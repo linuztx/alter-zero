@@ -333,7 +333,12 @@ pub fn approve_call(
     // refused here, before a prompt exists — no request, no wait, and no
     // `Notification`, since nobody is shown anything. The gate keeps the
     // refusal for the run's report.
-    if gate.refuses_unattended(&request) {
+    if gate.refuses_unattended(|| crate::permission::UnattendedRefusal {
+        request: request.clone(),
+        tool_name: call.name.clone(),
+        tool_use_id: call.id.clone(),
+        tool_input: call.arguments.clone(),
+    }) {
         return Approval::Reject {
             display: UNATTENDED_DISPLAY.to_string(),
             result: UNATTENDED_RESULT.to_string(),
@@ -1075,8 +1080,12 @@ mod tests {
         assert_eq!(decide(&gate, None, false, &rm), (refused(), false));
         let refusals = gate.take_unattended_refusals();
         assert_eq!(refusals.len(), 1, "{refusals:?}");
-        assert_eq!(refusals[0].kind, PermissionKind::Bash);
-        assert_eq!(refusals[0].target, "rm -rf build");
+        assert_eq!(refusals[0].request.kind, PermissionKind::Bash);
+        assert_eq!(refusals[0].request.target, "rm -rf build");
+        // The call as the model made it — what `permission_denials` reports.
+        assert_eq!(refusals[0].tool_name, "bash");
+        assert_eq!(refusals[0].tool_use_id, "c");
+        assert_eq!(refusals[0].tool_input, r#"{"command":"rm -rf build"}"#);
     }
 
     #[test]

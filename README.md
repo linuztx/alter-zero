@@ -320,9 +320,10 @@ Options:
   -V, --version                 Print version
 
 Print mode:
-  -p, --print                   Answer once with no screen: the answer on stdout, the log on stderr
+  -p, --print                   Answer once with no screen: the answer on stdout, problems on stderr
       --output-format <FORMAT>  text, json or stream-json
       --max-turns <N>           Stop after N model replies
+      --verbose                 Log each step of the run to stderr
 ```
 
 Start a task directly, or continue the work from your last session:

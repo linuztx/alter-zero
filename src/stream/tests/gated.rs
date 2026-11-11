@@ -453,3 +453,122 @@ fn a_timed_out_ask_demo_carries_on_without_the_user() {
         "the demo closes on the hand-off: {closing}"
     );
 }
+
+/// A headless run's gate (docs/headless.md): manual, and nobody to answer.
+fn unattended_gate() -> crate::permission::PermissionGate {
+    let gate = crate::permission::PermissionGate::new();
+    gate.set_mode(crate::permission::PermissionMode::Manual);
+    gate.set_unattended();
+    gate
+}
+
+/// A token that cancels itself after `after` — so a demo that waits on a
+/// gate nobody answers fails the test instead of hanging it.
+fn watchdog(after: Duration) -> CancelToken {
+    let cancel = CancelToken::new();
+    let fire = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        fire.cancel();
+    });
+    cancel
+}
+
+#[test]
+fn an_unattended_gate_refuses_the_demos_calls_without_asking() {
+    // Nobody can answer a headless run's prompt, so the demo's gated calls
+    // are refused the way the real approve seam refuses them: no request
+    // raised, each refusal kept for the run's `permission_denials`.
+    let gate = unattended_gate();
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+    let (tx, mut rx) = unbounded_channel();
+    let handle = dummy.spawn(
+        "parallel permission demo".to_string(),
+        vec![],
+        vec![],
+        tx,
+        watchdog(Duration::from_secs(10)),
+    );
+    let mut rejected = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Permission(request) => panic!("a request was raised: {request:?}"),
+            StreamEvent::ToolRejected { display, .. } => rejected.push(display),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().unwrap();
+    assert_eq!(
+        rejected,
+        vec![crate::permission::UNATTENDED_DISPLAY.to_string(); 2]
+    );
+    let refused: Vec<(String, String)> = gate
+        .take_unattended_refusals()
+        .into_iter()
+        .map(|refusal| (refusal.tool_name, refusal.request.target))
+        .collect();
+    assert_eq!(
+        refused,
+        vec![
+            ("bash".to_string(), "sudo whoami".to_string()),
+            ("bash".to_string(), "ping -c 4 google.com".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn an_unattended_gate_refuses_the_demo_subagents_call_too() {
+    // The subagent's request goes out on the agent channel, where a headless
+    // run's loop has no prompt to show: the gate refuses it before it is sent.
+    use crate::agents::{AgentEvent, AgentRegistry};
+    let gate = unattended_gate();
+    let (agent_tx, mut agent_rx) = unbounded_channel();
+    let registry = AgentRegistry::new(agent_tx);
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO)
+        .with_permissions(gate.clone())
+        .with_agents(registry);
+    let (tx, mut rx) = unbounded_channel();
+    let handle = dummy.spawn(
+        "launch a subagent that needs permission".to_string(),
+        vec![],
+        vec![],
+        tx,
+        watchdog(Duration::from_secs(10)),
+    );
+    while let Some(event) = rx.blocking_recv() {
+        if matches!(event, StreamEvent::StreamDone) {
+            break;
+        }
+    }
+    handle.join().unwrap();
+    while let Ok(event) = agent_rx.try_recv() {
+        if let AgentEvent::Stream {
+            event: StreamEvent::Permission(request),
+            ..
+        } = event
+        {
+            panic!("the subagent raised a request: {request:?}");
+        }
+    }
+    // Both of the agent's gated commands, each named as its own.
+    let refused: Vec<(String, String, Option<String>)> = gate
+        .take_unattended_refusals()
+        .into_iter()
+        .map(|refusal| {
+            (
+                refusal.tool_name,
+                refusal.request.target,
+                refusal.request.agent,
+            )
+        })
+        .collect();
+    let agent = Some("general-purpose".to_string());
+    assert_eq!(
+        refused,
+        vec![
+            ("bash".to_string(), "ls -la".to_string(), agent.clone()),
+            ("bash".to_string(), "pwd".to_string(), agent),
+        ]
+    );
+}

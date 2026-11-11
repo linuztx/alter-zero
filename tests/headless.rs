@@ -134,7 +134,7 @@ const DEMO_HANDOFF: &str = "`/login` signs you in";
 // ===== the offline demo: formats, prompts, sessions =====
 
 #[test]
-fn text_prints_the_answer_alone_and_logs_the_run_to_stderr() {
+fn text_prints_the_answer_alone_and_nothing_on_stderr() {
     let world = World::new("text");
     let out = world.demo(&["-p", "hello there"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -144,6 +144,17 @@ fn text_prints_the_answer_alone_and_logs_the_run_to_stderr() {
         !answer.contains('\x1b'),
         "no escape ever reaches stdout: {answer:?}"
     );
+    // Quiet unless asked: nothing went wrong, so stderr says nothing.
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn verbose_logs_the_run_to_stderr_and_leaves_stdout_alone() {
+    let world = World::new("verbose");
+    let quiet = world.demo(&["-p", "hello there"]);
+    let out = world.demo(&["-p", "--verbose", "hello there"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), stdout(&quiet));
     let log = stderr(&out);
     assert!(log.starts_with("alter-zero "), "{log}");
     assert!(log.contains("● Read(about.py)"), "{log}");
@@ -238,20 +249,18 @@ fn a_file_on_stdin_rides_beside_the_argument_in_a_tagged_block() {
 }
 
 #[test]
-fn an_open_pipe_that_says_nothing_is_left_alone() {
-    // n8n's command node, `docker run -i`: a pipe nobody writes to or closes.
-    let world = World::new("openpipe");
+fn an_open_socket_that_says_nothing_is_left_alone() {
+    // n8n's command node: Node starts a command with a socket on its stdin,
+    // and a parent that never writes to it or closes it.
+    let world = World::new("opensocket");
+    let (held_open, theirs) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
     let began = Instant::now();
-    let mut child = world
+    let out = world
         .command(&["-p", "--output-format", "json", "hello there"])
         .env("ALTER_ZERO_DUMMY", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
+        .output()
         .expect("the binary runs");
-    let held_open = child.stdin.take();
-    let out = child.wait_with_output().expect("the run ends");
     drop(held_open);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
@@ -260,6 +269,37 @@ fn an_open_pipe_that_says_nothing_is_left_alone() {
         stderr(&out)
     );
     assert!(began.elapsed() < Duration::from_secs(60));
+}
+
+#[test]
+fn a_slow_pipe_is_waited_for_and_what_it_sends_is_used() {
+    // `slow-command | alter-zero -p "summarize"`: a shell pipe ends when
+    // its writer does, so the run waits for it rather than lose its data.
+    let world = World::new("slowpipe");
+    let mut child = world
+        .command(&["-p", "--output-format", "stream-json", "summarize"])
+        .env("ALTER_ZERO_DUMMY", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    let mut pipe = child.stdin.take().expect("the pipe");
+    // Silent past the cut a socket would get, then the data, then the end.
+    std::thread::sleep(Duration::from_secs(4));
+    pipe.write_all(b"LATE_DATA\n").expect("written");
+    drop(pipe);
+    let out = child.wait_with_output().expect("the run ends");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let prompt = events(&out)
+        .into_iter()
+        .find(|event| event["item"]["type"] == "user_message")
+        .expect("the prompt's item");
+    assert_eq!(
+        prompt["item"]["text"],
+        "summarize\n\n<stdin>\nLATE_DATA\n</stdin>"
+    );
+    assert_eq!(stderr(&out), "", "nothing went wrong");
 }
 
 #[test]
@@ -329,6 +369,54 @@ fn no_model_configured_is_refused_rather_than_answered_by_the_demo() {
     assert!(stdout(&out).is_empty(), "{}", stdout(&out));
 }
 
+#[test]
+fn a_run_that_cannot_start_still_hands_a_json_reader_its_result() {
+    let world = World::new("notstarted");
+    let cases: [(&[&str], &str); 3] = [
+        (
+            &["-p", "--output-format", "json", "hello"],
+            "no model is configured",
+        ),
+        (
+            &["-p", "-c", "--output-format", "stream-json", "hello"],
+            "No conversation found to continue",
+        ),
+        (
+            &[
+                "-p",
+                "--resume",
+                "no-such-session",
+                "--output-format",
+                "json",
+                "hello",
+            ],
+            "No session found for id: no-such-session",
+        ),
+    ];
+    for (args, error) in cases {
+        let out = world
+            .command(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        let lines = events(&out);
+        assert_eq!(lines.len(), 1, "{args:?}: {lines:?}");
+        let result = &lines[0];
+        assert_eq!(result["type"], "result", "{args:?}");
+        assert_eq!(result["subtype"], "error_during_execution", "{args:?}");
+        assert_eq!(result["is_error"], true, "{args:?}");
+        assert!(
+            result["error"]
+                .as_str()
+                .is_some_and(|text| text.contains(error)),
+            "{args:?}: {result}"
+        );
+        // …and why, on stderr, as every failure is.
+        assert!(stderr(&out).contains(error), "{args:?}: {}", stderr(&out));
+    }
+}
+
 // ===== a real backend: permissions and the reply budget =====
 
 /// The command the stand-in's model asks to run: it leaves a marker file,
@@ -352,7 +440,10 @@ impl StandIn {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                serve(stream, &log);
+                // A connection of its own: a held reply (`STALL`) must not
+                // hold up the lead's next request.
+                let log = Arc::clone(&log);
+                std::thread::spawn(move || serve(stream, &log));
             }
         });
         Self { base, chats }
@@ -404,8 +495,11 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
 
 /// What a prompt says to make the stand-in delegate, or start a command
 /// that outlives the run — words no notice the app writes can contain.
+/// Beside `DELEGATE`, `STALL` gives the subagent a task the stand-in never
+/// answers in time: an agent that never finishes.
 const DELEGATE: &str = "HEADLESS_DELEGATE";
 const OUTLIVE: &str = "HEADLESS_OUTLIVE";
+const STALL: &str = "HEADLESS_STALL";
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
 /// user message it makes one call, chosen by what the message says:
@@ -419,6 +513,10 @@ fn chat_reply(body: &str) -> String {
         .cloned()
         .unwrap_or_default();
     let said = last["content"].to_string();
+    // The stalled subagent's task: answered long after any run waits for it.
+    if last["role"] == "user" && said.contains(STALL) && !said.contains(DELEGATE) {
+        std::thread::sleep(Duration::from_secs(30));
+    }
     let call = |name: &str, arguments: serde_json::Value| {
         vec![
             serde_json::json!({"choices": [{"delta": {"tool_calls": [{
@@ -434,11 +532,16 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
     } else if said.contains(DELEGATE) {
+        let task = if said.contains(STALL) {
+            format!("{STALL} make the marker")
+        } else {
+            "make the marker".to_string()
+        };
         call(
             "agent",
             serde_json::json!({
                 "description": "Make the marker",
-                "prompt": "make the marker",
+                "prompt": task,
                 "subagent_type": "general-purpose",
                 "run_in_background": true,
             }),
@@ -533,9 +636,12 @@ fn a_call_that_needs_approval_is_refused_and_the_model_is_told() {
     let result = &events(&out)[0];
     assert_eq!(result["result"], "Done.");
     assert_eq!(result["num_turns"], 2);
-    assert_eq!(result["permission_denials"][0]["kind"], "bash");
+    // Claude Code's entry: the tool as the model called it, and its input.
+    let denial = &result["permission_denials"][0];
+    assert_eq!(denial["tool_name"], "bash");
+    assert_eq!(denial["tool_use_id"], "call_1");
     assert_eq!(
-        result["permission_denials"][0]["target"],
+        denial["tool_input"]["command"],
         format!("touch {MARKER} && echo made")
     );
     // The model read why, in the tool result of its second request.
@@ -555,7 +661,7 @@ fn master_mode_runs_the_call_and_reports_success() {
     let out = real_run(
         &world,
         &stand_in,
-        &["-p", "--permission-mode", "master", "make it"],
+        &["-p", "--verbose", "--permission-mode", "master", "make it"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(marker_made(&world), "the command ran");
@@ -614,6 +720,42 @@ fn the_system_prompt_tells_the_model_it_runs_headless() {
     assert!(out.status.success(), "{}", stderr(&out));
     let chats = stand_in.chat_requests();
     assert!(chats[0].contains("## Headless"), "{}", chats[0]);
+}
+
+#[test]
+fn the_wait_on_a_background_agent_that_never_finishes_is_bounded() {
+    let world = World::new("stuckagent");
+    let stand_in = StandIn::start();
+    let mut command = world.command(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        &format!("{DELEGATE} {STALL}"),
+    ]);
+    stand_in.configure(&world, &mut command);
+    let began = Instant::now();
+    let out = command
+        .env("ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(
+        began.elapsed() < Duration::from_secs(20),
+        "the run waited out the stalled agent: {:?}",
+        began.elapsed()
+    );
+    // It ends on the lead's last reply, and says what it stopped.
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "Done.\n");
+    assert!(
+        stderr(&out).contains("stopped 1 background agent still running: Make the marker"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !marker_made(&world),
+        "the stalled agent never ran its command"
+    );
 }
 
 #[test]

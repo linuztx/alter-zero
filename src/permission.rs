@@ -165,6 +165,22 @@ pub struct PermissionRequest {
     pub agent_id: Option<String>,
 }
 
+/// A call an unattended gate refused (`docs/headless.md` *Permissions*): the
+/// request a prompt would have shown, and the call as the model made it —
+/// what a headless run's `permission_denials` report, in Claude Code's terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnattendedRefusal {
+    pub request: PermissionRequest,
+    /// The tool's wire name — what the model called (`bash`, `write`,
+    /// `mcp__github__create_issue`).
+    pub tool_name: String,
+    /// The call's id on the wire.
+    pub tool_use_id: String,
+    /// The model's arguments as it sent them: placeholders, never a secret's
+    /// value (`docs/secrets.md`).
+    pub tool_input: String,
+}
+
 /// What the user chose, handed back to the blocked tool thread. Esc is *not*
 /// one of these: it abandons the request (the loop releases it as a plain
 /// rejection) and interrupts the turn instead — `docs/permissions.md`.
@@ -1116,7 +1132,7 @@ struct GateInner {
     unattended: bool,
     /// What the unattended gate refused, in order, until taken for the run's
     /// report ([`PermissionGate::take_unattended_refusals`]).
-    refused: Vec<PermissionRequest>,
+    refused: Vec<UnattendedRefusal>,
     /// This session's scratchpad directory, when it has one
     /// ([`PermissionGate::set_scratchpad`]) — the root
     /// [`PermissionGate::scratchpad_covers`] measures a file change against.
@@ -1311,22 +1327,23 @@ impl PermissionGate {
         self.lock().unattended = true;
     }
 
-    /// The approve seam's last step on an unattended gate: refuse `request`
-    /// — recording it for the run's report — instead of raising a prompt.
-    /// `false` on an attended gate, whose prompt asks as ever.
+    /// The approve seam's last step on an unattended gate: refuse the call —
+    /// recording what `refusal` builds for the run's report — instead of
+    /// raising a prompt. `false` on an attended gate, whose prompt asks as
+    /// ever; `refusal` is only called when the record is kept.
     #[must_use]
-    pub fn refuses_unattended(&self, request: &PermissionRequest) -> bool {
+    pub fn refuses_unattended(&self, refusal: impl FnOnce() -> UnattendedRefusal) -> bool {
         let mut inner = self.lock();
         if inner.unattended {
-            inner.refused.push(request.clone());
+            inner.refused.push(refusal());
         }
         inner.unattended
     }
 
-    /// Every request this unattended gate refused since the last take, in
+    /// Every call this unattended gate refused since the last take, in
     /// order — the run's `permission_denials`.
     #[must_use]
-    pub fn take_unattended_refusals(&self) -> Vec<PermissionRequest> {
+    pub fn take_unattended_refusals(&self) -> Vec<UnattendedRefusal> {
         std::mem::take(&mut self.lock().refused)
     }
 
@@ -1371,10 +1388,25 @@ mod tests {
 
     // --- an unattended gate: the headless run (docs/headless.md) ---
 
+    /// A refusal of `target` as the model's call `id` made it.
+    fn refusal(kind: PermissionKind, target: &str, id: &str) -> UnattendedRefusal {
+        UnattendedRefusal {
+            request: request(kind, target),
+            tool_name: "bash".to_string(),
+            tool_use_id: id.to_string(),
+            tool_input: format!(r#"{{"command":"{target}"}}"#),
+        }
+    }
+
     #[test]
-    fn an_attended_gate_refuses_nothing_on_its_own() {
+    fn an_attended_gate_refuses_nothing_and_builds_no_record() {
         let gate = PermissionGate::new();
-        assert!(!gate.refuses_unattended(&request(PermissionKind::Bash, "rm -rf build")));
+        let mut built = false;
+        assert!(!gate.refuses_unattended(|| {
+            built = true;
+            refusal(PermissionKind::Bash, "rm -rf build", "call_1")
+        }));
+        assert!(!built, "an attended gate keeps nothing, so builds nothing");
         assert!(gate.take_unattended_refusals().is_empty());
     }
 
@@ -1382,11 +1414,11 @@ mod tests {
     fn an_unattended_gate_refuses_and_keeps_every_refusal_in_order() {
         let gate = PermissionGate::new();
         gate.set_unattended();
-        let first = request(PermissionKind::Bash, "rm -rf build");
-        let second = request(PermissionKind::Write, "/home/u/proj/a.rs");
-        assert!(gate.refuses_unattended(&first));
+        let first = refusal(PermissionKind::Bash, "rm -rf build", "call_1");
+        let second = refusal(PermissionKind::Write, "/home/u/proj/a.rs", "call_2");
+        assert!(gate.refuses_unattended(|| first.clone()));
         // Every clone shares the gate — a subagent's thread refuses too.
-        assert!(gate.clone().refuses_unattended(&second));
+        assert!(gate.clone().refuses_unattended(|| second.clone()));
         assert_eq!(gate.take_unattended_refusals(), vec![first, second]);
         assert!(gate.take_unattended_refusals().is_empty(), "taken once");
     }

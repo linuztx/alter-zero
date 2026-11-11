@@ -17,7 +17,8 @@ unit-tested must be unit-tested.
 
 The same session also runs with **no screen at all**: `alter-zero -p
 "prompt"` answers one prompt for a script, a cron job or a CI step — the
-answer on stdout (or JSON), the log on stderr, an exit status to branch on,
+answer on stdout (or JSON), problems on stderr — every step too with
+`--verbose` — an exit status to branch on,
 nothing asked ([`headless.md`](headless.md)). It is the TUI's own `Session`
 over a viewport that paints nowhere, so the conversation it records is the
 one the TUI would have.

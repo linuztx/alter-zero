@@ -21,12 +21,11 @@
 //!   own and MCP servers are children, so dying on SIGINT's default action
 //!   would orphan them. The run shuts down the TUI's way and reports.
 
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
 use alter_zero::app::{HistoryItem, Role};
-use alter_zero::cli::{self, HelpPage};
 use alter_zero::headless::{
     self as core, Denial, Emit, Reporter, RunEnd, RunOutcome, RunStart, RunUsage, StdinKind,
     StdinRead,
@@ -35,7 +34,7 @@ use alter_zero::mcp::McpServerStatus;
 use alter_zero::stream::StreamEvent;
 use alter_zero::term::InlineViewport;
 
-use super::startup::{Startup, StartupSession, help_style};
+use super::startup::{Halt, Startup, StartupSession};
 use super::{Session, config};
 
 /// What a run with no model to answer it says, and why it refuses rather
@@ -60,17 +59,18 @@ const SIGTERM: i32 = 15;
 /// Read a headless run's prompt (`docs/headless.md` *The prompt*): the
 /// argument, stdin, or both, by [`core::stdin_read`]'s rule. Runs in
 /// `resolve_cli`, before the runtime and before anything starts, so a usage
-/// mistake prints and exits like every other one. `Err(code)`: exit now — 2
-/// for nothing to answer, 1 for input that could not be read.
-pub(crate) fn read_prompt(arg: Option<&str>) -> Result<String, i32> {
+/// mistake prints and exits like every other one: [`Halt::Usage`] for
+/// nothing to answer, [`Halt::Failed`] for input that could not be read.
+pub(crate) fn read_prompt(arg: Option<&str>) -> Result<String, Halt> {
     let stdin = std::io::stdin();
     let kind = stdin_kind(&stdin);
     let input = match core::stdin_read(arg, kind) {
         StdinRead::Skip => None,
-        StdinRead::ToEnd => Some(read_stdin(&stdin)?),
+        StdinRead::ToEnd => Some(read_stdin(&stdin, None)?),
+        StdinRead::ToEndNoting(after) => Some(read_stdin(&stdin, Some(after))?),
         StdinRead::IfActiveWithin(wait) => {
             if readable_within(&stdin, wait) {
-                Some(read_stdin(&stdin)?)
+                Some(read_stdin(&stdin, Some(core::STDIN_NOTE_AFTER))?)
             } else {
                 write(&[core::warning(&format!(
                     "stdin said nothing for {}s, so the run goes on without it \
@@ -81,36 +81,32 @@ pub(crate) fn read_prompt(arg: Option<&str>) -> Result<String, i32> {
             }
         }
     };
-    core::combine_prompt(arg, input.as_deref()).ok_or_else(|| {
-        let message = if kind == StdinKind::Terminal {
-            "--print needs a prompt: pass it as an argument, or pipe it on stdin"
-        } else {
-            "the prompt is empty"
-        };
-        let style = help_style(std::io::stderr().is_terminal());
-        eprintln!("{}", cli::usage_error(HelpPage::Main, message, style));
-        2
-    })
+    core::combine_prompt(arg, input.as_deref()).ok_or(Halt::Usage(if kind == StdinKind::Terminal {
+        "--print needs a prompt: pass it as an argument, or pipe it on stdin"
+    } else {
+        "the prompt is empty"
+    }))
 }
 
-/// What stdin is: a terminal, a regular file, or a stream that may never
-/// end. A file is told apart by its own metadata, read through a duplicate
-/// of the descriptor so nothing of stdin itself is touched.
+/// What stdin is: a terminal, a regular file, a pipe, or another stream
+/// that may never end — told apart by the descriptor's own metadata, read
+/// through a duplicate so nothing of stdin itself is touched.
 fn stdin_kind(stdin: &std::io::Stdin) -> StdinKind {
+    use std::os::unix::fs::FileTypeExt;
     if stdin.is_terminal() {
         return StdinKind::Terminal;
     }
-    let is_file = stdin
+    let kind = stdin
         .as_fd()
         .try_clone_to_owned()
         .ok()
         .map(std::fs::File::from)
         .and_then(|file| file.metadata().ok())
-        .is_some_and(|meta| meta.is_file());
-    if is_file {
-        StdinKind::File
-    } else {
-        StdinKind::Stream
+        .map(|meta| meta.file_type());
+    match kind {
+        Some(kind) if kind.is_file() => StdinKind::File,
+        Some(kind) if kind.is_fifo() => StdinKind::Pipe,
+        _ => StdinKind::Stream,
     }
 }
 
@@ -129,25 +125,50 @@ fn readable_within(stdin: &std::io::Stdin, wait: Duration) -> bool {
     )
 }
 
-/// Read stdin to its end — at most [`core::STDIN_MAX_BYTES`] — and decode it.
-fn read_stdin(stdin: &std::io::Stdin) -> Result<String, i32> {
-    let limit = core::STDIN_MAX_BYTES as u64;
+/// Read stdin to its end — at most [`core::STDIN_MAX_BYTES`] — and decode
+/// it. With `note_after`, a stdin that has not ended by then is said on
+/// stderr, once, and still read to its end. Read from the descriptor itself,
+/// never through std's buffer, so `poll` sees everything still to come.
+fn read_stdin(stdin: &std::io::Stdin, note_after: Option<Duration>) -> Result<String, Halt> {
+    let began = Instant::now();
+    let mut noted = note_after.is_none();
     let mut bytes = Vec::new();
-    if let Err(err) = stdin.lock().take(limit + 1).read_to_end(&mut bytes) {
-        eprintln!("Could not read stdin: {err}");
-        return Err(1);
+    let mut chunk = vec![0; 64 * 1024];
+    loop {
+        if !noted {
+            let left = note_after
+                .unwrap_or_default()
+                .saturating_sub(began.elapsed());
+            if !readable_within(stdin, left) {
+                write(&[core::warning(
+                    "still reading stdin — the run starts once it ends (add < /dev/null \
+                     if nothing is piped in)",
+                )]);
+                noted = true;
+                continue;
+            }
+        }
+        let read = match rustix::io::read(stdin.as_fd(), &mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(err) => return Err(Halt::Failed(format!("Could not read stdin: {err}"))),
+        };
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.len() > core::STDIN_MAX_BYTES {
+            return Err(Halt::Failed(format!(
+                "stdin is over {} MiB — save it to a file and name the file in the prompt instead",
+                core::STDIN_MAX_BYTES / (1024 * 1024)
+            )));
+        }
     }
-    if bytes.len() as u64 > limit {
-        eprintln!(
-            "stdin is over {} MiB — save it to a file and name the file in the prompt instead",
-            core::STDIN_MAX_BYTES / (1024 * 1024)
-        );
-        return Err(1);
+    let decoded = core::decode_stdin(bytes);
+    if decoded.replaced {
+        write(&[core::warning(
+            "stdin is not all UTF-8: what is not reads as \u{fffd}",
+        )]);
     }
-    core::decode_stdin(bytes).map_err(|err| {
-        eprintln!("{err}");
-        1
-    })
+    Ok(decoded.text)
 }
 
 // ===== the streams =====
@@ -220,10 +241,8 @@ async fn next_signal(signal: &mut Option<tokio::signal::unix::Signal>) -> Option
 /// running that owes it a turn, then shut down and report.
 pub(crate) async fn run(mut startup: Startup) -> i32 {
     let began = Instant::now();
-    let format = startup
-        .print
-        .map(|options| options.output_format)
-        .unwrap_or_default();
+    let options = startup.print.unwrap_or_default();
+    let format = options.output_format;
     // The headless loop submits the prompt itself, once the MCP servers have
     // settled — bootstrap never sees it.
     let prompt = startup.prompt.take().unwrap_or_default();
@@ -235,19 +254,18 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
     let mut session = match Session::bootstrap(&mut term, startup) {
         Ok(session) => session,
         Err(err) => {
-            write(&[core::warning(&format!(
-                "could not start the session: {err}"
-            ))]);
+            let error = format!("could not start the session: {err}");
+            write(&core::not_started(format, &error, began.elapsed()));
             return 1;
         }
     };
     if !session.models.is_real() && !config::dummy_forced() && config::stall_ms().is_none() {
-        write(&[core::warning(NO_MODEL)]);
         let _ = session.shutdown();
+        write(&core::not_started(format, NO_MODEL, began.elapsed()));
         return 1;
     }
     session.report_held_for_review();
-    let mut reporter = Reporter::new(format);
+    let mut reporter = Reporter::new(format, options.verbose);
     let mut interrupted = session.settle_mcp(&mut signals).await;
     session.report_mcp_unavailable();
     let run_start = session.app.history.len();
@@ -258,6 +276,11 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
     // the TUI's idle-boundary rule, run once here (docs/compact.md).
     session.after_headless_iteration(true);
     let mut prompt = interrupted.is_none().then_some(prompt);
+    // How long the run may sit with nothing left but background subagents
+    // at work, and since when it has (docs/headless.md).
+    let agent_wait = core::agent_wait(std::env::var(core::AGENT_WAIT_ENV).ok().as_deref());
+    let mut agents_since: Option<Instant> = None;
+    let mut stopped_agents: Vec<String> = Vec::new();
     while interrupted.is_none() {
         if session.inflight.is_none()
             && let Some(prompt) = prompt.take()
@@ -277,12 +300,29 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
             }
             continue;
         }
+        // Idle but for subagents still working: the wait on them is bounded.
+        // A notice already in hand is not waited on — its turn is coming.
+        let agents_deadline = if prompt.is_none() && session.idle_on_working_agents() {
+            Some(*agents_since.get_or_insert_with(Instant::now) + agent_wait)
+        } else {
+            agents_since = None;
+            None
+        };
+        if agents_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // An agent that settled meanwhile still gets its turn.
+            session.drain_queued_events(&mut reporter, run_start, &mut emitted);
+            if session.idle_on_working_agents() {
+                stopped_agents = session.working_agents();
+                break;
+            }
+            continue;
+        }
         tokio::select! {
             Some(event) = session.reply_rx.recv() => {
                 session.on_headless_reply(event, &mut reporter, run_start, &mut emitted);
             }
             Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
-            Some(event) = session.agent_rx.recv() => session.on_agent_message(event),
+            Some(event) = session.agent_rx.recv() => session.on_headless_agent_message(event),
             Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
             Some((provider, result)) = session.probe_rx.recv(),
                 if session.models.probe_pending() =>
@@ -293,6 +333,9 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
             // nothing; its ticks are taken and dropped.
             Some(()) = session.draw_rx.recv() => {}
             signal = signals.recv() => interrupted = Some(signal),
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(
+                agents_deadline.unwrap_or_else(Instant::now),
+            )), if agents_deadline.is_some() => {}
         }
         // Compaction at the loop bottom only while the run waits on its
         // subagents — the idle boundary a follow-up turn will come out of.
@@ -300,7 +343,14 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
         session.after_headless_iteration(waiting);
     }
     session.emit_settled(&mut reporter, run_start, &mut emitted);
-    session.finish(&mut reporter, run_start, &start, began, interrupted)
+    session.finish(
+        &mut reporter,
+        run_start,
+        &start,
+        began,
+        interrupted,
+        &stopped_agents,
+    )
 }
 
 /// What the run announced itself as, kept for its report.
@@ -433,6 +483,25 @@ impl Session<'_> {
         write(&warnings);
     }
 
+    /// One subagent event, folded as the TUI folds it — except a permission
+    /// request, which nobody here can answer: the unattended gate refuses
+    /// before raising one, so one that arrived anyway is refused, never shown,
+    /// or the agent's thread would wait on it for the rest of the run.
+    fn on_headless_agent_message(&mut self, message: alter_zero::agents::AgentEvent) {
+        if let alter_zero::agents::AgentEvent::Stream {
+            event: StreamEvent::Permission(request),
+            ..
+        } = &message
+        {
+            self.permissions.resolve(
+                &request.id,
+                alter_zero::permission::PermissionDecision::Deny(None),
+            );
+            return;
+        }
+        self.on_agent_message(message);
+    }
+
     /// One reply event, folded exactly as the TUI folds it — then reported.
     fn on_headless_reply(
         &mut self,
@@ -518,6 +587,25 @@ impl Session<'_> {
             || self.app.has_pending_agent_notices()
     }
 
+    /// Idle but for subagents still at work — the wait
+    /// [`core::agent_wait`] bounds.
+    fn idle_on_working_agents(&self) -> bool {
+        self.inflight.is_none()
+            && !self.app.turn_active()
+            && self.app.queued.is_empty()
+            && self.app.agents().iter().any(alter_zero::herdr::agent_busy)
+    }
+
+    /// The subagents still at work, by their descriptions.
+    fn working_agents(&self) -> Vec<String> {
+        self.app
+            .agents()
+            .iter()
+            .filter(|run| alter_zero::herdr::agent_busy(run))
+            .map(|run| run.description.clone())
+            .collect()
+    }
+
     /// Fold every event already waiting on the background, subagent and
     /// reply channels — the last chance for one of them to start a
     /// follow-up turn. Only what is queued now: one that arrives meanwhile
@@ -538,7 +626,7 @@ impl Session<'_> {
             let Ok(event) = self.agent_rx.try_recv() else {
                 break;
             };
-            self.on_agent_message(event);
+            self.on_headless_agent_message(event);
         }
         for _ in 0..self.reply_rx.len() {
             let Ok(event) = self.reply_rx.try_recv() else {
@@ -579,6 +667,7 @@ impl Session<'_> {
         start: &StartInfo,
         began: Instant,
         interrupted: Option<i32>,
+        stopped_agents: &[String],
     ) -> i32 {
         let denials: Vec<Denial> = self
             .permissions
@@ -619,6 +708,7 @@ impl Session<'_> {
             usage,
             denials: &denials,
             stopped_shells: &stopped,
+            stopped_agents,
         }));
         outcome.exit_code()
     }

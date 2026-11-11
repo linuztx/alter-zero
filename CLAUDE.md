@@ -299,8 +299,9 @@ no facade (nothing outside the binary can name it — `main.rs` reaches exactly
 `tui::startup::resolve_cli`, then `tui::event_loop::run` or, for `-p`,
 `tui::headless::run` — **headless mode**, the same `Session` over
 `InlineViewport::headless` with no `EventStream`, nothing asked (an
-unattended permission gate, no `AskUserQuestion`), the answer on stdout and
-the log on stderr, `docs/headless.md`);
+unattended permission gate, no `AskUserQuestion`), the answer on stdout,
+problems on stderr and the step log there too with `--verbose`,
+`docs/headless.md`);
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `src/tui/`

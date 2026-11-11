@@ -52,10 +52,11 @@ Options:
 
 Print mode:
   -p, --print                    Answer PROMPT (or stdin) with no screen: the
-                                 answer on stdout, the log on stderr, then exit
+                                 answer on stdout, problems on stderr, then exit
       --output-format <FORMAT>   text (the answer), json (one result object) or
                                  stream-json (one event per line)
       --max-turns <N>            Stop after N model replies
+      --verbose                  Log each step of the run to stderr
 ```
 
 ```
@@ -253,8 +254,9 @@ page's grammar errors take the same shape over its six usage lines. Exit
   `--resume --help` doesn't eat `--help` as an id).
 - The headless flags (`docs/headless.md`): `-p`/`--print` is a switch, so
   the prompt stays the one positional (`alter-zero -p "…"`, or none at all
-  when stdin carries it); `--output-format text|json|stream-json` and
-  `--max-turns <N>` (a count above 0) need `-p` and are refused without it;
+  when stdin carries it); `--output-format text|json|stream-json`,
+  `--max-turns <N>` (a count above 0) and `--verbose` need `-p` and are
+  refused without it;
   `--permission-mode manual|edit|auto|master` and `-C`/`--cwd <DIR>` work in
   either kind of run. Every value-taking flag reads its value like
   `--resume`'s (separate or `=`-attached, never a `-`-leading next
@@ -284,6 +286,13 @@ page's grammar errors take the same shape over its six usage lines. Exit
   `cli::no_terminal_error` to stderr (the cause, then `{bin} -p "your
   prompt"`) and exits 1, where it used to end on the `io::Error`'s Debug
   form. `init` unwinds the modes it set before it returns the error.
+- **A launch that fails before it starts says so once.** The working
+  directory, the session to reopen and a headless run's prompt are resolved
+  by one `prepare` step whose failures come back as a `Halt` — a usage error
+  (the usage block, exit 2) or a failure with its message (exit 1) — and
+  `resolve_cli` prints it: as text for the TUI, through
+  `headless::not_started` for a headless run, so `--output-format json`
+  still hands a script its result object (`docs/headless.md`).
 - **Flags resolve to a `Startup` before `InlineViewport::init`** —
   `Startup { session: Option<StartupSession>, prompt: Option<String> }`,
   fail fast, no TUI flash:

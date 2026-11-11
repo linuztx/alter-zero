@@ -27,6 +27,39 @@ use crate::llm::tools::write_report as created;
 /// context (`docs/permissions.md`).
 type Resolution = Result<String, (String, String)>;
 
+/// The gate's record of a demo call it refused unattended: the call as the
+/// scripted model made it — its wire name and arguments — under the
+/// request's own id.
+pub(in crate::stream) fn unattended_refusal(
+    request: &PermissionRequest,
+) -> crate::permission::UnattendedRefusal {
+    let (tool_name, input) = match request.kind {
+        PermissionKind::Write => ("write", serde_json::json!({ "path": request.target })),
+        PermissionKind::Edit => ("edit", serde_json::json!({ "path": request.target })),
+        PermissionKind::Bash => ("bash", serde_json::json!({ "command": request.target })),
+        PermissionKind::Mcp => (request.target.as_str(), serde_json::json!({})),
+        PermissionKind::Session => (
+            "bashsend",
+            serde_json::json!({ "session_id": request.target }),
+        ),
+    };
+    crate::permission::UnattendedRefusal {
+        request: request.clone(),
+        tool_name: tool_name.to_string(),
+        tool_use_id: request.id.clone(),
+        tool_input: input.to_string(),
+    }
+}
+
+/// What an unattended refusal resolves with: the cell's line and the
+/// model's reason, the real approve seam's own.
+pub(in crate::stream) fn unattended() -> (String, String) {
+    (
+        crate::permission::UNATTENDED_DISPLAY.to_string(),
+        crate::permission::UNATTENDED_RESULT.to_string(),
+    )
+}
+
 /// One scripted call's identity, as a live backend would announce it: the
 /// display `kind`, the header `args` summary, the **verbatim** `arguments`
 /// the recorded cell replays next turn (`docs/context.md`), and the short
@@ -91,6 +124,11 @@ impl Stage<'_> {
     ) -> Option<Resolution> {
         if self.gate.allows(request) {
             return Some(Ok(output()));
+        }
+        // Nobody to ask — a headless run (docs/headless.md): refused the way
+        // the real approve seam refuses it, before a request exists.
+        if self.gate.refuses_unattended(|| unattended_refusal(request)) {
+            return Some(Err(unattended()));
         }
         let _ = self.tx.send(StreamEvent::Permission(request.clone()));
         let decision = self.gate.wait(&request.id, &|| self.cancel.is_cancelled());

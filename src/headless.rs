@@ -52,13 +52,34 @@ impl OutputFormat {
 
 // ===== the prompt: the argument, stdin, or both =====
 
-/// How long a pipe given **beside** a prompt argument may stay silent before
-/// the run goes on without it (`docs/headless.md` *The prompt*): a parent
-/// that leaves the pipe open and never writes to it — n8n's command node,
-/// `docker run -i`, `ssh` without `-n` — would otherwise hold the run
-/// forever, codex's hang. Anything at all within it — data or end-of-file —
-/// and the pipe is read to its end.
+/// How long a socket given **beside** a prompt argument may stay silent
+/// before the run goes on without it (`docs/headless.md` *The prompt*): a
+/// parent that leaves it open and never writes to it — Node's `exec`, so
+/// n8n's command node — would otherwise hold the run forever, codex's hang.
+/// Anything at all within it — data or end-of-file — and it is read to its
+/// end. A pipe is never cut off: a shell's `|` ends when its writer does,
+/// and data a slow writer has yet to send would be lost.
 pub const STDIN_WAIT: Duration = Duration::from_secs(3);
+
+/// How long a run that has nothing left but background subagents waits on
+/// them before stopping them and ending on its last reply (`docs/headless.md`
+/// *What the run does*) — a bound on an agent that never finishes.
+pub const AGENT_WAIT_DEFAULT: Duration = Duration::from_secs(600);
+
+/// The variable that sets [`agent_wait`]: whole seconds, `0` for no wait.
+pub const AGENT_WAIT_ENV: &str = "ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS";
+
+/// The wait on background subagents, from [`AGENT_WAIT_ENV`]'s value:
+/// whole seconds, `0` for none — anything else is [`AGENT_WAIT_DEFAULT`].
+#[must_use]
+pub fn agent_wait(raw: Option<&str>) -> Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map_or(AGENT_WAIT_DEFAULT, Duration::from_secs)
+}
+
+/// How long stdin may stay open before a run says on stderr that it is still
+/// waiting for its end, and how to stop it waiting (`< /dev/null`).
+pub const STDIN_NOTE_AFTER: Duration = Duration::from_secs(10);
 
 /// The most stdin a run takes — far past any model's context window, so
 /// input this large is a mistake to report, not a prompt to send.
@@ -74,7 +95,12 @@ pub enum StdinKind {
     Terminal,
     /// A regular file (`< task.md`): finite, read whole without waiting.
     File,
-    /// A pipe, a socket, a device — anything that may or may not end.
+    /// A pipe — a shell's `|`, Python's `Popen(stdin=PIPE)`: it ends when its
+    /// writer does, however slow the command writing it.
+    Pipe,
+    /// A socket, a device — anything else, which may or may not end: Node's
+    /// `spawn`/`exec` hand the commands they start a socket (n8n's Execute
+    /// Command node), one the parent may hold open without a word.
     Stream,
 }
 
@@ -85,6 +111,9 @@ pub enum StdinRead {
     Skip,
     /// Read it to its end, however long that takes.
     ToEnd,
+    /// Read it to its end, saying once on stderr if it has not ended within
+    /// the wait — a parent that never closes it holds the run, visibly.
+    ToEndNoting(Duration),
     /// Read it to its end if it says anything — data or end-of-file —
     /// within the wait; else leave it alone.
     IfActiveWithin(Duration),
@@ -92,8 +121,9 @@ pub enum StdinRead {
 
 /// How a run reads stdin, given its prompt argument and what stdin is
 /// (`docs/headless.md`): never a terminal unless `-` asks for it; a file
-/// always; and a stream in full when it *is* the prompt, but only if it is
-/// active within [`STDIN_WAIT`] when an argument was given beside it.
+/// always; a pipe to its end, however long its writer takes; and any other
+/// stream in full when it *is* the prompt, but only if it is active within
+/// [`STDIN_WAIT`] when an argument was given beside it.
 #[must_use]
 pub fn stdin_read(arg: Option<&str>, kind: StdinKind) -> StdinRead {
     let names_stdin = arg.is_none_or(|arg| arg == STDIN_ARG);
@@ -102,30 +132,38 @@ pub fn stdin_read(arg: Option<&str>, kind: StdinKind) -> StdinRead {
         StdinKind::Terminal if arg == Some(STDIN_ARG) => StdinRead::ToEnd,
         StdinKind::Terminal => StdinRead::Skip,
         StdinKind::File => StdinRead::ToEnd,
-        StdinKind::Stream if names_stdin => StdinRead::ToEnd,
+        // A pipe ends when its writer does: waited for, however slow.
+        StdinKind::Pipe => StdinRead::ToEndNoting(STDIN_NOTE_AFTER),
+        StdinKind::Stream if names_stdin => StdinRead::ToEndNoting(STDIN_NOTE_AFTER),
         StdinKind::Stream => StdinRead::IfActiveWithin(STDIN_WAIT),
     }
 }
 
-/// Decode what stdin carried: UTF-8, a leading byte-order mark dropped.
+/// What stdin carried, as text ([`decode_stdin`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdinText {
+    pub text: String,
+    /// Whether bytes that are not UTF-8 were replaced with `U+FFFD`.
+    pub replaced: bool,
+}
+
+/// Decode what stdin carried: UTF-8, a leading byte-order mark dropped, and
+/// any byte that is not UTF-8 replaced with `U+FFFD` — a log with one stray
+/// byte is still worth reading, and the run says it was changed.
 ///
-/// Taken by value: the input can be megabytes, and the decode reuses its
-/// buffer rather than copying it.
-///
-/// # Errors
-/// The input is not UTF-8 — named with the byte where it stops being so.
-pub fn decode_stdin(bytes: Vec<u8>) -> Result<String, String> {
+/// Taken by value: the input can be megabytes, and the decode of valid UTF-8
+/// reuses its buffer rather than copying it.
+#[must_use]
+pub fn decode_stdin(bytes: Vec<u8>) -> StdinText {
     const BOM: &str = "\u{feff}";
-    let mut text = String::from_utf8(bytes).map_err(|err| {
-        format!(
-            "stdin is not UTF-8 text (invalid at byte {})",
-            err.utf8_error().valid_up_to()
-        )
-    })?;
+    let (mut text, replaced) = match String::from_utf8(bytes) {
+        Ok(text) => (text, false),
+        Err(err) => (String::from_utf8_lossy(err.as_bytes()).into_owned(), true),
+    };
     if text.starts_with(BOM) {
         text.drain(..BOM.len());
     }
-    Ok(text)
+    StdinText { text, replaced }
 }
 
 /// The prompt a run answers, from its argument and what stdin carried
@@ -316,23 +354,73 @@ pub fn warning(text: &str) -> Emit {
     Emit::Stderr(format!("{STDERR_PREFIX}{text}"))
 }
 
-/// A tool call a headless run refused because it needed approval nobody
-/// could give (`docs/headless.md` *Permissions*) — the result's
-/// `permission_denials` entry.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Denial {
-    /// What was asked: `write`, `edit`, `bash`, `mcp` or `session`.
-    pub kind: &'static str,
-    /// The file, the command, the MCP tool, the session.
-    pub target: String,
-    /// The subagent type that asked; `None` for the lead.
-    pub agent: Option<String>,
+/// What a run that never started writes — no model, no session to continue,
+/// stdin that could not be read (`docs/headless.md` *Exit status*): why, on
+/// stderr in every format, and for the JSON formats the result object a
+/// script reads, so `jq .result` meets an error rather than nothing.
+#[must_use]
+pub fn not_started(format: OutputFormat, error: &str, duration: Duration) -> Vec<Emit> {
+    let mut out = vec![warning(error)];
+    if format != OutputFormat::Text {
+        out.push(Emit::Stdout(event_line(&Event::Result(ResultBody {
+            subtype: RunOutcome::Failed(String::new()).subtype(),
+            is_error: true,
+            result: "",
+            error: Some(error),
+            session_id: None,
+            model: None,
+            num_turns: 0,
+            duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            usage: RunUsage::default(),
+            permission_denials: &[],
+        }))));
+    }
+    out
 }
 
-impl From<&crate::permission::PermissionRequest> for Denial {
-    fn from(request: &crate::permission::PermissionRequest) -> Self {
+/// What a toast becomes in a headless run (`docs/headless.md` *Output*):
+/// an error is said on stderr always; anything else is the step log's, said
+/// only with `--verbose`.
+#[must_use]
+pub fn toast_line(text: &str, error: bool, verbose: bool) -> Option<Emit> {
+    (error || verbose).then(|| warning(text))
+}
+
+/// A tool call a headless run refused because it needed approval nobody
+/// could give (`docs/headless.md` *Permissions*) — the result's
+/// `permission_denials` entry, in Claude Code's fields: the tool as the model
+/// called it, the call's id and its input. `agent` adds the subagent type
+/// that asked; the lead's own calls carry none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Denial {
+    pub tool_name: String,
+    pub tool_use_id: String,
+    /// The call's arguments, one compact JSON object — `{}` when what the
+    /// model sent is not one.
+    #[serde(serialize_with = "raw_json")]
+    pub tool_input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// What the closing warning calls it: `write`, `edit`, `bash`, `mcp` or
+    /// `session`.
+    #[serde(skip)]
+    pub kind: &'static str,
+    /// The file, the command, the MCP tool, the session.
+    #[serde(skip)]
+    pub target: String,
+}
+
+impl From<&crate::permission::UnattendedRefusal> for Denial {
+    fn from(refusal: &crate::permission::UnattendedRefusal) -> Self {
         use crate::permission::PermissionKind;
+        let request = &refusal.request;
         Self {
+            tool_name: refusal.tool_name.clone(),
+            tool_use_id: refusal.tool_use_id.clone(),
+            tool_input: compact_json(&refusal.tool_input)
+                .filter(|input| input.starts_with('{'))
+                .unwrap_or_else(|| "{}".to_string()),
+            agent: request.agent.clone(),
             kind: match request.kind {
                 PermissionKind::Write => "write",
                 PermissionKind::Edit => "edit",
@@ -341,9 +429,17 @@ impl From<&crate::permission::PermissionRequest> for Denial {
                 PermissionKind::Session => "session",
             },
             target: request.target.clone(),
-            agent: request.agent.clone(),
         }
     }
+}
+
+/// Serialize `text` — JSON already, compacted by [`compact_json`] — as the
+/// value it is rather than as a string of it.
+fn raw_json<S: serde::Serializer>(text: &str, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    serde_json::value::RawValue::from_string(text.to_string())
+        .map_err(serde::ser::Error::custom)?
+        .serialize(serializer)
 }
 
 /// The provider's usage over the run — subagents included
@@ -400,6 +496,9 @@ pub struct RunEnd<'a> {
     pub denials: &'a [Denial],
     /// The background commands still running at the end, stopped with it.
     pub stopped_shells: &'a [String],
+    /// The background subagents still running once the run had waited
+    /// [`agent_wait`] on them — stopped, by their descriptions.
+    pub stopped_agents: &'a [String],
 }
 
 /// Turns what a headless run does into the lines it writes, for one output
@@ -409,6 +508,8 @@ pub struct RunEnd<'a> {
 #[derive(Debug, Default)]
 pub struct Reporter {
     format: OutputFormat,
+    /// `--verbose`: the step log on stderr, in every format.
+    verbose: bool,
     /// The next item's number — `item_N`, counted per process (codex's ids).
     next_item: u64,
     /// The lead's tool call whose start was announced and whose resolution
@@ -453,20 +554,26 @@ const LOG_DENIALS_NAMED: usize = 3;
 const INTERRUPTED_OUTPUT: &str = "Interrupted";
 
 impl Reporter {
+    /// A reporter writing `format`; `verbose` logs each step of the run to
+    /// stderr (`--verbose`) — without it stderr says only what went wrong or
+    /// needs attention.
     #[must_use]
-    pub fn new(format: OutputFormat) -> Self {
+    pub fn new(format: OutputFormat, verbose: bool) -> Self {
         Self {
             format,
+            verbose,
             ..Self::default()
         }
     }
 
     /// The run began: the log's header, the stream's `session.started`.
     pub fn start(&mut self, start: &RunStart<'_>) -> Vec<Emit> {
-        match self.format {
-            OutputFormat::Text => vec![Emit::Stderr(header_line(start))],
-            OutputFormat::Json => Vec::new(),
-            OutputFormat::StreamJson => vec![Emit::Stdout(event_line(&Event::SessionStarted {
+        let mut out = Vec::new();
+        if self.verbose {
+            out.push(Emit::Stderr(header_line(start)));
+        }
+        if self.format == OutputFormat::StreamJson {
+            out.push(Emit::Stdout(event_line(&Event::SessionStarted {
                 session_id: start.session_id,
                 model: start.model,
                 cwd: start.cwd,
@@ -474,8 +581,9 @@ impl Reporter {
                     .permission_mode
                     .map(crate::permission::PermissionMode::label),
                 resumed: start.resumed,
-            }))],
+            })));
         }
+        out
     }
 
     /// A tool call of the lead's started (its `ToolStart`): the log names
@@ -488,19 +596,18 @@ impl Reporter {
             args: args.to_string(),
             arguments: arguments.map(str::to_string),
         };
-        let out = match self.format {
-            OutputFormat::Text => {
-                // A call follows: whatever reply was held was narration.
-                let mut out = self.flush_held();
-                out.push(Emit::Stderr(tool_header(name, args)));
-                out
-            }
-            OutputFormat::Json => Vec::new(),
-            OutputFormat::StreamJson => vec![Emit::Stdout(event_line(&Event::ItemStarted {
+        let mut out = Vec::new();
+        if self.verbose {
+            // A call follows: whatever reply was held was narration.
+            out.extend(self.flush_held());
+            out.push(Emit::Stderr(tool_header(name, args)));
+        }
+        if self.format == OutputFormat::StreamJson {
+            out.push(Emit::Stdout(event_line(&Event::ItemStarted {
                 item: ItemEnvelope {
                     id: &open.id,
                     body: ItemBody::ToolCall {
-                        name: &open.name,
+                        name: wire_name(&open.name),
                         summary: &open.args,
                         arguments: open.arguments.as_deref().and_then(raw_arguments),
                         status: "in_progress",
@@ -508,8 +615,8 @@ impl Reporter {
                         note: None,
                     },
                 },
-            }))],
-        };
+            })));
+        }
         self.open_tool = Some(open);
         out
     }
@@ -519,17 +626,28 @@ impl Reporter {
     pub fn settled(&mut self, items: &[HistoryItem]) -> Vec<Emit> {
         let mut out = Vec::new();
         for item in items {
-            match self.format {
-                OutputFormat::Text => self.log_item(item, &mut out),
-                OutputFormat::Json => {}
-                OutputFormat::StreamJson => self.stream_item(item, &mut out),
+            // The lead's call this item resolves, when its start was
+            // announced — the log named it then, the stream opened its item.
+            let announced = matches!(item, HistoryItem::Tool(_))
+                .then(|| self.open_tool.take())
+                .flatten();
+            if self.verbose {
+                self.log_item(item, announced.is_some(), &mut out);
+            }
+            if self.format == OutputFormat::StreamJson {
+                self.stream_item(item, announced.map(|open| open.id), &mut out);
             }
         }
         out
     }
 
-    /// A request failed and is being sent again.
+    /// A request failed and is being sent again — the step log's news: a
+    /// retry that works needs nothing from anyone, and one that does not
+    /// ends the run with its error.
     pub fn retrying(&mut self, attempt: u32, max: u32) -> Vec<Emit> {
+        if !self.verbose {
+            return Vec::new();
+        }
         vec![warning(&format!(
             "the request failed — retrying ({attempt}/{max})"
         ))]
@@ -551,38 +669,44 @@ impl Reporter {
     pub fn finish(&mut self, end: &RunEnd<'_>) -> Vec<Emit> {
         let mut out = Vec::new();
         let open = self.open_tool.take();
+        let success = *end.outcome == RunOutcome::Success;
+        if self.verbose {
+            if open.is_some() {
+                out.push(Emit::Stderr(format!(
+                    "  ⎿ {}",
+                    INTERRUPTED_OUTPUT.to_lowercase()
+                )));
+            }
+            // A run that did not succeed prints no answer, so what the log
+            // held back is narration after all.
+            if success {
+                out.extend(self.after.drain(..).map(Emit::Stderr));
+                self.held.clear();
+            } else {
+                out.extend(self.flush_held());
+            }
+        }
+        out.extend(left_behind(end));
+        if self.verbose {
+            out.push(Emit::Stderr(footer_line(end)));
+        } else if let Some(error) = end.outcome.error() {
+            // Quiet, a run that went wrong still says what went wrong.
+            out.push(warning(error));
+        }
         match self.format {
             OutputFormat::Text => {
-                if open.is_some() {
-                    out.push(Emit::Stderr(format!(
-                        "  ⎿ {}",
-                        INTERRUPTED_OUTPUT.to_lowercase()
-                    )));
-                }
-                // A run that did not succeed prints no answer, so what it
-                // held back is narration after all.
-                if *end.outcome == RunOutcome::Success {
-                    out.extend(self.after.drain(..).map(Emit::Stderr));
-                    self.held.clear();
-                } else {
-                    out.extend(self.flush_held());
-                }
-                out.extend(left_behind(end));
-                out.push(Emit::Stderr(footer_line(end)));
-                if *end.outcome == RunOutcome::Success
-                    && let Some(answer) = end.answer
-                {
+                if success && let Some(answer) = end.answer {
                     out.push(Emit::Stdout(answer.to_string()));
                 }
             }
-            OutputFormat::Json | OutputFormat::StreamJson => {
-                out.extend(left_behind(end));
-                if let (OutputFormat::StreamJson, Some(open)) = (self.format, open) {
+            OutputFormat::Json => out.push(Emit::Stdout(result_line(end))),
+            OutputFormat::StreamJson => {
+                if let Some(open) = open {
                     out.push(Emit::Stdout(event_line(&Event::ItemCompleted {
                         item: ItemEnvelope {
                             id: &open.id,
                             body: ItemBody::ToolCall {
-                                name: &open.name,
+                                name: wire_name(&open.name),
                                 summary: &open.args,
                                 arguments: open.arguments.as_deref().and_then(raw_arguments),
                                 status: "failed",
@@ -615,8 +739,9 @@ impl Reporter {
             .collect()
     }
 
-    /// One settled item into the text log.
-    fn log_item(&mut self, item: &HistoryItem, out: &mut Vec<Emit>) {
+    /// One settled item into the step log; `announced`: the call it
+    /// resolves was named when it started.
+    fn log_item(&mut self, item: &HistoryItem, announced: bool, out: &mut Vec<Emit>) {
         match item {
             HistoryItem::Message(message) if message.role == Role::Assistant => {
                 let text = message.text.trim();
@@ -640,18 +765,21 @@ impl Reporter {
             }
             item => {
                 out.extend(self.flush_held());
-                out.extend(self.item_lines(item).into_iter().map(Emit::Stderr));
+                out.extend(
+                    Self::item_lines(item, announced)
+                        .into_iter()
+                        .map(Emit::Stderr),
+                );
             }
         }
     }
 
     /// The log lines of an item that is no reply and no trailing one.
-    fn item_lines(&mut self, item: &HistoryItem) -> Vec<String> {
+    fn item_lines(item: &HistoryItem, announced: bool) -> Vec<String> {
         match item {
             HistoryItem::Tool(call) => {
-                let opened = self.open_tool.take();
                 let mut lines = Vec::new();
-                if opened.is_none() {
+                if !announced {
                     lines.push(tool_header(&call.name, &call.args));
                 }
                 lines.push(tool_result_line(call));
@@ -692,8 +820,9 @@ impl Reporter {
         }
     }
 
-    /// One settled item into the event stream.
-    fn stream_item(&mut self, item: &HistoryItem, out: &mut Vec<Emit>) {
+    /// One settled item into the event stream; `announced`: the id of the
+    /// item the call's start opened.
+    fn stream_item(&mut self, item: &HistoryItem, announced: Option<String>, out: &mut Vec<Emit>) {
         let event = |body: ItemBody<'_>, id: &str| {
             event_line(&Event::ItemCompleted {
                 item: ItemEnvelope { id, body },
@@ -719,14 +848,14 @@ impl Reporter {
             }
             HistoryItem::Message(message) if message.role == Role::Shell => {}
             HistoryItem::Tool(call) => {
-                let id = match self.open_tool.take() {
-                    Some(open) => open.id,
+                let id = match announced {
+                    Some(id) => id,
                     None => self.next_id(),
                 };
                 let arguments = call.arguments.as_deref().and_then(raw_arguments);
                 out.push(Emit::Stdout(event(
                     ItemBody::ToolCall {
-                        name: &call.name,
+                        name: wire_name(&call.name),
                         summary: &call.args,
                         arguments,
                         status: tool_status_label(call),
@@ -744,6 +873,12 @@ impl Reporter {
             }
         }
     }
+}
+
+/// The name a tool call goes by in the stream — the one the model called,
+/// recovered from the screen's label the session records it under.
+fn wire_name(label: &str) -> std::borrow::Cow<'static, str> {
+    std::borrow::Cow::Owned(crate::context::wire_tool_name(label))
 }
 
 /// The stream item for everything but a tool call, a turn's end and a `!`
@@ -766,7 +901,7 @@ fn item_body(item: &HistoryItem) -> Option<ItemBody<'_>> {
             text: &reasoning.text,
         },
         HistoryItem::TaskCall(record) => ItemBody::ToolCall {
-            name: &record.name,
+            name: wire_name(&record.name),
             summary: &record.args,
             arguments: raw_arguments(&record.arguments),
             status: if record.ok { "completed" } else { "failed" },
@@ -1053,6 +1188,19 @@ fn left_behind(end: &RunEnd<'_>) -> Vec<Emit> {
                 .join(", ")
         )));
     }
+    if !end.stopped_agents.is_empty() {
+        let n = end.stopped_agents.len();
+        out.push(warning(&format!(
+            "stopped {n} background agent{} still running: {} ({AGENT_WAIT_ENV} sets how long \
+             a run waits for them)",
+            if n == 1 { "" } else { "s" },
+            end.stopped_agents
+                .iter()
+                .map(|description| cut(description, LOG_TARGET_MAX_COLS))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
     out
 }
 
@@ -1106,7 +1254,7 @@ fn result_line(end: &RunEnd<'_>) -> String {
         result: answer,
         error: end.outcome.error(),
         session_id: end.session_id,
-        model: end.model,
+        model: Some(end.model),
         num_turns: end.num_turns,
         duration_ms: u64::try_from(end.duration.as_millis()).unwrap_or(u64::MAX),
         usage: end.usage,
@@ -1206,7 +1354,9 @@ enum ItemBody<'a> {
         text: &'a str,
     },
     ToolCall {
-        name: &'a str,
+        /// The tool as the model called it (`bash`, `mcp__github__create_issue`)
+        /// — never the screen's label.
+        name: std::borrow::Cow<'a, str>,
         summary: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         arguments: Option<Box<serde_json::value::RawValue>>,
@@ -1282,7 +1432,8 @@ struct ResultBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
     session_id: Option<&'a str>,
-    model: &'a str,
+    /// `null` for a run that never started — it may have had no model.
+    model: Option<&'a str>,
     num_turns: usize,
     duration_ms: u64,
     usage: RunUsage,
@@ -1333,25 +1484,51 @@ mod tests {
     }
 
     #[test]
+    fn a_pipe_is_read_to_its_end_whatever_the_argument() {
+        // A shell `|` ends when its writer does: however slow the command
+        // before it, waiting loses nothing — and a pipe still open after a
+        // while is said on stderr.
+        for arg in [Some("summarize this"), None, Some("-")] {
+            assert_eq!(
+                stdin_read(arg, StdinKind::Pipe),
+                StdinRead::ToEndNoting(STDIN_NOTE_AFTER),
+                "{arg:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_stream_beside_an_argument_is_read_only_if_it_says_something_in_time() {
+        // A socket (what Node gives the commands it starts — n8n's) may be
+        // held open by a parent that never writes to it.
         assert_eq!(
             stdin_read(Some("review this diff"), StdinKind::Stream),
             StdinRead::IfActiveWithin(STDIN_WAIT)
         );
         // With no argument the stream IS the prompt: read to its end.
-        assert_eq!(stdin_read(None, StdinKind::Stream), StdinRead::ToEnd);
-        assert_eq!(stdin_read(Some("-"), StdinKind::Stream), StdinRead::ToEnd);
+        for arg in [None, Some("-")] {
+            assert_eq!(
+                stdin_read(arg, StdinKind::Stream),
+                StdinRead::ToEndNoting(STDIN_NOTE_AFTER),
+                "{arg:?}"
+            );
+        }
     }
 
     #[test]
     fn stdin_decodes_as_utf8_without_its_byte_order_mark() {
-        assert_eq!(decode_stdin(b"plain\n".to_vec()).as_deref(), Ok("plain\n"));
-        assert_eq!(
-            decode_stdin("\u{feff}caf\u{e9}".as_bytes().to_vec()).as_deref(),
-            Ok("caf\u{e9}")
-        );
-        let err = decode_stdin(b"ok\xffno".to_vec()).expect_err("not UTF-8");
-        assert!(err.contains("UTF-8") && err.contains("byte 2"), "{err}");
+        let plain = decode_stdin(b"plain\n".to_vec());
+        assert_eq!((plain.text.as_str(), plain.replaced), ("plain\n", false));
+        let bom = decode_stdin("\u{feff}caf\u{e9}".as_bytes().to_vec());
+        assert_eq!((bom.text.as_str(), bom.replaced), ("caf\u{e9}", false));
+    }
+
+    #[test]
+    fn stdin_that_is_not_all_utf8_keeps_what_is_and_says_so() {
+        // A log with one stray byte is still worth reading.
+        let mixed = decode_stdin(b"\xef\xbb\xbfok\xffno\n".to_vec());
+        assert_eq!(mixed.text, "ok\u{fffd}no\n");
+        assert!(mixed.replaced);
     }
 
     #[test]
@@ -1707,6 +1884,7 @@ mod tests {
             },
             denials: &[],
             stopped_shells: &[],
+            stopped_agents: &[],
         }
     }
 
@@ -1760,7 +1938,7 @@ mod tests {
 
     #[test]
     fn a_text_run_logs_its_work_to_stderr_and_prints_only_the_answer() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let mut emits = reporter.start(&start_info());
         emits.extend(reporter.settled(&[user("fix it")]));
         // The narration settles as the tool call starts…
@@ -1793,7 +1971,7 @@ mod tests {
 
     #[test]
     fn a_tool_that_never_announced_its_start_is_logged_whole() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let emits = reporter.settled(&[tool("bash", ToolStatus::Ok, "Exit code: 0\nok")]);
         assert_eq!(
             stderr(&emits),
@@ -1805,7 +1983,7 @@ mod tests {
     fn a_file_read_logs_how_much_it_read() {
         // The read tool's output is the numbered file; its cell's corner —
         // `Read 12 lines` — is synthesized, and so is the log's.
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let emits = reporter.settled(&[
             tool("read", ToolStatus::Ok, "1 fn main() {\n2     run();\n3 }"),
             tool("Read", ToolStatus::Ok, "1 one line"),
@@ -1826,7 +2004,7 @@ mod tests {
 
     #[test]
     fn declined_backgrounded_and_silent_calls_read_as_such() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let emits = reporter.settled(&[
             declined("bash", "Not run: needs approval (headless run)"),
             tool(
@@ -1854,7 +2032,7 @@ mod tests {
 
     #[test]
     fn a_long_or_multiline_header_is_cut_to_one_line() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let long = "x".repeat(300);
         let line = &stderr(&reporter.tool_started("bash", &long, None))[0];
         assert!(line.ends_with("…)") && line.chars().count() < 140, "{line}");
@@ -1864,7 +2042,7 @@ mod tests {
 
     #[test]
     fn a_notice_after_a_reply_keeps_its_place_once_the_reply_proves_narration() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let mut emits = reporter.settled(&[
             user("q"),
             reply("Waiting on the build."),
@@ -1888,7 +2066,7 @@ mod tests {
 
     #[test]
     fn a_failed_run_logs_its_error_and_prints_no_answer() {
-        let mut reporter = Reporter::new(OutputFormat::Text);
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
         let mut emits = reporter.settled(&[
             user("q"),
             reply("Partial"),
@@ -1913,7 +2091,7 @@ mod tests {
             let mut end = end_info(&outcome, None);
             end.num_turns = turns;
             end.usage = usage;
-            stderr(&Reporter::new(OutputFormat::Text).finish(&end))
+            stderr(&Reporter::new(OutputFormat::Text, true).finish(&end))
                 .last()
                 .cloned()
                 .unwrap()
@@ -1928,27 +2106,71 @@ mod tests {
         );
     }
 
+    /// The gate's record of a refused call, as the model's `call_7` made it —
+    /// its input pretty-printed, as some models send arguments.
+    fn refusal(
+        kind: PermissionKind,
+        target: &str,
+        agent: Option<&str>,
+    ) -> crate::permission::UnattendedRefusal {
+        crate::permission::UnattendedRefusal {
+            request: PermissionRequest {
+                id: "p1".into(),
+                kind,
+                target: target.into(),
+                body: String::new(),
+                detail: None,
+                agent: agent.map(Into::into),
+                agent_id: agent.map(|_| "a1".into()),
+            },
+            tool_name: "bash".into(),
+            tool_use_id: "call_7".into(),
+            tool_input: format!("{{\n  \"command\": \"{target}\"\n}}"),
+        }
+    }
+
+    #[test]
+    fn a_tool_call_is_named_as_the_model_called_it() {
+        // The live stream and the history carry the screen's label; the
+        // stream names each tool the way the model called it.
+        let label = crate::llm::tools::display_name;
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
+        let started = stdout(&reporter.tool_started(&label("bash"), "ls", None));
+        assert_eq!(json(&started[0])["item"]["name"], "bash");
+        let settled = stdout(&reporter.settled(&[tool(&label("bash"), ToolStatus::Ok, "ok")]));
+        assert_eq!(json(&settled[0])["item"]["name"], "bash");
+        // An MCP tool's label turns back into the name it was called by,
+        // its case kept.
+        let wire = "mcp__GitHub__create_issue";
+        let mcp = stdout(&reporter.settled(&[tool(&label(wire), ToolStatus::Ok, "{}")]));
+        assert_eq!(json(&mcp[0])["item"]["name"], wire);
+        // A run stopped under an open call names it the same way.
+        reporter.tool_started(&label("write"), "a.txt", None);
+        let outcome = RunOutcome::Interrupted(15);
+        let end = end_info(&outcome, None);
+        let closed = stdout(&reporter.finish(&end));
+        assert_eq!(json(&closed[0])["item"]["name"], "write");
+    }
+
     #[test]
     fn what_a_run_left_behind_is_said_on_stderr_in_every_format() {
         let denials = [
-            Denial {
-                kind: "bash",
-                target: "rm -rf build".into(),
-                agent: None,
-            },
-            Denial {
-                kind: "write",
-                target: "/home/u/proj/a.rs".into(),
-                agent: Some("general-purpose".into()),
-            },
+            Denial::from(&refusal(PermissionKind::Bash, "rm -rf build", None)),
+            Denial::from(&refusal(
+                PermissionKind::Write,
+                "/home/u/proj/a.rs",
+                Some("general-purpose"),
+            )),
         ];
         let shells = ["npm run dev".to_string()];
+        let agents = ["Review the diff".to_string()];
         for format in OutputFormat::ALL {
             let outcome = RunOutcome::Success;
             let mut end = end_info(&outcome, Some("ok"));
             end.denials = &denials;
             end.stopped_shells = &shells;
-            let lines = stderr(&Reporter::new(format).finish(&end));
+            end.stopped_agents = &agents;
+            let lines = stderr(&Reporter::new(format, false).finish(&end));
             assert!(
                 lines.contains(
                     &"alter-zero: 2 tool calls needed approval and did not run: bash rm -rf build, \
@@ -1964,25 +2186,175 @@ mod tests {
                 ),
                 "{format:?}: {lines:?}"
             );
+            assert!(
+                lines.contains(
+                    &"alter-zero: stopped 1 background agent still running: Review the diff \
+                      (ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS sets how long a run waits for them)"
+                        .to_string()
+                ),
+                "{format:?}: {lines:?}"
+            );
         }
     }
 
     #[test]
-    fn a_retry_and_an_outage_are_said_on_stderr_once() {
-        let mut reporter = Reporter::new(OutputFormat::StreamJson);
+    fn a_run_that_never_started_says_why_and_still_hands_scripts_a_result() {
+        let error = "no model is configured";
+        let took = Duration::from_millis(5);
+        // Text: why, on stderr — stdout has no answer to carry.
         assert_eq!(
-            reporter.retrying(2, 5),
+            not_started(OutputFormat::Text, error, took),
+            vec![warning(error)]
+        );
+        for format in [OutputFormat::Json, OutputFormat::StreamJson] {
+            let out = not_started(format, error, took);
+            assert_eq!(
+                stderr(&out),
+                vec![format!("alter-zero: {error}")],
+                "{format:?}"
+            );
+            let lines = stdout(&out);
+            assert_eq!(lines.len(), 1, "{format:?}: {lines:?}");
+            let result = json(&lines[0]);
+            assert_eq!(result["type"], "result");
+            assert_eq!(result["subtype"], "error_during_execution");
+            assert_eq!(result["is_error"], true);
+            assert_eq!(result["result"], "");
+            assert_eq!(result["error"], error);
+            assert!(result["session_id"].is_null(), "{result}");
+            assert!(result["model"].is_null(), "{result}");
+            assert_eq!(result["num_turns"], 0);
+            assert_eq!(result["duration_ms"], 5);
+            assert_eq!(result["permission_denials"], serde_json::json!([]));
+        }
+    }
+
+    #[test]
+    fn the_wait_on_background_agents_is_ten_minutes_unless_set() {
+        assert_eq!(agent_wait(None), Duration::from_secs(600));
+        assert_eq!(agent_wait(Some("30")), Duration::from_secs(30));
+        assert_eq!(agent_wait(Some(" 30 ")), Duration::from_secs(30));
+        assert_eq!(agent_wait(Some("0")), Duration::ZERO, "0 waits not at all");
+        for bad in ["", "ten", "-5", "1.5"] {
+            assert_eq!(agent_wait(Some(bad)), AGENT_WAIT_DEFAULT, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_toast_reaches_stderr_when_it_is_an_error_or_the_run_is_verbose() {
+        assert_eq!(
+            toast_line("providers.toml: bad", true, false),
+            Some(warning("providers.toml: bad"))
+        );
+        assert_eq!(
+            toast_line("Thinking: high", false, true),
+            Some(warning("Thinking: high"))
+        );
+        assert_eq!(toast_line("Thinking: high", false, false), None);
+    }
+
+    #[test]
+    fn a_retry_is_logged_when_verbose_and_an_outage_always_once() {
+        // A retry that works is no news: only the step log tells of it.
+        let mut quiet = Reporter::new(OutputFormat::StreamJson, false);
+        assert!(quiet.retrying(2, 5).is_empty());
+        let mut verbose = Reporter::new(OutputFormat::StreamJson, true);
+        assert_eq!(
+            verbose.retrying(2, 5),
             vec![Emit::Stderr(
                 "alter-zero: the request failed — retrying (2/5)".into()
             )]
         );
-        assert_eq!(
-            reporter.offline("api.openai.com", 1),
-            vec![Emit::Stderr(
-                "alter-zero: no connection to api.openai.com — waiting for it".into()
-            )]
+        // An outage can hold the run for as long as it lasts: said either way.
+        for mut reporter in [quiet, verbose] {
+            assert_eq!(
+                reporter.offline("api.openai.com", 1),
+                vec![Emit::Stderr(
+                    "alter-zero: no connection to api.openai.com — waiting for it".into()
+                )]
+            );
+            assert!(reporter.offline("api.openai.com", 2).is_empty());
+        }
+    }
+
+    /// Everything a reporter writes over a run that read, narrated, ran a
+    /// command and answered — then ended as `outcome`.
+    fn whole_run(format: OutputFormat, verbose: bool, outcome: &RunOutcome) -> Vec<Emit> {
+        let mut reporter = Reporter::new(format, verbose);
+        let mut out = reporter.start(&start_info());
+        out.extend(reporter.settled(&[user("q"), reply("Let me look.")]));
+        out.extend(reporter.tool_started("Bash", "ls", Some(r#"{"command":"ls"}"#)));
+        out.extend(reporter.settled(&[
+            tool("Bash", ToolStatus::Ok, "Exit code: 0\nCargo.toml\n"),
+            reply("Answer."),
+            summary(1),
+        ]));
+        let answer = (*outcome == RunOutcome::Success).then_some("Answer.");
+        out.extend(reporter.finish(&end_info(outcome, answer)));
+        out
+    }
+
+    #[test]
+    fn a_quiet_text_run_prints_its_answer_and_nothing_else() {
+        let out = whole_run(OutputFormat::Text, false, &RunOutcome::Success);
+        assert_eq!(out, vec![Emit::Stdout("Answer.".into())]);
+    }
+
+    #[test]
+    fn a_quiet_run_that_failed_says_why_on_stderr_in_every_format() {
+        let outcome = RunOutcome::Failed("HTTP 400: bad request".into());
+        for format in OutputFormat::ALL {
+            let lines = stderr(&whole_run(format, false, &outcome));
+            assert_eq!(
+                lines,
+                vec!["alter-zero: HTTP 400: bad request".to_string()],
+                "{format:?}"
+            );
+        }
+        // Verbose, the log's own error line and footer say it — once.
+        let lines = stderr(&whole_run(OutputFormat::Text, true, &outcome));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("alter-zero: HTTP 400")),
+            "{lines:?}"
         );
-        assert!(reporter.offline("api.openai.com", 2).is_empty());
+        assert!(
+            lines.iter().any(|line| line.starts_with("Failed after")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn verbose_logs_each_step_to_stderr_in_every_format() {
+        for format in OutputFormat::ALL {
+            let out = whole_run(format, true, &RunOutcome::Success);
+            let lines = stderr(&out);
+            assert!(
+                lines[0].starts_with("alter-zero 0.18.0 · gpt-5.5"),
+                "{format:?}: {lines:?}"
+            );
+            assert!(
+                lines.contains(&"Let me look.".to_string()),
+                "{format:?}: {lines:?}"
+            );
+            assert!(
+                lines.contains(&"● Bash(ls)".to_string()),
+                "{format:?}: {lines:?}"
+            );
+            assert!(
+                lines.last().is_some_and(|l| l.starts_with("Done in")),
+                "{format:?}: {lines:?}"
+            );
+            // The answer is stdout's, never the log's.
+            assert!(
+                !lines.contains(&"Answer.".to_string()),
+                "{format:?}: {lines:?}"
+            );
+            // stdout is the format's own, whatever stderr says.
+            let quiet = whole_run(format, false, &RunOutcome::Success);
+            assert_eq!(stdout(&out), stdout(&quiet), "{format:?}");
+        }
     }
 
     #[test]
@@ -2017,7 +2389,7 @@ mod tests {
             vec![user("q"), reply("A"), failure("boom")],
         ];
         for run in runs {
-            let mut reporter = Reporter::new(OutputFormat::Text);
+            let mut reporter = Reporter::new(OutputFormat::Text, true);
             let mut logged = Vec::new();
             for item in &run {
                 logged.extend(stderr(&reporter.settled(std::slice::from_ref(item))));
@@ -2041,7 +2413,7 @@ mod tests {
 
     #[test]
     fn stream_json_opens_with_the_session_and_pairs_a_tool_with_its_completion() {
-        let mut reporter = Reporter::new(OutputFormat::StreamJson);
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
         let mut emits = reporter.start(&start_info());
         emits.extend(reporter.settled(&[user("fix it")]));
         emits.extend(reporter.tool_started(
@@ -2090,7 +2462,7 @@ mod tests {
 
     #[test]
     fn every_history_item_maps_to_its_stream_item() {
-        let mut reporter = Reporter::new(OutputFormat::StreamJson);
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
         let group = HistoryItem::AgentGroup(AgentGroup {
             background: false,
             agents: vec![AgentGroupEntry {
@@ -2184,7 +2556,7 @@ mod tests {
 
     #[test]
     fn a_turn_ends_in_turn_completed_or_turn_failed() {
-        let mut reporter = Reporter::new(OutputFormat::StreamJson);
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
         let HistoryItem::Summary(mut done) = summary(71) else {
             unreachable!()
         };
@@ -2207,7 +2579,7 @@ mod tests {
 
     #[test]
     fn a_tool_still_open_at_the_end_completes_as_interrupted_before_the_result() {
-        let mut reporter = Reporter::new(OutputFormat::StreamJson);
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
         let _ = reporter.tool_started("bash", "sleep 60", None);
         let outcome = RunOutcome::Interrupted(2);
         let events: Vec<serde_json::Value> = stdout(&reporter.finish(&end_info(&outcome, None)))
@@ -2224,15 +2596,11 @@ mod tests {
 
     #[test]
     fn json_prints_one_result_object_and_nothing_else() {
-        let mut reporter = Reporter::new(OutputFormat::Json);
+        let mut reporter = Reporter::new(OutputFormat::Json, false);
         let mut emits = reporter.start(&start_info());
         emits.extend(reporter.tool_started("bash", "ls", None));
         emits.extend(reporter.settled(&[user("q"), reply("A"), summary(1)]));
-        let denials = [Denial {
-            kind: "bash",
-            target: "rm x".into(),
-            agent: None,
-        }];
+        let denials = [Denial::from(&refusal(PermissionKind::Bash, "rm x", None))];
         let outcome = RunOutcome::Success;
         let mut end = end_info(&outcome, Some("A"));
         end.denials = &denials;
@@ -2253,9 +2621,11 @@ mod tests {
         assert_eq!(result["usage"]["output_tokens"], 2_000);
         assert_eq!(result["usage"]["cached_input_tokens"], 31_000);
         assert_eq!(result["usage"]["cache_write_input_tokens"], 0);
-        assert_eq!(result["permission_denials"][0]["kind"], "bash");
-        assert_eq!(result["permission_denials"][0]["target"], "rm x");
-        assert!(result["permission_denials"][0]["agent"].is_null());
+        let denial = &result["permission_denials"][0];
+        assert_eq!(denial["tool_name"], "bash");
+        assert_eq!(denial["tool_use_id"], "call_7");
+        assert_eq!(denial["tool_input"]["command"], "rm x");
+        assert!(denial.get("agent").is_none(), "{denial}");
         assert!(
             out[0].starts_with(r#"{"type":"result","subtype":"success","is_error":false"#),
             "{}",
@@ -2268,7 +2638,7 @@ mod tests {
         let outcome = RunOutcome::MaxTurns("Stopped after 3 model replies".into());
         let mut end = end_info(&outcome, None);
         end.session_id = None;
-        let result = json(&stdout(&Reporter::new(OutputFormat::Json).finish(&end))[0]);
+        let result = json(&stdout(&Reporter::new(OutputFormat::Json, false).finish(&end))[0]);
         assert_eq!(result["subtype"], "error_max_turns");
         assert_eq!(result["is_error"], true);
         assert_eq!(result["result"], "");
@@ -2277,16 +2647,24 @@ mod tests {
     }
 
     #[test]
-    fn a_denial_names_its_kind_its_target_and_the_agent_that_asked() {
-        let request = |kind| PermissionRequest {
-            id: "p1".into(),
-            kind,
-            target: "rm -rf build".into(),
-            body: String::new(),
-            detail: None,
-            agent: Some("explore".into()),
-            agent_id: Some("a1".into()),
-        };
+    fn a_denial_reports_the_call_in_claude_codes_terms() {
+        // The lead's own call: Claude Code's entry, its input compacted.
+        let lead = Denial::from(&refusal(PermissionKind::Bash, "rm -rf build", None));
+        assert_eq!(
+            serde_json::to_string(&lead).expect("serializes"),
+            r#"{"tool_name":"bash","tool_use_id":"call_7","tool_input":{"command":"rm -rf build"}}"#
+        );
+        // A subagent's: the type that asked rides beside it.
+        let sub = Denial::from(&refusal(
+            PermissionKind::Bash,
+            "rm -rf build",
+            Some("explore"),
+        ));
+        assert_eq!(
+            serde_json::to_value(&sub).expect("serializes")["agent"],
+            "explore"
+        );
+        // The closing warning names each kind as it always did.
         let kinds = [
             (PermissionKind::Write, "write"),
             (PermissionKind::Edit, "edit"),
@@ -2295,14 +2673,21 @@ mod tests {
             (PermissionKind::Session, "session"),
         ];
         for (kind, label) in kinds {
+            let denial = Denial::from(&refusal(kind, "rm -rf build", None));
             assert_eq!(
-                Denial::from(&request(kind)),
-                Denial {
-                    kind: label,
-                    target: "rm -rf build".into(),
-                    agent: Some("explore".into()),
-                }
+                (denial.kind, denial.target.as_str()),
+                (label, "rm -rf build")
             );
+        }
+    }
+
+    #[test]
+    fn a_denial_whose_input_is_not_an_object_reports_an_empty_one() {
+        for input in ["not json", "[1, 2]", "\"rm\"", ""] {
+            let mut refused = refusal(PermissionKind::Bash, "rm", None);
+            refused.tool_input = input.to_string();
+            let denial = serde_json::to_value(Denial::from(&refused)).expect("serializes");
+            assert_eq!(denial["tool_input"], serde_json::json!({}), "{input:?}");
         }
     }
 

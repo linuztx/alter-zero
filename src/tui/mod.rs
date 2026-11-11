@@ -207,6 +207,9 @@ pub(crate) struct Session<'t> {
     /// session over a viewport that paints nowhere (`docs/headless.md`):
     /// nothing asked, nothing shown, toasts on stderr.
     headless: bool,
+    /// A headless run's `--verbose`: its info toasts reach stderr too, beside
+    /// the errors every headless run reports (`docs/headless.md` *Output*).
+    headless_verbose: bool,
     /// A headless run's reply budget (`--max-turns`), shared with every
     /// backend build — what the run reports as its `num_turns`. `None` in
     /// the TUI.

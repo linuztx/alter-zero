@@ -91,6 +91,9 @@ pub struct PrintOptions {
     /// `--max-turns`: the most model replies the lead agent may make over
     /// the whole run — Claude Code's agentic turns. `None` is no limit.
     pub max_turns: Option<NonZeroUsize>,
+    /// `--verbose`: log each step of the run to stderr. Without it stderr
+    /// says only what went wrong or needs attention.
+    pub verbose: bool,
 }
 
 /// How a session run begins — the session flags, one-to-one.
@@ -322,7 +325,7 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                     literal: "-p, --print",
                     placeholder: "",
                     description: "Answer PROMPT (or stdin) with no screen: the\n\
-                                  answer on stdout, the log on stderr, then exit",
+                                  answer on stdout, problems on stderr, then exit",
                 },
                 Row {
                     literal: "    --output-format",
@@ -334,6 +337,11 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                     literal: "    --max-turns",
                     placeholder: " <N>",
                     description: "Stop after N model replies",
+                },
+                Row {
+                    literal: "    --verbose",
+                    placeholder: "",
+                    description: "Log each step of the run to stderr",
                 },
             ],
         },
@@ -527,6 +535,7 @@ where
     let mut print: Option<()> = None;
     let mut output_format: Option<OutputFormat> = None;
     let mut max_turns: Option<NonZeroUsize> = None;
+    let mut verbose: Option<()> = None;
     let mut permission_mode: Option<PermissionMode> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut args = args.into_iter().peekable();
@@ -594,6 +603,13 @@ where
                 set_once(&mut print, (), "--print")?;
                 continue;
             }
+            "--verbose" => {
+                if value.is_some() {
+                    return Err(format!("{flag} takes no value"));
+                }
+                set_once(&mut verbose, (), "--verbose")?;
+                continue;
+            }
             "--output-format" => {
                 let raw = flag_value(&flag, value, &mut args)?;
                 let format = OutputFormat::parse(&raw).ok_or_else(|| {
@@ -644,6 +660,7 @@ where
         Some(()) => Some(PrintOptions {
             output_format: output_format.unwrap_or_default(),
             max_turns,
+            verbose: verbose.is_some(),
         }),
         None => {
             if output_format.is_some() {
@@ -651,6 +668,9 @@ where
             }
             if max_turns.is_some() {
                 return Err("--max-turns needs --print (-p)".to_string());
+            }
+            if verbose.is_some() {
+                return Err("--verbose needs --print (-p)".to_string());
             }
             None
         }
@@ -1324,6 +1344,31 @@ mod tests {
     }
 
     #[test]
+    fn verbose_turns_on_the_step_log_of_a_print_run() {
+        let verbose = printed(
+            Some("x"),
+            PrintOptions {
+                verbose: true,
+                ..PrintOptions::default()
+            },
+        );
+        assert_eq!(parsed(&["-p", "--verbose", "x"]), verbose);
+        assert_eq!(parsed(&["x", "--verbose", "-p"]), verbose);
+        // Quiet unless asked.
+        assert_eq!(
+            parsed(&["-p", "x"]),
+            printed(Some("x"), PrintOptions::default())
+        );
+        let err = parsed(&["--verbose=yes", "-p", "x"]).expect_err("a value");
+        assert!(
+            err.contains("--verbose") && err.contains("no value"),
+            "{err}"
+        );
+        let err = parsed(&["-p", "--verbose", "--verbose", "x"]).expect_err("twice");
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
     fn output_format_takes_every_format_separate_or_attached() {
         for format in OutputFormat::ALL {
             let want = printed(
@@ -1400,6 +1445,7 @@ mod tests {
             &["--output-format", "json", "x"][..],
             &["--max-turns", "3", "x"],
             &["-c", "--output-format=stream-json"],
+            &["--verbose", "x"],
         ] {
             let err = parsed(args).expect_err("a headless flag without -p");
             assert!(err.contains("needs --print"), "{args:?}: {err}");
@@ -1586,10 +1632,11 @@ Options:
 
 Print mode:
   -p, --print                    Answer PROMPT (or stdin) with no screen: the
-                                 answer on stdout, the log on stderr, then exit
+                                 answer on stdout, problems on stderr, then exit
       --output-format <FORMAT>   text (the answer), json (one result object) or
                                  stream-json (one event per line)
-      --max-turns <N>            Stop after N model replies";
+      --max-turns <N>            Stop after N model replies
+      --verbose                  Log each step of the run to stderr";
 
     /// Strip every `ESC[…m` sequence.
     fn strip_ansi(text: &str) -> String {

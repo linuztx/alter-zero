@@ -529,6 +529,11 @@ fn ask_at_gate(
     if gate.allows(&request) {
         return Gated::Allowed;
     }
+    // Nobody to ask — a headless run (docs/headless.md): refused before the
+    // request goes out on a channel no prompt is shown from.
+    if gate.refuses_unattended(|| super::gated::unattended_refusal(&request)) {
+        return Gated::Refused(super::gated::unattended());
+    }
     registry.send(AgentEvent::Stream {
         id: id.to_string(),
         event: StreamEvent::Permission(request.clone()),

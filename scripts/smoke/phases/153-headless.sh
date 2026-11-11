@@ -6,8 +6,8 @@ smoke_begin
 
 # Headless mode on a real tty (docs/headless.md). Pipes are cargo test's
 # (tests/headless.rs); what only a terminal can show is that a headless run
-# never touches one. From a tmux pane, `alter-zero -p` prints the run's log
-# and its answer and exits 0; the tty's modes are what they were before it
+# never touches one. From a tmux pane, `alter-zero -p --verbose` prints the
+# run's log and its answer and exits 0; the tty's modes are what they were before it
 # (`stty -g` before and after); and the raw byte stream (pipe-pane) holds
 # none of the escapes the TUI's viewport writes — no cursor query (DSR), no
 # alternate screen, no hidden cursor, no bracketed paste, no synchronized
@@ -22,13 +22,13 @@ HL_RAW="$SMOKE_TMP/raw153.txt"
 HL_APP="env $CFG_ENV_NOHIST ALTER_ZERO_DUMMY=1 ALTER_ZERO_STARTUP_DELAY_MS=0 ALTER_ZERO_CHUNK_DELAY_MS=0 $BIN_ABS"
 # The half-second lets pipe-pane attach before the run writes anything.
 tmux new-session -d -s "$S153" -c "$HL_WORK" -x 100 -y 40 \
-	"sleep 0.5; before=\$(stty -g); $HL_APP -p \"$USER_MSG\"; code=\$?; after=\$(stty -g); \
+	"sleep 0.5; before=\$(stty -g); $HL_APP -p --verbose \"$USER_MSG\"; code=\$?; after=\$(stty -g); \
 	if [ \"\$before\" = \"\$after\" ]; then echo HL_TTY_KEPT; else echo HL_TTY_CHANGED; fi; \
 	echo HL_EXIT=\$code; sleep 60"
 tmux pipe-pane -t "$S153" -o "cat > $HL_RAW"
 hl_pane="$(wait_pane 30 "$S153" -S -80 -- -F "HL_EXIT=")" || fail "the headless run never exited"
 tmux pipe-pane -t "$S153"
-dump "alter-zero -p \"$USER_MSG\" on a tty" "$hl_pane"
+dump "alter-zero -p --verbose \"$USER_MSG\" on a tty" "$hl_pane"
 tmux kill-session -t "$S153" 2>/dev/null
 
 # The two flags `-p` shares with the TUI (docs/cli.md): `--permission-mode`

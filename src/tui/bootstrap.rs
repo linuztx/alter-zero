@@ -70,6 +70,7 @@ impl<'t> Session<'t> {
         // shown and nobody to ask. Its prompt is the headless loop's to
         // submit; what it changes here is what a screen alone needs.
         let headless = print.is_some();
+        let headless_verbose = print.is_some_and(|options| options.verbose);
         let round_budget =
             print.map(|options| alter_zero::llm::agent::RoundBudget::new(options.max_turns));
         // Backend → loop (the streamed reply). A tokio channel so the loop can
@@ -541,6 +542,7 @@ impl<'t> Session<'t> {
             // terminal, which a cron job or a CI step does not have.
             events: (!headless).then(EventStream::new),
             headless,
+            headless_verbose,
             round_budget,
             frame,
             draw_rx,

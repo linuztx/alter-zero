@@ -2,8 +2,9 @@
 
 `alter-zero -p "prompt"` runs one prompt with **no screen**: no inline
 viewport, no raw mode, no cursor query, no key reader, nothing asked. The
-answer goes to stdout, the run's log to stderr, and the process exits with a
-status a script can branch on. It is the entry point for everything that is
+answer goes to stdout, anything that went wrong to stderr — every step of
+the run too with `--verbose` — and the process exits with a status a script
+can branch on. It is the entry point for everything that is
 not a person at a terminal — a cron job, a CI step, an n8n node, a benchmark
 harness, one stage of a pipeline.
 
@@ -99,14 +100,15 @@ alter-zero -p [OPTIONS] [PROMPT]
 | `-p`, `--print` | Run headless: answer, print, exit. |
 | `--output-format <FORMAT>` | `text` (default), `json` or `stream-json`. Needs `-p`. |
 | `--max-turns <N>` | Stop after **N model replies** of the lead agent, counted over the whole run. Needs `-p`. |
+| `--verbose` | Log each step of the run to stderr. Needs `-p`. |
 | `--permission-mode <MODE>` | `manual`, `edit`, `auto` or `master` for this run. Both modes. |
 | `-C`, `--cwd <DIR>` | Run as if started in `DIR`. Both modes. |
 | `-c`, `--continue` / `-r`, `--resume <ID>` | Send the prompt into that conversation (as without `-p`). |
 
 The grammar is `cli::parse`'s (`docs/cli.md`): `-p` is a switch and the prompt
 stays the one positional, so `alter-zero -p "…"` reads the way Claude Code's
-does. A usage error exits `2` with the clap-shaped trailer: `--output-format`
-or `--max-turns` without `-p`, an unknown format or mode, `--max-turns 0`, a
+does. A usage error exits `2` with the clap-shaped trailer: `--output-format`,
+`--max-turns` or `--verbose` without `-p`, an unknown format or mode, `--max-turns 0`, a
 flag given twice, and `-p` with the bare `--resume` — the picker is a screen,
 so a headless run must name its session.
 
@@ -135,7 +137,8 @@ included.
 | --- | --- | --- |
 | given | a terminal | the argument |
 | given | a file (`< task.md`) | the argument, then the file as a `<stdin>` block |
-| given | a pipe or socket | the argument, then the pipe as a `<stdin>` block — **if it says anything within 3 s** |
+| given | a pipe (a shell's `\|`) | the argument, then the pipe as a `<stdin>` block, read to its end however slow its writer |
+| given | a socket (what Node starts commands with — n8n) | the argument, then the socket as a `<stdin>` block — **if it says anything within 3 s** |
 | none, or `-` | not a terminal | stdin, read to its end |
 | `-` | a terminal | what is typed there, until Ctrl+D — `cat`'s rule |
 | none | a terminal | usage error: nothing to answer |
@@ -144,17 +147,33 @@ The `<stdin>` block is codex's, because a model told *what* came from a pipe
 reads a diff as a diff: `{prompt}\n\n<stdin>\n{input}\n</stdin>`. Blank input
 adds nothing.
 
-The 3 s is the open-pipe guard. With an argument already given, the input is
-an addition, and a parent that leaves the pipe open without ever writing to
-it (n8n's Execute Command node, `docker run -i`, `ssh` without `-n`) would
-otherwise hold the run forever: `poll` waits up to `STDIN_WAIT` for the pipe
-to become readable — data *or* EOF — and a pipe silent that long is left
-alone, with a note on stderr. Once it says anything it is read to its end
-(`git diff | …` streams for as long as git needs). A regular file never
-waits, and without an argument stdin *is* the prompt, so the read blocks
-until EOF exactly as asked. Input is UTF-8 (a BOM is dropped), at most
-`STDIN_MAX_BYTES` (8 MiB — beyond any context window; the error says to
-save it to a file and name the file instead).
+A **pipe** is never cut off. A shell's `|` ends when its writer does, so
+waiting for it loses nothing — `./slow-tests.sh 2>&1 | alter-zero -p
+"summarize the failures"` sends the whole log however long the tests stay
+quiet first — and a run that cut it off after a few seconds would answer the
+bare instruction with exit 0, the worst way to fail. The cost is a parent
+that holds a pipe open and never writes to it (Python's `Popen(stdin=PIPE)`
+never closed): the run waits for it, and after `STDIN_NOTE_AFTER` (10 s)
+says on stderr that it is still reading stdin and that `< /dev/null` stops
+it.
+
+A **socket** — anything that is neither a terminal, a file nor a pipe —
+beside an argument gets the 3 s guard instead (`STDIN_WAIT`, Claude Code's
+rule). Node's `spawn`/`exec` give the commands they start a socket for
+stdin, and n8n's Execute Command node starts its command that way and never
+closes it, which would otherwise hold every run forever (codex's hang):
+`poll` waits up to 3 s for the socket to become readable — data *or* EOF —
+and one silent that long is left alone, with a note on stderr. Once it says
+anything it is read to its end. A regular file never waits, and without an
+argument stdin *is* the prompt, so the read waits for its end exactly as
+asked.
+
+Input is read straight from the descriptor (never through std's buffer, so
+`poll` sees everything still to come), at most `STDIN_MAX_BYTES` (8 MiB —
+beyond any context window; the error says to save it to a file and name the
+file instead). It is decoded as UTF-8 with a BOM dropped, and a byte that is
+not UTF-8 reads as `U+FFFD` with a note on stderr: a log with one stray
+byte is still worth reading.
 
 ## What the run does
 
@@ -164,9 +183,10 @@ save it to a file and name the file instead).
    No `EventStream`; the startup review is never opened (see *Trust*); no
    telemetry ping, update check or herdr report; nothing joins the ↑ input
    history; a `--continue`/`--resume` load **does not restore the working
-   tree** to the conversation's last checkpoint (see *Resume*). Startup
-   toasts — a `SKILL.md` that would not parse, a provider file's problem —
-   are written to stderr as `alter-zero: …` lines.
+   tree** to the conversation's last checkpoint (see *Resume*). An error
+   toast — a `SKILL.md` that would not parse, a provider file's problem —
+   is written to stderr as an `alter-zero: …` line; an info toast only with
+   `--verbose`.
 3. **No model, no run**: when no provider, model and key resolve, the TUI
    falls back to the offline demo. A headless run refuses instead (exit 1,
    naming `/login` and the `ALTER_ZERO_PROVIDER`/`ALTER_ZERO_MODEL`
@@ -186,9 +206,15 @@ save it to a file and name the file instead).
 6. **The loop runs until the session is idle**: no turn in flight, nothing
    queued, no subagent running. A background agent's completion starts the
    follow-up turn the TUI would start, so "launch the critic agent, write a
-   report" reports. Background **shells** are not waited for — a dev server
-   started with `&` never exits — so any still running then are stopped and
-   named on stderr; the system prompt tells the model as much (below).
+   report" reports. That wait is bounded: once nothing but background agents
+   is left, the run waits on them at most
+   `ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS` (default 600, `0` for no wait), then
+   stops the ones still working, names them on stderr and ends on its last
+   reply — an agent that never finishes cannot hold a cron job forever. A
+   notice already in hand is never cut off: its follow-up turn is coming.
+   Background **shells** are not waited for — a dev server started with `&`
+   never exits — so any still running then are stopped and named on stderr;
+   the system prompt tells the model as much (below).
 7. **Shutdown** is the TUI's: the backend cancelled, shells and agents
    killed, `SessionEnd` fired (reason `other`), MCP children reaped, the
    rollout flushed. Then the result is printed and the process exits.
@@ -263,7 +289,17 @@ in the output — or `--continue` — picks it up again, headless or in the TUI.
 
 **stdout** carries the answer and nothing else (codex's rule): in `text` the
 final answer and a newline; in `json` one result object; in `stream-json`
-one event per line, the result last. **stderr** carries everything else.
+one event per line, the result last.
+
+**stderr** is quiet unless something needs saying — Claude Code's posture,
+and the one a cron job wants, since cron mails whatever a job writes. A run
+that went well writes nothing there. What it always says: why a run failed
+(`alter-zero: HTTP 401: …`, `interrupted by SIGTERM`, the `--max-turns`
+limit), the calls nobody could approve, the background work it stopped,
+stdin it waited on or left alone, an outage it is waiting out, the hooks and
+MCP servers held for review, an error toast. **`--verbose`** adds the run's
+step log below, in every format: the header, each tool call and its result,
+the narration, a retry, an info toast, the closing footer.
 
 The **answer** is the run's last reply: the assistant messages after the last
 thing that was not one (a tool call, a notice, a hook's note, the prompt) in
@@ -274,7 +310,7 @@ never mistaken for the result.
 ### `text`
 
 ```
-$ alter-zero -p "Run the tests and fix what fails"
+$ alter-zero -p --verbose "Run the tests and fix what fails"
 alter-zero 0.18.0 · gpt-5.5 · ~/proj · auto · session 18a9f2c33d41e5b6-1a2b   ← stderr
 ● Bash(cargo test)                                                           ← stderr
   ⎿ exit 101 · 240 lines
@@ -289,8 +325,9 @@ Done in 1m 12s · 5 model replies · 48k tokens (31k cached)                   �
 Fixed the empty-input panic in parse.rs; all 238 tests pass.                 ← stdout
 ```
 
-The log is plain text — no colour, no cursor movement — so it reads the same
-in a CI log, a cron mail and a terminal. A reply the run went on from is
+Without `--verbose` the same run writes only its last line, to stdout. The
+log is plain text — no colour, no cursor movement — so it reads the same in
+a CI log, a cron mail and a terminal. A reply the run went on from is
 narration and goes to the log; only the answer goes to stdout.
 
 ### `json`
@@ -308,6 +345,20 @@ failed — the provider, a hook that blocked the prompt) or `error_interrupted`
 (a signal); `is_error` is every one but the first, and `error` carries the
 message when there is one. `num_turns` is the model replies the budget
 counted. `usage` is the provider's own accounting, subagents included.
+
+Each `permission_denials` entry is Claude Code's: the tool as the model
+called it, the call's id and its input, plus the subagent type that asked
+when it was not the lead —
+`{"tool_name":"bash","tool_use_id":"call_7","tool_input":{"command":"rm -rf build"},"agent":"explore"}`.
+The gate records the call at the moment it refuses it
+(`permission::UnattendedRefusal`), so the input is exactly what the model
+sent — its placeholders, never a secret's value.
+
+A run that **never started** — no model configured, nothing to continue, an
+unknown `--resume` id, stdin that could not be read, a session that would not
+bootstrap — still prints a result in `json` and `stream-json`
+(`error_during_execution`, `session_id` and `model` null, `num_turns` 0), so
+a script piping to `jq .result` meets an error object rather than nothing.
 
 ### `stream-json`
 
@@ -330,7 +381,9 @@ codex's item stream, closed by the result:
   `write`, `mcp__…`, the task tools — with the model's own `arguments`, the
   header's `summary`, the `output` the **model** read, and an approval
   `note`; `status` is `completed`, `failed`, `declined` — it never ran — or
-  `background`), `subagents` (a launched group: each agent's id, type,
+  `background`; its `name` is the one the model called — `bash`,
+  `mcp__github__create_issue` — never the screen's `Bash` label),
+  `subagents` (a launched group: each agent's id, type,
   status and result), `background_notice` (its `shell_id`), `agent_notice`
   (its `agent_id`), `compaction`, `hook` and `notice`. No item has a field
   of its own named `id`: the envelope's `id` is flattened in beside the
@@ -352,7 +405,7 @@ codex's item stream, closed by the result:
 | Status | When |
 | --- | --- |
 | `0` | The run finished and its last turn completed. |
-| `1` | The last turn failed (provider error, a blocked prompt), `--max-turns` ran out, no model is configured, the prompt could not be read, nothing to continue / unknown session. |
+| `1` | The last turn failed (provider error, a blocked prompt), `--max-turns` ran out, no model is configured, the prompt could not be read, nothing to continue / unknown session — each said on stderr, and in the JSON formats as the result. |
 | `2` | Usage error. |
 | `130` / `143` | Interrupted by `SIGINT` / `SIGTERM`. |
 
@@ -378,16 +431,23 @@ installed before bootstrap starts any server, and the shutdown is bounded
 ## Testing
 
 - `cli`: every flag's spellings, `=`-attached values, the `-p`-only flags
-  refused without `-p`, unknown values listing the choices, `--max-turns 0`,
-  a flag given twice, `-p` with the bare picker, the help page pinned.
-- `headless`: the format labels; `combine_prompt`'s table; the answer
-  extraction (narration, continuation, a failed turn, a resumed history's
-  older replies never counted); the outcome and exit status; every item
-  mapping and event line; the text log's lines.
+  (`--verbose` among them) refused without `-p`, unknown values listing the
+  choices, `--max-turns 0`, a flag given twice, `-p` with the bare picker,
+  the help page pinned.
+- `headless`: the format labels; the stdin rule per kind (a pipe read to its
+  end, a socket cut off at 3 s beside an argument) and the lossy decode;
+  `combine_prompt`'s table; the answer extraction (narration, continuation,
+  a failed turn, a resumed history's older replies never counted); the
+  outcome and exit status; every item mapping and event line, tools named
+  as the model called them; the quiet default and `--verbose`'s log in every
+  format; the toast rule; a denial in Claude Code's fields; a run that never
+  started; the agent wait and the agents it stopped.
 - `permission` / `llm::approval`: an unattended gate refuses where it would
   have asked — after the allowlist, the scratchpad, the read-only fast path,
   a hook and the classifier have had their say — sends no request, and
-  records the refusal.
+  records the refusal with the call as the model made it.
+- `stream` (the offline demo): an unattended gate refuses the demo's gated
+  calls, the lead's and its subagent's, without raising a request.
 - `llm::agent` / `llm::backend`: `RoundOutcome::Limit` ends the turn on the
   error with no `StreamDone`; the budget counts across turns and refuses the
   request past its limit.
@@ -395,20 +455,24 @@ installed before bootstrap starts any server, and the shutdown is bounded
   — a budget of one reply never sends the second request, one that covers
   the turn counts every reply, and the budget spans every turn of the run.
 - `tests/headless.rs`, the real binary with **no terminal anywhere** (every
-  stream a pipe): the offline demo's answer on stdout and no escape on
-  either stream; `json` and `stream-json` parsed line by line; a prompt from
-  stdin, an argument plus a `<stdin>` block, an open pipe ignored after the
-  wait; nothing to answer and a `-p`-only flag without `-p` as usage errors;
-  `-C`; `-c` continuing the run before it; no model configured refused; a
-  SIGTERM mid-run exiting 143 with an `error_interrupted` result. Against a
-  local stand-in provider (a few lines of `std::net`) whose model asks for
-  one `bash` call: `manual` refuses it, tells the model and lists the
-  denial; `master` runs it; `--max-turns 1` stops before the second reply;
-  the system prompt carries the headless block and the request no
-  `askuserquestion`; a background subagent is waited for and its completion
-  answers the run; a command left running is stopped and named.
-- `scripts/smoke.sh` Phase 153: `alter-zero -p` from a tmux pane — the log
-  and the answer on the terminal, its modes unchanged (`stty -g`), and none
+  stream a pipe): the offline demo's answer on stdout, nothing on stderr,
+  and `--verbose`'s log beside the same stdout, no escape on either stream;
+  `json` and `stream-json` parsed line by line; a prompt from stdin, an
+  argument plus a `<stdin>` block, a pipe that stays silent past 3 s waited
+  for and its data used, an open socket left alone after the wait; nothing
+  to answer and a `-p`-only flag without `-p` as usage errors; `-C`; `-c`
+  continuing the run before it; no model configured refused, and with
+  nothing to continue or an unknown id, still a JSON result; a SIGTERM
+  mid-run exiting 143 with an `error_interrupted` result. Against a local
+  stand-in provider (a few lines of `std::net`) whose model asks for one
+  `bash` call: `manual` refuses it, tells the model and lists the denial in
+  Claude Code's fields; `master` runs it; `--max-turns 1` stops before the
+  second reply; the system prompt carries the headless block and the
+  request no `askuserquestion`; a background subagent is waited for and its
+  completion answers the run, and one that never finishes is stopped once
+  the wait runs out; a command left running is stopped and named.
+- `scripts/smoke.sh` Phase 153: `alter-zero -p --verbose` from a tmux pane —
+  the log and the answer on the terminal, its modes unchanged (`stty -g`), and none
   of the TUI's escapes in the raw byte stream (no DSR, no alternate screen,
   no hidden cursor, no bracketed paste, no synchronized update); and the TUI
   launched with `--permission-mode master -C <dir>` naming both in its

@@ -30,8 +30,16 @@ release heading when a version is cut.
   working directory, and `-c`/`--resume` continue a conversation, so a
   nightly job can keep one session going. The config, providers, skills,
   agents, hooks and MCP servers are the same ones the interactive app uses
-  (`docs/headless.md`). Launched without `-p` where there is no terminal,
-  the app now says it needs one and names `-p` instead of ending on
+  (`docs/headless.md`). stderr stays quiet unless something went wrong —
+  a failed run says why, refused calls and stopped background work are
+  named — and `--verbose` logs every step there. Piped input is read to its
+  end however slow the command writing it, while a socket nobody writes to
+  (Node, so n8n) is left alone after 3 s; refused calls are reported in
+  Claude Code's `permission_denials` fields; a run that cannot start still
+  prints a JSON result; and a background agent that never finishes is
+  stopped after `ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS` (10 minutes by
+  default). Launched without `-p` where there is no terminal, the app now
+  says it needs one and names `-p` instead of ending on
   `Error: Os { code: 6, … }`.
 
 - **A provider of your own can take the thinking level as
