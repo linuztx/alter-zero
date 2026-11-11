@@ -2692,7 +2692,7 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // the cursor — a port of codex's file-search popup. Each row is columned —
 // `→ name  parent/  …  File|Dir` — reusing the palette's `→` marker and its
 // cyan-selected / dim-unselected colours, additionally **bolding the
-// characters the query matched** (from `FileMatch.indices`), over the
+// characters the query matched** (worked out for the rows drawn), over the
 // palette's dim `(n/total)` counter. See docs/file-search.md. ---
 
 /// The most file rows shown at once — the `/` palette's five, as in the `$`

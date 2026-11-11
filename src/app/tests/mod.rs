@@ -86,12 +86,11 @@ pub(super) fn submit(app: &mut App, text: &str) {
     );
 }
 
-/// A bare file match (no score/indices) for the file-picker tests.
+/// A bare file match (no score) for the file-picker tests.
 pub(super) fn fm(path: &str) -> FileMatch {
     FileMatch {
         path: path.to_string(),
         score: 0,
-        indices: Vec::new(),
     }
 }
 

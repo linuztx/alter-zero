@@ -304,10 +304,18 @@ fn file_menu_highlight(
 /// the right edge (`width − FILE_MENU_TYPE_WIDTH`). `name_col` is the shared
 /// name-column width — the widest visible name plus [`FILE_MENU_GAP`], computed
 /// by [`file_menu_lines`] so the parent column aligns across rows. The selected
-/// row lights up cyan like the palette, the rest dim, and the query's matched
-/// characters ([`FileMatch::indices`]) stay bolded across the split columns.
-/// A width too narrow for the columns degrades to marker + name alone.
-fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> Line<'static> {
+/// row lights up cyan like the palette, the rest dim, and the characters the
+/// query matched — `indices`, their byte offsets in the path, worked out by
+/// [`file_menu_lines`] for the rows it draws — stay bolded across the split
+/// columns. A width too narrow for the columns degrades to marker + name
+/// alone.
+fn file_menu_row(
+    m: &FileMatch,
+    indices: &[usize],
+    selected: bool,
+    name_col: usize,
+    width: u16,
+) -> Line<'static> {
     let color = if selected {
         menu_selected_color()
     } else {
@@ -321,11 +329,11 @@ fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> 
     if avail < name_col + FILE_MENU_TYPE_WIDTH {
         // Too narrow for the parent/kind columns: just the (truncated) name.
         let name = truncate_cols(m.name(), avail);
-        file_menu_highlight(&mut spans, &name, m.name_start(), &m.indices, base, matched);
+        file_menu_highlight(&mut spans, &name, m.name_start(), indices, base, matched);
         return Line::from(spans);
     }
     let name = truncate_cols(m.name(), name_col);
-    file_menu_highlight(&mut spans, &name, m.name_start(), &m.indices, base, matched);
+    file_menu_highlight(&mut spans, &name, m.name_start(), indices, base, matched);
     spans.push(Span::styled(" ".repeat(name_col - cols(&name)), base));
     let dir_w = avail - name_col - FILE_MENU_TYPE_WIDTH;
     let parent = m.parent();
@@ -336,7 +344,7 @@ fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> 
         spans.push(Span::styled(format!("{root}{pad}"), base));
     } else {
         let shown = truncate_cols(parent, dir_w);
-        file_menu_highlight(&mut spans, &shown, 0, &m.indices, base, matched);
+        file_menu_highlight(&mut spans, &shown, 0, indices, base, matched);
         spans.push(Span::styled(" ".repeat(dir_w - cols(&shown)), base));
     }
     let kind = if m.is_dir() {
@@ -379,7 +387,16 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = visible
         .iter()
         .enumerate()
-        .map(|(i, m)| file_menu_row(m, offset + i == fs.selected, name_col, width))
+        .map(|(i, m)| {
+            // What to bold, worked out for this row alone: a match keeps no
+            // positions, since the list holds every match the walk found and
+            // only these few are ever drawn. A row the query no longer
+            // matches — the last search's, awaiting the next — bolds nothing.
+            let indices = crate::file_search::fuzzy_match(&fs.query, &m.path)
+                .map(|(_, indices)| indices)
+                .unwrap_or_default();
+            file_menu_row(m, &indices, offset + i == fs.selected, name_col, width)
+        })
         .collect();
     let selected = fs.selected.min(fs.matches.len() - 1);
     let partial = if fs.truncated {

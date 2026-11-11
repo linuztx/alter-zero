@@ -22,17 +22,17 @@ pub struct AtToken {
     pub query: String,
 }
 
-/// One ranked file match: the relative `path`, its `score` (higher is better),
-/// and the byte offsets of the query's matched characters in `path` (for popup
-/// highlighting). Mirrors the fields codex's `FileMatch` carries that we use.
+/// One ranked file match: the relative `path` and its `score` (higher is
+/// better). Which characters the query matched — what the picker bolds — is
+/// not kept: the picker works that out with [`fuzzy_match`] for the few rows
+/// it draws, since a list holds every match the walk found and almost none
+/// of them is ever on screen. See `docs/file-search.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMatch {
     /// The relative file path (directories carry a trailing `/`).
     pub path: String,
     /// Match score; higher ranks earlier.
     pub score: i32,
-    /// Byte offsets in `path` of the characters matched by the query.
-    pub indices: Vec<usize>,
 }
 
 impl FileMatch {
@@ -45,8 +45,8 @@ impl FileMatch {
     }
 
     /// Byte offset in [`path`](Self::path) where the display [`name`](Self::name)
-    /// begins — what remaps [`indices`](Self::indices) onto the picker's name
-    /// column.
+    /// begins — what remaps the matched characters' byte offsets in the path
+    /// onto the picker's name column.
     #[must_use]
     pub fn name_start(&self) -> usize {
         let trimmed = self.path.strip_suffix('/').unwrap_or(&self.path);
@@ -165,12 +165,8 @@ pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
     let mut scored: Vec<FileMatch> = candidates
         .into_iter()
         .filter_map(|path| {
-            let (score, indices) = fuzzy_match(query, &path)?;
-            Some(FileMatch {
-                path,
-                score,
-                indices,
-            })
+            let (score, _) = fuzzy_match(query, &path)?;
+            Some(FileMatch { path, score })
         })
         .collect();
     if query.is_empty() {
@@ -322,7 +318,6 @@ mod tests {
         let m = |path: &str| FileMatch {
             path: path.to_string(),
             score: 0,
-            indices: Vec::new(),
         };
         let file = m("public/assets/cv.pdf");
         assert!(!file.is_dir());

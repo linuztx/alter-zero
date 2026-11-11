@@ -2062,44 +2062,51 @@ fn band_rows_counts_the_skill_menu() {
     );
 }
 
+/// The bolded text of a picker row, run by run.
+fn bold_runs(line: &Line<'_>) -> Vec<String> {
+    line.spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.to_string())
+        .collect()
+}
+
 #[test]
 fn file_menu_bolds_the_matched_characters() {
-    // The query matched "ma" → bytes 0 and 1 of "main.rs".
-    let m = FileMatch {
-        path: "main.rs".to_string(),
-        score: 1,
-        indices: vec![0, 1],
-    };
-    let app = file_picker("ma", vec![m], 0);
+    // The query "ma" matches bytes 0 and 1 of "main.rs". A match stores no
+    // positions: the band works them out from the query for the rows it
+    // draws, so ranking ten thousand paths keeps none it would never show.
+    let app = file_picker("ma", vec![fmatch("main.rs")], 0);
     let line = &file_menu_lines(&app, 40)[0];
-    assert!(
-        line.spans
-            .iter()
-            .any(|s| s.style.add_modifier.contains(Modifier::BOLD)),
-        "the matched characters are bolded: {line:?}"
-    );
+    assert_eq!(bold_runs(line), ["ma"], "{line:?}");
 }
 
 #[test]
 fn file_menu_bolds_matched_characters_in_both_columns() {
-    // "sma" matched the `s` of the parent (`src/`, byte 0) and `ma` in the
-    // name (bytes 4–5 of "src/main.rs"): the byte offsets in `indices` are
-    // remapped onto the split name / parent columns.
-    let m = FileMatch {
-        path: "src/main.rs".to_string(),
-        score: 1,
-        indices: vec![0, 4, 5],
-    };
-    let app = file_picker("sma", vec![m], 0);
+    // "sma" matches the `s` of the parent (`src/`, byte 0) and `ma` in the
+    // name (bytes 4–5 of "src/main.rs"): the byte offsets the query matches
+    // are remapped onto the split name / parent columns.
+    let app = file_picker("sma", vec![fmatch("src/main.rs")], 0);
+    let bold = bold_runs(&file_menu_lines(&app, 60)[0]);
+    assert!(
+        bold.contains(&"ma".to_string()),
+        "name-column hit bolded: {bold:?}"
+    );
+    assert!(
+        bold.contains(&"s".to_string()),
+        "parent-column hit bolded: {bold:?}"
+    );
+}
+
+#[test]
+fn a_row_the_query_no_longer_matches_is_drawn_plain() {
+    // Between a keystroke and the search that answers it the band still
+    // shows the last query's matches, which the new query may not match at
+    // all: those rows are drawn as they are, with nothing bolded.
+    let app = file_picker("zz", vec![fmatch("src/main.rs")], 0);
     let line = &file_menu_lines(&app, 60)[0];
-    let bold: Vec<&str> = line
-        .spans
-        .iter()
-        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
-        .map(|s| s.content.as_ref())
-        .collect();
-    assert!(bold.contains(&"ma"), "name-column hit bolded: {bold:?}");
-    assert!(bold.contains(&"s"), "parent-column hit bolded: {bold:?}");
+    assert!(plain(line).contains("main.rs"), "{line:?}");
+    assert!(bold_runs(line).is_empty(), "{line:?}");
 }
 
 #[test]
@@ -2152,7 +2159,6 @@ fn fmatch(path: &str) -> FileMatch {
     FileMatch {
         path: path.to_string(),
         score: 0,
-        indices: Vec::new(),
     }
 }
 
