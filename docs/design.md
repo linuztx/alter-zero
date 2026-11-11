@@ -266,9 +266,9 @@ which Ctrl+V reads the clipboard from.
   and each step scrolls the next one in, sliding to an edge only where the list
   runs out (the first rows anchor at the top, the last flush with the tail — ↑
   from `/clear` wraps to `/quit` on the bottom row). The edge-pinned window it
-  replaced (`menu_window_rows`, the variable-height `menu_window` the `@` and `$`
-  pickers still use) only scrolled once the highlight crossed the bottom edge and
-  then held it there, hiding everything past it;
+  replaced (`menu_window_rows`, the variable-height `menu_window` the `@` picker
+  still uses) only scrolled once the highlight crossed the bottom edge and then
+  held it there, hiding everything past it;
   descriptions line up in a column (names padded to `MENU_DESC_COL`), **wrap**
   onto continuation rows indented to that same column when the terminal is too
   narrow for them (nothing the palette says is ever silently cut; the
@@ -569,7 +569,8 @@ which Ctrl+V reads the clipboard from.
   the discovered skills show fuzzy-filtered on their names in the same band
   slot: `→ name  description` rows, the description `…`-cut, matched
   characters bolded, at most 5 rows over the palette's dim `(n/total)`
-  counter. Matches derive **synchronously** from the
+  counter, the highlight kept centered as the list scrolls (`centered_window`,
+  the palette's window). Matches derive **synchronously** from the
   registry's enabled snapshot (`App::set_skills`, injected beside every
   listing render) — skills are already discovered, so unlike `@` there is no
   async walk. ↑/↓ move, **Tab/Enter insert `$name `** (the sigil kept, an

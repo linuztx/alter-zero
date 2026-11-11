@@ -1672,8 +1672,9 @@ fn many_skills(text: &str, n: usize, selected: usize) -> App {
     app
 }
 
-/// The picker's `(n/total)` counter row as plain text.
-fn skill_counter_text(selected: usize, total: usize) -> String {
+/// A picker band's `(n/total)` counter row as plain text (the `/` palette's
+/// counter, which the pickers below the box wear too).
+fn band_counter_text(selected: usize, total: usize) -> String {
     format!("{MENU_INDENT}({}/{total})", selected + 1)
 }
 
@@ -1706,7 +1707,7 @@ fn the_skill_picker_shows_five_skills_over_a_counter() {
     assert_eq!(texts.len(), 6, "five skills and the counter: {texts:?}");
     assert!(texts[0].starts_with("→ skill-0 "), "{texts:?}");
     assert!(texts[4].starts_with("  skill-4 "), "{texts:?}");
-    assert_eq!(texts[5], skill_counter_text(0, 12));
+    assert_eq!(texts[5], band_counter_text(0, 12));
     // A fact about the list rather than a row to pick: dim, in the names'
     // column, never wearing the selection's colour.
     let counter = lines.last().expect("the counter row");
@@ -1728,7 +1729,7 @@ fn the_skill_counter_follows_the_highlight_and_counts_the_matches() {
         let lines = skill_menu_lines(&many_skills("$", 12, selected), 80);
         assert_eq!(
             plain(lines.last().expect("the counter row")),
-            skill_counter_text(selected, 12),
+            band_counter_text(selected, 12),
             "selection {selected}"
         );
         let marked = format!("{MENU_MARKER}skill-{selected} ");
@@ -1749,10 +1750,60 @@ fn the_skill_counter_follows_the_highlight_and_counts_the_matches() {
     assert_eq!(lines.len(), total + 1, "{lines:?}");
     assert_eq!(
         plain(lines.last().expect("the counter row")),
-        skill_counter_text(1, total)
+        band_counter_text(1, total)
     );
     // No match, no count: the placeholder stands alone.
     assert_eq!(skill_menu_lines(&skill_app("$zzz", 0), 80).len(), 1);
+}
+
+/// A picker band's window read back as `(names, marked)`: the first word of
+/// each row top to bottom (the name, past the `→` marker on the selected
+/// row) and which of those rows wears the marker. The band's last line must
+/// be its `(n/total)` counter, which is not a row and is left out.
+fn band_window(lines: &[Line<'static>]) -> (Vec<String>, usize) {
+    let (counter, rows) = lines.split_last().expect("a band with rows");
+    assert!(
+        plain(counter).starts_with(&format!("{MENU_INDENT}(")),
+        "the band closes on its counter: {lines:?}"
+    );
+    let names = rows
+        .iter()
+        .map(|l| {
+            let text = plain(l);
+            let name = text.strip_prefix(MENU_MARKER).unwrap_or(&text);
+            name.split_whitespace().next().unwrap_or("").to_string()
+        })
+        .collect();
+    let marked = rows
+        .iter()
+        .position(|l| plain(l).starts_with(MENU_MARKER))
+        .expect("a marked row");
+    (names, marked)
+}
+
+#[test]
+fn the_skill_picker_keeps_the_highlight_centered() {
+    // The `/` palette's window (`centered_window`): ↓ walks the `→` down to
+    // the middle of the five rows, then the list scrolls under it, so the
+    // skills above *and* below the highlight stay in view. Only where the
+    // list runs out does it slide to an edge: the first rows anchored at the
+    // top, the last flush with the tail. (The edge-pinned window it replaced
+    // only scrolled once the highlight reached the bottom row, then held it
+    // there, hiding everything past it.)
+    for (selected, first, marked) in [
+        (0, 0, 0),
+        (2, 0, 2),
+        (3, 1, 2),
+        (6, 4, 2),
+        (9, 7, 2),
+        (10, 7, 3),
+        (11, 7, 4),
+    ] {
+        let (names, row) = band_window(&skill_menu_lines(&many_skills("$", 12, selected), 80));
+        let want: Vec<String> = (first..first + 5).map(|i| format!("skill-{i}")).collect();
+        assert_eq!(names, want, "the window at selection {selected}");
+        assert_eq!(row, marked, "the marked row at selection {selected}");
+    }
 }
 
 #[test]
@@ -1761,9 +1812,9 @@ fn the_skill_counter_is_left_out_where_the_width_cannot_hold_it() {
     // twelve — so a terminal too narrow for the whole counter shows the
     // rows without it rather than half of it.
     let app = many_skills("$", 12, 0);
-    let whole = u16::try_from(cols(&skill_counter_text(0, 12))).expect("narrow");
+    let whole = u16::try_from(cols(&band_counter_text(0, 12))).expect("narrow");
     let fits = skill_menu_lines(&app, whole);
-    assert_eq!(plain(fits.last().expect("rows")), skill_counter_text(0, 12));
+    assert_eq!(plain(fits.last().expect("rows")), band_counter_text(0, 12));
     let narrow = skill_menu_lines(&app, whole - 1);
     assert!(narrow.iter().all(|l| !plain(l).contains('(')), "{narrow:?}");
     assert_eq!(narrow.len(), usize::from(SKILL_MENU_MAX_ROWS));
@@ -1810,7 +1861,7 @@ fn skill_menu_lines_column_name_and_description() {
     assert_eq!(texts.len(), 3, "two skills and the counter: {texts:?}");
     assert!(texts[0].starts_with("  dataviz"), "{texts:?}");
     assert!(texts[1].starts_with("→ skill-creator"), "{texts:?}");
-    assert_eq!(texts[2], skill_counter_text(1, 2));
+    assert_eq!(texts[2], band_counter_text(1, 2));
     // The description column starts right after the widest visible name
     // (`skill-creator`, 13 wide) + the gap, marker included: 2 + 13 + 2.
     let col_of = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);

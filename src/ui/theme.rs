@@ -2731,9 +2731,9 @@ pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 // docs/skill-mentions.md. ---
 
 /// The most skill rows shown at once — the `/` palette's five, a row each,
-/// since a description is `…`-cut rather than wrapped; longer lists scroll to
-/// keep the selection visible (`menu_window`), like the file picker, and the
-/// `(n/total)` counter under them is a row of its own.
+/// since a description is `…`-cut rather than wrapped; longer lists scroll
+/// under a highlight kept on the middle row (`centered_window`, the palette's
+/// window), and the `(n/total)` counter under them is a row of its own.
 pub(super) const SKILL_MENU_MAX_ROWS: u16 = 5;
 
 /// The band's single placeholder row when the query matched no skill.

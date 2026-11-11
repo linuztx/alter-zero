@@ -7,7 +7,8 @@ smoke_begin
 # the `$` SKILL PICKER (docs/skill-mentions.md). Codex's skill
 # mentions as a fourth band: typing `$` in the composer lists the discovered
 # skills (name + description columns), five at a time over a `(n/total)`
-# counter, typing narrows on the name, Tab completes the mention IN PLACE —
+# counter with the highlight riding the middle row as ↑/↓ scroll (the `/`
+# palette's window), typing narrows on the name, Tab completes the mention IN PLACE —
 # `$alpha-skill ` stays in the draft, sigil kept — and submitting a message
 # that carries a mention plays the skill load (offline: the dummy's skills
 # demo; live: the Skill tool description makes the model call the `skill`
@@ -71,6 +72,22 @@ printf '%s\n' "$mention_last"
 expect_has "$mention_last" -E '^→ golf-skill ' "↑ from the first skill did not wrap the highlight to the last"
 expect_lacks "$mention_last" -F "alpha-skill" "the \$ band's window did not follow the highlight to the last skill"
 expect_eq "$(skill_counter "$mention_last")" "7/7" "the \$ band's counter after wrapping to the last skill"
+# ↓ wraps back to the first skill, and three more steps put the highlight on
+# the middle row, the `/` palette's window: the list scrolls under it, so
+# alpha-skill leaves the top while foxtrot-skill comes in below. (The
+# edge-pinned window kept alpha-skill on screen and the arrow on the fourth
+# row.)
+tmux send-keys -t "$S79" Down
+wait_for 3 "$S79" -E '^  \(1/7\)$' || fail "↓ from the last skill did not wrap the \$ band back to the first"
+tmux send-keys -t "$S79" Down Down Down
+mention_mid="$(wait_pane 3 "$S79" -E '^  \(4/7\)$')"
+echo "==== Phase 79: the band with its highlight centered ===="
+printf '%s\n' "$mention_mid"
+mid_rows="$(printf '%s\n' "$mention_mid" | grep -E '^(→ |  )[a-z]+-skill +[A-Z]' || true)"
+expect_has "$(printf '%s\n' "$mid_rows" | sed -n 3p)" -E '^→ delta-skill ' "the \$ band's highlight is not on its middle row"
+expect_has "$(printf '%s\n' "$mid_rows" | sed -n 1p)" -E '^  beta-skill ' "the \$ band's window did not scroll to keep its highlight centered"
+expect_lacks "$mention_mid" -F "alpha-skill" "the \$ band kept its first skill in view with the highlight past the middle"
+expect_has "$mention_mid" -E '^  foxtrot-skill ' "the \$ band did not scroll the next skill in under its centered highlight"
 # Typing narrows on the name…
 tmux send-keys -t "$S79" -l "alp"
 sleep 0.4

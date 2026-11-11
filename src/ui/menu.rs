@@ -437,11 +437,12 @@ fn skill_menu_row(
 }
 
 /// The styled lines for the open skill picker: a *No matching skills*
-/// placeholder when the query misses, else the skill rows windowed
-/// (`menu_window`) to keep the selection visible and capped at
-/// `SKILL_MENU_MAX_ROWS`, over the palette's dim `(n/total)` counter — which
-/// match is highlighted, of how many the query matched. Empty when the band
-/// is closed (or the cursor has left the mention). See
+/// placeholder when the query misses, else the skill rows windowed by
+/// [`centered_window`] — the `/` palette's window, so the highlight rides
+/// the middle row and the skills above *and* below it stay in view — and
+/// capped at `SKILL_MENU_MAX_ROWS`, over the palette's dim `(n/total)`
+/// counter: which match is highlighted, of how many the query matched.
+/// Empty when the band is closed (or the cursor has left the mention). See
 /// `docs/skill-mentions.md`.
 #[must_use]
 pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
@@ -457,7 +458,7 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .as_ref()
         .map_or(0, |picker| picker.selected);
     let max = SKILL_MENU_MAX_ROWS as usize;
-    let offset = menu_window(matches.len(), selected, max);
+    let offset = centered_window(matches.len(), selected, max);
     let visible = &matches[offset..(offset + max).min(matches.len())];
     // The shared name column: the widest visible name + the gap, so the
     // description column starts at the same place on every shown row.

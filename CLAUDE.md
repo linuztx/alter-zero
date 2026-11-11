@@ -3109,7 +3109,8 @@ discovered skills fuzzy-filtered on their names (`skills::mention_token` +
 registry's *enabled* skills, synchronous, no walk), rows columned
 `→ name  description` (widest visible name + gap, matched characters bolded,
 the description `…`-cut at the width), at most 5 rows over the palette's dim
-`(n/total)` counter; the grammar is codex's
+`(n/total)` counter, the highlight kept centered as the list scrolls (the
+palette's `centered_window`); the grammar is codex's
 — the `$` must open its whitespace-delimited word (`US$5` never triggers),
 `[A-Za-z0-9_-]` continue the name so `$dataviz,` still queries `dataviz`, a
 bare `$` lists everything, and shell-flavored queries (`$1`, `$-`/`$_`, the

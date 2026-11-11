@@ -120,7 +120,7 @@ sentence codex's eager injection cannot read and this design can.
   `rank_skills(query, &[SkillMetadata])` — `file_search::fuzzy_match` on
   each **name**, best score first, ties keeping discovery (precedence)
   order via the stable sort; an empty query lists everything. No cap — the
-  band windows with `menu_window` like the `@` file picker.
+  band windows with `centered_window`, the `/` palette's window.
 
 ### App state (`app/skill_picker.rs`)
 
@@ -168,8 +168,14 @@ The band shares the palette's slot: `band_rows += skill_menu_rows`.
   matches capped at `SKILL_MENU_MAX_ROWS` (5; longer lists scroll) and the
   counter under them.
 - `skill_menu_lines(app, width)` — one row per match, windowed
-  (`menu_window`): the palette's `→` marker on the selection (the rest
-  indent), the
+  (`centered_window`, the `/` palette's window): ↓ walks the highlight down
+  to the middle of the five rows, then the list scrolls under it, so the
+  skills above *and* below it stay in view, sliding to an edge only where
+  the list runs out (the first rows anchored at the top, the last flush with
+  the tail). The edge-pinned `menu_window` it used before scrolled only once
+  the highlight reached the bottom row, then held it there, hiding
+  everything past it. The palette's `→` marker sits on the selection (the
+  rest indent), the
   name with the query's matched bytes **bolded** (`file_menu_highlight`
   reused at offset 0), then — past a name column sized to the widest
   visible name + `FILE_MENU_GAP` — the skill's own description, `…`-cut at
@@ -203,12 +209,16 @@ whole round trip with no network.
   count equal to the painted lines at every width, the aligned
   name/description columns, the `…` cut, matched-char bolding, selection
   colours, the `(n/total)` counter (following the highlight, counting the
-  query's matches, left out where the width cannot hold it), `band_rows`
-  inclusion, the cursor-left-the-mention hide.
+  query's matches, left out where the width cannot hold it), the centered
+  window (the `→` on the middle row once there is room above it, anchored
+  at the top and flush with the tail at the ends), `band_rows` inclusion,
+  the cursor-left-the-mention hide.
 - `stream` (unit): the `$dataviz` cue selects the skills demo.
 - `scripts/smoke.sh` Phase 79: against a planted dir of seven skills —
   type `$`, the band lists the first five with descriptions over `(1/7)`;
-  ↑ wraps to the last, the window following it, over `(7/7)`; filter
+  ↑ wraps to the last, the window following it, over `(7/7)`; ↓ wraps back
+  to the first and three more steps put `delta-skill` on the middle row,
+  `alpha-skill` scrolled out, over `(4/7)`; filter
   narrows to `(1/1)`; Tab completes the mention into the composer;
   submitting a mention plays the skill demo (the `● Skill(dataviz)` cell,
   nothing of the body inline).
