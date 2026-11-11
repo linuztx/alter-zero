@@ -657,7 +657,7 @@ fn a_squeezed_pickers_strip_drops_preview_rows_not_the_status_line() {
     render_live_with_preview(buf.area, &mut buf, &app, Some(&preview));
     let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();
     assert!(
-        rows.iter().any(|r| r.contains("Working…")),
+        rows.iter().any(|r| r.contains("Hatching…")),
         "the turn's status line survives the squeeze: {rows:?}"
     );
     assert!(

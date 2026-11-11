@@ -1,7 +1,7 @@
 //! The inline `/spinner` picker view (`docs/spinner.md`).
 
 use super::*;
-use crate::app::{Spinner, Theme, VERB_ROTATION};
+use crate::app::{STATUS_VERBS, Spinner, Theme, VERB_ROTATION};
 use crate::ui::palette::palette_of;
 use crate::ui::spinner_view::{spinner_menu_rows, spinner_view_lines};
 use crate::ui::wrap::cols;
@@ -70,7 +70,7 @@ fn col_of(text: &str, needle: &str) -> usize {
 fn preview(texts: &[String]) -> &String {
     texts
         .iter()
-        .find(|t| t.contains("Working…"))
+        .find(|t| t.contains("Hatching…"))
         .unwrap_or_else(|| panic!("no preview line: {texts:?}"))
 }
 
@@ -79,7 +79,7 @@ fn preview(texts: &[String]) -> &String {
 fn is_beside(app: &App, width: u16) -> bool {
     texts(app, width)
         .iter()
-        .any(|t| Spinner::ALL.iter().any(|s| is_row_for(t, s.name())) && t.contains("Working…"))
+        .any(|t| Spinner::ALL.iter().any(|s| is_row_for(t, s.name())) && t.contains("Hatching…"))
 }
 
 /// The display column the row's glyph starts at, for the list row naming
@@ -168,7 +168,7 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
         // The live preview: the highlighted (default gravity) style as a
         // whole status line, built by the status line's own renderer.
         assert!(
-            preview(&texts).contains("⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)"),
+            preview(&texts).contains("⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (0s · esc to interrupt)"),
             "the sample status line wears the gravity track: {texts:#?}"
         );
         assert!(
@@ -279,7 +279,7 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
     let column = col_of(comet, "Gravity");
     for (row, piece) in [
         ("gravity", Spinner::Gravity.description()),
-        ("sparkle", "⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)"),
+        ("sparkle", "⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (0s · esc to interrupt)"),
     ] {
         let text = row_for(&texts, row);
         assert!(text.contains(piece), "{piece:?} beside {row}: {texts:#?}");
@@ -324,7 +324,7 @@ fn a_narrow_terminal_stacks_the_preview_under_the_list() {
     assert_eq!(texts[caption + 2], "", "a gap over the sample: {texts:#?}");
     assert_eq!(
         texts[caption + 3],
-        "  ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)",
+        "  ⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (0s · esc to interrupt)",
         "{texts:#?}"
     );
 }
@@ -353,7 +353,7 @@ fn the_layout_switches_once_and_beside_the_list_the_sample_reads_whole() {
         );
     }
     assert!(
-        preview(&texts(&app, switch)).contains("Working… (0s · esc to interrupt)"),
+        preview(&texts(&app, switch)).contains("Hatching… (0s · esc to interrupt)"),
         "the sample reads whole at {switch}"
     );
 }
@@ -459,7 +459,7 @@ fn a_standard_terminal_shows_every_caption_whole() {
         assert!(
             !texts
                 .iter()
-                .any(|t| t.contains('…') && !t.contains("Working…")),
+                .any(|t| t.contains('…') && !t.contains("Hatching…")),
             "nothing on the page is cut: {texts:#?}"
         );
     }
@@ -474,9 +474,33 @@ fn the_preview_walks_the_verbs_like_a_first_turn() {
     app.set_pulse(VERB_ROTATION + Duration::from_millis(120));
     let texts = texts(&app, 80);
     assert!(
-        texts.iter().any(|t| t.contains("Generating… (30s ·")),
+        texts.iter().any(|t| t.contains("Percolating… (30s ·")),
         "the preview moved on to the second verb: {texts:?}"
     );
+}
+
+#[test]
+fn every_verb_reads_whole_in_the_preview_on_a_standard_terminal() {
+    // Browsing long enough walks the sample through the whole table, so
+    // every word in it is one an 80-column terminal's preview column shows —
+    // and shows whole, the clock past its minutes and the `esc to interrupt`
+    // hint included (docs/status-indicator.md *The verb catalog*). A word
+    // cut here is cut on a narrow terminal's real line as well.
+    let mut app = open_app();
+    for (i, verb) in STATUS_VERBS.iter().enumerate() {
+        let on = VERB_ROTATION * u32::try_from(i).expect("a short table");
+        app.set_pulse(on + Duration::from_millis(120));
+        let texts = texts(&app, WIDE);
+        let live = format!("{}…", verb.working);
+        let line = texts
+            .iter()
+            .find(|t| t.contains(&live))
+            .unwrap_or_else(|| panic!("{verb:?} in the preview: {texts:#?}"));
+        assert!(
+            line.ends_with("esc to interrupt)"),
+            "{verb:?} reads whole: {line:?}"
+        );
+    }
 }
 
 #[test]
@@ -495,7 +519,7 @@ fn the_rows_and_the_preview_tick_with_the_frame_clock() {
         );
         let preview = preview(&texts);
         assert!(
-            preview.contains("Working… (3s ·"),
+            preview.contains("Hatching… (3s ·"),
             "the preview's seconds count from the open: {preview:?}"
         );
         // The preview wears the highlighted (default gravity) style on the
@@ -512,7 +536,7 @@ fn the_rows_and_the_preview_tick_with_the_frame_clock() {
             "the gravity row's track: {texts:?}"
         );
         assert!(
-            preview.contains(&format!("{track} Working…")),
+            preview.contains(&format!("{track} Hatching…")),
             "the preview's ball is on the same frame as its row ({track:?}): {preview:?}"
         );
     }
@@ -526,7 +550,7 @@ fn the_preview_follows_the_selection() {
         let texts = texts(&app, width);
         let preview = preview(&texts);
         assert!(
-            preview.contains("⠋ Working…"),
+            preview.contains("⠋ Hatching…"),
             "the dots style previews: {preview:?}"
         );
         assert!(
@@ -756,7 +780,7 @@ fn a_short_terminal_keeps_the_spinner_choices_on_screen() {
         assert!(texts[10].contains("Enter to choose"), "{texts:#?}");
         assert!(is_rule(&texts[11]), "{texts:#?}");
         assert!(
-            !texts.iter().any(|t| t.contains("Working")),
+            !texts.iter().any(|t| t.contains("Hatching")),
             "no preview: {texts:#?}"
         );
         assert!(
@@ -793,7 +817,7 @@ fn the_compact_spinner_window_rides_the_selection_and_holds_still() {
 #[test]
 fn the_whole_spinner_page_returns_once_it_fits() {
     let app = open_app();
-    let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Working"));
+    let has_preview = |texts: &[String]| texts.iter().any(|t| t.contains("Hatching"));
     for width in [WIDE, NARROW] {
         let whole = u16::try_from(page_at(&app, width, TALL).len()).expect("rows");
         assert!(

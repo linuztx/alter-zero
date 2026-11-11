@@ -873,7 +873,7 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
     assert!(
         texts
             .iter()
-            .any(|t| t == "Generated for 59s · 6.1k tokens (2.8k cached)"),
+            .any(|t| t == "Percolated for 59s · 6.1k tokens (2.8k cached)"),
         "the turn summary lands on the agent transcript: {texts:?}"
     );
     // Ctrl+D derives the *agent's* context: its prompt is the user entry.

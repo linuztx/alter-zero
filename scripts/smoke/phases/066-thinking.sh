@@ -56,8 +56,8 @@ printf '%s\n' "$think_done"
 expect_has "$think_done" -E "^Thought for [0-9]+s · [0-9]+ tokens \(ctrl\+o to expand\)" "the phase never collapsed into a bullet-less 'Thought for Ns · N tokens (ctrl+o to expand)' line"
 # …bullet-less and at the edge: a settled thought is turn meta, so nothing may
 # prefix it, not even the bullet's two blank columns.
-expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like the turn summary ('Worked for Ns')"
-expect_lacks "$think_done" -E "^[[:space:]]+Thought for " "the settled line is inset; it must start at the edge like the turn summary ('Worked for Ns')"
+expect_lacks "$think_done" -E "^[^[:space:]]+ Thought for " "the settled line carries a bullet; it must read like the turn summary ('Hatched for Ns')"
+expect_lacks "$think_done" -E "^[[:space:]]+Thought for " "the settled line is inset; it must start at the edge like the turn summary ('Hatched for Ns')"
 expect_lacks "$think_done" -F "Then edit it and run it." "the chain-of-thought reached scrollback; only the collapsed cell may commit"
 # Invariant 4: a phase that ends MID-REPLY must finalise the assistant text
 # before it (the ToolStart dance), so the cell is its own block rather than a

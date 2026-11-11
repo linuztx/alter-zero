@@ -61,9 +61,11 @@ which Ctrl+V reads the clipboard from.
   a braille track and bouncing off both walls; `/spinner` picks among nine
   styles, the comet's Larson-scanner sweep among them (`docs/spinner.md`,
   `ui::spinner_spans`),
-  then a per-turn whimsical **verb** (`Working`, `Cooking`, …, picked
-  deterministically by a turn counter) whose white text carries a codex-style
-  **shimmer** — a bright-white raised-cosine band sweeping the chars every 2 s
+  then a per-turn whimsical **verb** (`Hatching`, `Spelunking`, …, picked
+  deterministically by a turn counter from a sixty-word catalog held to the
+  rules in `docs/status-indicator.md` *The verb catalog*) whose white text
+  carries a codex-style **shimmer** — a bright-white raised-cosine band
+  sweeping the chars every 2 s
   (`ui::shimmer_spans`, ported from openai/codex) — a
   **timer** in whole seconds, a cumulative **token** estimate (`↑` for uploaded
   tokens — the user's input at turn start and a tool result folded back — `↓`
@@ -88,7 +90,7 @@ which Ctrl+V reads the clipboard from.
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
-  — the past tense of the verb the line wore last (`Worked for 12s`), the verb
+  — the past tense of the verb the line wore last (`Hatched for 12s`), the verb
   moving on every 30 s of a turn (`docs/status-indicator.md`) —
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
@@ -996,7 +998,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   running call and each waiting sibling, in order), and the red
   `Conversation interrupted` notice; then settle the held background
   completions and commit the turn's receipt under them — the summary a
-  finished turn ends on, over the tally the line last showed (`Worked for 8s ·
+  finished turn ends on, over the tally the line last showed (`Hatched for 8s ·
   ≈24.3k tokens`, `docs/interrupt.md`).
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), and the commit-to-scrollback steps above still run — the
@@ -1332,8 +1334,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   safely under a mid-stream resize.
 - `session` (`/resume`): every role/tool/summary round-trips through
   `parse_session` (multiline + quoted + unicode text; the summary verb
-  restored to its `STATUS_VERBS` past tense or legacy static, unknown verbs
-  falling back to `Done`);
+  restored to its `STATUS_VERBS` past tense, a retired verb's past tense or
+  legacy static, unknown verbs falling back to `Done`);
   malformed, blank, unknown-type, and unknown-role lines skip without failing
   the file; no meta line parses to `None`; `preview_of` finds the first
   user/shell message (flattened, `! ` for shell) and `None` without one;

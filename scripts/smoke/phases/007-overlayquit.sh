@@ -5,7 +5,7 @@
 smoke_begin
 
 # finishing a turn *while the Ctrl+O overlay is open*, then quitting
-# with Ctrl+C, must leave the RESTORED screen showing the committed "Worked for Ns"
+# with Ctrl+C, must leave the RESTORED screen showing the committed "Hatched for Ns"
 # summary — not the stale live "( ● ) {verb}… (… tokens)" status strip. Commits
 # made under the overlay queue on the viewport (invariant 4) and a normal Ctrl+O
 # return flushes them, but the quit path used to skip that and exit_overlay
@@ -23,7 +23,7 @@ submit "$S4" "hello there"
 wait_for 4 "$S4" -F "Happy" # up to ~4s
 tmux send-keys -t "$S4" C-o
 # Wait until the turn FINISHES while the overlay is up — the transcript gains the
-# "Worked for Ns" summary. This is the precondition for the bug (the turn ended with
+# "Hatched for Ns" summary. This is the precondition for the bug (the turn ended with
 # scrollback commits deferred).
 overlay_done="$(wait_pane 20.1 "$S4" -E "$SUMMARY_RE")" # up to ~20s
 echo "==== captured pane (turn finished inside the Ctrl+O overlay) ===="
@@ -46,6 +46,6 @@ tmux kill-session -t "$S4" 2>/dev/null
 if ! printf '%s' "$overlay_done" | grep -qE "$SUMMARY_RE"; then
 	fail "the turn never finished inside the Ctrl+O overlay (Phase 7 precondition not met — retune the timing)"
 else
-	expect_has "$post_quit" -E "$SUMMARY_RE" "after quitting (Ctrl+C) from the overlay, the committed 'Worked for Ns' summary was not restored to the screen — the quit path left the stale live status strip behind"
+	expect_has "$post_quit" -E "$SUMMARY_RE" "after quitting (Ctrl+C) from the overlay, the committed 'Hatched for Ns' summary was not restored to the screen — the quit path left the stale live status strip behind"
 	expect_lacks "$post_quit" -F "esc to interrupt" "after quitting (Ctrl+C) from the overlay, the stale live status line ('… esc to interrupt') was still on screen instead of the settled conversation"
 fi

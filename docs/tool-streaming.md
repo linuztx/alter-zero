@@ -162,7 +162,7 @@ row — count from the moment the **command** started, never from the turn's sta
 `preview_tool_lines` used to hand the status indicator's clock (the turn's
 `elapsed`) down to `running_command_lines`, so a `bash` call that began a
 minute into a turn opened on `+N lines (60s)` under a cell that had just
-started, the footer and the `Working… (60s ·` beside it counting in step —
+started, the footer and the status line's `(60s ·` beside it counting in step —
 the reported bug. Two clocks, two questions: the status line answers *how
 long has this turn run*, the footer *how long has this command run*.
 

@@ -87,6 +87,22 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The status line has sixty new verbs, and none of them is
+  `Generating…`.** The word beside the spinner came from a list of ten that
+  opened on `Working…` and `Generating…` and later read `Computing…` and
+  `Synthesizing…`, words any progress bar prints, and a long turn was back on
+  `Generating…` every five minutes. A session's first turn now opens on
+  `Hatching…`, after the default mascot, and the line walks on through
+  `Percolating…`, `Tinkering…`, `Spelunking…`, `Grepping…`, `Untangling…`,
+  `Soldering…`, `Defragging…` and more, a new word every 30 seconds and with
+  each new turn, so a single turn runs half an hour before a word comes round
+  again. The summary still names the verb you watched
+  (`Spelunked for 3m 2s`). None of the words is one the screen already uses
+  for something else, such as `Running…`, `Waiting…` or `Thinking…`, and
+  conversations recorded before this change resume with their summaries as
+  they were written, `Generated for 12s` included
+  (`docs/status-indicator.md`).
+
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
   the provider reported a request, so a large paste or a long tool output

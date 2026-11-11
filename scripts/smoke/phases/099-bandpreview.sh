@@ -49,7 +49,7 @@ for band_key in "/" "?" "@s"; do
 		fail "the box lost a rule under the '$band_key' band ($band_rules of 2)"
 	fi
 	# …and neither the band nor the turn's status line was traded away for it.
-	expect_has "$band_pane" -F "Working…" "the status line went missing under the '$band_key' band"
+	expect_has "$band_pane" -F "${VERB_TURN1}…" "the status line went missing under the '$band_key' band"
 	# The `?` band's first entry in either wording: under 53 columns it
 	# drops its `for`/`to` to keep two columns (docs/shortcuts.md), which is
 	# what leaves the strip rows to preview the table in here.

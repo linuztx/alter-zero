@@ -1,6 +1,7 @@
 //! Subagent rendering (`docs/agent-tool.md`).
 
 use super::*;
+use crate::app::STATUS_VERBS;
 use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
@@ -819,15 +820,16 @@ fn an_agent_views_status_verb_rotates_with_its_runtime() {
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    let pair = |i: usize| (STATUS_VERBS[i].working, STATUS_VERBS[i].done);
     assert_eq!(
         agent_view_verbs(&app, "a1"),
-        ("Working", "Worked"),
+        pair(0),
         "an agent opens on the first verb"
     );
     app.set_agent_runtime("a1", Duration::from_millis(29_999));
-    assert_eq!(agent_view_verbs(&app, "a1").0, "Working");
+    assert_eq!(agent_view_verbs(&app, "a1"), pair(0));
     app.set_agent_runtime("a1", Duration::from_secs(30));
-    assert_eq!(agent_view_verbs(&app, "a1"), ("Generating", "Generated"));
+    assert_eq!(agent_view_verbs(&app, "a1"), pair(1));
 }
 
 #[test]
@@ -836,13 +838,13 @@ fn an_agent_turns_summary_names_the_verb_its_view_wore() {
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
-    app.set_agent_runtime("a1", Duration::from_secs(45)); // `Generating…`
+    app.set_agent_runtime("a1", Duration::from_secs(45)); // the second verb
     app.apply_agent_event("a1", &StreamEvent::Chunk("It is 19°C.".into()));
     app.apply_agent_event("a1", &StreamEvent::StreamDone);
     let summary = agent_summary(&app, "a1");
     assert_eq!(
-        summary.verb, "Generated",
-        "the line last said `Generating…`"
+        summary.verb, STATUS_VERBS[1].done,
+        "the line last wore the second verb"
     );
     assert_eq!(summary.secs, 45);
 }
@@ -862,8 +864,8 @@ fn an_events_runtime_freeze_never_moves_the_agents_verb() {
     app.apply_agent_event("a1", &StreamEvent::StreamDone);
     let summary = agent_summary(&app, "a1");
     assert_eq!(
-        summary.verb, "Worked",
-        "the view never showed `Generating…`"
+        summary.verb, STATUS_VERBS[0].done,
+        "the view never showed the second verb"
     );
     assert_eq!(
         summary.secs, 30,
@@ -882,7 +884,7 @@ fn an_agents_chat_continuation_opens_on_the_verb_after_the_last_one_shown() {
     app.agent_chat("a1", "and in Manila?");
     assert_eq!(
         agent_view_verbs(&app, "a1").0,
-        "Pondering",
+        STATUS_VERBS[2].working,
         "never the verb the summary above it just named"
     );
 }

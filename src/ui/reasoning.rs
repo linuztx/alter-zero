@@ -176,7 +176,7 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 /// The **live** block for an open thinking phase, drawn in the strip's preview
 /// slot: a `● Thinking…` header — the bullet blinking at the frame `pulse`
 /// and the label carrying the status line's **shimmer** sweep
-/// ([`shimmer_spans_from`], the same wave the `Working…` verb below it wears,
+/// ([`shimmer_spans_from`], the same wave the status verb below it wears,
 /// but floored at the near-white [`reasoning_shimmer_base`] so it reads as
 /// bold white between crests rather than codex's grey) — over the **tail** of
 /// the thought so far in the `⎿` gutter: the last [`REASONING_PEEK_LINES`]

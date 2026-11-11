@@ -350,7 +350,7 @@ and standalone `!` commands read as separate turns:
 
 ```
 ● Happy to help!…            ← streaming preview
-( ●    ) Working… (…)         ← status line
+( ●    ) Hatching… (…)        ← status line
 
   ❯ Hello                     ← handed to the RUNNING turn (Enter): two-space
   ❯ World                       inset, user-style; gone at its next round

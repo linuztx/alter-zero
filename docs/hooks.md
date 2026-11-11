@@ -532,7 +532,7 @@ and in Ctrl+O, every hook that ran with what it said under it:
 
 | event                          | the cell sits                                            |
 | ------------------------------ | -------------------------------------------------------- |
-| `Stop`                         | under the reply, above the continuation it bought or the turn's `Worked for` line |
+| `Stop`                         | under the reply, above the continuation it bought or the turn's `Hatched for` line |
 | `SubagentStop`                 | the same, on the agent's own transcript (its session view and its Ctrl+O) |
 | `SubagentStart`                | under the task that opens the agent's own transcript, where its first round reads them |
 | `SessionStart`, `UserPromptSubmit` | under the prompt that read them                      |

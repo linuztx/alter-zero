@@ -30,11 +30,11 @@ pub enum TokenArrow {
 /// core except as these already-computed values (mirrors the timestamp clock).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnStatus {
-    /// The whimsical working verb the line wears right now (e.g. `Working`) —
+    /// The whimsical working verb the line wears right now (e.g. `Hatching`) —
     /// moved on every [`VERB_ROTATION`] by [`App::set_status_times`] when the
     /// turn [rotates](Self::rotates_from).
     pub verb: &'static str,
-    /// The past tense of [`verb`](Self::verb) (e.g. `Worked`), which the
+    /// The past tense of [`verb`](Self::verb) (e.g. `Hatched`), which the
     /// committed summary opens with. Always rotated together with it, so the
     /// summary names the verb the line last wore.
     pub done_verb: &'static str,
@@ -143,9 +143,10 @@ impl TurnStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnSummary {
     /// The past tense of the verb the turn's status line wore last (e.g.
-    /// `Worked` after `Working…`) — [`TurnStatus::done_verb`] at turn end. A
-    /// resumed older rollout may carry a verb from before the pairing
-    /// (`Done`, `Finished`, …).
+    /// `Hatched` after `Hatching…`) — [`TurnStatus::done_verb`] at turn end.
+    /// A resumed older rollout may carry a verb from before the pairing
+    /// (`Done`, `Finished`, …) or one the table has since retired
+    /// (`Generated`, `Worked`, …).
     pub verb: &'static str,
     /// The turn's total wall-clock duration in whole seconds.
     pub secs: u64,

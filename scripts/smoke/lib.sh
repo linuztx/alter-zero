@@ -48,14 +48,19 @@ HEADER_MARK="Alter Zero"
 # names that turn's verb instead (SUMMARY_TURN1…3, below). The same line lives
 # in `scripts/live_smoke.sh`, `cursor_hide_check.sh` and `paste_mem.sh`;
 # `app::tests::turn` pins all four copies to the table.
-SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
+SUMMARY_RE='(Hatched|Percolated|Tinkered|Spelunked|Pondered|Conjured|Grepped|Juggled|Simmered|Untangled|Sprouted|Whittled|Foraged|Mulled|Transmuted|Riffed|Brewed|Deciphered|Wrangled|Soldered|Skittered|Sleuthed|Cogitated|Defragged|Marinated|Enchanted|Bloomed|Polished|Excavated|Noodled|Herded|Kneaded|Concocted|Glimmered|Unscrambled|Tempered|Charted|Ruminated|Overclocked|Fermented|Burrowed|Alchemized|Harmonized|Knitted|Crunched|Unearthed|Mused|Galloped|Steeped|Divined|Ripened|Sculpted|Prospected|Fathomed|Churned|Shimmered|Distilled|Incubated|Kindled|Cooked) for [0-9]'
 # The summary each of a launch's first three turns ends on, for the phases
 # that must tell turns apart on one screen: a launch walks the table one verb
 # per turn while each turn stays under 30s. Pinned to the table by the same
 # `app::tests::turn` test.
-SUMMARY_TURN1="Worked for"
-SUMMARY_TURN2="Generated for"
-SUMMARY_TURN3="Pondered for"
+SUMMARY_TURN1="Hatched for"
+SUMMARY_TURN2="Percolated for"
+SUMMARY_TURN3="Tinkered for"
+# The live verb a launch's first turn opens on — an agent's first turn and
+# the `/spinner` preview open on it too — for the phases that find the status
+# line by its word: write "${VERB_TURN1}…" for the line as drawn. Pinned to
+# the table's first entry by the same `app::tests::turn` test.
+VERB_TURN1="Hatching"
 # The opening of a slash-palette row (an ERE, anchored): the selection's `→ `
 # marker or the two-space inset every other row wears (`MENU_MARKER` /
 # `MENU_INDENT`, docs/design.md), then the command's slash — so

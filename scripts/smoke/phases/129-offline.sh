@@ -107,7 +107,7 @@ dump "the provider is back; the turn settled" "$settled"
 note "the wait — the verb, the clause, the row, the count, and the recovery"
 expect_has "$waiting" -E "Waiting for internet… \([0-9]+s · ↑ [0-9]+ tokens · offline for [0-9]+s · esc to interrupt\)" \
 	"the status line does not read as the wait with its offline clause"
-expect_lacks "$waiting" -F "Working…" "the turn's own verb showed beside the wait"
+expect_lacks "$waiting" -F "${VERB_TURN1}…" "the turn's own verb showed beside the wait"
 expect_has "$waiting" -E "⎿ +\(*·\)* +No connection to 127\.0\.0\.1:$OFF_PORT — trying again · 1 attempt$" \
 	"the row under the line does not name the host with its first attempt"
 expect_lacks "$waiting" -F "retrying" "a lost connection was counted as a bounded retry"

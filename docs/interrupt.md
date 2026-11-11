@@ -29,7 +29,7 @@ worth keeping:
 
 A third divergence runs the other way, keeping something codex drops: **a kept
 turn keeps its receipt.** Under the notice commits the dim summary a finished
-turn ends on — `Worked for 8s · ≈24.3k tokens` — so stopping a turn no longer
+turn ends on — `Hatched for 8s · ≈24.3k tokens` — so stopping a turn no longer
 erases the two numbers that showed what it had cost (see *The receipt an
 interrupted turn keeps*, below).
 
@@ -252,7 +252,7 @@ segment (lowercase, matching this codebase's hint convention —
 `(ctrl+o to expand)`, `esc return`):
 
 ```
-( ●    ) Working… (3s · ↓ 27 tokens · Thinking for 2s · esc to interrupt)
+( ●    ) Hatching… (3s · ↓ 27 tokens · Thinking for 2s · esc to interrupt)
 ```
 
 ### The receipt an interrupted turn keeps
@@ -271,7 +271,7 @@ the dim summary a finished turn ends on, under the notice:
 
 ● Conversation interrupted - tell the model what to do differently.
 
-Worked for 8s · ≈24.3k tokens (8k cached)
+Hatched for 8s · ≈24.3k tokens (8k cached)
 ```
 
 - **Verb and time** follow the finished turn's rule
@@ -391,7 +391,7 @@ no receipt (`docs/agent-tool.md`).
 - `src/tui/` (smoke, Phase 8): mid-stream Esc (after a partial streamed) leaves
   the partial text and the `Conversation interrupted` notice on screen, clears
   the status line (no `esc to interrupt`), commits exactly one receipt under
-  the notice — `Worked for Ns · ≈N tokens`, all of it estimated, since the
+  the notice — `Hatched for Ns · ≈N tokens`, all of it estimated, since the
   dummy reports no usage — and the app still completes a following turn
   normally, its summary the second on screen. Phase 13 waits for that second
   summary too, requires exactly two, and checks that turn 1's receipt sits

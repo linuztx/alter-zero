@@ -8,7 +8,7 @@ smoke_begin
 # Mid-stream Esc must stop the generation promptly: the partial reply stays on
 # screen, the red "Conversation interrupted" notice commits, the live status
 # strip clears, and the turn's receipt — the summary a finished turn ends on,
-# "Worked for Ns · ≈N tokens" — commits UNDER the notice (docs/interrupt.md,
+# "Hatched for Ns · ≈N tokens" — commits UNDER the notice (docs/interrupt.md,
 # "The receipt an interrupted turn keeps"). The dummy reports no usage, so the
 # whole tally is the tokenizer's and the total wears the `≈` mark. The app
 # keeps running — a follow-up message must stream and finish normally, its
@@ -34,7 +34,7 @@ tmux kill-session -t "$S5" 2>/dev/null
 expect_has "$interrupted" -F "Conversation interrupted" "Esc mid-stream did not commit the 'Conversation interrupted' notice (did the app quit instead?)"
 expect_has "$interrupted" -F "Happy" "the partial reply was not kept on screen after the interrupt"
 expect_lacks "$interrupted" -F "esc to interrupt" "the live status line is still showing after the interrupt"
-expect_has "$interrupted" -E "^${SUMMARY_RE}[0-9]*s · ≈[0-9][0-9.]*k? tokens$" "the interrupted turn did not commit its receipt ('Worked for Ns · ≈N tokens', estimated with no usage reported)"
+expect_has "$interrupted" -E "^${SUMMARY_RE}[0-9]*s · ≈[0-9][0-9.]*k? tokens$" "the interrupted turn did not commit its receipt ('Hatched for Ns · ≈N tokens', estimated with no usage reported)"
 receipts=$(count_summaries "$interrupted")
 expect_eq "${receipts:-0}" 1 "the interrupted turn commits exactly one receipt"
 notice_row="$(printf '%s\n' "$interrupted" | grep -nF "Conversation interrupted" | head -1 | cut -d: -f1)"

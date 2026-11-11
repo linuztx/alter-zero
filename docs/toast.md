@@ -11,7 +11,7 @@ there" and fades it after a few seconds.
 ```
 ❯ Hi
 
-(  ●•· ) Working… (1s · ↑ 1 tokens · esc to interrupt)
+(  ●•· ) Hatching… (1s · ↑ 1 tokens · esc to interrupt)
 
   Copied last message to clipboard          ← the toast (dim), auto-clears ~4s
 ───────────────────────────────────────────────────────────────

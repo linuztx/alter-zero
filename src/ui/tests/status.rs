@@ -7,11 +7,13 @@ use crate::app::{STATUS_VERBS, VERB_ROTATION};
 use crate::ui::message::compaction_full_lines;
 use crate::ui::palette::with_theme;
 use crate::ui::theme::{
-    INDENT, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, ai_color, header_gradient_end,
-    header_gradient_start, shimmer_highlight, spinner_bars_high, spinner_pulse_bright,
-    spinner_tail_color, status_color, status_detail_color, status_done_color, status_offline_color,
-    status_retry_color, status_thinking_color, tool_diff_add_color, tool_diff_del_color,
-    tool_dim_color, tool_pulse_dim,
+    FILE_MENU_SEARCHING, INDENT, MCP_CALLING_PREFIX, OFFLINE_VERB, REASONING_RUNNING,
+    SESSION_WAITING_ROW, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, STATUS_ELLIPSIS, TOOL_RUNNING,
+    TOOL_WAITING, TOOL_WRITING, ai_color, header_gradient_end, header_gradient_start,
+    shimmer_highlight, spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color,
+    status_detail_color, status_done_color, status_offline_color, status_retry_color,
+    status_thinking_color, tool_diff_add_color, tool_diff_del_color, tool_dim_color,
+    tool_pulse_dim,
 };
 
 #[test]
@@ -549,6 +551,38 @@ fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         Some(status_detail_color()),
         "dim metrics"
     );
+}
+
+#[test]
+fn no_status_verb_borrows_a_word_the_strip_already_means_something_by() {
+    // The strip's fixed labels each say one thing — `Running…` a command in
+    // flight, `Waiting…` a call queued behind it, `Thinking…` the model's
+    // reasoning, `Waiting for internet…` a lost connection, `Compacting…` a
+    // /compact — and the status verb sits a row from all of them, so it may
+    // never be one of their words (docs/status-indicator.md *The verb
+    // catalog*).
+    let labels = [
+        crate::app::SHELL_VERB,
+        crate::app::COMPACT_VERB,
+        TOOL_RUNNING,
+        TOOL_WAITING,
+        TOOL_WRITING,
+        REASONING_RUNNING,
+        OFFLINE_VERB,
+        SESSION_WAITING_ROW,
+        FILE_MENU_SEARCHING,
+        MCP_CALLING_PREFIX,
+    ];
+    for label in labels {
+        let word = label
+            .split_whitespace()
+            .next()
+            .expect("a label has a word")
+            .trim_end_matches(STATUS_ELLIPSIS);
+        for verb in STATUS_VERBS {
+            assert_ne!(verb.working, word, "{verb:?} reads as {label:?}");
+        }
+    }
 }
 
 #[test]
@@ -1457,7 +1491,7 @@ fn render_live_wears_the_session_spinner_on_the_status_row() {
     render_live(buf.area, &mut buf, &app);
     assert_eq!(
         row(&buf, 0, 60).trim_end(),
-        "⠋ Working… (3s · esc to interrupt)",
+        "⠋ Hatching… (3s · esc to interrupt)",
         "the status row opens with the dots spinner"
     );
     assert_eq!(buf[(0, 0)].fg, status_color(), "the white head");

@@ -85,8 +85,8 @@ impl Session<'_> {
                 // queued (invariant 4) — so flush them and repaint the inline
                 // view the same way a normal Ctrl+O return does; otherwise
                 // restore() lands on the stale live status strip
-                // ("Working… (… tokens)") instead of the committed
-                // "Done for Ns" summary.
+                // ("Hatching… (… tokens)") instead of the committed
+                // "Hatched for Ns" summary.
                 if self.app.view != View::Conversation {
                     self.term.exit_overlay()?;
                     self.overlay_return_repaint()?;

@@ -3862,7 +3862,8 @@ mod tests {
             panic!("the settle records the summary: {:?}", run.history.last());
         };
         assert_eq!(
-            summary.verb, "Worked",
+            summary.verb,
+            crate::app::STATUS_VERBS[0].done,
             "the past tense of the verb the view wore (nothing rotated it)"
         );
         assert_eq!(summary.secs, 59);

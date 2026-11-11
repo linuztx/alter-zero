@@ -541,8 +541,9 @@ struct CheckpointRecord {
 }
 
 /// A [`TurnSummary`] on disk. `verb` maps back to its static on load — a
-/// [`STATUS_VERBS`] past tense or a [`LEGACY_DONE_VERBS`] entry, `Done` for a
-/// verb this build doesn't know — because `TurnSummary::verb` is
+/// [`STATUS_VERBS`] past tense, a [`RETIRED_STATUS_VERBS`] or a
+/// [`LEGACY_DONE_VERBS`] entry, `Done` for a verb this build doesn't know —
+/// because `TurnSummary::verb` is
 /// `&'static str`. The real usage (`tokens`/`cached`,
 /// `docs/prompt-caching.md`) is persisted — a fact of the turn, unlike the
 /// transient `shells` count — and `serde(default)`ed so rollouts recorded
@@ -607,13 +608,21 @@ fn role_from(name: &str) -> Option<Role> {
 /// doesn't know at all.
 const LEGACY_DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
 
+/// The past tenses of status verbs the table has since retired as too
+/// generic (`docs/status-indicator.md` *The verb catalog*) — still mapped
+/// back by value, so a conversation recorded while the line said
+/// `Generating…` resumes reading `Generated for 12s`, as it was recorded.
+const RETIRED_STATUS_VERBS: &[&str] = &["Worked", "Generated", "Computed", "Synthesized"];
+
 /// The static matching a recorded summary verb — a [`STATUS_VERBS`] past
-/// tense or a [`LEGACY_DONE_VERBS`] entry — or `Done` for one this build
-/// doesn't know: [`TurnSummary::verb`] is `&'static str`.
+/// tense, a [`RETIRED_STATUS_VERBS`] or a [`LEGACY_DONE_VERBS`] entry — or
+/// `Done` for one this build doesn't know: [`TurnSummary::verb`] is
+/// `&'static str`.
 fn done_verb(name: &str) -> &'static str {
     STATUS_VERBS
         .iter()
         .map(|verb| verb.done)
+        .chain(RETIRED_STATUS_VERBS.iter().copied())
         .chain(LEGACY_DONE_VERBS.iter().copied())
         .find(|verb| *verb == name)
         .unwrap_or(LEGACY_DONE_VERBS[0])
@@ -1889,7 +1898,7 @@ mod tests {
     #[test]
     fn every_status_verbs_past_tense_survives_a_round_trip() {
         // The summary names the past tense of the verb the line wore
-        // (`Worked for 12s`), and a resumed transcript must say the same —
+        // (`Hatched for 12s`), and a resumed transcript must say the same —
         // restored by value to its static (STATUS_VERBS is a `const`, so
         // pointer identity can't be asserted).
         for verb in STATUS_VERBS {
@@ -1915,6 +1924,28 @@ mod tests {
         // `Wrapped up`, … — a resumed old conversation keeps reading exactly
         // as it did.
         for verb in ["Done", "Finished", "Completed", "Wrapped up", "Ready"] {
+            let file = format!(
+                "{}\n{}\n",
+                meta_line(&meta(), "t0"),
+                format_args!(
+                    r#"{{"timestamp":"t","type":"summary","payload":{{"verb":"{verb}","secs":3,"timestamp":""}}}}"#
+                ),
+            );
+            let (_, parsed) = parse_session(&file).expect("parses");
+            let HistoryItem::Summary(s) = &parsed[0] else {
+                panic!("expected a summary");
+            };
+            assert_eq!(s.verb, verb);
+        }
+    }
+
+    #[test]
+    fn a_summary_verb_the_table_has_retired_still_loads_as_recorded() {
+        // The past tenses of the verbs the table dropped as too generic
+        // (docs/status-indicator.md *The verb catalog*): a conversation
+        // recorded while the line still said `Generating…` resumes reading
+        // `Generated for 3s`, not `Done for 3s`.
+        for verb in ["Worked", "Generated", "Computed", "Synthesized"] {
             let file = format!(
                 "{}\n{}\n",
                 meta_line(&meta(), "t0"),

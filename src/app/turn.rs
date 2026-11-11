@@ -5,15 +5,15 @@
 use super::*;
 
 /// A status verb in both of its forms: the live one the spinner line
-/// shimmers while a turn runs (`Working…`) and its past tense, which the
-/// committed summary opens with (`Worked for 12s`). One entry is one verb, so
+/// shimmers while a turn runs (`Hatching…`) and its past tense, which the
+/// committed summary opens with (`Hatched for 12s`). One entry is one verb, so
 /// a summary can never name a different verb than the line wore. See
 /// `docs/status-indicator.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusVerb {
-    /// The live form, drawn with a trailing `…` (`Working`).
+    /// The live form, drawn with a trailing `…` (`Hatching`).
     pub working: &'static str,
-    /// Its past tense, the summary's first word (`Worked`).
+    /// Its past tense, the summary's first word (`Hatched`).
     pub done: &'static str,
 }
 
@@ -58,17 +58,80 @@ pub const VERB_ROTATION: Duration = Duration::from_secs(30);
 /// whichever it wore last. Deterministic so the demo varies yet stays testable
 /// — no RNG (mirrors how [`dummy_response`](crate::stream::dummy_response)
 /// picks a reply).
+///
+/// The catalog's rules (`docs/status-indicator.md` *The verb catalog*): a
+/// word with some character, never one any program's progress line could
+/// print (`Generating`, `Processing`), nor one the strip already means
+/// something by (`Running`, `Waiting`, `Thinking`); a regular verb, so the
+/// summary is its own past tense; short enough to read whole in an
+/// 80-column terminal's `/spinner` preview; and enough of them that a single
+/// turn runs half an hour before the line comes back to a word. It opens on
+/// `Hatching` — the default mascot is a crested hatchling — which every
+/// session's first turn, every agent's and the `/spinner` preview start on,
+/// and walks a few themes in turn so neighbours differ: the mascots, the
+/// kitchen, the workshop, the expedition, the study, the alchemist's bench,
+/// the terminal, the ranch, the bandstand.
 pub const STATUS_VERBS: &[StatusVerb] = &[
-    StatusVerb::new("Working", "Worked"),
-    StatusVerb::new("Generating", "Generated"),
+    StatusVerb::new("Hatching", "Hatched"),
+    StatusVerb::new("Percolating", "Percolated"),
+    StatusVerb::new("Tinkering", "Tinkered"),
+    StatusVerb::new("Spelunking", "Spelunked"),
     StatusVerb::new("Pondering", "Pondered"),
-    StatusVerb::new("Cooking", "Cooked"),
-    StatusVerb::new("Brewing", "Brewed"),
-    StatusVerb::new("Crunching", "Crunched"),
     StatusVerb::new("Conjuring", "Conjured"),
+    StatusVerb::new("Grepping", "Grepped"),
+    StatusVerb::new("Juggling", "Juggled"),
+    StatusVerb::new("Simmering", "Simmered"),
+    StatusVerb::new("Untangling", "Untangled"),
+    StatusVerb::new("Sprouting", "Sprouted"),
+    StatusVerb::new("Whittling", "Whittled"),
+    StatusVerb::new("Foraging", "Foraged"),
+    StatusVerb::new("Mulling", "Mulled"),
+    StatusVerb::new("Transmuting", "Transmuted"),
+    StatusVerb::new("Riffing", "Riffed"),
+    StatusVerb::new("Brewing", "Brewed"),
+    StatusVerb::new("Deciphering", "Deciphered"),
+    StatusVerb::new("Wrangling", "Wrangled"),
+    StatusVerb::new("Soldering", "Soldered"),
+    StatusVerb::new("Skittering", "Skittered"),
+    StatusVerb::new("Sleuthing", "Sleuthed"),
+    StatusVerb::new("Cogitating", "Cogitated"),
+    StatusVerb::new("Defragging", "Defragged"),
+    StatusVerb::new("Marinating", "Marinated"),
+    StatusVerb::new("Enchanting", "Enchanted"),
+    StatusVerb::new("Blooming", "Bloomed"),
+    StatusVerb::new("Polishing", "Polished"),
+    StatusVerb::new("Excavating", "Excavated"),
+    StatusVerb::new("Noodling", "Noodled"),
+    StatusVerb::new("Herding", "Herded"),
+    StatusVerb::new("Kneading", "Kneaded"),
+    StatusVerb::new("Concocting", "Concocted"),
+    StatusVerb::new("Glimmering", "Glimmered"),
+    StatusVerb::new("Unscrambling", "Unscrambled"),
+    StatusVerb::new("Tempering", "Tempered"),
+    StatusVerb::new("Charting", "Charted"),
+    StatusVerb::new("Ruminating", "Ruminated"),
+    StatusVerb::new("Overclocking", "Overclocked"),
+    StatusVerb::new("Fermenting", "Fermented"),
+    StatusVerb::new("Burrowing", "Burrowed"),
+    StatusVerb::new("Alchemizing", "Alchemized"),
+    StatusVerb::new("Harmonizing", "Harmonized"),
+    StatusVerb::new("Knitting", "Knitted"),
+    StatusVerb::new("Crunching", "Crunched"),
+    StatusVerb::new("Unearthing", "Unearthed"),
+    StatusVerb::new("Musing", "Mused"),
+    StatusVerb::new("Galloping", "Galloped"),
+    StatusVerb::new("Steeping", "Steeped"),
+    StatusVerb::new("Divining", "Divined"),
+    StatusVerb::new("Ripening", "Ripened"),
+    StatusVerb::new("Sculpting", "Sculpted"),
+    StatusVerb::new("Prospecting", "Prospected"),
+    StatusVerb::new("Fathoming", "Fathomed"),
     StatusVerb::new("Churning", "Churned"),
-    StatusVerb::new("Computing", "Computed"),
-    StatusVerb::new("Synthesizing", "Synthesized"),
+    StatusVerb::new("Shimmering", "Shimmered"),
+    StatusVerb::new("Distilling", "Distilled"),
+    StatusVerb::new("Incubating", "Incubated"),
+    StatusVerb::new("Kindling", "Kindled"),
+    StatusVerb::new("Cooking", "Cooked"),
 ];
 
 /// The live-status verb for a `!` shell command (fixed, not cycled like the AI
@@ -81,7 +144,7 @@ pub const SHELL_VERB: &str = "Running";
 /// The notice committed when the user interrupts a turn (Esc mid-generation) —
 /// codex's wording, minus its `/feedback` plug. Recorded as a [`Role::Error`]
 /// message: like a backend failure, the notice is the turn's terminal state,
-/// with the turn's receipt (`Worked for 8s · ≈24.3k tokens`) committed under
+/// with the turn's receipt (`Hatched for 8s · ≈24.3k tokens`) committed under
 /// it. See `docs/interrupt.md`.
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
@@ -575,7 +638,7 @@ impl App {
     ///   already says it, so no redundant notice is committed. History gains
     ///   them in that order: the partial, the calls in the model's order, the
     ///   interrupted agent group, the notice. The live status clears after
-    ///   handing over the turn's **receipt** — `Worked for 8s · ≈24.3k
+    ///   handing over the turn's **receipt** — `Hatched for 8s · ≈24.3k
     ///   tokens`, the summary a finished turn ends on, over the tally the line
     ///   was showing — which the boundary records under the notice
     ///   ([`InterruptedTurn::Kept`]).

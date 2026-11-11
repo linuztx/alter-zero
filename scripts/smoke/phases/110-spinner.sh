@@ -33,7 +33,7 @@ echo "==== Phase 110: the picker open (gravity — the default — highlighted, 
 printf '%s\n' "$spin_open"
 for expect in "Select spinner" "The status line's animation — saved for this directory" \
 	"→ gravity" "comet" "wave" "sparkle" "dots" "(2/9)" \
-	"Gravity" "Working…" "esc to interrupt" "A ball hopping along the track" \
+	"Gravity" "${VERB_TURN1}…" "esc to interrupt" "A ball hopping along the track" \
 	"↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel"; do
 	expect_has "$spin_open" -F "$expect" "the open picker is missing '$expect'"
 done
@@ -77,11 +77,11 @@ if [ "$(braille_cells "$spin_wave_row")" -ne 8 ]; then
 fi
 # The preview at the open is the highlighted (default gravity) style: the
 # eight-cell braille track, not the comet's wall.
-spin_gravity_preview="$(printf '%s\n' "$spin_open" | grep -F "Working…")"
-if printf '%s\n' "$spin_gravity_preview" | grep -q '(.*●.*) Working'; then
+spin_gravity_preview="$(printf '%s\n' "$spin_open" | grep -F "${VERB_TURN1}…")"
+if printf '%s\n' "$spin_gravity_preview" | grep -q "(.*●.*) ${VERB_TURN1}"; then
 	fail "the preview wears the comet rather than the default gravity track"
 fi
-if [ "$(braille_cells "${spin_gravity_preview%% Working*}")" -ne 8 ]; then
+if [ "$(braille_cells "${spin_gravity_preview%% ${VERB_TURN1}*}")" -ne 8 ]; then
 	fail "the preview does not open with the eight-cell braille track: '$spin_gravity_preview'"
 fi
 # ↑ to comet: the counter, the preview and the description follow the
@@ -93,7 +93,7 @@ echo "==== Phase 110: ↑ previews comet ===="
 printf '%s\n' "$spin_comet"
 expect_has "$spin_comet" -F "→ comet" "the marker did not follow the selection"
 expect_has "$spin_comet" -F "A comet sweeping between two dim walls" "the description did not follow the selection"
-if ! printf '%s\n' "$spin_comet" | grep -F "Working…" | grep -q '(.*●.*) Working'; then
+if ! printf '%s\n' "$spin_comet" | grep -F "${VERB_TURN1}…" | grep -q "(.*●.*) ${VERB_TURN1}"; then
 	fail "the preview does not wear the comet after ↑"
 fi
 # The page is LIVE with no turn running: the preview line must have moved
@@ -101,9 +101,9 @@ fi
 # step every 80 ms — 0.3 s is never a whole 800 ms cycle, so two captures that
 # far apart can never show the same frame (the tracks are continuous curves
 # and can, at the instants their ping-pong mirrors).
-spin_preview_a="$(printf '%s\n' "$spin_comet" | grep -F "Working…")"
+spin_preview_a="$(printf '%s\n' "$spin_comet" | grep -F "${VERB_TURN1}…")"
 sleep 0.3
-spin_preview_b="$(tmux capture-pane -t "$S110" -p | grep -F "Working…")"
+spin_preview_b="$(tmux capture-pane -t "$S110" -p | grep -F "${VERB_TURN1}…")"
 echo "==== Phase 110: the preview line 0.3 s apart ===="
 printf '%s\n%s\n' "$spin_preview_a" "$spin_preview_b"
 if [ "$spin_preview_a" = "$spin_preview_b" ]; then

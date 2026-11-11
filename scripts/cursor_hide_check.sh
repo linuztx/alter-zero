@@ -23,7 +23,7 @@ fi
 S="curhide_$$"
 # A committed turn summary, whichever verb the turn ended on (the same line as
 # scripts/smoke/lib.sh; `app::tests::turn` pins every copy to `STATUS_VERBS`).
-SUMMARY_RE='(Worked|Generated|Pondered|Cooked|Brewed|Crunched|Conjured|Churned|Computed|Synthesized) for [0-9]'
+SUMMARY_RE='(Hatched|Percolated|Tinkered|Spelunked|Pondered|Conjured|Grepped|Juggled|Simmered|Untangled|Sprouted|Whittled|Foraged|Mulled|Transmuted|Riffed|Brewed|Deciphered|Wrangled|Soldered|Skittered|Sleuthed|Cogitated|Defragged|Marinated|Enchanted|Bloomed|Polished|Excavated|Noodled|Herded|Kneaded|Concocted|Glimmered|Unscrambled|Tempered|Charted|Ruminated|Overclocked|Fermented|Burrowed|Alchemized|Harmonized|Knitted|Crunched|Unearthed|Mused|Galloped|Steeped|Divined|Ripened|Sculpted|Prospected|Fathomed|Churned|Shimmered|Distilled|Incubated|Kindled|Cooked) for [0-9]'
 CFG="$(mktemp -d)"
 RAW="$(mktemp)"
 cleanup() {

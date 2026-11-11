@@ -1,7 +1,7 @@
 # The status spinner styles and the `/spinner` picker
 
 The live status line opens with a **spinner** — the animated glyph(s) before
-the shimmering verb (`⣤⣀⣀⣀⣀⣀⣀⣀ Working… (3s · ↓ 1.2k tokens · esc to
+the shimmering verb (`⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (3s · ↓ 1.2k tokens · esc to
 interrupt)`, `docs/status-indicator.md`). It used to be one animation, the
 comet. The **`/spinner`** command — the ninth composer-replacing inline
 picker, the `/mascot` picker's twin — chooses among nine, previews them
@@ -125,7 +125,7 @@ columns over this catalog — the preview sits **beside** the list, the
     comet     (●•·   )      Gravity
   → gravity   ⣤⣀⣀⣀⣀⣀⣀⣀ ✓    A ball hopping along the track, wall to wall
     wave      ⠔⠉⠉⠑⠤⣀⣀⡠
-    sparkle   ·             ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
+    sparkle   ·             ⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (0s · esc to interrupt)
     dots      ⠋
     (2/9)
 
@@ -152,7 +152,7 @@ On a narrower one the same preview stacks under the list:
   Gravity
   A ball hopping along the track, wall to wall
 
-  ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (0s · esc to interrupt)
+  ⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (0s · esc to interrupt)
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc …
 ────────────────────────────────────────────────────────────
