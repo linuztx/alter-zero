@@ -35,8 +35,10 @@ release heading when a version is cut.
   named — and `--verbose` logs every step there. Piped input is read to its
   end however slow the command writing it, while a socket nobody writes to
   (Node, so n8n) is left alone after 3 s; refused calls are reported in
-  Claude Code's `permission_denials` fields; a run that cannot start still
-  prints a JSON result; and a background agent that never finishes is
+  Claude Code's `permission_denials` fields; a call auto mode's safety check
+  could not decide (an error, not a denial) is retried once at most rather
+  than refused for good; a run that cannot start still prints a JSON
+  result; and a background agent that never finishes is
   stopped after `ALTER_ZERO_HEADLESS_AGENT_WAIT_SECS` (10 minutes by
   default). Launched without `-p` where there is no terminal, the app now
   says it needs one and names `-p` instead of ending on

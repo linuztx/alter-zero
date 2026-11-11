@@ -250,6 +250,22 @@ carry on without it or say what was needed. The cell reads `Not run: needs
 approval (headless run)`. Subagents share the gate, so theirs are refused the
 same way.
 
+A **failed safety check** is told apart. When auto mode's classifier errors
+before it reaches a verdict — the network, a rate limit, a reply it cannot
+read — the TUI falls back to asking; a headless run cannot, but a failure is
+not a denial, and telling the model "do not retry" would make a passing
+outage quietly cost the run its work. So the model reads
+`permission::CHECK_FAILED_RESULT` instead: the check failed with an error,
+nobody else can approve the call, it may retry **this exact call once**, and
+if the check fails again it must not. The gate remembers each call whose
+check failed (`PermissionGate::first_check_failure`, keyed on the call's
+kind and target), and a second failure on the same call answers
+`CHECK_FAILED_AGAIN_RESULT` — failed again, do not retry — with no
+invitation left, so a check that keeps failing cannot hold a model in a
+loop whatever it does. The cells read `Not run: the safety check failed
+(headless run)` and `… failed again …`; every attempt is a refusal in
+`permission_denials`.
+
 The mode decides how much reaches that step. `master` runs everything;
 `auto` (the default, unless the project saved another) runs edits, read-only
 commands and whatever the classifier allows; `edit` refuses commands nobody

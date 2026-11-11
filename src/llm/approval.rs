@@ -16,10 +16,11 @@ use super::tools::{
     render_numbered_diff,
 };
 use crate::permission::{
-    Approval, CLASSIFIER_ALLOWED_NOTE, ClassifierVerdict, PermissionDecision, PermissionGate,
-    PermissionKind, PermissionMode, PermissionRequest, SCRATCHPAD_ALLOWED_NOTE, UNATTENDED_DISPLAY,
-    UNATTENDED_RESULT, classifier_denial_result, classifier_denied_display, denial_result,
-    denied_display, explain_display, explain_result,
+    Approval, CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT, CHECK_FAILED_DISPLAY,
+    CHECK_FAILED_RESULT, CLASSIFIER_ALLOWED_NOTE, ClassifierVerdict, PermissionDecision,
+    PermissionGate, PermissionKind, PermissionMode, PermissionRequest, SCRATCHPAD_ALLOWED_NOTE,
+    UNATTENDED_DISPLAY, UNATTENDED_RESULT, classifier_denial_result, classifier_denied_display,
+    denial_result, denied_display, explain_display, explain_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -293,6 +294,7 @@ pub fn approve_call(
     // PermissionRequest hook above still answers first — a user-configured
     // decider outranks the forced ask, exactly as it does in the reference's
     // permission dialog.
+    let mut check_failed = false;
     if !force_ask
         && gate.mode() == PermissionMode::Auto
         && matches!(
@@ -324,8 +326,9 @@ pub fn approve_call(
             }
             // The classifier failed (network, an unparseable reply): fall
             // back to asking the user — the safe posture, and the one that
-            // still works offline.
-            Err(_) => {}
+            // still works offline. With nobody to ask, the refusal below
+            // says the check failed rather than ruled.
+            Err(_) => check_failed = true,
         }
     }
     // Nobody to ask — a headless run (docs/headless.md): everything that
@@ -339,9 +342,18 @@ pub fn approve_call(
         tool_use_id: call.id.clone(),
         tool_input: call.arguments.clone(),
     }) {
+        let (display, result) = if !check_failed {
+            (UNATTENDED_DISPLAY, UNATTENDED_RESULT)
+        } else if gate.first_check_failure(&request) {
+            // A failed check is no verdict: the call may be retried once…
+            (CHECK_FAILED_DISPLAY, CHECK_FAILED_RESULT)
+        } else {
+            // …and after that the model is told to stop.
+            (CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT)
+        };
         return Approval::Reject {
-            display: UNATTENDED_DISPLAY.to_string(),
-            result: UNATTENDED_RESULT.to_string(),
+            display: display.to_string(),
+            result: result.to_string(),
         };
     }
     request.id = gate.next_id();
@@ -1125,20 +1137,49 @@ mod tests {
 
     #[test]
     fn an_unattended_gate_refuses_a_forced_ask_and_a_failed_classifier() {
-        use crate::permission::PermissionMode;
+        use crate::permission::{
+            CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT, CHECK_FAILED_DISPLAY,
+            CHECK_FAILED_RESULT, PermissionMode,
+        };
         // A hook's `ask` means a human decides — and there is none.
         let gate = unattended(PermissionMode::Manual);
         gate.seed_commands(["cargo test".to_string()], std::iter::empty());
         let test = call("bash", r#"{"command":"cargo test"}"#);
         assert_eq!(decide(&gate, None, true, &test), (refused(), false));
-        // The classifier failing falls back to asking — refused here.
+        // A failed check is no verdict: where the TUI falls back to asking,
+        // the model may retry the call once…
         let gate = unattended(PermissionMode::Auto);
         let broken = |_: &PermissionRequest| Err("offline".to_string());
         let make = call("bash", r#"{"command":"make"}"#);
+        let failed = |display: &str, result: &str| {
+            (
+                Approval::Reject {
+                    display: display.to_string(),
+                    result: result.to_string(),
+                },
+                false,
+            )
+        };
         assert_eq!(
             decide(&gate, Some(&broken), false, &make),
-            (refused(), false)
+            failed(CHECK_FAILED_DISPLAY, CHECK_FAILED_RESULT)
         );
+        // …and is told to stop when the check fails on it again, so a check
+        // that keeps failing never holds it in a loop.
+        for _ in 0..2 {
+            assert_eq!(
+                decide(&gate, Some(&broken), false, &make),
+                failed(CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT)
+            );
+        }
+        // Another command gets its own retry.
+        let test = call("bash", r#"{"command":"make test"}"#);
+        assert_eq!(
+            decide(&gate, Some(&broken), false, &test),
+            failed(CHECK_FAILED_DISPLAY, CHECK_FAILED_RESULT)
+        );
+        // Every attempt is reported as a call that did not run.
+        assert_eq!(gate.take_unattended_refusals().len(), 4);
     }
 
     // ===== the auto mode classifier (docs/permissions.md) =====

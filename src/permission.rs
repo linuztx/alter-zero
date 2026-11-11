@@ -104,7 +104,7 @@ pub fn mode_by_env(value: Option<&str>) -> Option<PermissionMode> {
 
 /// What a pending request is asking permission to do — the prompt's title, its
 /// body shape, and which option-2 label it offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     /// A `write` that creates a brand-new file: the body is its numbered
     /// contents.
@@ -391,6 +391,35 @@ pub const UNATTENDED_RESULT: &str = "This tool call needs the user's approval, a
      that does the same thing. Continue with what does not need it; if it is essential, end \
      your answer by saying what you needed to run and why — the user can allow it with \
      --permission-mode or an allowlist rule.";
+
+/// The short output a call records when an **unattended** gate refused it
+/// because auto mode's safety check failed rather than ruled — an error, not
+/// a denial (`docs/headless.md` *Permissions*).
+pub const CHECK_FAILED_DISPLAY: &str = "Not run: the safety check failed (headless run)";
+
+/// The model-facing tool result for that call: the check failed, nobody else
+/// can approve the call, and the model may retry it **once** — where
+/// [`UNATTENDED_RESULT`] says a retry would be refused the same way. A
+/// second failure on the same call answers with [`CHECK_FAILED_AGAIN_RESULT`]
+/// instead ([`PermissionGate::first_check_failure`]).
+pub const CHECK_FAILED_RESULT: &str = "This tool call was not executed. In this \
+     non-interactive (headless) run, auto mode's safety check approves calls in place of the \
+     user, and the check failed with an error before it reached a decision — this is not a \
+     denial, and nobody else can approve the call. You may retry this exact call once. If the \
+     check fails again, do not retry it: continue with what does not need it, and if it is \
+     essential, end your answer by saying what you needed to run and why.";
+
+/// The short output of a call whose safety check failed again.
+pub const CHECK_FAILED_AGAIN_DISPLAY: &str =
+    "Not run: the safety check failed again (headless run)";
+
+/// The model-facing tool result once the check has failed on the same call
+/// before: no invitation left, so a check that keeps failing can never hold
+/// the model in a loop of retries.
+pub const CHECK_FAILED_AGAIN_RESULT: &str = "This tool call was not executed: auto mode's \
+     safety check failed again, and nobody else can approve the call in this non-interactive \
+     (headless) run. Do not retry it. Continue with what does not need it; if it is essential, \
+     end your answer by saying what you needed to run and why.";
 
 /// The model-facing tool result for Ctrl+E — explain the command instead of
 /// running it.
@@ -1133,6 +1162,10 @@ struct GateInner {
     /// What the unattended gate refused, in order, until taken for the run's
     /// report ([`PermissionGate::take_unattended_refusals`]).
     refused: Vec<UnattendedRefusal>,
+    /// The calls (kind, target) whose safety check already failed in this
+    /// unattended run — each is invited to retry once
+    /// ([`PermissionGate::first_check_failure`]).
+    check_failures: HashSet<(PermissionKind, String)>,
     /// This session's scratchpad directory, when it has one
     /// ([`PermissionGate::set_scratchpad`]) — the root
     /// [`PermissionGate::scratchpad_covers`] measures a file change against.
@@ -1340,6 +1373,18 @@ impl PermissionGate {
         inner.unattended
     }
 
+    /// Note that auto mode's safety check failed on `request` in an
+    /// unattended run (`docs/headless.md` *Permissions*): `true` the first
+    /// time it fails on this call — the model is invited to retry it once —
+    /// and `false` every time after, when it is told to stop, so a check
+    /// that keeps failing never holds the model in a loop.
+    #[must_use]
+    pub fn first_check_failure(&self, request: &PermissionRequest) -> bool {
+        self.lock()
+            .check_failures
+            .insert((request.kind, request.target.clone()))
+    }
+
     /// Every call this unattended gate refused since the last take, in
     /// order — the run's `permission_denials`.
     #[must_use]
@@ -1421,6 +1466,59 @@ mod tests {
         assert!(gate.clone().refuses_unattended(|| second.clone()));
         assert_eq!(gate.take_unattended_refusals(), vec![first, second]);
         assert!(gate.take_unattended_refusals().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_failed_safety_check_tells_the_model_to_retry_once_then_stop() {
+        assert_eq!(
+            CHECK_FAILED_DISPLAY,
+            "Not run: the safety check failed (headless run)"
+        );
+        for needle in [
+            "not executed",
+            "failed with an error",
+            "not a denial",
+            "nobody else can approve",
+            "retry this exact call once",
+            "do not retry it",
+        ] {
+            assert!(
+                CHECK_FAILED_RESULT.contains(needle),
+                "{needle}: {CHECK_FAILED_RESULT}"
+            );
+        }
+        assert_eq!(
+            CHECK_FAILED_AGAIN_DISPLAY,
+            "Not run: the safety check failed again (headless run)"
+        );
+        for needle in [
+            "not executed",
+            "failed again",
+            "nobody else can approve",
+            "Do not retry it",
+        ] {
+            assert!(
+                CHECK_FAILED_AGAIN_RESULT.contains(needle),
+                "{needle}: {CHECK_FAILED_AGAIN_RESULT}"
+            );
+        }
+        // The second answer never invites another try.
+        assert!(!CHECK_FAILED_AGAIN_RESULT.contains("once"));
+    }
+
+    #[test]
+    fn a_failed_safety_check_invites_one_retry_per_call() {
+        let gate = PermissionGate::new();
+        gate.set_unattended();
+        let make = request(PermissionKind::Bash, "make");
+        assert!(
+            gate.first_check_failure(&make),
+            "the first failure invites one"
+        );
+        assert!(!gate.first_check_failure(&make), "a repeat does not");
+        assert!(!gate.first_check_failure(&make));
+        // Another call gets its own retry.
+        assert!(gate.first_check_failure(&request(PermissionKind::Bash, "make test")));
     }
 
     #[test]

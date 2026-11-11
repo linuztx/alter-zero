@@ -1087,8 +1087,14 @@ reads `UNATTENDED_DISPLAY` (`Not run: needs approval (headless run)`); the
 model reads `UNATTENDED_RESULT` — the call did not run, nobody can approve
 it, do not retry or work around it, and say what was needed — the
 classifier denial's posture without its "stop and ask", since nobody is
-there to ask. A forced ask (`PreToolUse` → `ask`) and a classifier that
-failed both end there too: each means "a human decides". The gate keeps
+there to ask. A forced ask (`PreToolUse` → `ask`) ends there too: it means
+"a human decides". A classifier that **failed** — an error before any
+verdict — is refused there as well, but told apart: the model reads
+`CHECK_FAILED_RESULT` (the check failed, nobody else can approve it, retry
+this exact call once, and stop if it fails again), and a second failure on
+the same call reads `CHECK_FAILED_AGAIN_RESULT` (do not retry), the gate
+remembering each failed call (`PermissionGate::first_check_failure`) so the
+invitation is made once per call and a failing check never loops. The gate keeps
 every refusal until the run takes them (`take_unattended_refusals`) for its
 `permission_denials` and its closing stderr line. Subagents share the gate,
 so their calls are refused the same way.
