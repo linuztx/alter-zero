@@ -647,18 +647,26 @@ mod tests {
 
     #[test]
     fn the_session_leads_its_own_group_and_session() {
-        let mut session = spawn(None, "ps -o pid=,pgid=,sid= -p $$; echo END").expect("spawns");
+        // The ids come from the kernel, not `ps`: macOS's `ps` has no session
+        // column (its `sess` is a kernel address, shown as 0).
+        let mut session = spawn(None, "echo \"shell=$$ ready\"; read _").expect("spawns");
         let rx = reader(&session.master);
-        let out = read_until(&rx, "END");
+        let out = read_until(&rx, "ready");
+        let shell = out
+            .split("shell=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|pid| pid.parse::<u32>().ok());
+        assert_eq!(
+            shell,
+            Some(session.child.id()),
+            "the process spawned is the command's shell: {out:?}"
+        );
+        let pid = rustix::process::Pid::from_child(&session.child);
+        assert_eq!(rustix::process::getpgid(Some(pid)), Ok(pid), "pid == pgid");
+        assert_eq!(rustix::process::getsid(Some(pid)), Ok(pid), "pid == sid");
+        (&session.master).write_all(b"\n").expect("ends the read");
         let _ = session.child.wait();
-        let ids: Vec<&str> = out
-            .lines()
-            .next()
-            .expect("a ps row")
-            .split_whitespace()
-            .collect();
-        let pid = session.child.id().to_string();
-        assert_eq!(ids, vec![pid.as_str(); 3], "pid == pgid == sid: {out:?}");
     }
 
     #[test]

@@ -4244,8 +4244,10 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         registry.kill_all();
     }
 
-    /// A program that reads two bytes raw and prints them in hex — on the
-    /// alternate screen when `full_screen`, else at a plain prompt.
+    /// A program that reads two bytes raw and prints them in hex, one space
+    /// apart — on the alternate screen when `full_screen`, else at a plain
+    /// prompt. `$k` goes unquoted so the shell splits it into words: GNU
+    /// `od` prints ` 1b 4f`, macOS's pads its columns (`           1b  4f`).
     #[cfg(unix)]
     fn two_byte_reader(full_screen: bool) -> String {
         let (enter, leave) = if full_screen {
@@ -4256,7 +4258,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         format!(
             "{enter}stty raw -echo; printf 'keys> '; \
              k=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); \
-             stty sane; {leave}echo \"got:$k\""
+             stty sane; {leave}echo got: $k"
         )
     }
 
