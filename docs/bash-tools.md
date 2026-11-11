@@ -112,7 +112,9 @@ simply no longer offers them.
 - `bashkill` asks the command to stop — `SIGINT`, then `SIGTERM` — and
   `SIGKILL`s whatever is left after [`KILL_GRACE`] (2 s), the session's whole
   process tree included: a `docker compose up` stopped with `SIGKILL` alone
-  leaves its containers running.
+  leaves its containers running. Each signal reaches every process in the
+  session — found by the session's id, or on macOS, whose `pkill` has no
+  `-s`, by the session's terminal (`docs/interactive-shell.md`).
 - `bashlist` names every running session — its id, its command, how long it
   has run, and whether it waits for input — so a model that lost an id to a
   `/compact` or a `/resume` finds it without guessing. A session at a password

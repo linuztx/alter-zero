@@ -252,6 +252,16 @@ release heading when a version is cut.
   script. A hook is now named by its command's first line, cut at 80
   characters, there and on the hook-run cell (`docs/hooks.md`).
 
+- **On macOS, `bashkill` lets a command clean up before it is killed.**
+  Stopping a session sends `SIGINT`, then `SIGTERM`, and kills whatever is
+  left 2 s later, so a `docker compose up` can take its containers down.
+  The two signals went through `pkill -s`, and macOS's `pkill` has no `-s`:
+  it refused the option, nothing was signalled, and every stop there was a
+  `SIGKILL` that still reported the session as stopped. Where `pkill` cannot
+  find a session, the stop now finds its processes by the session's
+  terminal, and the final kill reaches a shell's own jobs there as well
+  (`docs/bash-tools.md`).
+
 ## [0.18.0] - 2026-11-03
 
 ### Added

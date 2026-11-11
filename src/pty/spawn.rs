@@ -247,9 +247,11 @@ impl LineMode {
     }
 }
 
-/// The path of the terminal behind `master` (`/dev/pts/N`) — what a process
-/// holding it shows in `/proc/PID/fd`, for the probe
-/// ([`super::probe::probe`]). `None` when the system will not say.
+/// The path of the terminal behind `master` (`/dev/pts/N`, `/dev/ttysNNN`) —
+/// what a process holding it shows in `/proc/PID/fd`, for the probe
+/// ([`super::probe::probe`]), and the name `ps -t` finds a session's
+/// processes by where `pkill -s` cannot (`crate::background`). `None` when
+/// the system will not say.
 #[cfg(unix)]
 #[must_use]
 pub fn terminal_path(master: &std::fs::File) -> Option<std::path::PathBuf> {
