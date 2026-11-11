@@ -48,6 +48,10 @@
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
+//! - [`headless`]    — `alter-zero -p`'s pure core: the output formats, the
+//!   prompt a pipe and an argument make together, the run's answer, the
+//!   JSON events and result object, and the exit status (the process is
+//!   `tui::headless`'s; see `docs/headless.md`).
 //! - [`herdr`]       — herdr support: the state this session reports to the
 //!   herdr multiplexer pane it runs in — derived from the app, never tracked
 //!   — the failed-turn hold, the socket requests, their sequence and the
@@ -161,6 +165,7 @@ pub mod file_search;
 pub mod frame;
 pub mod frontmatter;
 pub mod git_diff;
+pub mod headless;
 pub mod herdr;
 pub mod highlight;
 pub mod history;

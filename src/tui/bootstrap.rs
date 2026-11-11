@@ -63,7 +63,16 @@ impl<'t> Session<'t> {
         let Startup {
             session: startup,
             prompt,
+            permission_mode,
+            print,
         } = startup;
+        // A headless run (docs/headless.md): the same session, with nothing
+        // shown and nobody to ask. Its prompt is the headless loop's to
+        // submit; what it changes here is what a screen alone needs.
+        let headless = print.is_some();
+        let headless_verbose = print.is_some_and(|options| options.verbose);
+        let round_budget =
+            print.map(|options| alter_zero::llm::agent::RoundBudget::new(options.max_turns));
         // Backend → loop (the streamed reply). A tokio channel so the loop can
         // `select!` on it; the backend thread sends without touching the runtime.
         let (tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
@@ -86,7 +95,11 @@ impl<'t> Session<'t> {
         // recall and Ctrl+R search span past sessions. New submissions are
         // appended per loop iteration (`take_unpersisted_inputs`).
         let hist_store = InputHistoryStore::new();
-        app.seed_input_history(hist_store.load());
+        // A headless prompt is no recall entry (docs/headless.md), so its
+        // session has none to seed either.
+        if !headless {
+            app.seed_input_history(hist_store.load());
+        }
         // The working directory keys every per-directory file below
         // (docs/per-directory-state.md) — the two looks here, the `/model`
         // selection and `/settings` knobs further down, the permission rules.
@@ -97,16 +110,20 @@ impl<'t> Session<'t> {
         // anywhere, pinned as this directory's own right here — seeded before
         // the first frame commits the header so the banner draws it from
         // launch. An absent or corrupt file keeps the default.
-        if let Some(mascot) =
-            config::adopt_look::<Mascot>(config::mascot_json_path().as_deref(), &project)
+        // A headless run draws no banner and no spinner, so it pins neither
+        // look for the directory.
+        if !headless
+            && let Some(mascot) =
+                config::adopt_look::<Mascot>(config::mascot_json_path().as_deref(), &project)
         {
             app.set_mascot(mascot);
         }
         // The status spinner style (docs/spinner.md): the directory's saved
         // `/spinner` choice, seeded the same way so the first turn's status
         // line wears it.
-        if let Some(spinner) =
-            config::adopt_look::<Spinner>(config::spinner_json_path().as_deref(), &project)
+        if !headless
+            && let Some(spinner) =
+                config::adopt_look::<Spinner>(config::spinner_json_path().as_deref(), &project)
         {
             app.set_spinner(spinner);
         }
@@ -212,12 +229,17 @@ impl<'t> Session<'t> {
         // project's saved rules BEFORE the backend is built below — every
         // `write`/`edit`/`bash` call, the main turn's and its subagents', raises
         // the inline prompt and blocks its own thread on the answer.
-        let permissions = PermissionStore::open(&cwd);
+        let permissions = PermissionStore::open(&cwd, permission_mode);
         // …and pointed at the scratchpad, so a `write`/`edit` inside the
         // session's own temp directory resolves without a prompt
         // (`docs/scratchpad.md`). Nothing to point at = no exemption.
         if let Some(gate) = permissions.gate() {
             gate.set_scratchpad(scratchpad_dir.clone());
+            // Nobody can answer a prompt in a headless run: what would ask
+            // is refused instead, and the model is told (docs/headless.md).
+            if headless {
+                gate.set_unattended();
+            }
         }
 
         // The ask gate (docs/ask.md): the `AskUserQuestion` modal's answers
@@ -407,13 +429,16 @@ impl<'t> Session<'t> {
             &agent_registry,
             &steer,
             permissions.gate(),
-            &ask,
+            // AskUserQuestion only where somebody can answer it
+            // (docs/headless.md).
+            (!headless).then_some(&ask),
             &task_registry,
             &skill_registry,
             &subagents,
             Some(&mcp_manager),
             &settings,
             hook_setup,
+            round_budget.as_ref(),
         );
 
         // The `@` file-search pipeline (docs/file-search.md): a background worker
@@ -513,7 +538,12 @@ impl<'t> Session<'t> {
             // Invariant 1: the `EventStream` is created HERE — after
             // `InlineViewport::init` (in `main`) queried the cursor position over
             // stdin, synchronously — so it is the sole stdin reader from now on.
-            events: EventStream::new(),
+            // A headless run creates none: building one opens the controlling
+            // terminal, which a cron job or a CI step does not have.
+            events: (!headless).then(EventStream::new),
+            headless,
+            headless_verbose,
+            round_budget,
             frame,
             draw_rx,
             tx,
@@ -606,6 +636,15 @@ impl<'t> Session<'t> {
         // The capability probe for whatever model the session ended up on —
         // the directory's entry, or a resumed conversation's own.
         session.spawn_pending_probe();
+        // A headless run stops here (docs/headless.md): no startup review
+        // (nobody to ask — what waits for trust stays off, and the headless
+        // loop says so), no first frame, no telemetry ping, no update check,
+        // no herdr pane. SessionStart fires as the session opens, as in the
+        // TUI, and the headless loop submits the prompt.
+        if headless {
+            session.models.fire_session_start();
+            return Ok(session);
+        }
         // The startup review (docs/config-review.md), open on the very first
         // frame when a hook or a project server is new or changed: nothing
         // it asks about runs until it is answered, and the SessionStart
@@ -863,7 +902,12 @@ impl<'t> Session<'t> {
                 } = *loaded;
                 let session_checkpoints = session::parse_checkpoints(&text);
                 let recorded_model = session::parse_model(&text);
-                let restored = self.restore_final_checkpoint(&session_checkpoints);
+                // A headless resume leaves the working tree as it is: in a
+                // pipeline the tree is whatever the pipeline made it, and
+                // reverting it to the conversation's last checkpoint would
+                // undo that silently (docs/headless.md *Resume*).
+                let restored =
+                    !self.headless && self.restore_final_checkpoint(&session_checkpoints);
                 let count = items.len();
                 self.app.load_session(items);
                 // `paint_first_frame` commits the loaded transcript with no
@@ -1002,8 +1046,12 @@ impl<'t> Session<'t> {
         // cancelled above, so none of their hooks can land after the
         // session's end — and under the sink's own 2 s budget, so a quit
         // never hangs on a hook. Claude Code's reason for an interactive
-        // quit is `prompt_input_exit`.
-        self.models.end_conversation("prompt_input_exit");
+        // quit is `prompt_input_exit`; a headless run's end is `other`.
+        self.models.end_conversation(if self.headless {
+            "other"
+        } else {
+            "prompt_input_exit"
+        });
         // Tear down the MCP connections (docs/mcp.md): drops every transport
         // — killing the stdio children synchronously — and cancels a running
         // auth flow, so quitting can't orphan a server process.

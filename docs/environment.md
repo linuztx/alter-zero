@@ -35,17 +35,21 @@ CWD /home/linuztx/alter-zero
 
 ## Where it sits in the prompt
 
-The full system prompt the real backend sends is three blocks, in order:
+The full system prompt the real backend sends is three blocks, in order —
+four in a headless run:
 
 ```
 persona        prompts/alter_zero.md   (who you are)
 environment    prompts/environment.md  (where/when you are, as which user)   ← this doc
 scratchpad     prompts/scratchpad.md   (where your scratch goes, docs/scratchpad.md)
+headless       prompts/headless.md     (nobody is watching — alter-zero -p only, docs/headless.md)
 ```
 
 `persona → environment`, joined by `augment_with_environment`, then the
 scratchpad block appended by `augment_with_scratchpad` when the session has a
-scratchpad directory — nothing else:
+scratchpad directory, then — for a headless run alone — the block
+`augment_with_headless` appends: nobody can answer or approve, a call that
+needs approval is refused, the run ends with the turn. Nothing else:
 the tool schemas carry their own capability detail, so `LlmBackend::configure`
 appends no tools note (the retired `prompts/tools.md` re-spent those tokens on
 every request). The Ctrl+D context-debug view shows the whole assembled

@@ -54,6 +54,7 @@ multi-minute full rebuild — don't, unless the user asks.
 | anything on screen (spacing, glyphs, colours, cursor) | one or two smoke phases; the whole suite only at the end |
 | a public item moved/renamed, or a `mod.rs` re-export | `cargo test --test api_surface` + `cargo doc --no-deps --lib` |
 | `src/cli.rs`, `--help`, arg parsing | `cargo test --lib cli::` + `cargo test --test cli_help` |
+| `src/headless.rs`, `src/tui/headless.rs`, anything `-p` reaches | `cargo test --lib headless::` + `cargo test --test headless` (the real binary over pipes, a stand-in provider on the loopback) + `scripts/smoke.sh 153` for the tty case |
 | `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed |
 | `src/mcp/`, `src/llm/mcp/`, the `mcp` CLI | `cargo test --lib mcp::` (the filter matches both modules) + `cargo test --test mcp_cli` for the CLI |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`ls tests/*_memory.rs`) |

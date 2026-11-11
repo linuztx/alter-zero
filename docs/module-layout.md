@@ -143,7 +143,8 @@ opening the viewport, running the loop — and everything else lives here:
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
 | `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
-| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
+| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
+| `headless.rs` | `alter-zero -p`: the prompt read from the argument and stdin before the runtime, the loop that runs the same `Session` with no screen, the signals, the streams, the exit status (`docs/headless.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
@@ -343,8 +344,9 @@ visibility, which is how sibling modules were reaching them through
 
 `src/tui/` has no facade and needs none: it belongs to the **binary** crate, so
 nothing outside the binary can name it and there is no public surface to lock.
-`main.rs` reaches exactly two paths — `tui::startup::resolve_cli` and
-`tui::event_loop::run`.
+`main.rs` reaches exactly three paths — `tui::startup::resolve_cli`, then
+`tui::event_loop::run`, or `tui::headless::run` for a `-p` run
+(`docs/headless.md`).
 
 ## Doc links
 

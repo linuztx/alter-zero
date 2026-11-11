@@ -63,6 +63,15 @@ impl Session<'_> {
     /// even with no turn active. The draw tick clears it when due and re-arms
     /// while it lingers. See `docs/toast.md`.
     pub(crate) fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
+        // A headless run shows nothing: what an error toast would have said
+        // is a warning on stderr instead, and an info toast is the step
+        // log's (`--verbose`, docs/headless.md).
+        if self.headless {
+            let error = kind == ToastKind::Error;
+            let line = alter_zero::headless::toast_line(&text.into(), error, self.headless_verbose);
+            super::headless::write(line.as_slice());
+            return;
+        }
         self.app.show_toast(text, kind);
         self.toast_deadline = Some(Instant::now() + TOAST_TTL);
         self.frame.schedule_frame_in(TOAST_TTL);

@@ -14,35 +14,49 @@ boundary also answers the `mcp` subcommand family — `alter-zero mcp
 add/add-json/remove/get/list`, `docs/mcp-cli.md` — and `alter-zero
 update`, which installs the newest release over this binary through the
 one-line installer, `docs/update.md`; each is routed by its first argument
-before the flag grammar below applies.)
+before the flag grammar below applies.) **`-p` runs the same session with no
+screen** — one prompt in, the answer on stdout, an exit status out — with
+its own section on the page; the run itself is `docs/headless.md`, and this
+page covers only its grammar.
 
 ```
 $ alter-zero --help
 Alter Zero
 
-Starts an interactive session by default — a quoted PROMPT is its first turn.
+Starts an interactive session by default; with -p, answers once and exits.
 
 Usage: alter-zero [OPTIONS] [PROMPT]
+       alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
        alter-zero update
 
 Commands:
-  mcp                 Manage MCP servers in the user config file — see
-                      alter-zero mcp --help
-  update              Install the newest release over this binary, if one is
-                      out — the one-line installer, checksum-verified
+  mcp                            Manage MCP servers in the user config file —
+                                 see alter-zero mcp --help
+  update                         Install the newest release over this binary,
+                                 if one is out (the checksum-verified installer)
 
 Arguments:
-  [PROMPT]            Send this message as the first turn — of a new
-                      conversation, or of the one --continue/--resume reopens
+  [PROMPT]                       First message of a new conversation, or the
+                                 next of the one --continue/--resume reopens
 
 Options:
-  -c, --continue      Continue the most recent conversation recorded in this
-                      directory
-  -r, --resume [ID]   Resume a conversation — by the session id the exit hint
-                      prints, or picked from a list when no id is given
-  -h, --help          Print help
-  -V, --version       Print version
+  -c, --continue                 Continue the most recent conversation recorded
+                                 in this directory
+  -r, --resume [ID]              Resume a conversation by the id the exit hint
+                                 prints — or pick it from a list, given no ID
+  -C, --cwd <DIR>                Run in DIR instead of the current directory
+      --permission-mode <MODE>   manual, edit, auto or master, for this run only
+  -h, --help                     Print help
+  -V, --version                  Print version
+
+Print mode:
+  -p, --print                    Answer PROMPT (or stdin) with no screen: the
+                                 answer on stdout, problems on stderr, then exit
+      --output-format <FORMAT>   text (the answer), json (one result object) or
+                                 stream-json (one event per line)
+      --max-turns <N>            Stop after N model replies
+      --verbose                  Log each step of the run to stderr
 ```
 
 ```
@@ -161,7 +175,7 @@ to look:
   `mcp` page is titled by its command, `alter-zero mcp`, in the same style.
 - **The description** is the line under it, and it describes the
   *invocation*, not the product: `Starts an interactive session by
-  default — a quoted PROMPT is its first turn.` Both references write this
+  default; with -p, answers once and exits.` Both references write this
   line the same way — codex's *"If no subcommand is specified, options
   will be forwarded to the interactive CLI"*, Claude Code's *"starts an
   interactive session by default, use -p/--print for non-interactive
@@ -203,6 +217,7 @@ A **usage error** is clap's shape, not the old whole-page dump:
 error: unrecognized argument: --frob
 
 Usage: alter-zero [OPTIONS] [PROMPT]
+       alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
        alter-zero update
 
@@ -216,12 +231,15 @@ page's grammar errors take the same shape over its six usage lines. Exit
 
 ### The pure `cli` module (src/cli.rs)
 
-- `Cli` — the parsed invocation: `Session(SessionArgs)` (the TUI run — how
-  to start, plus the optional prompt), `Help`, `Version`, `Mcp(McpCli)`,
-  `Update` (the `update` subcommand — `tui::update_cli::run` does the work,
-  `docs/update.md`).
-  `SessionArgs { start: SessionStart, prompt: Option<String> }` with
-  `SessionStart::{Fresh, Continue, Resume(Option<String>)}`.
+- `Cli` — the parsed invocation: `Session(SessionArgs)` (a session run —
+  how to start, plus the optional prompt), `Help`, `Version`,
+  `Mcp(McpCli)`, `Update` (the `update` subcommand — `tui::update_cli::run`
+  does the work, `docs/update.md`).
+  `SessionArgs { start, prompt, cwd, permission_mode, print }` with
+  `SessionStart::{Fresh, Continue, Resume(Option<String>)}`, `cwd` the
+  `-C`/`--cwd` directory, `permission_mode` the `--permission-mode` seed,
+  and `print: Option<PrintOptions { output_format, max_turns }>` — `Some`
+  for a headless run (`docs/headless.md`), `None` for the TUI.
 - `parse(args)` — over `std::env::args().skip(1)`: a first argument of
   `mcp` or `update` routes to that subcommand (`update` takes nothing — a
   trailing argument is a usage error, never a guess); else `--continue`/`-c`,
@@ -234,6 +252,19 @@ page's grammar errors take the same shape over its six usage lines. Exit
   `--resume`'s value may be a following argument or `=`-attached; a leading
   `-` on the next argument means "bare `--resume`, then that flag" (so
   `--resume --help` doesn't eat `--help` as an id).
+- The headless flags (`docs/headless.md`): `-p`/`--print` is a switch, so
+  the prompt stays the one positional (`alter-zero -p "…"`, or none at all
+  when stdin carries it); `--output-format text|json|stream-json`,
+  `--max-turns <N>` (a count above 0) and `--verbose` need `-p` and are
+  refused without it;
+  `--permission-mode manual|edit|auto|master` and `-C`/`--cwd <DIR>` work in
+  either kind of run. Every value-taking flag reads its value like
+  `--resume`'s (separate or `=`-attached, never a `-`-leading next
+  argument), an unknown value is refused naming the choices, any flag given
+  twice is refused, and `-p` with the bare `--resume` is refused — the
+  picker is a screen, so a headless run names its session. At the boundary
+  `-C` is a `chdir` before anything reads the working directory, which is
+  why `--continue` then looks for the newest conversation *there*.
 - `help(page, style)` / `usage_error(page, message, style)` — the two
   pages above, in either style; `colour_enabled(no_color, term)` the
   colour rule.
@@ -249,6 +280,19 @@ page's grammar errors take the same shape over its six usage lines. Exit
   TUI flags; its argv is `__alter-zero-detached-exec {cmd}`), and the CLI
   work touches no terminal state, so `--help`/errors print to a normal
   cooked-mode stdio and exit before the tokio runtime boots.
+- **An interface that cannot start says what to do instead.** When
+  `InlineViewport::init` fails — no terminal to open (cron, CI, a pipe), or
+  one that never answers the cursor query — `tui_main` prints
+  `cli::no_terminal_error` to stderr (the cause, then `{bin} -p "your
+  prompt"`) and exits 1, where it used to end on the `io::Error`'s Debug
+  form. `init` unwinds the modes it set before it returns the error.
+- **A launch that fails before it starts says so once.** The working
+  directory, the session to reopen and a headless run's prompt are resolved
+  by one `prepare` step whose failures come back as a `Halt` — a usage error
+  (the usage block, exit 2) or a failure with its message (exit 1) — and
+  `resolve_cli` prints it: as text for the TUI, through
+  `headless::not_started` for a headless run, so `--output-format json`
+  still hands a script its result object (`docs/headless.md`).
 - **Flags resolve to a `Startup` before `InlineViewport::init`** —
   `Startup { session: Option<StartupSession>, prompt: Option<String> }`,
   fail fast, no TUI flash:
@@ -310,10 +354,10 @@ page's grammar errors take the same shape over its six usage lines. Exit
 - **The hint prints on every quit with history** (Claude gates some exits);
   it is plain stdout after restore, so it scrolls away naturally and never
   enters the transcript, the recorder, or the model's context.
-- **`[PROMPT]` is interactive-only.** Claude Code's prompt doubles as the
-  input of its `-p/--print` headless mode; this TUI has no non-interactive
-  mode, so the prompt always opens the session it starts. `--print`,
-  `--fork-session` and `--session-id` stay out of scope for the same reason.
+- **`[PROMPT]` doubles as `-p`'s input**, as Claude Code's does — and stdin
+  joins it the way codex joins them, in a tagged `<stdin>` block
+  (`docs/headless.md`). `--fork-session` and `--session-id` stay out of
+  scope.
 - **The help page is titled and coloured.** commander's page opens on
   `Usage:`; ours opens on the product name and the description, cargo's
   ordering, in the app's cyan where commander's is plain.

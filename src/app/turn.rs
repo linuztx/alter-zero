@@ -482,6 +482,17 @@ impl App {
         }
     }
 
+    /// How much of the history no retry can take back: everything but what
+    /// the reply attempt now streaming recorded
+    /// ([`withdraw_attempt`](App::withdraw_attempt)'s floor) — what a
+    /// headless run may print as settled (`docs/headless.md`).
+    #[must_use]
+    pub fn settled_history_len(&self) -> usize {
+        self.attempt_floor
+            .unwrap_or(self.history.len())
+            .min(self.history.len())
+    }
+
     /// The failed reply attempt is void — its request is being sent again
     /// ([`crate::stream::StreamEvent::Retrying`]) — so take back everything it
     /// streamed before the next attempt's first byte arrives: re-sent after

@@ -249,13 +249,13 @@ pays for and why (`moxcms` under `image`, the sixel quantiser under
 
 ## Architecture
 
-A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
+A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
 `session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -296,7 +296,12 @@ peeks — see `docs/dummy-backend.md`. The three library `mod.rs`es re-export th
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
 every `crate::app::X` / `ui::y(…)` / `stream::Z` path is what it always was; `src/tui/` needs
 no facade (nothing outside the binary can name it — `main.rs` reaches exactly
-`tui::startup::resolve_cli` and `tui::event_loop::run`);
+`tui::startup::resolve_cli`, then `tui::event_loop::run` or, for `-p`,
+`tui::headless::run` — **headless mode**, the same `Session` over
+`InlineViewport::headless` with no `EventStream`, nothing asked (an
+unattended permission gate, no `AskUserQuestion`), the answer on stdout,
+problems on stderr and the step log there too with `--verbose`,
+`docs/headless.md`);
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `src/tui/`

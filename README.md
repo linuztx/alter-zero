@@ -209,6 +209,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 
 - **Review at the approval prompt.** Inspect proposed file content, diffs, and commands before approving them. Approve once, allow a session rule, or reject with instructions using **Tab**. **Ctrl+E** asks for a command explanation.
 - **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
+- **Run it without a screen.** `alter-zero -p "…"` answers one prompt for a script, a cron job or a CI step: the answer on stdout, or JSON with `--output-format`, and an exit status to branch on. Nothing waits for a reply; `--permission-mode` decides what runs unasked. See [headless mode](docs/headless.md).
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
 - **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook, yours or a project's, and any new project MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
 - **Credentials by placeholder.** Store a credential with `/secrets` and the agent can use its placeholder without seeing the value. See [how secrets are stored and used](docs/secrets.md).
@@ -303,17 +304,26 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 
 ```text
 Usage: alter-zero [OPTIONS] [PROMPT]
+       alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
        alter-zero update
 
 Arguments:
-  [PROMPT]        Send this message as the first turn
+  [PROMPT]                      Send this message as the first turn
 
 Options:
-  -c, --continue     Continue the most recent conversation in this directory
-  -r, --resume [ID]  Resume a conversation by id, or pick one from a list
-  -h, --help         Print help
-  -V, --version      Print version
+  -c, --continue                Continue the most recent conversation in this directory
+  -r, --resume [ID]             Resume a conversation by id, or pick one from a list
+  -C, --cwd <DIR>               Run in DIR instead of the current directory
+      --permission-mode <MODE>  manual, edit, auto or master, for this run only
+  -h, --help                    Print help
+  -V, --version                 Print version
+
+Print mode:
+  -p, --print                   Answer once with no screen: the answer on stdout, problems on stderr
+      --output-format <FORMAT>  text, json or stream-json
+      --max-turns <N>           Stop after N model replies
+      --verbose                 Log each step of the run to stderr
 ```
 
 Start a task directly, or continue the work from your last session:
@@ -322,6 +332,15 @@ Start a task directly, or continue the work from your last session:
 alter-zero "fix the failing test"
 alter-zero -c "now review the changes"
 ```
+
+Or run it from a script, a cron job or CI, with no terminal at all:
+
+```bash
+alter-zero -p "Run the test suite and summarize the failures" > report.md
+git diff origin/main | alter-zero -p --output-format json "Review this diff"
+```
+
+[Headless mode](docs/headless.md) covers the output formats, exit codes and permission modes.
 
 Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
 

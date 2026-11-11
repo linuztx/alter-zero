@@ -27,10 +27,14 @@
 //! boundary's (`tui::mcp_cli`).
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 use unicode_width::UnicodeWidthStr;
 
+use crate::headless::OutputFormat;
 use crate::mcp::{self, McpServerConfig};
+use crate::permission::PermissionMode;
 
 /// One parsed invocation: a TUI run ([`Cli::Session`] — the flagless
 /// default included), one of the two print-and-exit flags, or the `mcp`
@@ -52,23 +56,51 @@ pub enum Cli {
     Update,
 }
 
-/// A TUI run's arguments (`docs/cli.md`): which conversation to open, and
-/// the message to send into it first — `None` opens on an empty composer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A session run's arguments (`docs/cli.md`): which conversation to open,
+/// the message to send into it first — `None` opens on an empty composer —
+/// where to run, and whether to run with a screen at all (`-p`,
+/// `docs/headless.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionArgs {
     /// How the session starts.
     pub start: SessionStart,
     /// The `[PROMPT]` positional, verbatim: the first turn of a fresh
     /// session, or the next turn of the one `--continue`/`--resume {id}`
     /// reopens. Never blank (the parse refuses one), never combined with
-    /// the bare picker (likewise).
+    /// the bare picker (likewise). A headless run without one reads its
+    /// prompt from stdin.
     pub prompt: Option<String>,
+    /// `-C` / `--cwd`: the directory the run starts in — `chdir`ed to before
+    /// anything reads the working directory, `--continue`'s search included.
+    pub cwd: Option<PathBuf>,
+    /// `--permission-mode`: the run's permission posture — the flag form of
+    /// `ALTER_ZERO_PERMISSION_MODE`, outranking it and the project's saved
+    /// mode, and never saved (`docs/permissions.md`).
+    pub permission_mode: Option<PermissionMode>,
+    /// `-p` / `--print`: run headless with these options — no screen, the
+    /// answer on stdout (`docs/headless.md`). `None` is the TUI.
+    pub print: Option<PrintOptions>,
 }
 
-/// How a TUI run begins — the session flags, one-to-one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A headless run's own options (`docs/headless.md`) — the flags that mean
+/// nothing with a screen, so the parse refuses them without `-p`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrintOptions {
+    /// `--output-format`: how the run reports.
+    pub output_format: OutputFormat,
+    /// `--max-turns`: the most model replies the lead agent may make over
+    /// the whole run — Claude Code's agentic turns. `None` is no limit.
+    pub max_turns: Option<NonZeroUsize>,
+    /// `--verbose`: log each step of the run to stderr. Without it stderr
+    /// says only what went wrong or needs attention.
+    pub verbose: bool,
+}
+
+/// How a session run begins — the session flags, one-to-one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SessionStart {
     /// No session flag: a fresh conversation.
+    #[default]
     Fresh,
     /// `--continue` / `-c`: resume the newest session recorded in this cwd.
     Continue,
@@ -116,7 +148,7 @@ pub enum McpCli {
 /// every row on the page — nothing is wrapped at render time, so the page
 /// reads in the source exactly as it prints.
 pub const DESCRIPTION: &str = "\
-Starts an interactive session by default — a quoted PROMPT is its first turn.";
+Starts an interactive session by default; with -p, answers once and exits.";
 
 /// Which `--help` page: the binary's own, or the `mcp` subcommand's
 /// (`docs/mcp-cli.md`). Both render through the one [`help`] renderer, so
@@ -214,6 +246,7 @@ const MAIN_DOC: HelpDoc = HelpDoc {
     description: DESCRIPTION,
     usage: &[
         ("alter-zero", " [OPTIONS] [PROMPT]"),
+        ("alter-zero -p", " [OPTIONS] [PROMPT]"),
         ("alter-zero mcp", " <COMMAND>"),
         ("alter-zero update", ""),
     ],
@@ -224,14 +257,14 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                 Row {
                     literal: "mcp",
                     placeholder: "",
-                    description: "Manage MCP servers in the user config file — see\n\
-                                  alter-zero mcp --help",
+                    description: "Manage MCP servers in the user config file —\n\
+                                  see alter-zero mcp --help",
                 },
                 Row {
                     literal: "update",
                     placeholder: "",
-                    description: "Install the newest release over this binary, if one is\n\
-                                  out — the one-line installer, checksum-verified",
+                    description: "Install the newest release over this binary,\n\
+                                  if one is out (the checksum-verified installer)",
                 },
             ],
         },
@@ -240,8 +273,8 @@ const MAIN_DOC: HelpDoc = HelpDoc {
             rows: &[Row {
                 literal: "",
                 placeholder: "[PROMPT]",
-                description: "Send this message as the first turn — of a new\n\
-                              conversation, or of the one --continue/--resume reopens",
+                description: "First message of a new conversation, or the\n\
+                              next of the one --continue/--resume reopens",
             }],
         },
         Section {
@@ -250,14 +283,26 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                 Row {
                     literal: "-c, --continue",
                     placeholder: "",
-                    description: "Continue the most recent conversation recorded in this\n\
-                                  directory",
+                    description: "Continue the most recent conversation recorded\n\
+                                  in this directory",
                 },
                 Row {
                     literal: "-r, --resume",
                     placeholder: " [ID]",
-                    description: "Resume a conversation — by the session id the exit hint\n\
-                                  prints, or picked from a list when no id is given",
+                    description: "Resume a conversation by the id the exit hint\n\
+                                  prints — or pick it from a list, given no ID",
+                },
+                Row {
+                    literal: "-C, --cwd",
+                    placeholder: " <DIR>",
+                    description: "Run in DIR instead of the current directory",
+                },
+                // A long-only flag lines its `--` up under the others'
+                // (clap's four-column pad), so the pad rides the literal.
+                Row {
+                    literal: "    --permission-mode",
+                    placeholder: " <MODE>",
+                    description: "manual, edit, auto or master, for this run only",
                 },
                 Row {
                     literal: "-h, --help",
@@ -268,6 +313,35 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                     literal: "-V, --version",
                     placeholder: "",
                     description: "Print version",
+                },
+            ],
+        },
+        // The headless run's own flags (docs/headless.md) — a section of
+        // their own, since they mean nothing without -p.
+        Section {
+            heading: "Print mode:",
+            rows: &[
+                Row {
+                    literal: "-p, --print",
+                    placeholder: "",
+                    description: "Answer PROMPT (or stdin) with no screen: the\n\
+                                  answer on stdout, problems on stderr, then exit",
+                },
+                Row {
+                    literal: "    --output-format",
+                    placeholder: " <FORMAT>",
+                    description: "text (the answer), json (one result object) or\n\
+                                  stream-json (one event per line)",
+                },
+                Row {
+                    literal: "    --max-turns",
+                    placeholder: " <N>",
+                    description: "Stop after N model replies",
+                },
+                Row {
+                    literal: "    --verbose",
+                    placeholder: "",
+                    description: "Log each step of the run to stderr",
                 },
             ],
         },
@@ -439,20 +513,31 @@ pub fn colour_enabled(no_color: Option<&str>, term: Option<&str>) -> bool {
 
 /// Parse the process arguments (without `argv[0]`). Usage errors — unknown
 /// flags, a second positional, a blank prompt, a value on `--continue`,
-/// more than one session flag, a prompt with the bare picker — come back
-/// as `Err(message)`; the boundary prints [`usage_error`] to stderr and
-/// exits 2. `--help`/`--version` win wherever they appear before a `--`
-/// (so `--resume --help` prints help rather than eating `--help` as an
-/// id); `--resume`'s id may be the next argument or `=`-attached, and a
-/// following `-`-leading argument is never taken as an id. The one
-/// positional is the `[PROMPT]`, anywhere among the flags; `--` ends the
-/// flags so a dash-leading prompt is reachable.
+/// more than one session flag, a prompt with the bare picker, a flag given
+/// twice, a headless-only flag without `-p` — come back as `Err(message)`;
+/// the boundary prints [`usage_error`] to stderr and exits 2.
+/// `--help`/`--version` win wherever they appear before a `--` (so
+/// `--resume --help` prints help rather than eating `--help` as an id);
+/// `--resume`'s id may be the next argument or `=`-attached, and a
+/// following `-`-leading argument is never taken as an id. Every
+/// value-taking flag (`--output-format`, `--max-turns`,
+/// `--permission-mode`, `-C`/`--cwd`) reads its value the same way. The
+/// one positional is the `[PROMPT]`, anywhere among the flags; `--` ends
+/// the flags so a dash-leading prompt is reachable.
 pub fn parse<I>(args: I) -> Result<Cli, String>
 where
     I: IntoIterator<Item = String>,
 {
     let mut start: Option<SessionStart> = None;
     let mut prompt: Option<String> = None;
+    // The headless switch and its companions (docs/headless.md), each
+    // allowed once.
+    let mut print: Option<()> = None;
+    let mut output_format: Option<OutputFormat> = None;
+    let mut max_turns: Option<NonZeroUsize> = None;
+    let mut verbose: Option<()> = None;
+    let mut permission_mode: Option<PermissionMode> = None;
+    let mut cwd: Option<PathBuf> = None;
     let mut args = args.into_iter().peekable();
     // `mcp` routes as the FIRST argument only (docs/mcp-cli.md) — anywhere
     // else it is a prompt like any other word, so the session grammar is
@@ -511,6 +596,57 @@ where
                 };
                 SessionStart::Resume(id)
             }
+            "--print" | "-p" => {
+                if value.is_some() {
+                    return Err(format!("{flag} takes no value"));
+                }
+                set_once(&mut print, (), "--print")?;
+                continue;
+            }
+            "--verbose" => {
+                if value.is_some() {
+                    return Err(format!("{flag} takes no value"));
+                }
+                set_once(&mut verbose, (), "--verbose")?;
+                continue;
+            }
+            "--output-format" => {
+                let raw = flag_value(&flag, value, &mut args)?;
+                let format = OutputFormat::parse(&raw).ok_or_else(|| {
+                    format!("invalid --output-format \"{raw}\" (use text, json or stream-json)")
+                })?;
+                set_once(&mut output_format, format, "--output-format")?;
+                continue;
+            }
+            "--max-turns" => {
+                let raw = flag_value(&flag, value, &mut args)?;
+                let turns = raw
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(NonZeroUsize::new)
+                    .ok_or_else(|| {
+                        format!(
+                            "--max-turns needs a number of model replies above 0, not \"{raw}\""
+                        )
+                    })?;
+                set_once(&mut max_turns, turns, "--max-turns")?;
+                continue;
+            }
+            "--permission-mode" => {
+                let raw = flag_value(&flag, value, &mut args)?;
+                let mode = PermissionMode::parse(&raw).ok_or_else(|| {
+                    format!(
+                        "invalid --permission-mode \"{raw}\" (use manual, edit, auto or master)"
+                    )
+                })?;
+                set_once(&mut permission_mode, mode, "--permission-mode")?;
+                continue;
+            }
+            "--cwd" | "-C" => {
+                let dir = flag_value(&flag, value, &mut args)?;
+                set_once(&mut cwd, PathBuf::from(dir), "--cwd")?;
+                continue;
+            }
             _ => return Err(format!("unrecognized argument: {arg}")),
         };
         if start.replace(picked).is_some() {
@@ -518,6 +654,36 @@ where
         }
     }
     let start = start.unwrap_or(SessionStart::Fresh);
+    // The headless run's own flags mean nothing with a screen
+    // (docs/headless.md): refused rather than silently ignored.
+    let print = match print {
+        Some(()) => Some(PrintOptions {
+            output_format: output_format.unwrap_or_default(),
+            max_turns,
+            verbose: verbose.is_some(),
+        }),
+        None => {
+            if output_format.is_some() {
+                return Err("--output-format needs --print (-p)".to_string());
+            }
+            if max_turns.is_some() {
+                return Err("--max-turns needs --print (-p)".to_string());
+            }
+            if verbose.is_some() {
+                return Err("--verbose needs --print (-p)".to_string());
+            }
+            None
+        }
+    };
+    // The picker is a screen: a headless run has to name the session it
+    // continues (docs/headless.md).
+    if print.is_some() && start == SessionStart::Resume(None) {
+        return Err(
+            "--print can't open the session picker: name the session with --resume <ID>, \
+             or use --continue"
+                .to_string(),
+        );
+    }
     // The picker is interactive and dismissable: a prompt parked behind it
     // would either start a fresh conversation on Esc or have to be dropped,
     // so the grammar says no up front (docs/cli.md).
@@ -526,7 +692,23 @@ where
             "--resume needs a session id to send a prompt into (or use --continue)".to_string(),
         );
     }
-    Ok(Cli::Session(SessionArgs { start, prompt }))
+    Ok(Cli::Session(SessionArgs {
+        start,
+        prompt,
+        cwd,
+        permission_mode,
+        print,
+    }))
+}
+
+/// Fill a flag's slot, refusing a second time — clap's rule for a
+/// single-value argument. `name` is the flag's long form, whichever spelling
+/// was typed.
+fn set_once<T>(slot: &mut Option<T>, value: T, name: &str) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        return Err(format!("{name} was given more than once"));
+    }
+    Ok(())
 }
 
 /// A flag is a dash plus something; a lone `-` is a positional.
@@ -889,6 +1071,26 @@ pub fn resume_hint(bin: &str, session_id: &str) -> String {
     format!("Resume this session with:\n{bin} --resume {session_id}")
 }
 
+/// What a launch of the interface prints when it cannot start: no terminal
+/// to open (cron, CI, a pipe), or one that never answered the cursor query
+/// (`docs/headless.md`). The cause verbatim, then print mode, which needs no
+/// terminal — named, never switched to: a run in which nobody can approve
+/// anything is the caller's choice to make.
+///
+/// ```text
+/// error: could not start the interface: No such device or address (os error 6)
+/// It needs a terminal; to run without one (cron, CI, a script), use print mode:
+/// alter-zero -p "your prompt"
+/// ```
+#[must_use]
+pub fn no_terminal_error(bin: &str, cause: &str) -> String {
+    format!(
+        "error: could not start the interface: {cause}\n\
+         It needs a terminal; to run without one (cron, CI, a script), use print mode:\n\
+         {bin} -p \"your prompt\""
+    )
+}
+
 /// The program name the hint prints — how the user actually invoked us
 /// (`argv[0]`'s basename, so a renamed or symlinked install echoes the name
 /// that was actually run), falling back to the canonical `alter-zero` when
@@ -918,6 +1120,7 @@ mod tests {
         Ok(Cli::Session(SessionArgs {
             start,
             prompt: prompt.map(str::to_string),
+            ..SessionArgs::default()
         }))
     }
 
@@ -1094,6 +1297,272 @@ mod tests {
         );
     }
 
+    // ===== headless mode (docs/headless.md) =====
+
+    /// A run with these arguments.
+    fn run(args: SessionArgs) -> Result<Cli, String> {
+        Ok(Cli::Session(args))
+    }
+
+    /// A headless run of `prompt` with `options`.
+    fn printed(prompt: Option<&str>, options: PrintOptions) -> Result<Cli, String> {
+        run(SessionArgs {
+            prompt: prompt.map(str::to_string),
+            print: Some(options),
+            ..SessionArgs::default()
+        })
+    }
+
+    #[test]
+    fn print_runs_the_prompt_headless_in_text_by_default() {
+        let want = printed(Some("Reply with OK"), PrintOptions::default());
+        assert_eq!(parsed(&["-p", "Reply with OK"]), want);
+        assert_eq!(parsed(&["--print", "Reply with OK"]), want);
+        // A switch, not a value-taker: the prompt may come first too.
+        assert_eq!(parsed(&["Reply with OK", "-p"]), want);
+        assert_eq!(
+            PrintOptions::default().output_format,
+            OutputFormat::Text,
+            "text is the default format"
+        );
+    }
+
+    #[test]
+    fn print_without_a_prompt_leaves_it_to_stdin() {
+        assert_eq!(parsed(&["-p"]), printed(None, PrintOptions::default()));
+        // A lone `-` is a positional the boundary reads as "stdin".
+        assert_eq!(
+            parsed(&["-p", "-"]),
+            printed(Some("-"), PrintOptions::default())
+        );
+    }
+
+    #[test]
+    fn print_takes_no_value() {
+        let err = parsed(&["--print=yes", "x"]).expect_err("a value on --print");
+        assert!(err.contains("--print") && err.contains("no value"), "{err}");
+    }
+
+    #[test]
+    fn verbose_turns_on_the_step_log_of_a_print_run() {
+        let verbose = printed(
+            Some("x"),
+            PrintOptions {
+                verbose: true,
+                ..PrintOptions::default()
+            },
+        );
+        assert_eq!(parsed(&["-p", "--verbose", "x"]), verbose);
+        assert_eq!(parsed(&["x", "--verbose", "-p"]), verbose);
+        // Quiet unless asked.
+        assert_eq!(
+            parsed(&["-p", "x"]),
+            printed(Some("x"), PrintOptions::default())
+        );
+        let err = parsed(&["--verbose=yes", "-p", "x"]).expect_err("a value");
+        assert!(
+            err.contains("--verbose") && err.contains("no value"),
+            "{err}"
+        );
+        let err = parsed(&["-p", "--verbose", "--verbose", "x"]).expect_err("twice");
+        assert!(err.contains("more than once"), "{err}");
+    }
+
+    #[test]
+    fn output_format_takes_every_format_separate_or_attached() {
+        for format in OutputFormat::ALL {
+            let want = printed(
+                Some("x"),
+                PrintOptions {
+                    output_format: format,
+                    ..PrintOptions::default()
+                },
+            );
+            assert_eq!(
+                parsed(&["-p", "--output-format", format.label(), "x"]),
+                want
+            );
+            let attached = format!("--output-format={}", format.label());
+            assert_eq!(parsed(&["x", &attached, "-p"]), want);
+        }
+    }
+
+    #[test]
+    fn an_unknown_output_format_names_the_choices() {
+        let err = parsed(&["-p", "--output-format", "xml", "x"]).expect_err("xml");
+        assert!(
+            err.contains("\"xml\"") && err.contains("text, json or stream-json"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_value_flag_with_no_value_is_a_usage_error() {
+        for args in [
+            &["-p", "--output-format"][..],
+            &["-p", "--output-format="],
+            &["-p", "--output-format", "--max-turns", "3"],
+            &["-p", "--max-turns"],
+            &["--permission-mode"],
+            &["-C"],
+            &["--cwd="],
+        ] {
+            let err = parsed(args).expect_err("a missing value");
+            assert!(err.contains("needs a value"), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn max_turns_takes_a_positive_count() {
+        let want = |n: usize| {
+            printed(
+                Some("x"),
+                PrintOptions {
+                    max_turns: NonZeroUsize::new(n),
+                    ..PrintOptions::default()
+                },
+            )
+        };
+        assert_eq!(parsed(&["-p", "--max-turns", "5", "x"]), want(5));
+        assert_eq!(parsed(&["-p", "--max-turns=12", "x"]), want(12));
+    }
+
+    #[test]
+    fn max_turns_refuses_zero_and_anything_but_a_count() {
+        for value in ["0", "many", "2.5", "-3"] {
+            let attached = format!("--max-turns={value}");
+            let err = parsed(&["-p", &attached, "x"]).expect_err("not a count");
+            assert!(
+                err.contains("--max-turns") && err.contains(value),
+                "{value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_print_only_flags_need_print() {
+        for args in [
+            &["--output-format", "json", "x"][..],
+            &["--max-turns", "3", "x"],
+            &["-c", "--output-format=stream-json"],
+            &["--verbose", "x"],
+        ] {
+            let err = parsed(args).expect_err("a headless flag without -p");
+            assert!(err.contains("needs --print"), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn permission_mode_seeds_either_kind_of_run() {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Edit,
+            PermissionMode::Auto,
+            PermissionMode::Master,
+        ] {
+            assert_eq!(
+                parsed(&["--permission-mode", mode.label()]),
+                run(SessionArgs {
+                    permission_mode: Some(mode),
+                    ..SessionArgs::default()
+                })
+            );
+            let attached = format!("--permission-mode={}", mode.label());
+            assert_eq!(
+                parsed(&["-p", &attached, "x"]),
+                run(SessionArgs {
+                    prompt: Some("x".into()),
+                    permission_mode: Some(mode),
+                    print: Some(PrintOptions::default()),
+                    ..SessionArgs::default()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_permission_mode_names_the_choices() {
+        let err = parsed(&["--permission-mode", "yolo"]).expect_err("yolo");
+        assert!(
+            err.contains("\"yolo\"") && err.contains("manual, edit, auto or master"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn cwd_takes_a_directory_short_long_or_attached_in_either_run() {
+        let want = |print: Option<PrintOptions>| {
+            run(SessionArgs {
+                cwd: Some(PathBuf::from("/srv/repo")),
+                print,
+                ..SessionArgs::default()
+            })
+        };
+        assert_eq!(parsed(&["-C", "/srv/repo"]), want(None));
+        assert_eq!(parsed(&["--cwd", "/srv/repo"]), want(None));
+        assert_eq!(parsed(&["--cwd=/srv/repo"]), want(None));
+        assert_eq!(
+            parsed(&["-p", "-C", "/srv/repo"]),
+            want(Some(PrintOptions::default()))
+        );
+        // `-C` is the directory; `-c` is still --continue.
+        assert_eq!(
+            parsed(&["-c", "-C", "/srv/repo"]),
+            run(SessionArgs {
+                start: SessionStart::Continue,
+                cwd: Some(PathBuf::from("/srv/repo")),
+                ..SessionArgs::default()
+            })
+        );
+    }
+
+    #[test]
+    fn a_flag_given_twice_is_a_usage_error() {
+        for args in [
+            &["-p", "-p", "x"][..],
+            &["-p", "--print", "x"],
+            &["-C", "a", "--cwd", "b"],
+            &["--permission-mode", "auto", "--permission-mode=master"],
+            &["-p", "--output-format", "json", "--output-format", "text"],
+            &["-p", "--max-turns", "1", "--max-turns=2"],
+        ] {
+            let err = parsed(args).expect_err("twice");
+            assert!(err.contains("more than once"), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn print_with_the_bare_picker_is_refused() {
+        for args in [&["-p", "--resume"][..], &["-r", "-p"], &["--resume=", "-p"]] {
+            let err = parsed(args).expect_err("the picker headless");
+            assert!(
+                err.contains("--resume") && err.contains("--continue"),
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn print_sends_the_prompt_into_a_continued_or_resumed_session() {
+        assert_eq!(
+            parsed(&["-p", "-c", "and the docs"]),
+            run(SessionArgs {
+                start: SessionStart::Continue,
+                prompt: Some("and the docs".into()),
+                print: Some(PrintOptions::default()),
+                ..SessionArgs::default()
+            })
+        );
+        assert_eq!(
+            parsed(&["--resume", "18a9f2c3-1a2b", "-p"]),
+            run(SessionArgs {
+                start: SessionStart::Resume(Some("18a9f2c3-1a2b".into())),
+                print: Some(PrintOptions::default()),
+                ..SessionArgs::default()
+            })
+        );
+    }
+
     // ===== the exit hint (docs/cli.md) =====
 
     #[test]
@@ -1101,6 +1570,20 @@ mod tests {
         assert_eq!(
             resume_hint("alter-zero", "18a9f2c3-1a2b"),
             "Resume this session with:\nalter-zero --resume 18a9f2c3-1a2b",
+        );
+    }
+
+    #[test]
+    fn no_terminal_error_names_the_cause_and_the_mode_that_needs_none() {
+        // The interactive launch with no terminal behind it (cron, CI, a
+        // pipe) used to end on main's Debug print of the io::Error. The
+        // cause stays verbatim, then the way to run without a terminal, its
+        // command alone on the last line like the resume hint's.
+        assert_eq!(
+            no_terminal_error("az", "No such device or address (os error 6)"),
+            "error: could not start the interface: No such device or address (os error 6)\n\
+             It needs a terminal; to run without one (cron, CI, a script), use print mode:\n\
+             az -p \"your prompt\"",
         );
     }
 
@@ -1120,29 +1603,40 @@ mod tests {
     const MAIN_PAGE: &str = "\
 Alter Zero
 
-Starts an interactive session by default — a quoted PROMPT is its first turn.
+Starts an interactive session by default; with -p, answers once and exits.
 
 Usage: alter-zero [OPTIONS] [PROMPT]
+       alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
        alter-zero update
 
 Commands:
-  mcp                 Manage MCP servers in the user config file — see
-                      alter-zero mcp --help
-  update              Install the newest release over this binary, if one is
-                      out — the one-line installer, checksum-verified
+  mcp                            Manage MCP servers in the user config file —
+                                 see alter-zero mcp --help
+  update                         Install the newest release over this binary,
+                                 if one is out (the checksum-verified installer)
 
 Arguments:
-  [PROMPT]            Send this message as the first turn — of a new
-                      conversation, or of the one --continue/--resume reopens
+  [PROMPT]                       First message of a new conversation, or the
+                                 next of the one --continue/--resume reopens
 
 Options:
-  -c, --continue      Continue the most recent conversation recorded in this
-                      directory
-  -r, --resume [ID]   Resume a conversation — by the session id the exit hint
-                      prints, or picked from a list when no id is given
-  -h, --help          Print help
-  -V, --version       Print version";
+  -c, --continue                 Continue the most recent conversation recorded
+                                 in this directory
+  -r, --resume [ID]              Resume a conversation by the id the exit hint
+                                 prints — or pick it from a list, given no ID
+  -C, --cwd <DIR>                Run in DIR instead of the current directory
+      --permission-mode <MODE>   manual, edit, auto or master, for this run only
+  -h, --help                     Print help
+  -V, --version                  Print version
+
+Print mode:
+  -p, --print                    Answer PROMPT (or stdin) with no screen: the
+                                 answer on stdout, problems on stderr, then exit
+      --output-format <FORMAT>   text (the answer), json (one result object) or
+                                 stream-json (one event per line)
+      --max-turns <N>            Stop after N model replies
+      --verbose                  Log each step of the run to stderr";
 
     /// Strip every `ESC[…m` sequence.
     fn strip_ansi(text: &str) -> String {
@@ -1214,10 +1708,24 @@ Options:
             "{styled}"
         );
         assert!(
-            styled.contains("\x1b[1m-r, --resume\x1b[0m [ID]   Resume"),
+            styled.contains("\x1b[1m-r, --resume\x1b[0m [ID]              Resume"),
             "{styled}"
         );
-        assert!(styled.contains("\n  [PROMPT]            Send"), "{styled}");
+        assert!(
+            styled.contains("\n  [PROMPT]                       First"),
+            "{styled}"
+        );
+        // The headless section is a section like any other, and a long-only
+        // flag's pad rides inside its literal.
+        assert!(styled.contains("\x1b[1;36mPrint mode:\x1b[0m"), "{styled}");
+        assert!(
+            styled.contains("\x1b[1malter-zero -p\x1b[0m [OPTIONS] [PROMPT]"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\x1b[1m    --max-turns\x1b[0m <N>"),
+            "{styled}"
+        );
         assert!(!styled.contains("\x1b[1m[PROMPT]"), "{styled}");
         // An empty literal never emits an empty escape pair.
         assert!(!styled.contains("\x1b[1m\x1b[0m"), "{styled}");
@@ -1268,7 +1776,8 @@ Options:
         assert_eq!(
             text,
             "error: unrecognized argument: --frob\n\n\
-             Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero mcp <COMMAND>\n       alter-zero update\n\n\
+             Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero -p [OPTIONS] [PROMPT]\n       \
+             alter-zero mcp <COMMAND>\n       alter-zero update\n\n\
              For more information, try '--help'."
         );
         let styled = usage_error(HelpPage::Main, "x", HelpStyle::Ansi);

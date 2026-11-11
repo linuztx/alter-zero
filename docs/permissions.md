@@ -449,19 +449,22 @@ disabled there is no mode: the footer segment is hidden and Shift+Tab raises a
 
 A new session takes its mode from the first of:
 
-1. **`ALTER_ZERO_PERMISSION_MODE`** — `manual`, `edit`, `auto` or `master`,
-   in any case — for this launch only. It outranks the project's saved mode
-   and is **never saved**: only a mode the user picks reaches
+1. **`--permission-mode <MODE>`** on the command line — the flag form of
+   the variable below, outranking it (`docs/cli.md`). The parse refuses an
+   unknown mode outright, naming the four.
+2. **`ALTER_ZERO_PERMISSION_MODE`** — `manual`, `edit`, `auto` or `master`,
+   in any case — for this launch only. Both seeds outrank the project's
+   saved mode and are **never saved**: only a mode the user picks reaches
    `permissions.json` (below). A blank value counts as unset; anything else
    starts the run in manual, the rule an unreadable saved label follows too
    (`permission::mode_by_env`).
-2. **The mode this project saved** in `permissions.json`.
-3. **auto**.
+3. **The mode this project saved** in `permissions.json`.
+4. **auto**.
 
 `PermissionsFile::starting_mode` is that order, pure and unit-tested;
-`PermissionStore::open` reads the variable and the file and seeds the gate
-with the answer before the first frame, and the footer's segment reads the
-gate.
+`PermissionStore::open` takes the flag's seed, reads the variable and the
+file, and seeds the gate with the answer before the first frame, and the
+footer's segment reads the gate.
 
 Auto is the default because manual stops the turn for every file change and
 every command, so a task of any size becomes a run of approvals. Auto lets
@@ -1069,6 +1072,39 @@ amend field, are found from the region's bottom edge, `PERMISSION_TAIL_ROWS` up
 tail block closes the page, so the bottom anchor keeps it flush against the
 closing rule at every body size — a flowing page and a fitting one seat the
 cursor identically.
+
+## Nobody to ask: a headless run
+
+A headless run (`alter-zero -p`, `docs/headless.md`) has no screen to put a
+prompt on, so its gate is **unattended** (`PermissionGate::set_unattended`).
+Everything that answers before a prompt still answers — the allowlist, the
+scratchpad exemption, the read-only fast path, a `PermissionRequest` hook,
+the classifier — and only the last step changes: where `approve_call` would
+send `StreamEvent::Permission` and wait, it refuses the call instead
+(`PermissionGate::refuses_unattended`). No request exists, nothing waits,
+and no `Notification` hook fires, since nobody is shown anything. The cell
+reads `UNATTENDED_DISPLAY` (`Not run: needs approval (headless run)`); the
+model reads `UNATTENDED_RESULT` — the call did not run, nobody can approve
+it, do not retry or work around it, and say what was needed — the
+classifier denial's posture without its "stop and ask", since nobody is
+there to ask. A forced ask (`PreToolUse` → `ask`) ends there too: it means
+"a human decides". A classifier that **failed** — an error before any
+verdict — is refused there as well, but told apart: the model reads
+`CHECK_FAILED_RESULT` (the check failed, nobody else can approve it, retry
+this exact call once, and stop if it fails again), and a second failure on
+the same call reads `CHECK_FAILED_AGAIN_RESULT` (do not retry), the gate
+remembering each failed call (`PermissionGate::first_check_failure`) so the
+invitation is made once per call and a failing check never loops. The gate keeps
+every refusal until the run takes them (`take_unattended_refusals`) for its
+`permission_denials` and its closing stderr line. Subagents share the gate,
+so their calls are refused the same way.
+
+So the mode is what decides a headless run: `master` runs everything,
+`auto` (unless the project saved another) lets file changes, read-only
+commands and classifier-allowed commands through, `edit` refuses what is not
+allow-listed among commands, `manual` refuses every change. A rule saved in
+the TUI is honoured, which is how a project is prepared once interactively
+and then run unattended.
 
 ## Turning it off
 

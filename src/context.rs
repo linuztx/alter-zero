@@ -310,7 +310,7 @@ impl std::ops::DerefMut for Derived {
 /// tool's display `name` (title-cased by `llm::tools::display_name`). The four
 /// known tools reverse exactly; anything else falls back to a lowercase of the
 /// display name.
-fn wire_tool_name(display: &str) -> String {
+pub(crate) fn wire_tool_name(display: &str) -> String {
     // An MCP cell's display name (`{server} - {tool} (MCP)`) inverts to the
     // `mcp__server__tool` the model actually called (`docs/mcp.md`).
     if let Some(wire) = crate::mcp::wire_from_display(display) {

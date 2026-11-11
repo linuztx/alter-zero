@@ -146,21 +146,20 @@ fn rollout_candidates(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Resolve `--resume {id}` to a rollout path (`docs/cli.md`), printing its
-/// own failure to stderr (exit 1 — [`resolve_cli`]'s contract). Accepts, in
+/// Resolve `--resume {id}` to a rollout path (`docs/cli.md`), or say why
+/// not — [`resolve_cli`] prints it and exits 1. Accepts, in
 /// order: an existing **path** (the sessions dir is plain files), an exact
 /// rollout **filename**, an exact **id** (the filename segment
 /// [`session::rollout_file_id`] extracts — the exit hint prints it), then a
 /// **unique id prefix**; several prefix matches are ambiguous, an error
 /// rather than a guess.
-pub(crate) fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBuf, i32> {
+pub(crate) fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBuf, String> {
     let as_path = Path::new(id);
     if as_path.is_file() {
         return Ok(as_path.to_path_buf());
     }
     let Some(root) = root else {
-        eprintln!("No sessions directory (set HOME or ALTER_ZERO_SESSIONS_DIR)");
-        return Err(1);
+        return Err("No sessions directory (set HOME or ALTER_ZERO_SESSIONS_DIR)".to_string());
     };
     let mut exact = Vec::new();
     let mut prefixed = Vec::new();
@@ -184,18 +183,11 @@ pub(crate) fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBu
     let mut matches = if exact.is_empty() { prefixed } else { exact };
     match matches.len() {
         1 => Ok(matches.remove(0)),
-        0 => {
-            eprintln!("No session found for id: {id}");
-            eprintln!(
-                "Pick one interactively with: {} --resume",
-                cli::bin_name(std::env::args().next().as_deref()),
-            );
-            Err(1)
-        }
-        n => {
-            eprintln!("Ambiguous session id: {id} matches {n} sessions");
-            Err(1)
-        }
+        0 => Err(format!(
+            "No session found for id: {id}\nPick one interactively with: {} --resume",
+            cli::bin_name(std::env::args().next().as_deref()),
+        )),
+        n => Err(format!("Ambiguous session id: {id} matches {n} sessions")),
     }
 }
 

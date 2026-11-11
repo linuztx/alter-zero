@@ -104,7 +104,7 @@ pub fn mode_by_env(value: Option<&str>) -> Option<PermissionMode> {
 
 /// What a pending request is asking permission to do — the prompt's title, its
 /// body shape, and which option-2 label it offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     /// A `write` that creates a brand-new file: the body is its numbered
     /// contents.
@@ -163,6 +163,22 @@ pub struct PermissionRequest {
     /// only an id can tell the viewed agent's own `⎿ Waiting…` batch from
     /// another agent's, or from the main turn's. Two agents can share a type.
     pub agent_id: Option<String>,
+}
+
+/// A call an unattended gate refused (`docs/headless.md` *Permissions*): the
+/// request a prompt would have shown, and the call as the model made it —
+/// what a headless run's `permission_denials` report, in Claude Code's terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnattendedRefusal {
+    pub request: PermissionRequest,
+    /// The tool's wire name — what the model called (`bash`, `write`,
+    /// `mcp__github__create_issue`).
+    pub tool_name: String,
+    /// The call's id on the wire.
+    pub tool_use_id: String,
+    /// The model's arguments as it sent them: placeholders, never a secret's
+    /// value (`docs/secrets.md`).
+    pub tool_input: String,
 }
 
 /// What the user chose, handed back to the blocked tool thread. Esc is *not*
@@ -360,6 +376,50 @@ pub fn denial_result(feedback: Option<&str>) -> String {
         None => base.to_string(),
     }
 }
+
+/// The short output a call refused by an **unattended** gate records — a
+/// headless run's, where nobody can answer a prompt (`docs/headless.md`).
+pub const UNATTENDED_DISPLAY: &str = "Not run: needs approval (headless run)";
+
+/// The model-facing tool result for a call an unattended gate refused: it
+/// did not run, nobody can approve it, and what to do instead — the
+/// classifier denial's posture (carry on, never bypass the intent), minus
+/// its "stop and ask", since nobody is there to ask.
+pub const UNATTENDED_RESULT: &str = "This tool call needs the user's approval, and this run \
+     is non-interactive (headless): nobody can approve it, so it was not executed (a file \
+     change was not written). Do not retry it, and do not work around it with another tool \
+     that does the same thing. Continue with what does not need it; if it is essential, end \
+     your answer by saying what you needed to run and why — the user can allow it with \
+     --permission-mode or an allowlist rule.";
+
+/// The short output a call records when an **unattended** gate refused it
+/// because auto mode's safety check failed rather than ruled — an error, not
+/// a denial (`docs/headless.md` *Permissions*).
+pub const CHECK_FAILED_DISPLAY: &str = "Not run: the safety check failed (headless run)";
+
+/// The model-facing tool result for that call: the check failed, nobody else
+/// can approve the call, and the model may retry it **once** — where
+/// [`UNATTENDED_RESULT`] says a retry would be refused the same way. A
+/// second failure on the same call answers with [`CHECK_FAILED_AGAIN_RESULT`]
+/// instead ([`PermissionGate::first_check_failure`]).
+pub const CHECK_FAILED_RESULT: &str = "This tool call was not executed. In this \
+     non-interactive (headless) run, auto mode's safety check approves calls in place of the \
+     user, and the check failed with an error before it reached a decision — this is not a \
+     denial, and nobody else can approve the call. You may retry this exact call once. If the \
+     check fails again, do not retry it: continue with what does not need it, and if it is \
+     essential, end your answer by saying what you needed to run and why.";
+
+/// The short output of a call whose safety check failed again.
+pub const CHECK_FAILED_AGAIN_DISPLAY: &str =
+    "Not run: the safety check failed again (headless run)";
+
+/// The model-facing tool result once the check has failed on the same call
+/// before: no invitation left, so a check that keeps failing can never hold
+/// the model in a loop of retries.
+pub const CHECK_FAILED_AGAIN_RESULT: &str = "This tool call was not executed: auto mode's \
+     safety check failed again, and nobody else can approve the call in this non-interactive \
+     (headless) run. Do not retry it. Continue with what does not need it; if it is essential, \
+     end your answer by saying what you needed to run and why.";
 
 /// The model-facing tool result for Ctrl+E — explain the command instead of
 /// running it.
@@ -1096,6 +1156,16 @@ impl PermissionsFile {
 #[derive(Debug, Default)]
 struct GateInner {
     rules: PermissionRules,
+    /// Whether nobody can answer a prompt — a headless run
+    /// ([`PermissionGate::set_unattended`], `docs/headless.md`).
+    unattended: bool,
+    /// What the unattended gate refused, in order, until taken for the run's
+    /// report ([`PermissionGate::take_unattended_refusals`]).
+    refused: Vec<UnattendedRefusal>,
+    /// The calls (kind, target) whose safety check already failed in this
+    /// unattended run — each is invited to retry once
+    /// ([`PermissionGate::first_check_failure`]).
+    check_failures: HashSet<(PermissionKind, String)>,
     /// This session's scratchpad directory, when it has one
     /// ([`PermissionGate::set_scratchpad`]) — the root
     /// [`PermissionGate::scratchpad_covers`] measures a file change against.
@@ -1280,6 +1350,48 @@ impl PermissionGate {
         drop(job);
     }
 
+    /// Make the gate **unattended** — a headless run's (`docs/headless.md`):
+    /// where a call would put a prompt to the user, nobody is there to
+    /// answer, so it is refused instead ([`refuses_unattended`]). One-way: a
+    /// run with no screen never grows one.
+    ///
+    /// [`refuses_unattended`]: Self::refuses_unattended
+    pub fn set_unattended(&self) {
+        self.lock().unattended = true;
+    }
+
+    /// The approve seam's last step on an unattended gate: refuse the call —
+    /// recording what `refusal` builds for the run's report — instead of
+    /// raising a prompt. `false` on an attended gate, whose prompt asks as
+    /// ever; `refusal` is only called when the record is kept.
+    #[must_use]
+    pub fn refuses_unattended(&self, refusal: impl FnOnce() -> UnattendedRefusal) -> bool {
+        let mut inner = self.lock();
+        if inner.unattended {
+            inner.refused.push(refusal());
+        }
+        inner.unattended
+    }
+
+    /// Note that auto mode's safety check failed on `request` in an
+    /// unattended run (`docs/headless.md` *Permissions*): `true` the first
+    /// time it fails on this call — the model is invited to retry it once —
+    /// and `false` every time after, when it is told to stop, so a check
+    /// that keeps failing never holds the model in a loop.
+    #[must_use]
+    pub fn first_check_failure(&self, request: &PermissionRequest) -> bool {
+        self.lock()
+            .check_failures
+            .insert((request.kind, request.target.clone()))
+    }
+
+    /// Every call this unattended gate refused since the last take, in
+    /// order — the run's `permission_denials`.
+    #[must_use]
+    pub fn take_unattended_refusals(&self) -> Vec<UnattendedRefusal> {
+        std::mem::take(&mut self.lock().refused)
+    }
+
     /// Drop every posted-but-unclaimed decision (`/clear`, an interrupt): the
     /// waiting threads are cancelled separately and must not pick up a stale
     /// answer if one raced in.
@@ -1316,6 +1428,112 @@ mod tests {
             detail: None,
             agent: None,
             agent_id: None,
+        }
+    }
+
+    // --- an unattended gate: the headless run (docs/headless.md) ---
+
+    /// A refusal of `target` as the model's call `id` made it.
+    fn refusal(kind: PermissionKind, target: &str, id: &str) -> UnattendedRefusal {
+        UnattendedRefusal {
+            request: request(kind, target),
+            tool_name: "bash".to_string(),
+            tool_use_id: id.to_string(),
+            tool_input: format!(r#"{{"command":"{target}"}}"#),
+        }
+    }
+
+    #[test]
+    fn an_attended_gate_refuses_nothing_and_builds_no_record() {
+        let gate = PermissionGate::new();
+        let mut built = false;
+        assert!(!gate.refuses_unattended(|| {
+            built = true;
+            refusal(PermissionKind::Bash, "rm -rf build", "call_1")
+        }));
+        assert!(!built, "an attended gate keeps nothing, so builds nothing");
+        assert!(gate.take_unattended_refusals().is_empty());
+    }
+
+    #[test]
+    fn an_unattended_gate_refuses_and_keeps_every_refusal_in_order() {
+        let gate = PermissionGate::new();
+        gate.set_unattended();
+        let first = refusal(PermissionKind::Bash, "rm -rf build", "call_1");
+        let second = refusal(PermissionKind::Write, "/home/u/proj/a.rs", "call_2");
+        assert!(gate.refuses_unattended(|| first.clone()));
+        // Every clone shares the gate — a subagent's thread refuses too.
+        assert!(gate.clone().refuses_unattended(|| second.clone()));
+        assert_eq!(gate.take_unattended_refusals(), vec![first, second]);
+        assert!(gate.take_unattended_refusals().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_failed_safety_check_tells_the_model_to_retry_once_then_stop() {
+        assert_eq!(
+            CHECK_FAILED_DISPLAY,
+            "Not run: the safety check failed (headless run)"
+        );
+        for needle in [
+            "not executed",
+            "failed with an error",
+            "not a denial",
+            "nobody else can approve",
+            "retry this exact call once",
+            "do not retry it",
+        ] {
+            assert!(
+                CHECK_FAILED_RESULT.contains(needle),
+                "{needle}: {CHECK_FAILED_RESULT}"
+            );
+        }
+        assert_eq!(
+            CHECK_FAILED_AGAIN_DISPLAY,
+            "Not run: the safety check failed again (headless run)"
+        );
+        for needle in [
+            "not executed",
+            "failed again",
+            "nobody else can approve",
+            "Do not retry it",
+        ] {
+            assert!(
+                CHECK_FAILED_AGAIN_RESULT.contains(needle),
+                "{needle}: {CHECK_FAILED_AGAIN_RESULT}"
+            );
+        }
+        // The second answer never invites another try.
+        assert!(!CHECK_FAILED_AGAIN_RESULT.contains("once"));
+    }
+
+    #[test]
+    fn a_failed_safety_check_invites_one_retry_per_call() {
+        let gate = PermissionGate::new();
+        gate.set_unattended();
+        let make = request(PermissionKind::Bash, "make");
+        assert!(
+            gate.first_check_failure(&make),
+            "the first failure invites one"
+        );
+        assert!(!gate.first_check_failure(&make), "a repeat does not");
+        assert!(!gate.first_check_failure(&make));
+        // Another call gets its own retry.
+        assert!(gate.first_check_failure(&request(PermissionKind::Bash, "make test")));
+    }
+
+    #[test]
+    fn an_unattended_refusal_tells_the_model_nobody_can_approve_it() {
+        assert_eq!(UNATTENDED_DISPLAY, "Not run: needs approval (headless run)");
+        for needle in [
+            "non-interactive",
+            "not executed",
+            "Do not retry",
+            "--permission-mode",
+        ] {
+            assert!(
+                UNATTENDED_RESULT.contains(needle),
+                "{needle}: {UNATTENDED_RESULT}"
+            );
         }
     }
 

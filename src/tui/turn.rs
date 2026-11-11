@@ -172,7 +172,11 @@ impl Session<'_> {
     pub(crate) fn submit_startup_prompt(&mut self, prompt: String) {
         let prompt = self.app.redact_typed(prompt);
         self.toast_masked_secrets();
-        self.app.input_history.record(&prompt);
+        // A headless run's prompt is a script's, not something the user
+        // typed: ↑ in the TUI never walks through it (docs/headless.md).
+        if !self.headless {
+            self.app.input_history.record(&prompt);
+        }
         self.start_turn(TurnInput {
             texts: vec![prompt],
             images: Vec::new(),

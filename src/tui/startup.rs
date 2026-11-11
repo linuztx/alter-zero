@@ -16,9 +16,11 @@
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use alter_zero::app::HistoryItem;
 use alter_zero::cli::{self, Cli, HelpPage, HelpStyle, SessionArgs, SessionStart};
+use alter_zero::headless;
 use alter_zero::session::{self, SessionMeta};
 
 use super::resume::{find_session_by_id, list_sessions, sessions_root};
@@ -29,6 +31,11 @@ use super::resume::{find_session_by_id, list_sessions, sessions_root};
 pub(crate) struct Startup {
     pub(crate) session: Option<StartupSession>,
     pub(crate) prompt: Option<String>,
+    /// `--permission-mode`: the run's permission seed, in either kind of run.
+    pub(crate) permission_mode: Option<alter_zero::permission::PermissionMode>,
+    /// `-p`: run headless, reporting this way (`docs/headless.md`) — the
+    /// prompt above then already holds what stdin added. `None` is the TUI.
+    pub(crate) print: Option<alter_zero::cli::PrintOptions>,
 }
 
 /// The `--continue`/`--resume` directive — the session to install before the
@@ -85,11 +92,81 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             Err(0)
         }
-        Cli::Session(SessionArgs { start, prompt }) => {
-            let session = resolve_session(start)?;
-            Ok(Startup { session, prompt })
+        Cli::Session(SessionArgs {
+            start,
+            prompt,
+            cwd,
+            permission_mode,
+            print,
+        }) => {
+            let began = Instant::now();
+            let (session, prompt) =
+                prepare(start, prompt, cwd, print.is_some()).map_err(|halt| match halt {
+                    Halt::Usage(message) => {
+                        let style = help_style(std::io::stderr().is_terminal());
+                        eprintln!("{}", cli::usage_error(HelpPage::Main, message, style));
+                        2
+                    }
+                    Halt::Failed(message) => {
+                        match print {
+                            // A headless run's failure is its result too: a
+                            // script reading JSON meets an error object.
+                            Some(options) => super::headless::write(&headless::not_started(
+                                options.output_format,
+                                &message,
+                                began.elapsed(),
+                            )),
+                            None => eprintln!("{message}"),
+                        }
+                        1
+                    }
+                })?;
+            Ok(Startup {
+                session,
+                prompt,
+                permission_mode,
+                print,
+            })
         }
     }
+}
+
+/// Why a launch stops before it starts — said once, by [`resolve_cli`].
+pub(crate) enum Halt {
+    /// Nothing sound to run: the usage block, exit 2.
+    Usage(&'static str),
+    /// Something to say about it, exit 1 — for a headless run in the form
+    /// its output format promises.
+    Failed(String),
+}
+
+/// The working directory, the conversation and — for a headless run — the
+/// prompt, resolved in that order, in cooked mode, before anything starts.
+fn prepare(
+    start: SessionStart,
+    prompt: Option<String>,
+    cwd: Option<PathBuf>,
+    headless: bool,
+) -> Result<(Option<StartupSession>, Option<String>), Halt> {
+    // `-C` first: everything after reads the working directory —
+    // `--continue` looks for the newest conversation *there*.
+    if let Some(dir) = cwd
+        && let Err(err) = std::env::set_current_dir(&dir)
+    {
+        return Err(Halt::Failed(format!(
+            "Cannot run in {}: {err}",
+            dir.display()
+        )));
+    }
+    let session = resolve_session(start).map_err(Halt::Failed)?;
+    // A headless run reads its prompt now, before anything else starts: an
+    // argument, stdin, or both (docs/headless.md).
+    let prompt = if headless {
+        Some(super::headless::read_prompt(prompt.as_deref())?)
+    } else {
+        prompt
+    };
+    Ok((session, prompt))
 }
 
 /// The style for a page written to a stream: the app's colour when the
@@ -113,7 +190,7 @@ pub(crate) fn stdout_style() -> HelpStyle {
 /// Resolve a session flag to the directive: `None` for a fresh session, the
 /// picker for a bare `--resume`, else the rollout file — found and parsed
 /// here, failing fast on stderr with exit 1.
-fn resolve_session(start: SessionStart) -> Result<Option<StartupSession>, i32> {
+fn resolve_session(start: SessionStart) -> Result<Option<StartupSession>, String> {
     match start {
         SessionStart::Fresh => Ok(None),
         SessionStart::Resume(None) => Ok(Some(StartupSession::Picker)),
@@ -133,26 +210,23 @@ fn resolve_session(start: SessionStart) -> Result<Option<StartupSession>, i32> {
                 Some(path) => Ok(Some(StartupSession::Load(Box::new(load_rollout(
                     path.to_path_buf(),
                 )?)))),
-                None => {
-                    eprintln!("No conversation found to continue in {}", cwd.display());
-                    Err(1)
-                }
+                None => Err(format!(
+                    "No conversation found to continue in {}",
+                    cwd.display()
+                )),
             }
         }
     }
 }
 
 /// Read + parse one rollout file for [`StartupSession::Load`], failing fast
-/// on stderr (exit 1) — the CLI twin of the picker arm's read, run before the
-/// terminal boots so an error never flashes a TUI.
-fn load_rollout(path: PathBuf) -> Result<LoadedSession, i32> {
-    let text = std::fs::read_to_string(&path).map_err(|err| {
-        eprintln!("Failed to read session file {}: {err}", path.display());
-        1
-    })?;
+/// with what went wrong — the CLI twin of the picker arm's read, run before
+/// the terminal boots so an error never flashes a TUI.
+fn load_rollout(path: PathBuf) -> Result<LoadedSession, String> {
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| format!("Failed to read session file {}: {err}", path.display()))?;
     let Some((meta, items)) = session::parse_session(&text) else {
-        eprintln!("Not a session file: {}", path.display());
-        return Err(1);
+        return Err(format!("Not a session file: {}", path.display()));
     };
     Ok(LoadedSession {
         path,
