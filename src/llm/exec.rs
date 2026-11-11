@@ -2920,13 +2920,16 @@ os.write(1, b"\n")'"#;
         assert!(context.contains("HTML-escaped"), "{context}");
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn indented_lines_reach_a_program_that_takes_pastes_as_one_paste() {
         // vim, bash, Python 3.13: a program in bracketed-paste mode is sent
         // typed code the way a person pastes it, so its auto-indent leaves
         // the indentation alone (docs/interactive-shell.md). This one turns
-        // the mode on and shows exactly what reached it.
+        // the mode on and shows exactly what reached it. Linux only: the
+        // paste goes to the program the process table names, and elsewhere
+        // none does, so on the main screen the code is typed
+        // (docs/interactive-shell.md *Limits*).
         if std::process::Command::new("python3")
             .arg("--version")
             .output()

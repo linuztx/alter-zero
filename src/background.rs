@@ -3206,12 +3206,15 @@ mod tests {
         // reads key by key is still one to tell of (docs/bash-tools.md). A
         // display that holds the terminal key by key but waits on a pipe
         // asks nothing either: its wait, read off its memory, is on no
-        // terminal (`pty::probe`).
+        // terminal (`pty::probe`). Only Linux lets the probe read that;
+        // elsewhere the screen decides alone, and a screen held key by key
+        // is one that asks (docs/interactive-shell.md *Limits*).
         let (reg, mut rx) = registry();
         let display = reg
             .launch_tty(DISPLAY_LOOP, None, None, true)
             .expect("launches")
             .task;
+        #[cfg(target_os = "linux")]
         let raw_display = reg
             .launch_tty(
                 &format!("stty -icanon -echo; {DISPLAY_LOOP}"),
@@ -3235,6 +3238,7 @@ mod tests {
             .collect();
         assert_eq!(waiting, [menu.id.as_str()], "{events:?}");
         assert_ne!(display.id, menu.id);
+        #[cfg(target_os = "linux")]
         assert_ne!(raw_display.id, menu.id);
         reg.kill_all();
     }
@@ -3815,13 +3819,15 @@ mod tests {
         reg.kill_all();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_picker_reading_its_terminal_waits_however_its_line_animated() {
         // A picker that animated its line before asking has the screen of a
         // progress bar — but the kernel sees it blocked reading the
         // terminal (`pty::probe`), and that is the word that counts; typed
-        // into, it redraws and waits again.
+        // into, it redraws and waits again. Linux only: elsewhere there is no
+        // probe, and the screen of a progress bar is all there is to go on
+        // (docs/interactive-shell.md *Limits*).
         let (reg, _rx) = registry();
         let launch = reg
             .launch_tty(
