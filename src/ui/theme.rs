@@ -2692,12 +2692,14 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // the cursor — a port of codex's file-search popup. Each row is columned —
 // `→ name  parent/  …  File|Dir` — reusing the palette's `→` marker and its
 // cyan-selected / dim-unselected colours, additionally **bolding the
-// characters the query matched** (from `FileMatch.indices`). See
-// docs/file-search.md. ---
+// characters the query matched** (from `FileMatch.indices`), over the
+// palette's dim `(n/total)` counter. See docs/file-search.md. ---
 
-/// The most file rows shown at once; longer match lists scroll to keep the
-/// selection visible (`menu_window`, which pins it to the edge it crossed).
-pub(super) const FILE_MENU_MAX_ROWS: u16 = 8;
+/// The most file rows shown at once — the `/` palette's five, as in the `$`
+/// picker; the rest of the matches (every one the search found) scroll under
+/// a highlight kept on the middle row (`centered_window`), and the
+/// `(n/total)` counter under them is a row of its own.
+pub(super) const FILE_MENU_MAX_ROWS: u16 = 5;
 
 /// The picker's single placeholder row while a search is in flight.
 pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";

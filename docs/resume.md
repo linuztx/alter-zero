@@ -296,11 +296,11 @@ scroll offset): on a list taller than the screen the highlight rides the
 middle row, so the sessions above *and* below it stay in view and every ↑/↓
 scrolls the next one in, sliding to an edge only when the list runs out on
 that side (the first rows anchor at the top, the last flush with the tail).
-The edge-pinned `menu_window` (the palette's window then, the `@` file
-picker's still) used to window it instead, which pinned the highlight to
-whichever edge it had crossed — ↓ from the bottom row scrolled
-exactly one new session in and hid everything beyond it, and ↑ walked the
-highlight back up the rows already on screen without scrolling at all.
+The edge-pinned `menu_window` (the palette's window then, and the `@` and
+`$` pickers' until they were centered too) used to window it instead, which
+pinned the highlight to whichever edge it had crossed — ↓ from the bottom row
+scrolled exactly one new session in and hid everything beyond it, and ↑ walked
+the highlight back up the rows already on screen without scrolling at all.
 
 ## Known divergences from codex
 

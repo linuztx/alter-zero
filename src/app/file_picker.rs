@@ -16,7 +16,8 @@ pub struct FileSearch {
     pub selected: usize,
     /// The `@token` query the current `matches` are for (staleness guard).
     pub query: String,
-    /// The ranked file matches for `query`, capped by the boundary.
+    /// Every file match the boundary's search found for `query`, ranked —
+    /// what the band scrolls through, five rows at a time, and counts.
     pub matches: Vec<FileMatch>,
     /// A search for the current query is in flight (show *Searching…*).
     pub waiting: bool,

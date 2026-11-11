@@ -3096,7 +3096,10 @@ changes drive a `dispatch_file_search`, results come back via
 `App::set_file_matches` with a staleness guard), the rows **columned**
 codex-style — `→ name  parent/  File|Dir`: the selected row's `→` marker, the
 name column sized to the widest visible name, the parent dir (`./` at the
-root), and the kind label pinned at the right edge, at most 8 rows — ↑/↓ move
+root), and the kind label pinned at the right edge, at most 5 rows over the
+palette's dim `(n/total)` counter — **every** match the walk found, the worker
+sending them all back rather than the best eight, the highlight kept centered
+as the list scrolls (`centered_window`, the palette's window) — ↑/↓ move
 and **Tab/Enter insert
 the path** (replacing the `@token`, a trailing space added, whitespace paths
 quoted), Esc dismisses sticky-per-token; the matched characters are bolded in
@@ -3794,9 +3797,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   name + gap), `FILE_MENU_TYPE_WIDTH` with the `FILE_MENU_FILE_LABEL`/
   `FILE_MENU_DIR_LABEL` kind labels pinned at the right edge, and
   `FILE_MENU_ROOT_DIR` (`./`) for root-level parents, with a
-  `FILE_MENU_MAX_ROWS` cap and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
+  `FILE_MENU_MAX_ROWS` (5) cap over the palette's dim `(n/total)` counter and
+  the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
-  palette helpers — see `docs/file-search.md`), the `$` skill picker
+  palette helpers, the row count the built line count like `menu_rows`, the
+  window the palette's `centered_window` — see `docs/file-search.md`), the `$`
+  skill picker
   (`SKILL_MENU_*` — only its own `SKILL_MENU_MAX_ROWS` (5) cap and
   `SKILL_MENU_NO_MATCH` placeholder: it reuses the file picker's
   marker/indent/`FILE_MENU_GAP` geometry and the palette colours, bolding the

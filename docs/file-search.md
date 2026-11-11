@@ -52,7 +52,7 @@ loop's existing `select!` + boundary-injection idioms:
 key ─► App edits draft ─► (loop) app.file_search_query() changed?
                                    └─ yes ─► req_tx.send(query)         [loop → worker]
 worker thread: recv(query) ─► coalesce (drain to newest) ─► walk afresh
-              ─► file_search::rank_files(query, &files, LIMIT)
+              ─► file_search::rank_files(query, files)   (every match, ranked)
               ─► res_tx.send(FileSearchResult{query, matches})         [worker → loop]
 loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stale-dropped]
 ```
@@ -101,11 +101,16 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
     boundary/contiguous/basename hits higher (a directory's basename is the
     component *before* its trailing `/`, or every dir would lose the bonus).
     Empty query matches everything (score 0).
-  - `rank_files(query, &[String], limit) -> Vec<FileMatch>` — filter+sort
-    (score desc, then shorter path, then lexicographic), capped at `limit`.
+  - `rank_files(query, Vec<String>) -> Vec<FileMatch>` — filter+sort
+    (score desc, then shorter path, then lexicographic), **every match
+    kept** (see *Every match, five at a time* below). It takes the walk's
+    list by value and moves each matched path into its `FileMatch`, so
+    ranking the whole walk never copies it.
 - `app/file_picker.rs`:
   - `FileSearch { selected, query, matches: Vec<FileMatch>, waiting }` on
-    `App::file_search: Option<…>` (`None` = closed), parallel to `command_menu`.
+    `App::file_search: Option<…>` (`None` = closed), parallel to `command_menu`;
+    `matches` holds every match the last search returned, which is what the
+    band scrolls through and counts.
   - `refresh_file_search(had_token)` — open on the None→Some token transition,
     clamp the selection as the filter narrows, close when the token's gone;
     Esc-dismiss is **sticky** within a token (the palette's `had_query` trick),
@@ -131,21 +136,27 @@ are mutually exclusive by construction (a bare `/token` has no whitespace, so an
 ### Rendering (`ui/menu.rs`)
 
 A third band sharing the palette's slot below the box:
-`band = menu_rows + shortcuts_rows + file_menu_rows` (at most one is non-zero).
+`band = menu_rows + shortcuts_rows + file_menu_rows + skill_menu_rows` (at
+most one is non-zero).
 
-- `file_menu_rows(app)` — 0 closed; one placeholder row for *Searching…* /
-  *No matching files* (inset by `MENU_INDENT`, so it says so in the names'
-  column rather than the marker's gutter); else
-  `matches.len().min(FILE_MENU_MAX_ROWS)` (at most **8** rows; longer lists
-  scroll).
+- `file_menu_rows(app, width)` — **the built line count** of
+  `file_menu_lines` (the palette's `menu_rows` rule, so the reserved rows and
+  the painted ones agree at every width, the counter coming and going with
+  it): 0 closed; one placeholder row for *Searching…* / *No matching files*
+  (inset by `MENU_INDENT`, so it says so in the names' column rather than the
+  marker's gutter); else the matches capped at `FILE_MENU_MAX_ROWS` (**5**;
+  longer lists scroll) and the counter under them.
 - `file_menu_lines(app, width)` — one **columned** row per match, windowed
-  (`menu_window`) to keep the selection visible:
+  (`centered_window`, the `/` palette's window) to keep the selection on the
+  middle row, over the palette's dim `(n/total)` counter:
 
   ```text
-  → public      ./                                                        Dir
+    public      ./                                                        Dir
     assets      public/                                                   Dir
-    cv.pdf      public/assets/                                            File
+  → cv.pdf      public/assets/                                            File
     next.svg    public/                                                   File
+    vercel.svg  public/                                                   File
+    (3/12)
   ```
 
   The selected row carries the `→` marker (`MENU_MARKER`, which the slash
@@ -158,12 +169,65 @@ A third band sharing the palette's slot below the box:
   (`width − FILE_MENU_TYPE_WIDTH`). **Matched characters** stay emphasized
   (from `FileMatch.indices`, remapped across the name/parent split —
   `file_menu_highlight`). A width too narrow for the columns degrades to
-  marker + name alone.
+  marker + name alone. Under the rows hangs the palette's dim `(n/total)`
+  counter (`menu_counter_line`), in the names' column: which match the
+  highlight is on, of how many the query matched. A terminal too narrow to
+  hold the whole counter goes without it rather than cutting a number in
+  half, and a placeholder has nothing to count.
 - `render_live`/`cursor_position`/`live_height` (and `tui::view::Session::live_region_height`)
   add `file_menu_rows` to the band so the box, cursor, and footer stay put when
   the picker opens — exactly like the palette/shortcuts.
 - The `?` shortcuts band names the sigil, `@ for file paths`, beside
   `/`, `!` and `$` (`docs/shortcuts.md`).
+
+## Every match, five at a time
+
+Date: 2026-11-11
+
+The picker used to show the **best eight** matches and nothing past them: the
+worker ranked every entry the walk found, then dropped all but eight
+(`FILE_MENU_LIMIT`), so ↑/↓ wrapped inside those eight. In this repository a
+bare `@` reached eight of the 890 entries the walk lists. It now keeps them all,
+and shows them the way the `/` palette and the `$` picker show theirs:
+
+- **The worker sends back every match.** `rank_files(query, files)` ranks the
+  whole walk and caps nothing. The walk's own bounds are unchanged, and they
+  are what keep "every match" finite: hidden entries and the
+  `target`/`node_modules` denylist are skipped, and `FILE_INDEX_CAP` (10,000
+  entries) stops the breadth-first walk, so a launch in `~` or `/` lists the
+  shallowest ten thousand entries rather than walking the disk on every
+  keystroke.
+- **Five rows at a time** (`FILE_MENU_MAX_ROWS`), the rest a scroll away,
+  over the `(n/total)` counter: `(1/12)` on a query twelve files match, where
+  a counter over the old list could never have read past `/8`.
+- **The highlight stays centered** (`centered_window`): ↓ walks the `→` down
+  to the middle row, then the list scrolls under it, so the files above *and*
+  below it stay in view, sliding to an edge only where the list runs out (the
+  first rows anchored at the top, the last flush with the tail — ↑ from the
+  first match wraps to the last on the bottom row). The edge-pinned
+  `menu_window` it replaced scrolled only once the highlight reached the
+  bottom row, then held it there, hiding everything past it.
+
+What it costs: `rank_files` already scored and sorted every walked entry
+before it truncated, so a search does no more work than it did, and taking
+the walk's list by value means the matched paths are moved, never copied.
+What changes is that the matches outlive the search: `App::file_search` holds
+them while the band is open — at most `FILE_INDEX_CAP` of them, about a
+megabyte of data at the cap and a few dozen kilobytes in a typical project —
+and drops them when it closes. That megabyte was already resident, though:
+the old ranking built the same list before cutting it to eight, and glibc
+keeps a freed list's pages. Measured in `/usr`, where the walk stops at its
+cap, with a bare `@` open over 10,000 matches (two runs of each build): 16.3
+and 16.4 MiB resident after the change, 16.4 and 16.6 MiB before it. Ten more
+searches after that grew both builds alike.
+
+Considered and not done: walking *everything* — hidden entries included, no
+cap. Without `.gitignore` support a hidden directory is as likely to be
+`.venv/` or `.next/` (tens of thousands of cache and build files) as
+`.github/`, and they would fill the cap and bury the project's own files;
+uncapped, a launch in `~` would walk the whole home directory on every
+keystroke. Finding dotfiles (`.github/workflows/ci.yml`, `.env.example`)
+properly needs the walk to honour `.gitignore`, which is a change of its own.
 
 ## Testing
 
@@ -171,22 +235,30 @@ A third band sharing the palette's slot below the box:
   `email@host`, finds the token around the cursor, empty query for a lone `@`;
   `fuzzy_match` is an ASCII-case-insensitive subsequence with correct indices and
   None on no match; `rank_files` ranks basename/contiguous hits first, sorts
-  ties by length then name, caps at the limit, and lists everything for an
-  empty query.
+  ties by length then name, drops non-matches but keeps every match, and
+  lists everything for an empty query.
 - `textarea` (unit): `replace_range` splices and seats the cursor after.
 - `app` (unit): `@` opens the picker and `file_search_query` tracks the token;
   ↑/↓ move and wrap at the ends; Enter/Tab accept (the `@token` becomes `path ` with the
   cursor after); Esc dismisses and is sticky; `set_file_matches` drops stale
   results; the picker stays closed in shell mode and is suppressed in the
   tool view; submit/clear/recall close it.
-- `ui` (unit): `file_menu_rows` is 0/1/n capped at 8; `file_menu_lines` splits
-  each match into aligned name / parent / kind columns (`./` for root-level,
-  `File`/`Dir` pinned at `width − 6`, a truncated deep parent keeping the pin),
-  marks only the selected row with `→` and the cyan highlight, bolds matched
-  chars in *both* columns, and degrades to marker + name when too narrow;
-  `live_height` grows by the band and `cursor_position` stays put when it
-  opens.
+- `ui` (unit): `file_menu_rows` is 0 closed, 1 for a placeholder, five rows
+  and the counter for a long list, and equal to the painted lines at every
+  width; `file_menu_lines` splits each match into aligned name / parent /
+  kind columns (`./` for root-level, `File`/`Dir` pinned at `width − 6`, a
+  truncated deep parent keeping the pin), marks only the selected row with
+  `→` and the cyan highlight, bolds matched chars in *both* columns, and
+  degrades to marker + name when too narrow; the dim `(n/total)` counter
+  follows the highlight, counts every match, and is left out where the width
+  cannot hold it; the window keeps the `→` on the middle row once there is
+  room above it; `live_height` grows by the band and `cursor_position` stays
+  put when it opens.
 - `src/tui/` (smoke, Phase 25): launch in a temp dir with known files, type
   `@alpha`, the picker lists the file in the columned `→ name  ./  File`
   layout, Enter inserts its path into the composer — then create a file and
   search again: the per-query walk lists a file that didn't exist at startup.
+  Then `@pick_` over twelve planted files: five rows over `(1/12)`, three ↓
+  put `pick_04.txt` on the middle row with `pick_01.txt` scrolled out, and ↑
+  from the first wraps to `pick_12.txt` over `(12/12)` — the twelfth match,
+  which the old best-eight list could not reach.

@@ -150,16 +150,21 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
     Some((score, indices))
 }
 
-/// Rank `candidates` against `query`: keep the fuzzy matches, sort by score
-/// (desc), then shorter path, then lexicographically, and cap at `limit`. The
-/// pure ranking the boundary's file-search worker runs over the walked file list.
+/// Rank `candidates` against `query`: keep **every** fuzzy match, sorted by
+/// score (desc), then shorter path, then lexicographically. The pure ranking
+/// the boundary's file-search worker runs over the walked file list; the
+/// picker scrolls through and counts all of it, so nothing is capped here —
+/// the walk's own bound is what keeps the list finite. The list is taken by
+/// value so each matched path *moves* into its [`FileMatch`]: ranking a whole
+/// walk never copies it. See `docs/file-search.md`.
 #[must_use]
-pub fn rank_files(query: &str, candidates: &[String], limit: usize) -> Vec<FileMatch> {
+pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
     let mut scored: Vec<FileMatch> = candidates
-        .iter()
-        .filter_map(|c| {
-            fuzzy_match(query, c).map(|(score, indices)| FileMatch {
-                path: c.clone(),
+        .into_iter()
+        .filter_map(|path| {
+            let (score, indices) = fuzzy_match(query, &path)?;
+            Some(FileMatch {
+                path,
                 score,
                 indices,
             })
@@ -171,7 +176,6 @@ pub fn rank_files(query: &str, candidates: &[String], limit: usize) -> Vec<FileM
             .then_with(|| a.path.chars().count().cmp(&b.path.chars().count()))
             .then_with(|| a.path.cmp(&b.path))
     });
-    scored.truncate(limit);
     scored
 }
 
@@ -280,7 +284,7 @@ mod tests {
         // defeat the basename bonus (`rfind('/')` finding the trailing slash
         // used to leave every dir with no basename at all).
         let files = vec!["docs/beta/".to_string(), "xbeta.txt".to_string()];
-        let r = rank_files("beta", &files, 10);
+        let r = rank_files("beta", files);
         assert_eq!(r[0].path, "docs/beta/", "{r:?}");
     }
 
@@ -290,26 +294,44 @@ mod tests {
             "src/my_admin_index.rs".to_string(),
             "src/main.rs".to_string(),
         ];
-        let r = rank_files("main", &files, 10);
+        let r = rank_files("main", files);
         assert_eq!(r[0].path, "src/main.rs");
     }
 
     #[test]
-    fn rank_files_drops_non_matches_and_caps_at_limit() {
+    fn rank_files_drops_non_matches_and_keeps_every_match() {
         let files = vec![
             "a.rs".to_string(),
             "b.rs".to_string(),
             "zzz.txt".to_string(),
         ];
-        let r = rank_files("rs", &files, 1);
-        assert_eq!(r.len(), 1);
-        assert!(r.iter().all(|m| m.path.ends_with(".rs")));
+        let r = rank_files("rs", files);
+        let paths: Vec<&str> = r.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn rank_files_keeps_every_match() {
+        // The picker scrolls through every match and counts them all
+        // (`docs/file-search.md`), so the ranking caps nothing: thirty
+        // matches in, thirty out, in rank order. They all score the same
+        // here, so the shorter `src/mod.rs` leads and the rest follow by
+        // name; `README.md` has no `o` after its `M` and is dropped.
+        let mut files: Vec<String> = (0..29).map(|i| format!("src/f{i:02}_mod.rs")).collect();
+        files.push("src/mod.rs".to_string());
+        files.push("README.md".to_string());
+        let r = rank_files("mod", files);
+        assert_eq!(r.len(), 30, "every match, no cap: {r:?}");
+        assert_eq!(r[0].path, "src/mod.rs", "{r:?}");
+        assert_eq!(r[1].path, "src/f00_mod.rs", "{r:?}");
+        assert_eq!(r[29].path, "src/f28_mod.rs", "{r:?}");
+        assert!(r.iter().all(|m| m.path != "README.md"), "{r:?}");
     }
 
     #[test]
     fn rank_files_empty_query_lists_all_shortest_first() {
         let files = vec!["longer_name.rs".to_string(), "a.rs".to_string()];
-        let r = rank_files("", &files, 10);
+        let r = rank_files("", files);
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].path, "a.rs", "shorter path first on an empty query");
     }

@@ -137,6 +137,13 @@ release heading when a version is cut.
   is highlighted and how many match what you typed
   (`docs/skill-mentions.md`).
 
+- **The `@` file picker lists every matching file, five at a time, with a
+  count.** It showed the best eight matches and nothing past them, so ↑/↓
+  could never reach the ninth. It now keeps every file and folder that
+  matches what you typed, shows five at a time with the highlighted one kept
+  in the middle as ↑/↓ scroll, and counts them under the list, `(1/12)`, the
+  way the `/` palette and the `$` picker do (`docs/file-search.md`).
+
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
   (`Select model`, `Settings`, `Select theme`, `Select mascot`,

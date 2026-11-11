@@ -1507,18 +1507,41 @@ fn the_palette_replaces_the_footer() {
 
 #[test]
 fn file_menu_rows_counts_closed_placeholder_and_capped_matches() {
-    assert_eq!(file_menu_rows(&App::new()), 0, "closed");
+    assert_eq!(file_menu_rows(&App::new(), 80), 0, "closed");
     assert_eq!(
-        file_menu_rows(&file_picker("a", vec![], 0)),
+        file_menu_rows(&file_picker("a", vec![], 0), 80),
         1,
         "one placeholder row while empty"
     );
     let many: Vec<_> = (0..12).map(|i| fmatch(&format!("d/f{i}.rs"))).collect();
     assert_eq!(
-        file_menu_rows(&file_picker("f", many, 0)),
-        FILE_MENU_MAX_ROWS,
-        "capped"
+        file_menu_rows(&file_picker("f", many, 0), 80),
+        FILE_MENU_MAX_ROWS + 1,
+        "capped: five files and the counter"
     );
+}
+
+#[test]
+fn file_menu_rows_equals_the_painted_lines_at_every_width() {
+    // The reserved band height IS the built line count — the palette's rule
+    // — so the counter, which comes and goes with the width, can never be
+    // painted into a row that was not reserved.
+    for width in 1..=120u16 {
+        let mut searching = file_picker("a", vec![], 0);
+        searching.file_search.as_mut().unwrap().waiting = true;
+        for app in [
+            many_files(30, 17),
+            file_picker("ma", vec![fmatch("src/main.rs")], 0),
+            file_picker("zz", vec![], 0),
+            searching,
+        ] {
+            assert_eq!(
+                usize::from(file_menu_rows(&app, width)),
+                file_menu_lines(&app, width).len(),
+                "width {width}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1528,13 +1551,17 @@ fn file_menu_lines_placeholder_is_searching_then_no_match() {
     assert!(plain(&file_menu_lines(&app, 40)[0]).contains("Searching"));
     app.file_search.as_mut().unwrap().waiting = false;
     assert!(plain(&file_menu_lines(&app, 40)[0]).contains("No matching files"));
+    // Nothing to count yet, or nothing matched: the placeholder stands alone,
+    // with no counter under it.
+    assert_eq!(file_menu_lines(&app, 40).len(), 1);
 }
 
 #[test]
 fn file_menu_lines_lists_names_with_the_selection_highlighted() {
     let app = file_picker("ma", vec![fmatch("src/main.rs"), fmatch("READ.md")], 1);
     let lines = file_menu_lines(&app, 40);
-    assert_eq!(lines.len(), 2);
+    assert_eq!(lines.len(), 3, "two rows and the counter: {lines:?}");
+    assert_eq!(plain(&lines[2]), band_counter_text(1, 2));
     // Each row shows the basename in the name column with its parent dir
     // (`./` for a root-level entry) beside it — not one raw path string.
     assert!(
@@ -1581,7 +1608,8 @@ fn file_menu_rows_split_name_parent_and_kind_into_columns() {
         0,
     );
     let texts: Vec<String> = file_menu_lines(&app, 80).iter().map(plain).collect();
-    assert_eq!(texts.len(), 3);
+    assert_eq!(texts.len(), 4, "three rows and the counter: {texts:?}");
+    assert_eq!(texts[3], band_counter_text(0, 3));
     assert!(texts[0].starts_with("→ public"), "{texts:?}");
     assert!(texts[1].starts_with("  assets"), "{texts:?}");
     assert!(texts[2].starts_with("  cv.pdf"), "{texts:?}");
@@ -1619,11 +1647,93 @@ fn file_menu_degrades_to_marker_and_name_on_narrow_widths() {
     assert_eq!(texts[0].trim_end(), "→ cv.pdf", "{texts:?}");
 }
 
+/// An app whose open `@` picker holds `n` matches, `f0.rs` … `f{n-1}.rs` in
+/// that order, highlighted at `selected`.
+fn many_files(n: usize, selected: usize) -> App {
+    let matches = (0..n).map(|i| fmatch(&format!("f{i}.rs"))).collect();
+    file_picker("f", matches, selected)
+}
+
 #[test]
-fn the_file_picker_shows_at_most_eight_results() {
-    assert_eq!(FILE_MENU_MAX_ROWS, 8, "the requested cap");
-    let many: Vec<_> = (0..30).map(|i| fmatch(&format!("f{i}.rs"))).collect();
-    assert_eq!(file_menu_lines(&file_picker("f", many, 0), 80).len(), 8);
+fn the_file_picker_shows_five_files_over_a_counter() {
+    // The `/` palette's and the `$` picker's shape: at most five files at a
+    // time — a longer list scrolls — over a dim `(n/total)` counter in the
+    // names' column, saying which file is highlighted and how many matched.
+    assert_eq!(FILE_MENU_MAX_ROWS, 5, "the requested cap");
+    let lines = file_menu_lines(&many_files(30, 0), 80);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(texts.len(), 6, "five files and the counter: {texts:?}");
+    assert!(texts[0].starts_with("→ f0.rs "), "{texts:?}");
+    assert!(texts[4].starts_with("  f4.rs "), "{texts:?}");
+    assert_eq!(texts[5], band_counter_text(0, 30));
+    // A fact about the list rather than a row to pick: dim, in the names'
+    // column, never wearing the selection's colour.
+    let counter = lines.last().expect("the counter row");
+    assert_eq!(counter.spans[0].content, MENU_INDENT);
+    assert!(
+        counter.spans[1..]
+            .iter()
+            .all(|s| s.style.fg == Some(menu_dim_color())),
+        "{counter:?}"
+    );
+}
+
+#[test]
+fn the_file_counter_follows_the_highlight_and_counts_every_match() {
+    // The total is every match the search returned, not the five rows on
+    // screen: thirty files read `(n/30)` wherever the highlight is, and the
+    // highlighted file is always in the window.
+    for selected in [0, 4, 5, 17, 29] {
+        let lines = file_menu_lines(&many_files(30, selected), 80);
+        assert_eq!(
+            plain(lines.last().expect("the counter row")),
+            band_counter_text(selected, 30),
+            "selection {selected}"
+        );
+        let marked = format!("{MENU_MARKER}f{selected}.rs ");
+        assert!(
+            lines.iter().any(|l| plain(l).starts_with(&marked)),
+            "selection {selected} is in the window: {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn the_file_picker_keeps_the_highlight_centered() {
+    // The `/` palette's window (`centered_window`), as in the `$` picker: the
+    // `→` walks down to the middle of the five rows and the list scrolls under
+    // it, sliding to an edge only where the list runs out.
+    for (selected, first, marked) in [
+        (0, 0, 0),
+        (2, 0, 2),
+        (3, 1, 2),
+        (14, 12, 2),
+        (27, 25, 2),
+        (28, 25, 3),
+        (29, 25, 4),
+    ] {
+        let (names, row) = band_window(&file_menu_lines(&many_files(30, selected), 80));
+        let want: Vec<String> = (first..first + 5).map(|i| format!("f{i}.rs")).collect();
+        assert_eq!(names, want, "the window at selection {selected}");
+        assert_eq!(row, marked, "the marked row at selection {selected}");
+    }
+}
+
+#[test]
+fn the_file_counter_is_left_out_where_the_width_cannot_hold_it() {
+    // A count cut at the terminal's edge would misread — `(1/3` for one of
+    // thirty — so a terminal too narrow for the whole counter shows the rows
+    // without it rather than half of it.
+    let app = many_files(30, 0);
+    let whole = u16::try_from(cols(&band_counter_text(0, 30))).expect("narrow");
+    let fits = file_menu_lines(&app, whole);
+    assert_eq!(plain(fits.last().expect("rows")), band_counter_text(0, 30));
+    let narrow = file_menu_lines(&app, whole - 1);
+    assert!(narrow.iter().all(|l| !plain(l).contains('(')), "{narrow:?}");
+    assert_eq!(narrow.len(), usize::from(FILE_MENU_MAX_ROWS));
 }
 
 // ===== the `$` skill picker band (docs/skill-mentions.md) =====
@@ -1978,7 +2088,7 @@ fn file_menu_bolds_matched_characters_in_both_columns() {
 #[test]
 fn render_live_draws_the_file_picker_below_the_box() {
     let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
-    let band = file_menu_rows(&app);
+    let band = file_menu_rows(&app, 40);
     let h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, band, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);

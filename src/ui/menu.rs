@@ -38,12 +38,12 @@ pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
 /// **centered** in a window of `max` rows: the selection rides the middle row
 /// (`max/2`) while there is room on both sides, so the user always sees as much
 /// of the list *above and below* the highlight as fits — the "broad view" the
-/// `/model` and `/login` pickers want, and the slash-command palette too
-/// (row-budgeted by `centered_window_rows`, whose wrapped entries make each
-/// one a different height). Near the ends the window can't center
-/// (there aren't enough rows on one side), so it anchors: the top for the first
-/// `max/2` selections, the bottom (flush with the tail) for the last. Clamped to
-/// `[0, len - max]`.
+/// `/model` and `/login` pickers want, the `@` and `$` pickers below the box,
+/// and the slash-command palette too (row-budgeted by `centered_window_rows`,
+/// whose wrapped entries make each one a different height). Near the ends the
+/// window can't center (there aren't enough rows on one side), so it anchors:
+/// the top for the first `max/2` selections, the bottom (flush with the tail)
+/// for the last. Clamped to `[0, len - max]`.
 ///
 /// Unlike [`menu_window`] — which only scrolls once the selection would leave
 /// the window, pinning it to whichever edge it exited — this recenters on every
@@ -242,18 +242,17 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// How many rows the `@` file picker occupies for `app`: 0 when closed, one
-/// placeholder row while searching / when nothing matched, else the match count
-/// capped at `FILE_MENU_MAX_ROWS` (longer lists scroll, like the palette).
-/// [`live_height`] adds this to its band and [`render_live`] paints exactly this
-/// many rows — the two must agree. See `docs/file-search.md`.
+/// How many rows the `@` file picker occupies for `app` at `width`: **the
+/// built line count** of [`file_menu_lines`] — 0 when closed, one placeholder
+/// row while searching / when nothing matched, else the matches capped at
+/// `FILE_MENU_MAX_ROWS` (longer lists scroll) and the `(n/total)` counter
+/// under them, which a terminal too narrow to hold it whole goes without.
+/// Height-is-the-line-count is [`menu_rows`]' rule: [`live_height`] adds this
+/// via [`band_rows`] and [`render_live`] paints exactly this many rows, so the
+/// two agree by construction. See `docs/file-search.md`.
 #[must_use]
-pub fn file_menu_rows(app: &App) -> u16 {
-    match &app.file_search {
-        None => 0,
-        Some(fs) if fs.matches.is_empty() => 1,
-        Some(fs) => (fs.matches.len() as u16).min(FILE_MENU_MAX_ROWS),
-    }
+pub fn file_menu_rows(app: &App, width: u16) -> u16 {
+    u16::try_from(file_menu_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
 /// Append `text` to `spans`, bolding the characters the query matched: a
@@ -345,9 +344,13 @@ fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> 
 }
 
 /// The styled lines for the open file picker: a *Searching…* / *No matching
-/// files* placeholder while the band has no matches, else the file rows windowed
-/// (`menu_window`) to keep the selection visible and capped at
-/// `FILE_MENU_MAX_ROWS`. Empty when the picker is closed.
+/// files* placeholder while the band has no matches, else the file rows
+/// windowed by [`centered_window`] — the `/` palette's window, so the
+/// highlight rides the middle row and the files above *and* below it stay in
+/// view — and capped at `FILE_MENU_MAX_ROWS`, over the palette's dim
+/// `(n/total)` counter: which match is highlighted, of how many the search
+/// found (every match, `docs/file-search.md`). Empty when the picker is
+/// closed.
 #[must_use]
 pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(fs) = &app.file_search else {
@@ -362,16 +365,22 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return vec![placeholder_line(text)];
     }
     let max = FILE_MENU_MAX_ROWS as usize;
-    let offset = menu_window(fs.matches.len(), fs.selected, max);
+    let offset = centered_window(fs.matches.len(), fs.selected, max);
     let visible = &fs.matches[offset..(offset + max).min(fs.matches.len())];
     // The shared name-column width: the widest *visible* name + the gap, so
     // the parent column starts at the same place on every shown row.
     let name_col = visible.iter().map(|m| cols(m.name())).max().unwrap_or(0) + FILE_MENU_GAP;
-    visible
+    let mut lines: Vec<Line<'static>> = visible
         .iter()
         .enumerate()
         .map(|(i, m)| file_menu_row(m, offset + i == fs.selected, name_col, width))
-        .collect()
+        .collect();
+    lines.extend(menu_counter_line(
+        fs.selected.min(fs.matches.len() - 1),
+        fs.matches.len(),
+        width,
+    ));
+    lines
 }
 
 /// How many rows the `$` skill picker occupies for `app` at `width`: **the
@@ -510,7 +519,7 @@ pub fn shortcuts_rows(app: &App, width: u16) -> u16 {
 pub fn band_rows(app: &App, width: u16) -> u16 {
     menu_rows(app, width)
         + shortcuts_rows(app, width)
-        + file_menu_rows(app)
+        + file_menu_rows(app, width)
         + skill_menu_rows(app, width)
 }
 

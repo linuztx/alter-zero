@@ -438,16 +438,16 @@ pub(crate) fn spawn_update_check(
     });
 }
 
-/// Max files the `@` picker's worker indexes — bounds each walk's memory/time
-/// (codex's nucleo walk is similarly capped).
+/// Max entries the `@` picker's worker indexes — bounds each walk's
+/// memory/time, and so how many matches the picker can ever hold, since
+/// every match goes back (codex's nucleo walk is similarly capped).
 const FILE_INDEX_CAP: usize = 10_000;
-/// Max ranked matches returned per query (the picker shows up to this many).
-const FILE_MENU_LIMIT: usize = 8;
 /// Directory names the walk skips, on top of every hidden (dotfile) entry.
 const FILE_WALK_DENYLIST: &[&str] = &["target", "node_modules"];
 
 /// A file-search result for the `@` picker: the `query` it answers (for the
-/// staleness guard in `App::set_file_matches`) and its ranked `matches`.
+/// staleness guard in `App::set_file_matches`) and **every** match the walk
+/// found for it, ranked — what the picker scrolls through and counts.
 pub(crate) struct FileSearchResult {
     query: String,
     matches: Vec<FileMatch>,
@@ -497,7 +497,9 @@ fn walk_files(root: &Path, cap: usize) -> Vec<String> {
 /// Spawn the `@` file-search worker: a background thread that, for each query —
 /// coalescing any that queued while it worked (the debounce) — walks `root`
 /// **afresh** and ranks the result ([`rank_files`]), sending a
-/// [`FileSearchResult`] back. The walk is per-query (bounded by
+/// [`FileSearchResult`] back with every match in it, not just the first
+/// screenful: the picker scrolls through and counts them all, five rows at a
+/// time (`docs/file-search.md`). The walk is per-query (bounded by
 /// [`FILE_INDEX_CAP`]) rather than cached at startup, so a file the agent just
 /// created — or anything else new on disk — appears in the picker immediately;
 /// codex gets the same freshness by starting a new walk per `@`-token session.
@@ -516,9 +518,10 @@ pub(crate) fn spawn_file_search_worker(
             }
             // Walk fresh every time — a startup-cached list went stale the
             // moment the agent (or anyone) created a file, so `@` in a fresh
-            // dir only ever showed the boot-time contents.
-            let files = walk_files(&root, FILE_INDEX_CAP);
-            let matches = rank_files(&query, &files, FILE_MENU_LIMIT);
+            // dir only ever showed the boot-time contents. The walk's list
+            // moves into the ranking, so its paths are never copied, and
+            // every match comes back.
+            let matches = rank_files(&query, walk_files(&root, FILE_INDEX_CAP));
             if res_tx.send(FileSearchResult { query, matches }).is_err() {
                 break; // the loop is gone
             }
