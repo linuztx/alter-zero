@@ -36,10 +36,27 @@ fn esc_dismisses_the_file_picker_and_stays_dismissed_in_the_token() {
 fn stale_file_matches_are_dropped() {
     let mut app = App::new();
     type_str(&mut app, "@ab");
-    app.set_file_matches("a", vec![fm("axe")]); // results for the OLD query
+    app.set_file_matches("a", vec![fm("axe")], false); // results for the OLD query
     assert!(app.file_search.as_ref().unwrap().matches.is_empty());
-    app.set_file_matches("ab", vec![fm("abc")]); // results for the live query
+    app.set_file_matches("ab", vec![fm("abc")], false); // results for the live query
     assert_eq!(app.file_search.as_ref().unwrap().matches.len(), 1);
+}
+
+#[test]
+fn file_matches_remember_whether_the_walk_stopped_short() {
+    // A walk that reached its cap saw only part of the workspace: the picker
+    // keeps that beside the matches, so its count can say the list may be
+    // missing entries (docs/file-search.md).
+    let mut app = App::new();
+    type_str(&mut app, "@x");
+    app.set_file_matches("x", vec![fm("x1")], true);
+    assert!(app.file_search.as_ref().unwrap().truncated);
+    // A later walk that saw everything clears it…
+    app.set_file_matches("x", vec![fm("x1")], false);
+    assert!(!app.file_search.as_ref().unwrap().truncated);
+    // …and a stale result changes nothing, the flag included.
+    app.set_file_matches("old", vec![fm("x1")], true);
+    assert!(!app.file_search.as_ref().unwrap().truncated);
 }
 
 #[test]
@@ -49,11 +66,11 @@ fn a_shrinking_result_refresh_clamps_the_file_selection() {
     // Tab/Enter accept nothing (and the render highlights no row).
     let mut app = App::new();
     type_str(&mut app, "@x");
-    app.set_file_matches("x", vec![fm("x1"), fm("x2"), fm("x3")]);
+    app.set_file_matches("x", vec![fm("x1"), fm("x2"), fm("x3")], false);
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down)); // highlight the third match
     assert_eq!(app.file_search.as_ref().unwrap().selected, 2);
-    app.set_file_matches("x", vec![fm("x9")]); // the list shrank to one
+    app.set_file_matches("x", vec![fm("x9")], false); // the list shrank to one
     assert_eq!(app.file_search.as_ref().unwrap().selected, 0, "clamped");
     assert_eq!(
         app.highlighted_file().map(|m| m.path.as_str()),
@@ -66,9 +83,9 @@ fn a_shrinking_result_refresh_clamps_the_file_selection() {
 fn an_empty_result_refresh_leaves_a_harmless_selection() {
     let mut app = App::new();
     type_str(&mut app, "@x");
-    app.set_file_matches("x", vec![fm("x1"), fm("x2")]);
+    app.set_file_matches("x", vec![fm("x1"), fm("x2")], false);
     app.on_key(key(KeyCode::Down));
-    app.set_file_matches("x", Vec::new()); // everything filtered away
+    app.set_file_matches("x", Vec::new(), false); // everything filtered away
     assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
     assert!(app.highlighted_file().is_none(), "nothing to accept");
     assert_eq!(
@@ -90,7 +107,7 @@ fn the_file_picker_stays_closed_in_shell_mode() {
 fn accepting_a_path_with_spaces_quotes_it() {
     let mut app = App::new();
     type_str(&mut app, "@my");
-    app.set_file_matches("my", vec![fm("my docs/notes.md")]);
+    app.set_file_matches("my", vec![fm("my docs/notes.md")], false);
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.input.text(), "\"my docs/notes.md\" ");
 }

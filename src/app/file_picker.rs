@@ -16,10 +16,14 @@ pub struct FileSearch {
     pub selected: usize,
     /// The `@token` query the current `matches` are for (staleness guard).
     pub query: String,
-    /// The ranked file matches for `query`, capped by the boundary.
+    /// Every file match the boundary's search found for `query`, ranked —
+    /// what the band scrolls through, five rows at a time, and counts.
     pub matches: Vec<FileMatch>,
     /// A search for the current query is in flight (show *Searching…*).
     pub waiting: bool,
+    /// The walk behind `matches` stopped at its cap, so the list — and the
+    /// count the band shows for it — may be missing entries.
+    pub truncated: bool,
 }
 
 impl App {
@@ -62,6 +66,7 @@ impl App {
                         query: tok.query,
                         matches: Vec::new(),
                         waiting: true,
+                        truncated: false,
                     });
                 }
                 // Dismissed earlier and still in the same token → stay closed.
@@ -84,8 +89,10 @@ impl App {
     /// Feed asynchronously-fetched file matches into the open picker — codex's
     /// `on_file_search_result`. Stale results (the token moved on since the
     /// search was dispatched) are dropped; otherwise they replace the band's
-    /// matches, clear the `waiting` flag, and clamp the highlight.
-    pub fn set_file_matches(&mut self, query: &str, matches: Vec<FileMatch>) {
+    /// matches, clear the `waiting` flag, and clamp the highlight. `truncated`
+    /// says the walk behind them stopped at its cap, which the band's count
+    /// owns up to (`docs/file-search.md`).
+    pub fn set_file_matches(&mut self, query: &str, matches: Vec<FileMatch>, truncated: bool) {
         // Compare against the *live* token so a result that raced the user's
         // typing is discarded (the loop also re-dispatches on every change).
         let active = at_token(self.input.text(), self.input.cursor()).map(|t| t.query);
@@ -97,6 +104,7 @@ impl App {
             fs.matches = matches;
             fs.query = query.to_string();
             fs.waiting = false;
+            fs.truncated = truncated;
         }
     }
 

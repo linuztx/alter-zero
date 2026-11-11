@@ -33,7 +33,7 @@ use std::thread::JoinHandle;
 
 use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
-use alter_zero::file_search::{FileMatch, rank_files};
+use alter_zero::file_search::{FileMatch, rank_files, sibling_order};
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
 
@@ -438,66 +438,133 @@ pub(crate) fn spawn_update_check(
     });
 }
 
-/// Max files the `@` picker's worker indexes — bounds each walk's memory/time
-/// (codex's nucleo walk is similarly capped).
+/// Max entries the `@` picker's worker indexes — bounds each walk's
+/// memory/time, and so how many matches the picker can ever hold, since
+/// every match goes back (codex's nucleo walk is similarly capped). A walk
+/// that reaches it says so, and the band's count owns up to it.
 const FILE_INDEX_CAP: usize = 10_000;
-/// Max ranked matches returned per query (the picker shows up to this many).
-const FILE_MENU_LIMIT: usize = 8;
 /// Directory names the walk skips, on top of every hidden (dotfile) entry.
 const FILE_WALK_DENYLIST: &[&str] = &["target", "node_modules"];
 
 /// A file-search result for the `@` picker: the `query` it answers (for the
-/// staleness guard in `App::set_file_matches`) and its ranked `matches`.
+/// staleness guard in `App::set_file_matches`), **every** match the walk
+/// found for it, ranked — what the picker scrolls through and counts — and
+/// whether that walk stopped at its cap.
 pub(crate) struct FileSearchResult {
     query: String,
     matches: Vec<FileMatch>,
+    truncated: bool,
+}
+
+/// What one walk of the workspace found: the relative paths, and whether it
+/// stopped at its cap with entries left unlisted.
+struct Walk {
+    paths: Vec<String>,
+    truncated: bool,
 }
 
 /// Walk `root` breadth-first collecting up to `cap` relative paths, skipping
 /// hidden entries (dotfiles — so `.git` too) and [`FILE_WALK_DENYLIST`]
-/// directories; directories are listed with a trailing `/`. Dependency-free (the
-/// agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
-fn walk_files(root: &Path, cap: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut queue = VecDeque::new();
-    queue.push_back(root.to_path_buf());
+/// directories; directories are listed with a trailing `/`. A walk is
+/// `truncated` only when an entry it would have listed is left out: it reads
+/// on past the cap until it meets one, so a tree that exactly fills the cap is
+/// complete. Breadth-first, so a cut drops the deepest entries. Dependency-free
+/// (the agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
+///
+/// Each path is built **once**, as its folder's path plus its name joined by
+/// `/`: one allocation per entry beside the name `read_dir` hands back, where
+/// a full path, a copy relative to the root and a copy with the folder's `/`
+/// appended each used to be allocated and thrown away. Joining by hand is
+/// also what keeps a name's own `\` — an ordinary character on Linux and
+/// macOS — rather than rewriting it into a separator. A folder's entries are
+/// gathered before any is listed, never more than the cap has room for (the
+/// one more that proves the walk short is noticed, not kept), so a huge last
+/// folder costs no more than the cap allows.
+fn walk_files(root: &Path, cap: usize) -> Walk {
+    let mut paths: Vec<String> = Vec::new();
+    // The folders still to read, each as the index of its own entry in
+    // `paths` — its path from the root, closing `/` included — or `None` for
+    // the root, so an entry's path is that text followed by its name.
+    let mut queue: VecDeque<Option<usize>> = VecDeque::from([None]);
+    // One folder's listable entries, gathered before any is listed: each
+    // one's path from the root and whether it is a folder.
+    let mut found: Vec<(String, bool)> = Vec::new();
     while let Some(dir) = queue.pop_front() {
-        if out.len() >= cap {
-            break;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let folder = dir.map_or("", |i| paths[i].as_str());
+        let Ok(entries) = std::fs::read_dir(root.join(folder)) else {
             continue;
         };
+        let mut more = false;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.starts_with('.') || FILE_WALK_DENYLIST.contains(&name.as_ref()) {
                 continue;
             }
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                out.push(format!("{rel}/"));
-                queue.push_back(path);
-            } else {
-                out.push(rel);
-            }
-            if out.len() >= cap {
+            if paths.len() + found.len() == cap {
+                more = true;
                 break;
             }
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            let mut path = String::with_capacity(folder.len() + name.len() + 1);
+            path.push_str(folder);
+            path.push_str(&name);
+            if is_dir {
+                path.push('/');
+            }
+            found.push((path, is_dir));
+        }
+        // In listing order, so the walk as a whole reads like a bare `@`'s
+        // list (`file_search::sibling_order`) and that list's sort finds
+        // nothing to move. Only a folder's own entries are compared here, by
+        // their names alone.
+        let start = folder.len();
+        found.sort_by(|(a, a_dir), (b, b_dir)| {
+            sibling_order(
+                own_name(a, start, *a_dir),
+                *a_dir,
+                own_name(b, start, *b_dir),
+                *b_dir,
+            )
+        });
+        for (path, is_dir) in found.drain(..) {
+            if is_dir {
+                queue.push_back(Some(paths.len()));
+            }
+            paths.push(path);
+        }
+        if more {
+            return Walk {
+                paths,
+                truncated: true,
+            };
         }
     }
-    out
+    Walk {
+        paths,
+        truncated: false,
+    }
+}
+
+/// An entry's own name inside a walked `path` whose folder's part is the
+/// first `start` bytes — a folder's closing `/` left off, as
+/// `FileMatch::name` leaves it off, so the walk's sort and the listing's
+/// compare the same text.
+fn own_name(path: &str, start: usize, is_dir: bool) -> &str {
+    let own = &path[start..];
+    if is_dir {
+        own.strip_suffix('/').unwrap_or(own)
+    } else {
+        own
+    }
 }
 
 /// Spawn the `@` file-search worker: a background thread that, for each query —
 /// coalescing any that queued while it worked (the debounce) — walks `root`
 /// **afresh** and ranks the result ([`rank_files`]), sending a
-/// [`FileSearchResult`] back. The walk is per-query (bounded by
+/// [`FileSearchResult`] back with every match in it, not just the first
+/// screenful: the picker scrolls through and counts them all, five rows at a
+/// time (`docs/file-search.md`). The walk is per-query (bounded by
 /// [`FILE_INDEX_CAP`]) rather than cached at startup, so a file the agent just
 /// created — or anything else new on disk — appears in the picker immediately;
 /// codex gets the same freshness by starting a new walk per `@`-token session.
@@ -516,10 +583,17 @@ pub(crate) fn spawn_file_search_worker(
             }
             // Walk fresh every time — a startup-cached list went stale the
             // moment the agent (or anyone) created a file, so `@` in a fresh
-            // dir only ever showed the boot-time contents.
-            let files = walk_files(&root, FILE_INDEX_CAP);
-            let matches = rank_files(&query, &files, FILE_MENU_LIMIT);
-            if res_tx.send(FileSearchResult { query, matches }).is_err() {
+            // dir only ever showed the boot-time contents. The walk's list
+            // moves into the ranking, so its paths are never copied, and
+            // every match comes back.
+            let walk = walk_files(&root, FILE_INDEX_CAP);
+            let matches = rank_files(&query, walk.paths);
+            let result = FileSearchResult {
+                query,
+                matches,
+                truncated: walk.truncated,
+            };
+            if res_tx.send(result).is_err() {
                 break; // the loop is gone
             }
         }
@@ -616,7 +690,8 @@ impl Session<'_> {
     /// (stale results — the token moved on — are dropped by `set_file_matches`),
     /// then repaint. See `docs/file-search.md`.
     pub(crate) fn on_file_matches(&mut self, result: FileSearchResult) {
-        self.app.set_file_matches(&result.query, result.matches);
+        self.app
+            .set_file_matches(&result.query, result.matches, result.truncated);
         self.frame.schedule_frame();
     }
 
@@ -673,4 +748,93 @@ pub(crate) fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
         .ok()?
         .into_dimensions()
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::walk_files;
+
+    /// A temp tree of four listable entries — two files at the top, a
+    /// directory holding a third — beside a hidden file and a denylisted
+    /// directory the walk never lists.
+    fn tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        for file in ["a.txt", "b.txt", ".hidden"] {
+            std::fs::write(root.join(file), "").expect("a file");
+        }
+        for sub in ["sub", "target"] {
+            std::fs::create_dir(root.join(sub)).expect("a dir");
+            std::fs::write(root.join(sub).join("inner.txt"), "").expect("a file");
+        }
+        dir
+    }
+
+    #[test]
+    fn the_walk_lists_the_workspace_and_says_it_saw_all_of_it() {
+        let dir = tree();
+        let walk = walk_files(dir.path(), 100);
+        let mut paths = walk.paths.clone();
+        paths.sort();
+        assert_eq!(paths, ["a.txt", "b.txt", "sub/", "sub/inner.txt"]);
+        assert!(!walk.truncated, "nothing was left out");
+    }
+
+    #[test]
+    fn the_walk_says_when_its_cap_left_entries_unlisted() {
+        // The picker counts what the walk found, so a walk cut short by its
+        // cap must say so — or the count would claim the whole workspace.
+        let dir = tree();
+        let exact = walk_files(dir.path(), 4);
+        assert_eq!(exact.paths.len(), 4);
+        assert!(!exact.truncated, "a cap the tree exactly fills cut nothing");
+        let short = walk_files(dir.path(), 3);
+        assert_eq!(short.paths.len(), 3);
+        assert!(short.truncated, "a fourth entry went unlisted");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_backslash_in_a_name_stays_part_of_the_name() {
+        // On Linux and macOS `\` is an ordinary character in a file name, so
+        // `a\b.txt` is one file at the top — listed as `a/b.txt`, it would
+        // show under a folder `a` that does not exist, and Enter would
+        // insert a path that names nothing.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("a\\b.txt"), "").expect("a file");
+        std::fs::create_dir(dir.path().join("x\\y")).expect("a dir");
+        std::fs::write(dir.path().join("x\\y").join("z.txt"), "").expect("a file");
+        let mut paths = walk_files(dir.path(), 100).paths;
+        paths.sort();
+        assert_eq!(paths, ["a\\b.txt", "x\\y/", "x\\y/z.txt"]);
+    }
+
+    #[test]
+    fn the_walk_reads_each_folder_into_listing_order() {
+        // Each folder's entries are sorted as they are read — folders first,
+        // names without regard to case — so the breadth-first walk comes out
+        // in exactly the order a bare `@` lists, whatever order the
+        // filesystem returned them in, and the listing's own sort finds
+        // nothing to move.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path();
+        for folder in ["c", "B", "Z", "c/X"] {
+            std::fs::create_dir(root.join(folder)).expect("a dir");
+        }
+        for file in ["b.txt", "A.txt", "a.md", "c/y.txt", "B/q", "c/X/w"] {
+            std::fs::write(root.join(file), "").expect("a file");
+        }
+        let walk = walk_files(root, 100);
+        assert_eq!(
+            walk.paths,
+            [
+                "B/", "c/", "Z/", "a.md", "A.txt", "b.txt", "B/q", "c/X/", "c/y.txt", "c/X/w",
+            ]
+        );
+        let listed: Vec<String> = alter_zero::file_search::rank_files("", walk.paths.clone())
+            .into_iter()
+            .map(|m| m.path)
+            .collect();
+        assert_eq!(listed, walk.paths, "the listing found nothing to move");
+    }
 }

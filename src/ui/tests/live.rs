@@ -1147,11 +1147,11 @@ fn every_band_and_terminal_size_keeps_the_composer() {
                                 .map(|i| crate::file_search::FileMatch {
                                     path: format!("src/module_{i}/main.rs"),
                                     score: 10,
-                                    indices: vec![0, 1, 2],
                                 })
                                 .collect(),
                             selected: 0,
                             waiting: false,
+                            truncated: false,
                         });
                     }
                     _ => {}

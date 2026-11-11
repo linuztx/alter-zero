@@ -131,10 +131,23 @@ release heading when a version is cut.
   palette never takes more than the eight rows it did before.
 
 - **The `$` skill picker lists five skills at a time, with a count.** It
-  showed up to eight. It now shows five, the rest a scroll away with ↑/↓,
-  over the same dim counter as the `/` palette, `(1/7)`, saying which skill
+  showed up to eight. It now shows five, the highlighted one kept in the
+  middle as ↑/↓ scroll through the rest, the way the `/` palette scrolls,
+  over the same dim counter as the palette, `(1/7)`, saying which skill
   is highlighted and how many match what you typed
   (`docs/skill-mentions.md`).
+
+- **The `@` file picker lists every matching file, five at a time, with a
+  count.** It showed the best eight matches and nothing past them, so ↑/↓
+  could never reach the ninth. It now keeps every file and folder that
+  matches what you typed, shows five at a time with the highlighted one kept
+  in the middle as ↑/↓ scroll, and counts them under the list, `(1/12)`, the
+  way the `/` palette and the `$` picker do. A bare `@` lists the whole
+  workspace the way a directory listing reads: the working directory's own
+  entries first, folders before files, then each level down. The search
+  still stops after 10,000 entries so a huge directory stays quick; when it
+  does, the count ends in `+`, as in `(1/10000+)`, to say the list is
+  partial (`docs/file-search.md`).
 
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
@@ -220,6 +233,13 @@ release heading when a version is cut.
   browse them.
 
 ### Fixed
+
+- **A file with a backslash in its name is offered under that name by
+  `@`.** On Linux and macOS `\` is an ordinary character in a file name,
+  but the `@` picker turned it into a folder separator, so `a\b.txt` was
+  listed as `b.txt` inside a folder `a` that does not exist, and choosing
+  it put a path that named nothing into your message
+  (`docs/file-search.md`).
 
 - **Models an OpenAI-compatible gateway discovered stay in `/model`.**
   OmniRoute lists a model it found upstream, such as a Codex model, under

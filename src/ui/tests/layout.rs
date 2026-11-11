@@ -920,30 +920,31 @@ fn size_sweep_apps() -> Vec<(&'static str, App)> {
         app
     };
     let file_picker = {
-        // An open `@` picker with match indices deep enough in a long
-        // mixed-width path that tiny widths truncate past them, so
-        // `file_menu_row`'s truncate + match-span grouping is swept too.
+        // An open `@` picker whose query matches characters deep enough in
+        // a long mixed-width path that tiny widths truncate past them, so
+        // `file_menu_row`'s truncate + match-span grouping is swept too. The
+        // band works out what to bold from the query, which matches the long
+        // path at bytes 0, 1, 2, 23, 26, 42, 52 and 57 — `s`, `r`, `c`, `世`,
+        // `界`, `🎉`, `a` and `l`, the last five past a narrow truncation —
+        // while the composer keeps a plain `@src`, as the sweep always had.
         let long = "src/some/deeply/nested/世界 with spaces/🎉emoji/averylongfilename.rs";
         let mut app = base();
         app.input = TextArea::from_text("@src");
         app.file_search = Some(FileSearch {
             selected: 0,
-            query: "src".into(),
+            query: "src世界🎉al".into(),
             matches: vec![
                 FileMatch {
                     path: "src/app.rs".into(),
                     score: 10,
-                    indices: vec![0, 1, 2],
                 },
                 FileMatch {
                     path: long.into(),
-                    // Byte offsets of `s`, `r`, `c`, `世`, `界`, `🎉`, `a`,
-                    // and `l` — the last five land past a narrow truncation.
                     score: 5,
-                    indices: vec![0, 1, 2, 23, 26, 42, 52, 57],
                 },
             ],
             waiting: false,
+            truncated: false,
         });
         app
     };

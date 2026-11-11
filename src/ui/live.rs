@@ -1002,7 +1002,7 @@ pub fn render_live_with_preview(
             band_area.height,
         ))
         .render(band_area, buf);
-    } else if file_menu_rows(app) > 0 {
+    } else if file_menu_rows(app, area.width) > 0 {
         Paragraph::new(file_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if skill_menu_rows(app, area.width) > 0 {
         Paragraph::new(skill_menu_lines(app, band_area.width)).render(band_area, buf);

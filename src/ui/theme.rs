@@ -2692,18 +2692,25 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // the cursor — a port of codex's file-search popup. Each row is columned —
 // `→ name  parent/  …  File|Dir` — reusing the palette's `→` marker and its
 // cyan-selected / dim-unselected colours, additionally **bolding the
-// characters the query matched** (from `FileMatch.indices`). See
-// docs/file-search.md. ---
+// characters the query matched** (worked out for the rows drawn), over the
+// palette's dim `(n/total)` counter. See docs/file-search.md. ---
 
-/// The most file rows shown at once; longer match lists scroll to keep the
-/// selection visible (`menu_window`, which pins it to the edge it crossed).
-pub(super) const FILE_MENU_MAX_ROWS: u16 = 8;
+/// The most file rows shown at once — the `/` palette's five, as in the `$`
+/// picker; the rest of the matches (every one the search found) scroll under
+/// a highlight kept on the middle row (`centered_window`), and the
+/// `(n/total)` counter under them is a row of its own.
+pub(super) const FILE_MENU_MAX_ROWS: u16 = 5;
 
 /// The picker's single placeholder row while a search is in flight.
 pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";
 
 /// The picker's single placeholder row when the query matched nothing.
 pub(super) const FILE_MENU_NO_MATCH: &str = "No matching files";
+
+/// Closes the `(n/total)` counter's total when the walk stopped at its cap
+/// — `(1/10000+)` — since the list it counts is then only part of the
+/// workspace, and the total a floor.
+pub(super) const FILE_MENU_PARTIAL_MARK: &str = "+";
 
 /// Gap between the name column and the parent-dir column (the name column is
 /// the widest visible name plus this).
@@ -2731,9 +2738,9 @@ pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 // docs/skill-mentions.md. ---
 
 /// The most skill rows shown at once — the `/` palette's five, a row each,
-/// since a description is `…`-cut rather than wrapped; longer lists scroll to
-/// keep the selection visible (`menu_window`), like the file picker, and the
-/// `(n/total)` counter under them is a row of its own.
+/// since a description is `…`-cut rather than wrapped; longer lists scroll
+/// under a highlight kept on the middle row (`centered_window`, the palette's
+/// window), and the `(n/total)` counter under them is a row of its own.
 pub(super) const SKILL_MENU_MAX_ROWS: u16 = 5;
 
 /// The band's single placeholder row when the query matched no skill.
