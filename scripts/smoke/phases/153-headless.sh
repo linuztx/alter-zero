@@ -13,7 +13,9 @@ smoke_begin
 # alternate screen, no hidden cursor, no bracketed paste, no synchronized
 # update. The pane outlives the run so its last lines can be read. Then the
 # two flags `-p` shares with the TUI, on the TUI: `--permission-mode` and
-# `-C` show in its footer.
+# `-C` show in its footer. Last, the TUI launched where its terminal can
+# never answer says so and names `-p`, instead of ending on the io::Error's
+# Debug form.
 S153="${S}_headless"
 HL_WORK="$(work_dir headless)"
 HL_RAW="$SMOKE_TMP/raw153.txt"
@@ -40,6 +42,22 @@ dump "the TUI under --permission-mode master -C ~/headless" "$hl_tui"
 keys "$S153T" C-c
 tmux kill-session -t "$S153T" 2>/dev/null
 
+# Without `-p` the interface needs its terminal to answer the cursor query.
+# With stdout sent to /dev/null the query never reaches the pane, so the
+# launch fails (docs/headless.md *Why it was missing*): exit 1, the cause and
+# `-p` on stderr, never the Debug form of the error, and the pane's modes as
+# they were — init unwinds raw mode before it returns.
+S153N="${S}_headlessnotty"
+HL_NT_ERR="$SMOKE_TMP/notty153.txt"
+tmux new-session -d -s "$S153N" -c "$HL_WORK" -x 100 -y 40 \
+	"before=\$(stty -g); $HL_APP \"$USER_MSG\" >/dev/null 2>$HL_NT_ERR </dev/null; code=\$?; after=\$(stty -g); \
+	if [ \"\$before\" = \"\$after\" ]; then echo NT_TTY_KEPT; else echo NT_TTY_CHANGED; fi; \
+	echo NT_EXIT=\$code; sleep 60"
+hl_nt="$(wait_pane 30 "$S153N" -F "NT_EXIT=")" || fail "the launch with no answering terminal never exited"
+tmux kill-session -t "$S153N" 2>/dev/null
+hl_nt_err="$(cat "$HL_NT_ERR")"
+dump "alter-zero \"$USER_MSG\" with stdout away from the pane (stderr)" "$hl_nt_err"
+
 expect_has "$hl_tui" -E "~/headless +master" "the footer does not show -C's directory beside --permission-mode's mode"
 expect_has "$hl_pane" -F "HL_EXIT=0" "the headless run did not exit 0"
 expect_has "$hl_pane" -F "HL_TTY_KEPT" "the headless run left the terminal's modes changed"
@@ -52,5 +70,10 @@ for hl_esc in '[6n' '[?1049h' '[?25l' '[?2004h' '[?2026h'; do
 		fail "the headless run wrote the terminal escape ESC$hl_esc"
 	fi
 done
+expect_has "$hl_nt" -F "NT_EXIT=1" "a launch whose terminal never answered did not exit 1"
+expect_has "$hl_nt" -F "NT_TTY_KEPT" "a launch whose terminal never answered left the pane's modes changed"
+expect_has "$hl_nt_err" -F "could not start the interface" "a launch with no answering terminal did not say why it stopped"
+expect_has "$hl_nt_err" -F " -p \"your prompt\"" "a launch with no answering terminal did not name print mode"
+expect_lacks "$hl_nt_err" -F "Os {" "a launch with no answering terminal printed the error's Debug form"
 
 smoke_finish

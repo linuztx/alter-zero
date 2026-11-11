@@ -278,6 +278,12 @@ page's grammar errors take the same shape over its six usage lines. Exit
   TUI flags; its argv is `__alter-zero-detached-exec {cmd}`), and the CLI
   work touches no terminal state, so `--help`/errors print to a normal
   cooked-mode stdio and exit before the tokio runtime boots.
+- **An interface that cannot start says what to do instead.** When
+  `InlineViewport::init` fails — no terminal to open (cron, CI, a pipe), or
+  one that never answers the cursor query — `tui_main` prints
+  `cli::no_terminal_error` to stderr (the cause, then `{bin} -p "your
+  prompt"`) and exits 1, where it used to end on the `io::Error`'s Debug
+  form. `init` unwinds the modes it set before it returns the error.
 - **Flags resolve to a `Startup` before `InlineViewport::init`** —
   `Startup { session: Option<StartupSession>, prompt: Option<String> }`,
   fail fast, no TUI flash:

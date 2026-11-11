@@ -1051,6 +1051,26 @@ pub fn resume_hint(bin: &str, session_id: &str) -> String {
     format!("Resume this session with:\n{bin} --resume {session_id}")
 }
 
+/// What a launch of the interface prints when it cannot start: no terminal
+/// to open (cron, CI, a pipe), or one that never answered the cursor query
+/// (`docs/headless.md`). The cause verbatim, then print mode, which needs no
+/// terminal — named, never switched to: a run in which nobody can approve
+/// anything is the caller's choice to make.
+///
+/// ```text
+/// error: could not start the interface: No such device or address (os error 6)
+/// It needs a terminal; to run without one (cron, CI, a script), use print mode:
+/// alter-zero -p "your prompt"
+/// ```
+#[must_use]
+pub fn no_terminal_error(bin: &str, cause: &str) -> String {
+    format!(
+        "error: could not start the interface: {cause}\n\
+         It needs a terminal; to run without one (cron, CI, a script), use print mode:\n\
+         {bin} -p \"your prompt\""
+    )
+}
+
 /// The program name the hint prints — how the user actually invoked us
 /// (`argv[0]`'s basename, so a renamed or symlinked install echoes the name
 /// that was actually run), falling back to the canonical `alter-zero` when
@@ -1504,6 +1524,20 @@ mod tests {
         assert_eq!(
             resume_hint("alter-zero", "18a9f2c3-1a2b"),
             "Resume this session with:\nalter-zero --resume 18a9f2c3-1a2b",
+        );
+    }
+
+    #[test]
+    fn no_terminal_error_names_the_cause_and_the_mode_that_needs_none() {
+        // The interactive launch with no terminal behind it (cron, CI, a
+        // pipe) used to end on main's Debug print of the io::Error. The
+        // cause stays verbatim, then the way to run without a terminal, its
+        // command alone on the last line like the resume hint's.
+        assert_eq!(
+            no_terminal_error("az", "No such device or address (os error 6)"),
+            "error: could not start the interface: No such device or address (os error 6)\n\
+             It needs a terminal; to run without one (cron, CI, a script), use print mode:\n\
+             az -p \"your prompt\"",
         );
     }
 

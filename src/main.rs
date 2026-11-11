@@ -65,7 +65,20 @@ async fn headless_main(startup: Startup) -> i32 {
 
 #[tokio::main(flavor = "current_thread")]
 async fn tui_main(startup: Startup) -> io::Result<()> {
-    let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
+    // No terminal behind us (cron, CI, a pipe), or one that never answered
+    // the cursor query: say so and name print mode rather than end on the
+    // io::Error's Debug form. init unwinds the modes it set before it fails.
+    let mut term = match InlineViewport::init(ui::LIVE_MIN_HEIGHT) {
+        Ok(term) => term,
+        Err(err) => {
+            let arg0 = std::env::args().next();
+            eprintln!(
+                "{}",
+                cli::no_terminal_error(&cli::bin_name(arg0.as_deref()), &err.to_string())
+            );
+            std::process::exit(1);
+        }
+    };
     let result = tui::event_loop::run(&mut term, startup).await;
     // Always restore the terminal (raw mode off, cursor below the box), even if
     // the loop bailed out with an I/O error — then surface the first error.

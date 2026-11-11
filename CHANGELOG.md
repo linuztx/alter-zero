@@ -30,7 +30,9 @@ release heading when a version is cut.
   working directory, and `-c`/`--resume` continue a conversation, so a
   nightly job can keep one session going. The config, providers, skills,
   agents, hooks and MCP servers are the same ones the interactive app uses
-  (`docs/headless.md`).
+  (`docs/headless.md`). Launched without `-p` where there is no terminal,
+  the app now says it needs one and names `-p` instead of ending on
+  `Error: Os { code: 6, … }`.
 
 - **A provider of your own can take the thinking level as
   `reasoning_effort`.** Ctrl+T's level rides every chat request in

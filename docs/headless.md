@@ -28,6 +28,19 @@ has the same flaw on its own: constructing one opens the controlling
 terminal eagerly, so even a session that never read a key could not exist
 without a tty.
 
+The interactive launch still needs that terminal, but it no longer dies on
+the error's Debug form (`Error: Os { code: 6, … }`): when
+`InlineViewport::init` fails, `main` prints the cause and names print mode
+(`cli::no_terminal_error`), then exits 1. It never switches to `-p` on its
+own — a run in which nobody can approve anything is the caller's choice.
+`init` has already unwound the modes it set by then.
+
+```text
+error: could not start the interface: No such device or address (os error 6)
+It needs a terminal; to run without one (cron, CI, a script), use print mode:
+alter-zero -p "your prompt"
+```
+
 ## What the references do (findings)
 
 - **Claude Code** — `claude -p "query"`: the same session, printed instead
