@@ -265,6 +265,18 @@ entries in no promised order, and a merely partial order would let the same
 files reshuffle between two keystrokes. A typed query is ranked exactly as
 before (score, then shorter path, then the path).
 
+The listing order costs more to sort than shortest-first did, and it runs on
+every bare `@`. Over a 10,000-entry walk of `/usr` the sort takes about
+22 ms against 6 ms. It was 55 ms before two shortcuts that change no
+order: siblings, whose parents are spelled byte for byte the same, skip the
+component walk, and two plain-ASCII names fold a byte at a time instead of
+through `char`'s Unicode tables (`the_bare_listing_folds_case_beyond_ascii_too`
+pins the non-ASCII case). Keypress to list on screen, a bare `@` there takes
+about 47 ms against 29 ms; in a project the size of this repository (890
+entries) the two are within 2 ms. Measured with a throwaway integration test
+timing `rank_files("", walk)` on the same walk, and with tmux polling for the
+counter after typing `@`.
+
 ### A capped walk says so
 
 The walk stops at `FILE_INDEX_CAP` (10,000 entries), breadth-first, so a

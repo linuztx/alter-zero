@@ -195,6 +195,12 @@ pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
 /// order is total: the filesystem hands back a directory's entries in no
 /// promised order, and the list must not reshuffle between two keystrokes
 /// over the same files. See `docs/file-search.md`.
+///
+/// It runs for every comparison of a sort over up to `FILE_INDEX_CAP`
+/// entries, so the common cases are cheap: siblings share a parent spelled
+/// byte for byte the same, which skips the component walk, and a name in
+/// plain ASCII folds a byte at a time rather than through `char`'s Unicode
+/// tables.
 fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
     let (a_parent, b_parent) = (a.parent(), b.parent());
     a_parent
@@ -202,6 +208,9 @@ fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
         .count()
         .cmp(&b_parent.matches('/').count())
         .then_with(|| {
+            if a_parent == b_parent {
+                return Ordering::Equal;
+            }
             // Equal depths split into equally many components.
             a_parent
                 .split('/')
@@ -216,11 +225,19 @@ fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
 
 /// Two names compared case-insensitively, the exact spelling breaking a tie
 /// — `a.txt`, `B.txt`, `b.txt` — so no two different names compare equal.
+/// Two ASCII names fold byte by byte, which is what `char::to_lowercase`
+/// does to ASCII anyway.
 fn name_order(a: &str, b: &str) -> Ordering {
-    a.chars()
-        .flat_map(char::to_lowercase)
-        .cmp(b.chars().flat_map(char::to_lowercase))
-        .then_with(|| a.cmp(b))
+    let folded = if a.is_ascii() && b.is_ascii() {
+        a.bytes()
+            .map(|c| c.to_ascii_lowercase())
+            .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+    } else {
+        a.chars()
+            .flat_map(char::to_lowercase)
+            .cmp(b.chars().flat_map(char::to_lowercase))
+    };
+    folded.then_with(|| a.cmp(b))
 }
 
 #[cfg(test)]
@@ -440,6 +457,19 @@ mod tests {
         assert_eq!(
             forward,
             ["Dir/", "dir/", "a.txt", "B.txt", "b.txt", "Dir/x", "dir/x"]
+        );
+    }
+
+    #[test]
+    fn the_bare_listing_folds_case_beyond_ascii_too() {
+        // A name outside ASCII folds its case like any other — `Éclair` and
+        // `éclair` tie and fall to the spelling — and sorts by code point
+        // after the folding, so `é` comes after `z`, however a pair mixes
+        // ASCII names with the rest.
+        let walked = ["éclair.txt", "Zed.txt", "Éclair.txt", "eclair.txt"];
+        assert_eq!(
+            listed(&walked),
+            ["eclair.txt", "Zed.txt", "Éclair.txt", "éclair.txt"]
         );
     }
 }
