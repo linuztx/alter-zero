@@ -74,6 +74,11 @@ pub(crate) fn spawn_shell_command(
                     output: refusal,
                     ok: false,
                     truncated: false,
+                    // Nothing ran: the command named a secret that is not
+                    // stored (docs/rollout-records.md).
+                    run: alter_zero::stream::ToolRun::refused(
+                        alter_zero::stream::ToolErrorKind::ToolError,
+                    ),
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -91,6 +96,9 @@ pub(crate) fn spawn_shell_command(
                     output: format!("failed to run command: {err}"),
                     ok: false,
                     truncated: false,
+                    run: alter_zero::stream::ToolRun::refused(
+                        alter_zero::stream::ToolErrorKind::ToolError,
+                    ),
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -113,6 +121,10 @@ pub(crate) fn spawn_shell_command(
         }
         drop(chunk_tx);
 
+        // The command's runtime, from its spawn to its exit — what the
+        // rollout's `tool` line records (docs/rollout-records.md).
+        let started = std::time::Instant::now();
+        let ran_for = || Some(alter_zero::stream::ToolRun::millis(started.elapsed()));
         let mut combined: Vec<u8> = Vec::new();
         let mut truncated = false;
         // Wait for the child, polling so an Esc interrupt (cancel) or a Ctrl+B
@@ -141,6 +153,10 @@ pub(crate) fn spawn_shell_command(
                     id: task.id.clone(),
                     output: "[moved to background; the final output will follow when it completes]"
                         .to_string(),
+                    run: alter_zero::stream::ToolRun {
+                        duration_ms: ran_for(),
+                        ..alter_zero::stream::ToolRun::default()
+                    },
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -160,6 +176,12 @@ pub(crate) fn spawn_shell_command(
                         output: format!("error waiting on command: {err}"),
                         ok: false,
                         truncated: false,
+                        run: alter_zero::stream::ToolRun {
+                            duration_ms: ran_for(),
+                            ..alter_zero::stream::ToolRun::refused(
+                                alter_zero::stream::ToolErrorKind::ToolError,
+                            )
+                        },
                     });
                     let _ = tx.send(StreamEvent::StreamDone);
                     return;
@@ -208,6 +230,11 @@ pub(crate) fn spawn_shell_command(
             output,
             ok,
             truncated,
+            run: alter_zero::stream::ToolRun {
+                exit_code: status.code(),
+                duration_ms: ran_for(),
+                error_kind: (!ok).then_some(alter_zero::stream::ToolErrorKind::ToolError),
+            },
         });
         let _ = tx.send(StreamEvent::StreamDone);
     })

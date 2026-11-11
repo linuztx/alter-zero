@@ -235,6 +235,8 @@ pub fn approve_call(
             return Approval::Reject {
                 display: refusal.clone(),
                 result: refusal,
+                // The call itself is malformed for this session.
+                kind: crate::stream::ToolErrorKind::ToolError,
             };
         }
         Some(Ok(expanded)) => expanded,
@@ -284,7 +286,11 @@ pub fn approve_call(
     match hooks.permission_request(call, cancel) {
         Some(HookPermissionVerdict::Allow { note }) => return Approval::AllowNoted { note },
         Some(HookPermissionVerdict::Deny { display, result }) => {
-            return Approval::Reject { display, result };
+            return Approval::Reject {
+                display,
+                result,
+                kind: crate::stream::ToolErrorKind::HookBlocked,
+            };
         }
         None => {}
     }
@@ -314,6 +320,7 @@ pub fn approve_call(
                 return Approval::Reject {
                     display: classifier_denied_display(reason),
                     result: classifier_denial_result(reason),
+                    kind: crate::stream::ToolErrorKind::ClassifierDenied,
                 };
             }
             // An Esc mid-classification resolves like a reaped gate wait —
@@ -322,6 +329,7 @@ pub fn approve_call(
                 return Approval::Reject {
                     display: CANCELLED_DISPLAY.to_string(),
                     result: denial_result(None),
+                    kind: crate::stream::ToolErrorKind::Interrupted,
                 };
             }
             // The classifier failed (network, an unparseable reply): fall
@@ -354,6 +362,7 @@ pub fn approve_call(
         return Approval::Reject {
             display: display.to_string(),
             result: result.to_string(),
+            kind: crate::stream::ToolErrorKind::Unattended,
         };
     }
     request.id = gate.next_id();
@@ -382,10 +391,12 @@ pub fn approve_call(
         Some(PermissionDecision::Deny(feedback)) => Approval::Reject {
             display: denied_display(&request, feedback.as_deref()),
             result: denial_result(feedback.as_deref()),
+            kind: crate::stream::ToolErrorKind::Rejected,
         },
         Some(PermissionDecision::Explain) => Approval::Reject {
             display: explain_display(),
             result: explain_result(&request),
+            kind: crate::stream::ToolErrorKind::Rejected,
         },
         // The cancel that reaps a waiting thread (Esc, `/clear`, quit)
         // resolves the same way: nothing runs. The turn is being torn down, so
@@ -393,6 +404,7 @@ pub fn approve_call(
         None => Approval::Reject {
             display: CANCELLED_DISPLAY.to_string(),
             result: denial_result(None),
+            kind: crate::stream::ToolErrorKind::Interrupted,
         },
     }
 }
@@ -927,9 +939,16 @@ mod tests {
             &request.id,
             PermissionDecision::Deny(Some("use pathlib".to_string())),
         );
-        let Approval::Reject { display, result } = waiter.join().unwrap() else {
+        let Approval::Reject {
+            display,
+            result,
+            kind,
+        } = waiter.join().unwrap()
+        else {
             panic!("expected a rejection");
         };
+        // The user said no (docs/rollout-records.md).
+        assert_eq!(kind, crate::stream::ToolErrorKind::Rejected);
         // Tab's typed instructions ride both texts: the cell's second line
         // (the transcript's only record of them) and the model's tool result.
         assert_eq!(
@@ -1082,6 +1101,8 @@ mod tests {
         Approval::Reject {
             display: UNATTENDED_DISPLAY.to_string(),
             result: UNATTENDED_RESULT.to_string(),
+            // Nobody was there to ask (docs/rollout-records.md).
+            kind: crate::stream::ToolErrorKind::Unattended,
         }
     }
 
@@ -1156,6 +1177,7 @@ mod tests {
                 Approval::Reject {
                     display: display.to_string(),
                     result: result.to_string(),
+                    kind: crate::stream::ToolErrorKind::Unattended,
                 },
                 false,
             )
@@ -1422,9 +1444,15 @@ mod tests {
             &call("bash", r#"{"command":"sudo rm -rf /"}"#),
             None,
         );
-        let Approval::Reject { display, result } = approval else {
+        let Approval::Reject {
+            display,
+            result,
+            kind,
+        } = approval
+        else {
             panic!("a denied command must not run: {approval:?}");
         };
+        assert_eq!(kind, crate::stream::ToolErrorKind::ClassifierDenied);
         assert_eq!(
             display,
             "Denied by auto mode classifier\nReason: privilege escalation"
@@ -1849,9 +1877,15 @@ mod tests {
             })
         };
         let approval = wait_bounded(waiter, &gate, &mut rx);
-        let Approval::Reject { display, result } = approval else {
+        let Approval::Reject {
+            display,
+            result,
+            kind,
+        } = approval
+        else {
             panic!("a denied MCP call must not run: {approval:?}");
         };
+        assert_eq!(kind, crate::stream::ToolErrorKind::ClassifierDenied);
         assert_eq!(
             display,
             "Denied by auto mode classifier\nReason: sends data to an external service"
@@ -2153,9 +2187,16 @@ mod tests {
                 &call(name, arguments),
                 Some(&secrets),
             );
-            let Approval::Reject { display, result } = approval else {
+            let Approval::Reject {
+                display,
+                result,
+                kind,
+            } = approval
+            else {
                 panic!("{name}: {approval:?}");
             };
+            // A placeholder naming nothing stored: the call is malformed.
+            assert_eq!(kind, crate::stream::ToolErrorKind::ToolError, "{name}");
             assert!(
                 display.starts_with("Not run: <secret:TOKN> is not a stored secret."),
                 "{display}"

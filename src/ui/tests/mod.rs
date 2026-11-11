@@ -213,6 +213,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -279,6 +280,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         batch: None,
         call_id: None,
         position: None,
+        run: crate::stream::ToolRun::default(),
     }
 }
 

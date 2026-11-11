@@ -188,11 +188,13 @@ impl Stage<'_> {
                         display: output,
                         result: result.clone(),
                         truncated: false,
+                        run: crate::stream::ToolRun::default(),
                     }),
                     _ => self.tx.send(StreamEvent::ToolEnd {
                         output,
                         ok,
                         truncated: false,
+                        run: crate::stream::ToolRun::default(),
                     }),
                 };
             }
@@ -201,6 +203,7 @@ impl Stage<'_> {
                     display,
                     result,
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 });
             }
         }
@@ -335,6 +338,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
                 truncated: false,
                 display: outcome.output,
                 result,
+                run: crate::stream::ToolRun::default(),
             });
         }
         Some(result) => {
@@ -342,6 +346,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
                 truncated: false,
                 display: outcome.output,
                 result,
+                run: crate::stream::ToolRun::default(),
             });
         }
         // An argument failure can't happen (the script is valid); resolve
@@ -351,6 +356,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
                 output: outcome.output,
                 ok: outcome.ok,
                 truncated: false,
+                run: crate::stream::ToolRun::default(),
             });
         }
     }

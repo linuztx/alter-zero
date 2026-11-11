@@ -667,6 +667,7 @@ impl AgentRun {
                         batch: None,
                         call_id: None,
                         position: None,
+                        run: crate::stream::ToolRun::default(),
                     });
                 }
                 // Each queued `Write` takes the draft it streamed
@@ -728,6 +729,7 @@ impl AgentRun {
                             batch: None,
                             call_id: None,
                             position: None,
+                            run: crate::stream::ToolRun::default(),
                         });
                     }
                 }
@@ -773,6 +775,7 @@ impl AgentRun {
                 output,
                 ok,
                 truncated,
+                run,
             } => {
                 self.tokens += crate::app::count_tokens(output) as u64;
                 if let Some(mut front) = self.pop_front_call() {
@@ -783,6 +786,9 @@ impl AgentRun {
                     };
                     front.output = output.clone();
                     front.truncated = *truncated;
+                    // How it ran, on every resolution, as the main session
+                    // keeps it (docs/rollout-records.md).
+                    front.run = *run;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -795,6 +801,7 @@ impl AgentRun {
                 display,
                 result,
                 truncated,
+                run,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.pop_front_call() {
@@ -805,6 +812,7 @@ impl AgentRun {
                     // (`tui::stream`), so the expanded cell appends its dim
                     // `…` marker here too.
                     front.truncated = *truncated;
+                    front.run = *run;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -812,7 +820,7 @@ impl AgentRun {
             // the shared registry, attributed via `BgOrigin`): resolve the
             // front call as backgrounded — the shell itself lives on the
             // shared list (`docs/background.md`).
-            StreamEvent::ToolBackgrounded { output, .. } => {
+            StreamEvent::ToolBackgrounded { output, run, .. } => {
                 // The launch acknowledgement is text the model reads, so it
                 // is charged like every other resolution's — the main
                 // session's `resolve_front_tool` charges it too.
@@ -820,6 +828,7 @@ impl AgentRun {
                 if let Some(mut front) = self.pop_front_call() {
                     front.status = ToolStatus::Backgrounded;
                     front.output = output.clone();
+                    front.run = *run;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -911,6 +920,7 @@ impl AgentRun {
                 display,
                 result,
                 truncated,
+                run,
             } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.pop_front_call() {
@@ -918,6 +928,7 @@ impl AgentRun {
                     front.output = display.clone();
                     front.context_output = Some(result.clone());
                     front.truncated = *truncated;
+                    front.run = *run;
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -954,6 +965,7 @@ impl AgentRun {
                     batch: None,
                     call_id: None,
                     position: None,
+                    run: crate::stream::ToolRun::default(),
                 }));
             }
             // A permission request is the *user's* business, not the roster's:
@@ -3325,6 +3337,70 @@ mod tests {
     }
 
     #[test]
+    fn apply_keeps_how_each_of_a_subagents_calls_ran() {
+        // The main session's rule (docs/rollout-records.md): whichever event
+        // resolves the call, its record keeps the facts it carried.
+        use crate::stream::{ToolErrorKind, ToolRun};
+        let ran = ToolRun {
+            exit_code: Some(2),
+            duration_ms: Some(31),
+            error_kind: Some(ToolErrorKind::ToolError),
+        };
+        let resolutions = [
+            StreamEvent::ToolEnd {
+                output: "Exit code: 2".into(),
+                ok: false,
+                truncated: false,
+                run: ran,
+            },
+            StreamEvent::ToolRejected {
+                display: "User rejected write to a.py".into(),
+                result: "denied".into(),
+                truncated: false,
+                run: ToolRun::refused(ToolErrorKind::Rejected),
+            },
+            StreamEvent::ToolAnswered {
+                display: "Wrote 1 line to a.py".into(),
+                result: "File created".into(),
+                truncated: false,
+                run: ToolRun {
+                    duration_ms: Some(4),
+                    ..ToolRun::default()
+                },
+            },
+            StreamEvent::ToolBackgrounded {
+                id: "bash_1".into(),
+                output: "started".into(),
+                run: ToolRun {
+                    duration_ms: Some(9),
+                    ..ToolRun::default()
+                },
+            },
+        ];
+        for resolution in resolutions {
+            let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+            run.apply(&StreamEvent::ToolStart {
+                name: "Bash".to_string(),
+                args: "ls".to_string(),
+                detail: None,
+                arguments: None,
+            });
+            run.apply(&resolution);
+            let HistoryItem::Tool(tool) = run.history.last().expect("the call recorded") else {
+                panic!("a tool call lands in the transcript");
+            };
+            let (StreamEvent::ToolEnd { run: carried, .. }
+            | StreamEvent::ToolRejected { run: carried, .. }
+            | StreamEvent::ToolAnswered { run: carried, .. }
+            | StreamEvent::ToolBackgrounded { run: carried, .. }) = resolution
+            else {
+                unreachable!()
+            };
+            assert_eq!(tool.run, carried, "{resolution:?}");
+        }
+    }
+
+    #[test]
     fn apply_keeps_the_classifier_note_on_the_resolved_call() {
         // A subagent's command allowed by the auto mode classifier
         // (docs/permissions.md): the ToolNote lands on the running front and
@@ -3344,6 +3420,7 @@ mod tests {
             output: "Exit code: 0\ntotal 40".to_string(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         let HistoryItem::Tool(tool) = run.history.last().expect("the call recorded") else {
             panic!("a tool call lands in the transcript");
@@ -3373,6 +3450,7 @@ mod tests {
             output: "Exit code: 0\ntotal 40".to_string(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         let HistoryItem::Tool(tool) = run.history.last().expect("the call recorded") else {
             panic!("a tool call lands in the transcript");
@@ -3446,6 +3524,7 @@ mod tests {
             output: "+19°C".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         }));
         // The pre-tool text flushed as its own message, the tool follows it.
         assert!(matches!(
@@ -3591,6 +3670,7 @@ mod tests {
             output: "[…]".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         assert_eq!(
             run.activity(),
@@ -3779,6 +3859,7 @@ mod tests {
             output: "a.rs".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         run.apply(&chunk("Only a.rs is here."));
         run.apply(&StreamEvent::Steered {
@@ -3825,6 +3906,7 @@ mod tests {
             display: "User rejected write to hello.py\nInstructions: use pathlib".into(),
             result: "The user doesn't want to proceed… instructions instead: use pathlib".into(),
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         }));
         let Some(HistoryItem::Tool(tool)) = run.history.last() else {
             panic!("the refused call still lands on the transcript");
@@ -4095,6 +4177,7 @@ mod tests {
             display: "Wrote 1 line to a.py\n1 A".to_string(),
             result: "File created successfully at: a.py".to_string(),
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         assert!(run.drafts().is_empty(), "the resolved call took its draft");
     }
@@ -4563,6 +4646,7 @@ mod tests {
                     output: "out".to_string(),
                     ok: true,
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4571,6 +4655,7 @@ mod tests {
                     display: "Wrote 1 lines to f.py".to_string(),
                     result: "File created successfully at: f.py".to_string(),
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4579,6 +4664,7 @@ mod tests {
                     display: "User rejected write to f.py".to_string(),
                     result: "the user refused".to_string(),
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4586,6 +4672,7 @@ mod tests {
                 StreamEvent::ToolBackgrounded {
                     id: "b1".to_string(),
                     output: "Running in the background".to_string(),
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
         ];
@@ -4683,6 +4770,7 @@ mod tests {
                     output: "out".to_string(),
                     ok: true,
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4691,6 +4779,7 @@ mod tests {
                     display: "no".to_string(),
                     result: "refused".to_string(),
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4699,6 +4788,7 @@ mod tests {
                     display: "done".to_string(),
                     result: "ack".to_string(),
                     truncated: false,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4706,6 +4796,7 @@ mod tests {
                 StreamEvent::ToolBackgrounded {
                     id: "b1".to_string(),
                     output: "backgrounded".to_string(),
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             ("StreamDone", StreamEvent::StreamDone),
@@ -4747,6 +4838,7 @@ mod tests {
             output: "Exit code: 0".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
@@ -4793,6 +4885,7 @@ mod tests {
             output: "Exit code: 0".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         });
         run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
@@ -4958,6 +5051,7 @@ mod tests {
                     output: "out".to_string(),
                     ok: true,
                     truncated: true,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4966,6 +5060,7 @@ mod tests {
                     display: "no".to_string(),
                     result: "refused".to_string(),
                     truncated: true,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
             (
@@ -4974,6 +5069,7 @@ mod tests {
                     display: "done".to_string(),
                     result: "ack".to_string(),
                     truncated: true,
+                    run: crate::stream::ToolRun::default(),
                 },
             ),
         ];
@@ -5005,6 +5101,7 @@ mod tests {
         run.apply(&StreamEvent::ToolBackgrounded {
             id: "b1".to_string(),
             output: "Command running in the background with id b1".to_string(),
+            run: crate::stream::ToolRun::default(),
         });
         assert!(
             run.tokens > before,
@@ -6469,6 +6566,7 @@ mod tests {
             output: "{}".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         };
         let mut recorder = RunRecorder::new(registry.clone(), id.clone());
         for event in [

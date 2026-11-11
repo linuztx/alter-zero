@@ -445,7 +445,10 @@ impl App {
         };
         // The running call and every `⎿ Waiting…` sibling behind it: none of
         // them will ever get its ToolEnd now (docs/interrupt.md).
-        let tools = self.fail_live_queue(ERROR_TOOL_OUTPUT);
+        let tools = self.fail_live_queue(
+            ERROR_TOOL_OUTPUT,
+            crate::stream::ToolErrorKind::BackendError,
+        );
         // A live agent group dies with the turn — resolve it locally (the
         // channel swap drops the backend's own AgentGroupDone); the loop
         // kills its subagents and commits the tree cell. See
@@ -685,7 +688,10 @@ impl App {
         // and is recorded: the cells stay on screen, and the next request
         // replays the whole round, so the model keeps every call it made
         // (docs/interrupt.md).
-        let tools = self.fail_live_queue(INTERRUPT_TOOL_OUTPUT);
+        let tools = self.fail_live_queue(
+            INTERRUPT_TOOL_OUTPUT,
+            crate::stream::ToolErrorKind::Interrupted,
+        );
         // A live agent group is stopped with the turn: settle its members as
         // interrupted and record the tree cell — the loop kills the
         // subagent threads via the registry (docs/agent-tool.md).

@@ -512,7 +512,10 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
     };
     gate.resolve(&request.id, decision);
 
-    let crate::permission::Approval::Reject { display, result } = waiter.join().unwrap() else {
+    let crate::permission::Approval::Reject {
+        display, result, ..
+    } = waiter.join().unwrap()
+    else {
         panic!("an amended answer is a rejection");
     };
     // …and the loop folds the backend's events into the app.

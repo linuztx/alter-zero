@@ -829,6 +829,7 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
             output: "+19°C".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
     ] {
         app.apply_agent_event("a1", &event);

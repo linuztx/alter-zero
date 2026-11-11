@@ -117,6 +117,7 @@ fn finish_agent_group_snapshots_the_roster_around_the_outputs() {
             output: "+19°C".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
         StreamEvent::Chunk("Warsaw is 19°C.".into()),
         StreamEvent::StreamDone,

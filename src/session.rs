@@ -142,6 +142,79 @@ enum ItemRecord {
     /// wins), skipped by [`parse_session`]. Old builds skip the unknown
     /// record type (the forward-compatibility contract).
     Model(ModelSelection),
+    /// One model request's usage as the provider reported it
+    /// (`docs/rollout-records.md`) — codex's `token_usage_record`, written
+    /// where the request finished. Not a [`HistoryItem`]: read back by
+    /// [`parse_usage`], skipped by [`parse_session`], and skipped as an
+    /// unknown record type by a build from before it.
+    Usage(UsageRecord),
+}
+
+/// One model request's usage, as the rollout keeps it
+/// (`docs/rollout-records.md`): the provider's own counts for the request —
+/// [`TokenUsage`]'s, `input` including every cached read and cache write,
+/// `output` the reasoning — and where in the conversation it finished.
+///
+/// [`TokenUsage`]: crate::stream::TokenUsage
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestUsage {
+    /// How many history items had been recorded when the request finished:
+    /// its line sits right after them. Never written — the file's own order
+    /// records it, and [`parse_usage`] reads it back from there.
+    pub after: usize,
+    /// The provider's counts.
+    pub usage: crate::stream::TokenUsage,
+    /// The subagent whose request it was, by the id its `agent_group` entry
+    /// carries — `None` for the conversation's own.
+    pub agent: Option<String>,
+}
+
+/// A [`RequestUsage`] on disk: every count always written (a reader needs no
+/// defaults), `serde(default)`ed on the way back in.
+#[derive(Serialize, Deserialize)]
+struct UsageRecord {
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    cached: u64,
+    #[serde(default)]
+    cache_write: u64,
+    #[serde(default)]
+    reasoning: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
+}
+
+impl From<&RequestUsage> for UsageRecord {
+    fn from(record: &RequestUsage) -> Self {
+        Self {
+            input: record.usage.input,
+            output: record.usage.output,
+            cached: record.usage.cached,
+            cache_write: record.usage.cache_write,
+            reasoning: record.usage.reasoning,
+            agent: record.agent.clone(),
+        }
+    }
+}
+
+impl UsageRecord {
+    /// The record read back, placed after the `after` items before it.
+    fn into_request(self, after: usize) -> RequestUsage {
+        RequestUsage {
+            after,
+            usage: crate::stream::TokenUsage {
+                input: self.input,
+                output: self.output,
+                cached: self.cached,
+                cache_write: self.cache_write,
+                reasoning: self.reasoning,
+            },
+            agent: self.agent,
+        }
+    }
 }
 
 /// A [`crate::app::HookNote`] on disk: the transcript heading, the verbatim
@@ -467,6 +540,19 @@ struct ToolRecord {
     name: String,
     args: String,
     ok: bool,
+    /// How the call ran ([`crate::stream::ToolRun`], `docs/rollout-records.md`):
+    /// the command's exit status when it exited during the call, how long
+    /// the call ran, and why a failed one failed. Each omitted when absent,
+    /// the `context_output` rule, so a call nothing measured keeps the line
+    /// it always had — and a line from before the fields reads with none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+    /// [`crate::stream::ToolErrorKind::wire`]'s spelling; one this build
+    /// does not know reads back as absent rather than failing the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_kind: Option<String>,
     output: String,
     timestamp: String,
     shell: bool,
@@ -676,6 +762,9 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             name: tool.name.clone(),
             args: tool.args.clone(),
             ok: matches!(tool.status, ToolStatus::Ok | ToolStatus::Backgrounded),
+            exit_code: tool.run.exit_code,
+            duration_ms: tool.run.duration_ms,
+            error_kind: tool.run.error_kind.map(|kind| kind.wire().to_string()),
             output: tool.output.clone(),
             timestamp: tool.timestamp.clone(),
             shell: tool.shell,
@@ -819,6 +908,46 @@ pub fn checkpoint_line(checkpoint: &Checkpoint, stamp: &str) -> String {
     )
 }
 
+/// Serialize one model request's usage as a rollout line
+/// (`docs/rollout-records.md`). `stamp` is the write-time line stamp.
+#[must_use]
+pub fn usage_line(record: &RequestUsage, stamp: &str) -> String {
+    line(stamp, ItemRecord::Usage(UsageRecord::from(record)))
+}
+
+/// The rollout lines for `items` — history from index `first` on — with each
+/// request's `usage` line placed where the request finished: right before
+/// the first item recorded after it ([`RequestUsage::after`]), or at the end
+/// when nothing was recorded after it yet (`docs/rollout-records.md`). Every
+/// line ends with a newline. The recorder's one writer for both of its
+/// paths: an append (the items and usage new since its last write) and a
+/// rewrite (everything, from `first` 0), so a rewrite re-places each usage
+/// line exactly where the append had put it. `usage` is in the order the
+/// requests finished, which is the order of their positions.
+#[must_use]
+pub fn history_lines(
+    items: &[HistoryItem],
+    first: usize,
+    usage: &[RequestUsage],
+    stamp: &str,
+) -> String {
+    let mut text = String::new();
+    let mut usage = usage.iter().peekable();
+    for (offset, item) in items.iter().enumerate() {
+        while let Some(record) = usage.next_if(|record| record.after <= first + offset) {
+            text.push_str(&usage_line(record, stamp));
+            text.push('\n');
+        }
+        text.push_str(&item_line(item, stamp));
+        text.push('\n');
+    }
+    for record in usage {
+        text.push_str(&usage_line(record, stamp));
+        text.push('\n');
+    }
+    text
+}
+
 /// Extract the [`Checkpoint`]s recorded in a rollout file, in file order —
 /// the code-reset side channel `/resume` reads alongside [`parse_session`]'s
 /// transcript. Malformed and non-checkpoint lines are skipped; an empty vec
@@ -849,176 +978,226 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
     let mut meta: Option<SessionMeta> = None;
     let mut items = Vec::new();
     for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(record) = serde_json::from_str::<LineRecord>(line) else {
-            continue; // malformed or unknown-type line: skip, don't fail
-        };
-        match record.item {
+        match parse_line(line) {
             // The first meta wins (codex: the file's own meta is line 1).
-            ItemRecord::SessionMeta(parsed) => {
+            Some(ItemRecord::SessionMeta(parsed)) => {
                 meta.get_or_insert(parsed);
             }
-            ItemRecord::Message(message) => {
-                if let Some(role) = role_from(&message.role) {
-                    items.push(HistoryItem::Message(Message {
-                        role,
-                        text: message.text,
-                        timestamp: message.timestamp,
-                        images: message.images.into_iter().map(PathBuf::from).collect(),
-                    }));
-                }
-            }
-            ItemRecord::Tool(tool) => items.push(HistoryItem::Tool(ToolCall {
-                name: tool.name,
-                args: tool.args,
-                status: if tool.backgrounded {
-                    ToolStatus::Backgrounded
-                } else if tool.ok {
-                    ToolStatus::Ok
-                } else {
-                    ToolStatus::Failed
-                },
-                output: tool.output,
-                timestamp: tool.timestamp,
-                shell: tool.shell,
-                truncated: tool.truncated,
-                context_output: tool.context_output,
-                arguments: tool.arguments,
-                approval_note: tool.approval_note,
-                batch: tool.batch,
-                call_id: tool.call_id,
-                position: tool.position,
-            })),
-            ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
-                verb: done_verb(&summary.verb),
-                secs: summary.secs,
-                timestamp: summary.timestamp,
-                // Not persisted: a resumed session's shells are gone, so the
-                // suffix must not claim they still run (docs/background.md).
-                shells: 0,
-                tokens: summary.tokens,
-                estimated: summary.estimated,
-                cached: summary.cached,
-                cache_write: summary.cache_write,
-            })),
-            ItemRecord::Background(notice) => {
-                items.push(HistoryItem::Background(crate::app::BackgroundNotice {
-                    description: notice.description,
-                    id: notice.id,
-                    code: notice.code,
-                    killed: notice.killed,
-                    output_tail: notice.output_tail,
-                    origin: notice.origin,
-                    waiting: notice.waiting,
-                    timestamp: notice.timestamp,
-                }));
-            }
-            ItemRecord::AgentGroup(group) => {
-                items.push(HistoryItem::AgentGroup(AgentGroup {
-                    background: group.background,
-                    agents: group
-                        .agents
-                        .into_iter()
-                        .map(|entry| AgentGroupEntry {
-                            id: entry.id,
-                            description: entry.description,
-                            agent_type: entry.agent_type,
-                            prompt: entry.prompt,
-                            status: agent_status_from(&entry.status),
-                            tool_uses: entry.tool_uses,
-                            tokens: entry.tokens,
-                            secs: entry.secs,
-                            result: entry.result,
-                            tool_headers: entry.tool_headers,
-                            output: entry.output,
-                            call_id: entry.call_id,
-                            arguments: entry.arguments,
-                            position: entry.position,
-                        })
-                        .collect(),
-                    timestamp: group.timestamp,
-                    batch: group.batch,
-                }));
-            }
-            ItemRecord::AgentNotice(notice) => {
-                items.push(HistoryItem::AgentNotice(AgentNotice {
-                    id: notice.id,
-                    description: notice.description,
-                    status: agent_status_from(&notice.status),
-                    secs: notice.secs,
-                    result: notice.result,
-                    timestamp: notice.timestamp,
-                    user_messages: notice.user_messages,
-                    resumed: notice.resumed,
-                }));
-            }
-            ItemRecord::HookNote(note) | ItemRecord::HookReport(note) => {
-                items.push(HistoryItem::HookNote(crate::app::HookNote {
-                    label: note.label,
-                    text: note.text,
-                    report: note.report.map(crate::hooks::HookReport::from),
-                    timestamp: note.timestamp,
-                }));
-            }
-            ItemRecord::Compaction(compaction) => {
-                items.push(HistoryItem::Compaction(crate::app::Compaction {
-                    summary: compaction.summary,
-                    timestamp: compaction.timestamp,
-                    before: compaction.before,
-                    after: compaction.after,
-                    auto: compaction.auto,
-                    secs: compaction.secs,
-                }));
-            }
-            ItemRecord::Reasoning(reasoning) => {
-                items.push(HistoryItem::Reasoning(crate::app::Reasoning {
-                    text: reasoning.text,
-                    secs: reasoning.secs,
-                    tokens: reasoning.tokens,
-                    timestamp: reasoning.timestamp,
-                }));
-            }
-            ItemRecord::TaskCall(record) => {
-                let tasks: Vec<crate::tasks::Task> = record
-                    .tasks
-                    .into_iter()
-                    .map(|task| crate::tasks::Task {
-                        id: task.id,
-                        subject: task.subject,
-                        description: task.description,
-                        active_form: task.active_form,
-                        // An unknown status name reads as pending — the
-                        // conservative open state.
-                        status: crate::tasks::TaskStatus::from_wire(&task.status)
-                            .unwrap_or_default(),
-                        blocked_by: task.blocked_by,
-                    })
-                    .collect();
-                items.push(HistoryItem::TaskCall(crate::app::TaskCallRecord {
-                    name: record.name,
-                    args: record.args,
-                    arguments: record.arguments,
-                    output: record.output,
-                    ok: record.ok,
-                    timestamp: record.timestamp,
-                    tasks: crate::tasks::TaskStore::from_parts(tasks, record.next_id),
-                    call_id: record.call_id,
-                    batch: record.batch,
-                    position: record.position,
-                }));
-            }
-            // Checkpoints ride the same file but aren't transcript items —
-            // `parse_checkpoints` reads them for the code reset. Skip here so
-            // the loaded history matches what the user actually said. The
-            // session's model record is the same kind of sidecar
-            // (`parse_model`, docs/session-model.md).
-            ItemRecord::Checkpoint(_) | ItemRecord::Model(_) => {}
+            Some(record) => push_history_item(&mut items, record),
+            None => {} // malformed or unknown-type line: skip, don't fail
         }
     }
     meta.map(|meta| (meta, items))
+}
+
+/// The usage of each model request a rollout recorded, in file order, each
+/// placed after the history items that precede it in the file
+/// (`docs/rollout-records.md`) — what a resume hands the recorder, so a later
+/// rewrite keeps every `usage` line where it was. Positions count exactly
+/// the items [`parse_session`] yields, by the same conversion: a malformed
+/// line, an unknown record type, a message in a role this build doesn't
+/// know and every sidecar move none. Empty for a file with no usage lines
+/// (one recorded on the dummy, or by a build from before them).
+#[must_use]
+pub fn parse_usage(text: &str) -> Vec<RequestUsage> {
+    let mut items = Vec::new();
+    let mut usage = Vec::new();
+    for line in text.lines() {
+        match parse_line(line) {
+            Some(ItemRecord::Usage(record)) => usage.push(record.into_request(items.len())),
+            Some(record) => push_history_item(&mut items, record),
+            None => {}
+        }
+    }
+    usage
+}
+
+/// One rollout line's record, or `None` for a blank, malformed or
+/// unknown-type line — which every reader skips (codex's forward-compatible
+/// reader).
+fn parse_line(line: &str) -> Option<ItemRecord> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<LineRecord>(line)
+        .ok()
+        .map(|record| record.item)
+}
+
+/// Push the history item `record` is onto `items` — nothing for a record that
+/// is none: the meta, a sidecar, a message in a role this build doesn't know.
+/// The one conversion [`parse_session`] and [`parse_usage`] share, so a usage
+/// line's position can never count differently from the history it sits in.
+fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
+    match record {
+        ItemRecord::Message(message) => {
+            if let Some(role) = role_from(&message.role) {
+                items.push(HistoryItem::Message(Message {
+                    role,
+                    text: message.text,
+                    timestamp: message.timestamp,
+                    images: message.images.into_iter().map(PathBuf::from).collect(),
+                }));
+            }
+        }
+        ItemRecord::Tool(tool) => items.push(HistoryItem::Tool(ToolCall {
+            name: tool.name,
+            args: tool.args,
+            status: if tool.backgrounded {
+                ToolStatus::Backgrounded
+            } else if tool.ok {
+                ToolStatus::Ok
+            } else {
+                ToolStatus::Failed
+            },
+            output: tool.output,
+            timestamp: tool.timestamp,
+            shell: tool.shell,
+            truncated: tool.truncated,
+            context_output: tool.context_output,
+            arguments: tool.arguments,
+            approval_note: tool.approval_note,
+            batch: tool.batch,
+            call_id: tool.call_id,
+            position: tool.position,
+            run: crate::stream::ToolRun {
+                exit_code: tool.exit_code,
+                duration_ms: tool.duration_ms,
+                error_kind: tool
+                    .error_kind
+                    .as_deref()
+                    .and_then(crate::stream::ToolErrorKind::from_wire),
+            },
+        })),
+        ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
+            verb: done_verb(&summary.verb),
+            secs: summary.secs,
+            timestamp: summary.timestamp,
+            // Not persisted: a resumed session's shells are gone, so the
+            // suffix must not claim they still run (docs/background.md).
+            shells: 0,
+            tokens: summary.tokens,
+            estimated: summary.estimated,
+            cached: summary.cached,
+            cache_write: summary.cache_write,
+        })),
+        ItemRecord::Background(notice) => {
+            items.push(HistoryItem::Background(crate::app::BackgroundNotice {
+                description: notice.description,
+                id: notice.id,
+                code: notice.code,
+                killed: notice.killed,
+                output_tail: notice.output_tail,
+                origin: notice.origin,
+                waiting: notice.waiting,
+                timestamp: notice.timestamp,
+            }));
+        }
+        ItemRecord::AgentGroup(group) => {
+            items.push(HistoryItem::AgentGroup(AgentGroup {
+                background: group.background,
+                agents: group
+                    .agents
+                    .into_iter()
+                    .map(|entry| AgentGroupEntry {
+                        id: entry.id,
+                        description: entry.description,
+                        agent_type: entry.agent_type,
+                        prompt: entry.prompt,
+                        status: agent_status_from(&entry.status),
+                        tool_uses: entry.tool_uses,
+                        tokens: entry.tokens,
+                        secs: entry.secs,
+                        result: entry.result,
+                        tool_headers: entry.tool_headers,
+                        output: entry.output,
+                        call_id: entry.call_id,
+                        arguments: entry.arguments,
+                        position: entry.position,
+                    })
+                    .collect(),
+                timestamp: group.timestamp,
+                batch: group.batch,
+            }));
+        }
+        ItemRecord::AgentNotice(notice) => {
+            items.push(HistoryItem::AgentNotice(AgentNotice {
+                id: notice.id,
+                description: notice.description,
+                status: agent_status_from(&notice.status),
+                secs: notice.secs,
+                result: notice.result,
+                timestamp: notice.timestamp,
+                user_messages: notice.user_messages,
+                resumed: notice.resumed,
+            }));
+        }
+        ItemRecord::HookNote(note) | ItemRecord::HookReport(note) => {
+            items.push(HistoryItem::HookNote(crate::app::HookNote {
+                label: note.label,
+                text: note.text,
+                report: note.report.map(crate::hooks::HookReport::from),
+                timestamp: note.timestamp,
+            }));
+        }
+        ItemRecord::Compaction(compaction) => {
+            items.push(HistoryItem::Compaction(crate::app::Compaction {
+                summary: compaction.summary,
+                timestamp: compaction.timestamp,
+                before: compaction.before,
+                after: compaction.after,
+                auto: compaction.auto,
+                secs: compaction.secs,
+            }));
+        }
+        ItemRecord::Reasoning(reasoning) => {
+            items.push(HistoryItem::Reasoning(crate::app::Reasoning {
+                text: reasoning.text,
+                secs: reasoning.secs,
+                tokens: reasoning.tokens,
+                timestamp: reasoning.timestamp,
+            }));
+        }
+        ItemRecord::TaskCall(record) => {
+            let tasks: Vec<crate::tasks::Task> = record
+                .tasks
+                .into_iter()
+                .map(|task| crate::tasks::Task {
+                    id: task.id,
+                    subject: task.subject,
+                    description: task.description,
+                    active_form: task.active_form,
+                    // An unknown status name reads as pending — the
+                    // conservative open state.
+                    status: crate::tasks::TaskStatus::from_wire(&task.status).unwrap_or_default(),
+                    blocked_by: task.blocked_by,
+                })
+                .collect();
+            items.push(HistoryItem::TaskCall(crate::app::TaskCallRecord {
+                name: record.name,
+                args: record.args,
+                arguments: record.arguments,
+                output: record.output,
+                ok: record.ok,
+                timestamp: record.timestamp,
+                tasks: crate::tasks::TaskStore::from_parts(tasks, record.next_id),
+                call_id: record.call_id,
+                batch: record.batch,
+                position: record.position,
+            }));
+        }
+        // Checkpoints ride the same file but aren't transcript items —
+        // `parse_checkpoints` reads them for the code reset. Skip here so
+        // the loaded history matches what the user actually said. The
+        // session's model record is the same kind of sidecar
+        // (`parse_model`, docs/session-model.md), and so is a request's usage
+        // (`parse_usage`, docs/rollout-records.md). The meta is the caller's.
+        ItemRecord::SessionMeta(_)
+        | ItemRecord::Checkpoint(_)
+        | ItemRecord::Model(_)
+        | ItemRecord::Usage(_) => {}
+    }
 }
 
 /// The picker preview: the first user input in `items` — a [`Role::User`]
@@ -1416,6 +1595,7 @@ mod tests {
             batch: Some(4),
             call_id: Some("call_provider_1".into()),
             position: Some(2),
+            run: crate::stream::ToolRun::default(),
         });
         let task = HistoryItem::TaskCall(crate::app::TaskCallRecord {
             name: "TaskUpdate".into(),
@@ -1622,6 +1802,215 @@ mod tests {
         text
     }
 
+    // ===== one line per model request (docs/rollout-records.md) =====
+
+    fn request(after: usize, input: u64, output: u64) -> RequestUsage {
+        RequestUsage {
+            after,
+            usage: crate::stream::TokenUsage {
+                input,
+                output,
+                cached: input / 2,
+                cache_write: 7,
+                reasoning: output / 4,
+            },
+            agent: None,
+        }
+    }
+
+    /// A tool round as history records it: the prompt, the reply that asked
+    /// for a call, the call, the answer, the turn's summary.
+    fn tool_round() -> Vec<HistoryItem> {
+        vec![
+            message(Role::User, "run the tests"),
+            message(Role::Assistant, "Running them."),
+            HistoryItem::Tool(ToolCall {
+                name: "Bash".into(),
+                args: "cargo test".into(),
+                status: ToolStatus::Ok,
+                output: "Exit code: 0".into(),
+                timestamp: String::new(),
+                shell: false,
+                truncated: false,
+                context_output: None,
+                arguments: None,
+                approval_note: None,
+                batch: None,
+                call_id: None,
+                position: None,
+                run: crate::stream::ToolRun::default(),
+            }),
+            message(Role::Assistant, "All green."),
+            HistoryItem::Summary(TurnSummary {
+                verb: "Worked",
+                secs: 4,
+                timestamp: String::new(),
+                shells: 0,
+                tokens: 0,
+                estimated: 0,
+                cached: 0,
+                cache_write: 0,
+            }),
+        ]
+    }
+
+    /// The `type` of every line of `text`, in order.
+    fn kinds(text: &str) -> Vec<String> {
+        text.lines()
+            .map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+                value["type"].as_str().unwrap_or_default().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_usage_line_records_one_requests_counts() {
+        let line = usage_line(&request(1, 18_240, 312), "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "usage");
+        assert_eq!(value["timestamp"], "t");
+        let payload = &value["payload"];
+        assert_eq!(payload["input"], 18_240);
+        assert_eq!(payload["output"], 312);
+        assert_eq!(payload["cached"], 9_120);
+        assert_eq!(payload["cache_write"], 7);
+        assert_eq!(payload["reasoning"], 78);
+        // The conversation's own request names no agent, and the position
+        // is the file's own order, never a field.
+        assert!(payload.get("agent").is_none(), "{line}");
+        assert!(payload.get("after").is_none(), "{line}");
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn every_count_is_written_even_a_zero() {
+        // A reader needs no defaults.
+        let line = usage_line(&request(0, 0, 0), "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        for count in ["input", "output", "cached", "cache_write", "reasoning"] {
+            assert!(value["payload"][count].is_u64(), "{count}: {line}");
+        }
+    }
+
+    #[test]
+    fn a_subagents_request_names_the_agent() {
+        let mut record = request(2, 900, 40);
+        record.agent = Some("agent_7".into());
+        let value: serde_json::Value =
+            serde_json::from_str(&usage_line(&record, "t")).expect("valid JSON");
+        assert_eq!(value["payload"]["agent"], "agent_7");
+    }
+
+    #[test]
+    fn usage_lines_sit_where_their_requests_finished() {
+        // The request that asked for the call heads it; the one that read its
+        // result follows it — so a step's cost reads off file order.
+        let text = history_lines(
+            &tool_round(),
+            0,
+            &[request(1, 1_000, 30), request(3, 1_400, 20)],
+            "t",
+        );
+        assert_eq!(
+            kinds(&text),
+            [
+                "message", "usage", "message", "tool", "usage", "message", "summary",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_append_places_usage_among_the_new_items_only() {
+        // The recorder appends what is new since its last write: items from
+        // `first` on, and the usage noted since — a request that finished
+        // after the last item lands at the end.
+        let history = tool_round();
+        let text = history_lines(
+            &history[3..],
+            3,
+            &[request(3, 1_400, 20), request(5, 1_500, 10)],
+            "t",
+        );
+        assert_eq!(kinds(&text), ["usage", "message", "summary", "usage"]);
+        // …and with no usage it is the items alone, as before.
+        assert_eq!(
+            history_lines(&history, 0, &[], "t"),
+            history
+                .iter()
+                .map(|item| format!("{}\n", item_line(item, "t")))
+                .collect::<String>()
+        );
+    }
+
+    #[test]
+    fn usage_reads_back_where_it_sits_and_history_ignores_it() {
+        // A resume adopts the file's usage so a later rewrite keeps each line
+        // where it was; the conversation itself is unchanged by them.
+        let records = vec![request(1, 1_000, 30), request(3, 1_400, 20)];
+        let mut text = meta_line(&meta(), "t0");
+        text.push('\n');
+        text.push_str(&history_lines(&tool_round(), 0, &records, "t"));
+        assert_eq!(parse_usage(&text), records);
+        let (_, items) = parse_session(&text).expect("parses");
+        assert_eq!(items, tool_round(), "an older reader's view: no usage");
+        // Rewritten from what was read back, the file is the same.
+        let mut rewritten = meta_line(&meta(), "t0");
+        rewritten.push('\n');
+        rewritten.push_str(&history_lines(&items, 0, &parse_usage(&text), "t"));
+        assert_eq!(rewritten, text);
+    }
+
+    #[test]
+    fn a_usage_position_counts_only_the_items_history_keeps() {
+        // A malformed line, a record of an unknown type, a message in a role
+        // this build doesn't know and a sidecar are no history items, so they
+        // move no usage line's position.
+        let text = [
+            meta_line(&meta(), "t0"),
+            item_line(&message(Role::User, "go"), "t"),
+            "not json".to_string(),
+            r#"{"timestamp":"t","type":"from_the_future","payload":{}}"#.to_string(),
+            r#"{"timestamp":"t","type":"message","payload":{"role":"robot","text":"x","timestamp":""}}"#
+                .to_string(),
+            checkpoint_line(
+                &Checkpoint {
+                    after: 1,
+                    commit: "abc".into(),
+                },
+                "t",
+            ),
+            usage_line(&request(0, 10, 1), "t"),
+            item_line(&message(Role::Assistant, "done"), "t"),
+        ]
+        .join("\n");
+        let usage = parse_usage(&text);
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].after, 1, "after the one item before it");
+    }
+
+    #[test]
+    fn a_usage_line_missing_a_count_reads_it_as_zero() {
+        let text = format!(
+            "{}\n{}\n",
+            meta_line(&meta(), "t0"),
+            r#"{"timestamp":"t","type":"usage","payload":{"input":5,"output":2,"extra":true}}"#
+        );
+        let usage = parse_usage(&text);
+        let [record] = usage.as_slice() else {
+            panic!("one record: {usage:?}");
+        };
+        assert_eq!(
+            record.usage,
+            crate::stream::TokenUsage {
+                input: 5,
+                output: 2,
+                ..crate::stream::TokenUsage::default()
+            }
+        );
+        assert_eq!((record.after, record.agent.as_deref()), (0, None));
+    }
+
     // ===== checkpoints (docs/checkpoint.md) =====
 
     #[test]
@@ -1724,6 +2113,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -1739,6 +2129,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
@@ -1768,6 +2159,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
@@ -1794,6 +2186,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let file = file_of(std::slice::from_ref(&tool));
         let (_, parsed) = parse_session(&file).expect("parses");
@@ -1815,9 +2208,104 @@ mod tests {
                 batch: None,
                 call_id: None,
                 position: None,
+                run: crate::stream::ToolRun::default(),
             })])
             .contains("arguments"),
             "an empty field is omitted from the record"
+        );
+    }
+
+    // ===== how a call ran (docs/rollout-records.md) =====
+
+    /// A failed `bash` call that ran: what a reader of the rollout wants to
+    /// count — its exit code, its runtime and why it failed.
+    fn failed_command() -> HistoryItem {
+        HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "cargo test".into(),
+            status: ToolStatus::Failed,
+            output: "Exit code: 101\ntest result: FAILED".into(),
+            timestamp: "03:21 PM".into(),
+            shell: false,
+            truncated: false,
+            context_output: None,
+            arguments: None,
+            approval_note: None,
+            batch: None,
+            call_id: None,
+            position: None,
+            run: crate::stream::ToolRun {
+                exit_code: Some(101),
+                duration_ms: Some(48_213),
+                error_kind: Some(crate::stream::ToolErrorKind::ToolError),
+            },
+        })
+    }
+
+    #[test]
+    fn a_tool_line_records_how_the_call_ran() {
+        // The facts a failure-rate or per-step analysis reads, as data rather
+        // than a regex over the `Exit code: N` frame.
+        let line = item_line(&failed_command(), "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["exit_code"], 101);
+        assert_eq!(value["payload"]["duration_ms"], 48_213);
+        assert_eq!(value["payload"]["error_kind"], "tool_error");
+        // …beside the fields every reader already has.
+        assert_eq!(value["payload"]["ok"], false);
+        assert_eq!(
+            value["payload"]["output"],
+            "Exit code: 101\ntest result: FAILED"
+        );
+    }
+
+    #[test]
+    fn how_a_call_ran_survives_a_resume() {
+        let tool = failed_command();
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
+        assert_eq!(parsed, vec![tool]);
+    }
+
+    #[test]
+    fn a_call_with_no_facts_keeps_the_old_line_shape() {
+        // Absent facts are omitted, so an older reader sees the line it knew.
+        let HistoryItem::Tool(mut call) = failed_command() else {
+            unreachable!()
+        };
+        call.run = crate::stream::ToolRun::default();
+        let line = item_line(&HistoryItem::Tool(call), "t");
+        for field in ["exit_code", "duration_ms", "error_kind"] {
+            assert!(!line.contains(field), "{field} omitted: {line}");
+        }
+    }
+
+    #[test]
+    fn a_tool_line_from_before_the_facts_reads_with_none() {
+        let line = r#"{"timestamp":"t","type":"tool","payload":{"name":"Bash","args":"ls","ok":true,"output":"Exit code: 0","timestamp":"","shell":false,"truncated":false}}"#;
+        let (_, items) =
+            parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "t0"))).expect("parses");
+        let [HistoryItem::Tool(call)] = items.as_slice() else {
+            panic!("one tool: {items:?}")
+        };
+        assert_eq!(call.run, crate::stream::ToolRun::default());
+    }
+
+    #[test]
+    fn an_error_kind_this_build_does_not_know_reads_as_none() {
+        // A newer build's kind drops the field, never the line.
+        let line = r#"{"timestamp":"t","type":"tool","payload":{"name":"Bash","args":"ls","ok":false,"exit_code":2,"duration_ms":7,"error_kind":"sandbox_denied","output":"Exit code: 2","timestamp":"","shell":false,"truncated":false}}"#;
+        let (_, items) =
+            parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "t0"))).expect("parses");
+        let [HistoryItem::Tool(call)] = items.as_slice() else {
+            panic!("one tool: {items:?}")
+        };
+        assert_eq!(
+            call.run,
+            crate::stream::ToolRun {
+                exit_code: Some(2),
+                duration_ms: Some(7),
+                error_kind: None,
+            }
         );
     }
 
@@ -1840,6 +2328,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
         assert_eq!(parsed, vec![tool]);
@@ -1858,6 +2347,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         assert!(!item_line(&plain, "t").contains("approval_note"));
     }
@@ -1881,6 +2371,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let line = item_line(&tool, "t");
         assert!(!line.contains("context_output"), "not recorded: {line}");
@@ -2130,6 +2621,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -2156,6 +2648,7 @@ mod tests {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         });
         let line = item_line(&tool, "t");
         assert!(

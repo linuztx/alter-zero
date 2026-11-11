@@ -103,6 +103,7 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
             output: "+19°C".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
     );
     let texts: Vec<String> = live_agent_group_lines(&app, 80).iter().map(plain).collect();
@@ -361,6 +362,7 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
             output: "Created game.py (10 lines)".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
     ] {
         app.apply_agent_event("a2", &event);
@@ -1413,6 +1415,7 @@ fn a_live_agent_cells_nested_headers_shorten_from_the_record() {
             output: "Wrote 1 line to ../../notes.md\n1 x".into(),
             ok: true,
             truncated: false,
+            run: crate::stream::ToolRun::default(),
         },
     );
     app.apply_agent_event(

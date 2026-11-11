@@ -932,6 +932,9 @@ impl<'t> Session<'t> {
                     count,
                     torn,
                     session_checkpoints,
+                    // Each request's usage line stays where it sat
+                    // (docs/rollout-records.md).
+                    session::parse_usage(&text),
                     self.app.history_generation(),
                     recorded_model,
                     model.honoured,

@@ -1281,7 +1281,15 @@ http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
 `tui::mcp_cli`) in
-`docs/resume.md`; the **filesystem checkpoints** (every turn snapshots the whole
+`docs/resume.md`; the **rollout records** an analysis reads (codex's
+`token_usage_record` and command record, sized down: every `tool` line keeps
+the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
+the `stream::ToolRun` each resolving event carries, `run_agent` timing the
+executor and naming refusals, `App::fail_live_queue` stamping an Esc's or a
+backend error's calls — and every model request leaves a `usage` sidecar
+line with the provider's counts, `agent` on a subagent's, placed where it
+finished by `session::history_lines` and adopted back on a resume by
+`session::parse_usage`) in `docs/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the
 code**, not just the transcript: rewinding restores the working directory to the

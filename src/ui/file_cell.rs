@@ -778,6 +778,7 @@ pub(super) fn draft_cell_lines(
                 batch: None,
                 call_id: None,
                 position: None,
+                run: crate::stream::ToolRun::default(),
             };
             &generating
         }

@@ -389,7 +389,8 @@ fn run_piped(
             // The interrupt path owns the UI; return a terse outcome (the loop
             // discards it — the channel is already swapped). The group kill has
             // reaped any straggler, so the detached readers finish on their own.
-            return ToolOutcome::error("Interrupted by user");
+            return ToolOutcome::error("Interrupted by user")
+                .with_error_kind(crate::stream::ToolErrorKind::Interrupted);
         }
         // Ctrl+B — or the model's own `wait` passing: hand the run off to
         // the background registry mid-flight. It replays what we already read
@@ -485,7 +486,8 @@ fn run_piped(
             "command timed out after {} ms and was stopped — nothing here can keep it running \
              past its wait\n{body}",
             wait.as_millis()
-        ));
+        ))
+        .with_error_kind(crate::stream::ToolErrorKind::TimedOut);
     }
     let exit_code = status.as_ref().and_then(std::process::ExitStatus::code);
     let ok = status
@@ -504,6 +506,9 @@ fn run_piped(
         image: None,
         tasks: None,
         context,
+        // The status the frame above names, as data (docs/rollout-records.md).
+        exit_code,
+        error_kind: None,
     }
 }
 
@@ -568,6 +573,7 @@ fn run_tty(
         WaitEnd::Cancelled => {
             registry.kill(&task.id);
             ToolOutcome::error("Interrupted by user")
+                .with_error_kind(crate::stream::ToolErrorKind::Interrupted)
         }
         WaitEnd::Handoff => {
             registry.announce(&task.id);
@@ -584,6 +590,7 @@ fn run_tty(
             ToolOutcome {
                 ok: code == Some(0),
                 context,
+                exit_code: code,
                 ..ToolOutcome::ok(report)
             }
         }
@@ -832,7 +839,8 @@ fn run_session(
             if let Some(observed) = io.end_wait() {
                 registry.finalize(id, observed);
             }
-            return ToolOutcome::error("Interrupted by user");
+            return ToolOutcome::error("Interrupted by user")
+                .with_error_kind(crate::stream::ToolErrorKind::Interrupted);
         }
         Some(WaitEnd::Settled(Settle::Exited)) => Status::Exited(io.exit().flatten()),
         _ if call.kill && !spare => {
@@ -880,6 +888,11 @@ fn run_session(
     ToolOutcome {
         ok: !matches!(status, Status::Exited(code) if code != Some(0)),
         context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
+        // The call that saw the session exit records how (docs/rollout-records.md).
+        exit_code: match status {
+            Status::Exited(code) => code,
+            _ => None,
+        },
         ..ToolOutcome::ok(report)
     }
 }
@@ -918,6 +931,7 @@ fn claimed_exit_report(
     ToolOutcome {
         ok: exit.code == Some(0),
         context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
+        exit_code: exit.code,
         ..ToolOutcome::ok(report)
     }
 }
@@ -1639,6 +1653,8 @@ os.write(1, b"\n")'"#;
         assert!(out.ok);
         assert!(out.output.starts_with("Exit code: 0"), "got {}", out.output);
         assert!(out.output.contains("hello"));
+        // …and as data, for the rollout (docs/rollout-records.md).
+        assert_eq!(out.exit_code, Some(0));
     }
 
     #[test]
@@ -1646,6 +1662,9 @@ os.write(1, b"\n")'"#;
         let out = exec("bash", r#"{"command":"exit 3"}"#);
         assert!(!out.ok);
         assert!(out.output.contains("Exit code: 3"));
+        assert_eq!(out.exit_code, Some(3));
+        // An ordinary failure: the loop's default kind covers it.
+        assert_eq!(out.error_kind, None);
     }
 
     #[test]
@@ -1661,6 +1680,9 @@ os.write(1, b"\n")'"#;
         let out = exec("bash", r#"{"command":"sleep 5","timeout":150}"#);
         assert!(!out.ok);
         assert!(out.output.contains("timed out"), "got {}", out.output);
+        // Stopped, not exited: the reason without an exit code.
+        assert_eq!(out.error_kind, Some(crate::stream::ToolErrorKind::TimedOut));
+        assert_eq!(out.exit_code, None);
     }
 
     #[test]
@@ -2486,6 +2508,8 @@ os.write(1, b"\n")'"#;
         );
         let id = session_of(&out.output);
         assert!(out.output.contains("started"), "{}", out.output);
+        // Still running when its call returned: no exit status yet.
+        assert_eq!(out.exit_code, None);
         assert!(
             out.context_text()
                 .contains(&crate::pty::report::continued_note(&id)),
@@ -2498,6 +2522,8 @@ os.write(1, b"\n")'"#;
             &serde_json::json!({"session_id": id, "wait": 10}).to_string(),
         );
         assert_eq!(waited.output, "Exit code: 0\ndone");
+        // The call that saw the exit records it.
+        assert_eq!(waited.exit_code, Some(0));
         registry.kill_all();
     }
 
@@ -2634,6 +2660,7 @@ os.write(1, b"\n")'"#;
         );
         assert!(!out.ok, "exit 3 is a failure: {}", out.output);
         assert_eq!(out.output, "Exit code: 3\non-a-terminal\na\tb  \n");
+        assert_eq!(out.exit_code, Some(3));
         assert!(out.background.is_none());
         assert!(
             events_within(&mut rx, std::time::Duration::from_millis(200)).is_empty(),
@@ -4412,6 +4439,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
             "{}",
             killed.output
         );
+        assert_eq!(killed.exit_code, Some(3));
         let told = killed
             .context
             .expect("the model is told nothing was stopped");

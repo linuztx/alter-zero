@@ -95,6 +95,16 @@ pub struct ToolOutcome {
     /// ([`crate::app::ToolCall::context_output`]). `None` for every ordinary
     /// outcome, whose display *is* what the model reads.
     pub context: Option<String>,
+    /// The command's exit status, when it exited during the call — what the
+    /// rollout's `tool` line records as `exit_code`
+    /// (`docs/rollout-records.md`). Set wherever the executor learns one:
+    /// the pipe runner, the terminal runner, a session call that saw the
+    /// exit. `None` for every other outcome.
+    pub exit_code: Option<i32>,
+    /// Why the call failed, when the executor knows more than that it did —
+    /// a command stopped at its time limit. A failed outcome that names none
+    /// is the tool's own failure ([`ToolOutcome::run`]).
+    pub error_kind: Option<crate::stream::ToolErrorKind>,
 }
 
 impl ToolOutcome {
@@ -109,6 +119,8 @@ impl ToolOutcome {
             image: None,
             tasks: None,
             context: None,
+            exit_code: None,
+            error_kind: None,
         }
     }
 
@@ -124,6 +136,8 @@ impl ToolOutcome {
             image: None,
             tasks: None,
             context: None,
+            exit_code: None,
+            error_kind: None,
         }
     }
 
@@ -140,6 +154,8 @@ impl ToolOutcome {
             image: None,
             tasks: None,
             context: None,
+            exit_code: None,
+            error_kind: None,
         }
     }
 
@@ -179,6 +195,36 @@ impl ToolOutcome {
     #[must_use]
     pub fn context_text(&self) -> &str {
         self.context.as_deref().unwrap_or(&self.output)
+    }
+
+    /// Record the command's exit status (the `exit_code` field doc).
+    #[must_use]
+    pub const fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = Some(code);
+        self
+    }
+
+    /// Name why the call failed (the `error_kind` field doc).
+    #[must_use]
+    pub const fn with_error_kind(mut self, kind: crate::stream::ToolErrorKind) -> Self {
+        self.error_kind = Some(kind);
+        self
+    }
+
+    /// How the call ran, for a call that ran for `elapsed`
+    /// (`docs/rollout-records.md`): its exit code, the duration, and — for a
+    /// failure — its kind, the tool's own failure when the executor named
+    /// none. A success names no failure.
+    #[must_use]
+    pub fn run(&self, elapsed: std::time::Duration) -> crate::stream::ToolRun {
+        crate::stream::ToolRun {
+            exit_code: self.exit_code,
+            duration_ms: Some(crate::stream::ToolRun::millis(elapsed)),
+            error_kind: (!self.ok).then(|| {
+                self.error_kind
+                    .unwrap_or(crate::stream::ToolErrorKind::ToolError)
+            }),
+        }
     }
 }
 
@@ -4209,6 +4255,45 @@ mod tests {
             desc.contains("image") && desc.contains("attached"),
             "the model is told image files come back attached: {desc}"
         );
+    }
+
+    // ===== how a call ran (docs/rollout-records.md) =====
+
+    #[test]
+    fn an_outcome_states_how_its_call_ran() {
+        use crate::stream::{ToolErrorKind, ToolRun};
+        let elapsed = std::time::Duration::from_millis(1_250);
+        // A success names no failure, whatever its exit code.
+        assert_eq!(
+            ToolOutcome::ok("Exit code: 0")
+                .with_exit_code(0)
+                .run(elapsed),
+            ToolRun {
+                exit_code: Some(0),
+                duration_ms: Some(1_250),
+                error_kind: None,
+            }
+        );
+        // A failure nothing more specific explains is the tool's own…
+        assert_eq!(
+            ToolOutcome::error("no such file").run(elapsed),
+            ToolRun {
+                exit_code: None,
+                duration_ms: Some(1_250),
+                error_kind: Some(ToolErrorKind::ToolError),
+            }
+        );
+        // …and one the executor named keeps its name.
+        assert_eq!(
+            ToolOutcome::error("command timed out")
+                .with_error_kind(ToolErrorKind::TimedOut)
+                .run(elapsed)
+                .error_kind,
+            Some(ToolErrorKind::TimedOut)
+        );
+        // A plain outcome carries neither.
+        let plain = ToolOutcome::ok("fine");
+        assert_eq!((plain.exit_code, plain.error_kind), (None, None));
     }
 
     #[test]

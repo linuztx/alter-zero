@@ -34,6 +34,7 @@ use alter_zero::agents::{AGENT_LINGER, AgentEvent};
 use alter_zero::app::{
     AgentNotice, AgentStop, CONNECTION_LOST_NOTICE, HistoryItem, Role, ToastKind, ToolStatus, View,
 };
+use alter_zero::session::RequestUsage;
 use alter_zero::stream::{AgentChatDelivery, StreamEvent};
 use alter_zero::ui;
 
@@ -116,6 +117,18 @@ impl Session<'_> {
             request.agent_id = Some(id.to_string());
             self.app.open_permission(request);
             return;
+        }
+        // A subagent's request is paid for by this conversation too: its
+        // `usage` line, tagged with the agent, lands in the lead's rollout
+        // where it finished — whatever the roster then makes of the event, a
+        // late one included, since the provider billed it either way
+        // (docs/rollout-records.md).
+        if let StreamEvent::Usage(usage) = &event {
+            self.recorder.record_usage(RequestUsage {
+                after: self.app.history.len(),
+                usage: *usage,
+                agent: Some(id.to_string()),
+            });
         }
         // Screen commits pause while a framed view's flow covers the agent
         // session view (a menu opened from its palette, `docs/view-flow.md`)

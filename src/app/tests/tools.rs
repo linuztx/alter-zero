@@ -16,6 +16,54 @@ fn start_tool_marks_a_running_tool_not_yet_in_history() {
     assert!(app.history.is_empty(), "a running tool is not yet history");
 }
 
+// --- how a call ran (docs/rollout-records.md) ---
+
+fn failed_run() -> crate::stream::ToolRun {
+    crate::stream::ToolRun {
+        exit_code: Some(101),
+        duration_ms: Some(48_213),
+        error_kind: Some(crate::stream::ToolErrorKind::ToolError),
+    }
+}
+
+#[test]
+fn the_resolved_call_keeps_how_it_ran() {
+    // The resolving event states the facts; the record the rollout writes
+    // keeps them.
+    let mut app = App::new();
+    app.start_tool("Bash", "cargo test", None);
+    app.set_tool_run(failed_run());
+    let resolved = app.end_tool("Exit code: 101", false).expect("a call ran");
+    assert_eq!(resolved.run, failed_run());
+    let Some(HistoryItem::Tool(recorded)) = app.history.last() else {
+        panic!("the call is history: {:?}", app.history);
+    };
+    assert_eq!(recorded.run, failed_run());
+}
+
+#[test]
+fn a_run_reaches_the_running_call_alone() {
+    // Nothing in flight, or a batch sibling still waiting its turn, has not
+    // run: the facts belong to the call the event resolves.
+    let mut app = App::new();
+    app.set_tool_run(failed_run());
+    assert!(
+        app.current_tool().is_none(),
+        "nothing to stamp, nothing made"
+    );
+    app.start_tool_batch(&ping_batch());
+    app.set_tool_run(failed_run());
+    assert_eq!(
+        app.current_tool().unwrap().run,
+        crate::stream::ToolRun::default(),
+        "a waiting call has not run"
+    );
+    app.start_tool("Bash", "ping google.com", None);
+    app.set_tool_run(failed_run());
+    assert_eq!(app.tool_queue()[0].run, failed_run());
+    assert_eq!(app.tool_queue()[1].run, crate::stream::ToolRun::default());
+}
+
 #[test]
 fn start_tool_records_the_verbatim_arguments_on_the_call() {
     // The header summary is lossy on purpose (`● Write(a.py)`), so the raw
@@ -158,6 +206,7 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             batch: None,
             call_id: None,
             position: None,
+            run: crate::stream::ToolRun::default(),
         }))
     );
 }
