@@ -420,8 +420,9 @@ which Ctrl+V reads the clipboard from.
 - **`/model` picker** (`docs/llm.md`). An **inline** picker (it replaces the
   composer in the bottom region, unlike the alternate-screen `/resume`): `/model`
   fetches **every configured provider's** `/v1/models` in parallel (one worker
-  thread each), merging them into one provider-tagged list as they land (a
-  provider that fails is noted beside the counter, the rest staying put), lists
+  thread each), merging them into one list ordered by provider, then id —
+  grouped under provider headings when several are present (a provider that
+  fails is noted beside the counter, the rest staying put), lists
   them with type-to-search under a `Select model` title and a dim subtitle
   (`→` marks the selection, `❯` the search prompt, seven rows at a time over
   the `(n/total)` counter — `docs/view-flow.md` *A picker's page*), and

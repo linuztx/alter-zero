@@ -236,8 +236,8 @@ fn add_models_shows_the_first_provider_and_merges_the_rest() {
     let ids: Vec<&str> = picker.models.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["a/x", "b/y", "c/z"],
-        "merged + sorted across providers"
+        ["b/y", "a/x", "c/z"],
+        "merged + sorted by provider, then id"
     );
 }
 
@@ -426,5 +426,109 @@ fn selecting_a_model_carries_its_speed_tiers() {
                 && service_tiers[0].id == "priority"
         ),
         "the entry's tiers ride the action: {action:?}"
+    );
+}
+
+#[test]
+fn the_list_groups_by_provider_with_a_header_between_groups() {
+    // #25: the merged list is ordered provider-then-id, and the picker exposes
+    // a header row at each provider boundary so the UI can draw sections. The
+    // `Model` indexes address `matches()`, not the row list, so selection and
+    // the counter keep skipping headers.
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.begin_model_load(2);
+    app.add_models(vec![
+        model("c/z", "openrouter", "C Z"),
+        model("a/x", "openrouter", "A X"),
+    ]);
+    app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(
+        picker.rows(),
+        [
+            ModelListRow::Provider("a0_venice"),
+            ModelListRow::Model(0),
+            ModelListRow::Provider("openrouter"),
+            ModelListRow::Model(1),
+            ModelListRow::Model(2),
+        ],
+        "a header at each boundary, models in provider-then-id order"
+    );
+}
+
+#[test]
+fn a_one_provider_list_has_no_headers() {
+    // The common single-provider list keeps its exact old shape: no header,
+    // the `[provider]` tag stays on the rows.
+    let app = model_app(&sample_models());
+    let picker = app.model_picker.as_ref().unwrap();
+    assert!(
+        picker
+            .rows()
+            .iter()
+            .all(|row| matches!(row, ModelListRow::Model(_))),
+        "no provider rows for one provider: {:?}",
+        picker.rows()
+    );
+}
+
+#[test]
+fn set_models_sorts_by_provider_then_id() {
+    // The one-shot path (a single fetch, or a test) gets the same canonical
+    // order as the merge path, so `rows` never depends on who filled the list.
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.set_models(vec![
+        model("z/z", "openrouter", "Z Z"),
+        model("b/b", "a0_venice", "B B"),
+        model("a/a", "openrouter", "A A"),
+    ]);
+    let ids: Vec<&str> = app
+        .model_picker
+        .as_ref()
+        .unwrap()
+        .models
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
+    assert_eq!(ids, ["b/b", "a/a", "z/z"], "provider, then id");
+}
+
+#[test]
+fn search_keeps_headers_only_while_the_matches_span_providers() {
+    // A filter that narrows to one provider has nothing to group, so the
+    // header rows disappear and the `[provider]` tag carries the name; a
+    // filter that still spans providers keeps both.
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.set_models(vec![
+        model("b/y", "a0_venice", "B Y"),
+        model("a/x", "openrouter", "A X"),
+        model("c/z", "openrouter", "C Z"),
+    ]);
+    let picker = app.model_picker.as_mut().unwrap();
+    assert!(picker.is_grouped(), "two providers are grouped");
+
+    picker.query = "openrouter".into();
+    assert!(!picker.is_grouped(), "one provider after filtering");
+    assert!(
+        picker
+            .rows()
+            .iter()
+            .all(|row| matches!(row, ModelListRow::Model(_))),
+        "no headers for a one-provider result: {:?}",
+        picker.rows()
+    );
+
+    picker.query = "a".into();
+    assert!(picker.is_grouped(), "both providers still match");
+    assert!(
+        picker
+            .rows()
+            .iter()
+            .any(|row| matches!(row, ModelListRow::Provider(_))),
+        "headers return with the second provider: {:?}",
+        picker.rows()
     );
 }

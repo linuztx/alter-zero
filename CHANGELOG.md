@@ -103,6 +103,15 @@ release heading when a version is cut.
 
 ### Changed
 
+- **The `/model` picker groups its list by provider.** A list that spans
+  several providers now sorts by provider, then id, and draws a bold provider
+  heading before each group; the `[provider]` tag is dropped there while the
+  heading is on screen, since it already says it (a window that starts
+  mid-group keeps the tag). A single-provider list — and a search narrowed to
+  one provider — keeps the old flat rows and the tag. Selection, paging and
+  the `(n/total)` counter still step over models only, never over a heading
+  (`docs/llm.md`).
+
 - **The release binary is over a quarter smaller, and draws faster.**
   Releases are now built with whole-program link-time optimisation, in a
   build profile of their own, so the compiler sees every crate at once: the
