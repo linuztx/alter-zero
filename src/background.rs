@@ -1256,8 +1256,14 @@ impl BackgroundRegistry {
     /// process group — a TTY session's whole session — synchronously, with
     /// the monitor's kill token as the portable backstop. The monitor then
     /// reports `Exited {killed: true}`.
+    ///
+    /// The token is tripped only once the kill is done: the monitor answers
+    /// it within a poll by killing the leader's group, and where a session
+    /// is found by its terminal (macOS), a dead leader's session has none —
+    /// a sweep that came after it found nothing, and a shell's jobs in
+    /// process groups of their own lived on.
     pub fn kill(&self, id: &str) {
-        let target = {
+        let (target, backstop) = {
             let mut inner = self.inner.lock().expect("registry lock");
             let Some(task) = inner.tasks.get_mut(id) else {
                 return;
@@ -1266,16 +1272,18 @@ impl BackgroundRegistry {
                 return;
             }
             task.killed = true;
-            task.kill.cancel();
-            task.stop_target()
+            (task.stop_target(), task.kill.clone())
         };
         target.kill();
+        backstop.cancel();
     }
 
     /// Stop every running task — the quit and `/clear` sweep. Synchronous
-    /// (direct group kills), so the quit path can't orphan a `ping`.
+    /// (direct group kills), so the quit path can't orphan a `ping`. Each
+    /// task's kill token is tripped after its kill, as in
+    /// [`kill`](Self::kill).
     pub fn kill_all(&self) {
-        let targets: Vec<StopTarget> = {
+        let targets: Vec<(StopTarget, CancelToken)> = {
             let mut inner = self.inner.lock().expect("registry lock");
             inner
                 .tasks
@@ -1283,13 +1291,13 @@ impl BackgroundRegistry {
                 .filter(|task| !task.exited)
                 .map(|task| {
                     task.killed = true;
-                    task.kill.cancel();
-                    task.stop_target()
+                    (task.stop_target(), task.kill.clone())
                 })
                 .collect()
         };
-        for target in targets {
+        for (target, backstop) in targets {
             target.kill();
+            backstop.cancel();
         }
     }
 
@@ -2765,6 +2773,54 @@ mod tests {
         }
         let _ = session.child.wait();
         assert!(gone, "the job was killed with the session: {out:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_kill_sweeps_the_session_before_the_monitor_ends_its_leader() {
+        // The kill as `bashkill` and the quit sweep make it, monitor and all:
+        // the monitor answers the kill token by ending the leader's group,
+        // and a leader that dies before the sweep takes its session's
+        // terminal with it — on macOS, where the terminal is what names the
+        // session, its jobs then outlived the kill. With `pkill` standing in
+        // as macOS's, this failed 19 runs in 20 before the token was tripped
+        // after the kill.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let job_file = dir.path().join("job");
+        let (reg, _rx) = registry();
+        let task = reg
+            .launch_tty(
+                &format!(
+                    "set -m; sleep 300 & echo $! > '{}'; wait",
+                    job_file.display()
+                ),
+                None,
+                None,
+                true,
+            )
+            .expect("launches")
+            .task;
+        let deadline = std::time::Instant::now() + LONG;
+        let job: u32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&job_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "the job started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        reg.kill(&task.id);
+        let gone = gone_within(job, Duration::from_secs(5));
+        if let Some(job) = i32::try_from(job)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .filter(|_| !gone)
+        {
+            let _ = rustix::process::kill_process(job, rustix::process::Signal::KILL);
+        }
+        assert!(gone, "the job was killed with its session");
     }
 
     #[test]
