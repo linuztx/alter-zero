@@ -636,8 +636,9 @@ impl BackgroundRegistry {
     /// Install the terminal-detach helper — the TUI's own binary
     /// (`crate::subprocess`), the fallback tier that keeps a `/dev/tty`
     /// password prompt (`sudo`) failing fast even where the `setsid` binary
-    /// is absent (macOS). Production only (`main.rs` resolves `current_exe`
-    /// once at startup); without it the chain is just shorter.
+    /// is absent (macOS). `main.rs` resolves `current_exe` once at startup,
+    /// and the tests install the binary cargo built beside them; without it
+    /// the chain is just shorter.
     #[must_use]
     pub fn with_detach_helper(mut self, helper: Option<PathBuf>) -> Self {
         self.detach = helper;
@@ -2299,7 +2300,13 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let dir =
             std::env::temp_dir().join(format!("alter-zero-bg-test-{}-{seq}", std::process::id()));
-        (BackgroundRegistry::new(tx, dir), rx)
+        // The helper `main()` installs, so a terminal session starts where
+        // there is no `setsid` binary too (macOS).
+        let helper = crate::subprocess::test_detach_helper().map(std::path::Path::to_path_buf);
+        (
+            BackgroundRegistry::new(tx, dir).with_detach_helper(helper),
+            rx,
+        )
     }
 
     /// Wait (bounded) for the next event.
@@ -2709,7 +2716,7 @@ mod tests {
         let marker =
             std::env::temp_dir().join(format!("alter-zero-stopped-session-{}", std::process::id()));
         let mut session = crate::pty::spawn::spawn(
-            None,
+            crate::subprocess::test_detach_helper(),
             &format!(
                 "trap 'echo cleaned > {}; exit 0' TERM; echo up; while :; do sleep 0.1; done",
                 marker.display()
@@ -2740,9 +2747,11 @@ mod tests {
         // out of the group kill's reach: the session sweep is what ends it.
         // Where `pkill` cannot name a session (macOS), the terminal names it
         // only while the session's leader still holds it.
-        let mut session =
-            crate::pty::spawn::spawn(None, "set -m; sleep 300 & echo \"job=$!\"; wait")
-                .expect("spawns");
+        let mut session = crate::pty::spawn::spawn(
+            crate::subprocess::test_detach_helper(),
+            "set -m; sleep 300 & echo \"job=$!\"; wait",
+        )
+        .expect("spawns");
         let rx = master_reader(&session.master);
         let out = master_read_until(&rx, |out| {
             out.split("job=")

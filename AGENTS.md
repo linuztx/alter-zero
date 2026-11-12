@@ -55,7 +55,7 @@ multi-minute full rebuild — don't, unless the user asks.
 | a public item moved/renamed, or a `mod.rs` re-export | `cargo test --test api_surface` + `cargo doc --no-deps --lib` |
 | `src/cli.rs`, `--help`, arg parsing | `cargo test --lib cli::` + `cargo test --test cli_help` |
 | `src/headless.rs`, `src/tui/headless.rs`, anything `-p` reaches | `cargo test --lib headless::` + `cargo test --test headless` (the real binary over pipes, a stand-in provider on the loopback) + `scripts/smoke.sh 153` for the tty case |
-| `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed |
+| `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed (on a Mac, `cargo build` first: the terminal tests run through the built binary) |
 | `src/mcp/`, `src/llm/mcp/`, the `mcp` CLI | `cargo test --lib mcp::` (the filter matches both modules) + `cargo test --test mcp_cli` for the CLI |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`ls tests/*_memory.rs`) |
 | `providers.toml`, `src/llm/config.rs` | `cargo test --lib llm::config` — it pins the shipped provider set and the `snake_case` spellings |
@@ -104,15 +104,15 @@ CI runs the gate and the smoke suite on `ubuntu-latest`, and the gate's
 `cargo test` and `cargo doc` on `macos-latest` too (the `test · doc (macOS)`
 job, beside the clipboard tests and the smoke readers' selftest). Both are
 expected to be green, so a red `cargo test --lib` is yours on either — once a
-Mac has `setsid` on `PATH` (below). Know which platform you are on before you
-diagnose anything: the two compile different code
+Mac has the `alter-zero` binary built (below). Know which platform you are on
+before you diagnose anything: the two compile different code
 (`cfg(target_os = "linux")`) and run different tools (GNU and procps, or
 BSD).
 
 | | Linux (CI) | macOS (CI) |
 | --- | --- | --- |
-| `cargo test --lib` | green | green with `setsid` on `PATH`; **about 46 failures** without it |
-| `setsid` | ships with util-linux | **absent**; `brew install util-linux`, then put it on `PATH` |
+| `cargo test --lib` | green | green once the binary is built (`cargo build`, or any `cargo test`); **about 46 failures** before |
+| `setsid` | ships with util-linux | **absent**, and not needed: the terminal tests start their sessions through the built binary's helper, as the app does on a Mac |
 | `pkill`, `ps`, `od` | procps and GNU | BSD's: **`pkill` has no `-s` and its `-t` matches nothing (`ps -t` works), `ps` has no `sid`, `od` pads its columns** — code and tests must not lean on the GNU forms |
 | `--lib` tests compiled | about 6,540 | about 6,510 — **38** are `cfg(target_os = "linux")` and never compile here, **6** (`clipboard/macos.rs`) compile only here; the 10 in `src/tui/` are bin-only on both |
 | `scripts/smoke.sh` | bash 5 from the distro | needs **bash 4+**; macOS `/bin/bash` is 3.2 and dies |
@@ -140,26 +140,32 @@ or the Linux half of the executor. Say in the commit which platform you
 actually ran. Those areas need the Linux CI run (or a container) to mean
 anything.
 
-### macOS: the lib suite needs `setsid`
+### macOS: the terminal tests run through the built binary
 
 A test that starts a terminal session gets it from the detach chain's TTY
 tiers (`subprocess::tty_tiers`): util-linux's `setsid -c`, then the app's own
-helper re-exec. A test binary has libtest's `main`, not the app's, so there is
-no helper to re-exec, and macOS ships no `setsid`. Without one on `PATH`, about
-46 tests fail with `no way to give the command a terminal of its own here` —
-the environment, not your change. Put util-linux's on `PATH`:
+helper re-exec. macOS ships no `setsid`, so there the helper is the tier, for
+the app and its tests alike. A test binary's `main` is libtest's, so it cannot
+be the helper itself; the tests start their sessions through the `alter-zero`
+binary cargo builds beside them (`subprocess::test_detach_helper`).
+`cargo test` builds it before it runs anything. `cargo test --lib` does not,
+so on a fresh checkout build it once:
 
 ```bash
-brew install util-linux
-PATH="$(brew --prefix util-linux)/bin:$PATH" cargo test --lib
+cargo build
+cargo test --lib
 ```
 
-CI's macOS job links util-linux's `setsid` alone onto `PATH`, so every other
-tool the tests run is still macOS's own. The helper tier, the one the app uses
-on a Mac, is covered against the real binary by `tests/detached_exec.rs`,
-which `cargo test` runs.
+Without it about 46 tests fail with `no way to give the command a terminal of
+its own here (neither `setsid` nor the alter-zero helper is available)` — the
+environment, not your change. Rebuild it after changing the helper itself
+(`subprocess::run_detached_exec_if_requested`), since a test runs whatever
+binary is there.
 
-A test that fails on a Mac with `setsid` on `PATH` is a real failure: diagnose
+CI's macOS job runs with no `setsid` on `PATH`, and fails if an image ever
+puts one there, so the tier a Mac runs on is the tier the suite tests.
+
+A test that fails on a Mac with the binary built is a real failure: diagnose
 it. Six such failures used to be listed here as a baseline. One was `bashkill`
 never sending `SIGTERM` on macOS (its `pkill` has no `-s`); the rest were
 tests that read GNU output or asserted Linux-only behaviour.
@@ -197,8 +203,11 @@ Other platform notes:
 
 Three failure modes to name, because each looks like something it is not:
 
-- **"My change broke 46 tests"** on a fresh Mac — it did not; `setsid` is
-  missing. Confirm with `command -v setsid` before reading a single stack trace.
+- **"My change broke 46 tests"** on a fresh Mac — it did not; the
+  `alter-zero` binary is not built, and with no `setsid` there the terminal
+  tests have no way to start a session. Confirm with
+  `ls target/debug/alter-zero` before reading a single stack trace;
+  `cargo build` fixes it.
 - **"It passes on macOS, ship it"** for anything in `pty/probe`, `exec`,
   `subprocess`, `background` or `clipboard` — half of that code is behind
   `cfg(target_os = "linux")` and macOS never compiled it. Those need the Linux

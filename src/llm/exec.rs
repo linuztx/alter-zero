@@ -2251,7 +2251,13 @@ os.write(1, b"\n")'"#;
             "alter-zero-exec-bg-test-{}-{seq}",
             std::process::id()
         ));
-        (crate::background::BackgroundRegistry::new(tx, dir), rx)
+        // The helper `main()` installs, so a terminal session starts where
+        // there is no `setsid` binary too (macOS).
+        let helper = crate::subprocess::test_detach_helper().map(std::path::Path::to_path_buf);
+        (
+            crate::background::BackgroundRegistry::new(tx, dir).with_detach_helper(helper),
+            rx,
+        )
     }
 
     #[test]

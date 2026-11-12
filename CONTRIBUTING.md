@@ -161,8 +161,9 @@ the code they cover) plus the integration tests in `tests/` that are not
 
 [`AGENTS.md`](AGENTS.md) maps a change to the smallest check that can fail, with
 measured times — run that per edit and the full suite once at the end. It also
-says what a Mac needs for the suite (util-linux's `setsid` on `PATH`) and what
-differs between Linux and macOS, so a red run is read for what it is.
+says what a Mac needs for the suite (the binary built, which the terminal tests
+start their sessions through) and what differs between Linux and macOS, so a
+red run is read for what it is.
 
 | Suite | How | Run it when |
 | --- | --- | --- |

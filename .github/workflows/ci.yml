@@ -54,31 +54,29 @@ jobs:
     # beside Linux. On Linux alone, a test or a code path that leans on GNU
     # `ps` or `od`, procps' `pkill -s` or `/proc` passes by accident of the
     # platform: `bashkill` never sent SIGTERM on a Mac, and nothing here
-    # could see it. The library's tests start their terminal sessions through
-    # util-linux's `setsid`, which macOS lacks — a test binary has libtest's
-    # `main`, so the helper re-exec the app itself uses there is not there to
-    # call; `tests/detached_exec.rs` covers that tier against the real binary.
-    # Only `setsid` goes on PATH, so every other tool the tests run is
-    # macOS's own.
+    # could see it. macOS has no `setsid` binary, so the app gives a command
+    # its terminal through its own binary's helper re-exec; the library's
+    # tests start their terminal sessions the same way, through the
+    # `alter-zero` binary `cargo test` builds beside them
+    # (docs/tty-detach.md *Testing*) — the tier a Mac runs on, and every
+    # tool the tests run is macOS's own.
     name: test · doc (macOS)
     runs-on: macos-latest
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_NO_INSTALL_CLEANUP: "1"
     steps:
       - uses: actions/checkout@v7
+      - name: No setsid on PATH
+        # Fail rather than pass on another tier if an image ever ships one:
+        # the terminal tests must start their sessions through the helper.
+        run: |
+          if command -v setsid; then
+            echo "::error::setsid is on PATH; this job tests the helper tier macOS runs on"
+            exit 1
+          fi
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: debug
-      - name: Put util-linux's setsid, and nothing else of it, on PATH
-        run: |
-          brew install util-linux
-          mkdir -p "$RUNNER_TEMP/setsid"
-          ln -s "$(brew --prefix util-linux)/bin/setsid" "$RUNNER_TEMP/setsid/setsid"
-          "$RUNNER_TEMP/setsid/setsid" --version
-          echo "$RUNNER_TEMP/setsid" >> "$GITHUB_PATH"
       - run: cargo test
       - run: cargo doc --no-deps --lib
 

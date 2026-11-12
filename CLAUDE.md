@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 first edit: it maps a change to the smallest check that can fail, so the loop is
 `cargo test --lib <module>::` (sub-second warm) rather than `cargo test` or the
 whole smoke suite after every edit. It also says what a Mac needs for the
-lib suite (util-linux's `setsid` on `PATH` — without it every test that
-starts a terminal session fails, and that is not a regression) and what else
-differs between the two platforms CI tests on.
+lib suite (the `alter-zero` binary built: with no `setsid` there, the tests
+start their terminal sessions through its helper, and without it every such
+test fails, which is not a regression) and what else differs between the two
+platforms CI tests on.
 
 ## Commands
 
