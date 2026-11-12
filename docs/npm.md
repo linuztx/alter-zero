@@ -28,7 +28,8 @@ Each platform package holds one release archive's binary at
 `bin/alter-zero` (mode 755), the LICENSE and a README pointing at the
 launcher. npm reads the `os`/`cpu`/`libc` of every optional dependency and
 installs only the one that matches, so an install downloads the launcher
-(a few kilobytes) and one ~10 MB binary package; an optional dependency that
+(a few kilobytes) and one binary package of ~9 MB (`docs/binary-size.md`);
+an optional dependency that
 does not match is skipped rather than failed. The launcher's own `os`/`cpu`
 make npm refuse an unsupported platform (Windows, a 32-bit CPU) at install
 time instead of at first run. The packages are built from the **same

@@ -302,9 +302,10 @@ than in a diff.
 
 Cutting a release is a maintainer task and is fully scripted: `scripts/release.sh
 prepare X.Y.Z`, a commit, an annotated `vX.Y.Z` tag, a push. The tag push runs
-`.github/workflows/release.yml` — the gate, one build per platform, checksums,
-verification, and a GitHub release whose notes are the changelog's section for
-that version. `workflow_dispatch` rehearses the whole pipeline without publishing
+`.github/workflows/release.yml` — the gate, one build per platform (in the
+`dist` profile, whole-program LTO: [`docs/binary-size.md`](docs/binary-size.md)),
+checksums, verification, and a GitHub release whose notes are the changelog's
+section for that version. `workflow_dispatch` rehearses the whole pipeline without publishing
 anything, and every step runs locally the same way
 ([`docs/release.md`](docs/release.md)).
 
