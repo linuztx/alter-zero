@@ -1499,6 +1499,14 @@ mod tests {
         // — the read that made the update due — the cell showed the blanked
         // line instead of the spinner, frame after frame; it is sampled in
         // the pause between frames instead (`pty::pace`).
+        //
+        // The pieces are a millisecond apart, spent running rather than
+        // asleep: a sleep ends when the scheduler gets back to it, which on
+        // a loaded runner — macOS's three cores under the whole suite —
+        // came past the pacer's settle often enough to split a frame there
+        // every run. Woken by the sleep between frames, the program draws
+        // a whole frame in one slice, and a millisecond is still far longer
+        // than a read, so the pieces still arrive apart.
         let python = std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
         });
@@ -1510,7 +1518,9 @@ mod tests {
 os.write(1, b"installing\n")
 for glyph in "abcdefghijkl":
     os.write(1, b"\x1b[1G\x1b[0K")
-    time.sleep(0.001)
+    apart = time.perf_counter() + 0.001
+    while time.perf_counter() < apart:
+        pass
     os.write(1, glyph.encode())
     time.sleep(0.06)
 os.write(1, b"\n")'"#;
