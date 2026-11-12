@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The reported flicker (docs/interactive-shell.md *Streaming the running
+# The reported flicker (docs/tools/interactive-shell.md *Streaming the running
 # cell*), driven through the REAL backend against a stub provider: `bash`
 # starts a program drawing npm's spinner — each frame a column move, an
 # erase and the glyph, three writes every 80 ms — the call comes back with

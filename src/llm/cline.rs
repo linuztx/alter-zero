@@ -1,10 +1,10 @@
 //! Cline as a **subscription**: the account sign-in the Cline extension and
 //! CLI run, the refresh token it fills the `.env` store with, and the
-//! short-lived access token every request is minted with. See `docs/cline.md`.
+//! short-lived access token every request is minted with. See `docs/providers/cline.md`.
 //!
-//! The fourth sign-in, after GitHub Copilot's device flow (`docs/copilot.md`),
-//! OpenAI's browser loopback and device code (`docs/chatgpt.md`) and
-//! Anthropic's Console PKCE (`docs/claude.md`), and it keeps their two-layer
+//! The fourth sign-in, after GitHub Copilot's device flow (`docs/providers/copilot.md`),
+//! OpenAI's browser loopback and device code (`docs/providers/chatgpt.md`) and
+//! Anthropic's Console PKCE (`docs/providers/claude.md`), and it keeps their two-layer
 //! split exactly: a long-lived token in the `.env` key store, exchanged (and
 //! cached in memory, never written) for the short-lived credential the API
 //! actually takes.
@@ -99,7 +99,7 @@ const CATALOG_PATH: &str = "/api/v1/ai/cline/models";
 
 /// The signed-in account's ClinePass plan, and what of its rolling windows
 /// is used — the two reads behind the Cline dashboard's subscription page,
-/// and the `/usage` page's (`docs/usage.md`).
+/// and the `/usage` page's (`docs/providers/usage.md`).
 const PLAN_PATH: &str = "/api/v1/users/me/plan";
 const USAGE_LIMITS_PATH: &str = "/api/v1/users/me/plan/usage-limits";
 
@@ -269,7 +269,7 @@ pub struct DeviceCode {
 
 /// The wire shape of the code response. `expires_in` and `interval` arrive as
 /// numbers from WorkOS; both spellings are accepted, the tolerance
-/// `docs/chatgpt.md`'s device code already extends.
+/// `docs/providers/chatgpt.md`'s device code already extends.
 #[derive(Debug, Deserialize)]
 struct RawDeviceCode {
     #[serde(default)]
@@ -1123,7 +1123,7 @@ fn refresh_url() -> String {
 
 /// Where Cline's own catalog is read from, on the API host in force
 /// ([`set_api_base`]) — the records a ClinePass model borrows its facts from
-/// (`llm::models`, `docs/cline.md`).
+/// (`llm::models`, `docs/providers/cline.md`).
 #[must_use]
 pub fn catalog_url() -> String {
     format!("{}{CATALOG_PATH}", api_base())

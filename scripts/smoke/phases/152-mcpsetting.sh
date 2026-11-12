@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The /settings **MCP** row (docs/mcp.md, docs/settings.md): the session-wide
+# The /settings **MCP** row (docs/tools/mcp.md, docs/state/settings.md): the session-wide
 # switch over the servers /mcp turns on and off one by one. Driven against a
 # SCRIPTED modern stdio server (Phase 80's fixture) that drops a marker as it
 # starts and another once its stdin closes, so the phase sees the process
@@ -21,7 +21,7 @@ smoke_begin
 #      saves nothing;
 #   6. a project server new to the startup review, MCP off at launch — the
 #      review does not ask (nothing could run), /mcp lists it waiting, and
-#      turning MCP on asks then, the Hooks row's rule (docs/config-review.md).
+#      turning MCP on asks then, the Hooks row's rule (docs/state/config-review.md).
 S152="${S}_mcpsetting"
 MCP_DIR="$(mktemp -d)"
 cat >"$MCP_DIR/server.sh" <<MCPSRV

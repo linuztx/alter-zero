@@ -1,6 +1,6 @@
 //! The real tool executor — the I/O boundary that actually runs a `bash`
 //! command and reads/writes the filesystem for the model's tool calls (see
-//! `docs/tools.md`). The pure cores it wraps (arg parse, the edit engine, the
+//! `docs/tools/tools.md`). The pure cores it wraps (arg parse, the edit engine, the
 //! read formatter, the diff) live in [`crate::llm::tools`].
 //!
 //! Boundary code like `main.rs`/`term.rs`: the process/file I/O is verified by
@@ -30,7 +30,7 @@ pub trait ToolExecutor {
     /// a streaming tool (`bash`, `bash_session`) calls it as the command runs,
     /// so the TUI can tail the running cell (surfaced as
     /// [`ToolScreen`](crate::stream::StreamEvent::ToolScreen); see
-    /// `docs/tool-streaming.md`). A tool that produces its result all at once
+    /// `docs/ui/tool-streaming.md`). A tool that produces its result all at once
     /// (`read`/`write`/`edit`) simply never calls it — the full result still
     /// comes back in the returned [`ToolOutcome`].
     fn execute(
@@ -50,7 +50,7 @@ pub enum ToolProgress<'a> {
     /// good, `live` rows that replace the previous `live` — the line a plain
     /// command is still drawing, the rows a terminal can still redraw
     /// ([`crate::stream::StreamEvent::ToolScreen`],
-    /// `docs/interactive-shell.md`).
+    /// `docs/tools/interactive-shell.md`).
     Screen { settled: &'a str, live: &'a str },
     /// The call's header, refined
     /// ([`crate::stream::StreamEvent::ToolTitle`]).
@@ -63,15 +63,15 @@ const BASH_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// The real executor: runs commands under `sh -c` and touches the filesystem in
 /// the app's working directory. Stateless — paths resolve against the process
-/// cwd, the same trust model as the `!` shell (`docs/shell-command.md`).
+/// cwd, the same trust model as the `!` shell (`docs/input/shell-command.md`).
 /// An attached [`BackgroundRegistry`] enables `run_in_background` and the
-/// Ctrl+B handoff for `bash` (see `docs/background.md`); without one those
+/// Ctrl+B handoff for `bash` (see `docs/tools/background.md`); without one those
 /// resolve as recoverable errors / are unavailable.
 #[derive(Debug, Clone, Default)]
 pub struct RealToolExecutor {
     background: Option<BackgroundRegistry>,
     /// The launching **subagent**, when this executor runs one's tool calls
-    /// (`docs/agent-tool.md`): its `run_in_background` launches carry this
+    /// (`docs/agents/agent-tool.md`): its `run_in_background` launches carry this
     /// origin into the shared shell list, and the Ctrl+B latch is left alone
     /// (the handoff belongs to the main turn's foreground command — a
     /// subagent's concurrent `bash` must never steal it).
@@ -86,7 +86,7 @@ pub struct RealToolExecutor {
     /// The active model's image-input support (`ModelConfig::vision`):
     /// `Some(false)` makes an image `read` fail as a recoverable error
     /// instead of attaching pixels the provider would reject with the whole
-    /// turn (`docs/tools.md`). `None`/`Some(true)` attach as normal.
+    /// turn (`docs/tools/tools.md`). `None`/`Some(true)` attach as normal.
     vision: Option<bool>,
 }
 
@@ -97,7 +97,7 @@ impl RealToolExecutor {
     }
 
     /// Attach the shared background registry (the production path — `main.rs`
-    /// threads it through the backend). See `docs/background.md`.
+    /// threads it through the backend). See `docs/tools/background.md`.
     #[must_use]
     pub fn with_background(mut self, registry: BackgroundRegistry) -> Self {
         self.background = Some(registry);
@@ -105,7 +105,7 @@ impl RealToolExecutor {
     }
 
     /// Attribute this executor's background launches to a **subagent**
-    /// (`docs/agent-tool.md`): its `run_in_background` shells join the same
+    /// (`docs/agents/agent-tool.md`): its `run_in_background` shells join the same
     /// shared list — stacking into the footer count — tagged with the
     /// launcher, while the Ctrl+B handoff latch stays untouched (it belongs
     /// to the main turn's foreground command).
@@ -125,7 +125,7 @@ impl RealToolExecutor {
     }
 
     /// Tell the executor the active model's image-input support (the backend
-    /// copies it off its `ModelConfig`). See `docs/tools.md`.
+    /// copies it off its `ModelConfig`). See `docs/tools/tools.md`.
     #[must_use]
     pub fn with_vision(mut self, vision: Option<bool>) -> Self {
         self.vision = vision;
@@ -143,7 +143,7 @@ impl ToolExecutor for RealToolExecutor {
         let background = self.background.as_ref();
         let origin = self.bg_origin.as_ref();
         // The calls to a running session, one tool per action
-        // (docs/bash-tools.md), all through the one runner.
+        // (docs/tools/bash-tools.md), all through the one runner.
         let session = |parsed: Result<SessionCall, String>,
                        on_output: &mut dyn FnMut(ToolProgress<'_>)| {
             match parsed {
@@ -186,10 +186,10 @@ impl ToolExecutor for RealToolExecutor {
 }
 
 /// The model-facing result of a `bash` call started in the background on a
-/// **pipe** — where no terminal could be had (docs/bash-tools.md) — what the
+/// **pipe** — where no terminal could be had (docs/tools/bash-tools.md) — what the
 /// tool result says (the cell shows the fixed backgrounded row instead): the
 /// session id `bashwait`/`bashkill` take back, the log to `read` mid-run,
-/// and the promise of the final output. See `docs/background.md`.
+/// and the promise of the final output. See `docs/tools/background.md`.
 #[must_use]
 pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String {
     format!(
@@ -203,7 +203,7 @@ pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String 
 
 /// The model-facing result of a `bash` call started in the background — in
 /// a terminal of its own, so a question it asks can be answered
-/// (docs/bash-tools.md).
+/// (docs/tools/bash-tools.md).
 #[must_use]
 pub fn tty_background_launch_text(task: &crate::background::LaunchedTask) -> String {
     format!(
@@ -217,7 +217,7 @@ pub fn tty_background_launch_text(task: &crate::background::LaunchedTask) -> Str
 
 /// The model-facing result of a **Ctrl+B handoff** of a command that had
 /// not yet settled: the user moved it on, the session keeps running, and the
-/// model can come back to it (docs/bash-tools.md).
+/// model can come back to it (docs/tools/bash-tools.md).
 #[must_use]
 pub fn tty_handoff_text(task: &crate::background::LaunchedTask) -> String {
     format!(
@@ -238,7 +238,7 @@ pub fn tty_handoff_text(task: &crate::background::LaunchedTask) -> String {
 /// waiting, or it treats the acknowledgement as an anomaly and re-reads the
 /// log round after round. The launch facts (the log, the completion promise)
 /// are embedded verbatim so the two variants can never drift. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 #[must_use]
 pub fn background_handoff_text(task: &crate::background::LaunchedTask) -> String {
     format!(
@@ -257,7 +257,7 @@ fn arg_error(err: String) -> ToolOutcome {
     ToolOutcome::error(err)
 }
 
-/// `bash` (`docs/bash-tools.md`): run the command in a **terminal of its
+/// `bash` (`docs/tools/bash-tools.md`): run the command in a **terminal of its
 /// own** ([`run_tty`]) and return once it exits, stops to wait for input, or
 /// its `wait` passes — the command still running then goes on as a session.
 /// `wait: 0` (or the old `run_in_background`, or a trailing `&`) starts it in
@@ -277,7 +277,7 @@ fn run_bash(
         Err(e) => return arg_error(e),
     };
     // A Ctrl+B pressed before this command started belongs to nothing — drop
-    // it so it can't instantly background us (docs/background.md). The latch
+    // it so it can't instantly background us (docs/tools/background.md). The latch
     // is the MAIN turn's alone: a subagent's executor (origin set) leaves it
     // for the foreground command it actually belongs to.
     if let Some(registry) = background
@@ -294,10 +294,10 @@ fn run_bash(
 }
 
 /// `bash` on a **pipe** — the fallback where no terminal can be had
-/// (docs/bash-tools.md): stdin `/dev/null`, combined stdout+stderr folded
+/// (docs/tools/bash-tools.md): stdin `/dev/null`, combined stdout+stderr folded
 /// the way a terminal would show it and kept with both ends ([`PipeOutput`]),
 /// streamed as it arrives so the TUI tails the running cell
-/// (`docs/tool-streaming.md`), framed as codex does (`Exit code: N` +
+/// (`docs/ui/tool-streaming.md`), framed as codex does (`Exit code: N` +
 /// output). A `wait` that passes hands the command to the background
 /// registry, still running, as a session; with no registry to hold it, it is
 /// stopped there.
@@ -344,7 +344,7 @@ fn run_piped(
     // **group** kill reaps the whole tree, so the reader-thread joins can't
     // hang) and has **no controlling terminal** — a `/dev/tty` password
     // prompt (`sudo`) errors at once instead of hijacking the TUI (see
-    // `crate::subprocess`, docs/tools.md).
+    // `crate::subprocess`, docs/tools/tools.md).
     let mut child = match crate::subprocess::spawn_detached_in(
         detach_helper,
         crate::subprocess::tool_shell(),
@@ -467,7 +467,7 @@ fn run_piped(
     // Even on a clean exit, reap any process the command backgrounded — it holds
     // the pipe open, so joining the readers below would otherwise block on it.
     // The model is told when there was one (`server &`): it would otherwise go
-    // looking for what it started (docs/bash-tools.md).
+    // looking for what it started (docs/tools/bash-tools.md).
     let stranded = !timed_out && crate::subprocess::group_outlives(&child);
     crate::subprocess::kill_process_group(&mut child);
     let _ = out_reader.join();
@@ -506,13 +506,13 @@ fn run_piped(
         image: None,
         tasks: None,
         context,
-        // The status the frame above names, as data (docs/rollout-records.md).
+        // The status the frame above names, as data (docs/state/rollout-records.md).
         exit_code,
         error_kind: None,
     }
 }
 
-/// `bash` in a terminal of its own (`docs/bash-tools.md`): start the command
+/// `bash` in a terminal of its own (`docs/tools/bash-tools.md`): start the command
 /// and wait for it to **settle** — exit, stop at a prompt, or pass its `wait`
 /// (`pty::settle`: a quiet command is not a waiting one). A command that
 /// finished reports its whole output as data, exactly what a pipe returned
@@ -618,7 +618,7 @@ fn run_tty(
 }
 
 /// One call to a running session, whichever tool made it
-/// (`docs/bash-tools.md`): `bashsend` types and waits briefly for the
+/// (`docs/tools/bash-tools.md`): `bashsend` types and waits briefly for the
 /// answer, `bashwait` only waits, `bashkill` stops — and the legacy
 /// `bash_session` any mix of the three.
 struct SessionCall {
@@ -670,7 +670,7 @@ impl SessionCall {
     }
 }
 
-/// A call to a running session (`docs/bash-tools.md`): type into it, wait on
+/// A call to a running session (`docs/tools/bash-tools.md`): type into it, wait on
 /// it, or stop it — then report what it printed since the model's last look,
 /// under the frame saying where it stands. Works on every shell the registry
 /// holds: a terminal session takes typed input, a pipe task only a `<C-c>`
@@ -715,20 +715,20 @@ fn run_session(
     let mut parts = parse_input(call.input.as_deref().unwrap_or_default());
     // A key named alone with its brackets forgotten (`F3`, `Esc`) is that
     // key to a full-screen program, which reads every keystroke as a command
-    // — at a line prompt the name may be the answer (docs/interactive-shell.md).
+    // — at a line prompt the name may be the answer (docs/tools/interactive-shell.md).
     if io.modes().full_screen
         && let Some(key) = call.input.as_deref().and_then(bare_key)
     {
         parts = vec![crate::pty::keys::InputPart::Key(key)];
     }
     // Codes a terminal writes to programs are no keys: a program would take
-    // them as typing (docs/interactive-shell.md).
+    // them as typing (docs/tools/interactive-shell.md).
     let dropped = strip_output_codes(&mut parts);
     // A secret is typed as text, whatever its characters: its placeholder is
     // expanded here, inside the text runs the key notation left — never
     // before it, where a value holding `\n`, `<Up>` or `&lt;` would be read
     // as keys — and a placeholder naming nothing stored refuses the call
-    // before a key is typed (docs/secrets.md).
+    // before a key is typed (docs/state/secrets.md).
     if let Some(secrets) = registry.secrets() {
         let refused = secrets.with(|store| {
             let refusal = store.refusal_for(parts.iter().filter_map(|part| match part {
@@ -752,7 +752,7 @@ fn run_session(
         }
     }
     // The header names the command the keys go to
-    // (docs/interactive-shell.md).
+    // (docs/tools/interactive-shell.md).
     on_output(ToolProgress::Title(&tools::session_title(
         &session.command,
         call.input.as_deref(),
@@ -854,7 +854,7 @@ fn run_session(
     // waiting for input` note still on the board would only reach it after
     // this answer. After the look, not before it — a note the loop posts
     // later finds the prompt seen and is not posted at all
-    // (docs/bash-tools.md *One notice per exit*).
+    // (docs/tools/bash-tools.md *One notice per exit*).
     registry.retract_shell_notices(id, origin.map(|origin| origin.agent_id.as_str()));
     // What the model is told beyond the report — never the cell, which shows
     // what happened (its state row says where the session stands).
@@ -888,7 +888,7 @@ fn run_session(
     ToolOutcome {
         ok: !matches!(status, Status::Exited(code) if code != Some(0)),
         context: (!notes.is_empty()).then(|| format!("{report}\n{}", notes.join("\n"))),
-        // The call that saw the session exit records how (docs/rollout-records.md).
+        // The call that saw the session exit records how (docs/state/rollout-records.md).
         exit_code: match status {
             Status::Exited(code) => code,
             _ => None,
@@ -899,7 +899,7 @@ fn run_session(
 
 /// A call to a session that exited before it could act — the session ended
 /// while the model was writing the call, so no note had told the model yet
-/// (`docs/bash-tools.md` *One notice per exit*). The look covers the exit, as
+/// (`docs/tools/bash-tools.md` *One notice per exit*). The look covers the exit, as
 /// a call that saw it happen reports it: what the command printed since the
 /// model's last look under its exit code — and, for the model alone, what
 /// became of the call's own keys or kill, and who stopped the session when
@@ -936,14 +936,14 @@ fn claimed_exit_report(
     }
 }
 
-/// How long a stop gives the command to end by itself (`docs/bash-tools.md`):
+/// How long a stop gives the command to end by itself (`docs/tools/bash-tools.md`):
 /// half after the `SIGINT` a person's Ctrl+C sends, half after the `SIGTERM`
 /// every daemon handles, before whatever is left is killed. A `docker compose
 /// up` stopped with `SIGKILL` alone leaves its containers running.
 pub const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// Stop a session the way a person would, then make sure
-/// (`docs/bash-tools.md`): `SIGINT` to everything in it, then `SIGTERM`, each
+/// (`docs/tools/bash-tools.md`): `SIGINT` to everything in it, then `SIGTERM`, each
 /// given half of [`KILL_GRACE`] to end it — a program still waiting at a
 /// prompt after one gets the next at once — and `SIGKILL` for whatever is
 /// left, the session's whole process tree included.
@@ -985,7 +985,7 @@ fn stop_session(
 /// How long a kill waits for the killed command's last output and exit.
 const SESSION_STOP_WAIT: Duration = Duration::from_secs(3);
 
-/// `bashlist` (`docs/bash-tools.md`): every running session — its id, its
+/// `bashlist` (`docs/tools/bash-tools.md`): every running session — its id, its
 /// command, how long it has run, and whether it waits for input — so a model
 /// that lost an id to a `/compact` or a `/resume` finds it without guessing.
 fn run_list(background: Option<&BackgroundRegistry>) -> ToolOutcome {
@@ -1005,7 +1005,7 @@ fn run_list(background: Option<&BackgroundRegistry>) -> ToolOutcome {
 /// report covered the exit; otherwise the session is another conversation's,
 /// which its exit is reported to. "Already reported or never existed" sent a
 /// model looking for an output it had never been shown
-/// (`docs/bash-tools.md` *One notice per exit*).
+/// (`docs/tools/bash-tools.md` *One notice per exit*).
 fn unknown_session_text(
     id: &str,
     running: &[(String, String)],
@@ -1091,11 +1091,11 @@ fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
 /// two frames ([`crate::pty::pace`]).
 const PIPE_STREAM_INTERVAL: Duration = Duration::from_millis(50);
 
-/// A plain command's output as it arrives (`docs/interactive-shell.md`):
+/// A plain command's output as it arrives (`docs/tools/interactive-shell.md`):
 /// folded the way a terminal would show it ([`Fold`] — a `\r`-redrawn
 /// progress bar is one line in its final state, colour escapes gone), each
 /// line kept once it ends — both ends of the output past the cap, the cut
-/// marked ([`HeadTail`], `docs/bash-tools.md`) — and streamed to the running
+/// marked ([`HeadTail`], `docs/tools/bash-tools.md`) — and streamed to the running
 /// cell as [`ToolProgress::Screen`]: the ended lines appended, the line still
 /// being drawn redrawn in place.
 ///
@@ -1210,7 +1210,7 @@ impl PipeOutput {
 /// byte-capped. On a model whose `/v1/models` record said "no image input"
 /// (`vision == Some(false)`), an image read fails as a recoverable error
 /// before touching the file — attaching would make the provider fail the
-/// whole turn instead (`docs/tools.md`).
+/// whole turn instead (`docs/tools/tools.md`).
 fn run_read(arguments: &str, vision: Option<bool>) -> ToolOutcome {
     let args: ReadArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
@@ -1241,7 +1241,7 @@ fn run_read(arguments: &str, vision: Option<bool>) -> ToolOutcome {
     ToolOutcome::ok(output).with_truncated(truncated)
 }
 
-/// The image branch of `read` (`docs/tools.md`): bound the size, sniff the
+/// The image branch of `read` (`docs/tools/tools.md`): bound the size, sniff the
 /// real format from the bytes (the MIME must match the content, not the
 /// extension, or a provider decodes garbage), read the header dimensions, and
 /// return the facts as the text output with the base64 `data:` URL riding
@@ -1277,7 +1277,7 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     // and past the byte cap it could not be sent at all. The *file* is
     // untouched — only what rides the request shrinks — so the fact line
     // leads with the file's own size and names the sent one after
-    // (`docs/images.md`). Through the session's payload cache: a picture the
+    // (`docs/ui/images.md`). Through the session's payload cache: a picture the
     // model reads twice is shrunk once.
     let sent = crate::images::downscale_for_model_at(std::path::Path::new(path), bytes, format);
     let (payload, mime, label) = match &sent {
@@ -1297,13 +1297,13 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
     }
     // The session keeps this one encoding: every later turn re-sends the
     // picture, and reads it back from the cache rather than from the file
-    // (`docs/memory.md`).
+    // (`docs/architecture/memory.md`).
     let url = crate::images::remember_attachment(std::path::Path::new(path), payload, mime);
     // The cell this read resolves draws the picture from the file, so the
     // renderer hears that it is there — over a verdict that it was gone: a
     // resumed conversation that found this path missing, its `/tmp`
     // screenshot wiped by a reboot, before the agent took it again
-    // (`docs/images.md`, *A picture whose file is gone*).
+    // (`docs/ui/images.md`, *A picture whose file is gone*).
     crate::images::remember_size(path, (width, height));
     let text = match &sent {
         Some(small) => tools::format_read_image_resized(
@@ -1354,7 +1354,7 @@ fn run_write(arguments: &str) -> ToolOutcome {
     let display = describe_change(&args.path, &old, &args.content, !existed);
     // The cell keeps the numbered body; the model reads one line, because the
     // content it just sent replays verbatim on the call itself
-    // (`docs/tools.md`, `docs/context.md`). A write that changed nothing has
+    // (`docs/tools/tools.md`, `docs/architecture/context.md`). A write that changed nothing has
     // no body to spare it, so it stays single-text.
     if old == args.content {
         return ToolOutcome::ok(display);
@@ -1394,7 +1394,7 @@ fn run_edit(arguments: &str) -> ToolOutcome {
 }
 
 /// The model-facing result of a `write`/`edit` — also exactly what the cell
-/// shows (the TUI restyles the rows; see `docs/tools.md`). A brand-new file is
+/// shows (the TUI restyles the rows; see `docs/tools/tools.md`). A brand-new file is
 /// a `Wrote {N} lines to {path}` head over the numbered contents
 /// ([`tools::write_report`]); a change to existing content is an
 /// `Updated {path} (+A -D)` head over the numbered diff hunks
@@ -1480,7 +1480,7 @@ mod tests {
     fn a_plain_commands_progress_bar_reaches_the_model_once() {
         // curl's meter, tqdm, ffmpeg: `\r` frames on a pipe. The model reads
         // the line as a terminal would show it — its final frame — and the
-        // running cell redraws it in place (docs/interactive-shell.md).
+        // running cell redraws it in place (docs/tools/interactive-shell.md).
         let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.15; done; printf '\n'";
         let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
@@ -1581,7 +1581,7 @@ os.write(1, b"\n")'"#;
     #[test]
     fn a_plain_commands_long_output_keeps_both_ends_and_says_so() {
         // The head alone lost a build's summary, and it stopped mid-line
-        // without a word to the model (docs/bash-tools.md).
+        // without a word to the model (docs/tools/bash-tools.md).
         let out = exec("bash", r#"{"command":"seq 1 30000"}"#);
         assert!(out.ok, "{}", &out.output[..200]);
         assert!(out.output.starts_with("Exit code: 0\n1\n2\n3\n"));
@@ -1601,7 +1601,7 @@ os.write(1, b"\n")'"#;
     fn bash_streams_its_output_to_the_sink() {
         // The live-output sink receives the command's output as it runs; by the
         // time execute returns it has seen all of it, and the framed final still
-        // carries the same body (docs/tool-streaming.md).
+        // carries the same body (docs/ui/tool-streaming.md).
         let mut cell = LiveCell::default();
         let out = RealToolExecutor::new().execute(
             &call("bash", r#"{"command":"printf 'a\nb\nc\n'"}"#),
@@ -1663,7 +1663,7 @@ os.write(1, b"\n")'"#;
         assert!(out.ok);
         assert!(out.output.starts_with("Exit code: 0"), "got {}", out.output);
         assert!(out.output.contains("hello"));
-        // …and as data, for the rollout (docs/rollout-records.md).
+        // …and as data, for the rollout (docs/state/rollout-records.md).
         assert_eq!(out.exit_code, Some(0));
     }
 
@@ -1742,7 +1742,7 @@ os.write(1, b"\n")'"#;
         assert!(out.output.contains("2 beta"));
     }
 
-    // ===== image reads (docs/tools.md) =====
+    // ===== image reads (docs/tools/tools.md) =====
 
     #[test]
     fn read_of_a_png_attaches_the_image() {
@@ -1787,7 +1787,7 @@ os.write(1, b"\n")'"#;
         // A resumed conversation can have found this very path missing — a
         // screenshot under `/tmp`, wiped by a reboot — and the agent taking
         // it again and reading it must draw again rather than inherit the
-        // old verdict (`docs/images.md`, *A picture whose file is gone*).
+        // old verdict (`docs/ui/images.md`, *A picture whose file is gone*).
         let path = temp_path("read-image-seen-again.png");
         let name = path.to_str().unwrap().to_string();
         crate::images::remember_missing(&name);
@@ -1858,7 +1858,7 @@ os.write(1, b"\n")'"#;
     fn an_image_past_the_resize_cap_is_downscaled_not_refused() {
         // `/settings` **Auto-resize images**, on by default: the file keeps
         // its own size (which is what the cell draws), and the fact line names
-        // the original first and what was uploaded after (`docs/images.md`).
+        // the original first and what was uploaded after (`docs/ui/images.md`).
         let path = temp_path("read-image-big.png");
         image::RgbImage::from_pixel(3000, 2000, image::Rgb([10, 120, 220]))
             .save_with_format(&path, image::ImageFormat::Png)
@@ -2043,7 +2043,7 @@ os.write(1, b"\n")'"#;
 
     #[test]
     fn write_hands_the_model_one_line_and_the_cell_the_numbered_body() {
-        // The two-text split (`ToolOutcome::context`, docs/tools.md): the
+        // The two-text split (`ToolOutcome::context`, docs/tools/tools.md): the
         // numbered content is the *cell*, and what rides the conversation is
         // one line — the arguments already carry the content verbatim.
         let path = temp_path("write-ack-new.txt");
@@ -2191,12 +2191,12 @@ os.write(1, b"\n")'"#;
         assert!(out.output.contains("invalid tool arguments"));
     }
 
-    // ===== background (docs/background.md) =====
+    // ===== background (docs/tools/background.md) =====
 
     #[test]
     fn background_launch_text_names_the_session_the_companions_take_back() {
         // The id is model-facing: `bashwait` checks on the command and
-        // `bashkill` stops it (docs/bash-tools.md). It appears as the session
+        // `bashkill` stops it (docs/tools/bash-tools.md). It appears as the session
         // id and as the log's basename — twice, never as a separate label.
         let task = crate::background::LaunchedTask {
             id: "bvyo7tkbe".to_string(),
@@ -2234,7 +2234,7 @@ os.write(1, b"\n")'"#;
         // command finishes. "You will be re-invoked" named the harness's
         // own mechanism instead — a word a model can do nothing with, and
         // one that reads as a threat of interruption rather than a promise
-        // of delivery (docs/background.md).
+        // of delivery (docs/tools/background.md).
         let task = crate::background::LaunchedTask {
             id: "bash_3".to_string(),
             output_path: std::path::PathBuf::from("/tmp/tasks/bash_3.output"),
@@ -2252,7 +2252,7 @@ os.write(1, b"\n")'"#;
         // Ctrl+B: the model expected a foreground run's full output, so the
         // handoff must say the USER moved the command, carry the launch facts
         // (interim path + completion promise) verbatim, and steer
-        // the model off re-running/polling (docs/background.md).
+        // the model off re-running/polling (docs/tools/background.md).
         let task = crate::background::LaunchedTask {
             id: "bash_7".to_string(),
             output_path: std::path::PathBuf::from("/tmp/tasks/bash_7.output"),
@@ -2379,7 +2379,7 @@ os.write(1, b"\n")'"#;
         // The Ctrl+B path: raise the latch mid-run; the launch's wait takes
         // it and hands the session over as it stands — the outcome flips to
         // backgrounded, the model is told the user moved it, and the command
-        // finishes on its own, its log holding every line (docs/bash-tools.md).
+        // finishes on its own, its log holding every line (docs/tools/bash-tools.md).
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let flag = registry.clone();
@@ -2408,7 +2408,7 @@ os.write(1, b"\n")'"#;
         );
         // The model asked for a FOREGROUND run — the result must say the
         // *user* moved it, or the model keeps waiting for the full output
-        // and polls the log round after round (docs/background.md).
+        // and polls the log round after round (docs/tools/background.md).
         assert!(
             out.output
                 .starts_with("The user moved this command to the background"),
@@ -2453,7 +2453,7 @@ os.write(1, b"\n")'"#;
 
     #[test]
     fn a_background_request_hands_a_piped_command_off_mid_run() {
-        // The same Ctrl+B where no terminal can be had (docs/bash-tools.md):
+        // The same Ctrl+B where no terminal can be had (docs/tools/bash-tools.md):
         // the poll loop adopts the child — the already-produced output
         // replays into the background stream.
         let (registry, mut rx) = test_registry();
@@ -2513,7 +2513,7 @@ os.write(1, b"\n")'"#;
     fn a_piped_command_that_outlives_its_wait_goes_on_as_a_session() {
         // No terminal here, but a registry to hold the command: its `wait`
         // passing hands it over, still running, never stops it
-        // (docs/bash-tools.md).
+        // (docs/tools/bash-tools.md).
         let (registry, _rx) = test_registry();
         let registry = registry.without_terminals();
         let executor = RealToolExecutor::new().with_background(registry.clone());
@@ -2565,7 +2565,7 @@ os.write(1, b"\n")'"#;
     fn a_subagent_executor_launches_in_background_with_its_origin() {
         // A subagent's run_in_background works like the main turn's — the
         // shell joins the shared registry — with the launcher attributed on
-        // the Started event (docs/agent-tool.md).
+        // the Started event (docs/agents/agent-tool.md).
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new()
             .with_background(registry)
@@ -2604,7 +2604,7 @@ os.write(1, b"\n")'"#;
     fn a_subagent_executor_never_consumes_the_ctrl_b_latch() {
         // Ctrl+B belongs to the MAIN turn's foreground command: a subagent's
         // concurrently-running bash must neither clear a pending request as
-        // it starts nor take it mid-run (docs/agent-tool.md).
+        // it starts nor take it mid-run (docs/agents/agent-tool.md).
         let (registry, _rx) = test_registry();
         registry.request_background();
         let executor = RealToolExecutor::new()
@@ -2630,7 +2630,7 @@ os.write(1, b"\n")'"#;
     }
 
     // --- interactive shells: `bash` with `tty`, and `bash_session`
-    // (docs/interactive-shell.md) ---
+    // (docs/tools/interactive-shell.md) ---
 
     fn exec_with(executor: &RealToolExecutor, name: &str, args: &str) -> ToolOutcome {
         executor.execute(&call(name, args), &CancelToken::new(), &mut |_| {})
@@ -2664,7 +2664,7 @@ os.write(1, b"\n")'"#;
     #[cfg(unix)]
     #[test]
     fn a_command_that_finishes_in_its_call_reports_its_output_as_data() {
-        // Every command runs in a terminal (docs/bash-tools.md), and one that
+        // Every command runs in a terminal (docs/tools/bash-tools.md), and one that
         // finishes inside its call reads exactly as a pipe's output did —
         // tabs and trailing spaces included — and is never listed.
         let (registry, mut rx) = test_registry();
@@ -2688,7 +2688,7 @@ os.write(1, b"\n")'"#;
     #[test]
     fn a_quiet_command_runs_to_its_exit_in_one_call() {
         // `sleep 3; echo done` came back `Running` after two seconds of
-        // silence, then exited with nobody watching (docs/bash-tools.md).
+        // silence, then exited with nobody watching (docs/tools/bash-tools.md).
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry);
         let out = exec_with(&executor, "bash", r#"{"command":"sleep 3; echo done"}"#);
@@ -2703,7 +2703,7 @@ os.write(1, b"\n")'"#;
     #[test]
     fn a_command_that_outlives_its_wait_keeps_running_as_a_session() {
         // A wait, not a timeout: the command is not stopped when it passes
-        // (docs/bash-tools.md).
+        // (docs/tools/bash-tools.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let out = exec_with(
@@ -2825,7 +2825,7 @@ os.write(1, b"\n")'"#;
     #[test]
     fn a_secret_typed_into_a_session_is_text_whatever_its_characters() {
         // The value is expanded inside the text the key notation leaves, never
-        // before it (docs/secrets.md): expanded first, this password's `\n`
+        // before it (docs/state/secrets.md): expanded first, this password's `\n`
         // would be undone into a line break by the double-escape repair the
         // slipped `\\n` below triggers, its `<Up>` read as an arrow key and
         // its `&lt;` as HTML. The program reverses the line it reads, so the
@@ -2864,7 +2864,7 @@ os.write(1, b"\n")'"#;
         // Typed as written, a misspelled placeholder is a wrong password at
         // the prompt — an attempt counted against the account. The check
         // reads the text the key notation leaves, so a placeholder escaped
-        // as HTML is caught too (docs/secrets.md).
+        // as HTML is caught too (docs/state/secrets.md).
         let mut store = crate::secrets::SecretStore::new();
         store
             .apply(&crate::secrets::SecretDraft {
@@ -2911,7 +2911,7 @@ os.write(1, b"\n")'"#;
     #[test]
     fn codes_a_terminal_sends_programs_are_not_typed_and_the_model_hears_why() {
         // A model appended `\u001b[?25h` ("show the cursor") to its keys and
-        // the program took it as typing (docs/interactive-shell.md).
+        // the program took it as typing (docs/tools/interactive-shell.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry);
         let out = exec_with(
@@ -2968,11 +2968,11 @@ os.write(1, b"\n")'"#;
     fn indented_lines_reach_a_program_that_takes_pastes_as_one_paste() {
         // vim, bash, Python 3.13: a program in bracketed-paste mode is sent
         // typed code the way a person pastes it, so its auto-indent leaves
-        // the indentation alone (docs/interactive-shell.md). This one turns
+        // the indentation alone (docs/tools/interactive-shell.md). This one turns
         // the mode on and shows exactly what reached it. Linux only: the
         // paste goes to the program the process table names, and elsewhere
         // none does, so on the main screen the code is typed
-        // (docs/interactive-shell.md *Limits*).
+        // (docs/tools/interactive-shell.md *Limits*).
         if std::process::Command::new("python3")
             .arg("--version")
             .output()
@@ -3073,7 +3073,7 @@ os.write(1, b"\n")'"#;
     #[cfg(unix)]
     #[test]
     fn kill_asks_the_command_to_stop_before_it_insists() {
-        // A server that cleans up on SIGTERM gets to (docs/bash-tools.md): a
+        // A server that cleans up on SIGTERM gets to (docs/tools/bash-tools.md): a
         // `docker compose up` killed outright leaves its containers running.
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
@@ -3363,7 +3363,7 @@ os.write(1, b"\n")'"#;
     #[cfg(unix)]
     #[test]
     fn a_display_that_reads_whole_lines_is_never_said_to_wait_for_input() {
-        // The reported case (docs/interactive-shell.md): `gh run watch`
+        // The reported case (docs/tools/interactive-shell.md): `gh run watch`
         // started in the background and waited on — its screen, quiet between
         // redraws, ended the wait at once as "waiting for input", and the
         // model killed it. Nothing reads a key there: the wait rides it out,
@@ -3644,7 +3644,7 @@ select.select([sys.stdin], [], [])'"#;
         // The kernel cannot see into sudo — a timed `read -s` waits in
         // `pselect6`, blind the same way — and a wait begun after the prompt
         // sees no output of its own: only the terminal's mode, a line read
-        // with echo off, says it asks (docs/interactive-shell.md).
+        // with echo off, says it asks (docs/tools/interactive-shell.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let script = r#"bash -c 'read -p "Continue? " a; sleep 3; read -s -t 60 -p "Password: " p; echo; echo "got ${#p}"'"#;
@@ -3714,7 +3714,7 @@ select.select([sys.stdin], [], [])'"#;
         // The program takes the answer, works quietly, then asks again: the
         // kernel sees it at work meanwhile, so the call that typed the
         // answer returns with the next question rather than a `Running`
-        // (docs/bash-tools.md).
+        // (docs/tools/bash-tools.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let script = r#"read -p "Continue? " a; sleep 3; read -p "Name? " n; echo "hi $n""#;
@@ -3749,7 +3749,7 @@ select.select([sys.stdin], [], [])'"#;
         // kernel cannot see the timed read (`pselect6`, blind the way it is
         // behind sudo), and it is no password: a wait begun after the
         // question still ends on it, since the model has not seen it
-        // (docs/interactive-shell.md).
+        // (docs/tools/interactive-shell.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let script =
@@ -3982,7 +3982,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     fn a_session_calls_header_names_its_command_and_shows_the_keys_typed() {
         // The header says what the keys go to, and shows them as typed — at
         // a prompt that reads with echo off too: masking there hid ordinary
-        // input as often as a password (docs/interactive-shell.md).
+        // input as often as a password (docs/tools/interactive-shell.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let out = exec_with(
@@ -4371,7 +4371,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         // exit itself now: what the command printed since the model's last
         // look, under its exit code, with the model told nothing was typed —
         // and the note that would have said the same is not owed
-        // (docs/bash-tools.md *One notice per exit*).
+        // (docs/tools/bash-tools.md *One notice per exit*).
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let launched = exec_with(
@@ -4407,7 +4407,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     fn a_subagents_call_into_its_session_that_just_ended_reports_its_exit() {
         // The same race inside a subagent: its shell's note went to the
         // subagent's own queue, unread, so its call claims the exit there
-        // (docs/bash-tools.md *One notice per exit*).
+        // (docs/tools/bash-tools.md *One notice per exit*).
         let (agents_tx, _agents_rx) = tokio::sync::mpsc::unbounded_channel();
         let agents = crate::agents::AgentRegistry::new(agents_tx);
         let (agent, _cancel) = agents.register(crate::agents::GENERAL_PURPOSE);
@@ -4477,7 +4477,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         // posted `… is waiting for input` — and the model, before reading it,
         // called the session itself. The call's report shows the prompt; the
         // note would reach the model only after its answer, so it goes
-        // (docs/bash-tools.md *One notice per exit*).
+        // (docs/tools/bash-tools.md *One notice per exit*).
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let launched = exec_with(
@@ -4527,7 +4527,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         // went to the subagent's own queue, and the subagent looked before
         // its next round read it. The look showed the prompt, so the note —
         // and the cell held for it — go, as the lead's would off the board
-        // (docs/bash-tools.md *One notice per exit*).
+        // (docs/tools/bash-tools.md *One notice per exit*).
         let (agents_tx, _agents_rx) = tokio::sync::mpsc::unbounded_channel();
         let agents = crate::agents::AgentRegistry::new(agents_tx);
         let (agent, _cancel) = agents.register(crate::agents::GENERAL_PURPOSE);
@@ -4687,7 +4687,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     #[test]
     fn a_subagents_note_the_board_took_is_the_leads_to_have_read() {
         // Its launcher settled before the exit, so the note went to the
-        // lead's board instead (docs/agent-tool.md): the lead read it, and a
+        // lead's board instead (docs/agents/agent-tool.md): the lead read it, and a
         // later call of the lead's naming the session was reported to.
         let (registry, mut rx) = test_registry();
         let subagent = RealToolExecutor::new()
@@ -4725,7 +4725,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         // The lead's session ended unheard, and a subagent named it. Its note
         // is the lead's to read, so the call claims nothing — and must not
         // answer "already reported or never existed" either: it was reported
-        // to nobody yet, and certainly existed (docs/bash-tools.md).
+        // to nobody yet, and certainly existed (docs/tools/bash-tools.md).
         let (registry, mut rx) = test_registry();
         let lead = RealToolExecutor::new().with_background(registry.clone());
         let launched = exec_with(&lead, "bash", r#"{"command":"echo removed","wait":0}"#);
@@ -4833,7 +4833,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     fn a_background_launch_returns_its_session_at_once() {
         // `wait: 0`: the command starts in a terminal of its own and the call
         // returns at once, naming the session — which takes typing like any
-        // other (docs/bash-tools.md).
+        // other (docs/tools/bash-tools.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let out = exec_with(&executor, "bash", r#"{"command":"cat","wait":0}"#);
@@ -4958,7 +4958,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     fn a_terminal_calls_cell_redraws_a_progress_bar_in_place() {
         // The running cell streams what the report will say: the bar is one
         // row replaced as it moves, never its every frame
-        // (docs/interactive-shell.md).
+        // (docs/tools/interactive-shell.md).
         let (registry, _rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
         let command = r"printf 'fetching\n'; for p in 10 40 70 100; do printf '\r%3d%%' $p; sleep 0.2; done; printf '\n'";
@@ -5046,7 +5046,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
     fn sessions_need_the_registry_and_bash_runs_on_a_pipe_without_one() {
         // No registry, no sessions to hold (an embedder, a test): `bash` runs
         // on a pipe to its exit, and the companions say there is nothing to
-        // continue (docs/bash-tools.md).
+        // continue (docs/tools/bash-tools.md).
         let out = exec("bash", r#"{"command":"echo hi"}"#);
         assert!(out.ok);
         assert_eq!(out.output, "Exit code: 0\nhi\n");

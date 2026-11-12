@@ -1,5 +1,5 @@
 //! AGENTS.md discovery — codex's project doc, in the context window's
-//! `<system-reminder>` (see `docs/project-doc.md`).
+//! `<system-reminder>` (see `docs/state/project-doc.md`).
 //!
 //! `/init` generates an `AGENTS.md` contributor guide; this module reads it
 //! (and any nested ones) back so every turn's context carries the project's
@@ -395,7 +395,7 @@ mod tests {
         );
     }
 
-    // --- the instructions section (docs/project-doc.md) ---
+    // --- the instructions section (docs/state/project-doc.md) ---
 
     #[test]
     fn doc_heading_names_the_file_and_whether_it_is_checked_in() {

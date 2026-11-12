@@ -1,4 +1,4 @@
-//! The `/export` page and the export file name (`docs/export.md`).
+//! The `/export` page and the export file name (`docs/ui/export.md`).
 
 use super::*;
 
@@ -90,7 +90,7 @@ fn slash_export_works_mid_turn() {
 fn inside_an_agent_view_the_viewed_transcript_is_what_counts() {
     // The main history can be empty while a subagent's session view is up —
     // the export is of the conversation on screen, so the page opens on the
-    // agent's own transcript (the `/copy` rule, `docs/copy.md`).
+    // agent's own transcript (the `/copy` rule, `docs/ui/copy.md`).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(
@@ -246,7 +246,7 @@ fn the_page_owns_every_other_key() {
 #[test]
 fn an_open_page_suppresses_the_ctrl_b_hint_clock_and_asks_no_animation() {
     // The running cell it keeps visible above itself must not advertise a
-    // Ctrl+B the page would swallow (docs/background.md) — and the page is
+    // Ctrl+B the page would swallow (docs/tools/background.md) — and the page is
     // still, so it never re-arms the animation chain on its own.
     let mut app = App::new();
     app.record_user_message("hello");

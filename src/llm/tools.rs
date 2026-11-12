@@ -1,4 +1,4 @@
-//! The tool-calling primitives — **pure and unit-tested** (see `docs/tools.md`).
+//! The tool-calling primitives — **pure and unit-tested** (see `docs/tools/tools.md`).
 //!
 //! This module holds everything the real backend needs to offer the model the
 //! `bash` / `read` / `write` / `edit` tools *except* the I/O itself:
@@ -22,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// How long a `bash` call waits for its command before it returns, when the
-/// model names no `wait` (`docs/bash-tools.md`) — long enough for a build or
+/// model names no `wait` (`docs/tools/bash-tools.md`) — long enough for a build or
 /// a test run. Passing it never stops the command.
 pub const BASH_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
@@ -56,7 +56,7 @@ pub struct ToolCallRequest {
 /// `ok` outcome (green vs red cell), and whether the output was `truncated` at
 /// the byte cap. Mirrors the `StreamEvent::ToolEnd` payload the loop emits —
 /// except a `background: Some(id)` outcome, which the agent loop surfaces as
-/// `StreamEvent::ToolBackgrounded` instead (see `docs/background.md`).
+/// `StreamEvent::ToolBackgrounded` instead (see `docs/tools/background.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutcome {
     pub output: String,
@@ -71,10 +71,10 @@ pub struct ToolOutcome {
     /// png/jpg/jpeg/gif/webp): the pixels the agent loop attaches as a
     /// follow-up **user** message — never part of `output`, which stays the
     /// small human/model-readable text (byte-capped, cell-displayed,
-    /// token-counted, session-recorded). See `docs/tools.md`.
+    /// token-counted, session-recorded). See `docs/tools/tools.md`.
     pub image: Option<crate::images::AttachmentUrl>,
     /// `Some(snapshot)` when the call was a **task tool** op
-    /// (`docs/task-tools.md`): the post-call state of the shared task list,
+    /// (`docs/tools/task-tools.md`): the post-call state of the shared task list,
     /// which `run_agent` surfaces as `StreamEvent::TaskCall` — the single
     /// event that replaces the `ToolStart`/`ToolEnd` pair for these calls —
     /// so the live checklist under the status line tracks every change.
@@ -83,9 +83,9 @@ pub struct ToolOutcome {
     /// `Some(text)` when the **model-facing result differs from the displayed
     /// cell text**. Three tools split this way: `write`/`edit`, whose cell
     /// keeps the numbered content or diff hunks while the model reads a
-    /// one-line ack ([`write_ack`]/[`edit_ack`], `docs/tools.md`); `skill`,
+    /// one-line ack ([`write_ack`]/[`edit_ack`], `docs/tools/tools.md`); `skill`,
     /// whose cell is one green line over the rendered body
-    /// (`docs/skills.md`); and `AskUserQuestion` (`docs/ask.md`), where
+    /// (`docs/tools/skills.md`); and `AskUserQuestion` (`docs/tools/ask.md`), where
     /// `output` is the committed cell's text (`User answered Alter
     /// Zero's questions:` over the `· Q → A` rows) while this is what the tool call
     /// returns to the model (the answers JSON, or the declined/chat
@@ -97,7 +97,7 @@ pub struct ToolOutcome {
     pub context: Option<String>,
     /// The command's exit status, when it exited during the call — what the
     /// rollout's `tool` line records as `exit_code`
-    /// (`docs/rollout-records.md`). Set wherever the executor learns one:
+    /// (`docs/state/rollout-records.md`). Set wherever the executor learns one:
     /// the pipe runner, the terminal runner, a session call that saw the
     /// exit. `None` for every other outcome.
     pub exit_code: Option<i32>,
@@ -143,7 +143,7 @@ impl ToolOutcome {
 
     /// A call resolved by moving to the background: `output` is the
     /// model-facing launch text (the interim-output path + completion
-    /// promise). See `docs/background.md`.
+    /// promise). See `docs/tools/background.md`.
     #[must_use]
     pub fn backgrounded(id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
@@ -182,7 +182,7 @@ impl ToolOutcome {
     }
 
     /// Attach a task tool op's post-call snapshot (the `tasks` field doc —
-    /// `docs/task-tools.md`).
+    /// `docs/tools/task-tools.md`).
     #[must_use]
     pub fn with_tasks(mut self, tasks: crate::tasks::TaskStore) -> Self {
         self.tasks = Some(tasks);
@@ -212,7 +212,7 @@ impl ToolOutcome {
     }
 
     /// How the call ran, for a call that ran for `elapsed`
-    /// (`docs/rollout-records.md`): its exit code, the duration, and — for a
+    /// (`docs/state/rollout-records.md`): its exit code, the duration, and — for a
     /// failure — its kind, the tool's own failure when the executor named
     /// none. A success names no failure.
     #[must_use]
@@ -249,7 +249,7 @@ pub fn tool_specs() -> Vec<Value> {
 
 /// [`tool_specs`] plus the `agent` tool and its four companions — the
 /// **main** backend's set when a subagent registry is attached
-/// (`docs/agent-tool.md`, `docs/agent-tools.md`). A subagent itself never
+/// (`docs/agents/agent-tool.md`, `docs/agents/agent-tools.md`). A subagent itself never
 /// gets any of them (no nesting, and no steering its siblings), so it keeps
 /// [`tool_specs`] — or the reduced [`subagent_tool_specs`] its type allows.
 #[must_use]
@@ -261,7 +261,7 @@ pub fn tool_specs_with_agents() -> Vec<Value> {
 }
 
 /// The `agent` tool's four companions, in definition order
-/// (`docs/agent-tools.md`): message an agent, read its progress, stop it,
+/// (`docs/agents/agent-tools.md`): message an agent, read its progress, stop it,
 /// list them.
 #[must_use]
 pub fn agent_companion_specs() -> Vec<Value> {
@@ -274,7 +274,7 @@ pub fn agent_companion_specs() -> Vec<Value> {
 }
 
 /// The built-in tool set a subagent is offered: [`tool_specs`] filtered by
-/// its definition's `tools:` allowlist (`docs/subagents.md`). Never includes
+/// its definition's `tools:` allowlist (`docs/agents/subagents.md`). Never includes
 /// `agent` — agents don't nest, whatever a definition file says.
 ///
 /// The order is the definition order, not the file's: two types with the same
@@ -315,7 +315,7 @@ pub const TOOL_NAMES: [&str; 8] = [
 ];
 
 /// The wire name of the tool that types into a running command
-/// (`docs/bash-tools.md`). `bash`'s companions are one lowercase word each —
+/// (`docs/tools/bash-tools.md`). `bash`'s companions are one lowercase word each —
 /// the task tools' convention — so each display name lowercases to its wire
 /// name.
 pub const BASH_SEND_TOOL: &str = "bashsend";
@@ -340,7 +340,7 @@ pub const BASH_LIST_DISPLAY: &str = "BashList";
 
 /// Is `name` one of the bash tools — `bash`, a companion, or the legacy
 /// `bash_session` — by wire name? What a `tools: Bash` grant covers
-/// (`docs/bash-tools.md`).
+/// (`docs/tools/bash-tools.md`).
 #[must_use]
 pub fn is_bash_family(name: &str) -> bool {
     matches!(
@@ -350,8 +350,8 @@ pub fn is_bash_family(name: &str) -> bool {
 }
 
 /// The wire name of the **legacy** interactive-session tool — four actions
-/// in one call shape (`docs/interactive-shell.md`). No longer offered, since
-/// `bashsend`, `bashwait` and `bashkill` do one each (`docs/bash-tools.md`),
+/// in one call shape (`docs/tools/interactive-shell.md`). No longer offered, since
+/// `bashsend`, `bashwait` and `bashkill` do one each (`docs/tools/bash-tools.md`),
 /// but still executed: a resumed conversation may hold calls to it, and a
 /// model may remember it.
 pub const BASH_SESSION_TOOL_NAME: &str = "bash_session";
@@ -379,11 +379,11 @@ const SESSION_INPUT_SUMMARY_CHARS: usize = 120;
 /// ([`session_title`]).
 const SESSION_COMMAND_SUMMARY_CHARS: usize = 60;
 
-/// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
+/// The wire name of the subagent-launching tool (`docs/agents/agent-tool.md`).
 pub const AGENT_TOOL_NAME: &str = "agent";
 
 /// The wire name of the tool that messages an agent — a running one's next
-/// step, or a finished one's resumed conversation (`docs/agent-tools.md`).
+/// step, or a finished one's resumed conversation (`docs/agents/agent-tools.md`).
 /// `agent`'s companions are one lowercase word each, the bash companions'
 /// convention, so each display name lowercases to its wire name.
 pub const AGENT_SEND_TOOL: &str = "agentsend";
@@ -408,7 +408,7 @@ pub const AGENT_LIST_DISPLAY: &str = "AgentList";
 
 /// Is `name` one of `agent`'s companions, by wire name? Not `agent` itself:
 /// a launch takes its own path through the loop (`run_agents`), while the
-/// companions run as ordinary calls (`docs/agent-tools.md`).
+/// companions run as ordinary calls (`docs/agents/agent-tools.md`).
 #[must_use]
 pub fn is_agent_companion(name: &str) -> bool {
     matches!(
@@ -428,7 +428,7 @@ const AGENT_MESSAGE_SUMMARY_CHARS: usize = 100;
 /// The most of an agent's task a companion's header shows.
 const AGENT_NAME_SUMMARY_CHARS: usize = 60;
 
-/// The wire name of the ask-the-user tool (`docs/ask.md`). Lowercase like
+/// The wire name of the ask-the-user tool (`docs/tools/ask.md`). Lowercase like
 /// every other wire name — which is also what the context replay's
 /// lowercasing fallback reproduces from the display name, so a replayed call
 /// matches the offered spec.
@@ -436,10 +436,10 @@ pub const ASK_TOOL_NAME: &str = "askuserquestion";
 
 /// The display name the ask tool's cell header shows while it runs; the
 /// resolved cell replaces the whole header with the outcome headline
-/// (`docs/ask.md`).
+/// (`docs/tools/ask.md`).
 pub const ASK_TOOL_DISPLAY: &str = "AskUserQuestion";
 
-/// The `AskUserQuestion` tool definition (`docs/ask.md`) — offered only when
+/// The `AskUserQuestion` tool definition (`docs/tools/ask.md`) — offered only when
 /// an [`crate::ask::AskGate`] is attached (`LlmBackend::with_ask`): without
 /// one nobody could answer, so the tool isn't there to call. Subagents never
 /// get it (they cannot talk to the user). The description and schema follow
@@ -530,12 +530,12 @@ pub fn ask_spec() -> Value {
     )
 }
 
-/// The `Skill` tool definition (`docs/skills.md`) — offered only when a
+/// The `Skill` tool definition (`docs/tools/skills.md`) — offered only when a
 /// **non-empty** [`crate::skills::SkillRegistry`] is attached
 /// (`LlmBackend::with_skills`): with no skills on disk the tool has nothing
 /// to load. Keep the matching-task, `$<name>` mention, and load-once guidance
 /// together and brief: this prose rides every request. The executor enforces
-/// deduplication even when the model calls again (`docs/skills.md`).
+/// deduplication even when the model calls again (`docs/tools/skills.md`).
 #[must_use]
 pub fn skill_spec() -> Value {
     function_spec(
@@ -558,7 +558,7 @@ pub fn skill_spec() -> Value {
     )
 }
 
-/// The four task-list tool definitions (`docs/task-tools.md`) — offered only
+/// The four task-list tool definitions (`docs/tools/task-tools.md`) — offered only
 /// when a [`crate::tasks::TaskRegistry`] is attached
 /// (`LlmBackend::with_tasks`): without one nobody holds the list. Subagents
 /// never get them (the lead agent plans; subagents execute). The
@@ -749,7 +749,7 @@ fn agent_id_param() -> Value {
     })
 }
 
-/// `agentsend` (`docs/agent-tools.md`): message an agent — a running one at
+/// `agentsend` (`docs/agents/agent-tools.md`): message an agent — a running one at
 /// its next step, a finished one by resuming its conversation.
 fn agent_send_spec() -> Value {
     function_spec(
@@ -774,7 +774,7 @@ fn agent_send_spec() -> Value {
     )
 }
 
-/// `agentoutput` (`docs/agent-tools.md`): an agent's progress, optionally
+/// `agentoutput` (`docs/agents/agent-tools.md`): an agent's progress, optionally
 /// waiting for it to settle.
 fn agent_output_spec() -> Value {
     function_spec(
@@ -799,7 +799,7 @@ fn agent_output_spec() -> Value {
     )
 }
 
-/// `agentkill` (`docs/agent-tools.md`): stop a running agent, keeping its
+/// `agentkill` (`docs/agents/agent-tools.md`): stop a running agent, keeping its
 /// conversation resumable.
 fn agent_kill_spec() -> Value {
     function_spec(
@@ -817,7 +817,7 @@ fn agent_kill_spec() -> Value {
     )
 }
 
-/// `agentlist` (`docs/agent-tools.md`): the session's agents.
+/// `agentlist` (`docs/agents/agent-tools.md`): the session's agents.
 fn agent_list_spec() -> Value {
     function_spec(
         AGENT_LIST_TOOL,
@@ -833,7 +833,7 @@ fn agent_list_spec() -> Value {
 
 /// The Chat Completions `{"type":"function", …}` entry every tool def uses —
 /// `pub(crate)` so the MCP manager can build specs for dynamically-discovered
-/// tools in exactly this shape (`docs/mcp.md`).
+/// tools in exactly this shape (`docs/tools/mcp.md`).
 pub(crate) fn function_spec(name: &str, description: &str, parameters: Value) -> Value {
     json!({
         "type": "function",
@@ -894,7 +894,7 @@ fn session_id_param() -> Value {
     })
 }
 
-/// `bashsend` (`docs/bash-tools.md`): type into a command `bash` left
+/// `bashsend` (`docs/tools/bash-tools.md`): type into a command `bash` left
 /// running, and read its answer.
 fn bash_send_spec() -> Value {
     function_spec(
@@ -926,7 +926,7 @@ fn bash_send_spec() -> Value {
     )
 }
 
-/// `bashwait` (`docs/bash-tools.md`): wait on a running command.
+/// `bashwait` (`docs/tools/bash-tools.md`): wait on a running command.
 fn bash_wait_spec() -> Value {
     function_spec(
         BASH_WAIT_TOOL,
@@ -950,7 +950,7 @@ fn bash_wait_spec() -> Value {
     )
 }
 
-/// `bashkill` (`docs/bash-tools.md`): stop a running command.
+/// `bashkill` (`docs/tools/bash-tools.md`): stop a running command.
 fn bash_kill_spec() -> Value {
     function_spec(
         BASH_KILL_TOOL,
@@ -967,7 +967,7 @@ fn bash_kill_spec() -> Value {
     )
 }
 
-/// `bashlist` (`docs/bash-tools.md`): the running commands.
+/// `bashlist` (`docs/tools/bash-tools.md`): the running commands.
 fn bash_list_spec() -> Value {
     function_spec(
         BASH_LIST_TOOL,
@@ -1075,7 +1075,7 @@ fn edit_spec() -> Value {
     )
 }
 
-/// Parsed `agent` arguments (`docs/agent-tool.md`).
+/// Parsed `agent` arguments (`docs/agents/agent-tool.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AgentArgs {
     pub description: String,
@@ -1105,7 +1105,7 @@ impl AgentArgs {
     }
 }
 
-/// Parsed `agentsend` arguments (`docs/agent-tools.md`). The id takes the
+/// Parsed `agentsend` arguments (`docs/agents/agent-tools.md`). The id takes the
 /// short names a model reaches for too, and the message the words a model
 /// uses for one — a call whose intent is plain is not refused over a
 /// spelling (the bash companions' rule).
@@ -1125,7 +1125,7 @@ impl AgentSendArgs {
     }
 }
 
-/// Parsed `agentoutput` arguments (`docs/agent-tools.md`).
+/// Parsed `agentoutput` arguments (`docs/agents/agent-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AgentOutputArgs {
     #[serde(alias = "id", alias = "agentId", alias = "agent")]
@@ -1180,7 +1180,7 @@ pub fn agent_output_wait_ms(arguments: Option<&str>) -> u64 {
         .map_or(0, |args| args.wait_ms())
 }
 
-/// Parsed `bash` arguments (`docs/bash-tools.md`).
+/// Parsed `bash` arguments (`docs/tools/bash-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BashArgs {
     pub command: String,
@@ -1238,7 +1238,7 @@ impl BashArgs {
 
 /// What a `bash` call's model-facing result gains when the command left a
 /// process running — `server & …` — that stopped with the command
-/// (docs/bash-tools.md).
+/// (docs/tools/bash-tools.md).
 pub const REAPED_NOTE: &str = "Note: a process this command started in the background (`&`) \
     was stopped when the command finished. To keep one running, start it in its own bash \
     call with wait: 0.";
@@ -1299,7 +1299,7 @@ impl WaitFields {
 /// How long a `bash` call with these verbatim `arguments` waits before it
 /// returns, in milliseconds — [`BashArgs::wait_ms`]'s rule read off the wait
 /// fields, so the live cell can name it beside its clock
-/// (`(22s · wait 1m 50s)`, `docs/tool-streaming.md`). A call with no argument
+/// (`(22s · wait 1m 50s)`, `docs/ui/tool-streaming.md`). A call with no argument
 /// record (`None` — the dummy backend's scripted calls, a call the app
 /// synthesized) or arguments that are not an object takes the default: what
 /// the executor applies to a call that names no wait, and never a hidden
@@ -1325,7 +1325,7 @@ pub fn session_wait_ms(name: &str, arguments: Option<&str>) -> u64 {
     }
 }
 
-/// Parsed `bashsend` arguments (`docs/bash-tools.md`). The session id takes
+/// Parsed `bashsend` arguments (`docs/tools/bash-tools.md`). The session id takes
 /// the short names a model reaches for too — a call whose intent is plain is
 /// not refused over a spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1343,7 +1343,7 @@ pub struct SendArgs {
     pub input: String,
 }
 
-/// Parsed `bashwait` arguments (`docs/bash-tools.md`).
+/// Parsed `bashwait` arguments (`docs/tools/bash-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct WaitArgs {
     #[serde(
@@ -1379,7 +1379,7 @@ fn effective_session_wait_ms(wait: Option<u64>, timeout: Option<u64>) -> u64 {
         .min(BASH_MAX_TIMEOUT_MS)
 }
 
-/// Parsed `bashkill` arguments (`docs/bash-tools.md`).
+/// Parsed `bashkill` arguments (`docs/tools/bash-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct KillArgs {
     #[serde(
@@ -1392,7 +1392,7 @@ pub struct KillArgs {
 }
 
 /// Parsed arguments of the **legacy** `bash_session` tool
-/// (`docs/interactive-shell.md`) — still executed, no longer offered.
+/// (`docs/tools/interactive-shell.md`) — still executed, no longer offered.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SessionArgs {
     /// The session `bash` reported. `id` and `shell_id` are accepted too:
@@ -1408,7 +1408,7 @@ pub struct SessionArgs {
     pub timeout: Option<u64>,
     /// End the command. `stop` is accepted too — but the schema said
     /// `kill`, because a model read `stop` as "stop waiting" and ended a
-    /// wizard mid-answer (docs/interactive-shell.md).
+    /// wizard mid-answer (docs/tools/interactive-shell.md).
     #[serde(default, alias = "stop", deserialize_with = "lenient::flag")]
     pub kill: bool,
 }
@@ -1533,7 +1533,7 @@ pub fn display_name(name: &str) -> String {
         return display.to_string();
     }
     // An `mcp__server__tool` call wears Claude Code's user-facing
-    // `{server} - {tool} (MCP)` (`docs/mcp.md`).
+    // `{server} - {tool} (MCP)` (`docs/tools/mcp.md`).
     if let Some(display) = crate::mcp::display_from_wire(name) {
         return display;
     }
@@ -1562,7 +1562,7 @@ pub fn display_name(name: &str) -> String {
 /// — a `bash` call's optional `description` argument (an `agent` call's
 /// `description` already *is* its summary). `None` for everything else. The
 /// agent roster's tree rows prefer it for their `{Name}: {detail}` activity
-/// line (`docs/agent-tool.md`).
+/// line (`docs/agents/agent-tool.md`).
 #[must_use]
 pub fn call_description(name: &str, arguments: &str) -> Option<String> {
     if name != "bash" {
@@ -1587,7 +1587,7 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     // returns it verbatim, so a later round re-reads the JSON the model
     // actually sent); the pretty `key: "value"` header form is derived at
     // render time from this string instead (`ui::tool`'s MCP branch,
-    // `docs/mcp.md`). Re-serialized compactly — lossless (a raw flatten
+    // `docs/tools/mcp.md`). Re-serialized compactly — lossless (a raw flatten
     // would collapse spaces *inside* string values), and single-line by
     // construction; only unparseable arguments fall back to the flatten.
     if crate::mcp::is_mcp_tool(name) {
@@ -1618,14 +1618,14 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     // `● BashSend(b7x2k9m1q ← print(1)⏎)`, `● BashWait(b7x2k9m1q)` — which
     // session, and what was typed into it (on one line, `pty::keys`' display
     // form). With the registry at hand the session is named by its command
-    // instead ([`summarize_call_naming`], docs/bash-tools.md).
+    // instead ([`summarize_call_naming`], docs/tools/bash-tools.md).
     if let Some((id, input, kill)) = session_call_parts(name, arguments) {
         return session_summary(&id, input.as_deref(), kill);
     }
     // `● AgentSend(a7k2m9x4q ← also check gists)`, `● AgentOutput(a7k2m9x4q)`
     // — which agent, and what was sent to it, on one line. With the registry
     // at hand the agent is named by its task instead
-    // ([`summarize_call_naming`], docs/agent-tools.md).
+    // ([`summarize_call_naming`], docs/agents/agent-tools.md).
     if let Some((id, message)) = agent_call_parts(name, arguments) {
         return agent_summary(&id, message.as_deref());
     }
@@ -1639,10 +1639,10 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         AGENT_TOOL_NAME => field("description"),
         // `● Skill(dataviz)` — the name alone, the reference's header. The
         // optional `args` stay out of it: they are prose, and the cell has
-        // one line (`docs/skills.md`).
+        // one line (`docs/tools/skills.md`).
         crate::skills::SKILL_TOOL_NAME => field("skill"),
         // The task tools' headers (Ctrl+O only — inline they render nothing,
-        // docs/task-tools.md): a create shows its subject, a get/update the
+        // docs/tools/task-tools.md): a create shows its subject, a get/update the
         // `#id` (an update's status change appended — `#1 → completed`), a
         // list nothing.
         crate::tasks::TASK_CREATE_TOOL => field("subject"),
@@ -1659,7 +1659,7 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         }),
         // The ask tool's header summarizes as its first question (+ how many
         // more ride along) — what the Ctrl+O transcript shows while the call
-        // waits on the user (`docs/ask.md`).
+        // waits on the user (`docs/tools/ask.md`).
         ASK_TOOL_NAME => value
             .as_ref()
             .and_then(|v| v.get("questions"))
@@ -1682,9 +1682,9 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
 /// executor refines the header to. So the header names the program the keys
 /// go to from the moment the call is announced: above its permission prompt,
 /// and on a cell the user refused, which never reaches the executor
-/// (`docs/interactive-shell.md`). An agent companion's agent is named the
+/// (`docs/tools/interactive-shell.md`). An agent companion's agent is named the
 /// same way, by its task — `lookup` answers an agent id with the agent's
-/// description (`docs/agent-tools.md`; the two kinds of id never collide, a
+/// description (`docs/agents/agent-tools.md`; the two kinds of id never collide, a
 /// session's opening `b` and an agent's `a`). An id nothing answers to is
 /// kept.
 #[must_use]
@@ -1769,7 +1769,7 @@ fn session_call_parts(name: &str, arguments: &str) -> Option<(String, Option<Str
 }
 
 /// A recorded call to the legacy `bash_session` tool, as the tool that does
-/// the same thing now (`docs/bash-tools.md`) — so a resumed conversation's
+/// the same thing now (`docs/tools/bash-tools.md`) — so a resumed conversation's
 /// request names only tools it offers: a kill as `bashkill`, typed input as
 /// `bashsend`, anything else as `bashwait`. Arguments that don't parse keep
 /// the old name.
@@ -1798,7 +1798,7 @@ pub fn legacy_session_call(arguments: &str) -> (&'static str, String) {
 }
 
 /// A session call's header once the executor knows the session
-/// (`docs/bash-tools.md`, sent as the call's refined title): the command the
+/// (`docs/tools/bash-tools.md`, sent as the call's refined title): the command the
 /// session runs — one line, cut at 60 characters — then what the call typed
 /// (and, for the legacy tool, `· kill`).
 #[must_use]
@@ -2047,7 +2047,7 @@ pub fn display_path(path: &str, cwd: &std::path::Path) -> String {
 
 /// The `● Read/Write/Edit({path})` **header's** form of a file tool's path —
 /// where the file *is*, the way a person at that terminal reads it (Claude
-/// Code's look, `docs/tools.md` *Path display*): under `cwd` by its relative
+/// Code's look, `docs/tools/tools.md` *Path display*): under `cwd` by its relative
 /// path (`hello.py`, `hello/hello.py`; the cwd itself is `.`), outside it but
 /// under `home` by its `~` form (`~/hello.py`; home itself is `~`), anything
 /// else by its absolute path (`/tmp/hello.py`; another user's home is not
@@ -2174,7 +2174,7 @@ pub fn is_image_path(path: &str) -> bool {
 /// (`Read image (PNG, 512x512, 17 KB)`). The path is deliberately absent —
 /// the `● Read({path})` header already shows the argument verbatim, and the
 /// follow-up `[image] …` user note ([`image_attachment_note`]) names it for
-/// the model along with where the pixels are. See `docs/tools.md`.
+/// the model along with where the pixels are. See `docs/tools/tools.md`.
 #[must_use]
 pub fn format_read_image(format: &str, width: u32, height: u32, bytes: usize) -> String {
     format!(
@@ -2184,7 +2184,7 @@ pub fn format_read_image(format: &str, width: u32, height: u32, bytes: usize) ->
 }
 
 /// [`format_read_image`] for a read that `/settings` **Auto-resize images**
-/// shrank before uploading (`docs/images.md`): the **file's own** facts
+/// shrank before uploading (`docs/ui/images.md`): the **file's own** facts
 /// first, then what was actually sent.
 ///
 /// That order is load-bearing twice over. The model needs the original
@@ -2494,7 +2494,7 @@ pub fn render_numbered_diff(diff: &Diff) -> String {
 /// (the executor passes the cwd-relative [`display_path`]); the head doubles
 /// as the model-facing result, exactly what the cell shows. Shared with the
 /// offline dummy so a scripted `Write` cell is byte-for-byte the live one
-/// (`docs/dummy-backend.md`).
+/// (`docs/architecture/dummy-backend.md`).
 #[must_use]
 pub fn write_report(path: &str, content: &str) -> String {
     let lines = content.lines().count();
@@ -2623,12 +2623,12 @@ mod tests {
         );
     }
 
-    // --- interactive shells (docs/interactive-shell.md) ---
+    // --- interactive shells (docs/tools/interactive-shell.md) ---
 
     #[test]
     fn bash_takes_a_command_a_wait_and_a_description() {
         // One action, three parameters, no switch that changes what the call
-        // means (docs/bash-tools.md): every command has a terminal, and
+        // means (docs/tools/bash-tools.md): every command has a terminal, and
         // `wait: 0` is the background.
         let spec = bash_spec();
         let params = &spec["function"]["parameters"];
@@ -2782,7 +2782,7 @@ mod tests {
     fn a_trailing_ampersand_starts_the_command_in_the_background() {
         // `npm run dev &` asks for the background: in a shell that then
         // exits, the `&` would only get the server stopped with it
-        // (docs/bash-tools.md).
+        // (docs/tools/bash-tools.md).
         let bash: BashArgs = parse_args(r#"{"command":"npm run dev &"}"#).unwrap();
         assert!(bash.background());
         assert_eq!(bash.command(), "npm run dev");
@@ -2940,7 +2940,7 @@ mod tests {
     fn a_session_call_is_summarized_by_the_command_its_session_runs() {
         // The header the permission prompt sits under, and a refused cell
         // keeps, names the program — not the id, which says nothing to a
-        // person (docs/bash-tools.md).
+        // person (docs/tools/bash-tools.md).
         let known = |id: &str| (id == "b5xg4o2w0").then(|| "sudo pacman -Syy".to_string());
         let summarize = |name: &str, arguments: serde_json::Value| {
             summarize_call_naming(name, &arguments.to_string(), &known)
@@ -3029,7 +3029,7 @@ mod tests {
     #[test]
     fn the_skill_description_teaches_the_dollar_mention_syntax() {
         // The composer's `$` picker inserts mentions like `$commit`
-        // (docs/skill-mentions.md) — the description is where the model
+        // (docs/input/skill-mentions.md) — the description is where the model
         // learns one is a load request, since the `<system-reminder>`
         // listing carries the roster alone. There is no slash syntax: a
         // leading `/` is the built-in command palette, never a skill.
@@ -3046,7 +3046,7 @@ mod tests {
 
     #[test]
     fn the_skill_spec_takes_only_a_skill_name() {
-        // `skill` is the whole schema (docs/skills.md). The reference's
+        // `skill` is the whole schema (docs/tools/skills.md). The reference's
         // optional `args` string is gone: nothing downstream could consume
         // it without rewriting the body's own text, and a parameter the
         // loader ignores is one the model spends tokens filling in.
@@ -3206,7 +3206,7 @@ mod tests {
     fn ask_description_reports_the_decline_outcomes_honestly() {
         // A decline or a chat request returns a stop-and-wait instruction,
         // not per-question choices — and the auto-added free-text row is not
-        // labelled "Other" (`ask::ANSWERED_*`, docs/ask.md).
+        // labelled "Other" (`ask::ANSWERED_*`, docs/tools/ask.md).
         let desc = ask_spec()["function"]["description"]
             .as_str()
             .unwrap()
@@ -3221,7 +3221,7 @@ mod tests {
     #[test]
     fn ask_description_leaves_the_unanswered_outcomes_to_the_result() {
         // A question nobody answers times out and its result says to keep
-        // working (docs/ask.md), so the description cannot promise that every
+        // working (docs/tools/ask.md), so the description cannot promise that every
         // unanswered outcome means stop and wait. Nor does it name the
         // timeout: the result says what to do when it happens, and the
         // description rides every request.
@@ -3347,7 +3347,7 @@ mod tests {
     #[test]
     fn bash_wait_ms_reads_the_wait_off_the_verbatim_arguments() {
         // The running cell names the wait its command's call runs under
-        // (`docs/tool-streaming.md`) off the call's recorded arguments alone
+        // (`docs/ui/tool-streaming.md`) off the call's recorded arguments alone
         // — `BashArgs::wait_ms`'s rule over the wait fields, whatever else
         // the object carries.
         assert_eq!(
@@ -3928,7 +3928,7 @@ mod tests {
         );
     }
 
-    // ===== image reads (docs/tools.md) =====
+    // ===== image reads (docs/tools/tools.md) =====
 
     #[test]
     fn is_image_path_detects_the_vision_formats_by_extension() {
@@ -3981,7 +3981,7 @@ mod tests {
         assert!(!is_image_read_output("could not read a.png: missing"));
     }
 
-    // ===== path display (docs/tools.md) =====
+    // ===== path display (docs/tools/tools.md) =====
 
     #[test]
     fn display_path_shows_a_file_under_the_cwd_by_its_relative_path() {
@@ -4031,7 +4031,7 @@ mod tests {
 
     #[test]
     fn header_path_reads_relative_under_the_cwd_tilde_under_home_else_absolute() {
-        // The header's rule (docs/tools.md "Path display") beside the corner
+        // The header's rule (docs/tools/tools.md "Path display") beside the corner
         // row's `display_path`: the two answer different questions — the
         // header says which file, the corner row where it is from here.
         let cwd = std::path::Path::new("/home/linuztx/Codes/tests");
@@ -4112,7 +4112,7 @@ mod tests {
         assert!(!is_file_tool("Bash") && !is_file_tool("Agent") && !is_file_tool("read"));
     }
 
-    // ===== the write/update reports (docs/tools.md) =====
+    // ===== the write/update reports (docs/tools/tools.md) =====
 
     #[test]
     fn write_report_heads_with_wrote_n_lines_over_the_numbered_body() {
@@ -4138,7 +4138,7 @@ mod tests {
         // The short model-facing twin of `write_report`: the numbered body
         // stays on the *cell*, and the model reads one line — honest only
         // because the call's own arguments now replay verbatim
-        // (`docs/context.md`).
+        // (`docs/architecture/context.md`).
         assert_eq!(
             write_ack("/tmp/name.txt", true),
             format!("File created successfully at: /tmp/name.txt {FILE_STATE_NOTE}")
@@ -4187,7 +4187,7 @@ mod tests {
     fn the_file_tools_tell_the_model_not_to_read_back_what_it_just_sent() {
         // The schema has to say it, because the model cannot see why the
         // result got shorter: its own `content`/`old_string` now ride the
-        // replayed call instead of the result (`docs/context.md`). Without
+        // replayed call instead of the result (`docs/architecture/context.md`). Without
         // the sentence the natural next move is a verifying `read`, which
         // uploads the file a second time — the opposite of the saving. One
         // sentence each: every word rides in every request that offers the
@@ -4257,7 +4257,7 @@ mod tests {
         );
     }
 
-    // ===== how a call ran (docs/rollout-records.md) =====
+    // ===== how a call ran (docs/state/rollout-records.md) =====
 
     #[test]
     fn an_outcome_states_how_its_call_ran() {
@@ -4362,7 +4362,7 @@ mod tests {
             .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
             .collect();
         // Agents don't nest, and an agent never steers its siblings: the
-        // whole family is the lead's alone (docs/agent-tools.md).
+        // whole family is the lead's alone (docs/agents/agent-tools.md).
         for lead_only in [
             "agent",
             "agentsend",
@@ -4394,7 +4394,7 @@ mod tests {
     fn the_agent_schema_points_at_the_listing_that_names_the_types() {
         // The types are discovered files now, so the schema cannot enumerate
         // them — it points at the `<system-reminder>` that can, and that
-        // pointer is the tool/listing pairing `docs/subagents.md` rests on: a
+        // pointer is the tool/listing pairing `docs/agents/subagents.md` rests on: a
         // schema naming types that no longer exist, or a reminder nothing
         // points at, is how a model comes to guess a `subagent_type`.
         let spec = &agent_spec()["function"];
@@ -4425,7 +4425,7 @@ mod tests {
         );
         // An allowlist filters, in the definition order rather than the
         // file's, so two types with the same set send the same bytes — and
-        // `Bash` brings its companions with it (docs/bash-tools.md).
+        // `Bash` brings its companions with it (docs/tools/bash-tools.md).
         assert_eq!(
             spec_names(&subagent_tool_specs(&AgentTools::parse("Read, Bash"))),
             [
@@ -4511,7 +4511,7 @@ mod tests {
     fn the_agent_companions_are_one_word_each_like_the_bash_companions() {
         // `agentsend`, not `agent_send`: the display name lowercases to the
         // wire name, so the context replay needs no table for them
-        // (docs/agent-tools.md).
+        // (docs/agents/agent-tools.md).
         for name in [
             AGENT_SEND_TOOL,
             AGENT_OUTPUT_TOOL,
@@ -4693,7 +4693,7 @@ mod tests {
     #[test]
     fn an_mcp_summary_is_the_compact_arguments_json() {
         // Lossless: `context::reconstruct_arguments` replays this verbatim
-        // (docs/mcp.md). Spaces inside string values survive.
+        // (docs/tools/mcp.md). Spaces inside string values survive.
         assert_eq!(
             summarize_call(
                 "mcp__deepwiki__ask_question",

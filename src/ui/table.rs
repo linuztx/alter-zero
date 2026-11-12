@@ -1,5 +1,5 @@
 //! GFM table rendering: column sizing, borders, and the narrow-terminal
-//! record fallback. See `docs/markdown.md` and `docs/table-streaming.md`.
+//! record fallback. See `docs/ui/markdown.md` and `docs/ui/table-streaming.md`.
 
 use super::inline::tokenize_words;
 use super::inline::{inline_spans, wrap_inline};
@@ -51,7 +51,7 @@ fn natural_word_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<
 /// columns, given each column's `natural` (widest cell) width and `word` width
 /// (its widest single unbreakable word — [`natural_word_widths`]).
 ///
-/// Three cases, in order — Claude Code's fit (docs/table-streaming.md):
+/// Three cases, in order — Claude Code's fit (docs/ui/table-streaming.md):
 ///
 /// 1. **The natural grid fits.** Return it: the table stays as narrow as its
 ///    content rather than stretching to the terminal.
@@ -256,7 +256,7 @@ fn pad_cell_line(
 /// fit to `content_width` — the widths each cell then wraps into. Computed only
 /// when the block closes (the rows are buffered until then), so a wide later
 /// row can never be shattered by widths guessed from an earlier one — the
-/// failure of the old first-data-row lock (docs/table-streaming.md).
+/// failure of the old first-data-row lock (docs/ui/table-streaming.md).
 pub(super) fn table_column_widths(
     header: &str,
     rows: &[String],
@@ -321,7 +321,7 @@ fn normalize_raw_cells(line: &str, ncols: usize) -> Vec<String> {
 /// Decide, at the block's close, whether the grid is too cramped to scan and
 /// should render as vertical key/value **records** instead (codex's key/value
 /// transpose). Made from the header and **every** buffered row — the same full
-/// knowledge the widths use (docs/table-streaming.md). True when a column is
+/// knowledge the widths use (docs/ui/table-streaming.md). True when a column is
 /// both **narrow** (`< TABLE_SCANNABLE_COL`) **and** holds content that wraps
 /// into `>= TABLE_RECORDS_MIN_LINES` rows at its allocated width — i.e. the
 /// grid is growing tall because columns are starved, not because one wide cell
@@ -416,7 +416,7 @@ pub(super) fn table_record_block(
     out
 }
 
-/// Re-join a hard-wrapped table row (docs/table-streaming.md). A model echoing
+/// Re-join a hard-wrapped table row (docs/ui/table-streaming.md). A model echoing
 /// terminal-wrapped source can carry a line break MID-ROW, so the row arrives
 /// as a leading-pipe line plus a fragment (`| google | … | 86.8 / 89.8 /` ␤
 /// `96.4 ms |`). Strict GFM reads the fragment as a row of its own — a phantom
@@ -435,13 +435,13 @@ pub(super) fn join_wrapped_table_row(prev: &str, line: &str, ncols: usize) -> Op
 }
 
 /// Render a complete GFM table block — the `header`, the delimiter's `aligns`,
-/// and the buffered data `rows` — into content rows (`docs/markdown.md`).
+/// and the buffered data `rows` — into content rows (`docs/ui/markdown.md`).
 /// Column widths are allocated from the header **and every data row** (fit to
 /// `content_width`), so the grid always fits its real content — the same full
 /// knowledge then decides grid vs. key/value records. THE table renderer:
 /// the batch path, the streaming close/`flush`, and the forming-table preview
 /// all emit a table only through here, so they can never disagree
-/// (docs/table-streaming.md).
+/// (docs/ui/table-streaming.md).
 pub(super) fn table_block_rows(
     header: &str,
     aligns: &[markdown::Alignment],

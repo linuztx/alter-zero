@@ -5,7 +5,7 @@
 smoke_begin
 
 # the agent session view's footer GAUGES THAT AGENT'S CONTEXT
-# (docs/agent-context-gauge.md). Under a forced window the footer shows the
+# (docs/agents/agent-context-gauge.md). Under a forced window the footer shows the
 # `{used}/{window} ({pct}%)` gauge; inside a subagent's session view that same
 # segment used to keep showing the LEAD's context — `23.7k/1M` under a roster
 # row saying the agent itself was at 64.9k. The `agent-stream` demo launches

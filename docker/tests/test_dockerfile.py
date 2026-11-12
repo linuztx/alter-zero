@@ -64,7 +64,7 @@ class ImageDefaults(unittest.TestCase):
 
 class AptMirrors(unittest.TestCase):
     """Kali's redirector first, and Kali's CDN for any file the mirror the
-    redirector picked cannot deliver (docs/docker.md *Mirrors*)."""
+    redirector picked cannot deliver (docs/ops/docker.md *Mirrors*)."""
 
     def test_the_list_tries_the_redirector_then_kalis_cdn(self):
         # apt reads a mirror's metadata only after a tab: with a space, the

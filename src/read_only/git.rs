@@ -1,6 +1,6 @@
 //! The `git` subcommands that only read — Claude Code's
 //! `GIT_READ_ONLY_COMMANDS`, ported for the inspection an agent does
-//! (`docs/tool-groups.md`). The subcommand must be `git`'s very first word, so
+//! (`docs/ui/tool-groups.md`). The subcommand must be `git`'s very first word, so
 //! a global option before it (`git -c core.pager=… log`, `git -C dir status`,
 //! `--exec-path`) refuses the command: `-c` can switch on a program git runs.
 

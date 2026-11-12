@@ -1,6 +1,6 @@
 //! Scripted driver for the bash tools — `bash` and its companions `bashsend`,
-//! `bashwait`, `bashkill` and `bashlist` (docs/bash-tools.md, over
-//! docs/interactive-shell.md's engine) — with **no model**: each line
+//! `bashwait`, `bashkill` and `bashlist` (docs/tools/bash-tools.md, over
+//! docs/tools/interactive-shell.md's engine) — with **no model**: each line
 //! of the script is one tool call, run through the real executor with a
 //! background registry attached, and the model-facing result is printed
 //! with how long the call took. NOT run by `cargo test`.

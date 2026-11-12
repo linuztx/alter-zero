@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The `alter-zero` command an npm install puts on PATH (docs/npm.md).
+// The `alter-zero` command an npm install puts on PATH (docs/ops/npm.md).
 //
 // npm installs this launcher and exactly one of its four optional
 // dependencies — @linuztx/alter-zero-{linux,darwin}-{x64,arm64}, each
@@ -28,7 +28,7 @@ const SOURCE_BUILD = `${REPO}#build-from-source`;
 
 // `${process.platform}-${process.arch}` → the release target its platform
 // package carries. These are the four targets the release builds
-// (docs/release.md); scripts/release/lib.sh's npm_platform maps them back
+// (docs/ops/release.md); scripts/release/lib.sh's npm_platform maps them back
 // and package.json's optionalDependencies names one package per key — the
 // tests hold all three together.
 const PLATFORMS = {

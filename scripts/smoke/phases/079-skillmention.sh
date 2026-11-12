@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `$` SKILL PICKER (docs/skill-mentions.md). Codex's skill
+# the `$` SKILL PICKER (docs/input/skill-mentions.md). Codex's skill
 # mentions as a fourth band: typing `$` in the composer lists the discovered
 # skills (name + description columns), five at a time over a `(n/total)`
 # counter with the highlight riding the middle row as ↑/↓ scroll (the `/`

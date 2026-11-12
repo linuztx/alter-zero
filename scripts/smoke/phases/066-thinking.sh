@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the THINKING STREAM (docs/thinking-stream.md). The model's
+# the THINKING STREAM (docs/ui/thinking-stream.md). The model's
 # chain-of-thought used to be counted and thrown away; now it streams live in
 # the strip under a `● Thinking…` header over the `⎿` gutter, and COLLAPSES at
 # the phase's end into one bullet-less committed
@@ -45,7 +45,7 @@ expect_has "$think_live" -F "Let me read the file first." "the chain-of-thought 
 # the spacer only appeared when the cell collapsed, jolting it down a row).
 # The header is matched with OR without its bullet: a live `●` blinks, so the
 # frame that first carried the thought may have caught it hidden — two blanks
-# where the bullet was, the label still in its column (docs/tool-pulse.md).
+# where the bullet was, the label still in its column (docs/ui/tool-pulse.md).
 if ! printf '%s' "$think_live" | grep -B 1 -E "^(● |  )Thinking…" | head -1 | grep -qE "^[[:space:]]*$"; then
 	fail "the live '● Thinking…' header is not preceded by a blank row: the segment before it was not finalised (invariant 4)"
 fi
@@ -94,10 +94,10 @@ expect_lacks "$nothink" -E "Thinking…|Thought for" "ALTER_ZERO_SHOW_THINKING=0
 tmux kill-session -t "$S66B" 2>/dev/null
 
 # Esc MID-THOUGHT settles the open phase as a cell that keeps its own
-# duration (docs/thinking-stream.md). The interrupt used to stop the turn's
+# duration (docs/ui/thinking-stream.md). The interrupt used to stop the turn's
 # clocks first — the thinking clock with them — so the phase it then settled
 # read `Thought for 0s` however long the model had thought, right above the
-# receipt saying how long the turn ran (docs/interrupt.md). The dummy's
+# receipt saying how long the turn ran (docs/input/interrupt.md). The dummy's
 # canned reasoning takes ≈1.8s, so Esc lands once the status line has
 # counted a whole second of it.
 S66C="${S}_thinkint"

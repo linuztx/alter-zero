@@ -5,7 +5,7 @@
 smoke_begin
 
 # the Ctrl+O overlay must TRANSMIT the picture, not just place
-# it (docs/images.md). A graphics placement belongs to the screen it was made
+# it (docs/ui/images.md). A graphics placement belongs to the screen it was made
 # on, and the kitty protocol transmits its image — creating that placement —
 # exactly once per encoded protocol object. Carrying one across the switch to
 # the alternate screen therefore painted the transcript with unicode

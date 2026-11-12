@@ -1,5 +1,5 @@
 //! Inline terminal images: a pasted screenshot and the `read` tool's image
-//! reads drawn as real pictures in the conversation (`docs/images.md`).
+//! reads drawn as real pictures in the conversation (`docs/ui/images.md`).
 //!
 //! Four modules over two layers — pure and boundary — split the way the crate
 //! always splits them:
@@ -18,10 +18,10 @@
 //!   re-sent on every later turn.
 //! - [`attachment`] — the wire's copy of a picture, encoded **once** per
 //!   session and shared by reference by every request that re-sends it, so a
-//!   turn allocates nothing picture-sized (`docs/memory.md`).
+//!   turn allocates nothing picture-sized (`docs/architecture/memory.md`).
 //! - [`fitted`] — pure. A PNG decoded at the size it will be shown or sent,
 //!   streaming its rows through an area-average shrink so the source picture
-//!   is never held whole (`docs/memory.md`).
+//!   is never held whole (`docs/architecture/memory.md`).
 //! - [`store`] — the paint boundary. What this terminal can draw (from the
 //!   environment and `TIOCGWINSZ`, and — where those name nothing — the
 //!   terminal's own answer inside the cursor query's read, never a stdin

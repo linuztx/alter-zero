@@ -1,6 +1,6 @@
 //! Ollama's **native** chat API as a wire format (`wire_api = "ollama"`) —
 //! the fourth after Chat Completions, Responses and Messages. See
-//! `docs/ollama.md`.
+//! `docs/providers/ollama.md`.
 //!
 //! Ollama also speaks an OpenAI-compatible `/v1`, and this module exists
 //! because of the one thing that endpoint cannot carry: `options.num_ctx`,
@@ -57,7 +57,7 @@ const DEFAULT_PORT: &str = "11434";
 /// an agentic turn overflows on its first file read; the model's own
 /// maximum (128K, 256K) is what OOMs a GPU. 32K is Ollama's own middle
 /// VRAM tier and Cline's default, and it is raised by
-/// `ALTER_ZERO_CONTEXT_WINDOW`. See `docs/ollama.md`.
+/// `ALTER_ZERO_CONTEXT_WINDOW`. See `docs/providers/ollama.md`.
 pub const DEFAULT_NUM_CTX_CAP: u64 = 32_768;
 
 /// The server-side default's own variable, read from this process's
@@ -176,7 +176,7 @@ pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage
 
 /// The `/api/chat` request as it is serialized: the `messages` **borrowed
 /// from the conversation** — a picture's base64 is a slice of the session's
-/// one shared encoding, never a copy into a tree (`docs/memory.md`) — beside
+/// one shared encoding, never a copy into a tree (`docs/architecture/memory.md`) — beside
 /// every other field in one small map.
 #[derive(serde::Serialize)]
 struct Request<'a> {
@@ -538,9 +538,9 @@ impl ChatAccumulator {
                     .id
                     .filter(|id| !id.is_empty())
                     .unwrap_or_else(|| format!("call_{}", self.calls.len()));
-                // Counted as it lands (`docs/status-indicator.md`) — the
+                // Counted as it lands (`docs/ui/status-indicator.md`) — the
                 // whole call in one piece, under its position in the round,
-                // so a `write` previews whole (`docs/write-streaming.md`).
+                // so a `write` previews whole (`docs/ui/write-streaming.md`).
                 delta.tool_calls.push(ToolCallFragment {
                     index: self.calls.len(),
                     name: call.function.name.clone(),
@@ -654,7 +654,7 @@ pub struct CatalogRecord {
 
 /// The `/api/tags` envelope. Each record stays an unparsed slice of the
 /// body and is decoded one at a time (the `parse_models` posture,
-/// `docs/memory.md`). The list is optional so that a body carrying none is
+/// `docs/architecture/memory.md`). The list is optional so that a body carrying none is
 /// told apart from an Ollama with nothing pulled.
 #[derive(Debug, Deserialize)]
 struct TagsResponse<'a> {
@@ -840,7 +840,7 @@ pub fn entry_of(
         reasoning,
         vision: has("vision"),
         context: context_window(record, server_default, uncapped),
-        // Ollama's `/api/show` names no speed tier (`docs/fast-mode.md`).
+        // Ollama's `/api/show` names no speed tier (`docs/providers/fast-mode.md`).
         service_tiers: Vec::new(),
     })
 }
@@ -924,7 +924,7 @@ pub fn advice(status: u16, body: &str, model: &str) -> Option<String> {
 /// `localhost`? The one case a refused connection is `ollama serve` not
 /// running rather than the network being gone, so it is the one case the
 /// connection advice replaces the wait for the host to come back
-/// (`docs/offline.md`).
+/// (`docs/providers/offline.md`).
 #[must_use]
 pub fn is_local_base(base: &str) -> bool {
     let Ok(url) = url::Url::parse(base) else {
@@ -1070,7 +1070,7 @@ mod tests {
     #[test]
     fn a_provider_drops_the_fields_its_server_refuses_here_too() {
         // `drop_params` is the provider's, whatever its wire
-        // (docs/user-providers.md).
+        // (docs/providers/user-providers.md).
         let mut cfg = cfg();
         cfg.thinking = Some(ThinkingMode::On);
         cfg.drop_params = vec!["think".to_string()];
@@ -1477,7 +1477,7 @@ mod tests {
         // LM Studio answers every path it does not serve with 200 and an
         // error object, so its port typed in as Ollama's read as an Ollama
         // with no models — a `/login` test that passed and saved the wrong
-        // server (docs/local-models.md).
+        // server (docs/providers/local-models.md).
         let err = tags_records(r#"{"error":"Unexpected endpoint or method. (GET /api/tags)"}"#)
             .unwrap_err();
         assert!(matches!(err, LlmError::Decode(_)), "{err:?}");
@@ -1743,7 +1743,7 @@ mod tests {
 
     #[test]
     fn the_request_borrows_a_pictures_bytes_rather_than_copying_them() {
-        // The whole point of the typed request (`docs/memory.md`): a
+        // The whole point of the typed request (`docs/architecture/memory.md`): a
         // message's `images` entry is a slice of the shared encoding.
         let url = crate::llm::AttachmentUrl::from("data:image/png;base64,AAAA");
         let messages_in = [ChatMessage::with_parts(

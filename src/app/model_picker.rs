@@ -1,5 +1,5 @@
 //! The inline `/model` picker: the per-provider model load, its search query,
-//! and the selection. See `docs/llm.md`.
+//! and the selection. See `docs/providers/llm.md`.
 
 use super::views::TOOL_VIEW_PAGE;
 use super::*;
@@ -9,7 +9,7 @@ const MODEL_PAGE: usize = TOOL_VIEW_PAGE;
 
 /// The load state of the inline `/model` picker's list: the boundary spawns a
 /// worker that fetches the provider's models, so the picker shows a placeholder
-/// until the result lands. See `docs/llm.md`.
+/// until the result lands. See `docs/providers/llm.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ModelLoad {
     /// The fetch is in flight — the picker shows `Loading models…`.
@@ -21,7 +21,7 @@ pub enum ModelLoad {
     Error(String),
     /// No provider has a resolvable API key yet, so no list is fetched — the
     /// picker points the user at `/login` instead of showing models they can't
-    /// use. See `docs/llm.md`.
+    /// use. See `docs/providers/llm.md`.
     NeedsLogin,
 }
 
@@ -52,7 +52,7 @@ pub struct ModelPicker {
     pub active_provider: String,
     /// Provider fetches still outstanding — the `/model` picker fetches **every**
     /// configured provider in parallel and merges their lists as they arrive
-    /// (docs/llm.md). Drives the `loading more…` counter hint, and at zero with
+    /// (docs/providers/llm.md). Drives the `loading more…` counter hint, and at zero with
     /// no models it settles the all-failed error.
     pub pending: usize,
     /// Providers whose model fetch failed, kept so the picker can show which
@@ -131,7 +131,7 @@ impl App {
     /// boundary's fetch fills it via [`set_models`]. Abandons any `?` band /
     /// palette / file picker (they share the composer the picker takes over),
     /// but stays in [`View::Conversation`] — the picker is inline, not an
-    /// overlay. See `docs/llm.md`.
+    /// overlay. See `docs/providers/llm.md`.
     ///
     /// [`set_models`]: App::set_models
     pub fn open_model_picker(&mut self, active_id: impl Into<String>) {
@@ -206,7 +206,7 @@ impl App {
     /// lands (status → `Ready`) and grows as the rest arrive. The highlight rides
     /// the same model across the merge, unless the user hasn't touched the picker
     /// yet — then it re-seats on the active model once its provider loads. No-op
-    /// if the picker closed meanwhile. See `docs/llm.md`.
+    /// if the picker closed meanwhile. See `docs/providers/llm.md`.
     pub fn add_models(&mut self, models: Vec<ModelEntry>) {
         let Some(picker) = self.model_picker.as_mut() else {
             return;
@@ -250,7 +250,7 @@ impl App {
     /// Record that one provider's model fetch failed: keep the reason (shown as a
     /// `⚠ … unavailable` note beside a partial list, or a red row when every
     /// provider fails) and mark the fetch done. No-op if the picker closed. See
-    /// `docs/llm.md`.
+    /// `docs/providers/llm.md`.
     pub fn add_model_error(&mut self, provider: impl Into<String>, message: impl Into<String>) {
         let Some(picker) = self.model_picker.as_mut() else {
             return;
@@ -277,7 +277,7 @@ impl App {
     /// Record that no provider is configured yet — the picker shows a `/login`
     /// hint in place of a model list (the boundary skips the fetch entirely, so
     /// the user isn't offered models they have no key for). No-op if the picker
-    /// was closed meanwhile. See `docs/llm.md`.
+    /// was closed meanwhile. See `docs/providers/llm.md`.
     pub fn set_models_needs_login(&mut self) {
         if let Some(picker) = self.model_picker.as_mut() {
             picker.status = ModelLoad::NeedsLogin;
@@ -301,7 +301,7 @@ impl App {
     /// used to be dropped on the floor to keep it out of the composer draft
     /// underneath — routing it here keeps that draft untouched *and* makes
     /// the key work. No-op if the picker was closed meanwhile. See
-    /// `docs/llm.md`.
+    /// `docs/providers/llm.md`.
     pub fn paste_into_model_filter(&mut self, pasted: &str) {
         let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
         if flat.is_empty() {

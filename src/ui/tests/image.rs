@@ -1,4 +1,4 @@
-//! The rows a picture reserves in the conversation (`docs/images.md`).
+//! The rows a picture reserves in the conversation (`docs/ui/images.md`).
 //!
 //! The policy is process-global — the module's own doc says why — so every
 //! test here holds [`policy_lock`] and puts the default back on the way out.

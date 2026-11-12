@@ -4,8 +4,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the ↓ MANAGER BAND FLOWS ITS PAGE TOP (docs/view-flow.md,
-# docs/background.md). On a terminal shorter than the details page, the band
+# the ↓ MANAGER BAND FLOWS ITS PAGE TOP (docs/ui/view-flow.md,
+# docs/tools/background.md). On a terminal shorter than the details page, the band
 # bottom-anchors — and the rows the anchor skips used to be dropped into NO
 # buffer at all: the conversation ran straight into a headless output box, and
 # scrolling the terminal up never found the `Shell details` title, the status

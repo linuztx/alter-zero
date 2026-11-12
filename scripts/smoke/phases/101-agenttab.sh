@@ -5,7 +5,7 @@
 smoke_begin
 
 # TAB in an agent session view queues a follow-up turn for THAT
-# AGENT (docs/queue.md) — the main session's Tab, one level down. Before this
+# AGENT (docs/input/queue.md) — the main session's Tab, one level down. Before this
 # the Tab arm read the *lead's* `is_streaming()` and pushed onto the *lead's*
 # queue, so a message typed into a subagent ran as a follow-up turn of the main
 # conversation once the lead's turn ended: the reported "it sends the msg to

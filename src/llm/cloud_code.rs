@@ -1,6 +1,6 @@
 //! Google's **Cloud Code Assist** API as a wire format — the backend Google
 //! Antigravity talks to, reached here through the Antigravity sign-in
-//! (`docs/antigravity.md`).
+//! (`docs/providers/antigravity.md`).
 //!
 //! Like [`super::anthropic`] and [`super::responses`], everything here is a
 //! **translation**, in both directions, between that format and the Chat
@@ -133,7 +133,7 @@ pub fn level_suffix(model: &str) -> Option<(&str, ReasoningEffort)> {
 }
 
 /// The id a request names for `model` at `thinking`: a grouped model's
-/// level is its runtime id's suffix (`docs/antigravity.md` *The catalog*),
+/// level is its runtime id's suffix (`docs/providers/antigravity.md` *The catalog*),
 /// so an effort is appended — unless the id already names one, which a
 /// listed id sent verbatim may.
 #[must_use]
@@ -458,7 +458,7 @@ fn request<'a>(
         fields.insert(k.clone(), v.clone());
     }
     // Last, so a field the server refuses leaves whatever put it there
-    // (`docs/user-providers.md`).
+    // (`docs/providers/user-providers.md`).
     cfg.drop_refused(&mut fields);
 
     Envelope {
@@ -1032,7 +1032,7 @@ pub enum Step {
 /// the finish reason and the usage. Gemini names no call ids, so each call
 /// it leaves unnamed is given one (`fresh_call_id`); the thought signature
 /// riding beside a call is kept with that id, because the next request must
-/// hand it back (`docs/antigravity.md` *Thought signatures*).
+/// hand it back (`docs/providers/antigravity.md` *Thought signatures*).
 #[derive(Debug, Default)]
 pub struct StreamAccumulator {
     calls: Vec<ToolCallRequest>,
@@ -1252,7 +1252,7 @@ impl StreamAccumulator {
 /// reads. A reason with no counterpart passes through lower-cased, which
 /// reads as a finish: `MALFORMED_FUNCTION_CALL` ends a round that answered
 /// nothing, and the agent loop asks the model to carry on
-/// (`docs/unfinished-replies.md`).
+/// (`docs/architecture/unfinished-replies.md`).
 fn crate_reason(raw: &str) -> String {
     match raw {
         "STOP" => "stop".to_string(),
@@ -1633,7 +1633,7 @@ mod tests {
     fn no_client_identity_is_ever_injected_into_the_system_instruction() {
         // Antigravity's own clients open with "You are Antigravity…"; the
         // backend does not require it, and this app sends the user's own
-        // system prompt and nothing else (`docs/antigravity.md`).
+        // system prompt and nothing else (`docs/providers/antigravity.md`).
         for model in [
             "gemini-3-flash",
             "claude-opus-4-6-thinking",

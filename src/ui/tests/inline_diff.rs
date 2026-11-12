@@ -1,5 +1,5 @@
 //! Tests for the character-level refinement of a diff cell's `-`/`+` line pairs
-//! ([`crate::ui::inline_diff`], `docs/inline-diff.md`).
+//! ([`crate::ui::inline_diff`], `docs/ui/inline-diff.md`).
 
 use super::super::inline_diff::{RefineRow, refine_pair, refine_rows};
 

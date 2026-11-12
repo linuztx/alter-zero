@@ -24,14 +24,14 @@ use super::{CancelToken, StreamEvent};
 /// turn (codex's `UserInput::LocalImage` typed channel, distinct from the text
 /// `prompt`): a real vision backend reads each file and attaches it to its
 /// request. The built-in [`DummyAi`](super::DummyAi) has no vision, so it only
-/// acknowledges their count. See `docs/image-paste.md`.
+/// acknowledges their count. See `docs/input/image-paste.md`.
 ///
 /// `context` is the whole conversation so far — derived from the history by
 /// [`crate::context::context_messages`] right after the turn's user message
 /// was recorded, so its last entry *is* the current message (text and
 /// attachments included). A real backend sends it verbatim so the model never
 /// loses context; the dummy ignores it (its replies are canned). See
-/// `docs/context.md`.
+/// `docs/architecture/context.md`.
 pub trait ReplySource {
     fn spawn(
         &self,
@@ -43,25 +43,25 @@ pub trait ReplySource {
     ) -> JoinHandle<()>;
 
     /// The model id this backend answers as, shown in the session-context
-    /// footer under the input box (see `docs/footer.md`). A real backend
+    /// footer under the input box (see `docs/ui/footer.md`). A real backend
     /// returns its real model name.
     fn model_name(&self) -> String;
 
     /// The system prompt this backend prepends to every request, if any —
     /// surfaced so the Ctrl+D context-debug view can show the *whole* context
-    /// window (see `docs/context.md`). The dummy sends none.
+    /// window (see `docs/architecture/context.md`). The dummy sends none.
     fn system_prompt(&self) -> Option<String> {
         None
     }
 
     /// The system prompt a **subagent** of `agent_type` is sent — surfaced
     /// like [`system_prompt`](ReplySource::system_prompt) so the *agent
-    /// session view's* Ctrl+D shows the real thing (`docs/agent-tool.md`).
+    /// session view's* Ctrl+D shows the real thing (`docs/agents/agent-tool.md`).
     /// Defaults to the backend's own prompt: without a distinct subagent
     /// prompt a launched agent would get the same one. `LlmBackend` overrides
     /// this with the type's definition — its own body when it has one, else
     /// the main prompt — plus the subagent note (`prompts/subagent.md`,
-    /// `docs/subagents.md`), which is why it takes the type: two types can be
+    /// `docs/agents/subagents.md`), which is why it takes the type: two types can be
     /// sent different prompts.
     fn agent_system_prompt(&self, agent_type: &str) -> Option<String> {
         let _ = agent_type;
@@ -70,7 +70,7 @@ pub trait ReplySource {
 
     /// The `<system-reminder>` a **subagent** of `agent_type` opens on, ahead
     /// of its task prompt: the session's skills roster, which a fresh context
-    /// would not otherwise carry (`docs/subagents.md`). Surfaced beside
+    /// would not otherwise carry (`docs/agents/subagents.md`). Surfaced beside
     /// [`agent_system_prompt`](ReplySource::agent_system_prompt) and for the
     /// same reason — the agent session view's Ctrl+D has to show what that
     /// agent actually read, and its briefing is the half no history item
@@ -84,7 +84,7 @@ pub trait ReplySource {
     /// The tools the next request offers the model — each one's wire name
     /// and its schema serialized exactly as the client sends it — surfaced
     /// so the `/context` page can show what they cost of the window
-    /// (`docs/context-usage.md`). Read at the loop bottom while the page is
+    /// (`docs/architecture/context-usage.md`). Read at the loop bottom while the page is
     /// open, so a backend hands out a shared handle rather than building the
     /// set per call. Empty for a backend that offers none — the dummy sends
     /// the model nothing at all.
@@ -101,11 +101,11 @@ pub trait ReplySource {
     }
 
     /// The model a **subagent** of `agent_type` runs on when its definition
-    /// pins one (`model:` — `docs/subagents.md`), or `None` when it inherits
+    /// pins one (`model:` — `docs/agents/subagents.md`), or `None` when it inherits
     /// the session's. Surfaced beside the two above and for the same reason:
     /// the agent session view's footer names the model the viewed agent
     /// actually runs on, and gauges its context against *that* model's window
-    /// rather than the lead's (`docs/agent-context-gauge.md`). The default —
+    /// rather than the lead's (`docs/agents/agent-context-gauge.md`). The default —
     /// the dummy, a backend without definitions — inherits.
     fn agent_model(&self, agent_type: &str) -> Option<String> {
         let _ = agent_type;
@@ -116,7 +116,7 @@ pub trait ReplySource {
     /// task context (the turn's user request + the actions taken so far) the
     /// classifier reads before every command and MCP call, surfaced so the
     /// Ctrl+D view's classifier page (Tab) can show what the next verdict
-    /// sees (`docs/permissions.md`). Read live: it grows as the turn runs
+    /// sees (`docs/state/permissions.md`). Read live: it grows as the turn runs
     /// and rolls its windows as the conversation goes on, so the boundary
     /// pulls it per draw rather than caching it. `None` when the backend keeps no log — the
     /// dummy, whose offline auto-mode demo answers from a pure heuristic
@@ -129,7 +129,7 @@ pub trait ReplySource {
     /// verdict is judged by, exactly as the classifier is sent it — surfaced
     /// beside [`classifier_context`](ReplySource::classifier_context) so the
     /// Ctrl+D classifier page can show what the reviewer is *told* above
-    /// what it is *shown*, abridged to its structure (`docs/permissions.md`).
+    /// what it is *shown*, abridged to its structure (`docs/state/permissions.md`).
     /// A constant per backend, so the boundary reads it when it reads
     /// [`system_prompt`](ReplySource::system_prompt) rather than per draw.
     /// `None` when the backend has no classifier — the dummy, whose offline
@@ -139,7 +139,7 @@ pub trait ReplySource {
     }
 
     /// Send a chat message into a running/settled subagent's session
-    /// (`docs/agent-tool.md`, `docs/queue.md`). The backend's registry — the
+    /// (`docs/agents/agent-tool.md`, `docs/input/queue.md`). The backend's registry — the
     /// only thing that knows whether the loop is still running — decides
     /// which it is, and says so in the [`AgentChatDelivery`] it returns; the
     /// loop renders the message accordingly. The default (the dummy, backends
@@ -151,7 +151,7 @@ pub trait ReplySource {
     /// Can this subagent take a **new turn** right now — settled, not
     /// stopped, and resumable? The Tab follow-up queue asks before handing
     /// one over, so the message opens its own continuation instead of being
-    /// queued as a steer into a run that is still going (`docs/queue.md`).
+    /// queued as a steer into a run that is still going (`docs/input/queue.md`).
     /// The registry answers, never the roster, for the reason
     /// [`AgentChatDelivery`] spells out. The default (a backend with no
     /// subagents) is `false`: nothing to continue.
@@ -171,7 +171,7 @@ pub trait ReplySource {
 /// What became of a message sent into a subagent's session — the registry's
 /// answer, which the loop must not second-guess: a roster status that lagged
 /// the registry by one event would either strand the queued row forever or
-/// record the message twice. See `docs/queue.md`.
+/// record the message twice. See `docs/input/queue.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentChatDelivery {
     /// The agent is mid-run: the message waits on its queue and reaches its

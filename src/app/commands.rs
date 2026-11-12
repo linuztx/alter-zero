@@ -3,15 +3,15 @@
 //! running the highlighted command.
 //!
 //! Each command's behaviour is documented where the feature lives —
-//! `docs/copy.md`, `docs/init.md`, `docs/compact.md`, `docs/resume.md` — and a
+//! `docs/ui/copy.md`, `docs/state/init.md`, `docs/architecture/compact.md`, `docs/state/resume.md` — and a
 //! mid-turn rejection surfaces as a toast rather than a scrollback bullet
-//! (`docs/toast.md`).
+//! (`docs/ui/toast.md`).
 //!
 //! The registry is static, but the palette is not quite: the active model's
 //! **speed tiers** each get a row of their own — `/fast`, `/ultrafast`,
 //! whatever the listing names — spliced in after `/model` by
 //! [`App::commands`], codex's `SlashCommandItem::ServiceTier`
-//! (`docs/fast-mode.md`). Nothing about a tier is hardcoded here: the rows
+//! (`docs/providers/fast-mode.md`). Nothing about a tier is hardcoded here: the rows
 //! are built from what the record said, so a tier the backend adds tomorrow
 //! is a command the day it is listed.
 
@@ -20,43 +20,43 @@ use std::borrow::Cow;
 use super::*;
 
 /// The toast shown when `/copy` writes the last response to the clipboard —
-/// codex's info event, verbatim. See `docs/copy.md`.
+/// codex's info event, verbatim. See `docs/ui/copy.md`.
 pub const COPY_OK_NOTICE: &str = "Copied last message to clipboard";
 
 /// The toast shown when `/copy` finds no assistant response to copy — codex's
 /// wording, but not its error kind: nothing failed, so it is the
 /// [`Action::Toast`] `/export` and `/compact` raise when they have nothing to
-/// act on. See `docs/copy.md`, `docs/toast.md`.
+/// act on. See `docs/ui/copy.md`, `docs/ui/toast.md`.
 pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 
 /// The transient toast shown when `/resume` is run while a turn is active —
 /// codex blocks the command mid-task (`slash_command_blocked_by_active_task`)
 /// instead of racing the stream (it would swap the whole conversation). Shown as
 /// an [`Action::Toast`] rather than a committed message — a soft rejection the
-/// user needn't keep. See `docs/resume.md` / `docs/toast.md`.
+/// user needn't keep. See `docs/state/resume.md` / `docs/ui/toast.md`.
 pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in progress";
 
 /// Codex's `/init` prompt (`prompts/init.md`, its `prompt_for_init_command.md`
 /// verbatim): generate an `AGENTS.md` contributor guide — never overwriting an
 /// existing one. Submitted as a **regular user turn** ([`Action::Submit`]), so
 /// the model's agentic tool loop does the exploring and writing; the prompt is
-/// the whole feature. See `docs/init.md`.
+/// the whole feature. See `docs/state/init.md`.
 pub const INIT_PROMPT: &str = include_str!("../../prompts/init.md");
 
 /// The transient toast shown when `/init` is run while a turn is active —
 /// codex disables it during a task (`available_during_task`); submitting would
 /// race the running stream with a second turn. The `/compact` toast pattern.
-/// See `docs/init.md` / `docs/toast.md`.
+/// See `docs/state/init.md` / `docs/ui/toast.md`.
 pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progress";
 
 /// The transient toast shown when `/compact` is run while a turn is active —
 /// codex disables it during a task (`available_during_task`); ours rejects with
-/// the `/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
+/// the `/resume` toast pattern. See `docs/architecture/compact.md` / `docs/ui/toast.md`.
 pub const COMPACT_BUSY_NOTICE: &str = "/compact is disabled while a task is in progress";
 
 /// The transient toast shown when `/compact` finds nothing to summarize — an
 /// empty conversation would send the bare summarization prompt to the model
-/// and "summarize" nothing. See `docs/compact.md`.
+/// and "summarize" nothing. See `docs/architecture/compact.md`.
 pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
 
 /// What running a slash command does. The palette dispatches one of these on
@@ -68,22 +68,22 @@ pub enum CommandEffect {
     Clear,
     /// Copy the last assistant response to the clipboard (`/copy`) — the
     /// confirmation surfaces as a toast, not a scrollback message. See
-    /// `docs/copy.md` / `docs/toast.md`.
+    /// `docs/ui/copy.md` / `docs/ui/toast.md`.
     Copy,
     /// Open the read-only `/export` page: the whole conversation as plain
     /// text, copied to the clipboard or saved to a file in the cwd —
     /// `/copy`'s sibling. Works **mid-turn** like `/donate` (it only
     /// replaces the composer; the export carries the live tail exactly as
     /// Ctrl+O shows it) — or, with nothing recorded, rejects with an
-    /// [`EXPORT_EMPTY_NOTICE`] toast. See `docs/export.md`.
+    /// [`EXPORT_EMPTY_NOTICE`] toast. See `docs/ui/export.md`.
     Export,
     /// Run codex's `/init`: submit the canned [`INIT_PROMPT`] as a regular
     /// user turn asking the model to generate an `AGENTS.md` contributor
-    /// guide (`docs/init.md`) — or reject with an [`INIT_BUSY_NOTICE`] toast
+    /// guide (`docs/state/init.md`) — or reject with an [`INIT_BUSY_NOTICE`] toast
     /// while a turn is active (codex's `available_during_task` is `false`).
     Init,
     /// Run codex's `/compact`: a summarization turn whose reply becomes the
-    /// context bridge (`docs/compact.md`) — or reject with a
+    /// context bridge (`docs/architecture/compact.md`) — or reject with a
     /// [`COMPACT_BUSY_NOTICE`] toast while a turn is active (codex disables
     /// it mid-task) / a [`COMPACT_EMPTY_NOTICE`] toast when the derived
     /// context is empty.
@@ -91,26 +91,26 @@ pub enum CommandEffect {
     /// Open the read-only `/context` page: what fills the context window,
     /// by category, and what the provider said about the last request and
     /// the cache. Works **mid-turn** like `/donate` — it only replaces the
-    /// composer, and it is live. See `docs/context-usage.md`.
+    /// composer, and it is live. See `docs/architecture/context-usage.md`.
     Context,
     /// Open the read-only `/usage` page: every signed-in subscription's
     /// usage against its plan, read off the providers. Works **mid-turn**
     /// like `/context` — it only replaces the composer, and it is live. See
-    /// `docs/usage.md`.
+    /// `docs/providers/usage.md`.
     Usage,
     /// Open the `/resume` session picker — or reject with a
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
-    /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
+    /// mid-task; it swaps the whole conversation). See `docs/state/resume.md`.
     Resume,
     /// Review the working tree and index in a full-screen Git diff viewer.
     Diff,
     /// Open the inline `/model` picker. Works **mid-turn** — it only replaces the
     /// composer, never the running turn (which streams on its own thread); a
-    /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
-    /// `docs/toast.md`.
+    /// switch only rebinds the *next* turn's backend. See `docs/providers/llm.md` /
+    /// `docs/ui/toast.md`.
     Model,
     /// Toggle one of the active model's **speed tiers** — codex's per-tier
-    /// commands, `/fast`, `/ultrafast`, … (`docs/fast-mode.md`). The row
+    /// commands, `/fast`, `/ultrafast`, … (`docs/providers/fast-mode.md`). The row
     /// exists only while the model's record lists the tier, and running it
     /// selects the tier — or, when it is the selection already, standard —
     /// riding the *next* request as `service_tier`, so it works mid-turn
@@ -119,49 +119,49 @@ pub enum CommandEffect {
     /// carries, since the rows are built from the listing.
     ServiceTier(ServiceTier),
     /// Open the inline `/login` API-key onboarding flow. Works **mid-turn** like
-    /// `/model` — saving a key never touches the running turn. See `docs/llm.md`
-    /// / `docs/toast.md`.
+    /// `/model` — saving a key never touches the running turn. See `docs/providers/llm.md`
+    /// / `docs/ui/toast.md`.
     Login,
     /// Open the inline `/settings` menu — the session's togglable knobs.
     /// Works **mid-turn** like `/model`: it only replaces the composer, and a
     /// change that rebuilds the backend rebinds the *next* turn. See
-    /// `docs/settings.md`.
+    /// `docs/state/settings.md`.
     Settings,
     /// Open the read-only `/hooks` browser over the configured lifecycle
     /// hooks. Works **mid-turn** like `/model` — browsing touches nothing.
-    /// See `docs/hooks-menu.md`.
+    /// See `docs/tools/hooks-menu.md`.
     Hooks,
     /// Open the inline `/skills` browser: every discovered skill, each one
     /// enable/disable-able. Works **mid-turn** like `/hooks` — the menu only
     /// replaces the composer, and a toggle binds the *next* turn's request.
-    /// See `docs/skills.md`.
+    /// See `docs/tools/skills.md`.
     Skills,
     /// Open the inline `/theme` picker: the colour themes, previewed on real
     /// cells. Works **mid-turn** like `/settings` — it only replaces the
-    /// composer. See `docs/theme.md`.
+    /// composer. See `docs/ui/theme.md`.
     Theme,
     /// Open the inline `/mascot` picker: the banner mascots, previewed live.
     /// Works **mid-turn** like `/settings` — it only replaces the composer.
-    /// See `docs/mascot.md`.
+    /// See `docs/ui/mascot.md`.
     Mascot,
     /// Open the inline `/spinner` picker: the status line's spinner styles,
     /// previewed live. Works **mid-turn** like `/mascot` — it only replaces
-    /// the composer. See `docs/spinner.md`.
+    /// the composer. See `docs/ui/spinner.md`.
     Spinner,
     /// Open the inline `/mcp` manager: every declared MCP server, its live
     /// status, tools, and the authenticate/reconnect/disable operations.
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
-    /// connection work runs on worker threads either way. See `docs/mcp.md`.
+    /// connection work runs on worker threads either way. See `docs/tools/mcp.md`.
     Mcp,
     /// Open the read-only `/donate` page: the project's crypto donation
     /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
-    /// only replaces the composer. See `docs/donate.md`.
+    /// only replaces the composer. See `docs/ui/donate.md`.
     Donate,
     /// Open the `/secrets` page: the user's secrets — credentials the agent
     /// uses by placeholder without ever seeing the value — to add, edit and
     /// delete. Works **mid-turn** like `/skills`: it only replaces the
     /// composer, and a change reaches the very next tool call. See
-    /// `docs/secrets.md`.
+    /// `docs/state/secrets.md`.
     Secrets,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
@@ -353,7 +353,7 @@ impl App {
     /// The palette's rows for this session: [`COMMANDS`] with one row per
     /// speed tier the active model lists spliced in **right after `/model`**
     /// — where codex inserts its tier commands, a tier being a fact about
-    /// the model just switched to (`docs/fast-mode.md`). Built from
+    /// the model just switched to (`docs/providers/fast-mode.md`). Built from
     /// [`App::speed`] on demand rather than stored, so the rows can never
     /// disagree with the state the footer and the next request read; a
     /// built-in's clone is a borrowed pointer copy, so a keystroke's rebuild
@@ -455,7 +455,7 @@ impl App {
             CommandEffect::Copy => match self.last_assistant_text() {
                 Some(text) => Action::Copy(text),
                 // Nothing to copy yet is /export's and /compact's empty case —
-                // a soft rejection, never a red failure. docs/toast.md.
+                // a soft rejection, never a red failure. docs/ui/toast.md.
                 None => Action::Toast(COPY_EMPTY_NOTICE.to_string()),
             },
             CommandEffect::Export => {
@@ -463,7 +463,7 @@ impl App {
                 // only replaces the composer, over two const rows — nothing
                 // to fetch, so the pure open happens right here. An empty
                 // conversation has nothing to export (the /compact rule):
-                // a toast, never an empty file. docs/export.md.
+                // a toast, never an empty file. docs/ui/export.md.
                 if self.export_available() {
                     self.open_export_picker();
                     Action::OpenExportPicker
@@ -475,7 +475,7 @@ impl App {
                 // /context works mid-turn like /donate: a read-only page that
                 // only replaces the composer. The pure open counts what App
                 // holds right here; the boundary then hands it the tool set
-                // the backend sends and keeps it live (docs/context-usage.md).
+                // the backend sends and keeps it live (docs/architecture/context-usage.md).
                 self.open_context_usage();
                 Action::OpenContextUsage
             }
@@ -484,7 +484,7 @@ impl App {
                 // only replaces the composer. Which subscriptions are signed
                 // in is the boundary's to know, so the loop opens the page
                 // over them and reads each one — or toasts that none is
-                // (docs/usage.md).
+                // (docs/providers/usage.md).
                 Action::OpenUsagePage
             }
             CommandEffect::Init => {
@@ -497,7 +497,7 @@ impl App {
                 // the ❯ cell (codex trims the same way at render time). Mid-turn
                 // it is disabled like /compact (codex's available_during_task =
                 // false); the ↑ recall history is untouched (the user typed
-                // "/init", not the prompt). See docs/init.md.
+                // "/init", not the prompt). See docs/state/init.md.
                 if self.turn_active() {
                     Action::Toast(INIT_BUSY_NOTICE.to_string())
                 } else {
@@ -509,7 +509,7 @@ impl App {
                 // request would race the stream over the same history); the
                 // rejection is a transient toast like /resume's. An empty
                 // derived context has nothing to summarize. See
-                // docs/compact.md / docs/toast.md.
+                // docs/architecture/compact.md / docs/ui/toast.md.
                 if self.turn_active() {
                     Action::Toast(COMPACT_BUSY_NOTICE.to_string())
                 } else if !crate::context::derives_conversation(&self.history) {
@@ -522,7 +522,7 @@ impl App {
                 // Codex blocks /resume while a task runs (it swaps the whole
                 // conversation, racing the stream); the rejection is a transient
                 // toast. Idle, the *loop* scans the sessions dir and opens the
-                // picker. See docs/resume.md / docs/toast.md.
+                // picker. See docs/state/resume.md / docs/ui/toast.md.
                 if self.turn_active() {
                     Action::Toast(RESUME_BUSY_NOTICE.to_string())
                 } else {
@@ -533,13 +533,13 @@ impl App {
                 // /model works mid-turn: it only replaces the composer with the
                 // inline picker, never the running turn (which streams on its own
                 // thread). Selecting rebinds only the *next* turn's backend. The
-                // *loop* fetches the model list. See docs/llm.md / docs/toast.md.
+                // *loop* fetches the model list. See docs/providers/llm.md / docs/ui/toast.md.
                 Action::OpenModelPicker
             }
             CommandEffect::ServiceTier(tier) => {
                 // A tier's command works mid-turn like Ctrl+T: the pure state
                 // toggles at once and the *loop* rebinds only the next turn's
-                // backend, persists, and toasts (docs/fast-mode.md). The row
+                // backend, persists, and toasts (docs/providers/fast-mode.md). The row
                 // exists only while the model lists the tier, so there is no
                 // "unsupported" case to explain.
                 self.toggle_speed_tier(&tier)
@@ -547,14 +547,14 @@ impl App {
             CommandEffect::Login => {
                 // /login works mid-turn like /model — saving a key never touches
                 // the running turn. The *loop* builds the provider choices and
-                // opens the onboarding inline. See docs/llm.md / docs/toast.md.
+                // opens the onboarding inline. See docs/providers/llm.md / docs/ui/toast.md.
                 Action::OpenKeyOnboarding
             }
             CommandEffect::Settings => {
                 // /settings works mid-turn for the same reason: it replaces
                 // only the composer, and a change that rebuilds the backend
                 // rebinds the *next* turn (the running one streams on its own
-                // thread). See docs/settings.md.
+                // thread). See docs/state/settings.md.
                 Action::OpenSettings
             }
             CommandEffect::Hooks => {
@@ -562,7 +562,7 @@ impl App {
                 // hooks config touches nothing running. The *loop* digests
                 // the runner's parsed hooks.json into the overview and opens
                 // the menu (the /resume data-injection seam). See
-                // docs/hooks-menu.md.
+                // docs/tools/hooks-menu.md.
                 Action::OpenHooksMenu
             }
             CommandEffect::Skills => {
@@ -570,7 +570,7 @@ impl App {
                 // nothing running; a change binds the next turn's request.
                 // The *loop* takes the registry's snapshot and opens the menu
                 // over it, so the rows can never disagree with what the model
-                // is offered. docs/skills.md.
+                // is offered. docs/tools/skills.md.
                 Action::OpenSkillsMenu
             }
             CommandEffect::Theme => {
@@ -578,7 +578,7 @@ impl App {
                 // composer, and a switch purge-rebuilds the screen in the new
                 // palette without touching the running turn. The catalog is
                 // a const — nothing to fetch, so the pure open happens right
-                // here. docs/theme.md.
+                // here. docs/ui/theme.md.
                 self.open_theme_picker();
                 Action::OpenThemePicker
             }
@@ -586,7 +586,7 @@ impl App {
                 // /mascot works mid-turn like /settings: it only replaces the
                 // composer, and a switch repaints the banner without touching
                 // the running turn. The catalog is a const — nothing to
-                // fetch, so the pure open happens right here. docs/mascot.md.
+                // fetch, so the pure open happens right here. docs/ui/mascot.md.
                 self.open_mascot_picker();
                 Action::OpenMascotPicker
             }
@@ -595,7 +595,7 @@ impl App {
                 // composer, and the switch reaches the running turn's status
                 // line on the very next frame. The catalog is a const —
                 // nothing to fetch, so the pure open happens right here.
-                // docs/spinner.md.
+                // docs/ui/spinner.md.
                 self.open_spinner_picker();
                 Action::OpenSpinnerPicker
             }
@@ -603,14 +603,14 @@ impl App {
                 // /mcp works mid-turn too — it only replaces the composer,
                 // and every connection op runs on a worker thread. The *loop*
                 // snapshots the live manager and opens the menu over it
-                // (docs/mcp.md).
+                // (docs/tools/mcp.md).
                 Action::OpenMcpMenu
             }
             CommandEffect::Donate => {
                 // /donate works mid-turn like /hooks: a read-only page that
                 // only replaces the composer. The catalog is a const —
                 // nothing to fetch, so the pure open happens right here.
-                // docs/donate.md.
+                // docs/ui/donate.md.
                 self.open_donate_picker();
                 Action::OpenDonatePicker
             }
@@ -619,7 +619,7 @@ impl App {
                 // replaces the composer, and a save reaches the next tool
                 // call through the shared store. The pure open happens here;
                 // the *loop* reloads the file and injects what the page may
-                // know. docs/secrets.md.
+                // know. docs/state/secrets.md.
                 self.open_secrets_page();
                 Action::OpenSecretsPage
             }

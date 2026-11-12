@@ -8,7 +8,7 @@
 // of `crate::app` — private items included — through their own `use super::*`.
 pub(super) use super::*;
 
-// ===== Ctrl+T thinking mode (docs/reasoning.md) =====
+// ===== Ctrl+T thinking mode (docs/providers/reasoning.md) =====
 
 use crate::llm::{ReasoningEffort, ServiceTier, SpeedState};
 
@@ -75,7 +75,7 @@ pub(super) fn message_at(app: &App, i: usize) -> &Message {
     }
 }
 
-// ===== ↑/↓ input history (shell-style recall — docs/input-history.md) =====
+// ===== ↑/↓ input history (shell-style recall — docs/input/input-history.md) =====
 
 /// Submit `text` through the real Enter path so it gets recorded.
 pub(super) fn submit(app: &mut App, text: &str) {
@@ -111,7 +111,7 @@ pub(super) fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-// --- message queue (docs/queue.md) ---
+// --- message queue (docs/input/queue.md) ---
 
 pub(super) fn alt(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::ALT)
@@ -133,7 +133,7 @@ pub(super) fn type_str(app: &mut App, s: &str) {
     }
 }
 
-// --- auto-compact + the context gauge (docs/compact.md) ---
+// --- auto-compact + the context gauge (docs/architecture/compact.md) ---
 
 pub(super) fn usage_of(total_input: u64, output: u64) -> crate::stream::TokenUsage {
     crate::stream::TokenUsage {
@@ -145,13 +145,13 @@ pub(super) fn usage_of(total_input: u64, output: u64) -> crate::stream::TokenUsa
     }
 }
 
-// --- timestamps (shown only in the Ctrl+O transcript; see docs/timestamps.md) ---
+// --- timestamps (shown only in the Ctrl+O transcript; see docs/ui/timestamps.md) ---
 
 /// A fixed stub clock so timestamp behaviour is deterministic in tests.
 pub(super) const STAMP: &str = "2026-06-09 02:32:05 PM";
 
 // --- Ctrl+R history search: InputHistory::search / entry / resume_at
-// (docs/history-search.md — codex's chat_composer_history search) ---
+// (docs/input/history-search.md — codex's chat_composer_history search) ---
 
 /// An InputHistory with `texts` recorded oldest → newest.
 pub(super) fn history_of(texts: &[&str]) -> InputHistory {
@@ -162,7 +162,7 @@ pub(super) fn history_of(texts: &[&str]) -> InputHistory {
     history
 }
 
-// --- Ctrl+R history search: the session over App (docs/history-search.md —
+// --- Ctrl+R history search: the session over App (docs/input/history-search.md —
 // codex's HistorySearchSession in chat_composer/history_search.rs) ---
 
 /// An App with `texts` submitted (each its own finished-enough turn — the
@@ -182,7 +182,7 @@ pub(super) fn type_query(app: &mut App, text: &str) {
     }
 }
 
-// --- Esc-Esc backtrack: edit a previous message (docs/backtrack.md) ---
+// --- Esc-Esc backtrack: edit a previous message (docs/input/backtrack.md) ---
 
 /// Run one full finished exchange (user → assistant → summary) so the app
 /// ends idle again, exactly as a real completed turn leaves it.
@@ -194,7 +194,7 @@ pub(super) fn exchange(app: &mut App, user: &str, reply: &str) {
     app.end_turn(1);
 }
 
-// ===== /resume session picker (docs/resume.md) =====
+// ===== /resume session picker (docs/state/resume.md) =====
 
 pub(super) fn summary(path: &str, preview: &str) -> crate::session::SessionSummary {
     crate::session::SessionSummary {
@@ -227,7 +227,7 @@ pub(super) fn type_chars(app: &mut App, text: &str) {
     }
 }
 
-// ===== /model picker (docs/llm.md) =====
+// ===== /model picker (docs/providers/llm.md) =====
 
 pub(super) fn model(id: &str, provider: &str, name: &str) -> ModelEntry {
     ModelEntry {
@@ -288,7 +288,7 @@ pub(super) fn backtab() -> KeyEvent {
     key(KeyCode::BackTab)
 }
 
-// --- The `/login` API-key onboarding flow (docs/llm.md). ---
+// --- The `/login` API-key onboarding flow (docs/providers/llm.md). ---
 
 pub(super) fn sample_choices() -> Vec<ProviderChoice> {
     vec![
@@ -319,7 +319,7 @@ pub(super) fn sample_choices() -> Vec<ProviderChoice> {
     ]
 }
 
-/// The local server rows the boundary injects (`docs/local-models.md`): LM
+/// The local server rows the boundary injects (`docs/providers/local-models.md`): LM
 /// Studio, not yet pointed at, and Ollama, pointed at a box on the network —
 /// both saving their address under a variable of their own — and a server
 /// the user's own provider block fixes in place, with nothing to save.
@@ -403,7 +403,7 @@ pub(super) fn sample_subscriptions() -> Vec<SubscriptionChoice> {
 }
 
 /// A subscription that offers **two** ways in — the browser (its default)
-/// and a device code for a headless machine (`docs/chatgpt.md`).
+/// and a device code for a headless machine (`docs/providers/chatgpt.md`).
 pub(super) fn chatgpt_subscription() -> SubscriptionChoice {
     SubscriptionChoice {
         id: "chatgpt_codex".into(),
@@ -493,7 +493,7 @@ pub(super) fn key_app(provider_id: &str) -> App {
     app
 }
 
-// --- background shells (docs/background.md) ---
+// --- background shells (docs/tools/background.md) ---
 
 /// A registered running shell for the manager tests.
 pub(super) fn app_with_shells(commands: &[&str]) -> App {
@@ -504,7 +504,7 @@ pub(super) fn app_with_shells(commands: &[&str]) -> App {
     app
 }
 
-// ===== The Agent tool (docs/agent-tool.md) =====
+// ===== The Agent tool (docs/agents/agent-tool.md) =====
 
 /// A two-agent batch announcement, the dummy demo's shape.
 pub(super) fn agent_specs(background: bool) -> Vec<AgentSpec> {

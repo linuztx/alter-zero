@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/tool-streaming.md *The window follows what is still moving*. The dummy's
+# docs/ui/tool-streaming.md *The window follows what is still moving*. The dummy's
 # `download` demo plays pacman's parallel database refresh the way a terminal
 # sees it: four bars redrawn in place, the two small ones finishing in the
 # first second and sitting BELOW the two still downloading, every row within

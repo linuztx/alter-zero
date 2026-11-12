@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/donate` page (docs/donate.md). The `/hooks` browser's
+# the `/donate` page (docs/ui/donate.md). The `/hooks` browser's
 # sibling over the project's crypto donation addresses: a gradient
 # `♥ Support Alter Zero` title over a dim blurb, each address as a numbered
 # `❯ 1. BTC  Bitcoin` row (the ticker and the coin — no network clause)

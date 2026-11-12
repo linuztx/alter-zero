@@ -1,4 +1,4 @@
-//! The MCP boundary's own files (`docs/mcp.md`): how the token store and the
+//! The MCP boundary's own files (`docs/tools/mcp.md`): how the token store and the
 //! user's `mcp.json` are written — atomically, never readable by anyone the
 //! file wasn't already readable by, and through a symlink to the file it
 //! names — and the cross-process lock the token store is renewed under.

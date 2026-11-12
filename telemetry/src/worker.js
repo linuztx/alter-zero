@@ -1,4 +1,4 @@
-// The Alter Zero telemetry collector (docs/telemetry.md): a Cloudflare Worker
+// The Alter Zero telemetry collector (docs/ops/telemetry.md): a Cloudflare Worker
 // over a D1 table. Four routes and a cron:
 //
 //   POST /v1/ping        the app's daily ping → one row keyed on the server's

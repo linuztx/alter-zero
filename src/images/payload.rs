@@ -8,7 +8,7 @@
 //! attachment — run their bytes through here first.
 //!
 //! Two things keep that from being the memory spike it used to be
-//! (`docs/memory.md`). The shrink itself rides [`super::fitted`]: a PNG is
+//! (`docs/architecture/memory.md`). The shrink itself rides [`super::fitted`]: a PNG is
 //! area-averaged **as its rows stream past**, so the file's own pixel count
 //! never lands on the heap, and anything else is thumbnailed without the
 //! resampler's `f32` pass, and refused whole past
@@ -298,7 +298,7 @@ fn sidecar(path: &Path, format: ImageFormat, max: u32) -> Option<PathBuf> {
 /// Best-effort: a cache that can't be written costs a rebuild next turn.
 /// How many bytes of downscaled payloads one session keeps on disk before
 /// the oldest are dropped. The cache exists so a re-sent attachment is never
-/// decoded twice (`docs/memory.md`); it is not a reason for a long session
+/// decoded twice (`docs/architecture/memory.md`); it is not a reason for a long session
 /// that pasted forty screenshots to hold every shrunk copy of them forever.
 /// `0` is no limit.
 pub const PAYLOAD_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;

@@ -1,6 +1,6 @@
 //! The inline tool-permission prompt: a modal that replaces the whole live
 //! region while a `write`/`edit`/`bash` call waits on the user.
-//! See `docs/permissions.md`.
+//! See `docs/state/permissions.md`.
 //!
 //! One builder ([`permission_lines`]) produces the rows; the renderer paints
 //! them and [`permission_height`](super::layout::permission_height) reserves
@@ -221,7 +221,7 @@ fn command_rows(
     (lines, hidden)
 }
 
-/// A session-input prompt's body (`docs/interactive-shell.md`) — the `bash`
+/// A session-input prompt's body (`docs/tools/interactive-shell.md`) — the `bash`
 /// body's shape, since it answers the same question (*what exactly is about
 /// to run?*): what will be typed, on one line as the cell will show it
 /// (`print(2 + 2)⏎`), over a dim row naming where it goes — `into {command} ·
@@ -283,7 +283,7 @@ fn detail_rows(request: &PermissionRequest, room: u16) -> Vec<(String, Color)> {
         .unwrap_or_default()
 }
 
-/// An MCP prompt's body (`docs/mcp.md`) — the `bash` body's shape, because it
+/// An MCP prompt's body (`docs/tools/mcp.md`) — the `bash` body's shape, because it
 /// answers the same question (*what exactly is about to run?*):
 ///
 /// ```text
@@ -356,7 +356,7 @@ fn mcp_rows(request: &PermissionRequest, width: u16, budget: usize) -> (Vec<Line
 /// `● Agent({description})` cell and the main turn's queue belong to the
 /// screen the user is *not* looking at; showing them here was the reported
 /// "the subagent TUI shows the Agent cell" bug
-/// (`docs/agent-view-streaming.md`).
+/// (`docs/agents/agent-view-streaming.md`).
 fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     if let Some(run) = app.viewed_agent() {
         // Only the agent whose view is up has its cells on this screen. A
@@ -377,7 +377,7 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
         chunks.push(agents);
     }
     // An all-MCP batch is one act and reads as one line here too — the strip's
-    // aggregated cell, drawn at rest (`docs/mcp.md`). A prompt raised while
+    // aggregated cell, drawn at rest (`docs/tools/mcp.md`). A prompt raised while
     // three `⎿ Waiting…` copies of it stacked up said the same thing three
     // times, in the rows the question needed.
     if chunks.is_empty()
@@ -387,7 +387,7 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     }
     let mut queue = queue_chunks(app.tool_queue().iter(), width, app.path_display());
     // The open read/search group the asked-about call follows, at rest
-    // (docs/tool-groups.md) — merged into that call's chunk, so the budget
+    // (docs/ui/tool-groups.md) — merged into that call's chunk, so the budget
     // that may collapse the siblings never drops the call being asked about.
     let group = super::tool_group::live_group_lines(app, width, None, false);
     if !group.is_empty() {
@@ -406,7 +406,7 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
 }
 
 /// One chunk per queued call — each call's ordinary collapsed cell, drawn at
-/// rest (the prompt is a still frame, `docs/tool-pulse.md`). The one walk the
+/// rest (the prompt is a still frame, `docs/ui/tool-pulse.md`). The one walk the
 /// main turn's queue and a viewed agent's share, so a subagent's parallel
 /// batch shows every `⎿ Waiting…` sibling exactly as the main view's does.
 fn queue_chunks<'a>(
@@ -439,7 +439,7 @@ fn waiting_summary_row(hidden: usize) -> Line<'static> {
 /// the approve seam runs before its `ToolStart`, so nothing has started), and
 /// a call that is truly executing (the main turn's, under a subagent's
 /// request) keeps its running row. No pulse: the prompt is a still frame
-/// ([`tool_lines`] renders a running bullet at rest, `docs/tool-pulse.md`).
+/// ([`tool_lines`] renders a running bullet at rest, `docs/ui/tool-pulse.md`).
 ///
 /// The context must not crowd out the prompt itself, though: a model's big
 /// parallel batch queues a screenful of `⎿ Waiting…` siblings, which used to
@@ -499,7 +499,7 @@ fn more_row(hidden: usize, width: u16) -> Line<'static> {
 /// The body — a `write`'s numbered contents, an `edit`'s numbered diff hunks,
 /// a `bash` command and its description — is shown **whole**: the point of
 /// the prompt is that you read what you are approving, all of it. The prompt
-/// is a framed view like the menus and pickers (`docs/view-flow.md`): a page
+/// is a framed view like the menus and pickers (`docs/ui/view-flow.md`): a page
 /// taller than the terminal is painted bottom-anchored — the question, the
 /// options and the hints close the page, so the anchor keeps them on screen
 /// — and the skipped top flows into the terminal's real scrollback, where
@@ -572,7 +572,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     if file_change {
         // The file named the way the cell it becomes will name it —
         // relative under the cwd, `~`-relative under home, absolute elsewhere
-        // (`docs/tools.md` *Path display*). The request's own `target` stays
+        // (`docs/tools/tools.md` *Path display*). The request's own `target` stays
         // verbatim: it is what the rule engine and the model see.
         frame.push(text_row(
             &app.path_display().display(&request.target),
@@ -581,7 +581,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         ));
     } else {
         // A command — and an MCP call, whose body names the tool the same way
-        // (`docs/mcp.md`) — gaps here instead: its target *is* the body.
+        // (`docs/tools/mcp.md`) — gaps here instead: its target *is* the body.
         frame.push(Line::default());
     }
     let (body, hidden) = if file_change {
@@ -640,7 +640,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         // siblings behind a summary row would lose them for nothing. Building
         // it without the budget also keeps the page independent of
         // `term_height` here, which is what keeps the builder a fixpoint at
-        // the region's own height (`docs/view-flow.md`).
+        // the region's own height (`docs/ui/view-flow.md`).
         context_lines(app, width, usize::MAX)
     } else {
         // …unless it **ticks**: a live agent group's bullet blinks at the
@@ -661,7 +661,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
 
 /// Whether the context cells above the prompt are **static** for as long as
 /// it is open — the test for whether they may ride a flowing page into the
-/// terminal's frozen scrollback (`docs/view-flow.md`).
+/// terminal's frozen scrollback (`docs/ui/view-flow.md`).
 ///
 /// A queued call is: the approve seam runs before its `ToolStart`, so a
 /// `⎿ Waiting…` cell cannot change while the answer is pending. Two things
@@ -721,13 +721,13 @@ fn file_lang(path: &str) -> Option<&str> {
 /// Paint the open permission prompt over the whole live region —
 /// bottom-anchored, so a page taller than the region keeps its tail (the
 /// question, the options, the hints, the closing rule) on screen while the
-/// skipped top flows into scrollback (`docs/view-flow.md`). Pure —
+/// skipped top flows into scrollback (`docs/ui/view-flow.md`). Pure —
 /// [`render_live`] calls this in place of the composer. The region is sized
 /// from the same builder
 /// ([`permission_height`](super::layout::permission_height), the fixpoint),
 /// and the conversation above a fitting prompt is the *real* screen — the
 /// prompt grew by scrolling like any other region, so what the user just
-/// read stays put (`docs/permissions.md`).
+/// read stays put (`docs/state/permissions.md`).
 pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, permission_lines(app, area.width, area.height));
 }
@@ -739,7 +739,7 @@ pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
 pub fn permission_remember_label(request: &PermissionRequest) -> String {
     match request.kind {
         PermissionKind::Bash => command_scope(&request.target).display(),
-        // The MCP rule is the exact wire name (`docs/mcp.md`).
+        // The MCP rule is the exact wire name (`docs/tools/mcp.md`).
         PermissionKind::Mcp => request.target.clone(),
         PermissionKind::Session => "this session".to_string(),
         PermissionKind::Write | PermissionKind::Edit => "all edits".to_string(),

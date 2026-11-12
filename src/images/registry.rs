@@ -21,7 +21,7 @@
 //!   paste's pixel size, which no fact line carries, or no picture at all —
 //!   a file gone since the conversation showed it, which reserves no rows.
 //!
-//! See `docs/images.md`.
+//! See `docs/ui/images.md`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -215,7 +215,7 @@ enum Sighting {
 /// the boundary looks again whenever it lays a conversation out from history
 /// ([`recheck_pictures`]), and a path it found nothing at is
 /// [`Missing`](Sighting::Missing): [`place`] reserves no rows for it. See
-/// `docs/images.md`, *A picture whose file is gone*.
+/// `docs/ui/images.md`, *A picture whose file is gone*.
 fn sightings() -> &'static Mutex<HashMap<String, Sighting>> {
     static SIGHTINGS: OnceLock<Mutex<HashMap<String, Sighting>>> = OnceLock::new();
     SIGHTINGS.get_or_init(|| Mutex::new(HashMap::new()))

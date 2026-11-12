@@ -1,4 +1,4 @@
-//! The inline tool-permission prompt's rendering (`docs/permissions.md`).
+//! The inline tool-permission prompt's rendering (`docs/state/permissions.md`).
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -533,7 +533,7 @@ fn the_cursor_seat_follows_the_highlighted_option() {
 
 #[test]
 fn the_cursor_seat_follows_the_option_on_a_flowing_prompt() {
-    // A page taller than the terminal bottom-anchors (docs/view-flow.md): the
+    // A page taller than the terminal bottom-anchors (docs/ui/view-flow.md): the
     // tail block — question, options, hints, rule — closes the page, so the
     // anchor keeps it flush at the region's bottom and the cursor is still
     // found from that edge. The marker's *page* row maps to its screen row by
@@ -580,7 +580,7 @@ fn the_cursor_sits_at_the_end_of_the_amend_field() {
     assert_eq!(x, 3 + "why".len() as u16);
 }
 
-// --- the context above the prompt (docs/permissions.md) ---
+// --- the context above the prompt (docs/state/permissions.md) ---
 //
 // A request must not hide what raised it: the call being asked about (and any
 // live agent group) stays visible above the modal, so the prompt reads as a
@@ -625,7 +625,7 @@ fn the_pending_call_shows_a_waiting_row_like_its_siblings() {
 #[test]
 fn a_batch_sibling_shows_its_waiting_row_too() {
     // Every not-yet-run call in the batch waits the same way — the one being
-    // asked about and the ones queued behind it alike (docs/parallel-tools.md).
+    // asked about and the ones queued behind it alike (docs/tools/parallel-tools.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool_batch(&[
@@ -718,7 +718,7 @@ fn a_big_batch_of_waiting_siblings_never_squeezes_out_the_body() {
 }
 
 // (A tall body under a big batch is `an_overflowing_prompt_drops_its_context_cells`
-// below: the page flows whole and the context gives way — docs/view-flow.md.)
+// below: the page flows whole and the context gives way — docs/ui/view-flow.md.)
 
 #[test]
 fn a_small_batch_keeps_every_sibling_with_no_summary() {
@@ -820,7 +820,7 @@ fn an_idle_prompt_has_no_context_rows() {
     assert_eq!(rows(&app, 70, 40)[0], "─".repeat(70));
 }
 
-// --- the prompt rendered plain (docs/permissions.md) ---
+// --- the prompt rendered plain (docs/state/permissions.md) ---
 //
 // The region is sized to exactly the prompt's rows, and the conversation
 // above it is the *real* screen — the prompt grew by scrolling like any other
@@ -855,7 +855,7 @@ fn the_context_rows_count_against_the_body_budget() {
             "stable at height {height}"
         );
         // The cell rides the page at every height — dropping it would leave
-        // the prompt a box out of nowhere (docs/permissions.md).
+        // the prompt a box out of nowhere (docs/state/permissions.md).
         let text: Vec<String> = permission_lines(&app, 70, height)
             .iter()
             .map(plain)
@@ -864,7 +864,7 @@ fn the_context_rows_count_against_the_body_budget() {
     }
 }
 
-// --- the MCP prompt (docs/mcp.md) ---
+// --- the MCP prompt (docs/tools/mcp.md) ---
 
 /// An app asking about a `deepwiki - read_wiki_structure` call, with the
 /// session info the footer (and option 2's project clause) reads.
@@ -925,7 +925,7 @@ fn an_mcp_prompt_reads_as_the_call_it_is_about() {
 #[test]
 fn the_mcp_marker_and_description_are_dim() {
     // `(MCP)` is a badge, not the call: it wears the description's colour so
-    // the eye lands on the tool (`docs/mcp.md`).
+    // the eye lands on the tool (`docs/tools/mcp.md`).
     let app = pending_mcp();
     let lines = permission_lines(&app, 76, 30);
     let call = lines
@@ -945,7 +945,7 @@ fn the_mcp_marker_and_description_are_dim() {
 #[test]
 fn a_parallel_mcp_batch_shows_one_context_cell_above_the_prompt() {
     // The three `⎿ Waiting…` copies of one aggregated line said the same
-    // thing three times, in the rows the question needed (`docs/mcp.md`).
+    // thing three times, in the rows the question needed (`docs/tools/mcp.md`).
     let mut app = pending_mcp();
     app.start_tool_batch(&[
         ToolCallSummary {
@@ -965,7 +965,7 @@ fn a_parallel_mcp_batch_shows_one_context_cell_above_the_prompt() {
     );
 }
 
-// --- the view flow (docs/view-flow.md): the body shows whole and the page
+// --- the view flow (docs/ui/view-flow.md): the body shows whole and the page
 // flows into scrollback instead of capping with a `… +N lines` tail ---
 
 #[test]
@@ -1081,7 +1081,7 @@ fn a_pathological_body_still_caps_at_the_ceiling() {
     );
 }
 
-// --- the context follows the conversation on screen (`docs/permissions.md`) ---
+// --- the context follows the conversation on screen (`docs/state/permissions.md`) ---
 
 /// A subagent `a1` mid-round with a parallel batch of `calls` announced, its
 /// session view open, and a prompt from that agent open for the front call.
@@ -1172,7 +1172,7 @@ fn an_agent_views_prompt_shows_every_waiting_sibling_of_its_batch() {
 fn the_main_view_still_shows_the_lead_agent_tree_above_a_subagents_prompt() {
     // The other half of the same rule: from the *main* conversation the
     // subagent's request keeps the lead's live agent cell, which is what is
-    // on screen there (`docs/permissions.md`) — and never the agent's own
+    // on screen there (`docs/state/permissions.md`) — and never the agent's own
     // queue, which that screen does not show.
     let mut req = request(PermissionKind::Bash, "ls -la", "");
     req.agent = Some("general-purpose".to_string());
@@ -1192,7 +1192,7 @@ fn an_agent_views_overflowing_prompt_keeps_its_static_cells() {
     // foreground subagent always leaves a live agent group on the *main*
     // session, so judging by that alone dropped the agent view's own static
     // `⎿ Waiting…` cells from every page too tall to fit — the prompt read as
-    // a box out of nowhere again, one level down (`docs/view-flow.md`).
+    // a box out of nowhere again, one level down (`docs/ui/view-flow.md`).
     let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
     let app = agent_view_pending(
         &[("Write", "viz.py"), ("Write", "plot.py")],
@@ -1279,7 +1279,7 @@ fn an_agent_views_prompt_keeps_no_context_for_another_conversations_request() {
 #[test]
 fn an_edit_prompt_marks_the_characters_that_changed() {
     // The preview is where "what exactly am I approving?" is load-bearing, so
-    // it gets the character-level refinement too (`docs/inline-diff.md`) — it shares
+    // it gets the character-level refinement too (`docs/ui/inline-diff.md`) — it shares
     // `numbered_body_lines` with the cell. Here the timeout 30 -> 90.
     use super::super::theme::{tool_diff_add_mark_bg, tool_diff_del_mark_bg};
     let body = "11      log.info(\"start\")\n12 -    timeout_seconds = 30\n12 +    timeout_seconds = 90\n13      run()";
@@ -1308,7 +1308,7 @@ fn an_edit_prompt_marks_the_characters_that_changed() {
 #[test]
 fn a_full_amend_row_keeps_the_caret_inside_the_width() {
     // Tab's amend field keeps one column for the caret like the composer
-    // (docs/textarea.md): a row of text never pushes it past the edge.
+    // (docs/input/textarea.md): a row of text never pushes it past the edge.
     let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
     app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     for n in 1..=200 {
@@ -1323,7 +1323,7 @@ fn a_full_amend_row_keeps_the_caret_inside_the_width() {
 #[test]
 fn the_target_row_reads_by_the_cells_path_rule() {
     // The prompt names the file the way the cell it becomes will
-    // (`docs/tools.md` "Path display"): relative under the cwd, `~`-relative
+    // (`docs/tools/tools.md` "Path display"): relative under the cwd, `~`-relative
     // under home, absolute elsewhere. The request's own `target` stays the
     // verbatim path — it is what the rule engine and the model see.
     let paths = PathDisplay::new(
@@ -1386,7 +1386,7 @@ fn the_pending_cell_above_the_prompt_shortens_with_its_header() {
     );
 }
 
-// --- session input (docs/interactive-shell.md) ---
+// --- session input (docs/tools/interactive-shell.md) ---
 
 #[test]
 fn a_session_prompt_shows_what_is_typed_and_where() {

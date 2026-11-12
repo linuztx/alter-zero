@@ -4,7 +4,7 @@
 //! loop in `main.rs` feeds key presses in and reacts to the returned
 //! [`Action`]s, and pushes streamed chunks in via [`App::push_chunk`].
 //!
-//! One module per area — see `docs/module-layout.md` for the map and
+//! One module per area — see `docs/architecture/module-layout.md` for the map and
 //! `docs/design.md` for how this sits in the loop. The [`App`] struct stays here
 //! so every submodule and the test tree keeps its private-field access.
 
@@ -103,7 +103,7 @@ pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
-// its own transcript (`docs/agent-view-streaming.md`).
+// its own transcript (`docs/agents/agent-view-streaming.md`).
 pub use self::config_review::{
     ConfigReview, ItemChange, ReviewAnswer, ReviewChoice, ReviewItem, ReviewKey, ReviewKind,
     ReviewPage, ReviewSection,
@@ -158,12 +158,12 @@ pub struct App {
     pub input: TextArea,
     /// Shell-style ↑/↓ recall of submitted inputs (and Ctrl+C-cleared drafts).
     /// Survives `/clear` — like codex, whose history even spans sessions. See
-    /// `docs/input-history.md`.
+    /// `docs/input/input-history.md`.
     pub input_history: InputHistory,
     /// The open Ctrl+R reverse search over [`input_history`], if one is —
     /// `None` when closed. While `Some`, every key routes to it
     /// (`on_key_search`) and the footer slot shows the query line. See
-    /// `docs/history-search.md`.
+    /// `docs/input/history-search.md`.
     ///
     /// [`input_history`]: App::input_history
     pub history_search: Option<HistorySearch>,
@@ -172,7 +172,7 @@ pub struct App {
     /// the box renders `! pwd` (the bang as the prompt) instead of `❯ !pwd`.
     /// Entered by typing `!` first (`sync_shell_mode` absorbs it), exited by
     /// Backspace/Esc on an empty composer or by submitting; the footer slot
-    /// shows a red `Shell mode` hint while it's on. See `docs/shell-command.md`.
+    /// shows a red `Shell mode` hint while it's on. See `docs/input/shell-command.md`.
     ///
     pub shell_mode: bool,
     /// Messages submitted while a turn was in flight, awaiting their own turns
@@ -183,12 +183,12 @@ pub struct App {
     /// queued. The loop pops the front batch ([`drain_next_batch`]) into one
     /// turn whenever the current one ends, so the batches iterate in order — and
     /// Esc-interrupt sends the front batch right away. Only ever non-empty while
-    /// a turn is active. See `docs/queue.md`.
+    /// a turn is active. See `docs/input/queue.md`.
     ///
     /// [`drain_next_batch`]: App::drain_next_batch
     pub queued: VecDeque<QueuedTurn>,
     /// The messages handed to the turn **already running** — codex's steering,
-    /// what Enter does mid-turn (`docs/queue.md`). They wait here, shown above
+    /// what Enter does mid-turn (`docs/input/queue.md`). They wait here, shown above
     /// the box exactly like [`queued`](App::queued), only until the model's
     /// next round boundary takes them: [`StreamEvent::Steered`] then turns
     /// each into a real user message in the conversation
@@ -205,7 +205,7 @@ pub struct App {
     /// [`StreamEvent::Steered`]: crate::stream::StreamEvent::Steered
     pub steered: VecDeque<String>,
     /// Has a steered message been **delivered** into this turn
-    /// (`docs/queue.md`)? Reset by [`begin_stream`](App::begin_stream).
+    /// (`docs/input/queue.md`)? Reset by [`begin_stream`](App::begin_stream).
     ///
     /// The Esc-interrupt **undo** decides from the history *tail*: a trailing
     /// user message means the turn is still the untouched submission. A
@@ -219,7 +219,7 @@ pub struct App {
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See
-    /// `docs/shortcuts.md`.
+    /// `docs/ui/shortcuts.md`.
     pub shortcuts_open: bool,
     /// `Some(buffer)` while the AI reply is streaming, accumulating chunks.
     /// Private: read through [`streaming_text`]/[`is_streaming`] — the turn
@@ -235,14 +235,14 @@ pub struct App {
     /// never rendered, codex parity) while the token tally still ticks.
     /// [`finish_compact`](App::finish_compact) takes it into the appended
     /// [`HistoryItem::Compaction`] marker; an interrupt, a backend error, or
-    /// a `/clear` drops it — the old context stands. See `docs/compact.md`.
+    /// a `/clear` drops it — the old context stands. See `docs/architecture/compact.md`.
     compact_buffer: Option<String>,
     /// `Some(buffer)` while a **thinking phase** is open, accumulating the
     /// model's streamed chain-of-thought: the strip previews its tail live and
     /// [`finish_reasoning`](App::finish_reasoning) collapses it into the
     /// committed `Thought for …` cell. `None` between phases — and always,
     /// when the display is off (`ALTER_ZERO_SHOW_THINKING=0`), because the
-    /// boundary then never opens one. See `docs/thinking-stream.md`.
+    /// boundary then never opens one. See `docs/ui/thinking-stream.md`.
     reasoning: Option<String>,
     /// Where this round's settled [`HistoryItem::Reasoning`] items landed in
     /// [`history`](Self::history) — the snap targets for the round's usage
@@ -253,7 +253,7 @@ pub struct App {
     /// Where the reply attempt now streaming began: the [`history`](Self::history)
     /// length at its first piece of output — the mark a
     /// [`StreamEvent::Retrying`] withdraws back to
-    /// ([`withdraw_attempt`](App::withdraw_attempt), `docs/offline.md` *A
+    /// ([`withdraw_attempt`](App::withdraw_attempt), `docs/providers/offline.md` *A
     /// connection lost mid-reply*). Set by [`track_attempt`](App::track_attempt)
     /// at the first piece of [attempt output] since an event of any other kind,
     /// and closed by the next such event — every round boundary is one, so a
@@ -275,10 +275,10 @@ pub struct App {
     /// `ALTER_ZERO_CONTEXT_WINDOW` override — injected at the boundary via
     /// [`set_context_window`](Self::set_context_window)). Drives the footer's
     /// `{used}/{window} ({pct}%)` gauge and the auto-compact trigger; `None`
-    /// hides both. See `docs/compact.md`.
+    /// hides both. See `docs/architecture/compact.md`.
     context_window: Option<u64>,
     /// The current context size in tokens, kept in the provider's own count
-    /// (`docs/token-estimate.md`): the last usage frame's `input` — the
+    /// (`docs/architecture/token-estimate.md`): the last usage frame's `input` — the
     /// provider's count of the request's whole context — plus the calibrated
     /// estimate of everything that joined the conversation since; after a
     /// history mutation that frame no longer describes (a compaction, a
@@ -288,7 +288,7 @@ pub struct App {
     context_used: u64,
     /// What the provider's usage reports say about this conversation's
     /// context: the base [`context_used`](Self::context_used) reads from, and
-    /// the calibration the reports taught (`docs/token-estimate.md`).
+    /// the calibration the reports taught (`docs/architecture/token-estimate.md`).
     context_meter: crate::tokens::ContextMeter,
     /// Where in the history the meter's base was taken — its
     /// `(generation, length)` — so a reading estimates only what joined
@@ -311,14 +311,14 @@ pub struct App {
     /// failed — and cleared when the next real turn begins, so a compaction
     /// that didn't (or couldn't) shrink the context never re-triggers in a
     /// tight loop, and an Esc'd one isn't immediately restarted against the
-    /// user's wishes. See `docs/compact.md`.
+    /// user's wishes. See `docs/architecture/compact.md`.
     auto_compact_blocked: bool,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's
     /// height while a table streams — so `ui::preview_rows` reserves exactly
     /// the rows `ui::StreamRender::preview` renders. See
-    /// `docs/table-streaming.md`.
+    /// `docs/ui/table-streaming.md`.
     ///
     /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
     /// [`set_status_times`]: App::set_status_times
@@ -331,18 +331,18 @@ pub struct App {
     /// single calls) is a one-element queue. Execution is sequential, so at most
     /// one call is ever `Running`, and it is always the front. Private: read the
     /// active call through [`current_tool`](App::current_tool) and the whole
-    /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
+    /// batch through [`tool_queue`](App::tool_queue). See `docs/tools/parallel-tools.md`.
     tool_queue: VecDeque<ToolCall>,
     /// The calls the model is still **generating** this round, previewed
     /// live — a `write` streams into its cell as its content arrives — and
     /// the previewed ones the announced batch took over
-    /// (`docs/write-streaming.md`). Live-only: nothing here is ever recorded.
+    /// (`docs/ui/write-streaming.md`). Live-only: nothing here is ever recorded.
     tool_drafts: ToolDrafts,
     /// The running call's **live** rows — the tail of its `output` the next
     /// [`push_tool_screen`](App::push_tool_screen) replaces
-    /// (`docs/interactive-shell.md`), and when each last changed, so the
+    /// (`docs/tools/interactive-shell.md`), and when each last changed, so the
     /// running cell's window can follow the rows still moving
-    /// (`docs/tool-streaming.md`). Empty whenever a call starts or resolves.
+    /// (`docs/ui/tool-streaming.md`). Empty whenever a call starts or resolves.
     tool_live: LiveTail,
     /// Bumped by every change to the running call's output or header, so the
     /// transcript cache sees a same-length redraw (`45%` → `46%`).
@@ -351,24 +351,24 @@ pub struct App {
     /// — the reads and searches recorded since, held out of scrollback while
     /// the strip shows them as one live cell, until something that is not
     /// part of the group arrives and the boundary commits them as one line
-    /// (`docs/tool-groups.md`). `None` with no group open, and always with
+    /// (`docs/ui/tool-groups.md`). `None` with no group open, and always with
     /// **Verbose output** on.
     tool_group: Option<usize>,
     /// Which of the open group's calls its `⎿` row is showing, and since when
     /// — stepped on the boundary's frame clock so every call's value gets the
-    /// row in turn ([`App::advance_group_hint`], `docs/tool-groups.md` *The
+    /// row in turn ([`App::advance_group_hint`], `docs/ui/tool-groups.md` *The
     /// hint row*).
     group_hint: tool_group::GroupHint,
     /// The id [`start_tool_batch`](App::start_tool_batch) stamps the next
     /// announced batch with ([`ToolCall::batch`]) — a plain counter, so two
     /// rounds' calls can never be mistaken for one parallel batch by the
-    /// renderer that collapses a run of MCP cells. See `docs/mcp.md`.
+    /// renderer that collapses a run of MCP cells. See `docs/tools/mcp.md`.
     next_batch: u64,
     /// The tool round the backend announced last
     /// ([`StreamEvent::RoundCalls`] → [`open_round`](App::open_round)): its
     /// batch id and its calls in the model's order, which is what stamps
     /// the round's records with the provider's own ids
-    /// (`docs/prompt-caching.md`). Cleared by [`begin_stream`](App::begin_stream).
+    /// (`docs/providers/prompt-caching.md`). Cleared by [`begin_stream`](App::begin_stream).
     round: Option<tools::OpenRound>,
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
@@ -377,7 +377,7 @@ pub struct App {
     /// rendered as the checklist under the status line while a turn runs and
     /// re-derived from history on every rewind
     /// ([`reset_tasks_from_history`](Self::reset_tasks_from_history)). See
-    /// `docs/task-tools.md`.
+    /// `docs/tools/task-tools.md`.
     tasks: crate::tasks::TaskStore,
     /// Bumped by every **non-append** [`history`](Self::history) mutation — a
     /// `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
@@ -400,13 +400,13 @@ pub struct App {
     pub tool_follow: bool,
     /// The Ctrl+D context-debug view's vertical scroll offset, in lines from
     /// the top — its own state so flipping between overlays never clobbers the
-    /// transcript pager's place. See `docs/context.md`.
+    /// transcript pager's place. See `docs/architecture/context.md`.
     pub debug_scroll: usize,
     /// Whether the context-debug view is pinned to the bottom (tail-follow),
     /// exactly like [`tool_follow`](Self::tool_follow).
     pub debug_follow: bool,
     /// Which page the Ctrl+D view is showing — Tab flips it
-    /// (`docs/permissions.md`). It persists across opens, so Ctrl+D comes
+    /// (`docs/state/permissions.md`). It persists across opens, so Ctrl+D comes
     /// back to whichever page you were last reading.
     pub debug_page: DebugPage,
     /// The classifier page's scroll offset — its own state beside
@@ -419,7 +419,7 @@ pub struct App {
     pub classifier_follow: bool,
     /// A ←/→ step between the showing Ctrl+D page's entries, waiting for the
     /// draw to resolve it against the page as built
-    /// ([`resolve_debug_jump`](Self::resolve_debug_jump), `docs/context.md`).
+    /// ([`resolve_debug_jump`](Self::resolve_debug_jump), `docs/architecture/context.md`).
     /// Tab and a close drop it, so a step never lands on a page it was not
     /// pressed on.
     pub debug_jump: Option<EntryJump>,
@@ -427,7 +427,7 @@ pub struct App {
     /// next verdict will read, injected per draw at the boundary from the
     /// live backend log (`ReplySource::classifier_context`), the
     /// system-prompt pattern. `None` when the backend keeps no log (the
-    /// dummy) or nothing has been recorded yet. See `docs/permissions.md`.
+    /// dummy) or nothing has been recorded yet. See `docs/state/permissions.md`.
     pub(crate) classifier_context: Option<String>,
     /// The auto mode classifier's **system prompt** — the fixed rubric every
     /// verdict is judged by (`prompts/classifier.md`), injected at the
@@ -435,7 +435,7 @@ pub struct App {
     /// `ReplySource::classifier_system_prompt`) so the Ctrl+D classifier
     /// page can show it, abridged to its structure, above the task context.
     /// `None` for a backend with no classifier (the dummy). See
-    /// `docs/permissions.md`.
+    /// `docs/state/permissions.md`.
     pub(crate) classifier_system_prompt: Option<String>,
     /// The active backend's system prompt, injected at the boundary
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
@@ -446,7 +446,7 @@ pub struct App {
     /// [`system_prompt`](Self::system_prompt)
     /// ([`App::set_agent_system_prompt`], from
     /// `ReplySource::agent_system_prompt`) so the *agent session view's*
-    /// Ctrl+D shows what that agent actually gets. See `docs/agent-tool.md`.
+    /// Ctrl+D shows what that agent actually gets. See `docs/agents/agent-tool.md`.
     pub agent_system_prompt: Option<String>,
     /// The `<system-reminder>` a launched **subagent** opens on, ahead of its
     /// task — the session's skills roster ([`App::set_agent_system_reminder`],
@@ -457,11 +457,11 @@ pub struct App {
     /// [`user_instructions`](Self::user_instructions) and
     /// [`listings`](Self::listings), because that is the order the agent read
     /// them in. `None` when the session has no skills or the type's `tools:`
-    /// withholds `Skill`. See `docs/subagents.md`.
+    /// withholds `Skill`. See `docs/agents/subagents.md`.
     pub agent_system_reminder: Option<String>,
     /// The context window of the model the **viewed** subagent runs on, when
     /// known — the denominator of its session view's footer gauge
-    /// (`docs/agent-context-gauge.md`). Injected at the boundary beside
+    /// (`docs/agents/agent-context-gauge.md`). Injected at the boundary beside
     /// [`agent_system_prompt`](Self::agent_system_prompt)
     /// ([`App::set_agent_context_window`]): the session's own window for a
     /// type that inherits the model, `None` for one pinned to a model whose
@@ -469,7 +469,7 @@ pub struct App {
     /// as an unknown window hides the main one.
     agent_context_window: Option<u64>,
     /// The model the **viewed** subagent's type is pinned to (`model:` in its
-    /// definition, `docs/subagents.md`), `None` when it inherits the
+    /// definition, `docs/agents/subagents.md`), `None` when it inherits the
     /// session's — what its session view's footer names in place of the
     /// session's model. Injected beside the window ([`App::set_agent_model`]).
     agent_model: Option<String>,
@@ -482,12 +482,12 @@ pub struct App {
     /// refreshed at every turn start, so a `/init`-generated guide rides the
     /// very next turn). The context derivation opens the one reminder with
     /// it (`context::context_messages_full`), the Ctrl+D view shows it there,
-    /// and the offline token estimate counts it. See `docs/project-doc.md`.
+    /// and the offline token estimate counts it. See `docs/state/project-doc.md`.
     pub user_instructions: Option<String>,
     /// The `<system-reminder>`'s **listing sections** — what this session can
     /// reach that the tool schemas don't name: the discovered skills
-    /// (`docs/skills.md`) and the subagent types the `agent` tool can launch
-    /// (`docs/subagents.md`). Rendered at the boundary
+    /// (`docs/tools/skills.md`) and the subagent types the `agent` tool can launch
+    /// (`docs/agents/subagents.md`). Rendered at the boundary
     /// ([`App::set_listings`], from `subagents::listing_sections`) and
     /// wrapped by the derivation into the same block as
     /// [`user_instructions`](Self::user_instructions), right behind it
@@ -498,7 +498,7 @@ pub struct App {
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
-    /// any view toggle and by any non-Esc key. See `docs/backtrack.md`.
+    /// any view toggle and by any non-Esc key. See `docs/input/backtrack.md`.
     pub backtrack: Backtrack,
     /// The open slash-command palette (when the input is a bare command token);
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
@@ -507,13 +507,13 @@ pub struct App {
     /// The open `@` file picker (when the cursor is in an `@token`); `None` when
     /// closed. Esc dismisses it (sticky within the token); the boundary fetches
     /// its matches asynchronously. See `App::refresh_file_search` and
-    /// `docs/file-search.md`.
+    /// `docs/input/file-search.md`.
     pub file_search: Option<FileSearch>,
     /// The open `$` skill picker (when the cursor is in a usable `$mention`);
     /// `None` when closed. Esc dismisses it (sticky within the mention); its
     /// matches derive synchronously from the `skills` field, so unlike
     /// the file picker nothing is fetched. See `App::refresh_skill_picker`
-    /// and `docs/skill-mentions.md`.
+    /// and `docs/input/skill-mentions.md`.
     pub skill_picker: Option<SkillPicker>,
     /// The skills the composer may `$`-mention — the registry's **enabled**
     /// snapshot, injected at the boundary ([`set_skills`](Self::set_skills),
@@ -523,87 +523,87 @@ pub struct App {
     /// The open `/resume` session picker; `Some` exactly while
     /// [`View::ResumePicker`] is showing ([`App::open_resume_picker`] /
     /// [`App::close_resume_picker`] keep the two in step). See
-    /// `docs/resume.md`.
+    /// `docs/state/resume.md`.
     pub resume_picker: Option<ResumePicker>,
     /// The open inline `/model` picker; `None` when closed. Unlike the resume
     /// picker it is **not** a [`View`] — it renders inline, replacing the
     /// composer in the bottom region, and owns every key while open (like the
-    /// Ctrl+R search). See `docs/llm.md`.
+    /// Ctrl+R search). See `docs/providers/llm.md`.
     pub model_picker: Option<ModelPicker>,
     /// The open inline `/login` API-key onboarding flow; `None` when closed.
     /// Like [`model_picker`](Self::model_picker) it renders inline and owns
     /// every key while open. Mutually exclusive with the picker. See
-    /// `docs/llm.md`.
+    /// `docs/providers/llm.md`.
     pub key_onboarding: Option<KeyOnboarding>,
     /// The open inline `/settings` menu; `None` when closed. The third
     /// composer-replacing picker, alongside
     /// [`model_picker`](Self::model_picker) and
-    /// [`key_onboarding`](Self::key_onboarding). See `docs/settings.md`.
+    /// [`key_onboarding`](Self::key_onboarding). See `docs/state/settings.md`.
     pub settings_picker: Option<SettingsPicker>,
     /// The open read-only `/hooks` menu; `None` when closed. The fourth
     /// composer-replacing picker — unlike the other three it has no text
-    /// entry, only navigation. See `docs/hooks-menu.md`.
+    /// entry, only navigation. See `docs/tools/hooks-menu.md`.
     pub hooks_menu: Option<HooksMenu>,
     /// The open inline `/skills` menu; `None` when closed. The fifth
     /// composer-replacing picker, and the [`settings_picker`](Self::settings_picker)'s
     /// twin — same frame, same grammar, rows being the discovered skills
-    /// instead of the session's knobs. See `docs/skills.md`.
+    /// instead of the session's knobs. See `docs/tools/skills.md`.
     pub skills_menu: Option<SkillsMenu>,
     /// The open `/mcp` manager; `None` when closed. The sixth
     /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s twin
     /// (page walk, no search) over the boundary-injected server snapshot.
-    /// See `docs/mcp.md`.
+    /// See `docs/tools/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over
-    /// pages the boundary builds. See `docs/config-review.md`.
+    /// pages the boundary builds. See `docs/state/config-review.md`.
     pub config_review: Option<ConfigReview>,
     /// The open inline `/mascot` picker; `None` when closed. The eighth
     /// composer-replacing picker, the [`settings_picker`](Self::settings_picker)'s
     /// twin — same frame, same grammar — over the mascot catalog, previewing
-    /// the highlighted mascot's banner live. See `docs/mascot.md`.
+    /// the highlighted mascot's banner live. See `docs/ui/mascot.md`.
     pub mascot_picker: Option<MascotPicker>,
     /// The banner mascot the startup header draws ([`Mascot::Crest`] by
     /// default) — chosen in the `/mascot` picker, seeded at the boundary from
-    /// `mascot.json` before the first frame. See `docs/mascot.md`.
+    /// `mascot.json` before the first frame. See `docs/ui/mascot.md`.
     mascot: Mascot,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row
-    /// and preview animate off the frame clock. See `docs/spinner.md`.
+    /// and preview animate off the frame clock. See `docs/ui/spinner.md`.
     pub spinner_picker: Option<SpinnerPicker>,
     /// The status line's spinner style ([`Spinner::Gravity`] by default) —
     /// chosen in the `/spinner` picker, seeded at the boundary from
-    /// `spinner.json` before the first frame. See `docs/spinner.md`.
+    /// `spinner.json` before the first frame. See `docs/ui/spinner.md`.
     spinner: Spinner,
     /// The open inline `/theme` picker; `None` when closed. The tenth
     /// composer-replacing picker, the [`spinner_picker`](Self::spinner_picker)'s
     /// twin over the colour-theme catalog, previewing the highlighted theme
-    /// on real cells. See `docs/theme.md`.
+    /// on real cells. See `docs/ui/theme.md`.
     pub theme_picker: Option<ThemePicker>,
     /// The colour theme ([`Theme::Mocha`] by default) — chosen in the
     /// `/theme` picker, seeded at the boundary from `theme.json` before the
     /// first frame, and mirrored into the ambient palette the renderers read
-    /// (`ui::activate_theme`). See `docs/theme.md`.
+    /// (`ui::activate_theme`). See `docs/ui/theme.md`.
     theme: Theme,
     /// The open `/donate` page; `None` when closed. The eleventh
     /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s
     /// sibling (no text entry) over the const donation-address catalog.
-    /// See `docs/donate.md`.
+    /// See `docs/ui/donate.md`.
     pub donate_picker: Option<DonatePicker>,
     /// The open `/export` page; `None` when closed. The `/donate` page's
     /// sibling (no text entry) over the two export targets — the clipboard
-    /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.
+    /// or a `conversation-….txt` file in the cwd. See `docs/ui/export.md`.
     pub export_picker: Option<ExportPicker>,
     /// The open `/context` page; `None` when closed. The `/donate` page's
     /// sibling (no text entry) over the context window's breakdown, counted
     /// when it opens and re-counted at the loop bottom whenever its inputs
-    /// change. See `docs/context-usage.md`.
+    /// change. See `docs/architecture/context-usage.md`.
     pub context_usage: Option<ContextUsagePage>,
     /// The open `/usage` page; `None` when closed. The `/context` page's
     /// sibling (no text entry) over every signed-in subscription's usage,
-    /// read off the providers by the boundary. See `docs/usage.md`.
+    /// read off the providers by the boundary. See `docs/providers/usage.md`.
     pub usage_page: Option<UsagePage>,
     /// What the last `/usage` page read, kept from its close for the next
     /// open — which shows those numbers at once while it reads them again
@@ -635,18 +635,18 @@ pub struct App {
     usage_since_launch: crate::context_usage::UsageLedger,
     /// The open `/secrets` page; `None` when closed — the list of the user's
     /// secrets and the form that adds or edits one, values masked
-    /// throughout. See `docs/secrets.md`.
+    /// throughout. See `docs/state/secrets.md`.
     pub secrets_page: Option<SecretsPage>,
     /// The user's secrets as the page may know them — names and context,
     /// never a value — injected by the boundary at startup and after every
-    /// change ([`App::set_secret_metas`]). See `docs/secrets.md`.
+    /// change ([`App::set_secret_metas`]). See `docs/state/secrets.md`.
     secret_metas: Vec<crate::secrets::SecretMeta>,
     /// The redacting half of the session's secrets, handed over by the
     /// boundary at startup ([`App::set_secret_redactor`]): a stored value the
     /// user types is replaced by its placeholder before anything keeps the
     /// text ([`App::redact_typed`]). It can take a value out and do nothing
     /// else, so the pure core still holds none. The default redacts nothing.
-    /// See `docs/secrets.md` *What the user types*.
+    /// See `docs/state/secrets.md` *What the user types*.
     secret_redactor: crate::secrets::SecretRedactor,
     /// The secrets whose values the user's sends masked since the boundary
     /// last looked — what its toast names ([`App::take_masked_secrets`]).
@@ -655,12 +655,12 @@ pub struct App {
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the
     /// `ALTER_ZERO_*` overrides; read through [`settings`](App::settings). See
-    /// `docs/settings.md`.
+    /// `docs/state/settings.md`.
     settings: crate::settings::SessionSettings,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See
-    /// `docs/status-indicator.md`.
+    /// `docs/ui/status-indicator.md`.
     ///
     /// [`begin_stream`]: App::begin_stream
     /// Private: read through [`status`](App::status).
@@ -679,13 +679,13 @@ pub struct App {
     /// one ([`seed_tips`](App::seed_tips), from `tips.json`), which is the
     /// unit-test default and shows no tip at all. Moved on by each tip a turn
     /// draws in [`set_status_times`](App::set_status_times) and read back by
-    /// the boundary to persist. See `docs/tips.md`.
+    /// the boundary to persist. See `docs/ui/tips.md`.
     tip_cursor: Option<usize>,
     /// The turn's accumulated **real** usage — billed tokens summed over the
     /// provider's per-round usage frames ([`App::apply_usage`]), which the
     /// live tally snaps to (replacing the estimate ticked so far) and the
     /// turn summary records. Reset by [`begin_stream`]/[`begin_shell`]. See
-    /// `docs/prompt-caching.md`.
+    /// `docs/providers/prompt-caching.md`.
     ///
     /// [`begin_stream`]: App::begin_stream
     /// [`begin_shell`]: App::begin_shell
@@ -698,25 +698,25 @@ pub struct App {
     /// ([`App::set_clock`]). `None` in unit tests (→ empty stamp, keeping the
     /// pure logic deterministic); `main.rs` sets a real local-time clock. The
     /// stamp is only ever shown in the Ctrl+O transcript (see
-    /// `docs/timestamps.md`).
+    /// `docs/ui/timestamps.md`).
     clock: Option<fn() -> String>,
     /// The session context shown in the footer under the input box (codex's
     /// footer status line), injected at the I/O boundary
     /// ([`App::set_session_info`]). `None` — the unit-test default — means no
-    /// footer row. See `docs/footer.md`.
+    /// footer row. See `docs/ui/footer.md`.
     pub session: Option<SessionInfo>,
     /// How a file tool's path reads on screen — the cwd-relative /
     /// `~`-relative / absolute rule of [`PathDisplay`], injected once at the
     /// I/O boundary ([`App::set_path_display`]) beside the session info. The
     /// verbatim default is what every unit test, and a session whose cwd is
-    /// unreadable, renders with (`docs/tools.md` *Path display*).
+    /// unreadable, renders with (`docs/tools/tools.md` *Path display*).
     path_display: PathDisplay,
     /// The active model's reasoning capability and chosen thinking mode —
     /// `None` when the model doesn't support reasoning (or support is
     /// unknown, e.g. the dummy backend). Injected at the boundary
     /// ([`App::set_thinking`], the [`set_session_info`] pattern), cycled by
     /// Ctrl+T, and shown beside the model name in the footer. See
-    /// `docs/reasoning.md`.
+    /// `docs/providers/reasoning.md`.
     ///
     /// [`set_session_info`]: App::set_session_info
     pub thinking: Option<ThinkingState>,
@@ -726,7 +726,7 @@ pub struct App {
     /// the [`set_thinking`] pattern), each tier toggled by its own palette
     /// command (`/fast`, `/ultrafast`, … — [`App::commands`]), and the
     /// selection shown beside the model name in the footer. See
-    /// `docs/fast-mode.md`.
+    /// `docs/providers/fast-mode.md`.
     ///
     /// [`set_thinking`]: App::set_thinking
     pub speed: Option<SpeedState>,
@@ -737,7 +737,7 @@ pub struct App {
     /// ([`on_paste`]) while its text waits here; `take_input` splices it back in
     /// when the draft is sent. Cleared whenever the composer empties (every
     /// `take`), but **not** by `/clear` (the draft survives `/clear`, so its
-    /// pastes do too). See `docs/paste.md`.
+    /// pastes do too). See `docs/input/paste.md`.
     ///
     /// [`on_paste`]: App::on_paste
     pub pasted: Vec<(String, String)>,
@@ -748,7 +748,7 @@ pub struct App {
     /// **not** expanded on send (it stays in the message text), and the path is
     /// surfaced separately via [`take_submission_images`]. Cleared by
     /// `take_input` (any draft-take drops attachments), so the idle submit path
-    /// stages them into `submission_images` first. See `docs/image-paste.md`.
+    /// stages them into `submission_images` first. See `docs/input/image-paste.md`.
     ///
     /// [`pasted`]: App::pasted
     /// [`attach_image`]: App::attach_image
@@ -760,7 +760,7 @@ pub struct App {
     /// to drain via [`take_submission_images`] — codex's
     /// `recent_submission_images`. The names ride along so recording can
     /// match each path to the message text that carries its placeholder
-    /// (`paste::distribute_images`). See `docs/image-paste.md`.
+    /// (`paste::distribute_images`). See `docs/input/image-paste.md`.
     ///
     /// [`images`]: App::images
     /// [`take_input`]: App::take_input
@@ -771,7 +771,7 @@ pub struct App {
     /// `/clear`'d queue. The pure core only records the drops; the boundary
     /// drains [`take_discarded_images`] and removes the files (the file I/O
     /// stays out of the library). Submitted images are *not* recorded here —
-    /// their files outlive the send. See `docs/image-paste.md`.
+    /// their files outlive the send. See `docs/input/image-paste.md`.
     ///
     /// [`take_discarded_images`]: App::take_discarded_images
     discarded_images: Vec<PathBuf>,
@@ -780,7 +780,7 @@ pub struct App {
     /// ([`show_toast`]/[`clear_toast`]). Never recorded in [`history`]: a toast
     /// is UI, not conversation. Its expiry is timed at the I/O boundary
     /// (`main.rs`'s `toast_deadline`), the timestamp pattern. See
-    /// `docs/toast.md`.
+    /// `docs/ui/toast.md`.
     ///
     /// [`show_toast`]: App::show_toast
     /// [`clear_toast`]: App::clear_toast
@@ -800,7 +800,7 @@ pub struct App {
     /// boundary's `BgEvent`s ([`bg_started`]/[`bg_output`]/[`bg_exited`]).
     /// Drives the footer's `· {n} shells` count, the `Done for Ns · {n}
     /// shells still running` summary suffix, and the ↓ manager band. See
-    /// `docs/background.md`.
+    /// `docs/tools/background.md`.
     ///
     /// [`bg_started`]: App::bg_started
     /// [`bg_output`]: App::bg_output
@@ -811,18 +811,18 @@ pub struct App {
     /// composer sets it (Claude-Code-style: step onto the indicator first,
     /// don't jump straight into the band), any other key clears it, and the
     /// last shell exiting clears it with the indicator. See
-    /// `docs/background.md`.
+    /// `docs/tools/background.md`.
     background_focus: bool,
     /// The open ↓ background manager band; `None` when closed. Inline like
     /// [`model_picker`](Self::model_picker) — it replaces the composer and
-    /// owns every key while open. See `docs/background.md`.
+    /// owns every key while open. See `docs/tools/background.md`.
     pub background_view: Option<BackgroundView>,
     /// Completions that landed while a turn was in flight, held until the
     /// model reads them: each settles where the in-flight agent announces it
     /// took its board note, and whatever no agent read settles at the turn's
     /// end — notices committed in that order, and (for model-launched shells
     /// with nothing queued) the automatic follow-up turn dispatched. See
-    /// `docs/background.md`.
+    /// `docs/tools/background.md`.
     pending_bg: VecDeque<Held<BgCompletion>>,
     /// How long the **current running command** (a model `bash` call or a `!`
     /// shell run) has been executing — boundary-injected each frame
@@ -830,19 +830,19 @@ pub struct App {
     /// [`set_status_times`](App::set_status_times) pattern; the clock lives in
     /// `tui::StatusClocks`, started at the call's `ToolStart`). `None` when no
     /// command is running. The `(Ns)` the running cell displays
-    /// ([`command_elapsed`](App::command_elapsed), `docs/tool-streaming.md`)
+    /// ([`command_elapsed`](App::command_elapsed), `docs/ui/tool-streaming.md`)
     /// — the command's own clock, never the turn's — and, masked wherever
     /// Ctrl+B is swallowed, the gate of the delayed `(ctrl+b to run in
     /// background)` preview hint, so a fast command never flashes it
     /// ([`background_hint_elapsed`](App::background_hint_elapsed),
-    /// `docs/background.md`).
+    /// `docs/tools/background.md`).
     command_elapsed: Option<Duration>,
     /// The **animation frame clock** — time since the loop started, injected
     /// before every draw ([`set_pulse`](App::set_pulse)). Purely a phase: the
     /// live region's running bullets blink against it, in unison, and nothing
-    /// ever displays it. See `docs/tool-pulse.md`.
+    /// ever displays it. See `docs/ui/tool-pulse.md`.
     pulse: Duration,
-    /// The subagent roster (`docs/agent-tool.md`): one [`AgentRun`] per
+    /// The subagent roster (`docs/agents/agent-tool.md`): one [`AgentRun`] per
     /// launched agent, created at its [`StreamEvent::AgentBatch`]
     /// announcement and updated from the dedicated agent channel
     /// ([`apply_agent_event`](App::apply_agent_event)). Drives the footer
@@ -856,14 +856,14 @@ pub struct App {
     /// and all, for the [`AGENT_RETAINED_MAX`](crate::agents::AGENT_RETAINED_MAX)
     /// most recent, so an agent the lead resumes with `agentsend` comes back
     /// to the roster with its whole conversation
-    /// ([`resume_agent`](App::resume_agent), `docs/agent-tools.md`).
+    /// ([`resume_agent`](App::resume_agent), `docs/agents/agent-tools.md`).
     retired_agents: VecDeque<AgentRun>,
     /// Hook notes from an agent the roster does not list yet, oldest first:
     /// a launch's `SubagentStart` note, which its thread sends before the
     /// lead's [`StreamEvent::AgentBatch`] announcing it may have reached the
     /// roster — the two arrive on different channels. Each waits for that
     /// announcement ([`start_agent_group`](App::start_agent_group)), at most
-    /// `EARLY_AGENT_NOTES_MAX` of them (`docs/hooks.md` *The hook-run
+    /// `EARLY_AGENT_NOTES_MAX` of them (`docs/tools/hooks.md` *The hook-run
     /// cell*).
     early_agent_notes: VecDeque<(String, StreamEvent)>,
     /// Bumped on every roster mutation — what the Ctrl+O transcript cache's
@@ -874,35 +874,35 @@ pub struct App {
     agent_group: Option<AgentGroupLive>,
     /// The ↓ roster navigation: `Some(0)` highlights the `● main` row,
     /// `Some(i+1)` the i-th **visible** roster entry. The footer line swaps
-    /// to the selection hints while it is `Some`. See `docs/agent-tool.md`.
+    /// to the selection hints while it is `Some`. See `docs/agents/agent-tool.md`.
     agent_selection: Option<usize>,
     /// The **last picked** roster row's agent id — where the next ↓ reopens
     /// the selection (an id, not an index, so a roster that grew or shrank
     /// underneath still resumes on the same agent; `None` = the `● main`
     /// row). Set by the ↑/↓ walk and by entering an agent's session view.
-    /// See `docs/agent-tool.md`.
+    /// See `docs/agents/agent-tool.md`.
     agent_selection_memory: Option<String>,
     /// The agent session view: `Some(id)` while the inline screen shows that
     /// agent's own conversation (the composer chats with it; Esc returns).
-    /// See `docs/agent-tool.md`.
+    /// See `docs/agents/agent-tool.md`.
     pub agent_view: Option<String>,
     /// Background-agent completions held until the lead reads them —
     /// settled beside [`pending_bg`](Self::pending_bg) (same sites, same
     /// rules).
     pending_agents: VecDeque<Held<AgentNotice>>,
-    /// The open tool-permission prompt (`docs/permissions.md`): a `write`,
+    /// The open tool-permission prompt (`docs/state/permissions.md`): a `write`,
     /// `edit`, or `bash` call whose thread is blocked on the user's answer.
     /// Inline like [`model_picker`](Self::model_picker) — it replaces the
     /// whole live region and owns every key while open. Read through
     /// [`permission`](Self::permission).
     permission: Option<PermissionPrompt>,
-    /// The open `AskUserQuestion` modal (`docs/ask.md`): the call whose
+    /// The open `AskUserQuestion` modal (`docs/tools/ask.md`): the call whose
     /// thread is blocked on the user's answers. The permission prompt's
     /// sibling — modal, composer-stashing, checked **first** in the key
     /// routing and the renderer. Read through [`ask`](Self::ask).
     ask: Option<AskPrompt>,
     /// Ask requests that arrived while another modal was open, oldest first —
-    /// each opens as the one before it resolves (`docs/ask.md`).
+    /// each opens as the one before it resolves (`docs/tools/ask.md`).
     pending_asks: VecDeque<AskRequest>,
     /// Ids of ask requests dropped without an answer (`/clear`, a permission
     /// Esc), drained by the boundary and resolved on the gate as declines so
@@ -921,7 +921,7 @@ pub struct App {
     /// disabled (`ALTER_ZERO_PERMISSIONS=0`), which hides the segment and
     /// makes the toggle explain itself instead. Injected at startup and kept
     /// in sync by the boundary (the gate owns the live rules); see
-    /// `docs/permissions.md`.
+    /// `docs/state/permissions.md`.
     permission_mode: Option<PermissionMode>,
 }
 
@@ -974,7 +974,7 @@ impl App {
     /// **are** without changing what is in them. Turning **Show images** off
     /// is the case that needs it: the inline view purge-rebuilds and drops
     /// the pictures, while a warm transcript cache would keep serving the
-    /// rows that still reserve them (`docs/images.md`).
+    /// rows that still reserve them (`docs/ui/images.md`).
     pub const fn invalidate_rendered_history(&mut self) {
         self.history_generation += 1;
     }
@@ -988,7 +988,7 @@ impl App {
 
     /// Seed the input history from the persistent file at startup (called once
     /// at the I/O boundary, the [`set_clock`] pattern): both ↑/↓ recall and
-    /// Ctrl+R search then span past sessions. See `docs/history-persistence.md`.
+    /// Ctrl+R search then span past sessions. See `docs/input/history-persistence.md`.
     ///
     /// [`set_clock`]: App::set_clock
     pub fn seed_input_history(&mut self, entries: Vec<String>) {
@@ -997,7 +997,7 @@ impl App {
 
     /// Drain the inputs recorded this session that are not yet on disk, for the
     /// boundary to append to the persistent history file (called once per loop
-    /// iteration beside `recorder.sync`). See `docs/history-persistence.md`.
+    /// iteration beside `recorder.sync`). See `docs/input/history-persistence.md`.
     pub fn take_unpersisted_inputs(&mut self) -> Vec<String> {
         self.input_history.take_unpersisted()
     }
@@ -1009,7 +1009,7 @@ impl App {
     /// [`set_clock`]: App::set_clock
     /// The project directory the footer names — what a permission rule's
     /// "don't ask again … in {dir}" clause points at, since the allowlist is
-    /// per project (`docs/permissions.md`, `docs/mcp.md`). `None` until the
+    /// per project (`docs/state/permissions.md`, `docs/tools/mcp.md`). `None` until the
     /// boundary injects the session info.
     #[must_use]
     pub fn project_dir(&self) -> Option<&str> {
@@ -1019,7 +1019,7 @@ impl App {
     pub fn set_session_info(&mut self, model: impl Into<String>, cwd: impl Into<String>) {
         let model = model.into();
         // Another model counts in another tokenizer: what the reports taught
-        // about the last one's no longer holds (docs/token-estimate.md).
+        // about the last one's no longer holds (docs/architecture/token-estimate.md).
         if self
             .session
             .as_ref()
@@ -1036,7 +1036,7 @@ impl App {
     /// Inject the active model's reasoning capability + mode (a `/model`
     /// switch, the startup seed, or the boundary's support probe) — `None`
     /// for a model with no reasoning, which also blanks the footer's mode and
-    /// makes Ctrl+T explain instead of cycle. See `docs/reasoning.md`.
+    /// makes Ctrl+T explain instead of cycle. See `docs/providers/reasoning.md`.
     pub fn set_thinking(&mut self, thinking: Option<(ReasoningSupport, ThinkingMode)>) {
         self.thinking = thinking.map(|(support, mode)| ThinkingState { support, mode });
     }
@@ -1044,7 +1044,7 @@ impl App {
     /// Inject the active model's speed tiers + selection (a `/model` switch,
     /// the startup seed, or the boundary's capability probe) — `None` for a
     /// model listing no tier, which also blanks the footer's tier word and
-    /// takes the tier rows out of the palette. See `docs/fast-mode.md`.
+    /// takes the tier rows out of the palette. See `docs/providers/fast-mode.md`.
     pub fn set_speed(&mut self, speed: Option<SpeedState>) {
         self.speed = speed;
     }
@@ -1074,7 +1074,7 @@ impl App {
     /// while [`App::speed`] lists the tier — nothing clears the state
     /// between one keystroke's row build and its dispatch — so a state that
     /// is gone is a no-op rather than a toast about a row that was just
-    /// shown. See `docs/fast-mode.md`.
+    /// shown. See `docs/providers/fast-mode.md`.
     fn toggle_speed_tier(&mut self, tier: &ServiceTier) -> Action {
         match self.speed.as_mut() {
             Some(state) => Action::SetSpeed(state.toggle(&tier.id)),
@@ -1086,7 +1086,7 @@ impl App {
     /// message self-clears after a few seconds — the *when* is timed at the I/O
     /// boundary (`main.rs`'s `toast_deadline`), so this only records *what* to
     /// show. Deliberately **not** pushed to [`history`](Self::history): a toast is
-    /// UI, never conversation. See `docs/toast.md`.
+    /// UI, never conversation. See `docs/ui/toast.md`.
     pub fn show_toast(&mut self, text: impl Into<String>, kind: ToastKind) {
         self.toast = Some(Toast {
             text: text.into(),
@@ -1122,7 +1122,7 @@ impl App {
 
     /// [`record_message`](Self::record_message) with image attachments — the
     /// submit path threads the turn's Ctrl+V temp-file paths onto the user
-    /// message so later turns' context can re-send them (`docs/context.md`).
+    /// message so later turns' context can re-send them (`docs/architecture/context.md`).
     fn record_message_with_images(
         &mut self,
         role: Role,
@@ -1145,14 +1145,14 @@ impl App {
     /// `last_agent_markdown` (likewise the latest agent message). The
     /// in-progress streaming buffer is not considered — only finished history.
     /// `None` (the nothing-to-copy path) when there's no assistant message, or
-    /// the latest one is empty. See `docs/copy.md`.
+    /// the latest one is empty. See `docs/ui/copy.md`.
     ///
     /// Inside an **agent session view** that conversation is the viewed
     /// agent's own transcript, not [`history`](Self::history) — the
     /// [`viewed_agent`](Self::viewed_agent) branch `ui::context_lines` and
     /// `ui::agent_transcript_lines` already take. Copying the lead's last
     /// answer while the screen shows a subagent's was the reported bug
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     #[must_use]
     pub fn last_assistant_text(&self) -> Option<String> {
         let history = self
@@ -1167,7 +1167,7 @@ impl App {
 
     /// Inject the active backend's system prompt (from
     /// `ReplySource::system_prompt`, at startup and on a `/model` switch) so
-    /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
+    /// the Ctrl+D view shows the whole context window. See `docs/architecture/context.md`.
     pub fn set_system_prompt(&mut self, prompt: Option<String>) {
         self.system_prompt = prompt;
     }
@@ -1176,7 +1176,7 @@ impl App {
     /// `ReplySource::classifier_context`, pulled per draw while the Ctrl+D
     /// view's classifier page is open) so the pure view can show what the
     /// next verdict reads.
-    /// See `docs/permissions.md`.
+    /// See `docs/state/permissions.md`.
     pub fn set_classifier_context(&mut self, context: Option<String>) {
         self.classifier_context = context;
     }
@@ -1192,7 +1192,7 @@ impl App {
     /// `ReplySource::classifier_system_prompt`, beside every
     /// [`set_system_prompt`](Self::set_system_prompt)) so the Ctrl+D
     /// classifier page can show the rubric above the block.
-    /// See `docs/permissions.md`.
+    /// See `docs/state/permissions.md`.
     pub fn set_classifier_system_prompt(&mut self, prompt: Option<String>) {
         self.classifier_system_prompt = prompt;
     }
@@ -1208,7 +1208,7 @@ impl App {
     /// `ReplySource::agent_system_prompt`, beside every
     /// [`set_system_prompt`](Self::set_system_prompt)) so the agent session
     /// view's Ctrl+D shows it — the main prompt plus the subagent note. See
-    /// `docs/agent-tool.md`.
+    /// `docs/agents/agent-tool.md`.
     pub fn set_agent_system_prompt(&mut self, prompt: Option<String>) {
         self.agent_system_prompt = prompt;
     }
@@ -1216,7 +1216,7 @@ impl App {
     /// Inject the briefing a launched subagent opens on (from
     /// `ReplySource::agent_system_reminder`, beside every
     /// [`set_agent_system_prompt`](Self::set_agent_system_prompt)) so the
-    /// agent session view's Ctrl+D leads with it. See `docs/subagents.md`.
+    /// agent session view's Ctrl+D leads with it. See `docs/agents/subagents.md`.
     pub fn set_agent_system_reminder(&mut self, reminder: Option<String>) {
         self.agent_system_reminder = reminder;
     }
@@ -1224,7 +1224,7 @@ impl App {
     /// Inject the project's rendered AGENTS.md instructions (from
     /// `project_doc::load_user_instructions`, at startup and refreshed at
     /// every turn start) so the context derivation, the Ctrl+D view, and the
-    /// token estimate all carry them. See `docs/project-doc.md`.
+    /// token estimate all carry them. See `docs/state/project-doc.md`.
     pub fn set_user_instructions(&mut self, instructions: Option<String>) {
         self.user_instructions = instructions;
     }
@@ -1234,7 +1234,7 @@ impl App {
     /// listing, rendered at the boundary at startup, at every turn's rescan,
     /// and whenever a setting changes what is offered) so the context
     /// derivation, the Ctrl+D view, and the token estimate all carry them.
-    /// See `docs/skills.md`, `docs/subagents.md`.
+    /// See `docs/tools/skills.md`, `docs/agents/subagents.md`.
     pub fn set_listings(&mut self, listings: Option<String>) {
         self.listings = listings;
     }
@@ -1246,7 +1246,7 @@ impl App {
 
     /// Record a finished user message together with its Ctrl+V image
     /// attachments — the submit path, so the message keeps its images for the
-    /// conversation context and the session file (`docs/context.md`).
+    /// conversation context and the session file (`docs/architecture/context.md`).
     pub fn record_user_message_with_images(&mut self, text: &str, images: Vec<PathBuf>) {
         self.record_message_with_images(Role::User, text, images);
     }
@@ -1262,7 +1262,7 @@ impl App {
     /// Record a red error notice in the history (so a resize repaints it), like
     /// [`record_system_message`](App::record_system_message) but [`Role::Error`]. Used
     /// for a Ctrl+V clipboard
-    /// failure — codex's `new_error_event`. See `docs/image-paste.md`.
+    /// failure — codex's `new_error_event`. See `docs/input/image-paste.md`.
     pub fn record_error_message(&mut self, text: &str) {
         self.record_message(Role::Error, text);
     }
@@ -1284,12 +1284,12 @@ impl App {
         // The group's calls went with the history they were held in.
         self.drop_tool_group();
         // A cleared slate holds no tasks — the boundary resets the shared
-        // registry beside this (docs/task-tools.md).
+        // registry beside this (docs/tools/task-tools.md).
         self.tasks = crate::tasks::TaskStore::default();
         self.streaming = None;
         self.compact_buffer = None;
         // An open thinking phase goes with the rest of the in-flight turn —
-        // the user asked for a blank screen (docs/thinking-stream.md).
+        // the user asked for a blank screen (docs/ui/thinking-stream.md).
         self.drop_reasoning();
         // A fresh slate — but the system prompt and the standing AGENTS.md
         // instructions still ride the next request, so the gauge re-seats on
@@ -1298,13 +1298,13 @@ impl App {
         self.refresh_context_used();
         self.auto_compact_blocked = false;
         // The last request described the conversation that just went; what
-        // the session spent stays in the ledger (`docs/context-usage.md`).
+        // the session spent stays in the ledger (`docs/architecture/context-usage.md`).
         self.last_usage = None;
         self.tool_queue.clear();
         self.tool_drafts.clear();
         self.status = None;
         // A message the running turn never got to read goes with it: the user
-        // asked for a blank screen (docs/queue.md).
+        // asked for a blank screen (docs/input/queue.md).
         self.steered.clear();
         // The wiped batches' image attachments will never dispatch — record
         // their temp files as discarded so the boundary removes them.
@@ -1321,17 +1321,17 @@ impl App {
         self.toast = None;
         // The background shells go too — the loop's Clear arm kills their
         // processes; wiping the state here means the late Exited events find
-        // nothing and owe no notice (docs/background.md).
+        // nothing and owe no notice (docs/tools/background.md).
         self.background.clear();
         self.background_view = None;
         self.background_focus = false;
         self.pending_bg.clear();
         // And the subagents — the loop's Clear arm kills their threads via
         // the registry; the wiped roster drops the late events
-        // (docs/agent-tool.md).
+        // (docs/agents/agent-tool.md).
         self.agents.clear();
         // …and the retired ones: the conversation that knew their ids is
-        // gone, so nothing may bring them back (docs/agent-tools.md).
+        // gone, so nothing may bring them back (docs/agents/agent-tools.md).
         self.retired_agents.clear();
         self.early_agent_notes.clear();
         self.agents_generation += 1;
@@ -1342,9 +1342,9 @@ impl App {
         self.pending_agents.clear();
         // The blocked tool threads are reaped by the loop's Clear arm (their
         // cancel token trips); the prompt they were waiting on goes with them
-        // (docs/permissions.md). The composer keeps its draft, as `/clear`
+        // (docs/state/permissions.md). The composer keeps its draft, as `/clear`
         // always has — the discards restore it first. The ask modal and its
-        // queue go the same way (docs/ask.md).
+        // queue go the same way (docs/tools/ask.md).
         self.discard_permissions();
         self.discard_asks();
     }

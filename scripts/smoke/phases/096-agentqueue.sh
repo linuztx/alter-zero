@@ -5,7 +5,7 @@
 smoke_begin
 
 # the agent session view has the SAME mid-turn queue the main one
-# has (docs/queue.md) — one mechanism, two levels. Open the demo subagent's
+# has (docs/input/queue.md) — one mechanism, two levels. Open the demo subagent's
 # session while it works, type a message: it waits inset above the box
 # ("  ❯ also add Elixir") exactly like the main session's, and the agent's own
 # loop takes it at its next ROUND boundary (its parallel `write` batch), where

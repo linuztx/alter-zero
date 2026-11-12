@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# AUTO-compact + the footer context gauge (docs/compact.md).
+# AUTO-compact + the footer context gauge (docs/architecture/compact.md).
 # `ALTER_ZERO_CONTEXT_WINDOW=100` forces a tiny window onto the dummy: the
 # footer shows the `{used}/{window} ({pct}%)` gauge, and one turn's estimate
 # blows past codex's 90% threshold — the loop then starts the summarization
@@ -24,7 +24,7 @@ submit "$S51" "hello there"
 # the compact turn — poll straight for the auto-tagged marker cell.
 auto_pane=""
 # The budget covers the WHOLE sequence — the demo turn (which now streams a
-# thinking phase too, docs/thinking-stream.md), the auto-compact turn's own
+# thinking phase too, docs/ui/thinking-stream.md), the auto-compact turn's own
 # startup pause, and its summary stream — so it is generous on purpose: at ~10s
 # the turn alone could eat it and the phase failed on speed, not behaviour.
 auto_pane="$(wait_pane 25 "$S51" -S -80 -- -E "tokens( · [0-9]+[hms][0-9ms ]*)? · auto")" # up to ~25s

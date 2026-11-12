@@ -2,7 +2,7 @@
 
 The server half of Alter Zero's usage telemetry. `TELEMETRY.md` in the
 repository root states what is collected and how to turn it off;
-`docs/telemetry.md` is the design. A **Cloudflare Worker** receives
+`docs/ops/telemetry.md` is the design. A **Cloudflare Worker** receives
 the app's anonymous daily ping, notes the **country** the connection came
 from — never the address — in a **D1** table, and serves a small dashboard of
 users per day and per country.
@@ -165,7 +165,7 @@ secret, binding, trusted source address, or limiter is unavailable. Both
 include `Retry-After: 60` and write no row. The body reader stops and cancels
 once it exceeds **1,024 bytes**, even without `Content-Length` (`413`);
 unreadable or invalid bodies return `400`. Responses remain `no-store`.
-See the [design notes](../docs/telemetry.md#ping-abuse-prevention) for the
+See the [design notes](../docs/ops/telemetry.md#ping-abuse-prevention) for the
 trust boundary and Cloudflare references.
 
 ## Develop

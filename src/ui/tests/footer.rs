@@ -1,5 +1,5 @@
 //! The footer row, the toast, and the queued-message rows
-//! (`docs/footer.md`, `docs/toast.md`, `docs/queue.md`).
+//! (`docs/ui/footer.md`, `docs/ui/toast.md`, `docs/input/queue.md`).
 
 use super::*;
 use crate::app::Theme;
@@ -63,7 +63,7 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
     }
 }
 
-// --- the permission-mode segment (docs/permissions.md) ---
+// --- the permission-mode segment (docs/state/permissions.md) ---
 
 #[test]
 fn the_footer_pins_the_permission_mode_at_the_right_edge() {
@@ -95,7 +95,7 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     assert_eq!(mode_span.content, "manual");
     assert_eq!(mode_span.style.fg, Some(footer_color()));
     // Every mode of the Shift+Tab cycle renders its label there — auto and
-    // master included (docs/permissions.md).
+    // master included (docs/state/permissions.md).
     for (mode, label) in [
         (crate::permission::PermissionMode::Edit, "edit"),
         (crate::permission::PermissionMode::Auto, "auto"),
@@ -110,7 +110,7 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
 
 #[test]
 fn each_permission_mode_warms_with_what_it_runs_unasked() {
-    // docs/permissions.md: the more a mode lets the agent do without asking,
+    // docs/state/permissions.md: the more a mode lets the agent do without asking,
     // the warmer its label — manual (asks before everything) dim with the
     // rest of the row, edit (file changes unasked) the theme's link blue,
     // auto (the classifier approves commands) the caution amber, master
@@ -169,7 +169,7 @@ fn a_narrow_footer_truncates_the_left_content_never_the_mode() {
     assert!(text.contains('…'), "the left content gave way: {text}");
 }
 
-// --- the footer context gauge (docs/compact.md) ---
+// --- the footer context gauge (docs/architecture/compact.md) ---
 
 #[test]
 fn the_footer_shows_the_context_gauge_when_the_window_is_known() {
@@ -236,7 +236,7 @@ fn the_footer_omits_the_gauge_without_a_window() {
 
 #[test]
 fn the_footer_gauge_turns_amber_then_red_as_the_window_fills() {
-    // The `/context` page's share rule, shared (docs/context-usage.md): the
+    // The `/context` page's share rule, shared (docs/architecture/context-usage.md): the
     // gauge rests on the footer's dim while there is room, turns amber from
     // 75% and red from the auto-compact threshold — so the footer itself
     // says compaction is near.
@@ -268,7 +268,7 @@ fn the_footer_gauge_turns_amber_then_red_as_the_window_fills() {
 
 #[test]
 fn an_agent_session_view_gauges_that_agents_own_context() {
-    // The reported bug (docs/agent-context-gauge.md): inside a subagent's
+    // The reported bug (docs/agents/agent-context-gauge.md): inside a subagent's
     // session view the footer read `23.7k/1M` — the LEAD's context — under a
     // roster row saying the agent itself was at 64.9k. The gauge follows the
     // screen: the viewed agent's own context, against its window.
@@ -309,7 +309,7 @@ fn an_agent_session_view_gauges_that_agents_own_context() {
 #[test]
 fn an_agent_pinned_to_another_model_names_it_in_its_views_footer() {
     // A type whose definition pins `model:` runs on that model
-    // (`docs/subagents.md`), so its view's footer names it; an inheriting
+    // (`docs/agents/subagents.md`), so its view's footer names it; an inheriting
     // type keeps the session's name.
     // The session's thinking mode goes with the session's model: the launch
     // drops it beside the model it replaces, so the footer must not claim it.
@@ -345,7 +345,7 @@ fn an_agent_pinned_to_another_model_names_it_in_its_views_footer() {
     assert!(inherit.starts_with("  kimi-k3 medium · ~"), "{inherit}");
 }
 
-// --- message queue (docs/queue.md) ---
+// --- message queue (docs/input/queue.md) ---
 
 #[test]
 fn steered_messages_show_above_the_box_until_the_turn_takes_them() {
@@ -376,7 +376,7 @@ fn steered_messages_lead_the_follow_up_turns() {
 
 #[test]
 fn an_agent_session_view_shows_that_agents_own_queue() {
-    // The agent view shows the agent's world (docs/agent-tool.md): its own
+    // The agent view shows the agent's world (docs/agents/agent-tool.md): its own
     // pending messages, never the main session's follow-ups.
     let mut app = App::new();
     app.begin_stream();
@@ -394,7 +394,7 @@ fn an_agent_session_view_shows_that_agents_own_queue() {
 fn an_agent_session_view_shows_its_steered_rows_over_its_follow_ups() {
     // The main view's shape one level down: what the running loop reads next
     // leads, the Tab follow-ups come after, a blank row dividing each turn
-    // (docs/queue.md).
+    // (docs/input/queue.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Fetch Manila weather", false)]);
@@ -428,7 +428,7 @@ fn the_pending_rows_are_built_once_per_frame_not_once_per_caller() {
     // paint — and each build word-wraps and styles the WHOLE backlog. With
     // the frame chain re-arming every 32 ms that was ~200 full re-renders a
     // second for rows that never changed: "pressing Tab with a message again
-    // and again lags the TUI" (`docs/queue.md`). The memo makes the repeats
+    // and again lags the TUI" (`docs/input/queue.md`). The memo makes the repeats
     // free, and a real change still rebuilds.
     let mut app = App::new();
     app.begin_stream();
@@ -663,7 +663,7 @@ fn footer_line_names_the_model_in_the_accent_and_the_cwd_in_green() {
     assert_eq!(plain(&line), "  dummy_model_name · ~/alter-zero");
     // spans = [indent, model, separator, cwd] — codex's status line with
     // theme colours on: the model in the accent, the path in green, the
-    // separator dim, the indent unstyled (docs/footer.md).
+    // separator dim, the indent unstyled (docs/ui/footer.md).
     assert_eq!(line.spans[0].style.fg, None);
     assert_eq!(line.spans[1].style.fg, Some(footer_model_color()));
     assert_eq!(line.spans[2].style.fg, Some(footer_color()));
@@ -691,7 +691,7 @@ fn footer_line_truncates_with_an_ellipsis_when_narrow() {
 fn footer_line_shows_the_thinking_mode_beside_the_model() {
     // A reasoning-capable model carries its mode right after the model
     // name — `{model} {mode} · {cwd}` — so the current thinking level is
-    // always visible (docs/reasoning.md).
+    // always visible (docs/providers/reasoning.md).
     use crate::llm::{ReasoningEffort, ReasoningSupport, ThinkingMode};
     let mut app = with_session();
     app.set_thinking(Some((
@@ -776,7 +776,7 @@ fn the_footer_stays_while_a_turn_streams() {
     );
 }
 
-// --- the transient toast (docs/toast.md) ---
+// --- the transient toast (docs/ui/toast.md) ---
 
 #[test]
 fn toast_rows_is_zero_without_a_toast_and_one_with_it() {
@@ -1099,7 +1099,7 @@ fn the_roster_selection_marks_rows_and_swaps_the_footer_hint() {
     );
 }
 
-// --- the `!` shell mode + its exec cell (docs/shell-command.md) ---
+// --- the `!` shell mode + its exec cell (docs/input/shell-command.md) ---
 
 /// An app in shell mode with `command` typed (the bang absorbed into the
 /// mode flag, codex-style — the textarea holds just the command).
@@ -1114,7 +1114,7 @@ fn shelling(command: &str) -> App {
 fn the_queued_memo_rebuilds_when_the_theme_changes() {
     // The pending rows are styled user bubbles, so the memo's fingerprint
     // carries the active theme: a `/theme` switch repaints them rather than
-    // serving rows in the old palette (`docs/theme.md`).
+    // serving rows in the old palette (`docs/ui/theme.md`).
     use crate::app::Theme;
     use crate::ui::palette::{palette_of, with_theme};
     let mut app = App::new();
@@ -1138,7 +1138,7 @@ fn the_queued_memo_rebuilds_when_the_theme_changes() {
 fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
     // A selected speed tier wears its name right after the thinking mode —
     // `{model} {mode} {tier} · {cwd}` — so fast mode is always visible
-    // (docs/fast-mode.md); standard shows nothing.
+    // (docs/providers/fast-mode.md); standard shows nothing.
     use crate::llm::{ReasoningEffort, ReasoningSupport, ServiceTier, SpeedState, ThinkingMode};
     let mut app = with_session();
     app.set_thinking(Some((

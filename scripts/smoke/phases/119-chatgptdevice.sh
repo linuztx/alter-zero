@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# ChatGPT Codex offers two ways in (docs/chatgpt.md): the browser PKCE flow
+# ChatGPT Codex offers two ways in (docs/providers/chatgpt.md): the browser PKCE flow
 # Phase 104 drives, and — for a headless machine — Codex's own device code.
 # Enter on its subscription row therefore opens a CHOICE rather than a page,
 # and the device row runs a flow that talks to OpenAI's auth server: a code
@@ -37,7 +37,7 @@ def b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 # An access token whose claims name the seat; the app never verifies the
-# signature (docs/chatgpt.md), only reads the payload.
+# signature (docs/providers/chatgpt.md), only reads the payload.
 claims = {
     "https://api.openai.com/auth": {"chatgpt_account_id": "acct-119", "chatgpt_plan_type": "pro"},
     "exp": 4102444800,

@@ -1,5 +1,5 @@
 //! When a call waiting on an interactive session returns
-//! (`docs/interactive-shell.md`).
+//! (`docs/tools/interactive-shell.md`).
 //!
 //! Codex's `exec_command`/`write_stdin` return after a fixed wait the model
 //! picks, and models pick badly: too short and they poll in a loop, too long
@@ -33,7 +33,7 @@
 //! 5. it has been silent for [`LINE_QUIET`] after an input, or
 //!    [`LAUNCH_QUIET`] after a launch — and the kernel does not see it **at
 //!    work** ([`Observation::busy`]): every command launches in a terminal
-//!    (`docs/bash-tools.md`), and a quiet command is not a waiting one, so a
+//!    (`docs/tools/bash-tools.md`), and a quiet command is not a waiting one, so a
 //!    `curl`, a link step or a `sleep` runs on to its exit or the call's
 //!    timeout. Never for a pure [`WaitKind::Wait`] either: a build that
 //!    pauses between lines is still working, so a wait returns only on an
@@ -83,7 +83,7 @@ pub fn prompt_quiet(kind: WaitKind, output: bool) -> Duration {
 pub const LINE_QUIET: Duration = Duration::from_secs(2);
 
 /// [`LINE_QUIET`] for a **launch**: every command starts in a terminal
-/// (`docs/bash-tools.md`), and a batch command that is quiet for two seconds
+/// (`docs/tools/bash-tools.md`), and a batch command that is quiet for two seconds
 /// — a download, a link step, a `terraform plan` — is not asking anything.
 /// What the kernel cannot see at work (a network wait, `sudo`, no `/proc`)
 /// returns after this long; what it sees at work never does.
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn a_quiet_launch_the_kernel_cannot_see_returns_after_a_longer_silence() {
-        // A quiet command is not a waiting one (docs/bash-tools.md): every
+        // A quiet command is not a waiting one (docs/tools/bash-tools.md): every
         // command launches in a terminal now, and two seconds of silence
         // handed back a `curl`, a link step or a `terraform plan` as
         // `Running` — then a completion notice nobody asked for.
@@ -556,7 +556,7 @@ mod tests {
     fn a_wait_on_a_program_reading_keys_with_nothing_new_returns_at_once() {
         // A REPL at the prompt the model already saw: nothing comes until it
         // is typed into, and a wait holding its budget over it only costs
-        // the user the wait (docs/bash-tools.md).
+        // the user the wait (docs/tools/bash-tools.md).
         let at_prompt = |elapsed| Observation {
             key_by_key: true,
             ..seen(elapsed, 5_000, false, true)

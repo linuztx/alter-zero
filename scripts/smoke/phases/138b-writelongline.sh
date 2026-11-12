@@ -4,12 +4,12 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/long-lines.md §7. The numbered `read`/`write`/`edit` cells used to cut
+# docs/ui/long-lines.md §7. The numbered `read`/`write`/`edit` cells used to cut
 # any line longer than three rows and end the third with a `…` — a markdown
 # paragraph, a long HTML tag, a string literal, cut mid-word while the file
 # streamed into its cell and again once it was written. A file cell now shows
 # a line to its end while the peek's ten rows hold it (the one line that needs
-# more is cut on the tenth, docs/long-lines.md §8 and Phase 138c); a line
+# more is cut on the tenth, docs/ui/long-lines.md §8 and Phase 138c); a line
 # taller than a streaming write's ten-row window scrolls through it instead.
 #
 # The REAL backend, against a stub provider whose model writes `notes.md` — a

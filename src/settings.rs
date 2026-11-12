@@ -1,12 +1,12 @@
 //! The `/settings` menu's pure model: which knobs the session exposes, what
 //! values each cycles through, and the `settings.json` format they persist in
-//! — **per working directory** ([`SettingsFile`], `docs/per-directory-state.md`).
+//! — **per working directory** ([`SettingsFile`], `docs/state/per-directory-state.md`).
 //!
 //! Everything here is data — no environment reads, no filesystem. The boundary
 //! (`tui::config`) reads the file, picks the cwd's entry and applies the
 //! `ALTER_ZERO_*` overrides, and hands the resulting [`SessionSettings`] to
 //! `App`; the picker (`crate::app::SettingsPicker`) renders it and cycles it.
-//! See `docs/settings.md`.
+//! See `docs/state/settings.md`.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +29,7 @@ pub const TOOL_CALL_CHOICES: &[usize] = &[0, 5, 10, 20, 50, 100];
 
 /// The waits **Ask timeout** cycles through, in seconds: how long a question
 /// waits on an idle user before the agent goes on without an answer
-/// (`docs/ask.md`). Ascending, with `0` — never — as the far end of them;
+/// (`docs/tools/ask.md`). Ascending, with `0` — never — as the far end of them;
 /// the default is [`crate::ask::DEFAULT_ASK_TIMEOUT`].
 pub const ASK_TIMEOUT_CHOICES: &[u64] = &[5 * 60, 10 * 60, 20 * 60, 30 * 60, 60 * 60, 0];
 
@@ -55,37 +55,37 @@ pub const PERMISSIONS_DISABLED_LABEL: &str = "disabled";
 /// One row of the `/settings` menu. The order here is the order they list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingKey {
-    /// Hide the model's streamed chain-of-thought (`docs/thinking-stream.md`).
+    /// Hide the model's streamed chain-of-thought (`docs/ui/thinking-stream.md`).
     HideThinking,
     /// Show every read, search and listing as its own tool cell instead of
-    /// collapsing a run of them into one line (`docs/tool-groups.md`).
+    /// collapsing a run of them into one line (`docs/ui/tool-groups.md`).
     Verbose,
-    /// Draw pictures inline in the conversation (`docs/images.md`).
+    /// Draw pictures inline in the conversation (`docs/ui/images.md`).
     ShowImages,
-    /// How wide, in columns, an inline picture may be (`docs/images.md`).
+    /// How wide, in columns, an inline picture may be (`docs/ui/images.md`).
     ImageWidth,
     /// Downscale a large image before it is **sent to the model**
-    /// (`docs/images.md`) — nothing to do with the display.
+    /// (`docs/ui/images.md`) — nothing to do with the display.
     AutoResizeImages,
     /// How many times a failed request is retried (`llm::retry`); a lost
     /// connection is waited for instead, and `0` turns both off
-    /// (`docs/offline.md`).
+    /// (`docs/providers/offline.md`).
     ErrorRetry,
-    /// Offer `bash`/`read`/`write`/`edit`/`agent` to the model (`docs/tools.md`).
+    /// Offer `bash`/`read`/`write`/`edit`/`agent` to the model (`docs/tools/tools.md`).
     Tools,
-    /// The session's permission posture — Shift+Tab's cycle (`docs/permissions.md`).
+    /// The session's permission posture — Shift+Tab's cycle (`docs/state/permissions.md`).
     PermissionMode,
-    /// Per-turn working-directory snapshots (`docs/checkpoint.md`).
+    /// Per-turn working-directory snapshots (`docs/state/checkpoint.md`).
     Checkpoints,
-    /// Auto-run `/compact` past the context threshold (`docs/compact.md`).
+    /// Auto-run `/compact` past the context threshold (`docs/architecture/compact.md`).
     AutoCompact,
-    /// Re-read the project's `AGENTS.md` each turn (`docs/project-doc.md`).
+    /// Re-read the project's `AGENTS.md` each turn (`docs/state/project-doc.md`).
     ProjectDocs,
-    /// Run the user's `hooks.json` lifecycle hooks (`docs/hooks.md`).
+    /// Run the user's `hooks.json` lifecycle hooks (`docs/tools/hooks.md`).
     Hooks,
-    /// Offer the `skill` tool and inject the skill listing (`docs/skills.md`).
+    /// Offer the `skill` tool and inject the skill listing (`docs/tools/skills.md`).
     Skills,
-    /// Connect the MCP servers and offer their tools (`docs/mcp.md`) — the
+    /// Connect the MCP servers and offer their tools (`docs/tools/mcp.md`) — the
     /// session-wide switch over the servers `/mcp` turns on and off one by
     /// one, each of which keeps its own state while this is off.
     Mcp,
@@ -94,16 +94,16 @@ pub enum SettingKey {
     /// How many rounds of tool calls one turn may run (`0` = no limit).
     MaxToolCalls,
     /// How long a question waits on an idle user before the agent goes on
-    /// without an answer (`docs/ask.md`); `never` stops the clock.
+    /// without an answer (`docs/tools/ask.md`); `never` stops the clock.
     AskTimeout,
-    /// Hang a tip off the status line while a turn runs (`docs/tips.md`).
+    /// Hang a tip off the status line while a turn runs (`docs/ui/tips.md`).
     /// Persists **per user** (`tips.json`), beside the walk's position.
     Tips,
     /// Ask the repository once a day whether a newer release is out and say
-    /// so under the banner (`docs/update.md`). Persists **per user**
+    /// so under the banner (`docs/ops/update.md`). Persists **per user**
     /// (`update.json`), like its neighbour.
     UpdateCheck,
-    /// Send the anonymous daily usage ping (`docs/telemetry.md`). The one
+    /// Send the anonymous daily usage ping (`docs/ops/telemetry.md`). The one
     /// row that persists **per user** (`telemetry.json`), not per directory.
     Telemetry,
 }
@@ -232,29 +232,29 @@ pub struct SettingAvailability {
     /// construction).
     pub checkpoints: bool,
     /// Whether a `hooks.json` resolved **and** had something runnable in it
-    /// (`docs/hooks.md`). Without one the row reports `false (unavailable)`
+    /// (`docs/tools/hooks.md`). Without one the row reports `false (unavailable)`
     /// rather than offering a toggle that can never do anything.
     pub hooks: bool,
-    /// Whether **any** skill loaded (`docs/skills.md`). With none the row
+    /// Whether **any** skill loaded (`docs/tools/skills.md`). With none the row
     /// reports `false (unavailable)` rather than offering a toggle over an
     /// empty set.
     pub skills: bool,
     /// Whether **any** MCP server was declared — the user's `mcp.json` or a
-    /// project's (`docs/mcp.md`). With none there is nothing to connect, so
+    /// project's (`docs/tools/mcp.md`). With none there is nothing to connect, so
     /// the row reports `false (unavailable)`, the **Skills** rule.
     pub mcp: bool,
-    /// Whether this terminal can draw a picture at all (`docs/images.md`) —
+    /// Whether this terminal can draw a picture at all (`docs/ui/images.md`) —
     /// the boundary's `ImageStore`. Without one the display rows report
     /// `false (unavailable)`; **Auto-resize images** stays available either
     /// way, since it is about the request, not the screen.
     pub images: bool,
     /// Whether there is a config home to keep an install id in
-    /// (`docs/telemetry.md`). Without one a fresh random id per launch would
+    /// (`docs/ops/telemetry.md`). Without one a fresh random id per launch would
     /// count one person as many, so the row reports `false (unavailable)`
     /// rather than offering a toggle that would miscount.
     pub telemetry: bool,
     /// Whether there is a config home to remember the day a check ran in
-    /// (`docs/update.md`), and the environment did not forbid the check.
+    /// (`docs/ops/update.md`), and the environment did not forbid the check.
     /// Without one the row reports `false (unavailable)`.
     pub update_check: bool,
 }
@@ -296,7 +296,7 @@ pub struct SessionSettings {
     pub hide_thinking: bool,
     /// Show every tool call as its own cell (default `false` — a run of
     /// reads, searches and listings collapses into one line, Claude Code's
-    /// default, `docs/tool-groups.md`).
+    /// default, `docs/ui/tool-groups.md`).
     #[serde(skip_serializing_if = "is_false")]
     pub verbose: bool,
     /// Draw pictures inline (default `true` — a terminal that can't draw one
@@ -319,7 +319,7 @@ pub struct SessionSettings {
     pub tools: bool,
     /// Per-turn checkpoints (default `false` — a directory opts in: the
     /// session-start snapshot is a whole-cwd `git add -A` before the first
-    /// frame, `docs/checkpoint.md`).
+    /// frame, `docs/state/checkpoint.md`).
     #[serde(skip_serializing_if = "is_false")]
     pub checkpoints: bool,
     /// Auto-compaction past the context threshold (default `true`).
@@ -330,7 +330,7 @@ pub struct SessionSettings {
     pub project_docs: bool,
     /// Run the lifecycle hooks (default `true` — every hook still runs only
     /// once the user has trusted it in the startup review, codex's answer
-    /// (`docs/config-review.md`); a directory turning them off is what its
+    /// (`docs/state/config-review.md`); a directory turning them off is what its
     /// entry records, and a session with no such file reports the row
     /// unavailable either way).
     #[serde(skip_serializing_if = "is_true")]
@@ -342,7 +342,7 @@ pub struct SessionSettings {
     pub skills: bool,
     /// Connect the MCP servers and offer their tools (default `true` — the
     /// **Hooks** posture: on until a directory turns it off, which is what
-    /// its entry records, `docs/mcp.md`). Off disconnects every server and
+    /// its entry records, `docs/tools/mcp.md`). Off disconnects every server and
     /// leaves each one's own `/mcp` switch as it was.
     #[serde(skip_serializing_if = "is_true")]
     pub mcp: bool,
@@ -358,7 +358,7 @@ pub struct SessionSettings {
     #[serde(skip_serializing_if = "is_default_ask_timeout")]
     pub ask_timeout_secs: u64,
     /// Send the anonymous daily ping (default `true` — opt-out,
-    /// `docs/telemetry.md`). **Never in `settings.json`**: an opt-out that
+    /// `docs/ops/telemetry.md`). **Never in `settings.json`**: an opt-out that
     /// applied only to the directory you happened to be in would be a
     /// surprise, so the value lives in `telemetry.json` beside the install
     /// id and the boundary seeds it from there (the `PermissionMode` pattern:
@@ -366,13 +366,13 @@ pub struct SessionSettings {
     #[serde(skip, default = "on")]
     pub telemetry: bool,
     /// Ask once a day whether a newer release is out (default `true` —
-    /// opt-out, `docs/update.md`). **Never in `settings.json`** either: a
+    /// opt-out, `docs/ops/update.md`). **Never in `settings.json`** either: a
     /// user preference kept in `update.json` beside the day of the last
     /// check, seeded from there by the boundary.
     #[serde(skip, default = "on")]
     pub update_check: bool,
     /// Hang a tip off the status line while a turn runs (default `true` —
-    /// Claude Code's `spinnerTipsEnabled`, `docs/tips.md`). **Never in
+    /// Claude Code's `spinnerTipsEnabled`, `docs/ui/tips.md`). **Never in
     /// `settings.json`**: whether you want tips is yours, not a project's,
     /// so the switch lives in `tips.json` beside the walk's position and the
     /// boundary seeds it from there (the `telemetry` pattern).
@@ -412,7 +412,7 @@ impl Default for SessionSettings {
 
 impl SessionSettings {
     /// Whether the model's thinking is **shown** — the inverse of the row, and
-    /// the phrasing every consumer wants (`docs/thinking-stream.md`).
+    /// the phrasing every consumer wants (`docs/ui/thinking-stream.md`).
     #[must_use]
     pub const fn show_thinking(&self) -> bool {
         !self.hide_thinking
@@ -421,7 +421,7 @@ impl SessionSettings {
     /// Whether a picture is actually drawn: the **Show images** row **and**
     /// whether the terminal can draw one
     /// ([`checkpoints_active`](Self::checkpoints_active)'s twin,
-    /// `docs/images.md`).
+    /// `docs/ui/images.md`).
     #[must_use]
     pub const fn images_active(&self) -> bool {
         self.show_images && self.availability.images
@@ -451,7 +451,7 @@ impl SessionSettings {
 
     /// Whether MCP actually runs: the knob **and** at least one declared
     /// server to connect ([`hooks_active`](Self::hooks_active)'s twin,
-    /// `docs/mcp.md`).
+    /// `docs/tools/mcp.md`).
     #[must_use]
     pub const fn mcp_active(&self) -> bool {
         self.mcp && self.availability.mcp
@@ -459,14 +459,14 @@ impl SessionSettings {
 
     /// Whether the daily ping is actually sent: the knob **and** a config
     /// home to keep the install id in ([`hooks_active`](Self::hooks_active)'s
-    /// twin, `docs/telemetry.md`).
+    /// twin, `docs/ops/telemetry.md`).
     #[must_use]
     pub const fn telemetry_active(&self) -> bool {
         self.telemetry && self.availability.telemetry
     }
 
     /// Whether the daily update check actually runs: the knob **and** a
-    /// config home to remember the day in (`docs/update.md`).
+    /// config home to remember the day in (`docs/ops/update.md`).
     #[must_use]
     pub const fn update_check_active(&self) -> bool {
         self.update_check && self.availability.update_check
@@ -481,14 +481,14 @@ impl SessionSettings {
     /// request never carries — a dead end the model spends a round hunting
     /// for. Distinct from `skills_active` on purpose: that is the
     /// `/settings` **Skills** row's own value, which Tools must not rewrite.
-    /// See `docs/skills.md`.
+    /// See `docs/tools/skills.md`.
     #[must_use]
     pub const fn skills_offered(&self) -> bool {
         self.tools && self.skills_active()
     }
 
     /// How long a question waits on an idle user before it resolves
-    /// unanswered (`docs/ask.md`) — `None` when the row says `never`.
+    /// unanswered (`docs/tools/ask.md`) — `None` when the row says `never`.
     #[must_use]
     pub const fn ask_timeout(&self) -> Option<std::time::Duration> {
         if self.ask_timeout_secs == 0 {
@@ -509,7 +509,7 @@ impl SessionSettings {
             SettingKey::Skills => self.availability.skills,
             SettingKey::Mcp => self.availability.mcp,
             // The two display rows need a terminal that can draw; the payload
-            // row does not (`docs/images.md`).
+            // row does not (`docs/ui/images.md`).
             SettingKey::ShowImages | SettingKey::ImageWidth => self.availability.images,
             SettingKey::PermissionMode => mode.is_some(),
             // Nowhere to keep an install id = nothing to turn on.
@@ -630,11 +630,11 @@ impl SessionSettings {
             // Not ours — the posture persists per project in permissions.json.
             SettingKey::PermissionMode => {}
             // Not ours either — the switch persists per user in telemetry.json
-            // (`docs/telemetry.md`).
+            // (`docs/ops/telemetry.md`).
             SettingKey::Telemetry => {}
-            // Nor this one — update.json (`docs/update.md`).
+            // Nor this one — update.json (`docs/ops/update.md`).
             SettingKey::UpdateCheck => {}
-            // …nor this one — tips.json (`docs/tips.md`).
+            // …nor this one — tips.json (`docs/ui/tips.md`).
             SettingKey::Tips => {}
         }
     }
@@ -656,7 +656,7 @@ impl SessionSettings {
 
 /// The `settings.json` file: one [`SessionSettings`] entry per working
 /// directory over the **seed** a directory with no entry starts from
-/// (`docs/per-directory-state.md`).
+/// (`docs/state/per-directory-state.md`).
 ///
 /// ```json
 /// {

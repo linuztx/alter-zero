@@ -1,5 +1,5 @@
 //! The pure display tree behind the read-only `/hooks` menu
-//! (`docs/hooks-menu.md`).
+//! (`docs/tools/hooks-menu.md`).
 //!
 //! [`HooksOverview::from_file`] digests a parsed [`HooksFile`] into what the
 //! menu browses: every modelled event in registry order, each event's matcher
@@ -62,7 +62,7 @@ pub struct HookOverview {
     pub status_message: Option<String>,
     /// For a hook that can run, read from a file: that `hooks.json`'s path
     /// and the hook itself — what trusting it records
-    /// (`docs/config-review.md`). `None` for a handler that never runs, or
+    /// (`docs/state/config-review.md`). `None` for a handler that never runs, or
     /// one read from no file.
     pub trust_key: Option<(String, crate::trust::HookIdentity)>,
     /// Whether the user trusts it ([`HooksOverview::with_trust`]); always
@@ -124,7 +124,7 @@ impl HooksOverview {
     }
 
     /// This overview with each runnable hook's trust answered by `trusted`
-    /// — given the hook's file and the hook (`docs/config-review.md`).
+    /// — given the hook's file and the hook (`docs/state/config-review.md`).
     #[must_use]
     pub fn with_trust(
         mut self,
@@ -237,7 +237,7 @@ pub const fn event_summary(event: HookEvent) -> &'static str {
 }
 
 /// The event's multi-line description (stdin payload + exit-code semantics,
-/// as **this** runner implements them — `docs/hooks.md`), shown under the
+/// as **this** runner implements them — `docs/tools/hooks.md`), shown under the
 /// matcher/hook titles. Lines are `\n`-separated.
 #[must_use]
 pub const fn event_description(event: HookEvent) -> &'static str {
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_runnable_hook_carries_its_file_identity_and_trust() {
-        // What `/hooks` shows and toggles (`docs/config-review.md`): each
+        // What `/hooks` shows and toggles (`docs/state/config-review.md`): each
         // hook that can run names its file and itself, and whether the user
         // trusts it; a handler that never runs carries neither.
         let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");

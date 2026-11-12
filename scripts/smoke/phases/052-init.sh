@@ -5,7 +5,7 @@
 smoke_begin
 
 # /init + the AGENTS.md instructions in the context
-# (docs/init.md, docs/project-doc.md). In a temp project with a planted
+# (docs/state/init.md, docs/state/project-doc.md). In a temp project with a planted
 # AGENTS.md: Ctrl+D shows the guide under its `Contents of {path} (project
 # instructions, checked into the codebase):` heading inside the one
 # `<system-reminder>` the context leads with, BEFORE any turn (the startup

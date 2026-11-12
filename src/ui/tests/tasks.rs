@@ -1,4 +1,4 @@
-//! The task tools' live checklist (`docs/task-tools.md`): the `⎿ ◻ subject`
+//! The task tools' live checklist (`docs/tools/task-tools.md`): the `⎿ ◻ subject`
 //! rows under the status line, their styling, the cap, and the strip
 //! geometry they occupy.
 
@@ -152,7 +152,7 @@ fn task_rows_gates_on_an_active_main_turn() {
     app.finish_stream();
     app.end_turn(1);
     // An OPEN task stays visible at rest — as the standalone block, so its
-    // count line makes it two rows (docs/task-tools.md).
+    // count line makes it two rows (docs/tools/task-tools.md).
     assert_eq!(task_rows(&app, 60), 2, "the resting block shows open work");
     // …and a list that retires (every task done) shows nothing at all.
     app.begin_stream();

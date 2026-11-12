@@ -1,5 +1,5 @@
 //! The mascot catalog, the `/mascot` picker, and its persistence format
-//! (`docs/mascot.md`).
+//! (`docs/ui/mascot.md`).
 
 use std::collections::BTreeMap;
 
@@ -56,7 +56,7 @@ fn every_mascot_has_art_a_name_and_a_description() {
 #[test]
 fn mascot_art_uses_only_single_width_glyphs() {
     // A wide (emoji/CJK) glyph would shear every banner row after it
-    // (docs/table-streaming.md "Wide glyphs") — the catalog must stay in
+    // (docs/ui/table-streaming.md "Wide glyphs") — the catalog must stay in
     // single-width block characters.
     for mascot in Mascot::ALL {
         for row in mascot.art() {
@@ -92,8 +92,8 @@ fn from_name_round_trips_case_insensitively() {
     assert_eq!(Mascot::from_name(""), None);
 }
 
-// ===== the persistence format — per working directory (docs/mascot.md,
-// docs/per-directory-state.md) =====
+// ===== the persistence format — per working directory (docs/ui/mascot.md,
+// docs/state/per-directory-state.md) =====
 
 #[test]
 fn a_pre_directory_mascot_file_is_the_last_choice_and_seeds_every_directory() {

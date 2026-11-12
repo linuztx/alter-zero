@@ -1,5 +1,5 @@
 //! The `/hooks` menu — the hooks configuration browsed, and each hook's
-//! trust toggled on its page. See `docs/hooks-menu.md`.
+//! trust toggled on its page. See `docs/tools/hooks-menu.md`.
 //!
 //! The ↓ manager band's pattern rather than the `/settings` fixed-slot
 //! layout: [`hooks_view_lines`] builds the whole framed body line by line —
@@ -38,7 +38,7 @@ fn title_line(text: &str, width: u16) -> Line<'static> {
 
 /// `text` word-wrapped to inset rows in `style` — informational text is
 /// never clipped at the width; the page's height is content-driven, so the
-/// continuation rows are free (`docs/view-flow.md`).
+/// continuation rows are free (`docs/ui/view-flow.md`).
 fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
     text.split('\n')
@@ -186,7 +186,7 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
     let untrusted = menu.overview.untrusted();
     if untrusted > 0 {
         // Amber: these hooks are configured and silent, which the user
-        // should know before reading anything else (`docs/config-review.md`).
+        // should know before reading anything else (`docs/state/config-review.md`).
         let (is, does, which) = if untrusted == 1 {
             ("is", "does", "it")
         } else {
@@ -410,7 +410,7 @@ fn detail_lines(
     );
     lines.push(field_line("Source:", &source, dim, width));
     // Where the hook stands with the user, for one that can run
-    // (`docs/config-review.md`) — Enter on this page toggles it.
+    // (`docs/state/config-review.md`) — Enter on this page toggles it.
     if hook.trust_key.is_some() {
         let (value, color) = if hook.trusted {
             (HOOKS_TRUSTED_VALUE, tool_ok_color())
@@ -521,8 +521,8 @@ pub fn hooks_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 /// Render the **inline** `/hooks` menu into the live region, in place of the
 /// composer — bottom-anchored, so a detail page taller than the area keeps
 /// its hint and closing rule on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/hooks-menu.md`.
+/// scrollback (`docs/ui/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/tools/hooks-menu.md`.
 pub fn render_hooks_menu(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, hooks_view_lines(app, area.width));
 }

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/spinner` picker (docs/spinner.md). The `/theme`
+# the `/spinner` picker (docs/ui/spinner.md). The `/theme`
 # picker's layout over the status line's spinner styles, LIVE: a title over
 # a dim subtitle, a five-row window over its counter, every row wearing its
 # own spinner, the highlighted style previewing as a whole status
@@ -39,7 +39,7 @@ for expect in "Select spinner" "The status line's animation — saved for this d
 done
 expect_lacks "$spin_open" -E "(^| )(blocks|pulse|bars|line) " "the five-row window shows the styles past it"
 # A fresh config home has no `spinner.json`, so this is the catalog's default
-# (docs/spinner.md): the open seats on gravity and gravity wears the ✓.
+# (docs/ui/spinner.md): the open seats on gravity and gravity wears the ✓.
 if ! printf '%s\n' "$spin_open" | grep -F "→ gravity" | grep -qF "✓"; then
 	fail "the default style (gravity) does not wear the ✓ on a fresh config home"
 fi
@@ -52,7 +52,7 @@ fi
 if [ "$(printf '%s\n' "$spin_open" | grep -c '(.*●.*)')" -lt 1 ]; then
 	fail "expected the comet on its own row"
 fi
-# The two braille tracks (docs/spinner.md). Their rows are LIVE — the ball
+# The two braille tracks (docs/ui/spinner.md). Their rows are LIVE — the ball
 # has moved on from its opening frame by the time the pane is captured — so
 # the checks are structural: eight braille cells each (U+2800–U+28FF, the
 # bytes E2 A0..A3 80..BF — counted bytewise under LC_ALL=C, since a

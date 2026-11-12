@@ -39,7 +39,7 @@ impl Session<'_> {
             let result = super::git_diff_loader::load(&cwd).map(|mut snapshot| {
                 // A file the agent wrote a credential into holds the value on
                 // disk; the review shows the placeholder, like every other
-                // view of the session (docs/secrets.md).
+                // view of the session (docs/state/secrets.md).
                 secrets.with(|store| {
                     for line in snapshot.files.iter_mut().flat_map(|file| &mut file.lines) {
                         if let std::borrow::Cow::Owned(text) = store.redact(&line.text) {

@@ -11,7 +11,7 @@
 //! vector, all to reproduce bytes the owner had already sent. Measured, one
 //! Ctrl+V spiked the process by ~24 MB — and the freed blocks raised glibc's
 //! dynamic `mmap` threshold past their own size, which is what later turned
-//! every same-sized buffer into a permanent heap residue (`docs/memory.md`).
+//! every same-sized buffer into a permanent heap residue (`docs/architecture/memory.md`).
 //!
 //! So on Linux the paste asks the owner for the encoded bytes itself and
 //! **copies them into the paste folder as they arrive**: a Wayland offer is a pipe

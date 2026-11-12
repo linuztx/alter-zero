@@ -1,5 +1,5 @@
 //! ↑/↓ input recall and the Ctrl+R reverse search over it
-//! (`docs/input-history.md`, `docs/history-search.md`).
+//! (`docs/input/input-history.md`, `docs/input/history-search.md`).
 
 use super::*;
 
@@ -315,7 +315,7 @@ fn history_browsing_steps_past_a_recalled_shell_entry() {
     // Recalling "!ls" absorbs the bang into shell_mode (composer "ls"),
     // but the recorded entry is "!ls" — the unedited-recall comparison
     // must account for the absorbed bang or browsing strands on the
-    // shell entry (docs/input-history.md: unedited recalls keep browsing).
+    // shell entry (docs/input/input-history.md: unedited recalls keep browsing).
     let mut app = App::new();
     submit(&mut app, "hello");
     type_query(&mut app, "!ls");

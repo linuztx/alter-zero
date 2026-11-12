@@ -1,4 +1,4 @@
-//! The read-only `/context` page (`docs/context-usage.md`).
+//! The read-only `/context` page (`docs/architecture/context-usage.md`).
 
 use std::sync::Arc;
 
@@ -965,7 +965,7 @@ fn a_short_terminal_sheds_rows_and_keeps_the_title_the_highlight_and_the_hint() 
 #[test]
 fn a_short_terminal_windows_the_legend_around_the_highlight() {
     // Three legend rows between the reserved `↑`/`↓` slots, under the title
-    // row and over the hint — the compact pages' shape (`docs/view-flow.md`).
+    // row and over the hint — the compact pages' shape (`docs/ui/view-flow.md`).
     let mut app = open_app();
     let texts = |app: &App| -> Vec<String> {
         context_usage_lines(app, 60, 9)
@@ -1028,7 +1028,7 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 #[test]
 fn the_page_never_flows_however_short_the_terminal() {
     // The last rung is the title row alone, so no terminal is too short
-    // for a page and nothing flows into scrollback (`docs/view-flow.md`).
+    // for a page and nothing flows into scrollback (`docs/ui/view-flow.md`).
     let app = open_app();
     for width in [100u16, 60] {
         for height in (1..=24).chain([TALL]) {
@@ -1137,7 +1137,7 @@ fn a_narrow_ledger_row_drops_its_cache_clause_whole() {
 #[test]
 fn a_docs_path_reads_by_the_sessions_path_rule() {
     // The breakdown keeps the path as the section names it; the screen
-    // shows it the way every file tool's header does (`docs/tools.md` *Path
+    // shows it the way every file tool's header does (`docs/tools/tools.md` *Path
     // display*): relative under the cwd.
     let mut app = with_session();
     app.set_path_display(crate::app::PathDisplay::new(

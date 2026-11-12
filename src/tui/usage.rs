@@ -1,5 +1,5 @@
 //! The `/usage` page at the boundary: reading every subscription off its
-//! provider, and keeping the open page live (`docs/usage.md`).
+//! provider, and keeping the open page live (`docs/providers/usage.md`).
 //!
 //! The pure side owns the page and its rounds ([`App::open_usage_page`],
 //! [`App::begin_usage_round`], [`App::finish_usage_fetch`]). What the

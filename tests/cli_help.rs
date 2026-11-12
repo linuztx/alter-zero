@@ -1,5 +1,5 @@
 //! Integration proof of the `--help` page, the `[PROMPT]` grammar's errors
-//! and the version line (`docs/cli.md`) against the **real built binary**
+//! and the version line (`docs/cli/cli.md`) against the **real built binary**
 //! (the `detached_exec.rs` pattern — cargo hands the path as
 //! `CARGO_BIN_EXE_alter-zero`). Offline and deterministic: every invocation
 //! here prints and exits before the terminal boots, and the pipes cargo

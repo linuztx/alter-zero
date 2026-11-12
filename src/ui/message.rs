@@ -1,5 +1,5 @@
 //! Rendering one committed message: the role-bulleted user/assistant/system/
-//! error lines, and the `/compact` marker cell (`docs/compact.md`).
+//! error lines, and the `/compact` marker cell (`docs/architecture/compact.md`).
 //!
 //! The walk over the whole history lives in
 //! [`conversation`](super::conversation).
@@ -25,7 +25,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
     };
     // Only the assistant's replies are markdown; user/shell/notice text stays
     // literal (a user pasting ``` must not be code-blocked, and the dark-bg
-    // padding math below assumes plain wrapped lines). See `docs/markdown.md`.
+    // padding math below assumes plain wrapped lines). See `docs/ui/markdown.md`.
     if role == Role::Assistant {
         return assistant_lines(text, width, bullet, color);
     }
@@ -47,7 +47,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
     // output rows' wrapper), tabs expanded for display like a code block's
     // (a tab paints as zero cells but measures as one, which left the dark
     // row a column short of the edge). The composer shows the draft that
-    // way, so the bubble it becomes agrees with it (`docs/textarea.md`).
+    // way, so the bubble it becomes agrees with it (`docs/input/textarea.md`).
     wrap_output(&expand_code_tabs(text), content_width)
         .into_iter()
         .enumerate()
@@ -81,7 +81,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// ([`format_elapsed`]-humanized; 0 hides it), and a dim ` · auto` tag for an
 /// auto-triggered compaction. A single unwrapped line, the [`summary_lines`]
 /// precedent. The summary body never shows inline — it expands in the Ctrl+O
-/// transcript only (`compaction_full_lines`). See `docs/compact.md`.
+/// transcript only (`compaction_full_lines`). See `docs/architecture/compact.md`.
 #[must_use]
 pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
     let _ = width; // one unwrapped line, like summary_lines
@@ -116,7 +116,7 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
 /// The Ctrl+O transcript's expanded `/compact` cell: the marker line with the
 /// model-written handoff summary wrapped dim + indented below it — what the
 /// bridge will replay to the model, readable in place. An empty summary shows
-/// just the marker. See `docs/compact.md`.
+/// just the marker. See `docs/architecture/compact.md`.
 pub(super) fn compaction_full_lines(
     compaction: &crate::app::Compaction,
     width: u16,
@@ -136,7 +136,7 @@ pub(super) fn compaction_full_lines(
     lines
 }
 
-/// A hook-injected conversation entry's transcript cell (`docs/hooks.md`):
+/// A hook-injected conversation entry's transcript cell (`docs/tools/hooks.md`):
 /// a dim `● {label}` heading over the wire text, wrapped + indented — what
 /// the model read, readable in place. **Transcript-only**: the inline view
 /// skips the item entirely (Claude Code hides these from its normal view

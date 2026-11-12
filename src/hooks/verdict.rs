@@ -1,4 +1,4 @@
-//! Reading one handler's answer, and merging several (`docs/hooks.md`).
+//! Reading one handler's answer, and merging several (`docs/tools/hooks.md`).
 //!
 //! A handler answers on **stdout**, in `camelCase` — the mirror of the
 //! `snake_case` payload it was fed. Its **exit code** matters as much as its
@@ -27,7 +27,7 @@ use crate::frontmatter::truncate_chars;
 
 /// How much of a handler's stdout/stderr is kept. codex spills an oversized
 /// `additionalContext` to a file and hands the model a preview; we cap and
-/// truncate until someone needs more (`docs/hooks.md`).
+/// truncate until someone needs more (`docs/tools/hooks.md`).
 pub const HOOK_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 
 /// What one handler's run produced — the boundary's whole report, so every
@@ -46,7 +46,7 @@ pub struct HookRun {
     /// Why there is no exit code, when there isn't one.
     pub error: Option<String>,
     /// How long the handler ran — the hook-run cell's Ctrl+O rows show it
-    /// (`docs/hooks.md` *The hook-run cell*).
+    /// (`docs/tools/hooks.md` *The hook-run cell*).
     pub elapsed: std::time::Duration,
 }
 
@@ -69,7 +69,7 @@ pub struct ParsedHook {
     /// The handler that blocked — set with
     /// [`block_reason`](Self::block_reason) and never without it, so the
     /// model can be told which hook refused it and where it is configured
-    /// (`docs/hooks.md`).
+    /// (`docs/tools/hooks.md`).
     pub blocked_by: Option<HookOrigin>,
     pub permission: Option<HookPermission>,
     /// The reason behind [`permission`](Self::permission), when given.

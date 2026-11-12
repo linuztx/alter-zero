@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# `@` file-path mentions (docs/file-search.md). Typing `@query`
+# `@` file-path mentions (docs/input/file-search.md). Typing `@query`
 # opens a file picker BELOW the box listing workspace files that fuzzy-match the
 # query (fetched asynchronously by a background walk+rank worker) in columned
 # `→ name  parent/  File|Dir` rows, five at a time over a `(n/total)` counter
@@ -61,7 +61,7 @@ echo "==== captured pane (file path inserted into the composer) ===="
 printf '%s\n' "$at_inserted"
 # A file created AFTER startup (what the agent does when asked to create one)
 # must appear in a later `@` search: the worker walks the cwd afresh per query
-# instead of serving a startup-cached list (docs/file-search.md).
+# instead of serving a startup-cached list (docs/input/file-search.md).
 : >"$ATDIR/gamma_new.txt"
 tmux send-keys -t "$S22" -l " @gamma"
 at_fresh="$(wait_pane 3 "$S22" -F "gamma_new.txt")" # up to ~3s for the fresh walk to list the new file
@@ -87,7 +87,7 @@ printf '%s\n' "$at_wrapped"
 tmux kill-session -t "$S22" 2>/dev/null
 rm -rf "$ATDIR"
 
-# Phase 25: the `@` file picker (docs/file-search.md). Typing "@alpha" lists the
+# Phase 25: the `@` file picker (docs/input/file-search.md). Typing "@alpha" lists the
 # matching workspace file below the box; Enter inserts its path into the composer.
 expect_has "$at_open" -F "alpha_smoke.txt" "typing '@alpha' did not list the matching file in the picker below the box"
 # The picker displaces the session footer (codex's popups take its row), like the palette.
@@ -95,7 +95,7 @@ expect_lacks "$at_open" -F "dummy_model_name" "the session footer is still shown
 expect_has "$at_inserted" -F "❯ see alpha_smoke.txt" "Enter did not insert the highlighted file path into the composer (expected '❯ see alpha_smoke.txt')"
 # The picker closed on accept: the session footer returns to its row.
 expect_has "$at_inserted" -F "dummy_model_name ·" "the session footer did not return after the @ file picker closed on accept"
-# The columned row layout (docs/file-search.md): the selected row carries the
+# The columned row layout (docs/input/file-search.md): the selected row carries the
 # `→` marker, then the name, the `./` parent column, and the `File` kind label.
 expect_has "$at_open" -E "→ alpha_smoke\.txt +\./ +File" "the @ picker row is not the columned '→ name  ./  File' layout"
 # The fresh-walk fix: a file created after startup appears in a later search.

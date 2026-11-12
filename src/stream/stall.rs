@@ -1,4 +1,4 @@
-//! The wedged-backend test double (`ALTER_ZERO_STALL_MS`, `docs/interrupt.md`).
+//! The wedged-backend test double (`ALTER_ZERO_STALL_MS`, `docs/input/interrupt.md`).
 
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -23,7 +23,7 @@ use super::{CancelToken, ReplySource, StreamEvent};
 /// `join()`** a cancelled backend on its thread: doing so freezes the UI for
 /// the whole stall (the interrupt-lag bug). Selected via `ALTER_ZERO_STALL_MS`
 /// and used only by `scripts/smoke.sh` — never in normal operation. See
-/// `docs/interrupt.md`.
+/// `docs/input/interrupt.md`.
 #[derive(Debug, Clone, Copy)]
 pub struct StallAi {
     stall: Duration,

@@ -5,7 +5,7 @@
 smoke_begin
 
 # /compact NEVER reaches the network when the session is running
-# the DUMMY (docs/compact.md). The trap: `is_usable()` only checks that a key
+# the DUMMY (docs/architecture/compact.md). The trap: `is_usable()` only checks that a key
 # resolved, so a configured provider + NO model selection used to build a REAL
 # one-off summarization backend for the model name the dummy answers as —
 # firing `POST /chat/completions` for "dummy_model_name" and resolving the turn

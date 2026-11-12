@@ -1,5 +1,5 @@
 //! The inline `AskUserQuestion` modal: the state a pending
-//! [`AskRequest`] puts the composer into, and its key map. See `docs/ask.md`.
+//! [`AskRequest`] puts the composer into, and its key map. See `docs/tools/ask.md`.
 //!
 //! The permission prompt's sibling ([`super::permission`]): while one is open
 //! it **owns every key** (routed at the top of [`on_key`](App::on_key)) and
@@ -112,7 +112,7 @@ pub struct AskPrompt {
     /// How long until the idle clock resolves the question unanswered — the
     /// boundary's reading, injected per draw ([`App::set_ask_remaining`]) for
     /// the countdown the closing rule shows; `None` when no clock runs (the
-    /// timeout is off, or no draw has injected one yet). See `docs/ask.md`.
+    /// timeout is off, or no draw has injected one yet). See `docs/tools/ask.md`.
     pub remaining: Option<Duration>,
     /// The composer draft this prompt displaced — restored verbatim when it
     /// closes, the permission prompt's stash.
@@ -121,7 +121,7 @@ pub struct AskPrompt {
     saved_shell_mode: bool,
     /// The secrets whose values the entry fields masked so far — announced
     /// when a submission carries them, never while an answer is only kept
-    /// (`docs/secrets.md` *What the user types*).
+    /// (`docs/state/secrets.md` *What the user types*).
     masked: Vec<String>,
 }
 
@@ -278,7 +278,7 @@ impl App {
 
     /// Whether any `AskUserQuestion` call is waiting on the user — the open
     /// modal, or one queued behind another modal. The boundary's idle clock
-    /// runs exactly while this holds (`docs/ask.md`).
+    /// runs exactly while this holds (`docs/tools/ask.md`).
     #[must_use]
     pub fn has_pending_asks(&self) -> bool {
         self.ask.is_some() || !self.pending_asks.is_empty()
@@ -294,7 +294,7 @@ impl App {
     }
 
     /// Resolve every waiting question unanswered: the user has been idle for
-    /// `after` (`docs/ask.md`). The open modal keeps what was answered before
+    /// `after` (`docs/tools/ask.md`). The open modal keeps what was answered before
     /// the user left — an entry field's unaccepted text is no answer, and its
     /// paste pairs go with it — then closes, handing the draft back; a queued
     /// question resolves with nothing. Returns each id with its decision for
@@ -533,7 +533,7 @@ impl App {
                 }
             }
             // `n` opens the notes field — preview questions only, where the
-            // hint offers it (`docs/ask.md`).
+            // hint offers it (`docs/tools/ask.md`).
             KeyCode::Char('n') => {
                 let tab = prompt.tab;
                 if prompt
@@ -551,7 +551,7 @@ impl App {
         }
     }
 
-    /// A bracketed paste while the modal is open (`docs/ask.md`): the live
+    /// A bracketed paste while the modal is open (`docs/tools/ask.md`): the live
     /// entry field (the Other row, the notes line) takes it exactly like the
     /// composer — an over-threshold paste collapses to its
     /// `[Pasted Content N chars]` placeholder, expanded back to the real text
@@ -566,11 +566,11 @@ impl App {
     /// Take the entry field's text on exit, splicing every large-paste
     /// placeholder back to its real content and **consuming** exactly the
     /// pairs that matched — the stashed composer draft's pairs must survive
-    /// the modal for the draft's own eventual send (`docs/paste.md`) — with
+    /// the modal for the draft's own eventual send (`docs/input/paste.md`) — with
     /// every stored secret's value replaced by its placeholder, since the
     /// answer goes to the model, so the field and the review page already
     /// show what the agent will read. The secrets it masked wait on the
-    /// prompt until a submission sends them (`docs/secrets.md` *What the user
+    /// prompt until a submission sends them (`docs/state/secrets.md` *What the user
     /// types*).
     fn take_entry_text(&mut self) -> String {
         let text = self.input.take();

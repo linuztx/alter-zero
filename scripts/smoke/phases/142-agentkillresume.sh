@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/agent-tools.md *A resume is news when it starts*: the note that a run
+# docs/agents/agent-tools.md *A resume is news when it starts*: the note that a run
 # is going is news only until the lead hears that run end. Phase 141's case,
 # driven through the REAL backend against a stub provider, with one change:
 # the round the lead is in when the user brings the failed agent back answers

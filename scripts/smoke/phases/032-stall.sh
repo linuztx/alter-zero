@@ -5,7 +5,7 @@
 smoke_begin
 
 # an Esc interrupt stays PROMPT even when the backend is slow to
-# observe the cancel (docs/interrupt.md — the interrupt-lag fix). ALTER_ZERO_STALL_MS
+# observe the cancel (docs/input/interrupt.md — the interrupt-lag fix). ALTER_ZERO_STALL_MS
 # selects a test backend that ignores the cancel for N ms, modelling a real
 # network backend wedged in a blocking read during the pre-first-token pause. The
 # old loop did `cancel + join`, which blocks the single-threaded loop until the
@@ -48,7 +48,7 @@ tmux kill-session -t "$STALL_S" 2>/dev/null
 
 # Phase 32: an Esc interrupt is prompt even when the backend is slow to observe
 # the cancel — the loop detaches the thread instead of join()ing it, so the UI
-# never freezes (docs/interrupt.md, the interrupt-lag fix). The stall backend
+# never freezes (docs/input/interrupt.md, the interrupt-lag fix). The stall backend
 # streams nothing, so Esc UNDOES the turn (req 1) — the promptness signal is the
 # status line clearing, and the undo restores the message with no notice.
 if [ "$stall_streaming" -ne 1 ]; then

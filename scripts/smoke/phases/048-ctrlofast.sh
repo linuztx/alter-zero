@@ -5,7 +5,7 @@
 smoke_begin
 
 # Ctrl+O on a resumed CODE-HEAVY session opens WARM and ATOMIC
-# (docs/tool-view-performance.md). A handcrafted rollout carries three Write
+# (docs/ui/tool-view-performance.md). A handcrafted rollout carries three Write
 # tools of ~1000 numbered HTML lines each (~110 KB — the grammar-highlight
 # heavy shape that made the old open re-render everything on a blank alt
 # screen for hundreds of ms, kitty's cursor-trail streaking up it). After

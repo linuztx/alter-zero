@@ -1,8 +1,8 @@
-//! The `@` file picker (`docs/file-search.md`).
+//! The `@` file picker (`docs/input/file-search.md`).
 
 use super::*;
 
-// ===== `@` file picker (docs/file-search.md) =====
+// ===== `@` file picker (docs/input/file-search.md) =====
 
 #[test]
 fn typing_at_opens_the_file_picker() {
@@ -46,7 +46,7 @@ fn stale_file_matches_are_dropped() {
 fn file_matches_remember_whether_the_walk_stopped_short() {
     // A walk that reached its cap saw only part of the workspace: the picker
     // keeps that beside the matches, so its count can say the list may be
-    // missing entries (docs/file-search.md).
+    // missing entries (docs/input/file-search.md).
     let mut app = App::new();
     type_str(&mut app, "@x");
     app.set_file_matches("x", vec![fm("x1")], true);

@@ -1,5 +1,5 @@
 //! The bands below the box: palette, `@` picker, `?` shortcuts
-//! (`docs/file-search.md`, `docs/shortcuts.md`).
+//! (`docs/input/file-search.md`, `docs/ui/shortcuts.md`).
 
 use super::*;
 use crate::ui::theme::{
@@ -310,7 +310,7 @@ fn the_wrapped_palette_keeps_a_command_on_each_side_of_the_highlight() {
 #[test]
 fn menu_rows_equals_the_painted_lines_at_every_width() {
     // The reserved band height IS the built line count — the settings/model
-    // pickers' "height is the line count" rule (docs/view-flow.md) — so a
+    // pickers' "height is the line count" rule (docs/ui/view-flow.md) — so a
     // wrapped description can never paint more rows than were reserved.
     for width in [24u16, 40, 60, 80, 120] {
         let app = palette("/", 0);
@@ -502,7 +502,7 @@ fn the_narrow_palette_windows_fewer_commands_inside_the_row_budget() {
 
 #[test]
 fn the_palette_lists_the_active_models_speed_tiers_after_model() {
-    // The tier rows are ordinary palette entries (docs/fast-mode.md): one per
+    // The tier rows are ordinary palette entries (docs/providers/fast-mode.md): one per
     // tier the model lists, right after /model, each wearing the backend's
     // own description in the description column and lighting up whole when
     // selected like any other row. A query narrows to them like any other.
@@ -655,7 +655,7 @@ fn command_menu_shows_a_placeholder_when_nothing_matches() {
 
 #[test]
 fn the_palette_marks_the_selection_with_an_arrow() {
-    // The `@` and `$` pickers' marker (docs/file-search.md): the highlighted
+    // The `@` and `$` pickers' marker (docs/input/file-search.md): the highlighted
     // command opens on `→ `, every other row on the marker's width of
     // spaces, so the names share one column and the selection still reads
     // where the cyan alone says nothing (a monochrome terminal, a capture).
@@ -795,7 +795,7 @@ fn cursor_stays_in_the_box_when_the_palette_opens() {
     assert_eq!(open, closed, "cursor unchanged when the menu opens");
 }
 
-// --- the `?` shortcuts band (docs/shortcuts.md) ---
+// --- the `?` shortcuts band (docs/ui/shortcuts.md) ---
 
 /// Every terminal width the band tests sweep: narrower than the one-column
 /// stack up to an ultra-wide pane.
@@ -1215,12 +1215,12 @@ fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
 #[test]
 fn the_band_lists_every_binding_the_composer_answers() {
     // Each entry once, in its own words: the sigils (`@` is the file picker,
-    // docs/file-search.md; `$` the skill picker, docs/skill-mentions.md),
-    // the history (docs/input-history.md, docs/history-search.md), the
-    // editing keys (docs/shift-enter.md, docs/image-paste.md,
-    // docs/textarea.md), the running turn (docs/queue.md — Tab and Alt+Up;
-    // docs/background.md — Ctrl+B), the two views, the thinking and
-    // permission modes (docs/reasoning.md, docs/permissions.md) and the
+    // docs/input/file-search.md; `$` the skill picker, docs/input/skill-mentions.md),
+    // the history (docs/input/input-history.md, docs/input/history-search.md), the
+    // editing keys (docs/input/shift-enter.md, docs/input/image-paste.md,
+    // docs/input/textarea.md), the running turn (docs/input/queue.md — Tab and Alt+Up;
+    // docs/tools/background.md — Ctrl+B), the two views, the thinking and
+    // permission modes (docs/providers/reasoning.md, docs/state/permissions.md) and the
     // way out.
     let all: String = band(false, false, 80)
         .iter()
@@ -1753,7 +1753,7 @@ fn the_file_counter_owns_up_to_a_walk_that_stopped_at_its_cap() {
     assert_eq!(narrow.len(), 5, "no half-counter: {narrow:?}");
 }
 
-// ===== the `$` skill picker band (docs/skill-mentions.md) =====
+// ===== the `$` skill picker band (docs/input/skill-mentions.md) =====
 
 /// A discovered skill for the band tests.
 fn smeta(name: &str, description: &str) -> crate::skills::SkillMetadata {
@@ -2152,7 +2152,7 @@ fn shortcuts_esc_entry_is_three_way_context_sensitive() {
     assert!(!target.contains("esc to quit"), "{target:?}");
 }
 
-// --- the `@` file picker (docs/file-search.md) ---
+// --- the `@` file picker (docs/input/file-search.md) ---
 
 /// A bare file match for the picker render tests.
 fn fmatch(path: &str) -> FileMatch {
@@ -2164,7 +2164,7 @@ fn fmatch(path: &str) -> FileMatch {
 
 #[test]
 fn the_skill_entry_is_an_ordinary_grid_slot() {
-    // The `$` skill picker (docs/skill-mentions.md) closes the composer's
+    // The `$` skill picker (docs/input/skill-mentions.md) closes the composer's
     // sigils — `/ ! @ $` down the head of the first column — as a plain
     // [`SHORTCUTS`] entry, listed once at every width, no special case.
     let lines = band(false, false, 80);

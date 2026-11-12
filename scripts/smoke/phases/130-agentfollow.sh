@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The agent tools (docs/agent-tools.md). The `agent-follow-up` demo launches
+# The agent tools (docs/agents/agent-tools.md). The `agent-follow-up` demo launches
 # a background agent and works it the way a live model did: `agentoutput`
 # waits on it, `agentsend` resumes its FINISHED conversation with a
 # follow-up, a second wait reports that answer, and `agentlist` lists it —
@@ -59,7 +59,7 @@ dump "the agent's own session" "$view"
 # reads a reply to a question it never asked as its own conversation. And
 # the agent had FINISHED: the message starts it again, which the lead must
 # hear when it happens — not only once the answer arrives — or it goes on
-# believing the agent is done (docs/agent-tools.md *A resume is news when it
+# believing the agent is done (docs/agents/agent-tools.md *A resume is news when it
 # starts*).
 submit "$S130" "thanks, keep it short"
 wait_pane 15 "$S130" -F "this reply is its next turn" >/dev/null ||

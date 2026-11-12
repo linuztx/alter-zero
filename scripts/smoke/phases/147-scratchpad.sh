@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/tool-groups.md *Scratchpad edits*: the offline `scratchpad` demo
+# docs/ui/tool-groups.md *Scratchpad edits*: the offline `scratchpad` demo
 # writes a game into the session's scratchpad — the `write` generated the way
 # a live model generates one, its arguments in token-sized pieces — then
 # changes one line of it, and replies. This launch drops the suite's

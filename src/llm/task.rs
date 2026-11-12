@@ -1,4 +1,4 @@
-//! The task tools' executor half (`docs/task-tools.md`): run one
+//! The task tools' executor half (`docs/tools/task-tools.md`): run one
 //! `taskcreate`/`taskget`/`tasklist`/`taskupdate` call against the shared
 //! [`TaskRegistry`] and hand back the split [`ToolOutcome`] — the
 //! model-facing result text in `output`, the post-call snapshot on `tasks`

@@ -1,6 +1,6 @@
 //! The `agent` tool's companions — `agentsend`, `agentoutput`, `agentkill`
 //! and `agentlist` — run against the shared [`AgentRegistry`]
-//! (`docs/agent-tools.md`).
+//! (`docs/agents/agent-tools.md`).
 //!
 //! The lead's tools alone: a subagent is never offered them. A continuation
 //! of a settled agent is spawned through an injected launcher
@@ -62,7 +62,7 @@ const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the agent keeps 
 
 /// Ahead of an earlier run's notice a report carries: the agent ended that
 /// run before the one reported, and the notice never reached the lead
-/// (`docs/agent-tools.md` *One notice per answer*).
+/// (`docs/agents/agent-tools.md` *One notice per answer*).
 const EARLIER_RUN_NOTE: &str =
     "[Before this run it had ended an earlier one, whose notice had not reached you:]";
 
@@ -70,7 +70,7 @@ const EARLIER_RUN_NOTE: &str =
 const EARLIER_RUNS_NOTE: &str = "[Before this run it had ended earlier ones, whose notices \
      had not reached you — oldest first:]";
 
-/// Run one companion call (`docs/agent-tools.md`). `on_output` streams a
+/// Run one companion call (`docs/agents/agent-tools.md`). `on_output` streams a
 /// waiting `agentoutput`'s calls as the agent starts them, so its running
 /// cell shows the agent at work.
 pub fn run_agent_tool(
@@ -156,7 +156,7 @@ fn send(ctx: &AgentToolContext<'_>, args: &AgentSendArgs) -> ToolOutcome {
 /// agent still running — once it settles, the wait passes, the lead is
 /// interrupted, or the user's Ctrl+B ends the wait. A wait **registers** with
 /// the registry, so a settle it sees is reported here and not noticed again
-/// (`docs/agent-tools.md` *One notice per answer*).
+/// (`docs/agents/agent-tools.md` *One notice per answer*).
 fn output(
     ctx: &AgentToolContext<'_>,
     args: &AgentOutputArgs,
@@ -174,7 +174,7 @@ fn output(
         return unknown_agent(ctx.registry, id);
     }
     // A Ctrl+B pressed before this wait began belongs to nothing — the
-    // `bash` runner's rule (docs/background.md).
+    // `bash` runner's rule (docs/tools/background.md).
     if let Some(background) = ctx.background {
         background.clear_background_request();
     }
@@ -189,7 +189,7 @@ fn output(
         };
         // What the agent has done since the last look, a line each, in the
         // order it did it — the running cell tails them
-        // (docs/agent-progress.md).
+        // (docs/agents/agent-progress.md).
         for line in &progress.lines {
             on_output(ToolProgress::Screen {
                 settled: &format!("{line}\n"),
@@ -221,7 +221,7 @@ fn output(
 
 /// The report, handed to the lead — and, for a settled agent, the
 /// registry told so, so the completion notice saying the same is cancelled
-/// or taken back (`docs/agent-tools.md` *One notice per answer*). A wait
+/// or taken back (`docs/agents/agent-tools.md` *One notice per answer*). A wait
 /// that saw the settle already marked it observed; this covers the settle
 /// it just missed, and the one that landed before the lead looked. Any
 /// earlier run's notice still unread comes back from the registry and
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn agentoutput_hands_the_lead_what_the_agent_said_on_its_way() {
-        // docs/agent-progress.md: the lead reads the agent's own account of
+        // docs/agents/agent-progress.md: the lead reads the agent's own account of
         // its progress, not only the calls it made.
         let (registry, _rx) = registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Fetch profile", "p");
@@ -739,7 +739,7 @@ mod tests {
     fn a_report_that_beats_the_notice_cancels_it() {
         // The settle landed just before the wait could register, so its
         // notice went out unobserved; the report hands the lead the answer,
-        // and the loop must then post nothing (docs/agent-tools.md *One
+        // and the loop must then post nothing (docs/agents/agent-tools.md *One
         // notice per answer*).
         let (registry, id, background) = settled_unobserved();
         let (outcome, _, _) = run(
@@ -812,7 +812,7 @@ mod tests {
     fn a_look_at_the_resumed_runs_end_takes_back_the_note_that_it_runs() {
         // The resumed run ends and the lead looks before the loop has handled
         // the settle: the report hands it the answer, so the note that the
-        // agent runs again must not reach it after (docs/agent-tools.md *A
+        // agent runs again must not reach it after (docs/agents/agent-tools.md *A
         // resume is news when it starts*).
         let (registry, id, background, seq) = resumed_by_user();
         registry.settle(
@@ -848,7 +848,7 @@ mod tests {
         // The lead stops the agent before reading the note: the stop's report
         // is the run's end — the user's message marked in it — and no notice
         // follows a stop the lead made, so "running again, you will be
-        // notified" must not reach it after (docs/agent-tools.md).
+        // notified" must not reach it after (docs/agents/agent-tools.md).
         let (registry, id, background, seq) = resumed_by_user();
         let (outcome, _, _) = run(
             &registry,
@@ -876,7 +876,7 @@ mod tests {
     fn agentkill_of_a_resumed_agent_already_done_takes_back_its_note() {
         // The resumed run finished before the lead read the note: the kill
         // stops nothing and its report says the agent is done, so the note
-        // that it runs again must not follow it (docs/agent-tools.md).
+        // that it runs again must not follow it (docs/agents/agent-tools.md).
         let (registry, id, background, seq) = resumed_by_user();
         registry.finish(
             &id,
@@ -903,7 +903,7 @@ mod tests {
         // The run the report covers came last; the one before it ended
         // unread, and its notice — taken off the board — follows the report,
         // marked as the earlier answer, where it used to be thrown away
-        // (docs/agent-tools.md *One notice per answer*).
+        // (docs/agents/agent-tools.md *One notice per answer*).
         let (registry, _rx) = registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "Create the frontend", "p");
         let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the FILE TOOL HEADER'S PATH IS A file:// LINK (docs/links.md
+# the FILE TOOL HEADER'S PATH IS A file:// LINK (docs/ui/links.md
 # *The file tool header*). `● Read(about.py)` reads exactly as before, but the
 # path's cells ride an OSC 8 hyperlink whose target is the file's ABSOLUTE
 # `file://` URI — the whole file, wherever the row showed it from — so a click

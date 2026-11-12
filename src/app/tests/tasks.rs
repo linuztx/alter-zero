@@ -1,4 +1,4 @@
-//! The task tools' app-side bookkeeping (`docs/task-tools.md`): the hidden
+//! The task tools' app-side bookkeeping (`docs/tools/task-tools.md`): the hidden
 //! [`HistoryItem::TaskCall`] record, the live checklist snapshot, and the
 //! three history rewinds that restore it.
 
@@ -74,7 +74,7 @@ fn record_task_call_charges_the_result_to_the_tally_like_a_tool() {
 fn a_turn_with_a_task_call_interrupts_kept_not_undone() {
     // The undo branch requires the just-submitted user message to still be
     // the history tail; a task record after it means the turn produced
-    // output, so Esc keeps it (docs/interrupt.md).
+    // output, so Esc keeps it (docs/input/interrupt.md).
     let mut app = App::new();
     app.record_user_message("plan it");
     app.begin_stream();
@@ -91,7 +91,7 @@ fn a_turn_with_a_task_call_interrupts_kept_not_undone() {
 fn a_resumed_or_rewound_finished_plan_stays_retired() {
     // A rewind lands between turns, so a snapshot that was already finished
     // there is finished now — restoring its ticks would put back exactly
-    // what the turn-boundary retirement removed (docs/task-tools.md).
+    // what the turn-boundary retirement removed (docs/tools/task-tools.md).
     let mut app = App::new();
     let mut done = store_of(&["a", "b"]);
     for id in 1..=2 {

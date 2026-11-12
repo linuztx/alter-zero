@@ -1,5 +1,5 @@
 //! The inline `/model` picker, and the pieces every picker's page is built
-//! from (`docs/view-flow.md` *A picker's page*). See `docs/llm.md`.
+//! from (`docs/ui/view-flow.md` *A picker's page*). See `docs/providers/llm.md`.
 
 use super::layout::model_has_detail;
 use super::theme::*;
@@ -25,7 +25,7 @@ fn inset_placeholder_row(indent: &str, text: &str, color: Color, width: u16) -> 
     ])
 }
 
-/// A picker's header (`docs/view-flow.md` *A picker's page*): its `title` in
+/// A picker's header (`docs/ui/view-flow.md` *A picker's page*): its `title` in
 /// the pages' title dress over a dim `subtitle` saying what a choice changes,
 /// wrapped rather than cut — the page's height is its line count, so a
 /// narrow terminal's continuation row costs only itself.
@@ -38,7 +38,7 @@ pub(super) fn picker_header(title: &str, subtitle: &str, width: u16) -> Vec<Line
 /// A search-line picker's page: the top rule, the `header` and the gap
 /// under it (when there is one), the `search` line, the `body` — everything
 /// after the search line, its tail included — and the bottom rule. No blank
-/// row hugs either rule (`docs/view-flow.md` *The frame hugs its content*).
+/// row hugs either rule (`docs/ui/view-flow.md` *The frame hugs its content*).
 pub(super) fn picker_page(
     header: &[Line<'static>],
     search: &Line<'static>,
@@ -61,7 +61,7 @@ pub(super) fn picker_page(
 /// its gap, the `search` line, a [`COMPACT_LIST_ROWS`] window of the list
 /// between the reserved overflow slots ([`model_compact_list`]), the `tail`,
 /// the rule. The description, the preview and the counter have yielded;
-/// codex's header outlasts them (`docs/view-flow.md`). A page with no tail
+/// codex's header outlasts them (`docs/ui/view-flow.md`). A page with no tail
 /// leaves off a blank `↓` slot, which would hug its bottom rule.
 pub(super) fn compact_page_with_header(
     header: &[Line<'static>],
@@ -187,7 +187,7 @@ pub(super) fn list_window(
 /// A compact page's list: the reserved `↑` slot, the window's rows, the
 /// reserved `↓` slot ([`model_overflow_slot`] both) — what a picker lays
 /// between its search line and its hint on a terminal too short for its whole
-/// page (`docs/view-flow.md`).
+/// page (`docs/ui/view-flow.md`).
 pub(super) fn model_compact_list(
     above: usize,
     window: Vec<Line<'static>>,
@@ -269,7 +269,7 @@ pub(super) fn caption_lines(title: &str, subtitle: &str, width: usize) -> [Line<
 /// `/spinner`. The list sits on the left, and the preview sits **beside**
 /// it once the terminal has room for the list column, the gap and the
 /// preview's narrowest column. Otherwise the preview is **stacked** under
-/// the list (`docs/theme.md`).
+/// the list (`docs/ui/theme.md`).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreviewLayout {
     /// The list column's width: the widest row the catalog can paint. A
@@ -403,7 +403,7 @@ const COMPACT: Rung = Rung {
 /// codex's order (`selection_picker_layout.rs`: *"optional gaps and
 /// previews yield first; headers, tabs, search, and at least one result
 /// remain visible"*), adapted to this frame, which pads neither rule
-/// (`docs/view-flow.md` *The frame hugs its content*):
+/// (`docs/ui/view-flow.md` *The frame hugs its content*):
 ///
 /// 1. the compact page: rule, search, `↑`, three rows, `↓`, tail, rule;
 /// 2. the overflow slots, as a pair: codex reserves its arrow rows only
@@ -545,7 +545,7 @@ pub(super) fn placeholder_window(
 /// The first of `pages` — tried in order, most complete first, each built
 /// only once the ones before it did not fit — whose rows fit `height`; the
 /// last one when none does, which then bottom-anchors like any framed page.
-/// The rule every height-aware page shares (`docs/view-flow.md`): on a
+/// The rule every height-aware page shares (`docs/ui/view-flow.md`): on a
 /// terminal too short for the whole page, what is optional yields before the
 /// choices do.
 ///
@@ -571,7 +571,7 @@ pub(super) fn first_page_that_fits(
 /// `text` word-wrapped to two-space-inset rows in `color` — the multi-row
 /// sibling of [`model_placeholder_row`] for informational text (an error's
 /// diagnostic, an actionable hint, a path, a description): the picker pages
-/// derive their height from the built line count (`docs/view-flow.md`), so
+/// derive their height from the built line count (`docs/ui/view-flow.md`), so
 /// continuation rows are free and nothing the user must read is ever cut.
 pub(super) fn model_wrapped_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
     inset_wrapped_rows(MODEL_INDENT, text, color, width)
@@ -593,7 +593,7 @@ fn inset_wrapped_rows(indent: &str, text: &str, color: Color, width: u16) -> Vec
 }
 
 /// [`model_wrapped_rows`] with every bare URL in `text` made **clickable**
-/// (`docs/links.md`).
+/// (`docs/ui/links.md`).
 ///
 /// The link is stamped on the *unwrapped* text and the wrap carries it, which
 /// is the whole point of the carrier: a URL wider than the row hard-breaks
@@ -604,7 +604,7 @@ fn inset_wrapped_rows(indent: &str, text: &str, color: Color, width: u16) -> Vec
 /// The caller's colour is **kept**, with only an underline added, rather than
 /// taking the chat link dress: these pages colour their URL on purpose (the
 /// device page dims it so the code box stays what the eye lands on —
-/// `docs/copilot.md`), and the underline alone already says "clickable".
+/// `docs/providers/copilot.md`), and the underline alone already says "clickable".
 pub(super) fn model_linked_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
     let base = Style::new().fg(color);
@@ -615,7 +615,7 @@ pub(super) fn model_linked_rows(text: &str, color: Color, width: u16) -> Vec<Lin
 }
 
 /// [`model_linked_rows`] for a text that **is** one URL — the `/mcp` sign-in
-/// page's authorize URL (`docs/mcp.md`): the same dress, the caller's colour
+/// page's authorize URL (`docs/tools/mcp.md`): the same dress, the caller's colour
 /// underlined, but the target is the whole text **verbatim**
 /// ([`whole_url_run`]). The page shows one thing, the URL `c` copies and the
 /// browser was handed, so a click must open exactly that — where prose
@@ -789,7 +789,7 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 /// The trailing status shown beside the `(n/total)` counter during a
 /// multi-provider load: `loading more…` (dim) while fetches are still out, then
 /// a red `{provider} unavailable` / `N providers unavailable` note if any
-/// failed. `None` once every provider succeeded. See `docs/llm.md`.
+/// failed. `None` once every provider succeeded. See `docs/providers/llm.md`.
 fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
     if picker.pending > 0 {
         Some((MODEL_LOADING_MORE.to_string(), model_meta_color()))
@@ -905,13 +905,13 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 }
 
 /// The framed page as lines — the shape of the user's mock and of every
-/// picker's page (`docs/view-flow.md` *A picker's page*): a top rule, the
+/// picker's page (`docs/ui/view-flow.md` *A picker's page*): a top rule, the
 /// `Select model` title over its dim subtitle, a gap, the `❯` search line, a
 /// gap, the scrolling model list (each row `→ id [provider] ✓`, the `→`
 /// under the `❯`), and — when a real model is highlighted — the `(n/total)`
 /// counter and the `Model Name:` line hanging under the ids, straight over
 /// the bottom rule (a placeholder page has neither, so the placeholder
-/// closes it). No blank row hugs either rule (`docs/view-flow.md` *The frame
+/// closes it). No blank row hugs either rule (`docs/ui/view-flow.md` *The frame
 /// hugs its content*).
 ///
 /// The first of three pages that fits `height` rows
@@ -922,7 +922,7 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
 /// on a terminal shorter still the header-less compact page and its rungs
 /// ([`compact_page`]), the slots, the rules and the rows going one by one —
 /// so the search line and the highlighted model stay on screen
-/// (`docs/view-flow.md` *A page that sheds rows before it flows*). The
+/// (`docs/ui/view-flow.md` *A page that sheds rows before it flows*). The
 /// picker has no hint row, so the compact pages keep the highlighted
 /// model's `Model Name:` line where its siblings keep theirs, which gives it
 /// their shape. A placeholder page (loading, an error, no match) has
@@ -986,8 +986,8 @@ pub(super) fn model_view_lines(
 /// Render the **inline** `/model` picker into the live region, in place of the
 /// composer. The page is built for the area's height — the whole list, the
 /// compact page, or that page's rungs down to the search line — so it always
-/// fits and nothing flows (`docs/view-flow.md`). Pure — `render_live` paints
-/// this. See `docs/llm.md`.
+/// fits and nothing flows (`docs/ui/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/providers/llm.md`.
 pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
     super::view_flow::render_framed_tail(
         area,

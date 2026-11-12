@@ -1,7 +1,7 @@
 //! The loopback callback every browser sign-in comes back through — an MCP
-//! server's OAuth flow (`docs/mcp.md`), ChatGPT's (`docs/chatgpt.md`), the
-//! Anthropic Console's (`docs/claude.md`) and Google Antigravity's
-//! (`docs/antigravity.md`). One implementation, because the first three
+//! server's OAuth flow (`docs/tools/mcp.md`), ChatGPT's (`docs/providers/chatgpt.md`), the
+//! Anthropic Console's (`docs/providers/claude.md`) and Google Antigravity's
+//! (`docs/providers/antigravity.md`). One implementation, because the first three
 //! used to share one hand-rolled loop and its weaknesses: a
 //! browser preconnect that never sends a byte froze the wait (and Esc with
 //! it), a macOS socket inheriting the listener's non-blocking mode read a
@@ -11,7 +11,7 @@
 //! come.
 //!
 //! The pure halves — the response parse, its checks, the pages the browser
-//! lands on (`page`, `docs/callback-page.md`) — are tested as such; the
+//! lands on (`page`, `docs/providers/callback-page.md`) — are tested as such; the
 //! server is exercised against real sockets.
 
 use std::io::{Read, Write};
@@ -195,7 +195,7 @@ pub(crate) struct Pages {
 }
 
 /// The page the browser lands on — whether the sign-in got what it needed,
-/// as a whole HTTP response (`docs/callback-page.md`).
+/// as a whole HTTP response (`docs/providers/callback-page.md`).
 pub(crate) fn callback_page(verdict: &Result<String, Rejected>, pages: &Pages) -> String {
     let app = crate::APP_NAME;
     match verdict {

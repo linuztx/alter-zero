@@ -3,9 +3,9 @@
 //! Anthropic's Console browser sign-in, Cline's device code), an **API key**
 //! (pick a provider, paste its key), or a **local model** (pick a server —
 //! Ollama, LM Studio — enter its address, and the connection is tested before
-//! anything is saved). See `docs/llm.md`, `docs/copilot.md`,
-//! `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md` and
-//! `docs/local-models.md`.
+//! anything is saved). See `docs/providers/llm.md`, `docs/providers/copilot.md`,
+//! `docs/providers/chatgpt.md`, `docs/providers/claude.md`, `docs/providers/cline.md` and
+//! `docs/providers/local-models.md`.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use crate::llm::local::Verdict;
 const LOGIN_PAGE: usize = TOOL_VIEW_PAGE;
 
 /// Which step of the inline `/login` onboarding flow is showing
-/// (`docs/llm.md`).
+/// (`docs/providers/llm.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyStep {
     /// The root: which way in — an account sign-in, an API key, or a local
@@ -28,7 +28,7 @@ pub enum KeyStep {
     Subscription,
     /// Choosing **how** the chosen subscription signs in, when it offers more
     /// than one way — ChatGPT Codex's browser or device code
-    /// (`docs/chatgpt.md`). A titled two-row question, not a searchable
+    /// (`docs/providers/chatgpt.md`). A titled two-row question, not a searchable
     /// list; a subscription offering one way skips it.
     SigninMethod,
     /// The chosen subscription's device-code page (its code, and the wait).
@@ -42,7 +42,7 @@ pub enum KeyStep {
     Local,
     /// The chosen server's page: its address, tested before it is saved —
     /// and its API token, when the server turns out to want one
-    /// ([`ServerPage`], `docs/local-models.md`).
+    /// ([`ServerPage`], `docs/providers/local-models.md`).
     Server,
 }
 
@@ -54,7 +54,7 @@ pub enum LoginMethod {
     /// Paste a provider's API key.
     ApiKey,
     /// Connect a model server running on this machine or the network
-    /// (Ollama, LM Studio) — no key, an address (`docs/local-models.md`).
+    /// (Ollama, LM Studio) — no key, an address (`docs/providers/local-models.md`).
     Local,
 }
 
@@ -77,7 +77,7 @@ impl LoginMethod {
 
 /// One selectable provider row in the `/login` API-key flow — plain data
 /// injected by the boundary (the `configured` flag needs boundary key
-/// resolution, like the `/model` list). See `docs/llm.md`.
+/// resolution, like the `/model` list). See `docs/providers/llm.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderChoice {
     /// The provider id (e.g. `openrouter`).
@@ -103,7 +103,7 @@ pub struct ProviderChoice {
 /// key is optional (`auth = "optional_key"`): a server the user runs, which
 /// is configured by its **address** rather than a secret. Plain data
 /// injected by the boundary, which resolves what is in force now. See
-/// `docs/local-models.md`.
+/// `docs/providers/local-models.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LocalChoice {
     /// The provider id (e.g. `lmstudio`).
@@ -158,7 +158,7 @@ pub struct TokenAsk {
 /// The `/login` local server page ([`KeyStep::Server`]): an address field
 /// whose Enter **tests** the server before anything is saved, and — when the
 /// server refuses the test as unauthorized — a masked token field for the
-/// same address. See `docs/local-models.md`.
+/// same address. See `docs/providers/local-models.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServerPage {
     /// The address being typed; empty means the one in force
@@ -186,7 +186,7 @@ impl ServerPage {
 /// What a passed connection test saves, for the boundary to write: the
 /// provider, the `.env` entries in order (the address, then a token typed
 /// for it), and how many models the server offered. See
-/// `docs/local-models.md`.
+/// `docs/providers/local-models.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSave {
     /// The provider id.
@@ -243,8 +243,8 @@ impl ServerSave {
 /// How a subscription's sign-in asks the user to prove who they are. The two
 /// are genuinely different pages, not one page with a blank: a device flow
 /// shows a **code** to type at a short URL, a browser flow shows a long
-/// **link** that comes back on its own. See `docs/copilot.md` and
-/// `docs/chatgpt.md`.
+/// **link** that comes back on its own. See `docs/providers/copilot.md` and
+/// `docs/providers/chatgpt.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SigninKind {
     /// A short code the user types at a short URL (GitHub Copilot).
@@ -286,7 +286,7 @@ const LOGIN_HEADLESS_NOTE: &str = "headless";
 
 /// One selectable subscription row — the same shape as [`ProviderChoice`] but
 /// carrying a *description* instead of an env var, since signing in is a flow
-/// rather than a secret to paste. See `docs/copilot.md`.
+/// rather than a secret to paste. See `docs/providers/copilot.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionChoice {
     /// The provider id the sign-in configures (e.g. `github_copilot`).
@@ -301,7 +301,7 @@ pub struct SubscriptionChoice {
     /// One kind opens its page at once; more than one puts the choice to the
     /// user first ([`KeyStep::SigninMethod`]) — ChatGPT Codex offers its
     /// browser flow and, for a headless machine, a device code
-    /// (`docs/chatgpt.md`).
+    /// (`docs/providers/chatgpt.md`).
     pub kinds: Vec<SigninKind>,
 }
 
@@ -338,7 +338,7 @@ pub enum DeviceStatus {
 /// and feeds this through [`App::set_device_code`] /
 /// [`App::fail_device_login`] / [`App::set_device_remaining`] — the
 /// clock-injection pattern, so the pure core never reads a clock. See
-/// `docs/copilot.md`.
+/// `docs/providers/copilot.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeviceLogin {
     /// The provider id being signed in to (e.g. `github_copilot`).
@@ -389,8 +389,8 @@ impl DeviceLogin {
 /// local model server ([`KeyStep::Local`] → [`KeyStep::Server`]). The chosen
 /// key is persisted to `.env` by the boundary ([`Action::SaveApiKey`]); a
 /// server's address only once its connection test passes
-/// ([`App::finish_server_test`]). See `docs/llm.md`, `docs/copilot.md` and
-/// `docs/local-models.md`.
+/// ([`App::finish_server_test`]). See `docs/providers/llm.md`, `docs/providers/copilot.md` and
+/// `docs/providers/local-models.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KeyOnboarding {
     /// The API-key providers to choose from, injected at open
@@ -430,7 +430,7 @@ pub struct KeyOnboarding {
     pub server: Option<ServerPage>,
     /// Where saved keys land (the `~`-relative `.env` path), injected at open by
     /// the boundary so the provider-step hint names the real file even under an
-    /// `ALTER_ZERO_ENV_FILE` override. See `docs/llm.md`.
+    /// `ALTER_ZERO_ENV_FILE` override. See `docs/providers/llm.md`.
     pub env_path: String,
 }
 
@@ -600,7 +600,7 @@ impl KeyOnboarding {
 
     /// Open the sign-in page for `choice` with `kind`'s flow, and tell the
     /// boundary to run it. The row's name titles the page; the kind decides
-    /// its wording and which flow the worker runs (`docs/chatgpt.md`).
+    /// its wording and which flow the worker runs (`docs/providers/chatgpt.md`).
     fn open_signin_page(&mut self, choice: &SubscriptionChoice, kind: SigninKind) -> Action {
         self.go(KeyStep::Device);
         self.device = Some(DeviceLogin {
@@ -631,7 +631,7 @@ impl App {
     /// `~`-relative `.env` path the provider-step hint names. Starts on the
     /// method step; abandons any band / palette / file picker / model picker
     /// it shares the composer with, staying in [`View::Conversation`]. See
-    /// `docs/llm.md`.
+    /// `docs/providers/llm.md`.
     pub fn open_key_onboarding(
         &mut self,
         providers: Vec<ProviderChoice>,
@@ -665,7 +665,7 @@ impl App {
     }
 
     /// The boundary's answer to a connection test ([`Action::TestLocalServer`],
-    /// `docs/local-models.md`). Applied only when it answers the test still in
+    /// `docs/providers/local-models.md`). Applied only when it answers the test still in
     /// flight — one the user stopped, or moved on from, is dropped:
     ///
     /// - **passed** closes the flow and hands back what to save — the address
@@ -749,7 +749,7 @@ impl App {
     }
 
     /// The boundary got a code back from the provider: show it, and start
-    /// waiting. See `docs/copilot.md`.
+    /// waiting. See `docs/providers/copilot.md`.
     pub fn set_device_code(&mut self, verification_uri: &str, user_code: &str) {
         if let Some(device) = self.device_mut() {
             device.verification_uri = verification_uri.to_string();
@@ -1062,7 +1062,7 @@ impl App {
     }
 
     /// Keys on a local server's page ([`KeyStep::Server`],
-    /// `docs/local-models.md`):
+    /// `docs/providers/local-models.md`):
     ///
     /// - **Testing**: the page waits — `Esc` stops the test
     ///   ([`Action::CancelServerTest`]) and keeps the page; everything else

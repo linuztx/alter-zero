@@ -4,11 +4,11 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# a VERY LONG `!` output shows WHOLE inline (docs/shell-command.md). The `!`
+# a VERY LONG `!` output shows WHOLE inline (docs/input/shell-command.md). The `!`
 # shell cell never folds: the user ran the command to read its output, so a
 # 750-char line — a minified blob, a `curl` JSON body — paints every row it
 # needs and nothing waits behind a `… +N lines (ctrl+o to expand)` hint (the
-# fold is the model's `bash` cell's alone — docs/long-lines.md, unit-tested,
+# fold is the model's `bash` cell's alone — docs/ui/long-lines.md, unit-tested,
 # and on screen in Phase 38's settled `Bash(ping …)` cells). At 80 columns
 # the `  ⎿  ` gutter leaves 75, so 750 chars is exactly 10 rows, all inline;
 # Ctrl+O holds the same ten.

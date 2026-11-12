@@ -1,11 +1,11 @@
-//! Collapsed read/search groups (`docs/tool-groups.md`): Claude Code's
+//! Collapsed read/search groups (`docs/ui/tool-groups.md`): Claude Code's
 //! non-verbose tool view, where a run of reads, searches and listings shows
 //! as one cell — `● Reading 2 files, listing 1 directory…` while it runs,
 //! `Read 2 files, listed 1 directory (ctrl+o to expand)` once it is over —
 //! instead of a cell per call.
 //!
 //! The grouping is a property of the **history**, like the parallel MCP run
-//! (`docs/mcp.md`), so scrollback and every rebuild derive it from the same
+//! (`docs/tools/mcp.md`), so scrollback and every rebuild derive it from the same
 //! place: [`group_run`] finds a group wherever one starts, and the open one
 //! — still collecting calls, so not yet in scrollback — is the history from
 //! [`App::tool_group_range`]'s start on, held by the commit path until
@@ -24,7 +24,7 @@ use crate::read_only::ReadKind;
 /// How long each call's value holds the open group's `⎿` row before the next
 /// call's replaces it — the reference's `MIN_HINT_DISPLAY_MS`. A parallel
 /// batch of reads resolves in milliseconds, so a row that followed the newest
-/// call showed only the last one's value (`docs/tool-groups.md` *The hint
+/// call showed only the last one's value (`docs/ui/tool-groups.md` *The hint
 /// row*).
 pub const GROUP_HINT_HOLD: Duration = Duration::from_millis(700);
 
@@ -38,7 +38,7 @@ pub enum GroupKind {
     /// A directory listing: `ls`, `tree`, `du`.
     List,
     /// A `write` or `edit` of a file in a session's scratchpad — scratch
-    /// work, where the reference folds it (`docs/tool-groups.md` *Scratchpad
+    /// work, where the reference folds it (`docs/ui/tool-groups.md` *Scratchpad
     /// edits*).
     ScratchpadEdit,
 }
@@ -59,7 +59,7 @@ impl From<ReadKind> for GroupKind {
 /// session's scratchpad ([`PathDisplay::in_scratchpad`]); a `!` command the
 /// user ran; a command started in the background, whose cell is the process
 /// it left running; and a read of an **image**, whose cell is the picture
-/// drawn under it (`docs/images.md`) — folded into a group's line it would
+/// drawn under it (`docs/ui/images.md`) — folded into a group's line it would
 /// draw nothing.
 #[must_use]
 pub fn group_kind(tool: &ToolCall, paths: &PathDisplay) -> Option<GroupKind> {
@@ -197,9 +197,9 @@ pub fn is_group_member(tool: &ToolCall, paths: &PathDisplay) -> bool {
 /// Whether `item` lets a group run on through it: a task call and a
 /// cell-less hook note have no cell inline at all, and a thought the model
 /// has while the group is open is part of the run its line stands for rather
-/// than ending it — shown only in the Ctrl+O transcript (`docs/tool-groups.md`
+/// than ending it — shown only in the Ctrl+O transcript (`docs/ui/tool-groups.md`
 /// *Thoughts*). A hook note carrying the hooks' cell is a cell of its own
-/// (`docs/hooks.md` *The hook-run cell*), so the group ends there.
+/// (`docs/tools/hooks.md` *The hook-run cell*), so the group ends there.
 fn passes_through(item: &HistoryItem) -> bool {
     match item {
         HistoryItem::TaskCall(_) | HistoryItem::Reasoning(_) => true,
@@ -373,7 +373,7 @@ pub enum ToolPlacement {
 impl App {
     /// Place the call just resolved — the last record of the history — the
     /// one decision every resolution (`ToolEnd`, a rejection, an answer, a
-    /// background launch) makes before it commits (`docs/tool-groups.md`). A
+    /// background launch) makes before it commits (`docs/ui/tool-groups.md`). A
     /// group member is **held** in the open group, opening one at itself
     /// when none is; anything else closes the open group ahead of itself.
     /// With **Verbose output** on nothing is ever held.
@@ -519,7 +519,7 @@ impl App {
     /// Whether `draft` — a `write` the model is still generating — is part
     /// of the open group rather than a cell of its own: a write into a
     /// session's scratchpad, once its path is out, with **Verbose output**
-    /// off (`docs/tool-groups.md` *Scratchpad edits*).
+    /// off (`docs/ui/tool-groups.md` *Scratchpad edits*).
     #[must_use]
     pub fn is_group_draft(&self, draft: &ToolDraft) -> bool {
         !self.settings.verbose
@@ -539,7 +539,7 @@ impl App {
     /// Whether a write still being generated ends the open group: one whose
     /// path is out and lies outside every scratchpad. Until its path is out
     /// nothing says where it writes, so the group stays open over its cell
-    /// (`docs/tool-groups.md` *Scratchpad edits*).
+    /// (`docs/ui/tool-groups.md` *Scratchpad edits*).
     #[must_use]
     pub fn draft_ends_group(&self) -> bool {
         self.tool_drafts.previews().any(|draft| {

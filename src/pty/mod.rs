@@ -1,5 +1,5 @@
 //! Pseudo-terminal sessions for the model's interactive commands — `bash`
-//! with `tty: true` and the `bash_session` tool (`docs/interactive-shell.md`).
+//! with `tty: true` and the `bash_session` tool (`docs/tools/interactive-shell.md`).
 //!
 //! The pure halves:
 //!

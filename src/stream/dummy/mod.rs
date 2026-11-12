@@ -6,12 +6,12 @@
 //! The split keeps those jobs apart:
 //!
 //! - `scenario` — the registry: which demo a prompt selects. **Adding a demo
-//!   is one entry there plus its turn function** (`docs/dummy-backend.md`).
+//!   is one entry there plus its turn function** (`docs/architecture/dummy-backend.md`).
 //! - `script` — the canned replies and the streaming primitives.
 //! - `turns` — the **pure** scripted turns (`Cue → Vec<StreamEvent>`),
 //!   unit-testable event-by-event.
 //! - `gated` — the turns that *ask*, blocking on the permission gate the way
-//!   a real backend's tool thread does (`docs/permissions.md`).
+//!   a real backend's tool thread does (`docs/state/permissions.md`).
 //!
 //! This module holds only the driver: select the scenario for the prompt, then
 //! either play its script back with the delays that make streaming visible, or
@@ -40,7 +40,7 @@ pub use self::turns::AGENT_DELAY;
 /// The full ordered sequence of events for one dummy turn — the **pure** twin
 /// of [`DummyAi::spawn`], and the entry point every offline test drives.
 ///
-/// The scenario registry picks the turn (`docs/dummy-backend.md`): a "table"
+/// The scenario registry picks the turn (`docs/architecture/dummy-backend.md`): a "table"
 /// prompt streams the markdown-table demo, an "agents" prompt the subagent
 /// group, a "parallel" prompt the vivid three-`Bash` batch, `/compact`'s
 /// request a text-only summary, and anything else the default turn — half the
@@ -75,7 +75,7 @@ pub const STARTUP_DELAY: Duration = Duration::from_secs(3);
 /// Delay between streamed chunks. Small enough to feel responsive, large
 /// enough that the word-by-word reveal is visible. The default of
 /// [`DummyAi::with_chunk_delay`], which the app overrides from
-/// `ALTER_ZERO_CHUNK_DELAY_MS` to mimic a slow model (`docs/slow-stream.md`).
+/// `ALTER_ZERO_CHUNK_DELAY_MS` to mimic a slow model (`docs/ui/slow-stream.md`).
 pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 
 /// How long a dummy tool "runs" — the pause between its `ToolStart` and
@@ -87,7 +87,7 @@ pub const TOOL_DELAY: Duration = Duration::from_millis(450);
 pub const SCREEN_FRAME_DELAY: Duration = Duration::from_millis(250);
 
 /// Delay after `ThinkingStart` and after each `ThinkingChunk`, so the
-/// reasoning trickles — visibly, in the live block (`docs/thinking-stream.md`)
+/// reasoning trickles — visibly, in the live block (`docs/ui/thinking-stream.md`)
 /// — and the token tally ticks while the model "thinks". The phase's total
 /// length is one step per event — `(1 + chunks) × THINK_CHUNK_DELAY` (≈2s for
 /// the canned reasoning's twelve words), long enough that `Thinking for Ns`
@@ -104,22 +104,22 @@ pub struct DummyAi {
     /// Pause after every streamed piece of reply text (and each live tool
     /// output line) — [`CHUNK_DELAY`] by default; the app overrides it from
     /// `ALTER_ZERO_CHUNK_DELAY_MS`, which is how the offline backend mimics
-    /// a model streaming a few tokens a second (`docs/slow-stream.md`).
+    /// a model streaming a few tokens a second (`docs/ui/slow-stream.md`).
     chunk_delay: Duration,
     /// The shared tool-permission gate, when the app attached one — lets the
     /// **offline** dummy drive the whole approval round trip for a prompt
-    /// mentioning "permission" (`docs/permissions.md`, `smoke.sh` Phase 55).
+    /// mentioning "permission" (`docs/state/permissions.md`, `smoke.sh` Phase 55).
     permissions: Option<crate::permission::PermissionGate>,
     /// The shared ask gate, when the app attached one — lets the offline
     /// dummy drive the whole `AskUserQuestion` round trip for a prompt
-    /// mentioning "ask" + "question" (`docs/ask.md`).
+    /// mentioning "ask" + "question" (`docs/tools/ask.md`).
     ask: Option<crate::ask::AskGate>,
     /// The shared subagent registry, when the app attached one — the channel
     /// the "subagent" demo streams a launched agent's own round on, so the
     /// agent **session view** is drivable offline
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     agents: Option<crate::agents::AgentRegistry>,
-    /// The session's mid-turn message queue (`docs/queue.md`), so the whole
+    /// The session's mid-turn message queue (`docs/input/queue.md`), so the whole
     /// round trip is drivable offline: a scripted turn takes what the user
     /// queued once each **tool round resolves** — its batch's last call, the
     /// dummy's honest stand-in for a real round boundary — and announces it with
@@ -130,11 +130,11 @@ pub struct DummyAi {
     /// each note announced with [`StreamEvent::NoticeDelivered`] as
     /// `run_agent` announces it, so a background notice that lands mid-turn
     /// settles in the offline demo exactly as it does live
-    /// (`docs/background.md`).
+    /// (`docs/tools/background.md`).
     background: Option<crate::background::BackgroundRegistry>,
     /// The session's scratchpad, when it has one — where the scratchpad demo
     /// writes, so its calls fold into the collapsed group as they would live
-    /// (`docs/tool-groups.md` *Scratchpad edits*).
+    /// (`docs/ui/tool-groups.md` *Scratchpad edits*).
     scratchpad: Option<std::path::PathBuf>,
 }
 
@@ -173,7 +173,7 @@ impl DummyAi {
     /// A dummy pacing its reply at `chunk_delay` per streamed piece — the app
     /// threads `ALTER_ZERO_CHUNK_DELAY_MS` through here so the demo streams
     /// as slowly as a struggling model, and the smoke suite drives the
-    /// inline pipeline at that pace (`docs/slow-stream.md`).
+    /// inline pipeline at that pace (`docs/ui/slow-stream.md`).
     #[must_use]
     pub fn with_chunk_delay(mut self, chunk_delay: Duration) -> Self {
         self.chunk_delay = chunk_delay;
@@ -181,7 +181,7 @@ impl DummyAi {
     }
 
     /// Tell the dummy the session's scratchpad, where its scratchpad demo
-    /// writes (`docs/tool-groups.md` *Scratchpad edits*).
+    /// writes (`docs/ui/tool-groups.md` *Scratchpad edits*).
     #[must_use]
     pub fn with_scratchpad(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.scratchpad = dir;
@@ -190,7 +190,7 @@ impl DummyAi {
 
     /// Attach the session's permission gate, so a prompt mentioning
     /// "permission" plays the scripted `Write` approval — the offline mirror of
-    /// what a real backend's `write` call does (`docs/permissions.md`).
+    /// what a real backend's `write` call does (`docs/state/permissions.md`).
     #[must_use]
     pub fn with_permissions(mut self, gate: crate::permission::PermissionGate) -> Self {
         self.permissions = Some(gate);
@@ -199,7 +199,7 @@ impl DummyAi {
 
     /// Attach the session's ask gate, so a prompt mentioning "ask" and
     /// "question" plays the scripted `AskUserQuestion` round trip — the
-    /// offline mirror of the real tool (`docs/ask.md`).
+    /// offline mirror of the real tool (`docs/tools/ask.md`).
     #[must_use]
     pub fn with_ask(mut self, gate: crate::ask::AskGate) -> Self {
         self.ask = Some(gate);
@@ -209,7 +209,7 @@ impl DummyAi {
     /// Attach the session's subagent registry, enabling the "subagent" demo:
     /// the launched agent's own round streams on that channel, which is what
     /// makes the agent session view drivable with no network
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     #[must_use]
     pub fn with_agents(mut self, registry: crate::agents::AgentRegistry) -> Self {
         self.agents = Some(registry);
@@ -218,7 +218,7 @@ impl DummyAi {
 
     /// Attach the session's mid-turn message queue, so a scripted turn takes
     /// what the user queued into it once its tool round resolves — the
-    /// offline mirror of a real round boundary (`docs/queue.md`).
+    /// offline mirror of a real round boundary (`docs/input/queue.md`).
     #[must_use]
     pub fn with_steer(mut self, queue: crate::steer::SteerQueue) -> Self {
         self.steer = queue;
@@ -227,7 +227,7 @@ impl DummyAi {
 
     /// Attach the session's background registry, so a scripted turn reads its
     /// notice board once its tool round resolves — the offline mirror of the
-    /// real agent's round-top take (`docs/background.md`).
+    /// real agent's round-top take (`docs/tools/background.md`).
     #[must_use]
     pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
         self.background = Some(registry);
@@ -237,7 +237,7 @@ impl DummyAi {
 
 impl ReplySource for DummyAi {
     /// Pauses for the startup delay, then plays the scenario the prompt selects
-    /// (`docs/dummy-backend.md`).
+    /// (`docs/architecture/dummy-backend.md`).
     ///
     /// A **scripted** one is [`turn_events`]' list, replayed with the delays
     /// that make streaming visible: the reply word-by-word ([`CHUNK_DELAY`]
@@ -246,13 +246,13 @@ impl ReplySource for DummyAi {
     /// pausing [`TOOL_DELAY`] after each `ToolStart` so the running state shows
     /// before it resolves, ending in [`StreamEvent::StreamDone`]. A **gated**
     /// one instead streams as it goes, blocking on the attached permission gate
-    /// for each call's answer (`docs/permissions.md`); it is only ever selected
+    /// for each call's answer (`docs/state/permissions.md`); it is only ever selected
     /// when [`with_permissions`](DummyAi::with_permissions) supplied a gate.
     ///
     /// Either way it stops early — sending nothing further — if `cancel` is
     /// tripped or the receiver has hung up. With `images` attached the reply
     /// opens with an acknowledgement (the dummy has no vision; see
-    /// `docs/image-paste.md`).
+    /// `docs/input/image-paste.md`).
     fn spawn(
         &self,
         prompt: String,
@@ -298,7 +298,7 @@ impl ReplySource for DummyAi {
                     None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
                 },
                 // The ask demo raises the question modal and blocks on the
-                // ask gate the same way (`docs/ask.md`).
+                // ask gate the same way (`docs/tools/ask.md`).
                 Play::Asked(play) => match &ask {
                     Some(gate) => play(&scenario::AskStage {
                         gate,
@@ -308,7 +308,7 @@ impl ReplySource for DummyAi {
                     None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
                 },
                 // The subagent demo streams on the agent channel too, from
-                // the launched agent's own thread (docs/agent-view-streaming.md).
+                // the launched agent's own thread (docs/agents/agent-view-streaming.md).
                 Play::Agent(play) => match &agents {
                     Some(registry) => play(&scenario::AgentStage {
                         agents: registry,
@@ -316,7 +316,7 @@ impl ReplySource for DummyAi {
                         cancel: &cancel,
                         // A subagent's own call asks on the same gate the
                         // main turn's does; `None` when permissions are off
-                        // (docs/permissions.md).
+                        // (docs/state/permissions.md).
                         gate: permissions.as_ref(),
                     }),
                     None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
@@ -331,7 +331,7 @@ impl ReplySource for DummyAi {
         "dummy_model_name".to_string()
     }
 
-    /// A message sent into the demo subagent's session (`docs/queue.md`). The
+    /// A message sent into the demo subagent's session (`docs/input/queue.md`). The
     /// **registry** decides, exactly as it does for a real backend: a running
     /// agent takes it onto its queue for the next round boundary, a settled
     /// one gets a short scripted continuation round. Declined without a
@@ -397,13 +397,13 @@ impl Inputs {
 /// text `chunk_delay` apart. Stops early — sending nothing further — the
 /// moment `cancel` is tripped or the receiver hangs up.
 ///
-/// **A resolved tool round is a round boundary here** (`docs/queue.md`): the
+/// **A resolved tool round is a round boundary here** (`docs/input/queue.md`): the
 /// point a real agent loop builds its next request at is the end of the
 /// round — its announced batch's **last** call resolved — so that is where a
 /// message the user queued mid-turn is taken and announced with
 /// [`StreamEvent::Steered`], and where a background note waiting on the board
 /// is read and announced with [`StreamEvent::NoticeDelivered`]
-/// (`docs/background.md`). A call no batch announced is a round of its own.
+/// (`docs/tools/background.md`). A call no batch announced is a round of its own.
 /// Without this the offline demo would show a queued row that only ever moved
 /// at the end of the turn — the behaviour this whole seam replaced — and
 /// taking them after a batch's *first* call recorded both inside a round the
@@ -459,20 +459,20 @@ fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
         StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
         // A foreground agent group "runs" between its announcement
         // and its resolution so the live tree cell shows; a
-        // background launch resolves at once (docs/agent-tool.md).
+        // background launch resolves at once (docs/agents/agent-tool.md).
         StreamEvent::AgentBatch { background, .. } if !background => Some(AGENT_DELAY),
         // Each streamed output line pauses like a word so the live
-        // cell visibly tails (docs/tool-streaming.md).
+        // cell visibly tails (docs/ui/tool-streaming.md).
         StreamEvent::ToolOutput(_) => Some(chunk_delay),
         // A terminal session's frame holds long enough to be seen before
-        // the next replaces it (docs/interactive-shell.md).
+        // the next replaces it (docs/tools/interactive-shell.md).
         StreamEvent::ToolScreen { .. } => Some(SCREEN_FRAME_DELAY),
         // Each task-tool call pauses like a running tool so the checklist
         // under the status line visibly grows row by row
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         StreamEvent::TaskCall { .. } => Some(TOOL_DELAY),
         // A call's argument pieces trickle like reply text, so a `write`
-        // streams into its cell at a readable pace (docs/write-streaming.md);
+        // streams into its cell at a readable pace (docs/ui/write-streaming.md);
         // the piece that names the call pauses like a thought.
         StreamEvent::ToolCallDelta(piece) if piece.name.is_empty() => Some(chunk_delay),
         StreamEvent::ThinkingStart

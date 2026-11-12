@@ -1,4 +1,4 @@
-// The npm launcher's tests (docs/npm.md): `node --test` from npm/.
+// The npm launcher's tests (docs/ops/npm.md): `node --test` from npm/.
 //
 // The pure half — the platform table, the ELF loader read, the libc read,
 // `locate`'s verdicts — is driven directly; the impure half — exec, the

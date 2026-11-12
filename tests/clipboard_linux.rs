@@ -1,6 +1,6 @@
 //! The Ctrl+V image read on Linux must **stream** the clipboard's `image/png`
 //! bytes into the paste folder — never decode them to RGBA and re-encode
-//! (`docs/image-paste.md`). That round trip cost tens of megabytes per paste
+//! (`docs/input/image-paste.md`). That round trip cost tens of megabytes per paste
 //! to produce the bytes the clipboard owner had already handed over.
 //!
 //! Needs an X server, so it is ignored by default; the offline smoke suite

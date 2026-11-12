@@ -1,5 +1,5 @@
 //! Recognising the `bash` commands that only **read** — two questions with two
-//! answers, kept apart on purpose (`docs/tool-groups.md`):
+//! answers, kept apart on purpose (`docs/ui/tool-groups.md`):
 //!
 //! - [`read_kind`] — *what* a command reads: a search, a file read or a
 //!   directory listing. What the collapsed tool cell counts ("Searched for 1
@@ -10,7 +10,7 @@
 //!   line must never summarise a write as a read.
 //! - [`is_read_only`] — whether a command **provably** only reads, so auto
 //!   mode may run it without consulting the classifier
-//!   (`docs/permissions.md`). Strict: every shell construct the words cannot
+//!   (`docs/state/permissions.md`). Strict: every shell construct the words cannot
 //!   vouch for refuses it (`lex::Hazards`), and every program must be on an
 //!   allowlist with only the flags its table names (`flags`, `git`) —
 //!   Claude Code's `checkReadOnlyConstraints`, ported. A miss costs a
@@ -210,7 +210,7 @@ const ANY_ARGS: &[&str] = &[
 /// allowlisted program with flags its table names, and no shell construct
 /// the words cannot vouch for (a redirect to a file, a variable, a glob, a
 /// substitution, a background job, a comment, a line break). The fast path
-/// auto mode takes before its classifier (`docs/permissions.md`).
+/// auto mode takes before its classifier (`docs/state/permissions.md`).
 #[must_use]
 pub fn is_read_only(command: &str) -> bool {
     let Some(parsed) = lex::parse(command) else {

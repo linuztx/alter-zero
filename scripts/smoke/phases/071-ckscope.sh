@@ -7,7 +7,7 @@ smoke_begin
 CK_SESS="$(mktemp -d "$SMOKE_TMP/cksess.XXXXXX")"
 
 # checkpoints refuse the directories that are not projects, and
-# say so (docs/checkpoint.md). Phase 49 covers the home dir; these are the
+# say so (docs/state/checkpoint.md). Phase 49 covers the home dir; these are the
 # three that made alter-zero "take seconds to boot": a SHARED scratch parent
 # (`/tmp` — every program's junk, measured 9.7 s to first frame on a 235 MB
 # tree), alter-zero's OWN state dir (where the store lives *inside* the work
@@ -71,14 +71,14 @@ expect_lacks "$ck71_pane" -F "Snapshotting" "a refused tree announced a snapshot
 
 # (d) the control: the same directory under the default budget checkpoints —
 # and, cold, its session-start snapshot ANNOUNCES itself above the banner
-# (`Snapshotting 1 file (12 B) for checkpoints…`, docs/checkpoint.md
+# (`Snapshotting 1 file (12 B) for checkpoints…`, docs/state/checkpoint.md
 # "Saying so").
 ck71_launch "in-budget project (control)" "$WORK71" "$CKAPP71"
 if ! git --git-dir="$ck71_dir" rev-parse HEAD >/dev/null 2>&1; then
 	fail "an ordinary project did not snapshot (the guards must be scoped, not a blanket disable)"
 fi
 expect_lacks "$ck71_pane" -F "Checkpoints off" "an ordinary project raised a refusal toast"
-expect_has "$ck71_pane" -F "Snapshotting 1 file (" "the cold session-start snapshot never announced itself (docs/checkpoint.md 'Saying so')"
+expect_has "$ck71_pane" -F "Snapshotting 1 file (" "the cold session-start snapshot never announced itself (docs/state/checkpoint.md 'Saying so')"
 
 # (e) a checkpoints root pointed INSIDE the project. This is the mechanism
 # behind the 2 GB `.alter-zero`: without the anchored self-exclude every

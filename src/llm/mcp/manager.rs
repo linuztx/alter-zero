@@ -1,4 +1,4 @@
-//! The session-owned MCP registry (`docs/mcp.md`): every declared server's
+//! The session-owned MCP registry (`docs/tools/mcp.md`): every declared server's
 //! live state behind one `Arc<Mutex<…>>` handle (the `BackgroundRegistry`
 //! shape), connected **concurrently on worker threads** at startup, every
 //! state change reported on the loop's MCP event channel so the `/mcp`
@@ -48,7 +48,7 @@ pub enum McpEvent {
 }
 
 /// Why the session is holding a project server back
-/// (`docs/config-review.md`).
+/// (`docs/state/config-review.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpHold {
     /// New or changed: waiting for the startup review's answer
@@ -68,7 +68,7 @@ pub struct McpSources {
     pub errors: Vec<String>,
     /// The per-project disabled set (from the user file).
     pub disabled: std::collections::BTreeSet<String>,
-    /// The project servers the review is holding (`docs/config-review.md`):
+    /// The project servers the review is holding (`docs/state/config-review.md`):
     /// never launched until enabled ([`McpManager::set_approved`]).
     pub held: BTreeMap<String, McpHold>,
     /// The absolute cwd — the disabled sets' project key.
@@ -82,7 +82,7 @@ pub struct McpSources {
     pub cwd: Option<PathBuf>,
     /// This binary, for the launch tier that re-execs it to detach a stdio
     /// server from the terminal where no `setsid` binary exists — resolved at
-    /// the boundary, never in a test binary (`docs/tty-detach.md`).
+    /// the boundary, never in a test binary (`docs/tools/tty-detach.md`).
     pub detach_helper: Option<PathBuf>,
     pub startup_timeout: Duration,
     pub tool_timeout: Duration,
@@ -194,7 +194,7 @@ fn sleep_unless_cancelled(pause: Duration, cancel: &CancelToken) -> bool {
 }
 
 /// Run blocking work on a worker thread while polling `cancel` on the 20 ms
-/// cadence — the transport's own contract (`docs/mcp.md`), which anything
+/// cadence — the transport's own contract (`docs/tools/mcp.md`), which anything
 /// that blocks a turn's thread must obey. `None` means the turn was
 /// cancelled (or the worker died); the thread is abandoned rather than
 /// joined, exactly as a cancelled transport wait abandons its POST.
@@ -250,7 +250,7 @@ struct ServerState {
     /// The last 401's `WWW-Authenticate` challenge. Discovery runs blind
     /// without it: the challenge names the `resource_metadata` URL a server
     /// publishes off the well-known path, and the `scope` the resource
-    /// actually wants (`docs/mcp.md`).
+    /// actually wants (`docs/tools/mcp.md`).
     challenge: Option<String>,
     /// Bumped on disable/reconnect so a stale connect thread's result is
     /// dropped instead of resurrecting an old state.
@@ -315,7 +315,7 @@ impl ServerState {
 struct Inner {
     servers: Vec<ServerState>,
     /// Whether MCP runs at all this session — the `/settings` **MCP** row
-    /// (`docs/mcp.md`). Off, nothing connects whoever asks, and every
+    /// (`docs/tools/mcp.md`). Off, nothing connects whoever asks, and every
     /// server the user hasn't switched off reads [`McpServerStatus::Off`].
     active: bool,
     errors: Vec<String>,
@@ -481,7 +481,7 @@ impl McpManager {
     }
 
     /// Turn MCP on or off for the whole session — the `/settings` **MCP**
-    /// row (`docs/mcp.md`).
+    /// row (`docs/tools/mcp.md`).
     ///
     /// Off stops every server — its connection dropped, a stdio child
     /// stopped with it, a connect still in flight superseded — cancels a
@@ -662,7 +662,7 @@ impl McpManager {
             // every call. A server whose entry names its OAuth client, or an
             // OAuth resource whose authorization server can't register this
             // app, waits for a sign-in instead of offering the model tools
-            // that only fail (`docs/mcp.md`).
+            // that only fail (`docs/tools/mcp.md`).
             if result.is_ok()
                 && anonymous
                 && (names_client || probe.is_some_and(|probe| probe.join().unwrap_or(false)))
@@ -846,7 +846,7 @@ impl McpManager {
         }
     }
 
-    /// The review's seam (`docs/config-review.md`): enable or disable one
+    /// The review's seam (`docs/state/config-review.md`): enable or disable one
     /// project server. Enabling releases the hold and hands the server back
     /// to its ordinary lifecycle — it connects, unless the user's own
     /// per-directory disable still holds it — while a server already running
@@ -907,7 +907,7 @@ impl McpManager {
 
     /// Is `name` in the user file's per-directory disabled set — the `/mcp`
     /// toggle a project server could be turned off with before the review
-    /// existed (`docs/config-review.md`)?
+    /// existed (`docs/state/config-review.md`)?
     #[must_use]
     pub fn is_user_disabled(&self, name: &str) -> bool {
         self.lock().disabled.contains(name)
@@ -1181,7 +1181,7 @@ impl McpManager {
     }
 
     /// Each server's own instructions the model is given
-    /// (`mcp::instructions_section`, `docs/mcp.md`): a connected server with
+    /// (`mcp::instructions_section`, `docs/tools/mcp.md`): a connected server with
     /// at least one offered tool that `allowed` admits by wire name — every
     /// one for the lead, a subagent's own allowlist for its briefing — and
     /// instructions to give, in name order so the reminder holds still
@@ -1203,7 +1203,7 @@ impl McpManager {
     }
 
     /// The server's own one-line description of the tool `wire` names — the
-    /// dim row the permission prompt shows under the call (`docs/mcp.md`).
+    /// dim row the permission prompt shows under the call (`docs/tools/mcp.md`).
     /// `None` for a tool no connected server offers.
     #[must_use]
     pub fn tool_description(&self, wire: &str) -> Option<String> {
@@ -1253,7 +1253,7 @@ impl McpManager {
     }
 
     /// Execute one `mcp__server__tool` call — the execute-closure arm
-    /// (`docs/mcp.md`). Every failure is a recoverable red outcome; only a
+    /// (`docs/tools/mcp.md`). Every failure is a recoverable red outcome; only a
     /// 401 additionally flips the server to needs-auth.
     #[must_use]
     pub fn call_tool(&self, call: &ToolCallRequest, cancel: &CancelToken) -> ToolOutcome {
@@ -1341,7 +1341,7 @@ impl McpManager {
         // Proactive: a grant inside its expiry skew refreshes *before* the
         // call, so the token never goes over the wire dead — the 401 arm
         // below stays as the backstop for revocation, clock skew, and grants
-        // with no known expiry (`docs/mcp.md`). Off-thread with the turn's
+        // with no known expiry (`docs/tools/mcp.md`). Off-thread with the turn's
         // cancel polled, because a wedged token endpoint must not eat Esc.
         let stale_refresh = match &server_url {
             Some(url) => {
@@ -1769,7 +1769,7 @@ done"#
 
     /// A server that says its tools changed is listed again, and the model
     /// is offered what it lists now — unasked from a legacy server, on the
-    /// `subscriptions/listen` it was sent by a modern one (`docs/mcp.md`).
+    /// `subscriptions/listen` it was sent by a modern one (`docs/tools/mcp.md`).
     #[test]
     fn a_server_announcing_new_tools_is_listed_again() {
         for modern in [false, true] {
@@ -2024,7 +2024,7 @@ done"#
     /// call. An anonymous connect to an OAuth resource whose authorization
     /// server can't register this app is held as needing a sign-in, its
     /// tools never offered to a model that could only watch them fail
-    /// (`docs/mcp.md`).
+    /// (`docs/tools/mcp.md`).
     #[test]
     fn an_oauth_resource_this_app_cant_register_with_waits_for_sign_in() {
         let url = spawn_oauth_resource_http(false);
@@ -2085,7 +2085,7 @@ done"#
 
     /// The instructions the reminder carries: only a connected server with
     /// a tool it offers, in name order, and — for a subagent — only a server
-    /// whose tools the agent may call (`docs/mcp.md`).
+    /// whose tools the agent may call (`docs/tools/mcp.md`).
     #[test]
     fn instructions_come_from_servers_whose_tools_are_offered() {
         let (manager, _rx) = manager_with(vec![
@@ -3200,7 +3200,7 @@ done
     }
 
     /// Turning MCP off for the session (`/settings` → **MCP**,
-    /// `docs/mcp.md`) stops every server — its stdin closed, not merely
+    /// `docs/tools/mcp.md`) stops every server — its stdin closed, not merely
     /// hidden — and offers the model nothing; turning it back on connects
     /// it again.
     #[test]
@@ -3739,7 +3739,7 @@ done
 
     #[test]
     fn esc_reaps_a_call_whose_token_refresh_is_wedged() {
-        // The transport contract (`docs/mcp.md`): every blocking wait polls
+        // The transport contract (`docs/tools/mcp.md`): every blocking wait polls
         // the turn's CancelToken on the 20 ms cadence, or Esc silently stops
         // working for as long as the peer takes. A refresh is a blocking
         // HTTP call on the tool thread, so it has to obey the same rule —

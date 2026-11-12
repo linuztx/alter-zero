@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measure what a conversation that carries a pasted picture costs the running
-# TUI per turn (docs/memory.md, "Every turn re-sent the picture").
+# TUI per turn (docs/architecture/memory.md, "Every turn re-sent the picture").
 #
 # `paste_mem.sh` measures the paste itself; this is its sibling for the turns
 # after it. It drives the REAL binary in tmux under a virtual X server, with

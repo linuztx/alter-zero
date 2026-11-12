@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 # Default features off: `all-widgets` is only the calendar widget, which
 # drags the whole `time` family into every build, and `macros` is
-# `ratatui-macros`, which nothing here uses (docs/build-time.md). What stays
+# `ratatui-macros`, which nothing here uses (docs/ops/build-time.md). What stays
 # is what the code reaches — `crossterm` (the backend and the re-export
 # below), `underline-color` (the `Style::underline_color` channel `links` and
 # `images` ride as their carrier), `layout-cache` (a default that costs
@@ -31,7 +31,7 @@ unicode-segmentation = "1"
 # Async runtime for the codex-style event loop (current-thread, minimal feature
 # set — no tokio I/O; crossterm's EventStream owns stdin via its own reactor).
 # `signal`: a headless run (`-p`) catches SIGINT/SIGTERM to shut its shells,
-# agents and MCP servers down rather than orphan them (docs/headless.md).
+# agents and MCP servers down rather than orphan them (docs/cli/headless.md).
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "signal"] }
 # `StreamExt::next` for crossterm's async `EventStream`.
 tokio-stream = "0.1"
@@ -43,9 +43,9 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 # Local wall-clock timestamps for the Ctrl+O transcript. Used ONLY in main.rs —
 # the I/O boundary — so the clock impurity never reaches the pure library; the
 # `clock` feature pulls in local-timezone support, default features off to stay
-# lean. See docs/timestamps.md.
+# lean. See docs/ui/timestamps.md.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# Ctrl+V image paste (docs/image-paste.md). These three are used ONLY at the I/O
+# Ctrl+V image paste (docs/input/image-paste.md). These three are used ONLY at the I/O
 # boundary (src/clipboard.rs) — the pure attach/placeholder logic stays in `app`.
 # arboard reads the system clipboard (image bytes or a copied file); on Linux it
 # speaks X11 + Wayland (the `wayland-data-control` feature) through pure-Rust
@@ -57,12 +57,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 # Write the decoded image to a kept temporary PNG the backend reads by path.
 tempfile = "3"
 # The PNG decoder `image` itself sits on, used directly for its row-streaming
-# reader (`images::fitted`, docs/memory.md): a picture is shrunk row by row to
+# reader (`images::fitted`, docs/architecture/memory.md): a picture is shrunk row by row to
 # the size it will be shown or sent, so the whole decoded frame — 33 MB for a
 # 4K screenshot — is never materialised. Already compiled into every build via
 # `image`; declaring it costs nothing new.
 png = "0.18"
-# The /resume session files (docs/resume.md): each conversation is recorded as
+# The /resume session files (docs/state/resume.md): each conversation is recorded as
 # a codex-style JSONL "rollout" file and parsed back on resume. serde/serde_json
 # serialize the `session` module's OWN record types (the on-disk format) — the
 # app types stay serde-free, and arbitrary user text (quotes, newlines, unicode)
@@ -72,14 +72,14 @@ serde = { version = "1", features = ["derive"] }
 # `preserve_order` keeps a parsed object's keys in the order they arrived
 # rather than sorting them: a model's tool-call arguments render in the order
 # it wrote them (`repoName` before the long `question` it qualifies), which is
-# what the MCP cell headers and the permission prompt show (docs/mcp.md).
+# what the MCP cell headers and the permission prompt show (docs/tools/mcp.md).
 # `raw_value` lets the `/v1/models` parse borrow each record as an unparsed
 # slice of the body instead of materializing the whole catalog as a `Value`
 # tree at once — the tree cost ~10x the body in small heap blocks the
 # allocator then kept (+6.6 MB RSS per `/model` open on a real 668 KB
-# OpenRouter list, measured by examples/mem_probe.rs; docs/llm.md).
+# OpenRouter list, measured by examples/mem_probe.rs; docs/providers/llm.md).
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-# The real LLM backend (docs/llm.md). Used ONLY at the I/O boundary — the `llm`
+# The real LLM backend (docs/providers/llm.md). Used ONLY at the I/O boundary — the `llm`
 # module's HTTP client (src/llm/openai.rs, src/llm/models.rs) and the backend
 # bridge (src/llm/backend.rs) — so the pure cores (config parse, the reasoning
 # `ThinkingSplitter`, the /v1/models response shape, the `/model` picker state)
@@ -93,12 +93,12 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 # agent proxy's custom CA is loaded at runtime from `SSL_CERT_FILE`. `json`
 # serializes request bodies; default features off to stay lean.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
+# Parse `providers.toml` (docs/providers/llm.md) into the `llm::config` provider table.
 # `parse` only: the file is read, never written, so the default `display`
 # half — a TOML serializer in `toml` and `toml_edit` — stayed out of the
-# build once it was noticed (docs/build-time.md).
+# build once it was noticed (docs/ops/build-time.md).
 toml = { version = "0.8", default-features = false, features = ["parse"] }
-# The MCP OAuth flow's PKCE S256 challenge (docs/mcp.md) — used ONLY at the
+# The MCP OAuth flow's PKCE S256 challenge (docs/tools/mcp.md) — used ONLY at the
 # I/O boundary (src/llm/mcp/oauth.rs). Both crates are already compiled into
 # every build transitively (rustls/ring pull them), so declaring them direct
 # costs nothing new.
@@ -107,7 +107,7 @@ getrandom = "0.3"
 # Parse/derive OAuth discovery URLs and the legacy-SSE endpoint resolution at
 # the MCP boundary. Already in the tree via reqwest — same zero-cost stance.
 url = "2"
-# Hook matchers (docs/hooks.md). Both Claude Code and codex take a non-regex
+# Hook matchers (docs/tools/hooks.md). Both Claude Code and codex take a non-regex
 # fast path for `Bash`-style names and compile anything else as a regex; we
 # match that contract — warn-and-skipping real regexes would silently break
 # any hooks file either reference accepts. It is the crate's one regex engine
@@ -117,7 +117,7 @@ url = "2"
 # only ever make a search faster: a matcher is tried against a tool name a few
 # bytes long, so the PikeVM every build keeps answers in microseconds, and the
 # regex crate promises the same matches with or without them. `unicode` stays,
-# so `\w`, `\d` and `(?i)` mean exactly what they meant (docs/binary-size.md).
+# so `\w`, `\d` and `(?i)` mean exactly what they meant (docs/ops/binary-size.md).
 regex = { version = "1", default-features = false, features = ["std", "unicode"] }
 # The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
 # wrapper that severs a shell child from the TUI's controlling terminal, so a
@@ -131,7 +131,7 @@ regex = { version = "1", default-features = false, features = ["std", "unicode"]
 # typed input is still unread (`pty::spawn::InputQueue`).
 rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"] }
 # The model's interactive shells (`bash` with `tty`, `bash_session` —
-# docs/interactive-shell.md) read a pseudo-terminal's byte stream two ways.
+# docs/tools/interactive-shell.md) read a pseudo-terminal's byte stream two ways.
 # `vt100` is the screen: an emulator at the pty's size (no scrollback, ~150 KB
 # a session) that renders what a full-screen program shows, tracks the
 # cursor-key mode typed arrows depend on, and reports the terminal queries
@@ -144,7 +144,7 @@ rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"
 vt100 = "0.16"
 vte = "0.15"
 # Grammar-accurate syntax highlighting for fenced code blocks (`highlight`
-# module, docs/markdown.md) — a port of codex's stack. `two-face` bundles ~250
+# module, docs/ui/markdown.md) — a port of codex's stack. `two-face` bundles ~250
 # TextMate grammars + 32 themes; `syntect` is the highlighting engine. We use the
 # **oniguruma** regex engine (`*-onig`), exactly as codex does. This is the ONE
 # place the crate takes a C build dependency (`onig_sys` bundles + compiles the
@@ -165,11 +165,11 @@ vte = "0.15"
 # carried `plist-load`/`yaml-load`/`html` — the loaders for grammars and
 # themes kept as *files* on disk, plus its own bundled dumps — which this
 # crate never uses and which cost `plist`, a second `quick-xml`, `yaml-rust`
-# and a share of `time` on every build (docs/build-time.md).
+# and a share of `time` on every build (docs/ops/build-time.md).
 two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 syntect = { version = "5", default-features = false, features = ["parsing", "regex-onig"] }
 
-# Terminal graphics for the inline image cells (docs/images.md): a pasted
+# Terminal graphics for the inline image cells (docs/ui/images.md): a pasted
 # screenshot and the `read` tool's image reads render as real pixels where the
 # terminal can (kitty / iTerm2 / sixel), and as unicode half-blocks everywhere
 # else. `default-features = false` drops two things we must not take: the
@@ -185,7 +185,7 @@ ratatui-image = { version = "11.0.6", default-features = false, features = ["cro
 
 # Linux only: the two clipboard backends arboard itself is built on, reached
 # directly for one operation arboard has no API for — reading the clipboard's
-# `image/png` bytes *as bytes* (`clipboard::linux`, docs/image-paste.md).
+# `image/png` bytes *as bytes* (`clipboard::linux`, docs/input/image-paste.md).
 # arboard decodes them to RGBA and we would re-encode that to PNG, a round
 # trip that cost tens of megabytes per paste to produce the bytes we were
 # handed. Same versions arboard pins, so nothing new is compiled.
@@ -195,7 +195,7 @@ wl-clipboard-rs = "0.9"
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress off CI either (`.github/workflows/ci.yml` runs the same gate;
-# docs/release.md). Mirrors `clippy --all-targets -- -D warnings`.
+# docs/ops/release.md). Mirrors `clippy --all-targets -- -D warnings`.
 [lints.rust]
 unsafe_code = "forbid"
 warnings = "deny"
@@ -218,9 +218,9 @@ opt-level = 1
 opt-level = 3
 
 # `cargo build --release` — and every `cargo run --release --example …` probe
-# `docs/memory.md` runs — used to recompile this ~90k-line crate from scratch
+# `docs/architecture/memory.md` runs — used to recompile this ~90k-line crate from scratch
 # for any edit: 53 s per one-line change measured, 44 s of it the library
-# alone on one core (`docs/build-time.md`). Incremental compilation brings the
+# alone on one core (`docs/ops/build-time.md`). Incremental compilation brings the
 # rebuild after an edit to ~9–10 s (a bare touch, ~5 s) — unchanged codegen
 # units are reused and the front end's query cache covers the rest — for a
 # first build ~10% slower, a larger `target/`, and nothing measurable at
@@ -255,13 +255,13 @@ incremental = false
 # 25.6 MB to 18.6 MB (with the `regex` trim above; the archive 10.1 → 8.6 MB)
 # and the render path got 4–13% *faster* (`perf_probe`), for a cold build of
 # 4 min 26 s instead of 2 min 17 s on 4 cores and ~1.9 GB of peak memory
-# (`docs/binary-size.md`). It is a profile of its own because a fat-LTO link
+# (`docs/ops/binary-size.md`). It is a profile of its own because a fat-LTO link
 # re-optimises the whole program on every build: in `release` it would turn
 # the ~10 s rebuild after an edit back into minutes. The symbol table stays,
 # as in every release profile: it is what turns a `RUST_BACKTRACE=1` report
-# into function names (`docs/release.md`), and after LTO it is ~1.8 MB of the
+# into function names (`docs/ops/release.md`), and after LTO it is ~1.8 MB of the
 # binary and ~0.4 MB of the archive. `panic = "abort"` and `opt-level = "s"`
-# were measured and refused (`docs/binary-size.md`).
+# were measured and refused (`docs/ops/binary-size.md`).
 [profile.dist]
 inherits = "release"
 incremental = false

@@ -1,4 +1,4 @@
-//! The mid-turn message queue (`docs/queue.md`).
+//! The mid-turn message queue (`docs/input/queue.md`).
 //!
 //! Two halves: what Enter hands to the **running** turn (steering — delivered
 //! at its next round boundary) and what Tab / a `!` command leave for a
@@ -470,7 +470,7 @@ fn enter_during_a_shell_turn_still_queues_a_follow_up() {
 fn a_draft_with_attachments_queues_instead_of_steering() {
     // A round-boundary injection is text-only (`ChatMessage::user`), so a
     // draft carrying Ctrl+V images keeps the follow-up path, where the typed
-    // image channel can carry them (docs/image-paste.md).
+    // image channel can carry them (docs/input/image-paste.md).
     let mut app = App::new();
     app.begin_stream();
     app.attach_image(std::path::PathBuf::from("/tmp/shot.png"));
@@ -533,7 +533,7 @@ fn reclaiming_nothing_leaves_the_queue_alone() {
 #[test]
 fn alt_up_over_a_steered_message_asks_the_boundary_for_it_back() {
     // Only the shared queue knows whether the turn has taken it yet, so the
-    // pull-back is the boundary's call (docs/queue.md).
+    // pull-back is the boundary's call (docs/input/queue.md).
     let mut app = App::new();
     app.begin_stream();
     app.input = TextArea::from_text("oops typo");
@@ -594,7 +594,7 @@ fn a_message_handed_to_the_turn_blocks_the_interrupt_undo() {
     // The undo rolls the submission back into the composer, which is only
     // right when nothing is waiting behind it. A steered message is waiting
     // behind it exactly like a queued follow-up, and the interrupt is what
-    // sends it (docs/interrupt.md).
+    // sends it (docs/input/interrupt.md).
     let mut app = App::new();
     app.record_user_message("go");
     app.begin_stream();
@@ -609,7 +609,7 @@ fn a_message_handed_to_the_turn_blocks_the_interrupt_undo() {
 
 #[test]
 fn a_compact_turn_takes_no_queued_messages() {
-    // A summarization turn is not a conversation (docs/compact.md): its
+    // A summarization turn is not a conversation (docs/architecture/compact.md): its
     // request is the fixed handoff prompt, and a user message folded into it
     // would corrupt the summary. The draft queues as a follow-up turn, which
     // is what it was always going to be.

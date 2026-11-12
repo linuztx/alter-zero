@@ -7,9 +7,9 @@
 //! **no text entry** (navigation is the whole grammar), so there is no query
 //! and the hardware cursor parks in the frame's corner. The data it browses —
 //! a [`HooksOverview`] digest of every configured hook, the user's file and
-//! a project's, each with its trust (`docs/config-review.md`) — is injected
+//! a project's, each with its trust (`docs/state/config-review.md`) — is injected
 //! whole at open ([`App::open_hooks_menu`]), the `/resume` picker's boundary
-//! seam; a hook's page toggles its trust. See `docs/hooks-menu.md`.
+//! seam; a hook's page toggles its trust. See `docs/tools/hooks-menu.md`.
 
 use super::*;
 
@@ -51,7 +51,7 @@ pub enum HooksLevel {
         selected: usize,
     },
     /// Level 4: one handler's details. No selection — Enter toggles a
-    /// runnable hook's trust (`docs/config-review.md`), Esc goes back.
+    /// runnable hook's trust (`docs/state/config-review.md`), Esc goes back.
     Detail {
         event: usize,
         matcher: Option<usize>,
@@ -288,7 +288,7 @@ impl App {
             KeyCode::Home => menu.select(0),
             KeyCode::End => menu.select(usize::MAX),
             // On a hook's detail page Enter trusts it or stops trusting it
-            // (`docs/config-review.md`); everywhere else it descends.
+            // (`docs/state/config-review.md`); everywhere else it descends.
             KeyCode::Enter => {
                 if let HooksLevel::Detail {
                     event,

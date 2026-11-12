@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the SESSION TEMP TREE (docs/scratchpad.md). One per-user,
+# the SESSION TEMP TREE (docs/tools/scratchpad.md). One per-user,
 # per-session root holds two named leaves: `scratchpad/` — created before the
 # first frame, so the system prompt can name a directory that exists — and
 # `tasks/`, where a background shell tees its interim output. TMPDIR points the

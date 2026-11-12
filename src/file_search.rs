@@ -6,7 +6,7 @@
 //! engine, async session machinery, `.gitignore` walk, or tool/skill mentions.
 //! The actual filesystem walk + the async request/response plumbing live at the
 //! `main.rs` boundary (it calls [`rank_files`] off-thread); everything here is
-//! pure, so it is unit-tested directly. See `docs/file-search.md`.
+//! pure, so it is unit-tested directly. See `docs/input/file-search.md`.
 
 use std::cmp::Ordering;
 use std::ops::Range;
@@ -26,7 +26,7 @@ pub struct AtToken {
 /// better). Which characters the query matched — what the picker bolds — is
 /// not kept: the picker works that out with [`fuzzy_match`] for the few rows
 /// it draws, since a list holds every match the walk found and almost none
-/// of them is ever on screen. See `docs/file-search.md`.
+/// of them is ever on screen. See `docs/input/file-search.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMatch {
     /// The relative file path (directories carry a trailing `/`).
@@ -37,7 +37,7 @@ pub struct FileMatch {
 
 impl FileMatch {
     /// Is this match a directory? The boundary's walk lists directories with a
-    /// trailing `/` (see `docs/file-search.md`), so the kind is carried by the
+    /// trailing `/` (see `docs/input/file-search.md`), so the kind is carried by the
     /// path itself.
     #[must_use]
     pub fn is_dir(&self) -> bool {
@@ -174,7 +174,7 @@ fn fuzzy_score(qchars: &[char], candidate: &str, mut matched: impl FnMut(usize))
 /// keeps the list finite. The list is taken by value so each matched path
 /// *moves* into its [`FileMatch`]: ranking a whole walk never copies it, and
 /// scoring a path allocates nothing (`fuzzy_score`, the query's characters
-/// gathered once for the whole walk). See `docs/file-search.md`.
+/// gathered once for the whole walk). See `docs/input/file-search.md`.
 #[must_use]
 pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
     let qchars: Vec<char> = query.chars().collect();
@@ -213,7 +213,7 @@ pub fn rank_files(query: &str, candidates: Vec<String>) -> Vec<FileMatch> {
 /// case-insensitively. A tie in case alone falls to the spelling, so the
 /// order is total: the filesystem hands back a directory's entries in no
 /// promised order, and the list must not reshuffle between two keystrokes
-/// over the same files. See `docs/file-search.md`.
+/// over the same files. See `docs/input/file-search.md`.
 ///
 /// It runs for every comparison of a sort over up to `FILE_INDEX_CAP`
 /// entries, so the common cases are cheap: siblings share a parent spelled
@@ -247,7 +247,7 @@ fn listing_order(a: &FileMatch, b: &FileMatch) -> Ordering {
 /// `b.txt`. A name is the entry's own, without a folder's closing `/`. The
 /// last word of the listing order, and the order the boundary's walk sorts
 /// each folder into as it reads it, which is what hands the listing's sort a
-/// list already in order (`docs/file-search.md`).
+/// list already in order (`docs/input/file-search.md`).
 #[must_use]
 pub fn sibling_order(a_name: &str, a_is_dir: bool, b_name: &str, b_is_dir: bool) -> Ordering {
     b_is_dir
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn rank_files_keeps_every_match() {
         // The picker scrolls through every match and counts them all
-        // (`docs/file-search.md`), so the ranking caps nothing: thirty
+        // (`docs/input/file-search.md`), so the ranking caps nothing: thirty
         // matches in, thirty out, in rank order. They all score the same
         // here, so the shorter `src/mod.rs` leads and the rest follow by
         // name; `README.md` has no `o` after its `M` and is dropped.

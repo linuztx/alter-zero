@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# LIFECYCLE HOOKS (docs/hooks.md). The user's own commands wedged
+# LIFECYCLE HOOKS (docs/tools/hooks.md). The user's own commands wedged
 # into the tool loop. The dummy's `hooks` scenario plays both halves of the
 # contract against the real rendering path: a `PreToolUse` hook refusing a
 # destructive command — the refusal text produced by `llm::hooks::block_texts`,
@@ -13,11 +13,11 @@ smoke_begin
 # did run, whose dim `⎿` provenance row is the user-visible trace while the
 # context itself rides the model-facing text (never the cell). Assert the
 # blocked call resolves with no output of its own, its cell names the event,
-# the hook and the hooks.json it is configured in (docs/hooks.md *What the
+# the hook and the hooks.json it is configured in (docs/tools/hooks.md *What the
 # user sees*), the allowed one keeps its command output under a row naming
 # its event, the model-only instruction never reaches scrollback, and the
 # closing Stop hook's block is a `● Ran 1 Stop hook` cell inline that Ctrl+O
-# expands into the hook that ran (docs/hooks.md *The hook-run cell*).
+# expands into the hook that ran (docs/tools/hooks.md *The hook-run cell*).
 S72="${S}_hooks"
 launch "$S72" 100 30
 submit "$S72" "show me the hooks demo"
@@ -40,7 +40,7 @@ expect_has "$hooks_pane" -F "drwxr-xr-x" "the allowed call lost its own output"
 # next (ToolCall::context_output). It may not be committed to the
 # conversation: the cell is the transcript's record.
 expect_lacks "$hooks_pane" -F "Do not retry the same call" "the model-facing instruction was committed to scrollback"
-# The demo's Stop hook blocks as the turn would finish (docs/hooks.md *The
+# The demo's Stop hook blocks as the turn would finish (docs/tools/hooks.md *The
 # hook-run cell*): its `● Ran 1 Stop hook` cell is committed under the reply
 # with the feedback the agent continues on right under it, and the round it
 # bought follows. The hook's own command is Ctrl+O's, never inline.

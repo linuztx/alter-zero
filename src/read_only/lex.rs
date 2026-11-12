@@ -1,6 +1,6 @@
 //! A `bash` command line as the read-only checks see it: its simple commands,
 //! each one's words with the quoting resolved, and every construct a verdict
-//! about the words alone could not see through (`docs/tool-groups.md`).
+//! about the words alone could not see through (`docs/ui/tool-groups.md`).
 //!
 //! Deliberately small — bash's own grammar is not the goal. A shape this
 //! lexer does not model is not guessed at: it raises a [`Hazards`] flag, and

@@ -1,4 +1,4 @@
-//! What the `/mcp` manager and the MCP tool cells consume (`docs/mcp.md`):
+//! What the `/mcp` manager and the MCP tool cells consume (`docs/tools/mcp.md`):
 //! the per-server snapshot the boundary injects into `App`, the status
 //! glyph/label vocabulary, the tool-detail parameter listing, and the
 //! pretty-printed argument forms the cell headers derive at render time.
@@ -23,10 +23,10 @@ pub enum McpServerStatus {
     /// Disabled here (per project) — never connected.
     Disabled,
     /// Declared by the project and waiting for the startup review's answer
-    /// (`docs/config-review.md`) — never launched until enabled there.
+    /// (`docs/state/config-review.md`) — never launched until enabled there.
     AwaitingReview,
     /// MCP is off for the whole session — the `/settings` **MCP** row
-    /// (`docs/mcp.md`): not connected, and connected again once the row is
+    /// (`docs/tools/mcp.md`): not connected, and connected again once the row is
     /// back on. The server's own `/mcp` switch is a separate thing and
     /// keeps its state.
     Off,
@@ -110,7 +110,7 @@ impl McpAuthState {
             // `not needed` shrug beside `✔ connected` read as a caveat where
             // there is none. The *state* stays distinct: it is what
             // withholds the re-authenticate and clear actions
-            // (`docs/mcp.md`).
+            // (`docs/tools/mcp.md`).
             Self::NotRequired => "authenticated",
             Self::Expired => "expired",
             Self::NotAuthenticated => "not authenticated",
@@ -327,7 +327,7 @@ mod tests {
             snapshot(McpServerStatus::Pending, 0).status_line(),
             "◯ connecting…"
         );
-        // The startup review's holding state (`docs/config-review.md`):
+        // The startup review's holding state (`docs/state/config-review.md`):
         // declared by the project, never launched, waiting for an answer.
         assert_eq!(
             snapshot(McpServerStatus::AwaitingReview, 0).status_line(),
@@ -434,7 +434,7 @@ mod tests {
     fn pretty_args_render_key_value_pairs_in_the_models_own_order() {
         // The model chose the order it emitted the arguments in — a schema's
         // `repoName` before the long `question` it qualifies — so the header
-        // keeps it instead of re-sorting alphabetically (`docs/mcp.md`).
+        // keeps it instead of re-sorting alphabetically (`docs/tools/mcp.md`).
         assert_eq!(
             pretty_args(r#"{"repoName":"a/b","question":"What?"}"#),
             r#"repoName: "a/b", question: "What?""#

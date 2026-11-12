@@ -1,4 +1,4 @@
-//! The `$` skill-mention picker (`docs/skill-mentions.md`).
+//! The `$` skill-mention picker (`docs/input/skill-mentions.md`).
 
 use super::*;
 

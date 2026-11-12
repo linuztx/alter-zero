@@ -1,5 +1,5 @@
 //! The assistant markdown renderer: fenced code, headings, lists, quotes
-//! (`docs/markdown.md`).
+//! (`docs/ui/markdown.md`).
 
 use super::*;
 use crate::ui::assistant::{
@@ -60,7 +60,7 @@ fn assistant_inline_link_shows_text_then_url() {
 
 #[test]
 fn a_hard_wrapped_url_carries_its_whole_target_on_every_row() {
-    // The reported bug (docs/links.md): in a narrow terminal the reply's URL
+    // The reported bug (docs/ui/links.md): in a narrow terminal the reply's URL
     // hard-breaks — `https://github.com/linuz` on one row, `tx.` on the next
     // — and clicking the first fragment opened the truncated URL. Every
     // rendered fragment must carry the FULL target through the whole
@@ -224,7 +224,7 @@ fn heading_combining_marks_survive_the_painted_buffer() {
     }
 }
 
-// --- codex block layout: lists, quotes, block spacing (docs/markdown.md) ---
+// --- codex block layout: lists, quotes, block spacing (docs/ui/markdown.md) ---
 
 /// An assistant reply's rendered rows as plain strings.
 fn rows(text: &str, width: u16) -> Vec<String> {
@@ -718,7 +718,7 @@ fn a_tight_item_keeps_a_quote_heading_or_table_against_its_text() {
     );
 }
 
-// --- assistant markdown: fenced code blocks + headings (docs/markdown.md) ---
+// --- assistant markdown: fenced code blocks + headings (docs/ui/markdown.md) ---
 
 #[test]
 fn assistant_prose_is_byte_identical_to_the_plain_path() {
@@ -829,7 +829,7 @@ fn assistant_headings_keep_the_hashes_and_style_per_level_like_codex() {
     // Codex keeps the `#` markers visible and styles the whole heading line
     // per level with text *modifiers only* (no foreground colour): h1
     // bold+underlined, h2 bold, h3 bold+italic, h4-6 italic. See
-    // docs/markdown.md and codex-rs/tui/src/markdown_render.rs::start_heading.
+    // docs/ui/markdown.md and codex-rs/tui/src/markdown_render.rs::start_heading.
     let h2 = message_lines(Role::Assistant, "## The Code", 80);
     assert_eq!(plain(&h2[0]), "● ## The Code", "hashes kept, not stripped");
 
@@ -1221,7 +1221,7 @@ fn wrapped_then_cut(
 #[test]
 fn a_code_lines_head_rows_are_the_first_rows_of_the_whole_wrap() {
     // The file peek cuts the line that runs past its tenth row
-    // (docs/long-lines.md §8) by wrapping only the rows it shows: the greedy
+    // (docs/ui/long-lines.md §8) by wrapping only the rows it shows: the greedy
     // break only ever looks back, so the head of the whole wrap is the wrap
     // of the head. The rows must be the whole wrap's first ones, styles and
     // all — a zero-width character after a full row stays on that row — and
@@ -1256,7 +1256,7 @@ fn wrapped_then_dropped(
 #[test]
 fn a_code_lines_tail_rows_are_the_last_rows_of_the_whole_wrap() {
     // A streaming file keeps a long line's newest rows without wrapping its
-    // head (docs/long-lines.md §7): printable ASCII skips the head by
+    // head (docs/ui/long-lines.md §7): printable ASCII skips the head by
     // arithmetic, anything else is wrapped whole. Either way the rows must be
     // exactly the whole wrap's last ones, styles and all.
     for (text, segments) in wrap_fixtures() {

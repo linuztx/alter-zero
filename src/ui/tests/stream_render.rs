@@ -1,10 +1,10 @@
-//! Incremental streaming to scrollback (`docs/markdown.md`, `docs/flicker.md`).
+//! Incremental streaming to scrollback (`docs/ui/markdown.md`, `docs/ui/flicker.md`).
 
 use super::*;
 
 #[test]
 fn the_render_says_whether_any_of_the_reply_reached_scrollback() {
-    // What a withdrawn reply attempt needs to know (docs/offline.md *A
+    // What a withdrawn reply attempt needs to know (docs/providers/offline.md *A
     // connection lost mid-reply*): rows already committed must be rebuilt
     // away; a reply still on its first line lives only in the strip.
     let mut render = StreamRender::new();
@@ -135,7 +135,7 @@ fn a_growing_url_repaints_unchanged_prefix_cells_with_the_new_target() {
 
 #[test]
 fn table_commits_whole_and_previews_while_forming() {
-    // The core behavior (docs/table-streaming.md): nothing of an open table
+    // The core behavior (docs/ui/table-streaming.md): nothing of an open table
     // reaches scrollback (its widths need every row), while the strip
     // previews the ENTIRE forming grid — so `committed ++ preview` equals
     // the batch render of every prefix (the reply is always fully visible,
@@ -355,7 +355,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         // A blank line *inside* a still-open fence at the end is content, not
         // a trailing blank — it must survive (the `!in_code` trim gate).
         "intro\n```\ncode\n\n",
-        // --- GFM tables (docs/markdown.md): a table is buffered whole and
+        // --- GFM tables (docs/ui/markdown.md): a table is buffered whole and
         // committed only when the block closes, so the streamed commits must
         // still match the batch render at every prefix and width (incl. the
         // column shrink at tiny widths). ---
@@ -386,19 +386,19 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         "files:\n\n| Database | Modified |\n|----------|----------|\n| `core.db` | **Jul 13** |\n| plain.db | today |\n\nend",
         // A table whose cells are long enough that at the narrower sweep widths
         // the grid is too cramped to scan and flips to codex-style key/value
-        // RECORDS (docs/table-streaming.md): the block (a `─` rule before each
+        // RECORDS (docs/ui/table-streaming.md): the block (a `─` rule before each
         // non-first record) is buffered and rendered whole like the grid, so
         // the streamed commits + the final flush must still equal the batch
         // render at every prefix/width.
         "summary:\n\n| Component | Description of the thing |\n|-----------|--------------------------|\n| Parser | Reads and validates the input tokens |\n| Renderer | Draws styled cells into the terminal |\n\ndone",
         // HARD-WRAPPED rows (the model echoing terminal-wrapped source): the
         // pipe-carrying fragments (`96.4 ms |`, `15.0 ms |`) don't start
-        // with `|` and re-join their rows (docs/table-streaming.md) — the
+        // with `|` and re-join their rows (docs/ui/table-streaming.md) — the
         // streamed commits + preview must match the batch render at every
         // prefix while the join forms (incl. mid-fragment prefixes, where
         // the pipe hasn't arrived yet and the tail still reads as prose).
         "pings:\n\n| Host | Loss | RTT |\n|------|------|-----|\n| google | 0% | 86.8 /\n96.4 ms |\n| fb | 0% |\n15.0 ms |\n\ndone",
-        // --- Inline emphasis (docs/markdown.md): line-local, so a complete
+        // --- Inline emphasis (docs/ui/markdown.md): line-local, so a complete
         // line's styling is final (its frozen rows never restyle) while a
         // trailing line with an open marker is withheld (has_open_inline). The
         // streamed commits must match the batch render at every prefix/width,
@@ -414,7 +414,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         "compute 2 * 3 and read foo_bar_baz then stop\ndone",
         // A strikethrough and inline code together, then a closing paragraph.
         "~~removed~~ and `kept` values differ\n\nsummary paragraph after a blank",
-        // --- Lists & blockquotes (docs/markdown.md): line-local, so frozen
+        // --- Lists & blockquotes (docs/ui/markdown.md): line-local, so frozen
         // rows never restyle; the streamed commits must match batch at every
         // prefix/width, incl. the `-`-vs-partial-thematic-break handoff, the
         // hanging-indent wraps, and list text with inline emphasis. ---
@@ -441,7 +441,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         "- a bullet with **bold** and `code` that wraps over rows\n- next item",
         "intro\n\n- [x] done task\n- [ ] pending task\n\nafter",
         "* star bullet\n+ plus bullet\ndone",
-        // --- Codex block layout (docs/markdown.md *Block layout*): the
+        // --- Codex block layout (docs/ui/markdown.md *Block layout*): the
         // container stack, each scope's last block and the pending blank all
         // thread line to line, so the separators they emit — before a block,
         // between a multi-row item and its sibling — must commit exactly
@@ -520,7 +520,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
                 // (c) the preview is a SUFFIX of the batch render of this
                 // prefix — its last row outside a table, the whole
                 // uncommitted tail (the forming block) while one is open
-                // (docs/table-streaming.md).
+                // (docs/ui/table-streaming.md).
                 let batch_prefix: Vec<Vec<(String, Option<Color>, Modifier)>> =
                     message_lines(Role::Assistant, prefix, width)
                         .iter()
@@ -532,7 +532,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
                     .map(styled)
                     .collect();
                 // …allowing the strip's blank padding rows past the batch
-                // render's end (`docs/slow-stream.md`).
+                // render's end (`docs/ui/slow-stream.md`).
                 let content = got_preview
                     .iter()
                     .rposition(|row| row.iter().any(|(t, ..)| !t.trim().is_empty()))
@@ -548,7 +548,7 @@ fn stream_render_matches_batch_render_on_every_prefix() {
                 // (d) while a table is open, scrollback + strip together show
                 // the WHOLE render — the table streams visibly even though
                 // none of it has committed to scrollback yet. The strip's
-                // blank padding rows past the block (docs/slow-stream.md)
+                // blank padding rows past the block (docs/ui/slow-stream.md)
                 // are not content, so they are not counted.
                 if ends_in_open_table(prefix) {
                     assert_eq!(
@@ -666,7 +666,7 @@ fn preview_never_shows_a_committed_row_while_streaming() {
         "## Heading Row\n\nbody text below it\n",
         // A streaming table: its rows commit progressively, so the preview
         // (the last streamed content row) must never duplicate a committed
-        // one (docs/table-streaming.md).
+        // one (docs/ui/table-streaming.md).
         "here:\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\ndone\n",
     ] {
         let mut render = StreamRender::new();
@@ -723,7 +723,7 @@ fn stream_render_preview_is_the_uncommitted_tail_of_the_render() {
         // blank run outside a fence, and keeps it inside one — exactly the
         // rule the preview follows. The one allowance is the strip's blank
         // padding, kept so it never shrinks between two tokens
-        // (`docs/slow-stream.md`).
+        // (`docs/ui/slow-stream.md`).
         expected.drain(..committed.len().min(expected.len()));
         assert!(
             matches_up_to_padding(&got, &expected, |s| blank_text(s)),
@@ -1014,7 +1014,7 @@ fn a_closing_fence_never_previews_an_already_committed_row() {
 fn the_strip_never_shrinks_between_two_tokens_without_a_commit() {
     // The region is content-anchored, so rows leaving the strip must be rows
     // that moved to scrollback — otherwise the box hops UP and drops back a
-    // token later, a bounce a slow model makes visible (`docs/slow-stream.md`).
+    // token later, a bounce a slow model makes visible (`docs/ui/slow-stream.md`).
     // Two shapes did exactly that, both at a code fence streamed one
     // backtick at a time: the closing ``` left nothing to preview (the slot
     // and its gap vanished — two rows), and the opening ``` after a paragraph

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# transient TOASTS above the box (docs/toast.md). A one-line status
+# transient TOASTS above the box (docs/ui/toast.md). A one-line status
 # message that self-clears after a few seconds instead of committing a scrollback
 # bullet. /copy's confirmation is a toast — it APPEARS then VANISHES (a committed
 # message would persist). /resume run mid-turn surfaces a toast rejection
@@ -52,7 +52,7 @@ printf '%s\n' "$toast_resume"
 # opens on its needs-login hint — proof it opened rather than being rejected.
 # And it replaces the COMPOSER ONLY: the spinner status line stays above it
 # (the reported bug was the picker taking the whole region and hiding the
-# running turn — docs/llm.md, the ↓ manager band's rule).
+# running turn — docs/providers/llm.md, the ↓ manager band's rule).
 tmux send-keys -t "$S33" -l "/model"
 sleep 0.3
 tmux send-keys -t "$S33" Enter
@@ -89,7 +89,7 @@ expect_has "$toast_resume" -F "/resume is disabled while a task is in progress" 
 expect_has "$toast_model" -F "run /login to add one" "mid-turn /model did not open the inline picker (it should no longer be blocked while a task runs)"
 # Phase 33: …and it replaces the COMPOSER only — the streaming strip's status
 # line stays above it, so the picker never hides the turn it was opened beside
-# (the reported bug; the ↓ manager band's rule — docs/llm.md).
+# (the reported bug; the ↓ manager band's rule — docs/providers/llm.md).
 expect_has "$toast_model" -F "esc to interrupt" "the mid-turn /model picker hid the status indicator — it must replace the composer only, keeping the streaming strip above it"
 # Phase 33: /login opens mid-turn under the same live status line — on its
 # method root (the sign-in fork, Phase 103), which is what a mid-turn `/login`

@@ -8,7 +8,7 @@
 # asset naming, the archive layout, the checksum vocabulary — as pure
 # functions of their arguments and the tree under $RELEASE_ROOT, which is
 # what lets scripts/release/selftest.sh drive each rule against a fixture
-# tree instead of the checkout. See docs/release.md.
+# tree instead of the checkout. See docs/ops/release.md.
 #
 # Portability: GitHub's macOS runners may hand a script bash 3.2, so nothing
 # here needs bash 4 (no `${var,,}`, no associative arrays, no mapfile), no
@@ -355,7 +355,7 @@ write_sha256sums() {
 }
 
 # ---------------------------------------------------------------------------
-# npm (docs/npm.md). npm/package.json is the launcher package; each release
+# npm (docs/ops/npm.md). npm/package.json is the launcher package; each release
 # target becomes a platform package named after Node's own words for its
 # OS and CPU (`process.platform-process.arch`) — what its `os`/`cpu` fields
 # say, and what the launcher (npm/bin/alter-zero.js) looks it up by. The

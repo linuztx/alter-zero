@@ -1,11 +1,11 @@
-//! The `<system-reminder>` the derived context leads with (`docs/context.md`).
+//! The `<system-reminder>` the derived context leads with (`docs/architecture/context.md`).
 //!
 //! One block, in front of every turn's conversation, carrying what the session
 //! tells the model *about itself* that neither the system prompt nor the tool
 //! schemas name: the project's `AGENTS.md` instructions
-//! (`docs/project-doc.md`), the skills the `Skill` tool can load
-//! (`docs/skills.md`) and the types the `Agent` tool can launch
-//! (`docs/subagents.md`). Each contributor renders its own **section**
+//! (`docs/state/project-doc.md`), the skills the `Skill` tool can load
+//! (`docs/tools/skills.md`) and the types the `Agent` tool can launch
+//! (`docs/agents/subagents.md`). Each contributor renders its own **section**
 //! ([`crate::project_doc::instructions_section`],
 //! [`crate::skills::skill_section`], [`crate::subagents::agent_section`]);
 //! this module only knows how sections become the one reminder.
@@ -13,7 +13,7 @@
 //! One block rather than one fragment per contributor because they are one
 //! kind of thing, and because every one of them is re-rendered per turn: a
 //! second fragment would be a second place the prompt-cache prefix can shift
-//! (`docs/prompt-caching.md`). The shape is the reference tool's — an opening
+//! (`docs/providers/prompt-caching.md`). The shape is the reference tool's — an opening
 //! line saying what follows, the sections blank-line separated, the closing
 //! tag — so a model trained on it reads ours the same way.
 

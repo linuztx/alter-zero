@@ -1,9 +1,9 @@
-//! The `/secrets` page (`docs/secrets.md`): the user's secrets listed by
+//! The `/secrets` page (`docs/state/secrets.md`): the user's secrets listed by
 //! placeholder, and the form that adds or edits one.
 //!
 //! The `/donate` page's frame — the family's rules and indent, the `❯`
 //! marker, the banner-gradient title — built line by line so the height is
-//! content-driven (`docs/view-flow.md`). The rule the page exists to keep
+//! content-driven (`docs/ui/view-flow.md`). The rule the page exists to keep
 //! lives here: **a value is masked in the builder**, never at paint time —
 //! the list shows a fixed eight-dot mask whatever the value's length, the
 //! form one dot per character typed, capped at the field's width, and no
@@ -159,12 +159,12 @@ fn list_parts(metas: &[SecretMeta], page: &SecretsPage, width: u16) -> ListParts
 ///    the whole page puts there;
 /// 3. that window without the header and without the slots, which would
 ///    sit straight under the top rule and hug it blank while nothing is
-///    hidden above (`docs/view-flow.md` *The frame hugs its content*): the
+///    hidden above (`docs/ui/view-flow.md` *The frame hugs its content*): the
 ///    window and the hint as the page's blocks, one height at every
 ///    selection.
 ///
 /// The list shrinks before the header goes — codex's order, the other
-/// pickers' (`docs/view-flow.md` *A page that sheds rows before it flows*).
+/// pickers' (`docs/ui/view-flow.md` *A page that sheds rows before it flows*).
 /// An empty store has nothing to window — its add row is the only row — so
 /// its short page is the whole one without the header, the empty note
 /// saying what a secret is for on its own. The hint stays on every page.
@@ -385,7 +385,7 @@ fn form_blocks(form: &SecretForm, width: u16) -> Vec<Block> {
 
 /// `blocks` framed: a top rule, the blocks joined by exactly one blank row
 /// (the `/login` page rule, so no two blank rows ever stack and none hugs
-/// either rule — `docs/view-flow.md` — an empty block is skipped), a bottom
+/// either rule — `docs/ui/view-flow.md` — an empty block is skipped), a bottom
 /// rule; and the caret's seat in the result, when one of the blocks holds
 /// it.
 fn framed(blocks: Vec<Block>, width: u16) -> SecretsBuild {
@@ -427,7 +427,7 @@ pub(super) fn secrets_build(app: &App, width: u16, height: u16) -> SecretsBuild 
 
 /// The page as lines (`secrets_build`'s) — what [`render_secrets_picker`]
 /// paints (bottom-anchored), what `secrets_menu_rows` counts and what flows
-/// (`docs/view-flow.md`), so the reserved height and the painted rows can
+/// (`docs/ui/view-flow.md`), so the reserved height and the painted rows can
 /// never disagree. Empty when the page is closed.
 #[must_use]
 pub fn secrets_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
@@ -457,7 +457,7 @@ pub fn secrets_picker_height(app: &App, width: u16, term_height: u16) -> Option<
 /// Render the **inline** `/secrets` page into the live region, in place of
 /// the composer — bottom-anchored, so a squeezed area keeps the fields, the
 /// hint and the closing rule on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this.
+/// scrollback (`docs/ui/view-flow.md`). Pure — `render_live` paints this.
 pub fn render_secrets_picker(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

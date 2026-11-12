@@ -14,7 +14,7 @@ fn question_mark_is_ignored_in_the_tool_view() {
 #[test]
 fn ctrl_o_dismisses_the_band_like_any_other_key() {
     // The band's rule is "any key but Esc closes it, then acts normally"
-    // (docs/shortcuts.md) — the global Ctrl+O arm is no exception, so the
+    // (docs/ui/shortcuts.md) — the global Ctrl+O arm is no exception, so the
     // band must not re-show under the box after the overlay round-trip.
     let mut app = App::new();
     app.on_key(key(KeyCode::Char('?')));
@@ -38,7 +38,7 @@ fn ctrl_o_toggles_into_and_out_of_the_tool_view() {
     assert_eq!(app.view, View::Conversation);
 }
 
-// ===== Ctrl+D context-debug view (docs/context.md) =====
+// ===== Ctrl+D context-debug view (docs/architecture/context.md) =====
 
 #[test]
 fn ctrl_d_toggles_into_and_out_of_the_context_debug_view() {
@@ -133,7 +133,7 @@ fn settle_debug_scroll_caps_a_stale_offset_and_repins_follow() {
 fn left_and_right_queue_a_step_between_entries() {
     // The key only says which way: where the neighbouring entry starts is a
     // fact about the rendered page — its width, its wrapping — so the draw
-    // resolves it (`docs/context.md`).
+    // resolves it (`docs/architecture/context.md`).
     let mut app = App::new();
     app.on_key(ctrl('d'));
     assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
@@ -433,7 +433,7 @@ fn ctrl_o_is_inert_while_the_picker_is_up() {
     assert_eq!(app.view, View::ResumePicker);
 }
 
-// ===== the Ctrl+D view's classifier page (docs/permissions.md) =====
+// ===== the Ctrl+D view's classifier page (docs/state/permissions.md) =====
 
 #[test]
 fn tab_flips_the_context_view_between_its_two_pages() {
@@ -550,7 +550,7 @@ fn the_boundary_injects_the_classifier_system_prompt() {
 }
 
 // --- The animation-frame chain under an alternate-screen overlay
-// (docs/overlay-repaint.md) ---
+// (docs/ui/overlay-repaint.md) ---
 
 #[test]
 fn the_three_full_screen_views_are_overlays_and_the_conversation_is_not() {

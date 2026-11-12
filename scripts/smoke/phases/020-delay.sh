@@ -5,7 +5,7 @@
 smoke_begin
 
 # the dummy AI PAUSES before streaming so the status indicator is
-# visible first (docs/status-indicator.md), and the just-sent user message is
+# visible first (docs/ui/status-indicator.md), and the just-sent user message is
 # counted into the tally with the ↑ arrow. Launch with a longer startup delay
 # (overriding the smoke-wide short one), submit, then capture MID-PAUSE: the
 # status line must show with `↑ N tokens` and NO reply text yet — then the

@@ -6,7 +6,7 @@
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 //!
-//! One module per area — see `docs/module-layout.md` for the map. Every styling
+//! One module per area — see `docs/architecture/module-layout.md` for the map. Every styling
 //! and geometry constant lives in `theme`, and all width math goes through
 //! `cols` in `wrap`.
 

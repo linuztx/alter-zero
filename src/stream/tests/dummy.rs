@@ -10,7 +10,7 @@ use super::*;
 #[test]
 fn dummy_ai_reports_its_model_name() {
     // The footer under the input box names the active backend's model
-    // (see docs/footer.md); the dummy reports its placeholder id.
+    // (see docs/ui/footer.md); the dummy reports its placeholder id.
     assert_eq!(DummyAi::default().model_name(), "dummy_model_name");
 }
 
@@ -107,7 +107,7 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ThinkingEnd => think_ends += 1,
             StreamEvent::ToolCallDelta(_) => tool_call_deltas += 1,
             // The default demo never touches the task list; the tasks demo
-            // has its own suite coverage (docs/task-tools.md).
+            // has its own suite coverage (docs/tools/task-tools.md).
             StreamEvent::TaskCall { .. } => {}
             StreamEvent::StreamDone => {
                 saw_done = true;
@@ -128,7 +128,7 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ToolRejected { .. } => {
                 panic!("no gate attached — nothing is ever rejected")
             }
-            // The file tools' two-text resolution (`docs/tools.md`) — the
+            // The file tools' two-text resolution (`docs/tools/tools.md`) — the
             // ask tool needs a gate, but a `write`/`edit` ack does not: it
             // closes its call exactly as a `ToolEnd` does.
             StreamEvent::ToolAnswered {
@@ -159,7 +159,7 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
     );
     assert!(
         tool_output_chunks >= 1,
-        "the dummy streams live tool output (docs/tool-streaming.md)"
+        "the dummy streams live tool output (docs/ui/tool-streaming.md)"
     );
     assert_eq!(
         tool_batches, 1,
@@ -227,7 +227,7 @@ fn dummy_ai_sends_nothing_when_cancelled_before_it_starts() {
 
 #[test]
 fn the_dummy_takes_a_queued_message_once_its_tool_round_resolves() {
-    // The offline mirror of a real round boundary (docs/queue.md): a message
+    // The offline mirror of a real round boundary (docs/input/queue.md): a message
     // queued while the scripted turn runs is announced once the turn's tool
     // round has resolved — every call of its batch, since `run_agent` reads
     // its pending inputs only after the round's last result — and not at the
@@ -267,7 +267,7 @@ fn the_dummy_takes_a_queued_message_once_its_tool_round_resolves() {
 
 #[test]
 fn the_dummy_reads_the_notice_board_once_its_tool_round_resolves() {
-    // The offline mirror of `run_agent`'s board take (docs/background.md): a
+    // The offline mirror of `run_agent`'s board take (docs/tools/background.md): a
     // background note posted while the scripted turn runs is read once the
     // turn's tool round resolves and announced with its number — ahead of
     // any queued message, the real loop's order — so a notice that lands
@@ -313,7 +313,7 @@ fn the_dummy_reads_the_notice_board_once_its_tool_round_resolves() {
 
 #[test]
 fn the_dummy_queues_a_chat_message_into_a_running_agent() {
-    // The offline mirror of `LlmBackend::spawn_agent_chat` (docs/queue.md):
+    // The offline mirror of `LlmBackend::spawn_agent_chat` (docs/input/queue.md):
     // the registry decides, and a running agent's session takes the message
     // onto its queue for the next round boundary. Without this the agent
     // view's own queue had no offline coverage at all — the dummy declined
@@ -340,7 +340,7 @@ fn the_dummy_declines_a_chat_with_no_subagents_attached() {
 
 #[test]
 fn the_dummys_chat_continuation_ends_as_its_settle_naming_its_run() {
-    // docs/agent-tools.md *One notice per answer*: a run's end reaches the
+    // docs/agents/agent-tools.md *One notice per answer*: a run's end reaches the
     // loop as its settle, which names the run its notice is tagged with. The
     // demo's scripted runs sent their end on the channel and settled after
     // it — an end naming no run, which the loop tagged with whichever run
@@ -420,7 +420,7 @@ fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
     // A slow model streams a few tokens a second, and the whole point of
     // `ALTER_ZERO_CHUNK_DELAY_MS` is to make the dummy do the same, so the
     // TUI can be watched — and smoke-tested — at that pace
-    // (`docs/slow-stream.md`). Play a text-only turn with a deliberate
+    // (`docs/ui/slow-stream.md`). Play a text-only turn with a deliberate
     // per-chunk pause and assert successive chunks are at least that far
     // apart; cancel after a few so the test stays short.
     let delay = Duration::from_millis(60);
@@ -458,7 +458,7 @@ fn dummy_ai_paces_its_chunks_by_the_configured_chunk_delay() {
 
 #[test]
 fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
-    // docs/agent-tools.md, offline: the lead launches a background agent,
+    // docs/agents/agent-tools.md, offline: the lead launches a background agent,
     // waits on it, sends it a follow-up that resumes its conversation, waits
     // again and lists it — every companion call resolved by the REAL
     // executor (the dummy-backend rule: offline cells carry live output), and
@@ -507,7 +507,7 @@ fn the_follow_up_demo_works_its_agent_through_the_real_companions() {
     assert!(calls.iter().all(|(_, _, ok)| *ok), "{calls:?}");
     assert!(calls[0].1.starts_with("Done (agent a"), "{}", calls[0].1);
     // What the agent said before its call is listed ahead of it, and the
-    // first wait streamed both as they happened (docs/agent-progress.md).
+    // first wait streamed both as they happened (docs/agents/agent-progress.md).
     let steps = "Agent: I'll read the top of the changelog first.\n\
                  Bash(head -12 CHANGELOG.md)\n";
     assert!(calls[0].1.contains(steps), "{}", calls[0].1);

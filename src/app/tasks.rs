@@ -1,4 +1,4 @@
-//! The task tools' app-side bookkeeping (`docs/task-tools.md`): the hidden
+//! The task tools' app-side bookkeeping (`docs/tools/task-tools.md`): the hidden
 //! [`HistoryItem::TaskCall`] record each resolved call appends, the live
 //! checklist snapshot the strip renders under the status line, and the
 //! restores that keep both in step with every history rewind.
@@ -13,7 +13,7 @@ use super::*;
 /// the call, the rollout round-trips it, and the **post-call snapshot** it
 /// carries is what `/resume` and the Esc-Esc backtrack restore the list from
 /// (the last record before the cut holds the state the conversation had
-/// there). See `docs/task-tools.md`.
+/// there). See `docs/tools/task-tools.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskCallRecord {
     /// The display name (`TaskCreate` …) — lowercased by the context replay
@@ -36,7 +36,7 @@ pub struct TaskCallRecord {
     /// Whether the op succeeded (an unknown id, a bad value → red in Ctrl+O).
     pub ok: bool,
     /// The provider's own id for the call, as on [`ToolCall::call_id`]
-    /// (`docs/prompt-caching.md`).
+    /// (`docs/providers/prompt-caching.md`).
     ///
     /// [`ToolCall::call_id`]: crate::app::ToolCall::call_id
     pub call_id: Option<String>,
@@ -97,13 +97,13 @@ impl App {
         ok: bool,
         tasks: crate::tasks::TaskStore,
     ) {
-        // The round's calls are all made (docs/write-streaming.md).
+        // The round's calls are all made (docs/ui/write-streaming.md).
         self.tool_drafts.seal();
         if let Some(turn) = self.status.as_mut() {
             turn.tokens += count_tokens(output);
             turn.arrow = TokenArrow::Up;
         }
-        // The round's identity (docs/prompt-caching.md): the batch every
+        // The round's identity (docs/providers/prompt-caching.md): the batch every
         // record of the round shares, and the provider's id of the next
         // task call the round announced.
         let (call_id, batch, position) = match self.round.as_mut() {
@@ -143,7 +143,7 @@ impl App {
     /// the reference transcript's "continue" flow. Returns whether anything
     /// was retired, so the boundary knows to re-sync the shared registry
     /// (the model's next `tasklist` must agree with the strip). See
-    /// `docs/task-tools.md`.
+    /// `docs/tools/task-tools.md`.
     pub fn retire_finished_tasks(&mut self) -> bool {
         self.tasks.retire_if_finished()
     }

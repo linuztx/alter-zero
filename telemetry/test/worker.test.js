@@ -1,4 +1,4 @@
-// The collector's *routes* (docs/telemetry.md), over a fake D1 — the half
+// The collector's *routes* (docs/ops/telemetry.md), over a fake D1 — the half
 // `lib.test.js` cannot reach. The pure functions can all be right while the
 // handler binds the INSERT in the wrong order, drops the edge's country, or
 // answers a bad body with a 500; each of those produces a table that looks

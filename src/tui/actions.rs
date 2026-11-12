@@ -42,12 +42,12 @@ impl Session<'_> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // A key says the user is here: a waiting question's idle
-                // clock starts over (docs/ask.md).
+                // clock starts over (docs/tools/ask.md).
                 self.note_user_activity();
                 let action = self.app.on_key(key);
                 // A send that masked a typed secret's value says so — first,
                 // so the action's own toast (a refusal) is the one left
-                // showing (docs/secrets.md).
+                // showing (docs/state/secrets.md).
                 self.toast_masked_secrets();
                 let flow = self.on_action(action)?;
                 if flow == Flow::Quit {
@@ -62,7 +62,7 @@ impl Session<'_> {
             }
             // A real bracketed paste (term::init enables it). A large paste
             // collapses to a `[Pasted Content N chars]` placeholder in the
-            // composer, expanded back on send — docs/paste.md.
+            // composer, expanded back on send — docs/input/paste.md.
             Event::Paste(pasted) => {
                 self.note_user_activity();
                 self.on_paste(&pasted);
@@ -92,13 +92,13 @@ impl Session<'_> {
                     self.overlay_return_repaint()?;
                 }
                 // A `/login` device flow's worker parks on a poll for minutes;
-                // cancel it so the process can actually exit (`docs/copilot.md`).
+                // cancel it so the process can actually exit (`docs/providers/copilot.md`).
                 self.cancel_device_login();
                 return Ok(Flow::Quit);
             }
             Action::Submit(text) => {
                 // Drain any Ctrl+V-attached images staged by the submit
-                // (docs/image-paste.md) to deliver them on the turn's typed
+                // (docs/input/image-paste.md) to deliver them on the turn's typed
                 // image channel.
                 let images = self.app.take_submission_images();
                 self.start_turn(TurnInput {
@@ -117,13 +117,13 @@ impl Session<'_> {
             }
             Action::RunShell(command) => {
                 // `!command` from an idle composer: echo it, then run it locally
-                // as a turn (docs/shell-command.md). Reuses the streamed-reply
+                // as a turn (docs/input/shell-command.md). Reuses the streamed-reply
                 // channel + inflight handle, so the status strip, Esc-interrupt,
                 // and resize repaint all work exactly like an AI turn.
                 self.run_shell(command);
             }
             // Enter mid-turn: hand the draft to the turn already running
-            // (docs/queue.md). `App` has parked it in `steered` for the strip;
+            // (docs/input/queue.md). `App` has parked it in `steered` for the strip;
             // pushing it here is what puts it in front of the backend, which
             // takes it at its next round boundary and answers with
             // `StreamEvent::Steered`.
@@ -139,7 +139,7 @@ impl Session<'_> {
                 None => self.app.recall_last_queued(),
             },
             // The same pull-back inside an agent session view, over that
-            // agent's own loop (docs/queue.md). No `recall_last_queued`
+            // agent's own loop (docs/input/queue.md). No `recall_last_queued`
             // fallback: the key arm already tried that agent's follow-ups and
             // must never reach the main session's backlog from here.
             Action::ReclaimAgentChat { id } => {
@@ -149,7 +149,7 @@ impl Session<'_> {
             }
             Action::Interrupt => self.interrupt_turn()?,
             Action::Compact => {
-                // /compact (docs/compact.md): run codex's summarization turn —
+                // /compact (docs/architecture/compact.md): run codex's summarization turn —
                 // the whole current context plus the fixed handoff prompt — with
                 // the reply diverted into the compact buffer (never rendered);
                 // `finish_compact` appends the marker at StreamDone and the
@@ -180,7 +180,7 @@ impl Session<'_> {
             Action::ResolveAsk { id, decision } => {
                 // Post the user's answers (or decline/chat) on the ask gate,
                 // waking the tool thread parked on it — the modal is already
-                // closed and the composer draft restored (docs/ask.md).
+                // closed and the composer draft restored (docs/tools/ask.md).
                 self.ask.resolve(&id, decision);
                 self.frame.schedule_frame();
             }
@@ -236,7 +236,7 @@ impl Session<'_> {
             Action::OpenSpinnerPicker => {
                 // The pure open already happened (the catalog is a const);
                 // after_key schedules the frame, and the open picker's own
-                // animation re-arm keeps its preview turning (docs/spinner.md).
+                // animation re-arm keeps its preview turning (docs/ui/spinner.md).
             }
             Action::CloseSpinnerPicker => {
                 // Esc/Ctrl+C dismissed the picker: nothing to reap; the
@@ -245,7 +245,7 @@ impl Session<'_> {
             Action::SelectSpinner(spinner) => self.select_spinner(spinner),
             Action::OpenThemePicker => {
                 // The pure open already happened (the catalog is a const);
-                // after_key schedules the frame (docs/theme.md).
+                // after_key schedules the frame (docs/ui/theme.md).
             }
             Action::CloseThemePicker => {
                 // Esc/Ctrl+C dismissed the picker: nothing to reap; the
@@ -255,7 +255,7 @@ impl Session<'_> {
             Action::OpenDonatePicker => {
                 // The pure open already happened (the catalog is a const —
                 // nothing to fetch or inject); after_key schedules the frame
-                // (docs/donate.md).
+                // (docs/ui/donate.md).
             }
             Action::CloseDonatePicker => {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
@@ -263,7 +263,7 @@ impl Session<'_> {
             }
             Action::CopyDonationAddress(address) => self.copy_donation_address(address),
             // The pure open already happened; the boundary reloads the file
-            // so a secret another session saved is listed (docs/secrets.md).
+            // so a secret another session saved is listed (docs/state/secrets.md).
             Action::OpenSecretsPage => self.open_secrets_page(),
             Action::CloseSecretsPage => {
                 // Esc/Ctrl+C dismissed the page — and its draft with it; the
@@ -274,12 +274,12 @@ impl Session<'_> {
             Action::CopySecretPlaceholder(name) => self.copy_secret_placeholder(&name),
             // The pure open already counted the window; the boundary hands
             // it the backend's tool set before the first frame
-            // (docs/context-usage.md).
+            // (docs/architecture/context-usage.md).
             Action::OpenContextUsage => self.sync_context_usage(),
             // Only the boundary knows which subscriptions are signed in, so
             // it opens the usage page over them and reads each one — or
             // toasts that none is — and reads them again on `r`
-            // (docs/usage.md).
+            // (docs/providers/usage.md).
             Action::OpenUsagePage => self.open_usage_page(),
             Action::RefreshUsagePage => self.refresh_usage_page(),
             Action::CloseUsagePage => self.cancel_usage_fetch(),
@@ -291,7 +291,7 @@ impl Session<'_> {
             Action::OpenExportPicker => {
                 // The pure open already happened (the rows are a const —
                 // nothing to fetch or inject); after_key schedules the frame
-                // (docs/export.md).
+                // (docs/ui/export.md).
             }
             Action::CloseExportPicker => {
                 // Esc/Ctrl+C dismissed the page: nothing to reap; the region
@@ -331,7 +331,7 @@ impl Session<'_> {
             Action::Toast(text) => {
                 // A slash command's transient info toast — a soft rejection
                 // (/resume, /compact run mid-turn) that self-clears above the box
-                // instead of landing in scrollback. See docs/toast.md.
+                // instead of landing in scrollback. See docs/ui/toast.md.
                 self.toast(text, ToastKind::Info);
             }
             Action::Copy(text) => self.copy_to_clipboard(&text),
@@ -343,7 +343,7 @@ impl Session<'_> {
     /// off a file search if the active `@token` changed, and delete the temp PNGs
     /// of any attachments the key discarded (an atomic placeholder delete, a
     /// Ctrl+C clear, a `/clear`ed queue) — the pure core records the drops, the
-    /// file I/O lives here (`docs/image-paste.md`).
+    /// file I/O lives here (`docs/input/image-paste.md`).
     fn after_key(&mut self, key: &ratatui::crossterm::event::KeyEvent) {
         self.schedule_for_key(key);
         self.dispatch_file_search();
@@ -356,7 +356,7 @@ impl Session<'_> {
     /// stayed pure). The pure core already decided *what* to copy — and, with
     /// nothing to copy, answered with its own info toast instead of reaching
     /// here. The result surfaces as a transient toast, not a scrollback bullet.
-    /// See `docs/copy.md` / `docs/toast.md`.
+    /// See `docs/ui/copy.md` / `docs/ui/toast.md`.
     fn copy_to_clipboard(&mut self, text: &str) {
         match clipboard::copy_to_clipboard(text) {
             Ok(lease) => {
@@ -377,17 +377,17 @@ impl Session<'_> {
     /// [`Session::abandon_inflight`] cancels + detaches the thread and swaps in a
     /// fresh reply channel, so any stale event it still emits (a final chunk, or a
     /// ToolStart that would otherwise wedge a phantom running tool) lands on the
-    /// dropped receiver and can't reach the next turn. See `docs/interrupt.md`.
+    /// dropped receiver and can't reach the next turn. See `docs/input/interrupt.md`.
     fn interrupt_turn(&mut self) -> std::io::Result<()> {
         // The turn's clock, read before `abandon_inflight` stops it: a kept
-        // turn's receipt says how long the turn ran (docs/interrupt.md).
+        // turn's receipt says how long the turn ran (docs/input/interrupt.md).
         let elapsed = self
             .clocks
             .turn_start
             .map_or(0, |start| start.elapsed().as_secs());
         // The running command's own clock, read now rather than at the last
         // draw: the call the interrupt resolves records how long it ran
-        // (docs/rollout-records.md).
+        // (docs/state/rollout-records.md).
         self.app
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // A thinking phase caught mid-thought settles first, so its
@@ -398,17 +398,17 @@ impl Session<'_> {
         // untouched. It runs before `abandon_inflight` too, which stops the
         // thinking clock with the others: settled after it, the cell read
         // `Thought for 0s` however long the model had thought
-        // (docs/thinking-stream.md).
+        // (docs/ui/thinking-stream.md).
         self.settle_reasoning();
         // The open read/search group closes on what it held — the thought
         // just settled included — above the interrupt's remains
-        // (docs/tool-groups.md).
+        // (docs/ui/tool-groups.md).
         let committing = self.commits_allowed();
         self.close_tool_group(committing, self.term.screen().width);
         self.abandon_inflight();
         // The interrupt takes a live foreground agent group down with it, and
         // a member may be the conversation on screen — the `Error` arm's rule
-        // (`docs/agent-view-streaming.md`). A no-op with no agent view open,
+        // (`docs/agents/agent-view-streaming.md`). A no-op with no agent view open,
         // which is the ordinary case: Esc inside one leaves the view instead.
         let width = self.term.screen().width;
         let owed = self.begin_turn_agent_settle(width);
@@ -425,7 +425,7 @@ impl Session<'_> {
                 // resets `render` itself). No notice, and no queue flush — the
                 // empty queue is the undo's precondition — but background
                 // completions held during the turn still settle
-                // (docs/background.md).
+                // (docs/tools/background.md).
                 self.repaint_conversation()?;
                 self.dispatch_after_turn();
             }
@@ -441,7 +441,7 @@ impl Session<'_> {
                 // — req 2). A live agent group resolved as interrupted: stop its
                 // subagent threads (the abandoned backend's own kill sweep may
                 // still be parked in a network read) and commit its red tree cell
-                // (docs/agent-tool.md). `commit_turn_failure`'s
+                // (docs/agents/agent-tool.md). `commit_turn_failure`'s
                 // `render.finish(partial)` needs the committed-lines cache intact
                 // (it flushes only the not-yet-committed tail), so reset `render`
                 // AFTER it, never before.
@@ -456,7 +456,7 @@ impl Session<'_> {
                 // The receipt closes the turn, under the notice: a background
                 // completion no round read settles above it first — the
                 // `StreamDone` order — and `dispatch_after_turn`'s own settle
-                // below then finds nothing left (docs/interrupt.md).
+                // below then finds nothing left (docs/input/interrupt.md).
                 self.settle_bg_completions();
                 if let Some(summary) = summary {
                     self.commit_turn_summary(summary);
@@ -466,7 +466,7 @@ impl Session<'_> {
                 // The front entry — the first queue — goes out now (a text batch
                 // to the model, or a `!` command run locally); any later batches
                 // iterate at the following turn-ends. Held background completions
-                // settle first, like every turn end (docs/background.md).
+                // settle first, like every turn end (docs/tools/background.md).
                 self.dispatch_after_turn();
             }
             None => self.render.reset(),
@@ -484,15 +484,15 @@ impl Session<'_> {
         // fresh channel (never join() on the loop — the interrupt-lag freeze):
         // any stale chunk or ToolStart the dying thread still emits lands on the
         // dropped receiver, so it can't repopulate the cleared state. See
-        // docs/interrupt.md.
+        // docs/input/interrupt.md.
         self.abandon_inflight();
         self.render.reset();
         // …and the pictures the wiped conversation kept encoded for the wire
-        // (`docs/memory.md`): nothing re-sends them now.
+        // (`docs/architecture/memory.md`): nothing re-sends them now.
         alter_zero::images::clear_attachments();
         // A fresh slate kills the background shells too (clear_conversation
         // already forgot them, so their Exited events find nothing and owe no
-        // notice — docs/background.md). Notes already posted for the wiped
+        // notice — docs/tools/background.md). Notes already posted for the wiped
         // conversation are dropped with it, else the next turn end would start a
         // phantom follow-up turn about them.
         self.registry.kill_all();
@@ -500,35 +500,35 @@ impl Session<'_> {
         // …and the mid-turn queue: `App::clear_conversation` dropped the rows,
         // so the handle the dying backend was about to drain must go too, or
         // the next turn would open by reading a message from the conversation
-        // that was just wiped (docs/queue.md).
+        // that was just wiped (docs/input/queue.md).
         let _ = self.steer.take();
-        // …and the subagents (docs/agent-tool.md): the wiped roster drops their
+        // …and the subagents (docs/agents/agent-tool.md): the wiped roster drops their
         // late events, and the registry forgets them — the conversation that
         // knew their ids is gone, so nothing may list or resume them
-        // (docs/agent-tools.md).
+        // (docs/agents/agent-tools.md).
         self.agent_registry.clear();
         self.agent_clocks.clear();
         self.agent_expiry.clear();
         // …and the permission gate: `clear_conversation` dropped the prompt, the
         // cancelled threads reap themselves, so no unclaimed decision may linger
-        // for the next turn (docs/permissions.md). The ask gate's board goes
-        // the same way (docs/ask.md).
+        // for the next turn (docs/state/permissions.md). The ask gate's board goes
+        // the same way (docs/tools/ask.md).
         self.permissions.clear();
         self.ask.clear();
         // …and the task list: `clear_conversation` wiped App's snapshot; the
         // shared registry follows so the model's next `tasklist` agrees
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         self.sync_task_registry();
-        // The session boundary for the hooks (docs/hooks.md), Claude Code's
+        // The session boundary for the hooks (docs/tools/hooks.md), Claude Code's
         // pair for its /clear: SessionEnd(clear) now — before the recorder
         // moves on, so it names the conversation that ended, and bounded, so
         // /clear cannot hang — and SessionStart(clear) in the background once
         // the new conversation has its id.
         self.models.end_conversation("clear");
         // A cleared conversation starts a fresh session file (codex's /new); the
-        // old one keeps what it had (docs/resume.md). Re-seed the checkpoint chain
+        // old one keeps what it had (docs/state/resume.md). Re-seed the checkpoint chain
         // with a pristine snapshot of the current tree so a backtrack in the new
-        // session can restore its starting point (docs/checkpoint.md).
+        // session can restore its starting point (docs/state/checkpoint.md).
         self.recorder.start_new();
         self.models.begin_conversation("clear");
         if let Some(commit) = self.checkpoints.snapshot("session start") {
@@ -556,7 +556,7 @@ impl Session<'_> {
             // A resize under an open permission prompt reseats it with this
             // purge; the reflow notes it itself (`term.take_modal_scrolled`) so
             // the prompt's close purge-rebuilds too instead of stranding the box
-            // (docs/permissions.md).
+            // (docs/state/permissions.md).
             self.repaint_active_view()?;
         } else if size_changed {
             // Under an overlay the inline view can't reflow (it would write the
@@ -582,7 +582,7 @@ impl Session<'_> {
         match self.app.view {
             // The ask modal owns every key, so it owns pastes too: the live
             // entry field takes them (placeholder-collapsed over the
-            // threshold), the option pages swallow them (docs/ask.md).
+            // threshold), the option pages swallow them (docs/tools/ask.md).
             View::Conversation if self.app.ask().is_some() => {
                 self.app.paste_into_ask(pasted);
             }
@@ -594,32 +594,32 @@ impl Session<'_> {
             }
             // The `/settings` menu has a search field too, but nothing anyone
             // pastes is a setting name — swallow it rather than letting it
-            // reach the composer draft underneath (docs/settings.md).
+            // reach the composer draft underneath (docs/state/settings.md).
             View::Conversation if self.app.settings_picker.is_some() => {}
-            // …and neither is a mascot name (docs/mascot.md)…
+            // …and neither is a mascot name (docs/ui/mascot.md)…
             View::Conversation if self.app.mascot_picker.is_some() => {}
-            // …nor a spinner style (docs/spinner.md).
+            // …nor a spinner style (docs/ui/spinner.md).
             View::Conversation if self.app.spinner_picker.is_some() => {}
-            // …nor a theme name (docs/theme.md)…
+            // …nor a theme name (docs/ui/theme.md)…
             View::Conversation if self.app.theme_picker.is_some() => {}
             // …and the read-only `/donate` page has no field at all
-            // (docs/donate.md)…
+            // (docs/ui/donate.md)…
             View::Conversation if self.app.donate_picker.is_some() => {}
-            // …nor does the `/export` page, its sibling (docs/export.md)…
+            // …nor does the `/export` page, its sibling (docs/ui/export.md)…
             View::Conversation if self.app.export_picker.is_some() => {}
-            // …nor the `/context` page (docs/context-usage.md).
+            // …nor the `/context` page (docs/architecture/context-usage.md).
             View::Conversation if self.app.context_usage.is_some() => {}
-            // …nor the `/usage` page (docs/usage.md).
+            // …nor the `/usage` page (docs/providers/usage.md).
             View::Conversation if self.app.usage_page.is_some() => {}
             // The `/secrets` form takes pastes — a credential is pasted far
             // more often than typed — into its focused field, never the
-            // composer draft underneath (docs/secrets.md).
+            // composer draft underneath (docs/state/secrets.md).
             View::Conversation if self.app.secrets_page.is_some() => {
                 self.app.on_paste(pasted);
             }
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
-            // point); every other page swallows them (docs/mcp.md).
+            // point); every other page swallows them (docs/tools/mcp.md).
             View::Conversation if self.app.mcp_menu.is_some() => {
                 let _ = self.app.paste_into_mcp_auth(pasted);
             }
@@ -638,7 +638,7 @@ impl Session<'_> {
 
     /// Esc-Esc backtrack confirmed: history is already truncated to the chosen
     /// message and the composer prefilled. Reset the code to that point's
-    /// checkpoint (`docs/checkpoint.md`) before returning to the inline view.
+    /// checkpoint (`docs/state/checkpoint.md`) before returning to the inline view.
     ///
     /// The restore target is the latest checkpoint at or before the new history
     /// length; the current tree is backed up first (recoverable via the store's
@@ -648,7 +648,7 @@ impl Session<'_> {
         let restored = self.restore_checkpoint_at(self.app.history.len());
         // `App::confirm_backtrack` already rewound the checklist to the
         // snapshot at the cut; the shared registry follows
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         self.sync_task_registry();
         // Consume the overlay-resized flag (a resize under the overlay must not
         // leak to the next return); we purge unconditionally below anyway.
@@ -672,7 +672,7 @@ impl Session<'_> {
     /// Sync the shared task registry to `App`'s checklist — after any history
     /// rewind (`/clear`, a `/resume` load, a backtrack truncation), so the
     /// model's next `tasklist` call agrees with what the strip shows
-    /// (`docs/task-tools.md`). The forward direction never needs this: a task
+    /// (`docs/tools/task-tools.md`). The forward direction never needs this: a task
     /// call *starts* at the registry and reaches `App` on its `TaskCall`
     /// event.
     pub(crate) fn sync_task_registry(&self) {

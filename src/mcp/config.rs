@@ -1,4 +1,4 @@
-//! The MCP config-file format (`docs/mcp.md`) — Claude Code's `mcpServers`
+//! The MCP config-file format (`docs/tools/mcp.md`) — Claude Code's `mcpServers`
 //! shape, parsed leniently but **loudly**: a server whose entry won't parse is
 //! reported by name (the boundary raises a red toast), never dropped in
 //! silence — the `SKILL.md` posture, because a silently-missing server reads
@@ -60,7 +60,7 @@ pub enum McpServerConfig {
     },
 }
 
-/// A remote server's pre-registered OAuth client (`docs/mcp.md`) — the
+/// A remote server's pre-registered OAuth client (`docs/tools/mcp.md`) — the
 /// `oauth` object other MCP clients write, for an authorization server that
 /// registers no clients itself (Google's): the client the user created in
 /// its console, the loopback port its redirect URI names, the scopes to ask
@@ -127,7 +127,7 @@ impl McpServerConfig {
     /// Did the user write an `Authorization` header into the config? Such a
     /// server is authenticated without OAuth ever running, so reporting it
     /// as "not authenticated" is the same lie the public-server case was
-    /// (`docs/mcp.md`). The transport already prefers this header over a
+    /// (`docs/tools/mcp.md`). The transport already prefers this header over a
     /// stored bearer, so the two agree.
     #[must_use]
     pub fn has_auth_header(&self) -> bool {
@@ -140,7 +140,7 @@ impl McpServerConfig {
     }
 
     /// The transport's display word (`stdio`/`http`/`sse`) — the CLI's
-    /// `mcp list`/`get` label (`docs/mcp-cli.md`). The `sse_fallback` Http
+    /// `mcp list`/`get` label (`docs/cli/mcp-cli.md`). The `sse_fallback` Http
     /// shape still *is* http; the retry is a resilience detail, not a
     /// fourth transport.
     #[must_use]
@@ -283,7 +283,7 @@ pub fn record_disabled(
 }
 
 /// Why a CLI write ([`record_server`]/[`remove_server`]) was refused — the
-/// boundary maps each to its message and exit code (`docs/mcp-cli.md`).
+/// boundary maps each to its message and exit code (`docs/cli/mcp-cli.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpWriteError {
     /// The file's contents don't parse as a JSON object (with `mcpServers`,
@@ -301,7 +301,7 @@ pub enum McpWriteError {
 }
 
 /// Parse one server **entry** from a JSON string — `mcp add-json`'s parser
-/// (`docs/mcp-cli.md`), the same `parse_server` every file read uses, so a
+/// (`docs/cli/mcp-cli.md`), the same `parse_server` every file read uses, so a
 /// README's `{"type":"http","url":…}` snippet round-trips through the one
 /// schema.
 pub fn parse_server_entry(json: &str) -> Result<McpServerConfig, String> {
@@ -473,7 +473,7 @@ fn parse_document(contents: &str) -> Result<serde_json::Map<String, Value>, McpW
 }
 
 /// Re-render the user file with `name`'s entry added — `record_disabled`'s
-/// sibling for the `mcp add` CLI (`docs/mcp-cli.md`): the boundary reads the
+/// sibling for the `mcp add` CLI (`docs/cli/mcp-cli.md`): the boundary reads the
 /// file, calls this, writes the result. A duplicate name is
 /// [`McpWriteError::Exists`] (remove it first — never a silent overwrite),
 /// and every other key — the `projects` disabled sets, unknown keys, the
@@ -804,7 +804,7 @@ pub fn resolve_config(
 /// Merge the scopes into the declared server list, first occurrence of a
 /// name winning (the Claude Code precedence, minus the scopes we don't
 /// model): the project's `.alter-zero/mcp.json`, then the compat
-/// `.mcp.json`, then the user file (`docs/project-config.md`). Order:
+/// `.mcp.json`, then the user file (`docs/state/project-config.md`). Order:
 /// project entries first (each file's order), then the user's — both
 /// project files' entries stay contiguous under the Project scope, so the
 /// `/mcp` list's headings render once per scope.
@@ -828,7 +828,7 @@ pub fn merge_scopes(
 }
 
 /// [`merge_scopes`] with the startup review woven in
-/// (`docs/config-review.md`): each project file carries the names the user
+/// (`docs/state/config-review.md`): each project file carries the names the user
 /// has **enabled** in it. Precedence is approval-aware — **enabled project
 /// servers, then the user's, then the project's other servers**, first
 /// occurrence of a name winning — so a server still waiting for its answer,
@@ -1087,7 +1087,7 @@ mod tests {
         assert_eq!(merged[0].config.url(), Some("https://a"));
     }
 
-    // ===== the CLI writers (docs/mcp-cli.md) =====
+    // ===== the CLI writers (docs/cli/mcp-cli.md) =====
 
     fn http(url: &str) -> McpServerConfig {
         McpServerConfig::Http {

@@ -5,7 +5,7 @@
 smoke_begin
 
 # Alt+Up pulls only the LAST queued batch back into the composer
-# (docs/queue.md): queue "world" with Enter (batch 1) and "again" with Tab
+# (docs/input/queue.md): queue "world" with Enter (batch 1) and "again" with Tab
 # (batch 2 — a separate turn) mid-stream, press Alt+Up — only "again" returns to
 # the box as the draft ("❯ again"), while the earlier "world" batch stays queued
 # (its "  ❯ world" inset row remains) and the pulled "  ❯ again" inset row is gone.

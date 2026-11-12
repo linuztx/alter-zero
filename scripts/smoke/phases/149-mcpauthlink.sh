@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The /mcp SIGN-IN URL IS A CLICKABLE LINK (docs/links.md, docs/mcp.md
+# The /mcp SIGN-IN URL IS A CLICKABLE LINK (docs/ui/links.md, docs/tools/mcp.md
 # *Authenticate*). The /login browser page's authorize URL opened whole when
 # clicked; the /mcp auth page's did not. It printed the URL as plain rows, so
 # the terminal's own per-row URL detection opened the FIRST row's truncated

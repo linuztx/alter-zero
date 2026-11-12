@@ -1,4 +1,4 @@
-//! The retained wire prefix, end to end (`docs/prompt-caching.md`, *Keeping
+//! The retained wire prefix, end to end (`docs/providers/prompt-caching.md`, *Keeping
 //! the conversation prefix stable*): a real [`LlmBackend`] turn against a
 //! stand-in on the loopback, its events folded into the [`App`] the way the
 //! boundary folds them, and the next turn's request read back off the wire.
@@ -74,7 +74,7 @@ const CHAT_TEXT_ROUND: &str = concat!(
     "data: [DONE]\n\n",
 );
 
-/// The same tool round on the Responses wire (`docs/chatgpt.md`): the blank
+/// The same tool round on the Responses wire (`docs/providers/chatgpt.md`): the blank
 /// line as an output-text delta, the call whole on one finished item.
 const RESPONSES_TOOL_ROUND: &str = concat!(
     "data: {\"type\":\"response.output_text.delta\",\"delta\":\"\\n\\n\"}\n\n",
@@ -229,7 +229,7 @@ fn backend_on(wire: WireApi, base: &str) -> LlmBackend {
     LlmBackend::configure(cfg, Some("be terse".to_string()), true).with_max_retries(0)
 }
 
-/// A `UserPromptSubmit` hook that refuses one exact prompt (`docs/hooks.md`).
+/// A `UserPromptSubmit` hook that refuses one exact prompt (`docs/tools/hooks.md`).
 #[derive(Debug)]
 struct BlockPrompt(&'static str);
 
@@ -364,7 +364,7 @@ fn continuation(events: &[StreamEvent]) -> Option<(String, String)> {
 
 #[test]
 fn an_empty_reply_is_answered_with_a_continuation_the_next_turn_replays() {
-    // The reported bug, end to end (docs/unfinished-replies.md): the model's
+    // The reported bug, end to end (docs/architecture/unfinished-replies.md): the model's
     // round comes back with reasoning and nothing else. The turn does not
     // end on it — the next request carries a continuation prompt, and the
     // reply that follows ends the turn — and the prompt is recorded, so the
@@ -423,7 +423,7 @@ fn a_cut_off_reply_and_its_continuation_replay_from_the_records_alone() {
     // What was said before the cap is kept and the prompt follows it. The
     // next human turn runs on a *rebuilt* backend — no retained request,
     // what a `/model` switch or a `/resume` leaves — so only the records
-    // can reproduce the request the provider saw (docs/unfinished-replies.md).
+    // can reproduce the request the provider saw (docs/architecture/unfinished-replies.md).
     let (base, requests) = stand_in(&[CHAT_CUT_OFF_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
     let first = backend_on(WireApi::Chat, &base);
     let mut app = App::new();
@@ -476,7 +476,7 @@ fn a_rebuilt_backend_sends_the_batch_the_provider_saw() {
     // and still sends the first turn's parallel batch as the provider saw
     // it: one assistant message, both calls, the provider's own ids. The
     // records carry the identity, so the derived context alone reproduces
-    // the wire (docs/prompt-caching.md).
+    // the wire (docs/providers/prompt-caching.md).
     let (base, requests) = stand_in(&[CHAT_BATCH_ROUND, CHAT_TEXT_ROUND, CHAT_TEXT_ROUND]);
     let first = backend_on(WireApi::Chat, &base);
     let mut app = App::new();
@@ -516,7 +516,7 @@ fn a_blocked_prompt_does_not_cost_the_retained_prefix() {
     // records cannot reproduce, so only the retained prefix restores it. A
     // `UserPromptSubmit` block ends a turn before any request goes out; it
     // must not consume that prefix, or the next real turn re-sends a
-    // different conversation (docs/prompt-caching.md).
+    // different conversation (docs/providers/prompt-caching.md).
     let (base, requests) = stand_in(&[
         RESPONSES_TOOL_ROUND,
         RESPONSES_TEXT_ROUND,
@@ -572,7 +572,7 @@ fn live_openrouter_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
     // context alone. The records carry the provider's own call id and the
     // round's exact text, so the provider reads the prefix through the tool
     // result back instead of re-reading it from the call on
-    // (docs/prompt-caching.md). Both backends share the session's affinity
+    // (docs/providers/prompt-caching.md). Both backends share the session's affinity
     // key, as two backends of one process do.
     use alter_zero::llm::{ProvidersFile, Selection};
     let key =
@@ -679,7 +679,7 @@ fn live_chatgpt_a_rebuilt_backend_reads_the_tool_round_back_from_cache() {
     // next turn from the derived context alone. A read that stops at the
     // system prompt and the first user message would be a mismatch at the
     // tool round; a read through the tool result is the record replaying
-    // what the provider cached (docs/prompt-caching.md). OpenAI's cache is
+    // what the provider cached (docs/providers/prompt-caching.md). OpenAI's cache is
     // best-effort, so the assertion is the floor and the ratio is printed.
     use alter_zero::llm::{ProvidersFile, Selection};
     alter_zero::llm::chatgpt::set_store_path(

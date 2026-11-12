@@ -1,6 +1,6 @@
 //! The thinking stream: the live reasoning buffer, the `Thought for …` cell
 //! it settles into, and the provider's reasoning-token snap.
-//! See `docs/thinking-stream.md`.
+//! See `docs/ui/thinking-stream.md`.
 
 use super::*;
 
@@ -80,7 +80,7 @@ fn an_empty_phase_records_nothing() {
 
 #[test]
 fn a_compact_turn_never_opens_a_phase() {
-    // The summarization turn is invisible by design (docs/compact.md) — its
+    // The summarization turn is invisible by design (docs/architecture/compact.md) — its
     // thinking must not commit a cell into the conversation.
     let mut app = App::new();
     app.begin_compact(false);
@@ -210,7 +210,7 @@ fn a_later_rounds_usage_leaves_an_earlier_thought_alone() {
 fn an_interrupt_after_thinking_keeps_the_thought() {
     // The boundary settles the open phase first, so the recorded cell is what
     // makes this a Kept interrupt: real work streamed, and codex never
-    // retracts what streamed (docs/interrupt.md).
+    // retracts what streamed (docs/input/interrupt.md).
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_stream();

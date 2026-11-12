@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measure what Ctrl+V image pastes cost the running TUI in resident memory
-# (docs/memory.md, "Pasting a screenshot"; docs/image-paste.md, "Measuring").
+# (docs/architecture/memory.md, "Pasting a screenshot"; docs/input/image-paste.md, "Measuring").
 #
 # Drives the REAL binary in tmux under a virtual X server, with the
 # `clipboard_owner` example serving a screenshot-shaped PNG on the clipboard

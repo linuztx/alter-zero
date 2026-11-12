@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# BACKGROUND SHELLS (docs/background.md). A long `!` command is
+# BACKGROUND SHELLS (docs/tools/background.md). A long `!` command is
 # moved to the background with Ctrl+B: its cell resolves to the fixed
 # `⎿ Running in the background (↓ to manage)` row, the footer counts
 # `· 1 shell`, ↓ LIGHTS THAT COUNT on cyan (the rest of the footer intact, no
@@ -13,7 +13,7 @@ smoke_begin
 # `x` stops the shell — committing the red `was stopped by the user` notice —
 # and, that being the last shell, the manager CLOSES itself: the composer and
 # the shell-less footer come back with no empty `No tasks currently running`
-# page left asking to be dismissed (docs/background.md).
+# page left asking to be dismissed (docs/tools/background.md).
 S42="${S}_background"
 # A short command line (the notice headline must fit one row at 80 cols), with
 # the slow streamer in a script file.
@@ -59,7 +59,7 @@ echo "==== Phase 42: cell resolved backgrounded + footer count ===="
 printf '%s\n' "$bg_cell_pane"
 # ↓ from the empty composer FOCUSES the footer's shell count first — it lights
 # up on the default theme's accent — Catppuccin Mocha's sky, `#89DCEB`,
-# SGR `48;2;137;220;235`, captured with -e (docs/theme.md; `ui/palette.rs`) — while the
+# SGR `48;2;137;220;235`, captured with -e (docs/ui/theme.md; `ui/palette.rs`) — while the
 # model/cwd segments stay put and no band opens. Enter is what opens it.
 tmux send-keys -t "$S42" Down
 sleep 0.3

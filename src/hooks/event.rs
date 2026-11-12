@@ -5,10 +5,10 @@
 //! than anything derived — a rename here silently stops matching real config
 //! files, which is why they are written out.
 
-/// One point in the agent's lifecycle a hook may run at (`docs/hooks.md`).
+/// One point in the agent's lifecycle a hook may run at (`docs/tools/hooks.md`).
 ///
 /// Claude Code's spellings throughout — a subset of its events, every one of
-/// them fired (`docs/hooks.md`); a config naming one we don't model loads
+/// them fired (`docs/tools/hooks.md`); a config naming one we don't model loads
 /// fine and never fires it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HookEvent {
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn claude_codes_failure_and_notification_events_are_modelled() {
         // A config written for Claude Code names these; they used to load and
-        // never fire (`docs/hooks.md` *Known gaps*).
+        // never fire (`docs/tools/hooks.md` *Known gaps*).
         for name in ["PostToolUseFailure", "StopFailure", "Notification"] {
             assert!(HookEvent::from_name(name).is_some(), "{name} is unmodelled");
         }

@@ -12,7 +12,7 @@
 # This runner discovers them, runs them on a pool of parallel workers, keeps a
 # log per phase, and prints one line per result plus a summary. Phases tagged
 # `serial` (a timing measurement a loaded machine would skew) run after the
-# pool drains, one at a time. See docs/smoke.md.
+# pool drains, one at a time. See docs/ops/smoke.md.
 #
 #   scripts/smoke.sh                      # everything, in parallel
 #   scripts/smoke.sh -j 2                 # two workers

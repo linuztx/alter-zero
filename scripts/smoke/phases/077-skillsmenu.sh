@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/skills` MENU (docs/skills.md). The `/settings` menu's
+# the `/skills` MENU (docs/tools/skills.md). The `/settings` menu's
 # twin — same frame, same grammar — under the pages' header (the `Skills`
 # title over a `{n} skills · {k} enabled` count), over the discovered skills,
 # each one toggled with Space or Enter and its value led by a `✔`/`◯` mark,

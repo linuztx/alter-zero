@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# a BLOCKED prompt is erased from the ROLLOUT too (docs/hooks.md).
+# a BLOCKED prompt is erased from the ROLLOUT too (docs/tools/hooks.md).
 # The recorder used to key its truncation rewrite on history length alone, and
 # block_prompt removes the submission AND records the notice — length holds
 # still, so the file kept the censored prompt, lost the notice, and a

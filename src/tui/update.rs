@@ -1,4 +1,4 @@
-//! The once-a-day update check at the boundary (`docs/update.md`): the
+//! The once-a-day update check at the boundary (`docs/ops/update.md`): the
 //! request, the card under the banner, the recorded day — everything
 //! `update` (the pure half) leaves to the side that can read a clock, touch
 //! the file and spawn a thread. `tui::telemetry`'s twin, and it keeps the
@@ -142,7 +142,7 @@ impl Session<'_> {
     /// same queue the banner rides. Chrome, never `history`; a purge rebuild
     /// does not re-emit it. Its command is the one that updates this install
     /// — `alter-zero update`, or the package manager's that unpacked this
-    /// binary under `node_modules` (`docs/npm.md`).
+    /// binary under `node_modules` (`docs/ops/npm.md`).
     fn commit_update_notice(&mut self, latest: &str) {
         let width = self.term.screen().width;
         let manager = std::env::current_exe()

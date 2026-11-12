@@ -10,7 +10,7 @@
 //! into a residue: a freed multi-megabyte block raises the threshold past its
 //! own size, so the *next* one of that size is carved from the heap instead —
 //! where a free never reaches the OS. Three pasted screenshots measured a
-//! 103 MB process (`docs/memory.md`).
+//! 103 MB process (`docs/architecture/memory.md`).
 //!
 //! The `png` crate underneath `image` can hand rows out one at a time, and a
 //! shrink that only ever goes **down** needs nothing but the row in hand and

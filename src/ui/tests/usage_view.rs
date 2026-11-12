@@ -1,4 +1,4 @@
-//! The read-only `/usage` page (`docs/usage.md`).
+//! The read-only `/usage` page (`docs/providers/usage.md`).
 
 use super::*;
 use crate::app::UsageTarget;

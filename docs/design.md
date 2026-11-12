@@ -9,7 +9,7 @@ user ↔ AI conversation. The AI side is a **dummy** that streams a canned
 response chunk-by-chunk, with **tool calls interleaved** in the reply — a
 guided demo of the UI that resolves its scripted calls with the *real*
 executor's output and closes by pointing at `/login` and `/model`
-(`docs/dummy-backend.md`). The
+(`docs/architecture/dummy-backend.md`). The
 layout must be responsive to terminal width, and the visual style should echo
 Claude Code (a bottom-pinned input field framed by a top/bottom rule, messages
 and tool calls flowing above it in normal scrollback). Everything that can be
@@ -19,12 +19,12 @@ The same session also runs with **no screen at all**: `alter-zero -p
 "prompt"` answers one prompt for a script, a cron job or a CI step — the
 answer on stdout (or JSON), problems on stderr — every step too with
 `--verbose` — an exit status to branch on,
-nothing asked ([`headless.md`](headless.md)). It is the TUI's own `Session`
+nothing asked ([`headless.md`](cli/headless.md)). It is the TUI's own `Session`
 over a viewport that paints nowhere, so the conversation it records is the
 one the TUI would have.
 
 The same binary also ships as a **headless Kali Linux container**
-([`docker.md`](docker.md)): the published release on Kali Rolling with a small
+([`docker.md`](ops/docker.md)): the published release on Kali Rolling with a small
 set of command-line tools, for Docker and Podman. It changes nothing about the
 app — the container is somewhere to `exec` into — but it is where two things
 the app takes from its surroundings have to be handed over on purpose: the
@@ -59,7 +59,7 @@ which Ctrl+V reads the clipboard from.
 - **Status indicator.** While a turn is in flight, the strip's status line opens
   with the session's **spinner** — by default `gravity`, a ball hopping along
   a braille track and bouncing off both walls; `/spinner` picks among nine
-  styles, the comet's Larson-scanner sweep among them (`docs/spinner.md`,
+  styles, the comet's Larson-scanner sweep among them (`docs/ui/spinner.md`,
   `ui::spinner_spans`),
   then a per-turn whimsical **verb** (`Working`, `Cooking`, …, picked
   deterministically by a turn counter) whose white text carries a codex-style
@@ -74,7 +74,7 @@ which Ctrl+V reads the clipboard from.
   chunk — `DummyAi`'s `STARTUP_DELAY`, 3s, overridable via
   `ALTER_ZERO_STARTUP_DELAY_MS`; its per-chunk pace, `CHUNK_DELAY`, is the
   twin knob `ALTER_ZERO_CHUNK_DELAY_MS`, which is how the offline backend
-  mimics a model streaming a few tokens a second — `docs/slow-stream.md`) so
+  mimics a model streaming a few tokens a second — `docs/ui/slow-stream.md`) so
   the indicator is visibly working first: the
   just-sent user message is counted up front (`App::count_user_input`, `↑`), so
   the pause shows `↑ N tokens` and the timer ticks. The strip reserves **no
@@ -82,25 +82,25 @@ which Ctrl+V reads the clipboard from.
   the status sits one blank below the user message, no stray empty line, like
   codex); the preview appears only once the reply streams (or a tool runs — a
   running backend tool previews its whole `header + ⎿ Running…` cell, so a long
-  command isn't clipped, `docs/tools.md`), and the first chunk flips the arrow
+  command isn't clipped, `docs/tools/tools.md`), and the first chunk flips the arrow
   `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the spinner runs, the shimmer waves, and the timer moves even
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   — the past tense of the verb the line wore last (`Worked for 12s`), the verb
-  moving on every 30 s of a turn (`docs/status-indicator.md`) —
+  moving on every 30 s of a turn (`docs/ui/status-indicator.md`) —
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
   Time is impure, so — like
   the timestamp clock — the loop owns the `Instant`s and feeds the pure status
   only computed `Duration`s (`App::set_status_times`; the same value drives the
-  displayed seconds and both animation phases). See `docs/status-indicator.md`.
+  displayed seconds and both animation phases). See `docs/ui/status-indicator.md`.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
   text wraps (or as explicit newlines are added with **Ctrl+J / Alt+Enter /
-  Shift+Enter** — `docs/shift-enter.md`), so a long message is never lost off the
+  Shift+Enter** — `docs/input/shift-enter.md`), so a long message is never lost off the
   right edge. The live region height is
   therefore dynamic: `LIVE_MIN_HEIGHT` (a one-row box, no preview strip) at rest,
   growing one row per wrapped input line up to the terminal height (plus a preview
@@ -139,9 +139,9 @@ which Ctrl+V reads the clipboard from.
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
   With a **real** backend these tools are driven by the model: it can call
   `bash`/`read`/`write`/`edit`, which run locally in an agentic loop and feed
-  their results back until it answers in plain text (`docs/tools.md`) — an
+  their results back until it answers in plain text (`docs/tools/tools.md`) — an
   empty reply, or one cut off at the output cap, is asked to continue rather
-  than taken for the answer (`docs/unfinished-replies.md`). An
+  than taken for the answer (`docs/architecture/unfinished-replies.md`). An
   `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
   in the `⎿` gutter.
 - **Collapsed read/search groups.** Unless the `/settings` **Verbose output**
@@ -155,9 +155,9 @@ which Ctrl+V reads the clipboard from.
   not a read arrives — a call of another kind, reply text, an error, the
   turn's end. The group is derived from the history (`app::group_run`), so
   every rebuild paints the same line; Ctrl+O keeps every call whole
-  (`docs/tool-groups.md`). In auto mode the same commands, when they
+  (`docs/ui/tool-groups.md`). In auto mode the same commands, when they
   *provably* only read (`read_only::is_read_only`), skip the classifier
-  (`docs/permissions.md`).
+  (`docs/state/permissions.md`).
 - **Clickable links (OSC 8).** Every URL an assistant reply shows — a bare
   `https://…` in prose, a list item, a table cell, inline/fenced/indented code,
   a heading, or a `[text](url)` target — is painted wrapped in an OSC 8
@@ -174,7 +174,7 @@ which Ctrl+V reads the clipboard from.
   without OSC 8 consumes the escape and behaves exactly as before. The URL
   rides from the renderer (where it is still whole) to the paint boundary in
   `Style::underline_color` as an
-  interned 24-bit id, stripped at emission — `docs/links.md`. A
+  interned 24-bit id, stripped at emission — `docs/ui/links.md`. A
   `● Read/Write/Edit({path})` header's path links the same way to the
   **file** — `links::file_url`, the absolute `file://` URI behind whatever
   short form the row shows — so a click opens it, while the `⎿ Wrote …`
@@ -195,7 +195,7 @@ which Ctrl+V reads the clipboard from.
   call's **complete** (expanded) output, interleaved in the exact order they
   happened, plus the live tail (in-progress reply / running tool) **plus the
   still-queued backlog** (the inline strip's inset `  ❯ …` rows, so a queued
-  message is never hidden — `docs/queue.md`), scrollable (↑/↓ PgUp/PgDn,
+  message is never hidden — `docs/input/queue.md`), scrollable (↑/↓ PgUp/PgDn,
   Home/End jump). It **opens
   pinned to the bottom** and tail-follows new content as it streams in (scroll up
   to read back; scrolling to the bottom re-engages following). Committed rows
@@ -204,7 +204,7 @@ which Ctrl+V reads the clipboard from.
   styles while preserving the IDs of retained spans. The pager expands only
   its visible rows, preserving instant opens and complete output while
   reducing retained memory
-  (`docs/memory.md`, `docs/tool-view-performance.md`). It is the
+  (`docs/architecture/memory.md`, `docs/ui/tool-view-performance.md`). It is the
   expanded counterpart of the inline view (where tools are collapsed): each tool's
   full output hangs under the same `⎿` gutter as the inline peek — a backend tool
   keeps its `● name(args)` header over it, a `!` shell cell stays headerless — with
@@ -216,7 +216,7 @@ which Ctrl+V reads the clipboard from.
   transcript gains the new user entry and follows the new turn live, the
   deferred user bubbles regenerated from history on return); Ctrl+O (`q`, or
   Esc — unless idle with a previous user message, when Esc instead begins the
-  backtrack preview in place, `docs/backtrack.md`) returns, and the inline
+  backtrack preview in place, `docs/input/backtrack.md`) returns, and the inline
   view is repainted from `history` to catch up — and **so does quitting** (Ctrl+C)
   from the overlay, which repaints before exiting so a turn that finished while the
   overlay was up restores its `Done for Ns` summary rather than the stale streaming
@@ -225,7 +225,7 @@ which Ctrl+V reads the clipboard from.
   screen**, and a frame that changes nothing is not written at all — which is
   what lets you select and copy text out of it *while a turn streams*, since a
   terminal drops a mouse selection the moment the cells under it are rewritten
-  (`docs/overlay-repaint.md`). The draw tick correspondingly stops re-arming the
+  (`docs/ui/overlay-repaint.md`). The draw tick correspondingly stops re-arming the
   status animation's clock chain while an overlay is up: nothing it animates is
   on screen there, and every event source schedules its own frame, so the page
   still repaints the instant its content changes. Only the **user** message shows a **wall-clock timestamp** (12-hour,
@@ -235,7 +235,7 @@ which Ctrl+V reads the clipboard from.
   conversation never shows any. The clock is injected at the I/O boundary
   (`App::set_clock`, a real `chrono::Local` clock in `tui::host`; `None` in unit
   tests → empty stamp) and each item stores the pre-formatted string, so the
-  pure library stays clock-free. See `docs/timestamps.md`.
+  pure library stays clock-free. See `docs/ui/timestamps.md`.
 - **The `/diff` Git review.** A read-only, alternate-screen review of the
   current Git worktree, including staged, unstaged, and untracked files. A
   themed two-pane layout puts a searchable, filterable file list beside the
@@ -244,7 +244,7 @@ which Ctrl+V reads the clipboard from.
   `/` searches paths, Tab changes focus, `n`/`N` move between hunks, and `r`
   refreshes. Git loads asynchronously. Outside a Git worktree the loading
   screen returns to chat with an explanatory toast; no repository is initialized.
-  `q`, Esc, or Ctrl+C return to the preserved conversation. See `docs/diff.md`;
+  `q`, Esc, or Ctrl+C return to the preserved conversation. See `docs/ui/diff.md`;
   `smoke.sh` Phase 120 covers the complete review flow in temporary repos.
 - **Slash-command palette (Claude-Code style).** When the input is a **bare
   command token** — `/`, `/cl`, `/clear`, but *not* `ask /clear` or anything past
@@ -257,7 +257,7 @@ which Ctrl+V reads the clipboard from.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_COMMANDS` (5)
   commands at a time over a dim `(n/total)` counter in the names' column — which
   match the highlight is on, of how many the query matched, the pickers' counter
-  (`docs/view-flow.md` *A picker's page*), left out only on a terminal too narrow
+  (`docs/ui/view-flow.md` *A picker's page*), left out only on a terminal too narrow
   to hold it whole, since a count cut at the edge would misread. The registry
   has outgrown the window, so a bare `/` shows `/clear` through `/compact` over
   `(1/21)`, and the window keeps the highlight **centered** the way the `/model` and
@@ -304,26 +304,26 @@ which Ctrl+V reads the clipboard from.
   system clipboard, the loop doing the arboard/OSC 52 write at the boundary
   and confirming with a toast; with no response yet the command is
   `Toast(COPY_EMPTY_NOTICE)` instead, `/compact`'s empty rule — see
-  `docs/copy.md`), and `/resume` →
+  `docs/ui/copy.md`), and `/resume` →
   `OpenResumePicker` idle or `Toast(RESUME_BUSY_NOTICE)` mid-turn
-  (codex blocks it while a task runs — see `docs/resume.md` and the /resume
+  (codex blocks it while a task runs — see `docs/state/resume.md` and the /resume
   bullet below), and `/init` → `Submit(INIT_PROMPT.trim_end())` idle
   (codex's `/init`:
   the canned `prompts/init.md` prompt — generate an `AGENTS.md` contributor
   guide, never overwriting an existing one — submitted as a regular user
   turn the model's tool loop answers; mid-turn a `Toast(INIT_BUSY_NOTICE)`
-  like codex's `available_during_task = false` — see `docs/init.md`), and
+  like codex's `available_during_task = false` — see `docs/state/init.md`), and
   `/compact` → `Compact` idle (codex's manual context
   compaction — a summarization turn whose invisible reply becomes the
   append-only `HistoryItem::Compaction` marker the context derivation bridges
   from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
-  `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
+  `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/architecture/compact.md`, `smoke.sh`
   Phase 50; with the model's context window known the footer carries a
   `{used}/{window} ({pct}%)` gauge and the loop **auto-compacts** past codex's 90%
   threshold, the cell tagged `· auto` — Phase 51), and `/context` →
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
-  cache hit, kept live by the boundary — see `docs/context-usage.md`,
+  cache hit, kept live by the boundary — see `docs/architecture/context-usage.md`,
   `smoke.sh` Phase 144). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
@@ -335,7 +335,7 @@ which Ctrl+V reads the clipboard from.
   interrupt notice, no summary), and the loop's `Clear` arm cancels + detaches
   the in-flight backend and swaps in a fresh reply channel (`abandon_inflight` —
   the Esc-interrupt dance minus the commits; never `join()`ing on the loop, the
-  interrupt-lag fix in `docs/interrupt.md`) before the blank repaint, so a stale
+  interrupt-lag fix in `docs/input/interrupt.md`) before the blank repaint, so a stale
   chunk or `ToolStart` can't repopulate the cleared state and stream into the
   fresh screen. Codex instead
   *disables* `/new`/`/clear` while a task runs (`available_during_task` → the
@@ -346,7 +346,7 @@ which Ctrl+V reads the clipboard from.
   conversation). Guarded by `smoke.sh` Phase 16: nothing may stream in after a
   mid-turn `/clear`, and the next turn must run normally.
 - **`?` shows a shortcuts band** (codex's footer shortcut overlay — see
-  `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
+  `docs/ui/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
   the box — `{key} for {thing}` entries (keys cyan, labels dim) inset two
   columns like the footer row whose slot it takes, running down as many
@@ -367,14 +367,14 @@ which Ctrl+V reads the clipboard from.
   quit). The band and the palette never show together, and the cursor stays
   put when the band opens (it is reserved below the box).
 - **Queue a message while a turn streams** (codex's `queued_user_messages` — see
-  `docs/queue.md`): pressing Enter *during a turn* doesn't wait — the message
+  `docs/input/queue.md`): pressing Enter *during a turn* doesn't wait — the message
   joins `App::queued` (consuming the composer, recorded in `input_history` for ↑
   recall) and shows **above the box**, in the streaming strip under the status
   line, inset two columns and styled exactly like a sent user message (`❯`
   bullet, dark background, wrapped) — every queued entry, uncapped. The queue is
   a sequence of **typed turn-entries** (`VecDeque<QueuedTurn>` — text
   `Messages { texts, images }` batches and standalone `Shell` commands, see
-  `docs/queue.md`): **Enter appends to the current batch** (consecutive Enters
+  `docs/input/queue.md`): **Enter appends to the current batch** (consecutive Enters
   share one next turn — Claude-Code batching) while **Tab opens a new batch**
   (codex's Tab-to-queue — its message
   runs as a *separate follow-up turn* after the ones already queued, a blank row
@@ -394,7 +394,7 @@ which Ctrl+V reads the clipboard from.
   (codex keeps the composer cursor during a running task; only the Ctrl+O
   overlay hides it).
 - **A session-context footer under the box** (codex's footer status line — see
-  `docs/footer.md`): the live region's last row shows `{model} · {cwd}` — the
+  `docs/ui/footer.md`): the live region's last row shows `{model} · {cwd}` — the
   backend's `ReplySource::model_name()` and the home-relativized working
   directory (`display_cwd`: `~`, `~/rel`, or absolute) — dim, inset two
   columns, ellipsis-truncated at narrow widths. Present from startup, idle and
@@ -407,7 +407,7 @@ which Ctrl+V reads the clipboard from.
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
   the seam for a real model. Quitting mid-stream trips a `CancelToken` so the
   backend stops promptly and its thread is reaped before exit.
-- **Real LLM backend & the dummy toggle** (`docs/llm.md`). The `llm` module is a
+- **Real LLM backend & the dummy toggle** (`docs/providers/llm.md`). The `llm` module is a
   drop-in `ReplySource` for any OpenAI-compatible endpoint: it streams
   `/chat/completions` over blocking `reqwest` + a hand-rolled SSE reader (so it
   stays on the same plain OS thread as `DummyAi`, polling the `CancelToken`
@@ -417,27 +417,27 @@ which Ctrl+V reads the clipboard from.
   fallback** — the real backend activates only when a provider, model, and API
   key all resolve and `ALTER_ZERO_DUMMY` isn't set — so the app always runs
   offline and `smoke.sh` (which configures none of that) stays on the dummy.
-- **`/model` picker** (`docs/llm.md`). An **inline** picker (it replaces the
+- **`/model` picker** (`docs/providers/llm.md`). An **inline** picker (it replaces the
   composer in the bottom region, unlike the alternate-screen `/resume`): `/model`
   fetches **every configured provider's** `/v1/models` in parallel (one worker
   thread each), merging them into one provider-tagged list as they land (a
   provider that fails is noted beside the counter, the rest staying put), lists
   them with type-to-search under a `Select model` title and a dim subtitle
   (`→` marks the selection, `❯` the search prompt, seven rows at a time over
-  the `(n/total)` counter — `docs/view-flow.md` *A picker's page*), and
+  the `(n/total)` counter — `docs/ui/view-flow.md` *A picker's page*), and
   `Enter` rebuilds the backend for the chosen model, updates the footer, and
   **persists the choice** to `~/.alter-zero/config.json` (`llm::settings::Settings`)
   so it's the default next run **in this working directory** — a directory
   launched in for the first time takes the last choice made anywhere and pins
-  it as its own (`docs/per-directory-state.md`) — and into the session's own
+  it as its own (`docs/state/per-directory-state.md`) — and into the session's own
   rollout, so a resumed conversation comes back on the model it was on rather
-  than the directory's current entry (`docs/session-model.md`). With no provider configured it shows a cyan
+  than the directory's current entry (`docs/state/session-model.md`). With no provider configured it shows a cyan
   `run /login` hint instead of a list. **Opens mid-turn** (unlike `/resume`) —
   and replaces the composer *only*: the streaming strip keeps its rows above
   the picker, so the running turn's status line and live tool cell stay
   visible while you browse (the ↓ manager band's geometry —
-  `ui::layout`'s `strip_above_rows`/`view_split`; `docs/llm.md`).
-- **`/login` onboarding** (`docs/llm.md`). A second **inline** flow, rooted at
+  `ui::layout`'s `strip_above_rows`/`view_split`; `docs/providers/llm.md`).
+- **`/login` onboarding** (`docs/providers/llm.md`). A second **inline** flow, rooted at
   three ways in under a `Select login method` title (no search line: three
   rows are a question, not a list): a subscription's account sign-in, an API
   key — pick a provider
@@ -445,14 +445,14 @@ which Ctrl+V reads the clipboard from.
   key` title) — or a **local model** server, whose address is **tested before
   it is saved**: the page lists the server's models the way `/model` will, a
   failure stays on the page in red, and a server answering 401 asks for its
-  token (`docs/local-models.md`). On save the key, token or address is written
+  token (`docs/providers/local-models.md`). On save the key, token or address is written
   to `~/.alter-zero/.env` (`llm::keystore::EnvFile`, a pure `.env`
   reader/writer) so it **persists across runs** — key resolution consults the
   real process env first, then this file. Because `std::env::set_var` is
   `unsafe` (forbidden here), the loaded keys live in an in-memory map, never
   the process env. Opens mid-turn — over the same kept streaming strip — like
   `/model`.
-- **Your own providers** (`docs/user-providers.md`). The shipped providers are
+- **Your own providers** (`docs/providers/user-providers.md`). The shipped providers are
   embedded; a user's `~/.alter-zero/providers.toml` is laid over them block by
   block — a new id adds a provider, a shipped id is patched key by key — and
   re-read whenever `/login` or `/model` opens. A re-read never takes the
@@ -465,22 +465,22 @@ which Ctrl+V reads the clipboard from.
   `providers.toml` in the working directory is never read, since a checkout
   must not be able to point a stored key at a host of its choosing.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
-  `docs/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
+  `docs/input/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
   the backend (never `join()`ing it on the loop — joining couples the UI to the
   thread's worst case, the interrupt-lag fix; the real backend's blocking
   network ops live on their own detached transport thread so the streaming
-  thread acknowledges the cancel within ~50 ms — `docs/llm.md`), keeps the
+  thread acknowledges the cancel within ~50 ms — `docs/providers/llm.md`), keeps the
   partial reply, resolves every tool call in flight as failed
   (`Interrupted by user`) — a parallel batch's running call **and** each
   `⎿ Waiting…` sibling, every one keeping its red cell and its place in the
-  next request's context (`docs/parallel-tools.md` *Interrupting a batch*) —
+  next request's context (`docs/tools/parallel-tools.md` *Interrupting a batch*) —
   and commits a red
   `Conversation interrupted - tell the model what to do differently.` notice —
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
   mid-turn. The status line's `esc to interrupt` hint advertises this.
 - **Esc Esc edits a previous message** (codex's backtrack — see
-  `docs/backtrack.md`): from an idle, empty composer with a previous user
+  `docs/input/backtrack.md`): from an idle, empty composer with a previous user
   message, the first Esc **arms** the gesture (the footer slot shows
   `esc again to edit previous message`; any other key disarms), the second
   opens the Ctrl+O transcript overlay as a **preview** with the newest user
@@ -492,7 +492,7 @@ which Ctrl+V reads the clipboard from.
   backtrack to (a fresh session, or right after `/clear`) — quitting otherwise
   is Ctrl+C or `/quit`.
 - **↑/↓ recall submitted messages** (shell-style, ported from codex's
-  `ChatComposerHistory` — see `docs/input-history.md`): with an **empty
+  `ChatComposerHistory` — see `docs/input/input-history.md`): with an **empty
   composer**, ↑ recalls the last submitted message (older with further
   presses, clamping at the oldest), ↓ steps back toward the newest and **past
   it clears the composer**. Recall replaces the draft with the cursor at the
@@ -503,10 +503,10 @@ which Ctrl+V reads the clipboard from.
   **spans sessions** — `App::input_history` is seeded from a persistent
   `history.jsonl` at startup and each sent input is appended at the boundary, so
   ↑/↓ (and Ctrl+R below) reach inputs typed in previous runs
-  (`docs/history-persistence.md`); recalling a bare `/token` re-derives the
+  (`docs/input/history-persistence.md`); recalling a bare `/token` re-derives the
   palette like typing it.
 - **Ctrl+R reverse-searches that history** (codex's reverse incremental
-  search — see `docs/history-search.md`): the footer slot becomes a
+  search — see `docs/input/history-search.md`): the footer slot becomes a
   `reverse-i-search: {query}` line (query cyan; on a match `enter accept ·
   esc cancel` hints; on a miss a red `no match`), the hardware cursor moves to
   the end of the query, and **every key belongs to the search** while it's
@@ -523,7 +523,7 @@ which Ctrl+V reads the clipboard from.
   interrupt/quit — the palette-dismiss precedent; Ctrl+C neither clears nor
   quits); Ctrl+O cancels first, then opens the overlay.
 - **`!` runs a local shell command** (codex's `!` shell mode — see
-  `docs/shell-command.md`): typing `!` first **absorbs** into `App::shell_mode`
+  `docs/input/shell-command.md`): typing `!` first **absorbs** into `App::shell_mode`
   (codex's `is_bash_mode`) — the bang becomes the composer's red `! ` prompt
   (`! pwd`, never `❯ !pwd`) and the footer flips to a red `Shell mode` hint;
   Backspace/Esc on the empty shell composer exit the mode, and the palette/`?`
@@ -540,9 +540,9 @@ which Ctrl+V reads the clipboard from.
   Ctrl+R (recall re-absorbs the bang). A bare `!` posts a help notice; mid-turn
   a `!command` queues as a standalone `QueuedTurn::Shell` entry, run **locally**
   when its turn comes (codex parity — never merged into a text batch; see
-  `docs/queue.md`).
+  `docs/input/queue.md`).
 - **`@` opens a file picker** (codex's `@` mention popup, Claude-Code-style — see
-  `docs/file-search.md`): whenever the cursor sits in an `@token` (an `@` at
+  `docs/input/file-search.md`): whenever the cursor sits in an `@token` (an `@` at
   start-of-line or after whitespace, so `email@host` never triggers), a fuzzy
   file list shows **below the box** (the palette's slot — the bands are mutually
   exclusive). The boundary's background worker walks the cwd **afresh per
@@ -569,7 +569,7 @@ which Ctrl+V reads the clipboard from.
   The path is inserted as **plain text** — it just becomes part of the message
   (codex leaves raw file paths literal too; no on-the-wire encoding).
 - **`$` opens a skill picker** (codex's `$` skill mentions — see
-  `docs/skill-mentions.md`): whenever the cursor sits in a usable `$mention`
+  `docs/input/skill-mentions.md`): whenever the cursor sits in a usable `$mention`
   (the `$` opening its whitespace-delimited word, `[A-Za-z0-9_-]` continuing
   the name — so `US$5` and `$dataviz,`'s comma never confuse it — with
   shell-flavored queries like `$1`/`$PATH` and `!` shell mode staying closed),
@@ -588,7 +588,7 @@ which Ctrl+V reads the clipboard from.
   the green `● Skill(name)` cell, the context replay and the
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
-- **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`,
+- **Built-in skills are editable defaults** (`docs/tools/skills.md`): `skill-creator`,
   `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and seed absent files
   in the personal root before discovery. Existing files are never overwritten,
   project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
@@ -602,7 +602,7 @@ which Ctrl+V reads the clipboard from.
   anonymous hosting with port-inventory checks, tracked sessions, verification
   and cleanup. None adds a native tool/dependency or runs on load; shell
   permissions and public-exposure/privacy checks still apply.
-- **Skill bodies load once per agent context** (`docs/skills.md`): the tool
+- **Skill bodies load once per agent context** (`docs/tools/skills.md`): the tool
   enforces its short load-once guidance at runtime. `LoadedSkills` is seeded
   from that agent's incoming skill call/result pairs, identifies successful
   body loads by their directory headers, and updates after each successful
@@ -612,7 +612,7 @@ which Ctrl+V reads the clipboard from.
   `/clear` or backtracking permits reloading. Context is the source of truth;
   a session-lifetime cache would outlive the instructions it was protecting.
 - **A large paste collapses to a placeholder** (codex's large-paste handling —
-  see `docs/paste.md`): a bracketed paste (`Event::Paste`) longer than
+  see `docs/input/paste.md`): a bracketed paste (`Event::Paste`) longer than
   `LARGE_PASTE_CHAR_THRESHOLD` (1000 chars) drops a compact
   `[Pasted Content N chars]` placeholder into the composer instead of the text
   (same-count collisions get a ` #2`, ` #3`, … suffix — `next_paste_placeholder`);
@@ -621,7 +621,7 @@ which Ctrl+V reads the clipboard from.
   **atomically** (`placeholder_to_delete`), dropping its stored text. A small
   paste inserts verbatim, indistinguishable from typing.
 - **Ctrl+V pastes a clipboard image** (codex's clipboard image attach — see
-  `docs/image-paste.md`): Ctrl+V / Ctrl+Alt+V returns the pure
+  `docs/input/image-paste.md`): Ctrl+V / Ctrl+Alt+V returns the pure
   `Action::PasteImage`; the boundary reads the system clipboard
   (`clipboard::read_clipboard_image` — on Linux the owner's own encoded bytes
   streamed first, then arboard's file list, then raw RGBA), saves it into the
@@ -637,7 +637,7 @@ which Ctrl+V reads the clipboard from.
   `Failed to paste image: {msg}` notice; a
   discarded attachment's file is deleted at the boundary
   (`App::take_discarded_images`).
-- **Images are drawn, not just described** (`docs/images.md`): a pasted
+- **Images are drawn, not just described** (`docs/ui/images.md`): a pasted
   screenshot and the `read` tool's image reads show the picture itself in the
   conversation — flush at the left margin under the cell that produced it, one
   blank row apart — in the terminal's real scrollback, in the live region, and
@@ -646,7 +646,7 @@ which Ctrl+V reads the clipboard from.
   everywhere else. The protocol comes from the environment, and where that
   names none — a herdr pane says `xterm-256color` while its emulator speaks
   kitty's — from the terminal itself, asked inside the startup cursor query's
-  one read (`docs/images.md` *Asking the terminal*). Pure `ui` reserves the
+  one read (`docs/ui/images.md` *Asking the terminal*). Pure `ui` reserves the
   rows (a block is `rows` `Line`s of `cols` marked spaces, so a picture rides
   every path a `Vec<Line>` already rides) and the boundary's
   `ImageStore::stamp` draws into them in the four paint paths. Three
@@ -655,7 +655,7 @@ which Ctrl+V reads the clipboard from.
   the *request* rather than the screen, downscaling a large picture before it
   is uploaded.
 - **`/resume` picks up a saved session** (codex's `/resume` — see
-  `docs/resume.md`). Every conversation records to a rollout JSONL file
+  `docs/state/resume.md`). Every conversation records to a rollout JSONL file
   (`{config_home}/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl` —
   `~/.alter-zero/sessions` by default, moving with `ALTER_ZERO_CONFIG_DIR` —
   overridable via `ALTER_ZERO_SESSIONS_DIR`): a `session_meta` line, then one line per
@@ -663,7 +663,7 @@ which Ctrl+V reads the clipboard from.
   (codex's persistence policy). The file is created lazily on the first
   recorded item (empty sessions never touch disk), a backtrack rewind
   rewrites it, and `/clear` starts a fresh one (codex's `/new`). The file is
-  also what a cost or reliability analysis reads (`docs/rollout-records.md`):
+  also what a cost or reliability analysis reads (`docs/state/rollout-records.md`):
   each `tool` line records the call's `exit_code`, `duration_ms` and, on a
   failure, its `error_kind`, and each model request leaves a `usage` line
   with the provider's own counts where the request finished. `/resume`
@@ -681,7 +681,7 @@ which Ctrl+V reads the clipboard from.
   first and cancels second, Ctrl+C cancels too (codex's from-a-session
   picker). The pure format/parse/preview logic is `session.rs`; the recorder
   and dir scan live at the boundary (`tui::recorder::SessionRecorder`). The
-  **CLI twins** (`docs/cli.md`, Claude-Code-style) resolve before the
+  **CLI twins** (`docs/cli/cli.md`, Claude-Code-style) resolve before the
   terminal boots: `--continue` reopens the newest session recorded in this
   cwd, `--resume {id}` one by id (the filename segment
   `session::rollout_file_id` extracts; unique prefixes and plain paths work
@@ -692,11 +692,11 @@ which Ctrl+V reads the clipboard from.
   whichever session those open, and `--help` is a titled page — `Alter
   Zero` in the app's bold-cyan heading colour over a description, `Usage:`,
   `Commands:`, `Arguments:` and `Options:` — plain through a pipe or under
-  `NO_COLOR`, its grammar errors clap-shaped (`docs/cli.md`).
+  `NO_COLOR`, its grammar errors clap-shaped (`docs/cli/cli.md`).
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
   **idle, with an empty composer and no previous user message to edit** —
   mid-turn Esc interrupts, once a user message exists idle Esc arms the
-  **Esc-Esc backtrack** (edit a previous message; `docs/backtrack.md`)
+  **Esc-Esc backtrack** (edit a previous message; `docs/input/backtrack.md`)
   instead of quitting, and with a typed draft Esc is a no-op like codex's
   composer (it never throws typed work away — Ctrl+C is the composer-clear).
   **Ctrl+C first clears a non-empty
@@ -710,18 +710,18 @@ which Ctrl+V reads the clipboard from.
   is disabled while a reply is streaming. A quit that recorded a conversation
   prints the copy-paste way back after the terminal restores —
   `Resume this session with: {bin} --resume {id}` — an empty session prints
-  nothing (`docs/cli.md`).
-- **Subagents** (`docs/agent-tool.md`): the model's `agent` tool launches
+  nothing (`docs/cli/cli.md`).
+- **Subagents** (`docs/agents/agent-tool.md`): the model's `agent` tool launches
   autonomous side-agents — a live tree cell while a foreground group runs,
   each row naming the agent's newest call or, while it talks, its words
-  (`Agent: …`, `docs/agent-progress.md`), a
+  (`Agent: …`, `docs/agents/agent-progress.md`), a
   persistent `● main` + `◯ …` roster under the footer (↓ selects — resuming on
   the last picked row — Enter opens an agent's own inline session view the
   user can chat in, `x` stops it and a second `x` clears the red row it
   leaves behind),
   background completions noticing + auto-following-up like background shells,
   and per-agent `● Agent(…)` expansions in the Ctrl+O transcript.
-- **The agent tools** (`docs/agent-tools.md`): every agent has an id the
+- **The agent tools** (`docs/agents/agent-tools.md`): every agent has an id the
   model is handed, and `agent`'s companions work it the way the bash family
   works a session — `agentsend` messages a running agent or resumes a
   finished one's conversation, `agentoutput` reports its tool calls as one
@@ -732,7 +732,7 @@ which Ctrl+V reads the clipboard from.
   user's own message starts again is announced to the lead as it starts, so
   the lead never goes on believing it failed or finished — the note dropped
   unread if the lead hears how that run ended first.
-- **Subagent definitions** (`docs/subagents.md`): which `subagent_type`s exist
+- **Subagent definitions** (`docs/agents/subagents.md`): which `subagent_type`s exist
   is authored, not compiled in — `agents/*.md` files of YAML frontmatter
   (`name`, `description`, `model`, `tools`) over a body that replaces the
   persona half of that type's system prompt. The cwd's, the project root's and
@@ -743,7 +743,7 @@ which Ctrl+V reads the clipboard from.
   not only where the specs are offered; and the model picks a type from the
   `<system-reminder>` that carries the skill listing beside it, under one
   shared budget.
-- **Mid-turn questions** (`docs/ask.md`): Claude Code's `AskUserQuestion` —
+- **Mid-turn questions** (`docs/tools/ask.md`): Claude Code's `AskUserQuestion` —
   the model asks one to four multiple-choice questions in an inline modal
   (the permission prompt's sibling) and its turn blocks on the answers. A
   decline or a `Chat about this` tells it to stop and wait; a question nobody
@@ -754,7 +754,7 @@ which Ctrl+V reads the clipboard from.
   answers given before they left included — told to use its best judgment
   and state what it assumed. A permission prompt never
   times out: nobody being there to refuse a write is no reason to approve it.
-- **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —
+- **Task tools** (`docs/tools/task-tools.md`): Claude Code's structured task list —
   the model plans multi-step work with
   `taskcreate`/`taskget`/`tasklist`/`taskupdate` and the user watches a
   **live checklist** under the status line (`⎿ ◻ subject` rows, `◼` in
@@ -766,7 +766,7 @@ which Ctrl+V reads the clipboard from.
   the next one starts fresh. Ctrl+O keeps the full per-call record, and the
   list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
   per-record snapshots.
-- **Spinner tips** (`docs/tips.md`): Claude Code's dim `⎿  Tip: …` row under
+- **Spinner tips** (`docs/ui/tips.md`): Claude Code's dim `⎿  Tip: …` row under
   the status line — not at once but once the turn has run three seconds, so a
   quick answer never flashes one; the next tip in a fixed catalog each turn
   and a fresh one every three minutes of a long turn; live only, never
@@ -774,7 +774,7 @@ which Ctrl+V reads the clipboard from.
   walk's cursor moves only when a tip is actually seen and persists per user
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
-- **Waiting for a lost connection** (`docs/offline.md`): a request no
+- **Waiting for a lost connection** (`docs/providers/offline.md`): a request no
   connection can be made for — the name won't resolve, the connect is refused
   or times out, the proxy is gone — is re-sent every few seconds for as long
   as it takes, never counted against the bounded `Error retry`, while the
@@ -782,7 +782,7 @@ which Ctrl+V reads the clipboard from.
   over a ripple row naming the host and counting the attempts; content ends
   it, Esc interrupts it (and hands an unsent message back to the composer),
   a refused local Ollama still says to start the server.
-- **A reply that isn't one** (`docs/unfinished-replies.md`): a round that
+- **A reply that isn't one** (`docs/architecture/unfinished-replies.md`): a round that
   ends with no reply and no tool call, or that the provider cut off at its
   output cap (every wire's stop reason read into one `StopReason`), no
   longer ends the turn as though it were the answer — the loop keeps what
@@ -790,7 +790,7 @@ which Ctrl+V reads the clipboard from.
   as a cell-less note Ctrl+O and the context carry, two times in a row at
   most before a red error says so; a reply stopped by the context window or
   a content filter ends on a notice naming the cause.
-- **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
+- **Lifecycle hooks** (`docs/tools/hooks.md`): Claude Code's `hooks.json` contract —
   the user's own shell commands wedged into the agent's lifecycle, fed their
   event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
   stdout (or exit `2` with a reason on stderr). **All fourteen modelled
@@ -830,9 +830,9 @@ which Ctrl+V reads the clipboard from.
   SessionStart/UserPromptSubmit hook's context — is the note's report, the
   `● Ran 1 Stop hook` cell committed inline and expanded in Ctrl+O into each
   hook that ran, how long it ran and its `hooks.json`; it changes nothing
-  the model reads, and a silent run leaves no cell (`docs/hooks.md` *The
+  the model reads, and a silent run leaves no cell (`docs/tools/hooks.md` *The
   hook-run cell*).
-- **herdr panes** (`docs/herdr.md`): run inside the herdr multiplexer, the
+- **herdr panes** (`docs/architecture/herdr.md`): run inside the herdr multiplexer, the
   app reports its own state to herdr's local socket — `working` while a turn
   or a subagent runs (a settled one with something queued for it included),
   `blocked` while a permission prompt or a question waits on the user (with
@@ -858,36 +858,36 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream/`   | The backend seam, split one module per area (`docs/module-layout.md`): `event` — the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`) and its payload types; `source` — the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer); `cancel` — the `CancelToken`; `stall` — the wedged-backend double; and `dummy/` — the built-in `DummyAi` (a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`) with the pure `dummy_response`/`chunks`/`turn_events`, the **scenario registry** that picks which canned demo a prompt plays, and the demo replies themselves — each narrating the cells it draws and closing on the `/login` → `/model` hand-off, with every scripted call resolving through the real executor's renderers so the offline cells are the live ones (`docs/dummy-backend.md`). | Pure parts, token & dummy: yes |
-| `llm/`      | The **real OpenAI-compatible backend** (`docs/llm.md`): `config` (the `providers.toml` parse, the user's own file laid over the built-ins — `docs/user-providers.md` — + `ModelConfig`/`Selection` resolution), `thinking` (`ThinkingSplitter` — peels `<think>`/native `reasoning` deltas out of the stream), `service_tier` (`ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each a palette command of its own (`/fast`, `/ultrafast`) that toggles it, `docs/fast-mode.md`), `openai` (`OpenAiClient` — pure endpoint/payload/SSE-parse + the blocking SSE `stream_chat`), `models` (`parse_models` + the `/v1/models` `fetch_models`, the `ModelEntry` picker row), `keystore` (`EnvFile` — the pure `.env` parser plus the shared atomic credential updater), `classifier` (the auto mode classifier — the silent bash-safety check auto mode runs in the user's stead, `docs/permissions.md`), `auth` (`request_auth` — the one seam every outbound call resolves through: what a request authenticates with, where it goes, and which header the credential rides), the **sign-in** modules `copilot`/`chatgpt`/`claude`/`cline`/`antigravity` (device flows and browser PKCE flows, each storing a long-lived token the request exchanges for a short-lived one — `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`, `docs/antigravity.md`, the last also finding the account's Cloud Code project every request names), the four extra **wire formats** `responses`, `anthropic`, `ollama` and `cloud_code` (pure translators between OpenAI's Responses / Anthropic's Messages / Ollama's native chat API / Google's Cloud Code Assist API and the Chat Completions currency the rest of the crate uses, so nothing above `OpenAiClient` learns they exist — `docs/ollama.md` also being the one whose request *sets* the context window, `options.num_ctx`, and `docs/antigravity.md` the one that keeps a memo of the thought signatures a later request must hand back), `agent_tools` (`agent`'s four companions — `agentsend`/`agentoutput`/`agentkill`/`agentlist` — over the shared `AgentRegistry`, a settled agent's continuation spawned through an injected launcher, `docs/agent-tools.md`), `usage` (a subscription's usage against its plan for the `/usage` page — ChatGPT's `wham/usage`, Copilot's `copilot_internal/user`, ClinePass's plan and usage limits, Antigravity's per-model quota off its catalog — each parsed into one provider-neutral `UsageReport`, a Console sign-in's per-token billing stated without a request, each provider's own usage page by sign-in scheme, and the `fetch_usage` that reads it through the same `auth` seam, `docs/usage.md`), and `backend` (`LlmBackend: ReplySource` — bridges the split deltas to `StreamEvent`s). The dummy is the default/fallback; the real backend activates only when a provider+model+key resolve and `ALTER_ZERO_DUMMY` isn't set. | Pure cores: yes (HTTP: manual) |
-| `hooks/`    | **Lifecycle hooks**, the pure half (`docs/hooks.md`): `config` (the `hooks.json` format + `select` — matcher groups → runnable handlers, deduped, with warnings instead of failures for a handler type or event name we don't model), `matcher` (both references' non-regex fast path, then a real regex), `event` (the fourteen `HookEvent`s and their wire names), `payload` (the per-event stdin JSON), `verdict` (one handler's exit code + stdout read into a `ParsedHook`, and several merged). Takes stdout **as a string**, so every rule is testable with no process anywhere; the spawn is `llm/hooks.rs`. | Yes |
-| `pty/`      | **Terminal sessions** (`docs/interactive-shell.md`, `docs/bash-tools.md`) — what every `bash` call and its companions (`bashsend`/`bashwait`/`bashkill`/`bashlist`) run on: `keys` (the `<Enter>`/`<C-c>`/`<Up>` input notation, encoded to terminal bytes, and the double-escape undo), `transcript` (the output as lines — `vte`, carriage returns and erases applied), `screen` (the output as a screen — `vt100`, plus the terminal-query replies), `fold` (the output folded one line at a time as a pipe would carry it — `\r` progress bars once, escapes gone, tabs and trailing spaces kept — and `HeadTail`, the head and tail a long output keeps), `probe` (what the session's processes are blocked in, from Linux's `/proc` — a read on the terminal, a wait that may be on it, an epoll wait whose interest list holds nothing on it, or a tree all at work), `settle` (when a waiting call returns: exit, a read the probe saw or a password prompt, prompt, silence the probe cannot account for — or a password's check — the wait), `pace` (when the running cell is sent its next update: every interval, sampled in a pause between two frames of the output — never between a redraw's erase and its text), `report` (the `Running`/`Stopped` frames the model reads — `waiting for input`, or `waiting for a password` — the data view of a finished command, the `bashlist` listing, and the model-only notes), `session` (`SessionIo` — the two views, the wait, the look, the exit handshake, the unseen-prompt check), and the boundary `spawn` (the pseudo-terminal, the controlling-terminal tiers, the line mode). The sessions themselves live in the background registry. | Pure cores: yes (`spawn`: real processes) |
-| `app/`      | State + pure update logic, split one module per area (`docs/module-layout.md`; the `App` struct stays in `mod.rs` so every submodule keeps its private-field access): `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, plus `seed`/`take_unpersisted` for the boundary's cross-session persistence, `docs/input-history.md` + `docs/history-persistence.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`), **the `/resume` picker** (`ResumePicker` state + `open_resume_picker`/`close_resume_picker`/`on_key_resume_picker`/`load_session` — the sessions arrive from the boundary's scan; `docs/resume.md`), **the inline `/model` picker** (`ModelPicker`/`ModelLoad`/`ModelFetchError` state + `open_model_picker`/`close_model_picker`/`begin_model_load`/`add_models`/`add_model_error`/`on_key_model_picker` — the per-provider model lists arrive in parallel from the boundary's fetches and merge; `docs/llm.md`), **the inline `/login` onboarding** (`KeyOnboarding`/`KeyStep`/`ProviderChoice` state + `open_key_onboarding`/`close_key_onboarding`/`on_key_key_onboarding`/`paste_into_key_onboarding` — the provider choices arrive from the boundary; `docs/llm.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`ResumePicker`/`ModelPicker`/`InputHistory`/`SessionInfo` types. | Yes |
-| `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort, every match kept; an empty query in a directory-listing order), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`tui::workers`); this is all pure. | Yes |
-| `markdown.rs` | The **pure markdown parser for assistant replies** (`docs/markdown.md`): `BlockScanner` (the incremental fence/indented-code state machine; `parse_blocks` its test-only batch twin), `fence_lang`, `heading_level` (ATX, closing `#`s dropped), `list_item`/`task_box`/`block_quote` (the container markers the renderer's block layout opens), `expand_prefix_tabs` (a line's block-prefix tabs read at four-column stops), GFM table rows, the streaming withholds (`has_unsettled_block_prefix`, `has_open_inline`), and `parse_inline` — CommonMark's delimiter-run emphasis plus code spans, links, images, autolinks, escapes and entities. `ui::AssistantRenderer` renders these codex's way: `#`s kept, `•` bullets, `☐`/`☑` tasks, renumbered `N.`, one blank row between blocks, code byte-for-byte. | Yes |
-| `highlight.rs` | **Syntax highlighting** for code blocks (`docs/markdown.md`): `syntect` over `two_face`'s grammars with oniguruma regexes, the active theme's code theme resolving scopes to styles; `Highlighter` carries a block's parse state line to line (prefix-stable, `Clone` for the streaming peek), a line over 4 KB stays plain, and an unknown language renders in the theme's plain style. | Yes |
-| `links.rs` | **Clickable links** (`docs/links.md`): `find_urls` (bare `http(s)://` detection with boundary/trim/paren-balance rules, control bytes excluded), the process-global URL **interner** (same URL → same 24-bit id for the process's life), the `Style::underline_color` id **carrier** (`linked` stamps, `carrier_id`/`link_url`/`style_link` decode — nothing else sets an underline colour, id 0 reserved), the OSC 8 **framing** (`osc8_open` percent-encodes every unsafe byte, `OSC8_CLOSE`), `file_url` (a file tool header's `file://` target — cwd-resolved, lexically normalized, percent-encoded), `is_whole_url` (a text that *is* one `http(s)://` URL, linked verbatim — the `/mcp` sign-in page's authorize URL), and the `ALTER_ZERO_HYPERLINKS` predicate. `ui::inline` marks prose, `ui::tool` stamps the header's file target, `ui::model_view`'s builders link the sign-in pages' URLs, `term::draw_cells` strips + brackets. | Yes |
-| `ui/`       | Pure rendering, split one module per area (`docs/module-layout.md`; every styling/geometry `const` lives in `ui/theme.rs`, the colours as accessor functions over the active theme's palette in `ui/palette.rs` — `docs/theme.md`): `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`, the growing-input geometry (`live_height`, `repin`, `cursor_position` + `cursor_visible`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `centered_window_rows`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/resume.md`), and the **view flow** (`view_flow` — `view_body_skip`'s bottom anchor for every content-driven framed view plus `view_flow`/`view_flow_signature`, the decision that flows a screen-tall `/mcp`/`/hooks` page's top into real scrollback and the signature the boundary tracks; `docs/view-flow.md`), and the **inline image blocks** (`image_block_lines`/`image_lines` — the rows a picture reserves under the cell that produced it, marked for the boundary to draw into, and `item_image_paths`, the files the boundary looks for again before it lays history out; `docs/images.md`). | Yes |
+| `stream/`   | The backend seam, split one module per area (`docs/architecture/module-layout.md`): `event` — the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`) and its payload types; `source` — the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer); `cancel` — the `CancelToken`; `stall` — the wedged-backend double; and `dummy/` — the built-in `DummyAi` (a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`) with the pure `dummy_response`/`chunks`/`turn_events`, the **scenario registry** that picks which canned demo a prompt plays, and the demo replies themselves — each narrating the cells it draws and closing on the `/login` → `/model` hand-off, with every scripted call resolving through the real executor's renderers so the offline cells are the live ones (`docs/architecture/dummy-backend.md`). | Pure parts, token & dummy: yes |
+| `llm/`      | The **real OpenAI-compatible backend** (`docs/providers/llm.md`): `config` (the `providers.toml` parse, the user's own file laid over the built-ins — `docs/providers/user-providers.md` — + `ModelConfig`/`Selection` resolution), `thinking` (`ThinkingSplitter` — peels `<think>`/native `reasoning` deltas out of the stream), `service_tier` (`ServiceTier`/`SpeedState` — codex's fast mode: the speed tiers a ChatGPT model lists, each a palette command of its own (`/fast`, `/ultrafast`) that toggles it, `docs/providers/fast-mode.md`), `openai` (`OpenAiClient` — pure endpoint/payload/SSE-parse + the blocking SSE `stream_chat`), `models` (`parse_models` + the `/v1/models` `fetch_models`, the `ModelEntry` picker row), `keystore` (`EnvFile` — the pure `.env` parser plus the shared atomic credential updater), `classifier` (the auto mode classifier — the silent bash-safety check auto mode runs in the user's stead, `docs/state/permissions.md`), `auth` (`request_auth` — the one seam every outbound call resolves through: what a request authenticates with, where it goes, and which header the credential rides), the **sign-in** modules `copilot`/`chatgpt`/`claude`/`cline`/`antigravity` (device flows and browser PKCE flows, each storing a long-lived token the request exchanges for a short-lived one — `docs/providers/copilot.md`, `docs/providers/chatgpt.md`, `docs/providers/claude.md`, `docs/providers/cline.md`, `docs/providers/antigravity.md`, the last also finding the account's Cloud Code project every request names), the four extra **wire formats** `responses`, `anthropic`, `ollama` and `cloud_code` (pure translators between OpenAI's Responses / Anthropic's Messages / Ollama's native chat API / Google's Cloud Code Assist API and the Chat Completions currency the rest of the crate uses, so nothing above `OpenAiClient` learns they exist — `docs/providers/ollama.md` also being the one whose request *sets* the context window, `options.num_ctx`, and `docs/providers/antigravity.md` the one that keeps a memo of the thought signatures a later request must hand back), `agent_tools` (`agent`'s four companions — `agentsend`/`agentoutput`/`agentkill`/`agentlist` — over the shared `AgentRegistry`, a settled agent's continuation spawned through an injected launcher, `docs/agents/agent-tools.md`), `usage` (a subscription's usage against its plan for the `/usage` page — ChatGPT's `wham/usage`, Copilot's `copilot_internal/user`, ClinePass's plan and usage limits, Antigravity's per-model quota off its catalog — each parsed into one provider-neutral `UsageReport`, a Console sign-in's per-token billing stated without a request, each provider's own usage page by sign-in scheme, and the `fetch_usage` that reads it through the same `auth` seam, `docs/providers/usage.md`), and `backend` (`LlmBackend: ReplySource` — bridges the split deltas to `StreamEvent`s). The dummy is the default/fallback; the real backend activates only when a provider+model+key resolve and `ALTER_ZERO_DUMMY` isn't set. | Pure cores: yes (HTTP: manual) |
+| `hooks/`    | **Lifecycle hooks**, the pure half (`docs/tools/hooks.md`): `config` (the `hooks.json` format + `select` — matcher groups → runnable handlers, deduped, with warnings instead of failures for a handler type or event name we don't model), `matcher` (both references' non-regex fast path, then a real regex), `event` (the fourteen `HookEvent`s and their wire names), `payload` (the per-event stdin JSON), `verdict` (one handler's exit code + stdout read into a `ParsedHook`, and several merged). Takes stdout **as a string**, so every rule is testable with no process anywhere; the spawn is `llm/hooks.rs`. | Yes |
+| `pty/`      | **Terminal sessions** (`docs/tools/interactive-shell.md`, `docs/tools/bash-tools.md`) — what every `bash` call and its companions (`bashsend`/`bashwait`/`bashkill`/`bashlist`) run on: `keys` (the `<Enter>`/`<C-c>`/`<Up>` input notation, encoded to terminal bytes, and the double-escape undo), `transcript` (the output as lines — `vte`, carriage returns and erases applied), `screen` (the output as a screen — `vt100`, plus the terminal-query replies), `fold` (the output folded one line at a time as a pipe would carry it — `\r` progress bars once, escapes gone, tabs and trailing spaces kept — and `HeadTail`, the head and tail a long output keeps), `probe` (what the session's processes are blocked in, from Linux's `/proc` — a read on the terminal, a wait that may be on it, an epoll wait whose interest list holds nothing on it, or a tree all at work), `settle` (when a waiting call returns: exit, a read the probe saw or a password prompt, prompt, silence the probe cannot account for — or a password's check — the wait), `pace` (when the running cell is sent its next update: every interval, sampled in a pause between two frames of the output — never between a redraw's erase and its text), `report` (the `Running`/`Stopped` frames the model reads — `waiting for input`, or `waiting for a password` — the data view of a finished command, the `bashlist` listing, and the model-only notes), `session` (`SessionIo` — the two views, the wait, the look, the exit handshake, the unseen-prompt check), and the boundary `spawn` (the pseudo-terminal, the controlling-terminal tiers, the line mode). The sessions themselves live in the background registry. | Pure cores: yes (`spawn`: real processes) |
+| `app/`      | State + pure update logic, split one module per area (`docs/architecture/module-layout.md`; the `App` struct stays in `mod.rs` so every submodule keeps its private-field access): `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, plus `seed`/`take_unpersisted` for the boundary's cross-session persistence, `docs/input/input-history.md` + `docs/input/history-persistence.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/input/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/input/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/ui/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/input/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/ui/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/input/file-search.md`), **the `/resume` picker** (`ResumePicker` state + `open_resume_picker`/`close_resume_picker`/`on_key_resume_picker`/`load_session` — the sessions arrive from the boundary's scan; `docs/state/resume.md`), **the inline `/model` picker** (`ModelPicker`/`ModelLoad`/`ModelFetchError` state + `open_model_picker`/`close_model_picker`/`begin_model_load`/`add_models`/`add_model_error`/`on_key_model_picker` — the per-provider model lists arrive in parallel from the boundary's fetches and merge; `docs/providers/llm.md`), **the inline `/login` onboarding** (`KeyOnboarding`/`KeyStep`/`ProviderChoice` state + `open_key_onboarding`/`close_key_onboarding`/`on_key_key_onboarding`/`paste_into_key_onboarding` — the provider choices arrive from the boundary; `docs/providers/llm.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`ResumePicker`/`ModelPicker`/`InputHistory`/`SessionInfo` types. | Yes |
+| `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/input/textarea.md`. | Yes |
+| `file_search.rs` | The **pure core of the `@` file picker** (`docs/input/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort, every match kept; an empty query in a directory-listing order), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`tui::workers`); this is all pure. | Yes |
+| `markdown.rs` | The **pure markdown parser for assistant replies** (`docs/ui/markdown.md`): `BlockScanner` (the incremental fence/indented-code state machine; `parse_blocks` its test-only batch twin), `fence_lang`, `heading_level` (ATX, closing `#`s dropped), `list_item`/`task_box`/`block_quote` (the container markers the renderer's block layout opens), `expand_prefix_tabs` (a line's block-prefix tabs read at four-column stops), GFM table rows, the streaming withholds (`has_unsettled_block_prefix`, `has_open_inline`), and `parse_inline` — CommonMark's delimiter-run emphasis plus code spans, links, images, autolinks, escapes and entities. `ui::AssistantRenderer` renders these codex's way: `#`s kept, `•` bullets, `☐`/`☑` tasks, renumbered `N.`, one blank row between blocks, code byte-for-byte. | Yes |
+| `highlight.rs` | **Syntax highlighting** for code blocks (`docs/ui/markdown.md`): `syntect` over `two_face`'s grammars with oniguruma regexes, the active theme's code theme resolving scopes to styles; `Highlighter` carries a block's parse state line to line (prefix-stable, `Clone` for the streaming peek), a line over 4 KB stays plain, and an unknown language renders in the theme's plain style. | Yes |
+| `links.rs` | **Clickable links** (`docs/ui/links.md`): `find_urls` (bare `http(s)://` detection with boundary/trim/paren-balance rules, control bytes excluded), the process-global URL **interner** (same URL → same 24-bit id for the process's life), the `Style::underline_color` id **carrier** (`linked` stamps, `carrier_id`/`link_url`/`style_link` decode — nothing else sets an underline colour, id 0 reserved), the OSC 8 **framing** (`osc8_open` percent-encodes every unsafe byte, `OSC8_CLOSE`), `file_url` (a file tool header's `file://` target — cwd-resolved, lexically normalized, percent-encoded), `is_whole_url` (a text that *is* one `http(s)://` URL, linked verbatim — the `/mcp` sign-in page's authorize URL), and the `ALTER_ZERO_HYPERLINKS` predicate. `ui::inline` marks prose, `ui::tool` stamps the header's file target, `ui::model_view`'s builders link the sign-in pages' URLs, `term::draw_cells` strips + brackets. | Yes |
+| `ui/`       | Pure rendering, split one module per area (`docs/architecture/module-layout.md`; every styling/geometry `const` lives in `ui/theme.rs`, the colours as accessor functions over the active theme's palette in `ui/palette.rs` — `docs/ui/theme.md`): `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`, the growing-input geometry (`live_height`, `repin`, `cursor_position` + `cursor_visible`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `centered_window_rows`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/input/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/state/resume.md`), and the **view flow** (`view_flow` — `view_body_skip`'s bottom anchor for every content-driven framed view plus `view_flow`/`view_flow_signature`, the decision that flows a screen-tall `/mcp`/`/hooks` page's top into real scrollback and the signature the boundary tracks; `docs/ui/view-flow.md`), and the **inline image blocks** (`image_block_lines`/`image_lines` — the rows a picture reserves under the cell that produced it, marked for the boundary to draw into, and `item_image_paths`, the files the boundary looks for again before it lays history out; `docs/ui/images.md`). | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
-| `paste.rs`  | Two pure paste jobs (`docs/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`) + `annotate_image_placeholders` (the wire form `[Image #N: {path}]`, `docs/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
-| `clipboard.rs` (+ `clipboard/linux.rs`, `clipboard/macos.rs`) | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → the session's paste folder, `{config_home}/image-cache/{session}/N.{ext}`, numbered in paste order and staged + header-checked before it takes its number — the path the backend reads and the model is told, `docs/image-paste.md`; on Linux `linux.rs` streams the owner's own encoded bytes into that folder before arboard is constructed — `image/png` then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices with `INCR` segments, capped at 256 MiB — so a paste decodes nothing — `docs/memory.md`; on macOS `macos.rs` is the fallback for the one shape arboard cannot read — a 16-bit floating-point `public.tiff`, i.e. a screenshot copied with ⌃⇧⌘4 — which AppKit coerces to PNG through `osascript` because `objc2-app-kit`'s PNG export is `unsafe` and this crate forbids it, the paste keeping only the chunks that draw the picture (`store_png_without_metadata`, never a decode) — `docs/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
-| `images/` | **Inline pictures** (`docs/images.md`), split five ways: `geometry` (pure — the cell footprint a picture takes at the terminal's cell size under the **Image width** cap, reproducing `ratatui_image`'s own `Resize::Fit` arithmetic so the reservation and the encoder agree to the cell, plus the per-cell carrier that marks a block's rows and packs `(placement id, row)` into the top half of `links`' `underline_color` channel), `registry` (the process-global render policy and the `(path, cols, rows)` placement interner, so pure line builders can reserve a block without a new argument on every signature, plus what the boundary last found at each picture's path — a paste's size, or no picture at all, which reserves nothing: the look a `--resume` load and every purge rebuild take first, `recheck_pictures`, so a `/tmp` screenshot gone after a reboot is no blank block, `docs/images.md` *A picture whose file is gone*), `payload` (the boundary that downscales a picture for the **model** — `/settings` **Auto-resize images** — and keeps the result on disk for the session so a re-sent attachment is never decoded twice), `attachment` (the wire's copy of a picture — its base64 `data:` URL — encoded once per session, streamed from the file or the sidecar, and shared by reference by every request that re-sends it, so a turn allocates nothing picture-sized; `docs/memory.md`), `fitted` (pure — a PNG decoded at the size it will be shown or sent, its rows streamed through an area-average shrink so the whole picture is never held; `fit_box` reproduces the encoder's `Resize::Fit` arithmetic — `docs/memory.md`), and `store` (the paint boundary: the env + `TIOCGWINSZ` capability detection, the encoded pictures under a byte budget, and the one `stamp` pass every paint path runs). | Pure parts: yes (I/O: smoke, Phase 107; `tests/clipboard_linux.rs` under Xvfb) |
-| `history.rs` | The **pure core of cross-session input-history persistence** (`docs/history-persistence.md`): the recall-buffer JSONL format — `history_line` (codex's `{session_id, ts, text}` on a serde'd module-local record, app types stay serde-free) and the forward-compatible `parse_history` (malformed / blank / empty-text lines skip). The byte read + lossy decode, the append, and the `InputHistoryStore` cap/compaction are the boundary's (`tui::history_store`). | Yes |
-| `session.rs` | The **pure core of `/resume`** (`docs/resume.md`): the rollout JSONL format (`meta_line`/`item_line` on serde'd module-local record types — the app types stay serde-free), the forward-compatible `parse_session` (malformed/unknown lines skip), the three sidecars that ride the file without being history items — `checkpoint_line`/`parse_checkpoints` (`docs/checkpoint.md`), `model_line`/`parse_model`, the session's own model selection whose newest record a resume runs on (`docs/session-model.md`), and `usage_line`/`parse_usage`, one model request's provider-reported usage placed among the items where it finished by `history_lines` (`docs/rollout-records.md`) — the picker's `preview_of` (first user/shell message, flattened) and `relative_age` (codex's `now`/`Ns`/`Nm`/`Nh`/`Nd ago`), `rollout_rel_path` (the dated layout), and the `SessionMeta`/`SessionSummary` types. The recorder + dir scan are the boundary's (`tui::recorder::SessionRecorder`/`list_sessions`). | Yes |
-| `scratchpad.rs` | The **session's own temp layout** (`docs/scratchpad.md`): `session_root` (`{tmp}/alter-zero-{uid}/{session}` — Claude Code's per-user root, one directory per live session), its two leaves `scratchpad_dir` (the agent's temp files, named in its system prompt), `tasks_dir` (the background shells' `{id}.output`, `docs/background.md`) and `images_dir` (the backend's downscaled-payload cache, `docs/images.md`), and `contains` — the strict lexical containment test behind the permission gate's scratchpad exemption (absolute only, no `..`, component-wise). The temp dir/uid/session id are injected at the boundary, which also creates the directories (`tui::config::prepare_scratchpad`). | Yes |
-| `project_doc.rs` | **AGENTS.md project-doc discovery** (`docs/project-doc.md`) — codex's `agents_md`: the pure `doc_chain` (project root → cwd, root first), `budget_docs` (the total byte budget, char-boundary truncation, blanks skipped — the docs kept separate, one `ProjectDoc { path, text }` each), `doc_budget` (the `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` override; `0` disables), `doc_heading` (`Contents of {path} (project instructions, checked into the codebase):`, the override captioned `not checked in`) and `instructions_section` (the reference's override paragraph over one heading + text per file — the `<system-reminder>`'s first section, the codex `<INSTRUCTIONS>` fragment retired), over a thin fs probe (`find_project_root` — nearest `.git` dir *or* worktree gitfile; `load_user_instructions` — the first of `AGENTS.override.md`/`AGENTS.md` per directory, read **capped at the budget** and decoded lossily). `App::user_instructions` carries the section; `context::context_messages_full` wraps it into the block the derived context leads with. | Pure core: yes (fs probes: temp dirs) |
-| `reminder.rs` | **The `<system-reminder>` the context leads with** (`docs/context.md`): `reminder_message` (the tags and the `Use the following contexts and instructions:` preamble over the non-blank sections, blank-line separated; empty when no section says anything, so a session with nothing to remind the model of sends no block) and `join_sections` (the shared join). The sections come from `project_doc::instructions_section`, `skills::skill_section` and `subagents::agent_section` (the latter two joined into `App::listings` by `subagents::listing_sections`); `context::context_messages_full` composes the block at derivation, `skills::listing_message` wraps the skills section alone as a subagent's briefing. | Pure core: yes |
-| `context_usage.rs` | **What fills the context window, counted** (`docs/context-usage.md`): `breakdown` over `Sources` — the system prompt split at its headings, the tool schemas (`ToolDefinition`: the wire name and the JSON the client sends) with the `mcp__server__tool` ones grouped by server, the `<system-reminder>` split into project docs (the stored instructions, found whole) then skills, agent types and secrets by the header each contributor writes, the derived messages split by kind and their user-role text by origin (`context::context_messages_with_origins`) — into a `Breakdown` of `Slice`s of `Part`s, the counter injected so a test can count bytes; `UsageLedger` sums the provider's usage frames and their cache share. The page over it is `app::context_usage` + `ui::context_usage_view`, kept live by `tui::context_usage`. | Yes |
-| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update; the region is repainted **in place**, never blanked first, and only the rows the previous region left below it are cleared — `docs/slow-stream.md`), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers), and the OSC 8 link emitter (`draw_cells` — the choke point every cell write goes through: strips the link-id carrier, brackets marked runs so a wrapped URL opens whole — `docs/links.md`). | No (I/O boundary) |
-| `main.rs`   | The 77-line shell: the detached-exec hook (first statement — `docs/tty-detach.md`), the `--continue`/`--resume` resolution, `InlineViewport::init`, `tui::event_loop::run`, `restore` + the exit hint. | No (I/O boundary) |
-| `tui/`      | The terminal shell, 20 area modules over one **`Session`** struct (`docs/module-layout.md`): the single-threaded **async (tokio) `select!`** loop over nine sources (`event_loop`), the `Action` dispatch (`actions`), turn lifecycle (`turn`), the reply and subagent folds (`stream`, `agent`), background shells (`background`), the permission gate's session rules (`permission`), drawing and repaints (`view`, `commit`), the backend selection (`models`, `config`), assembly and teardown (`bootstrap`, `startup`), the on-disk mirrors (`recorder`, `resume`, `history_store`), the `!` runner (`shell`), the off-thread workers (`workers`), and the raw impurities — clocks, dates, ids (`host`). | No (I/O boundary) |
+| `paste.rs`  | Two pure paste jobs (`docs/input/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`) + `annotate_image_placeholders` (the wire form `[Image #N: {path}]`, `docs/input/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
+| `clipboard.rs` (+ `clipboard/linux.rs`, `clipboard/macos.rs`) | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → the session's paste folder, `{config_home}/image-cache/{session}/N.{ext}`, numbered in paste order and staged + header-checked before it takes its number — the path the backend reads and the model is told, `docs/input/image-paste.md`; on Linux `linux.rs` streams the owner's own encoded bytes into that folder before arboard is constructed — `image/png` then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices with `INCR` segments, capped at 256 MiB — so a paste decodes nothing — `docs/architecture/memory.md`; on macOS `macos.rs` is the fallback for the one shape arboard cannot read — a 16-bit floating-point `public.tiff`, i.e. a screenshot copied with ⌃⇧⌘4 — which AppKit coerces to PNG through `osascript` because `objc2-app-kit`'s PNG export is `unsafe` and this crate forbids it, the paste keeping only the chunks that draw the picture (`store_png_without_metadata`, never a decode) — `docs/input/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/ui/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
+| `images/` | **Inline pictures** (`docs/ui/images.md`), split five ways: `geometry` (pure — the cell footprint a picture takes at the terminal's cell size under the **Image width** cap, reproducing `ratatui_image`'s own `Resize::Fit` arithmetic so the reservation and the encoder agree to the cell, plus the per-cell carrier that marks a block's rows and packs `(placement id, row)` into the top half of `links`' `underline_color` channel), `registry` (the process-global render policy and the `(path, cols, rows)` placement interner, so pure line builders can reserve a block without a new argument on every signature, plus what the boundary last found at each picture's path — a paste's size, or no picture at all, which reserves nothing: the look a `--resume` load and every purge rebuild take first, `recheck_pictures`, so a `/tmp` screenshot gone after a reboot is no blank block, `docs/ui/images.md` *A picture whose file is gone*), `payload` (the boundary that downscales a picture for the **model** — `/settings` **Auto-resize images** — and keeps the result on disk for the session so a re-sent attachment is never decoded twice), `attachment` (the wire's copy of a picture — its base64 `data:` URL — encoded once per session, streamed from the file or the sidecar, and shared by reference by every request that re-sends it, so a turn allocates nothing picture-sized; `docs/architecture/memory.md`), `fitted` (pure — a PNG decoded at the size it will be shown or sent, its rows streamed through an area-average shrink so the whole picture is never held; `fit_box` reproduces the encoder's `Resize::Fit` arithmetic — `docs/architecture/memory.md`), and `store` (the paint boundary: the env + `TIOCGWINSZ` capability detection, the encoded pictures under a byte budget, and the one `stamp` pass every paint path runs). | Pure parts: yes (I/O: smoke, Phase 107; `tests/clipboard_linux.rs` under Xvfb) |
+| `history.rs` | The **pure core of cross-session input-history persistence** (`docs/input/history-persistence.md`): the recall-buffer JSONL format — `history_line` (codex's `{session_id, ts, text}` on a serde'd module-local record, app types stay serde-free) and the forward-compatible `parse_history` (malformed / blank / empty-text lines skip). The byte read + lossy decode, the append, and the `InputHistoryStore` cap/compaction are the boundary's (`tui::history_store`). | Yes |
+| `session.rs` | The **pure core of `/resume`** (`docs/state/resume.md`): the rollout JSONL format (`meta_line`/`item_line` on serde'd module-local record types — the app types stay serde-free), the forward-compatible `parse_session` (malformed/unknown lines skip), the three sidecars that ride the file without being history items — `checkpoint_line`/`parse_checkpoints` (`docs/state/checkpoint.md`), `model_line`/`parse_model`, the session's own model selection whose newest record a resume runs on (`docs/state/session-model.md`), and `usage_line`/`parse_usage`, one model request's provider-reported usage placed among the items where it finished by `history_lines` (`docs/state/rollout-records.md`) — the picker's `preview_of` (first user/shell message, flattened) and `relative_age` (codex's `now`/`Ns`/`Nm`/`Nh`/`Nd ago`), `rollout_rel_path` (the dated layout), and the `SessionMeta`/`SessionSummary` types. The recorder + dir scan are the boundary's (`tui::recorder::SessionRecorder`/`list_sessions`). | Yes |
+| `scratchpad.rs` | The **session's own temp layout** (`docs/tools/scratchpad.md`): `session_root` (`{tmp}/alter-zero-{uid}/{session}` — Claude Code's per-user root, one directory per live session), its two leaves `scratchpad_dir` (the agent's temp files, named in its system prompt), `tasks_dir` (the background shells' `{id}.output`, `docs/tools/background.md`) and `images_dir` (the backend's downscaled-payload cache, `docs/ui/images.md`), and `contains` — the strict lexical containment test behind the permission gate's scratchpad exemption (absolute only, no `..`, component-wise). The temp dir/uid/session id are injected at the boundary, which also creates the directories (`tui::config::prepare_scratchpad`). | Yes |
+| `project_doc.rs` | **AGENTS.md project-doc discovery** (`docs/state/project-doc.md`) — codex's `agents_md`: the pure `doc_chain` (project root → cwd, root first), `budget_docs` (the total byte budget, char-boundary truncation, blanks skipped — the docs kept separate, one `ProjectDoc { path, text }` each), `doc_budget` (the `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` override; `0` disables), `doc_heading` (`Contents of {path} (project instructions, checked into the codebase):`, the override captioned `not checked in`) and `instructions_section` (the reference's override paragraph over one heading + text per file — the `<system-reminder>`'s first section, the codex `<INSTRUCTIONS>` fragment retired), over a thin fs probe (`find_project_root` — nearest `.git` dir *or* worktree gitfile; `load_user_instructions` — the first of `AGENTS.override.md`/`AGENTS.md` per directory, read **capped at the budget** and decoded lossily). `App::user_instructions` carries the section; `context::context_messages_full` wraps it into the block the derived context leads with. | Pure core: yes (fs probes: temp dirs) |
+| `reminder.rs` | **The `<system-reminder>` the context leads with** (`docs/architecture/context.md`): `reminder_message` (the tags and the `Use the following contexts and instructions:` preamble over the non-blank sections, blank-line separated; empty when no section says anything, so a session with nothing to remind the model of sends no block) and `join_sections` (the shared join). The sections come from `project_doc::instructions_section`, `skills::skill_section` and `subagents::agent_section` (the latter two joined into `App::listings` by `subagents::listing_sections`); `context::context_messages_full` composes the block at derivation, `skills::listing_message` wraps the skills section alone as a subagent's briefing. | Pure core: yes |
+| `context_usage.rs` | **What fills the context window, counted** (`docs/architecture/context-usage.md`): `breakdown` over `Sources` — the system prompt split at its headings, the tool schemas (`ToolDefinition`: the wire name and the JSON the client sends) with the `mcp__server__tool` ones grouped by server, the `<system-reminder>` split into project docs (the stored instructions, found whole) then skills, agent types and secrets by the header each contributor writes, the derived messages split by kind and their user-role text by origin (`context::context_messages_with_origins`) — into a `Breakdown` of `Slice`s of `Part`s, the counter injected so a test can count bytes; `UsageLedger` sums the provider's usage frames and their cache share. The page over it is `app::context_usage` + `ui::context_usage_view`, kept live by `tui::context_usage`. | Yes |
+| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/ui/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update; the region is repainted **in place**, never blanked first, and only the rows the previous region left below it are cleared — `docs/ui/slow-stream.md`), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers), and the OSC 8 link emitter (`draw_cells` — the choke point every cell write goes through: strips the link-id carrier, brackets marked runs so a wrapped URL opens whole — `docs/ui/links.md`). | No (I/O boundary) |
+| `main.rs`   | The 77-line shell: the detached-exec hook (first statement — `docs/tools/tty-detach.md`), the `--continue`/`--resume` resolution, `InlineViewport::init`, `tui::event_loop::run`, `restore` + the exit hint. | No (I/O boundary) |
+| `tui/`      | The terminal shell, 20 area modules over one **`Session`** struct (`docs/architecture/module-layout.md`): the single-threaded **async (tokio) `select!`** loop over nine sources (`event_loop`), the `Action` dispatch (`actions`), turn lifecycle (`turn`), the reply and subagent folds (`stream`, `agent`), background shells (`background`), the permission gate's session rules (`permission`), drawing and repaints (`view`, `commit`), the backend selection (`models`, `config`), assembly and teardown (`bootstrap`, `startup`), the on-disk mirrors (`recorder`, `resume`, `history_store`), the `!` runner (`shell`), the off-thread workers (`workers`), and the raw impurities — clocks, dates, ids (`host`). | No (I/O boundary) |
 
 The real backend also retains one bounded request prefix (`llm::wire_history`)
 to preserve provider tool IDs and parallel-call grouping across human turns.
 It restores that prefix only after matching the rebuilt context; rewinds,
 edits and incompatible histories keep the newly derived messages. See
-[`prompt-caching.md`](prompt-caching.md) for its bounds and stress coverage.
+[`prompt-caching.md`](providers/prompt-caching.md) for its bounds and stress coverage.
 Credential refreshes share a per-provider exchange gate, while login and
 rotation share `EnvFile::update` for serialized, atomic credential-file updates.
 
@@ -897,17 +897,17 @@ The loop is **async** (tokio, single-threaded `current_thread` runtime), built a
 `select!` over five sources — exactly how openai/codex drives its TUI. Terminal
 input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
 channel, **draw ticks** come from the frame scheduler, the **`@` file-search
-worker** answers on a fourth channel (`docs/file-search.md`), and each Ctrl+V
+worker** answers on a fourth channel (`docs/input/file-search.md`), and each Ctrl+V
 **image-paste worker** delivers its saved file on a fifth
-(`docs/image-paste.md`). `select!` polls its branches in randomized order, so
+(`docs/input/image-paste.md`). `select!` polls its branches in randomized order, so
 input and draws can't starve each other (codex's explicit round-robin fairness,
-for free). The async-rewrite design lives in `docs/async-rewrite.md`.
+for free). The async-rewrite design lives in `docs/architecture/async-rewrite.md`.
 
 The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
 has queried the cursor position over stdin once, synchronously — and any other
 question for the terminal rides in that read (today the kitty graphics query and
 XTVERSION, written ahead of the cursor query; the keys typed while it waited are
-replayed before the loop's first `select!` — `docs/images.md`). The reply backend
+replayed before the loop's first `select!` — `docs/ui/images.md`). The reply backend
 runs on a background thread that only *sends* on its channel — it never reads stdin.
 A second stdin reader would steal the cursor-position (DSR) reply — the cause of the
 "cursor position could not be read" error. (`insert_before` tracks the viewport row
@@ -923,13 +923,13 @@ earliest-wins fold). `insert_before` only
 **queues** its lines (codex's `pending_history_lines`): the draw tick writes them
 above the viewport and repaints the live region in **one synchronized frame**, so a
 scrollback commit can never flash a boxless state — the streaming-flicker fix, see
-`docs/flicker.md` (`reflow` paints the same way; `restore` flushes anything a
+`docs/ui/flicker.md` (`reflow` paints the same way; `restore` flushes anything a
 quit-before-tick left queued). Guarded by `scripts/smoke.sh` Phase 6 (a 1000-char
 burst must finish rendering near-instantly) and Phase 15 (a raw byte recording of a
 streaming turn must show every live-region clear inside a sync block) — and,
 since a commit repaints the region **in place** rather than blanking it first,
 Phase 121 pins that a token-paced 65 s turn records no live-region clear at all
-(`docs/slow-stream.md`).
+(`docs/ui/slow-stream.md`).
 
 ```
 keyboard / resize ──► EventStream ─┐
@@ -940,13 +940,13 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 
 - On `Submit(text)`: `insert_before` the user message and a blank spacer, then
   `backend.spawn(text, images, tx, cancel)` — the Ctrl+V image paths drained
-  from `App::take_submission_images` (`docs/image-paste.md`) — a thread that
+  from `App::take_submission_images` (`docs/input/image-paste.md`) — a thread that
   sends `Chunk(..)*` with `ToolStart`/`ToolEnd` pairs interleaved, then
   `StreamDone` (or `Error(msg)`). The loop keeps the thread's `JoinHandle` and
   `CancelToken` so quitting mid-stream cancels it (and detaches the thread — it
   finishes on its own; the loop never `join()`s a backend, so a wedged network
   read can't delay the terminal restore — the interrupt-lag fix in
-  `docs/interrupt.md`).
+  `docs/input/interrupt.md`).
 - On `Chunk`: append to the streaming buffer; commit any newly-stable lines to
   scrollback; redraw (preview row shows the partial last line).
 - On `ToolStart{name,args}`: `flush_streaming_segment` finalises the run of text
@@ -959,7 +959,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   so the status line shows/drops `Thinking for Ns`; nothing is committed (thinking
   is live-only). Each `ThinkingChunk` in between is counted into the token tally
   (`App::push_thinking`, which also accumulates it for the thinking stream's
-  live block when a phase is open — `docs/thinking-stream.md`), so the count keeps
+  live block when a phase is open — `docs/ui/thinking-stream.md`), so the count keeps
   ticking while the model thinks.
 - On `ToolCallDelta(piece)`: the model is generating a call. The piece is
   counted into the tally and folded into the round's drafts
@@ -967,7 +967,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   — the newest ten rows while it arrives, the first ten once it has — and the
   piece that opens it flushes the text segment first, like a `ToolStart`.
   Nothing is committed: the cell commits when the call resolves
-  (`docs/write-streaming.md`).
+  (`docs/ui/write-streaming.md`).
 - On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
   summary), then commit the final text segment + spacer + the summary. Because the
   streaming strip (preview + gap + status + gap) is drawn *above* the box, the loop first
@@ -996,7 +996,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   resets the boundary clocks and `repaint_conversation` reflows the now-blank
   inline view (clears the visible conversation; nothing may stream in afterwards
   — `smoke.sh` Phase 16).
-- On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`):
+- On `Interrupt` (Esc while a turn is in flight — `docs/input/interrupt.md`):
   `abandon_inflight` cancels the backend, **detaches** its thread (never
   `join()`ing on the loop — joining couples the UI to the thread's worst case:
   the interrupt-lag bug), and **swaps in
@@ -1009,7 +1009,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `Conversation interrupted` notice; then settle the held background
   completions and commit the turn's receipt under them — the summary a
   finished turn ends on, over the tally the line last showed (`Worked for 8s ·
-  ≈24.3k tokens`, `docs/interrupt.md`).
+  ≈24.3k tokens`, `docs/input/interrupt.md`).
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), and the commit-to-scrollback steps above still run — the
   lines merely **queue** in `term` (nothing flushes onto the alternate screen).
@@ -1025,11 +1025,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `Action { None, Submit(String), PasteImage, ToggleToolView, Notice(String),
   Clear, Copy(String), RunShell(String), Interrupt, Quit }` — returned
   by `App::on_key` (`PasteImage` sends the loop to the clipboard for a Ctrl+V
-  image — `docs/image-paste.md`; `RunShell` carries an idle `!command` to run
-  locally — `docs/shell-command.md`).
+  image — `docs/input/image-paste.md`; `RunShell` carries an idle `!command` to run
+  locally — `docs/input/shell-command.md`).
 - `View { Conversation, ToolOutput, ResumePicker }` — which screen is showing
   (Ctrl+O toggles the transcript; `/resume` opens the picker —
-  `docs/resume.md`).
+  `docs/state/resume.md`).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Copy,
   Init, Compact, Resume, Model, Login, Quit, … }` + the `COMMANDS` registry
   (`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`,
@@ -1040,14 +1040,14 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `KeyStep { Method, Subscription, SigninMethod, Device, Provider, Key, Local,
   Server }` + `ProviderChoice` / `SubscriptionChoice` / `LocalChoice` — the open
   inline `/login` flow (`App::key_onboarding`, `None` when closed;
-  `docs/llm.md`, `docs/local-models.md`).
+  `docs/providers/llm.md`, `docs/providers/local-models.md`).
 - `ResumePicker { sessions, selected, query, cwd, filter, sort, focus }` —
   the open `/resume` picker (`App::resume_picker`, `None` when closed); the
   rows derive on demand (`matches` — filter, query, then the active sort).
   `ResumeFilter { Cwd, All }` / `ResumeSort { Updated, Created }` /
   `ResumeControl { Filter, Sort }` are the toolbar's enums;
   `session::SessionMeta`/`session::SessionSummary` are the file meta and the
-  picker-row data (`docs/resume.md`).
+  picker-row data (`docs/state/resume.md`).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `DebugBody { lines, headers, summary }` — one built page of the Ctrl+D
@@ -1057,42 +1057,42 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `EntryJump` direction the key records and the draw resolves against the
   page as built (`App::resolve_debug_jump`, before the scroll settle;
   dropped on Tab and on a close); the renderer pins the header of the entry
-  the window opens inside over its top row (`docs/context.md`).
+  the window opens inside over its top row (`docs/architecture/context.md`).
 - The Ctrl+D classifier page shows the backend's classifier system prompt
   above its live task context. `ReplySource::classifier_system_prompt` is
   synced into `App` at startup and model switches; the dummy returns `None`.
   The view keeps headings and up to 240 display columns of each opening
   paragraph, with `… +N lines` for omitted detail. Task context remains
   verbatim as the `USER` entry, followed by the shared action-review header
-  and a placeholder for the next command or MCP call (`docs/permissions.md`).
+  and a placeholder for the next command or MCP call (`docs/state/permissions.md`).
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blinking grey while
-  it runs — `docs/tool-pulse.md` — then green/red).
+  it runs — `docs/ui/tool-pulse.md` — then green/red).
 - `ToolCall { name, args, status, output, timestamp, shell, truncated,
   context_output, approval_note }` — one
   tool invocation; `current_tool` while running, then recorded in history
   (stamped when it finishes). `shell` marks a `!` command's headerless exec
   cell, `truncated` a `!` output cut at the in-memory cap (a dim `…` appended
-  in the expanded view) — `docs/shell-command.md`. `context_output` is the
+  in the expanded view) — `docs/input/shell-command.md`. `context_output` is the
   **model-facing** result when it differs from the displayed `output` — set
   only by a permission rejection, whose cell is short while the model reads the
   full stop-and-wait instruction with Tab's amend feedback appended; the
   derived context replays it via `ToolCall::context_text()` so a later turn
-  carries what was really sent (`docs/permissions.md`). `approval_note` is the
+  carries what was really sent (`docs/state/permissions.md`). `approval_note` is the
   provenance of a call that ran without a human — the auto mode classifier's
   `Allowed by auto mode classifier`, or the scratchpad's `Allowed in the
-  session scratchpad` (`docs/scratchpad.md`) — a
+  session scratchpad` (`docs/tools/scratchpad.md`) — a
   dim `⎿` row the resolved cell appends, recorded so a `/resume` keeps it
-  (`docs/permissions.md`; the quiet resolved MCP cell leaves the row to its
-  expanded Ctrl+O form — `docs/mcp.md`).
+  (`docs/state/permissions.md`; the quiet resolved MCP cell leaves the row to its
+  expanded Ctrl+O form — `docs/tools/mcp.md`).
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, rotates_from,
   tokens, arrow, elapsed, thinking }` — the live status of the turn in flight
   (`App::status`; `verb`/`done_verb` are one `StatusVerb`'s two forms, rotated
   together by `set_status_times`);
   the `Duration`s are written by the boundary each frame (one value drives the
   displayed seconds *and* the verb's shimmer phase). See
-  `docs/status-indicator.md`.
+  `docs/ui/status-indicator.md`.
 - `TurnSummary { verb, secs, timestamp }` — the committed `"{verb} for Ns"` turn
   summary recorded at turn end.
 - `HistoryItem { Message(Message), Tool(ToolCall), Summary(TurnSummary) }` — one
@@ -1102,7 +1102,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   in the mid-turn queue (`App::queued`, a `VecDeque` drained one entry per
   turn-end): an Enter-batched text turn (its Ctrl+V attachments riding along as
   `(placeholder, path)` pairs) dispatched to the model, or a standalone `!`
-  command run locally. See `docs/queue.md`.
+  command run locally. See `docs/input/queue.md`.
 - `StreamError { partial: Option<String>, tools: Vec<ToolCall>, agents, error: String }`
   — what `App::fail_stream` hands the loop to flush after a backend failure (the
   `tools` are every call the error left in flight — the running one and each
@@ -1118,7 +1118,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   (in `stream/event.rs`) — what a backend sends to the loop (`ThinkingStart`/`ThinkingEnd`
   drive the live `Thinking for Ns`; the `ThinkingChunk` reasoning deltas between
   them are counted into the token tally and shown by the thinking stream, which
-  collapses each phase into a `Thought for …` cell (`docs/thinking-stream.md`);
+  collapses each phase into a `Thought for …` cell (`docs/ui/thinking-stream.md`);
   `ToolEnd`'s `truncated`
   flags a `!` output cut at the in-memory cap — a backend tool sends `false`).
 - `ReplySource` (trait, `stream/source.rs`) + `DummyAi` (impl, `stream/dummy/`) +
@@ -1147,10 +1147,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   right after a tool's `↑`) without touching the reply buffer; a no-op when idle.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Ctrl+J / Alt+Enter / Shift+Enter insert a newline (box grows) without submitting
-  (`docs/shift-enter.md`); Enter
+  (`docs/input/shift-enter.md`); Enter
   while empty / while streaming → `None`; Ctrl+C → `Quit` when idle, and Esc
   too but only on an empty composer with no previous user message to edit
-  (otherwise idle Esc arms the Esc-Esc backtrack — `docs/backtrack.md` — and
+  (otherwise idle Esc arms the Esc-Esc backtrack — `docs/input/backtrack.md` — and
   with a typed draft it is a no-op, codex-style), while
   Esc mid-turn → `Interrupt` (palette-dismiss still wins); Ctrl+C with a
   non-empty input clears the draft instead (closing the palette, leaving a
@@ -1167,7 +1167,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   final segment; a turn interleaves text/tool/text in order. Ctrl+O toggles the
   view (even mid-stream, stream keeps running); Esc and `q` close the overlay
   (vs quit in the chat) — except Esc idle with a previous user message, which
-  begins the backtrack preview in place (`docs/backtrack.md`); the viewer
+  begins the backtrack preview in place (`docs/input/backtrack.md`); the viewer
   scrolls and ignores typing; Home jumps to
   the top and End back to the bottom (re-engaging tail-follow); it opens pinned
   to the bottom and `settle_tool_scroll` tail-follows (scrolling up disengages,
@@ -1181,7 +1181,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   resuming text flips it back `↓`; `set_status_times` writes the boundary
   durations (no-op when idle); `end_turn` records a `Summary` and clears the status;
   `fail_stream` clears it with no summary; `count_tokens` (→ `tokens::estimate`,
-  the vocabulary-free estimate, `docs/token-estimate.md`) grows with length.
+  the vocabulary-free estimate, `docs/architecture/token-estimate.md`) grows with length.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens
@@ -1227,7 +1227,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   plain recall clears it, a Ctrl+R search suspends/restores it, accepting a
   `!entry` re-enters it); an empty bang → the help `Notice`, staying in the
   mode; mid-turn Enter queues a standalone `QueuedTurn::Shell` entry (run
-  locally at its turn, never merged into a text batch — `docs/queue.md`);
+  locally at its turn, never merged into a text batch — `docs/input/queue.md`);
   `begin_shell` records
   the `Role::Shell` header and flags the status + tool; `end_turn` returns no
   summary for a shell turn; an interrupt resolves the command failed.
@@ -1274,7 +1274,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `App.session` defaults unset and `set_session_info` stores the strings;
   `footer_rows` 0 without session info / 1 with it / 0 when a band is open;
   `footer_line` renders `  {model} · {cwd}` — the model in the accent, the
-  cwd green, the separator dim (`docs/footer.md` *Colour*) — and truncates
+  cwd green, the separator dim (`docs/ui/footer.md` *Colour*) — and truncates
   with `…` at narrow widths; `display_cwd` maps home → `~`, under-home → `~/sub`
   (component-wise), else absolute; `live_height` adds the row; `render_live`
   paints it on the last row (idle and mid-stream, never with the palette);
@@ -1287,7 +1287,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   verbatim (no gutter, no language label) and **syntax-highlighted** (`highlight` +
   `code_content_rows`), ATX headings styled per level with their text
   inline-parsed, lists and quotes in codex's look and spacing,
-  `docs/markdown.md`); `tool_lines`
+  `docs/ui/markdown.md`); `tool_lines`
   (status-coloured bullet header, collapsed peek + `(ctrl+o to expand)` hint,
   width-truncated); `transcript_lines`/`render_tool_view` (full conversation —
   messages interleaved with each tool's complete output, plus the live tail,
@@ -1337,7 +1337,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
   on shrink) — an inline modal (a permission prompt, `region_is_modal`) grows by
   the same rule, its one-way scrolls noted for the close's purge rebuild
-  (`docs/permissions.md`); `restore_cursor_row` lands the exit cursor just below the box (no
+  (`docs/state/permissions.md`); `restore_cursor_row` lands the exit cursor just below the box (no
   blank gap on quit when the box is near the top); the `BULLET_WIDTH`
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
@@ -1350,7 +1350,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   the file; no meta line parses to `None`; `preview_of` finds the first
   user/shell message (flattened, `! ` for shell) and `None` without one;
   `relative_age` matches codex's buckets; `rollout_rel_path` pads and
-  dashes the stamp. See `docs/resume.md`.
+  dashes the stamp. See `docs/state/resume.md`.
 - `app` (`/resume` picker): the palette runs `/resume` to `OpenResumePicker`
   idle and the red busy notice mid-turn; opening disarms a primed backtrack
   and seats codex's defaults (filter `Cwd`, sort `Updated`, focus `Filter`);
@@ -1425,7 +1425,7 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   it narrow, then the glyph last so it lands whole on the ones that draw it wide.
   `visible_cells` is one of `term.rs`'s pure, unit-tested corners (the emission
   order is asserted directly); the end-to-end rendering is smoke-covered
-  (Phase 41, inline pane *and* overlay). See `docs/table-streaming.md`
+  (Phase 41, inline pane *and* overlay). See `docs/ui/table-streaming.md`
   (*Wide glyphs*).
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
@@ -1477,7 +1477,7 @@ and its own pure corners — the `visible_cells` wide-glyph emitter, the
 `scripts/smoke.sh` is a runner over one file per phase (`scripts/smoke/phases/
 NNN-slug.sh`, each a self-contained scenario sourcing `scripts/smoke/lib.sh`),
 executed on a pool of parallel workers with a log per phase — the layout, the
-vocabulary and the phase contract are `docs/smoke.md`. What makes running them
+vocabulary and the phase contract are `docs/ops/smoke.md`. What makes running them
 at once *correct* is that the fixture is **per phase**: `smoke_begin` gives each
 its own tmux server, config home, skills/agents roots and temp tree, torn down
 together at exit, so no phase can see or leave behind another's state.
@@ -1491,7 +1491,7 @@ a phase run on its own is as hermetic as one run by the suite):
   knob, `OLLAMA_HOST`, `LMSTUDIO_HOST` and `LM_API_TOKEN`, `NO_COLOR`, `DISPLAY`/`WAYLAND_DISPLAY`/`XAUTHORITY`, and
   herdr's four `HERDR_*` pane variables (run from a herdr pane, every phase
   would report its turns to the developer's real multiplexer —
-  `docs/herdr.md`) before its first launch, then spells out per launch the ones
+  `docs/architecture/herdr.md`) before its first launch, then spells out per launch the ones
   it wants —
   exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
   `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
@@ -1561,7 +1561,7 @@ stream for their own reasons).
   had already scrolled into the terminal's own scrollback before the overlay
   opened keeps its old position, and a reply segment that was *partially* committed
   when the overlay opened is re-committed on return a chunk later (no data loss).
-- Terminal sessions (every `bash` call, `docs/bash-tools.md`) decide *waiting for input* first
+- Terminal sessions (every `bash` call, `docs/tools/bash-tools.md`) decide *waiting for input* first
   by asking Linux's `/proc` what the session's processes are blocked in (a
   `read` on the terminal is waiting, as is a `splice` from it whose wait
   channel identifies a terminal read; a splice waiting for pipe capacity
@@ -1627,12 +1627,12 @@ stream for their own reasons).
   ambiguous, and a silent asynchronous stdin listener can report `Running`
   because its kernel-visible wait also fits a pending promise. Visible
   nested questions and actual terminal reads still count. See
-  `docs/interactive-shell.md` *Limits*.
+  `docs/tools/interactive-shell.md` *Limits*.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
   with every tool expanded (by design — keeps the inline chat compact). Reads and
   searches go further by default and fold into one line per run
-  (`docs/tool-groups.md`); an agent's session view keeps a cell per call.
+  (`docs/ui/tool-groups.md`); an agent's session view keeps a cell per call.
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. Adding a command is a one-line
   `COMMANDS` entry plus an effect arm in `run_selected_command`. Esc's
@@ -1645,21 +1645,21 @@ stream for their own reasons).
   **user's** messages (12-hour `hh:mm AM/PM`, no seconds, right-aligned below the
   message); assistant/tool/summary items record a stamp but never display it. The
   inline conversation has none, and there is no per-token/relative time. See
-  `docs/timestamps.md`.
+  `docs/ui/timestamps.md`.
 - The status indicator's token counts are an app-side **estimate** between usage
-  frames (vocabulary-free, `docs/token-estimate.md`); each round's usage frame
+  frames (vocabulary-free, `docs/architecture/token-estimate.md`); each round's usage frame
   snaps the tally to the provider's own count, and the dummy reports none. The
   context gauge's estimated share is calibrated by those frames, so it is only
   as good as the estimate before the second one. The status verbs walk deterministically (a cursor moved
   every 30 s of a turn and at each turn start), not at random, and the summary
-  is the past tense of the verb the line wore. See `docs/status-indicator.md`.
-- `!` shell commands (`docs/shell-command.md`) run under `sh -c` with **no
+  is the past tense of the verb the line wore. See `docs/ui/status-indicator.md`.
+- `!` shell commands (`docs/input/shell-command.md`) run under `sh -c` with **no
   sandbox** and no timeout (codex caps at 1 hour); stdout and stderr are
   concatenated, not interleaved; the interrupt notice is the shared
   `Conversation interrupted…` text. (Mid-turn `!command`s are no longer a
   limitation: they queue as standalone `QueuedTurn::Shell` entries and run
-  locally when their turn comes — codex parity, `docs/queue.md`.)
-- The `@` file picker (`docs/file-search.md`) walks the cwd **afresh per
+  locally when their turn comes — codex parity, `docs/input/queue.md`.)
+- The `@` file picker (`docs/input/file-search.md`) walks the cwd **afresh per
   query** (bounded by `FILE_INDEX_CAP` — 10,000 entries, breadth-first, so a
   bigger tree loses its deepest entries, the counter's `+` saying so —
   requests coalesced), so files created
@@ -1674,7 +1674,7 @@ stream for their own reasons).
   (no tool/skill mentions, no image attachment, no on-the-wire encoding). Moving
   the cursor out of an `@token` leaves the band open until the next edit (it
   re-derives on edits only, like the palette).
-- `/resume` (`docs/resume.md`) has no pagination, sort/filter toolbar, density
+- `/resume` (`docs/state/resume.md`) has no pagination, sort/filter toolbar, density
   toggle, or per-row transcript preview (the scan is capped and loaded whole
   at open, always mtime-descending, always dense rows); no `/resume <id>`
   args or CLI subcommands; no cwd prompt on a cross-directory resume; and
@@ -1682,7 +1682,7 @@ stream for their own reasons).
   unguarded (each new session's file is unique per pid, but there is no
   codex-style state-db arbitration).
 - No markdown rendering or scrollback nav keys (YAGNI).
-- **Telemetry** (`docs/telemetry.md`) counts *installs whose ping reached the
+- **Telemetry** (`docs/ops/telemetry.md`) counts *installs whose ping reached the
   collector*: a launch with no network is uncounted until a later launch that
   day gets through, a config home shared by two machines counts once, and a
   deleted `telemetry.json` counts as a new install. The country is the edge's

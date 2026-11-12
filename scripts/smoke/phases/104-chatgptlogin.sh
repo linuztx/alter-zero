@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the BROWSER sign-in page (docs/chatgpt.md). The second
+# the BROWSER sign-in page (docs/providers/chatgpt.md). The second
 # subscription's sign-in is not a device code — it is a link the user opens,
 # and the browser redirects back to a loopback listener. That page is drivable
 # offline (building the URL and binding 127.0.0.1:1455 touch no network at
@@ -57,7 +57,7 @@ for want in "https://auth.openai.com/oauth/authorize?response_type=code" \
 	expect_has "$chatgpt_url" -F "$want" "the authorize URL is missing \"$want\""
 done
 # The URL opens its own row: it is a clickable OSC 8 hyperlink
-# (docs/links.md), and a verb in front of one only pushes the target off the
+# (docs/ui/links.md), and a verb in front of one only pushes the target off the
 # start of the row it should begin.
 expect_has "$chatgpt_page" -E '^ *https://auth\.openai\.com/oauth/authorize' "the authorize URL does not start its own row"
 # And it must NOT wear the device page's clothes, or a verb the link replaced.

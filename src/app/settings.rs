@@ -4,7 +4,7 @@
 //! The sibling of [`super::model_picker`] — same inline shape, same
 //! own-every-key rule — over the pure [`crate::settings`] model. Its rows are
 //! **derived, never stored**, so the value column can't drift from what the
-//! session is actually doing. See `docs/settings.md`.
+//! session is actually doing. See `docs/state/settings.md`.
 
 use super::views::TOOL_VIEW_PAGE;
 use super::*;
@@ -61,7 +61,7 @@ impl App {
 
     /// Inject what this host can actually run (the `set_clock` pattern): a
     /// feature the boundary can't serve shows `(unavailable)` and refuses to
-    /// cycle. See `docs/settings.md`.
+    /// cycle. See `docs/state/settings.md`.
     pub const fn set_setting_availability(&mut self, availability: SettingAvailability) {
         self.settings.availability = availability;
     }
@@ -148,7 +148,7 @@ impl App {
             // Every call is its own cell now: the reads the open group was
             // holding are rendered by the rebuild the row triggers — and the
             // other way, the reads a running turn committed as cells become
-            // the open group it holds (docs/tool-groups.md).
+            // the open group it holds (docs/ui/tool-groups.md).
             if row.key == SettingKey::Verbose {
                 if self.settings.verbose {
                     self.drop_tool_group();

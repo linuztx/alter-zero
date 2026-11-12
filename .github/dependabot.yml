@@ -1,4 +1,4 @@
-# Keep the workflows' actions current (docs/release.md): they are pinned to
+# Keep the workflows' actions current (docs/ops/release.md): they are pinned to
 # major tags, and this is what moves them when a major is released.
 #
 # Every bump rides ONE pull request, the `actions` group, not one per action

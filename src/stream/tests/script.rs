@@ -46,7 +46,7 @@ const EVERY_REPLY: &[&str] = &["", "a", "ab", "abc", "abcd", "abcde"];
 fn every_demo_reply_points_the_user_at_login_and_model() {
     // The dummy is what a first run meets, and its whole job is to hand the
     // user off to a real model: every canned reply names `/login` (save a
-    // provider key) and `/model` (pick one). See `docs/dummy-backend.md`.
+    // provider key) and `/model` (pick one). See `docs/architecture/dummy-backend.md`.
     for prompt in EVERY_REPLY {
         let reply = dummy_response(prompt);
         assert!(
@@ -95,7 +95,7 @@ fn the_handoff_paragraph_closes_every_demo_reply() {
     assert!(HANDOFF.contains("/login") && HANDOFF.contains("/model"));
     // …naming all three ways `/login` connects a model — a demo that only
     // mentions keys leaves a local server out of the very first pointer a
-    // new user gets (docs/local-models.md).
+    // new user gets (docs/providers/local-models.md).
     for way in ["subscription", "API key", "local model"] {
         assert!(
             HANDOFF.contains(way),
@@ -126,7 +126,7 @@ fn tokens_concatenate_back_to_the_original_text() {
 #[test]
 fn tokens_are_sub_word_pieces_never_longer_than_a_token() {
     // A slow model streams *tokens*, not words: a few characters at a time,
-    // split without regard to word or line boundaries (`docs/slow-stream.md`).
+    // split without regard to word or line boundaries (`docs/ui/slow-stream.md`).
     // Every piece is at most `TOKEN_MAX_CHARS` long, so a long word breaks
     // across pieces — the split `chunks` (whole words) never produces.
     let text = "supercalifragilisticexpialidocious is one word and this is more prose";

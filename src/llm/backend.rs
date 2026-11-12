@@ -3,7 +3,7 @@
 //!
 //! Boundary code (it spawns the streaming thread), but the message assembly is
 //! factored into the pure [`build_messages`] so it's unit-tested. See
-//! `docs/llm.md`.
+//! `docs/providers/llm.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -39,7 +39,7 @@ use crate::stream::{
 /// swap personas). Kept short to save tokens. The boundary folds the runtime
 /// **environment context** (date/os/user/cwd) onto this at startup so the
 /// agent has context awareness — see [`augment_with_environment`] and
-/// `docs/environment.md`. Override the persona with `ALTER_ZERO_SYSTEM_PROMPT`.
+/// `docs/architecture/environment.md`. Override the persona with `ALTER_ZERO_SYSTEM_PROMPT`.
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
 /// A real OpenAI-compatible backend. Holds the streaming client (carrying the
@@ -58,7 +58,7 @@ pub struct LlmBackend {
     tools_enabled: bool,
     /// The client's `tools` array as the `/context` page counts it — each
     /// tool's wire name and its schema serialized as sent
-    /// (`docs/context-usage.md`). Rebuilt with the array itself, at the two
+    /// (`docs/architecture/context-usage.md`). Rebuilt with the array itself, at the two
     /// places that set it, so the two cannot drift; shared by handle so the
     /// page's per-iteration pull costs a pointer copy.
     tool_definitions: Arc<[ToolDefinition]>,
@@ -70,48 +70,48 @@ pub struct LlmBackend {
     agent_tools: Arc<Mutex<Option<AgentToolsMemo>>>,
     /// The shared background-shell registry, when the boundary attached one —
     /// enables the `bash` tool's `run_in_background` and Ctrl+B handoff
-    /// (`docs/background.md`).
+    /// (`docs/tools/background.md`).
     background: Option<crate::background::BackgroundRegistry>,
     /// The model's image-input support ([`ModelConfig::vision`]): gates both
     /// the message assembly (attachments degrade to `[image omitted: …]`
     /// notes on a known non-vision model) and the `read` tool's image branch
-    /// (`docs/tools.md`).
+    /// (`docs/tools/tools.md`).
     vision: Option<bool>,
     /// The runtime half of [`system_prompt`](Self::system_prompt) alone — the
     /// environment and scratchpad blocks, without the persona
-    /// (`docs/subagents.md`). Kept apart so an agent definition whose body
+    /// (`docs/agents/subagents.md`). Kept apart so an agent definition whose body
     /// **replaces** the persona can still carry the facts about this session:
     /// the date, the os, the user, the cwd, where temporary files go. `None`
     /// when the boundary composed no context (the tests, an embedder).
     prompt_context: Option<String>,
     /// The shared subagent registry, when the boundary attached one — enables
-    /// the `agent` tool (`docs/agent-tool.md`). Attaching it swaps the
+    /// the `agent` tool (`docs/agents/agent-tool.md`). Attaching it swaps the
     /// client's tool set to include `agent`.
     agents: Option<AgentRegistry>,
     /// The subagent **definitions** — the `agents/*.md` types a launch picks
-    /// from (`docs/subagents.md`). Shared with the loop, which re-walks the
+    /// from (`docs/agents/subagents.md`). Shared with the loop, which re-walks the
     /// roots every turn, so a launcher always reads the current set. Seeded
     /// with the built-ins, so a backend the boundary never handed definitions
     /// to still resolves `general-purpose` and `explore`.
     subagents: crate::subagents::SubagentRegistry,
     /// The shared tool-permission gate, when the boundary attached one — makes
     /// every `write`/`edit`/`bash` call ask before it runs
-    /// (`docs/permissions.md`). Without it (an embedder, the live tests,
+    /// (`docs/state/permissions.md`). Without it (an embedder, the live tests,
     /// `ALTER_ZERO_PERMISSIONS` off) tools run unasked, as they always did.
     permissions: Option<PermissionGate>,
     /// The shared ask gate, when the boundary attached one — **enables the
-    /// `askuserquestion` tool** (`docs/ask.md`): the model can raise the
+    /// `askuserquestion` tool** (`docs/tools/ask.md`): the model can raise the
     /// inline question modal and block on the answers. Without it the tool
     /// isn't offered at all (nobody could answer). Subagents never carry it.
     ask: Option<AskGate>,
     /// The shared task list, when the boundary attached one — **enables the
-    /// four task tools** (`docs/task-tools.md`): the model can plan and track
+    /// four task tools** (`docs/tools/task-tools.md`): the model can plan and track
     /// structured tasks, the live checklist rendering under the status line.
     /// Without it the tools aren't offered (nobody holds the list). Subagents
     /// never carry it — the lead agent plans, subagents execute.
     tasks: Option<crate::tasks::TaskRegistry>,
     /// The discovered skills, when the boundary attached them — **enables the
-    /// `skill` tool** (`docs/skills.md`): the model can pull an authored
+    /// `skill` tool** (`docs/tools/skills.md`): the model can pull an authored
     /// `SKILL.md` body into the conversation on demand. Attached only when
     /// at least one skill loaded, since with none the tool has nothing to do.
     /// Subagents carry it too — a side agent benefits from a skill exactly as
@@ -119,17 +119,17 @@ pub struct LlmBackend {
     skills: Option<crate::skills::SkillRegistry>,
     /// The session's MCP servers, when the boundary attached the manager —
     /// **adds every connected server's tools** under their
-    /// `mcp__server__tool` wire names (`docs/mcp.md`). Attached only when at
+    /// `mcp__server__tool` wire names (`docs/tools/mcp.md`). Attached only when at
     /// least one tool is actually offered (the `with_skills` posture — a
     /// spec set that can only answer "unknown tool" spends the model's
     /// attention on a dead end). Subagents carry it too.
     mcp: Option<super::mcp::McpManager>,
     /// The auto mode classifier bound to this backend's provider
-    /// (`docs/permissions.md`): consulted by the approve seam for `bash`
+    /// (`docs/state/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
     /// other mode, and moot without a gate.
     classifier: SafetyClassifier,
-    /// The classifier's **live task context** (`docs/permissions.md`),
+    /// The classifier's **live task context** (`docs/state/permissions.md`),
     /// shared so it can outlive a turn and be read: [`spawn`] pushes each new
     /// user message onto its rolling window and the tool closures append the
     /// actions, while [`classifier_context`] reads it out for the Ctrl+D
@@ -144,18 +144,18 @@ pub struct LlmBackend {
     /// [`retry::MAX_RETRIES`] unless the `/settings` **Error retry** knob
     /// says otherwise ([`with_max_retries`](LlmBackend::with_max_retries)).
     /// Rides every round, the main turn's and a subagent's alike. See
-    /// `docs/settings.md`.
+    /// `docs/state/settings.md`.
     max_retries: u32,
     /// How many rounds of tool calls one turn may run before giving up —
     /// [`agent::MAX_TOOL_ITERATIONS`] unless the `/settings` **Max tool
     /// calls** knob says otherwise, and **`0` means no limit** (the app's own
-    /// default). See `docs/settings.md`.
+    /// default). See `docs/state/settings.md`.
     max_tool_calls: usize,
     /// The run's budget of model replies — `--max-turns`, a headless run's
-    /// (`docs/headless.md`). `None` on every other backend: the TUI never
+    /// (`docs/cli/headless.md`). `None` on every other backend: the TUI never
     /// counts, and neither does a subagent or a compaction.
     round_budget: Option<agent::RoundBudget>,
-    /// The session's **mid-turn message queue** (`docs/queue.md`): what the
+    /// The session's **mid-turn message queue** (`docs/input/queue.md`): what the
     /// user typed while this turn was already running. Drained at every round
     /// boundary, so a message reaches the model within the turn it was
     /// submitted into instead of waiting for the next one. Default-empty
@@ -166,13 +166,13 @@ pub struct LlmBackend {
     /// (same type, one level down), and the one-off `/compact` backend keeps
     /// this empty — its turn has a single round and nothing to steer.
     steer: SteerQueue,
-    /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
+    /// The user's lifecycle hooks (`docs/tools/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
     /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
     /// session without one pays a vtable dispatch and nothing else. Subagents
     /// carry it too — re-tagged with their own id, so a hook can tell.
     hooks: Arc<dyn HookSink>,
-    /// The user's secrets (`docs/secrets.md`), when the boundary attached
+    /// The user's secrets (`docs/state/secrets.md`), when the boundary attached
     /// them: every tool call this backend and its subagents run goes through
     /// `secret_exec::run_with_secrets` — the placeholders in an acting
     /// tool's arguments expanded for the executor alone, every output
@@ -192,7 +192,7 @@ impl LlmBackend {
 
     /// Build a backend with an explicit system prompt (`None` sends no system
     /// message). The boundary passes `ALTER_ZERO_SYSTEM_PROMPT` through here.
-    /// Tools are enabled unless `ALTER_ZERO_TOOLS` is falsy (see `docs/tools.md`).
+    /// Tools are enabled unless `ALTER_ZERO_TOOLS` is falsy (see `docs/tools/tools.md`).
     #[must_use]
     pub fn with_system_prompt(cfg: ModelConfig, system_prompt: Option<String>) -> Self {
         Self::configure(cfg, system_prompt, tools_enabled_from_env())
@@ -238,7 +238,7 @@ impl LlmBackend {
             // or not: the `agent` schema's default is `general-purpose`, so a
             // launch cannot depend on a file having been found. The boundary
             // replaces this with the walk's set — which carries the same two
-            // as its own fallback (`docs/subagents.md`).
+            // as its own fallback (`docs/agents/subagents.md`).
             subagents: crate::subagents::SubagentRegistry::new(super::subagent::builtin_agents()),
             permissions: None,
             ask: None,
@@ -257,7 +257,7 @@ impl LlmBackend {
     }
 
     /// Attach the shared background-shell registry so the executor can launch
-    /// and adopt background tasks (`docs/background.md`). The boundary calls
+    /// and adopt background tasks (`docs/tools/background.md`). The boundary calls
     /// this on every backend it builds; tests and offline tools skip it.
     #[must_use]
     pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
@@ -266,7 +266,7 @@ impl LlmBackend {
     }
 
     /// Attach the shared subagent registry, **enabling the `agent` tool**
-    /// (`docs/agent-tool.md`): the client's tool set gains the `agent` spec
+    /// (`docs/agents/agent-tool.md`): the client's tool set gains the `agent` spec
     /// (tools must already be enabled — a tools-off backend stays agent-less).
     /// The boundary calls this on every main backend it builds; the one-off
     /// `/compact` backend and subagents themselves never do.
@@ -280,7 +280,7 @@ impl LlmBackend {
     }
 
     /// Attach the runtime half of the system prompt — the environment and
-    /// scratchpad blocks alone (`docs/subagents.md`). Only a subagent whose
+    /// scratchpad blocks alone (`docs/agents/subagents.md`). Only a subagent whose
     /// definition **overrides** the persona reads it; the main prompt already
     /// contains it.
     #[must_use]
@@ -292,7 +292,7 @@ impl LlmBackend {
     }
 
     /// Attach the subagent **definitions** — the `agents/*.md` types
-    /// (`docs/subagents.md`). Unlike [`with_agents`](Self::with_agents) this
+    /// (`docs/agents/subagents.md`). Unlike [`with_agents`](Self::with_agents) this
     /// enables nothing on its own: it is the roster a launch resolves
     /// `subagent_type` against, and the handle is shared, so the loop's
     /// per-turn rescan reaches every backend rebuild without one.
@@ -304,7 +304,7 @@ impl LlmBackend {
 
     /// Attach the shared tool-permission gate, so every `write`/`edit`/`bash`
     /// call — this backend's and its subagents' — asks the user first
-    /// (`docs/permissions.md`). The boundary calls this on the backends it
+    /// (`docs/state/permissions.md`). The boundary calls this on the backends it
     /// builds unless `ALTER_ZERO_PERMISSIONS` is falsy.
     #[must_use]
     pub fn with_permissions(mut self, gate: PermissionGate) -> Self {
@@ -312,7 +312,7 @@ impl LlmBackend {
         self
     }
 
-    /// Attach the user's secrets (`docs/secrets.md`): the tool calls run
+    /// Attach the user's secrets (`docs/state/secrets.md`): the tool calls run
     /// with their placeholders expanded and their output redacted. The
     /// boundary attaches the shared registry to every backend it builds;
     /// without it a placeholder is ordinary text.
@@ -322,7 +322,7 @@ impl LlmBackend {
         self
     }
 
-    /// Attach the user's lifecycle hooks (`docs/hooks.md`). The boundary
+    /// Attach the user's lifecycle hooks (`docs/tools/hooks.md`). The boundary
     /// calls this on every backend it builds when a `hooks.json` resolved and
     /// had something runnable in it; without it the backend keeps [`NoHooks`]
     /// and behaves exactly as it did before the feature.
@@ -333,7 +333,7 @@ impl LlmBackend {
     }
 
     /// Attach the shared ask gate, **enabling the `askuserquestion` tool**
-    /// (`docs/ask.md`): the client's tool set gains the ask spec (tools must
+    /// (`docs/tools/ask.md`): the client's tool set gains the ask spec (tools must
     /// already be enabled — a tools-off backend cannot ask). The boundary
     /// calls this on every main backend it builds; the one-off `/compact`
     /// backend and subagents themselves never do.
@@ -347,7 +347,7 @@ impl LlmBackend {
     }
 
     /// Attach the shared task list, **enabling the task tools**
-    /// (`docs/task-tools.md`): the client's tool set gains the four task
+    /// (`docs/tools/task-tools.md`): the client's tool set gains the four task
     /// specs (tools must already be enabled). The boundary calls this on
     /// every main backend it builds; the one-off `/compact` backend and
     /// subagents themselves never do.
@@ -360,7 +360,7 @@ impl LlmBackend {
         self
     }
 
-    /// Attach the session's mid-turn message queue (`docs/queue.md`): what
+    /// Attach the session's mid-turn message queue (`docs/input/queue.md`): what
     /// the user submits while a turn runs is folded into **that turn's**
     /// context at its next round boundary. Unlike the tool attachments this
     /// enables no spec, so it is not gated on `tools_enabled` — a tools-free
@@ -374,7 +374,7 @@ impl LlmBackend {
     }
 
     /// Attach the discovered skills, **enabling the `skill` tool**
-    /// (`docs/skills.md`): the client's tool set gains the skill spec (tools
+    /// (`docs/tools/skills.md`): the client's tool set gains the skill spec (tools
     /// must already be enabled). A registry with **nothing enabled** attaches
     /// nothing — offering a tool that can only ever answer "unknown skill"
     /// would spend the model's attention on a dead end. That is `has_enabled`
@@ -391,7 +391,7 @@ impl LlmBackend {
     }
 
     /// Attach the session's MCP manager, **adding every connected server's
-    /// tools** (`docs/mcp.md`): the client's tool set gains one
+    /// tools** (`docs/tools/mcp.md`): the client's tool set gains one
     /// `mcp__server__tool` spec per discovered tool (tools must already be
     /// enabled). Attached only when something is actually offered — the
     /// boundary re-checks at every MCP event and rebuilds on a flip
@@ -436,7 +436,7 @@ impl LlmBackend {
     }
 
     /// Set how many times a failed request is retried before the error is
-    /// surfaced — the `/settings` **Error retry** knob (`docs/settings.md`).
+    /// surfaced — the `/settings` **Error retry** knob (`docs/state/settings.md`).
     /// `0` never retries. Defaults to [`retry::MAX_RETRIES`].
     #[must_use]
     pub const fn with_max_retries(mut self, max_retries: u32) -> Self {
@@ -445,7 +445,7 @@ impl LlmBackend {
     }
 
     /// Set how many rounds of tool calls one turn may run — the `/settings`
-    /// **Max tool calls** knob (`docs/settings.md`). **`0` is no limit**;
+    /// **Max tool calls** knob (`docs/state/settings.md`). **`0` is no limit**;
     /// defaults to [`agent::MAX_TOOL_ITERATIONS`].
     #[must_use]
     pub const fn with_max_tool_calls(mut self, max_tool_calls: usize) -> Self {
@@ -454,7 +454,7 @@ impl LlmBackend {
     }
 
     /// Count every request this backend's turns send against `budget` —
-    /// `--max-turns` (`docs/headless.md`). A request the budget refuses is
+    /// `--max-turns` (`docs/cli/headless.md`). A request the budget refuses is
     /// never sent: its turn ends on the budget's message. Shared by clone, so
     /// a rebuild that re-attaches it keeps counting.
     #[must_use]
@@ -489,7 +489,7 @@ impl LlmBackend {
 }
 
 /// Are the `bash`/`read`/`write`/`edit` tools enabled? On by default; disabled
-/// by a falsy `ALTER_ZERO_TOOLS` (`0`/`false`/`no`/`off`). See `docs/tools.md`.
+/// by a falsy `ALTER_ZERO_TOOLS` (`0`/`false`/`no`/`off`). See `docs/tools/tools.md`.
 fn tools_enabled_from_env() -> bool {
     match std::env::var("ALTER_ZERO_TOOLS") {
         Ok(v) => !matches!(
@@ -504,7 +504,7 @@ fn tools_enabled_from_env() -> bool {
 /// agent's runtime awareness — authored in
 /// [`prompts/environment.md`](../../prompts/environment.md) (terse, in the
 /// persona's own style) with `{date}`/`{os}`/`{user}`/`{cwd}` placeholders
-/// that [`render_environment`] fills. See `docs/environment.md`.
+/// that [`render_environment`] fills. See `docs/architecture/environment.md`.
 const ENVIRONMENT_TEMPLATE: &str = include_str!("../../prompts/environment.md");
 
 /// Fill the environment template with the session's `date`, `os`, `user`
@@ -525,9 +525,9 @@ pub fn render_environment(date: &str, os: &str, user: &str, cwd: &str) -> String
 }
 
 /// Append the environment context to a base system prompt so the agent knows
-/// its date/os/user/cwd (`docs/environment.md`). A blank base is returned
+/// its date/os/user/cwd (`docs/architecture/environment.md`). A blank base is returned
 /// unchanged so the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no system message"
-/// contract holds (`docs/context.md`); nothing else is appended — the final
+/// contract holds (`docs/architecture/context.md`); nothing else is appended — the final
 /// prompt reads persona → environment (the tool schemas carry their own
 /// detail).
 #[must_use]
@@ -546,7 +546,7 @@ pub fn augment_with_environment(base: &str, date: &str, os: &str, user: &str, cw
 /// scratchpad directory — authored in
 /// [`prompts/scratchpad.md`](../../prompts/scratchpad.md) (terse, in the
 /// persona's own style) with the one `{scratchpad}` placeholder
-/// [`render_scratchpad`] fills. See `docs/scratchpad.md`.
+/// [`render_scratchpad`] fills. See `docs/tools/scratchpad.md`.
 const SCRATCHPAD_TEMPLATE: &str = include_str!("../../prompts/scratchpad.md");
 
 /// Fill the scratchpad template with this session's scratchpad `dir`. Pure:
@@ -559,10 +559,10 @@ pub fn render_scratchpad(dir: &str) -> String {
 
 /// Append the scratchpad block to a base system prompt so the agent writes its
 /// temporary files into the session's own directory instead of `/tmp`
-/// (`docs/scratchpad.md`). Composes *after* [`augment_with_environment`], so
+/// (`docs/tools/scratchpad.md`). Composes *after* [`augment_with_environment`], so
 /// the assembled prompt reads persona → environment → scratchpad; a blank base
 /// is returned unchanged, keeping the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
-/// system message" contract (`docs/context.md`).
+/// system message" contract (`docs/architecture/context.md`).
 #[must_use]
 pub fn augment_with_scratchpad(base: &str, dir: &str) -> String {
     if base.trim().is_empty() {
@@ -573,15 +573,15 @@ pub fn augment_with_scratchpad(base: &str, dir: &str) -> String {
 
 /// The headless block appended to the system prompt of a run with no screen
 /// — authored in [`prompts/headless.md`](../../prompts/headless.md) in the
-/// persona's own terse style (`docs/headless.md`).
+/// persona's own terse style (`docs/cli/headless.md`).
 const HEADLESS_TEMPLATE: &str = include_str!("../../prompts/headless.md");
 
 /// Append the headless block to a base system prompt, so the model knows no
 /// one can answer it, that a call needing approval is refused, and that the
-/// run ends with its turn (`docs/headless.md`). Composes *after*
+/// run ends with its turn (`docs/cli/headless.md`). Composes *after*
 /// [`augment_with_scratchpad`], the prompt's last block; a blank base is
 /// returned unchanged, keeping the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
-/// system message" contract (`docs/context.md`).
+/// system message" contract (`docs/architecture/context.md`).
 #[must_use]
 pub fn augment_with_headless(base: &str) -> String {
     if base.trim().is_empty() {
@@ -595,7 +595,7 @@ pub fn augment_with_headless(base: &str) -> String {
 /// double- or single-quoted (the freedesktop os-release format). Returns
 /// `None` when neither key carries a non-empty value. Pure: the boundary
 /// (`main.rs`) reads the file and only on Linux, so the agent's `OS` line
-/// reads e.g. `linux (Ubuntu 24.04.4 LTS)`. See `docs/environment.md`.
+/// reads e.g. `linux (Ubuntu 24.04.4 LTS)`. See `docs/architecture/environment.md`.
 #[must_use]
 pub fn os_release_name(contents: &str) -> Option<String> {
     let value = |key: &str| {
@@ -620,7 +620,7 @@ pub fn os_release_name(contents: &str) -> Option<String> {
 /// (macOS opens the file on a block of them) and NIS compat entries
 /// (`+`/`-`, which name no local account) are skipped, as is any line whose
 /// uid field isn't a number. Pure: the boundary (`tui::host`) reads the file.
-/// See `docs/environment.md`.
+/// See `docs/architecture/environment.md`.
 #[must_use]
 pub fn passwd_name(contents: &str, uid: u32) -> Option<String> {
     contents.lines().find_map(|line| {
@@ -637,7 +637,7 @@ pub fn passwd_name(contents: &str, uid: u32) -> Option<String> {
 }
 
 /// The environment block's `User` value — the account the session runs as,
-/// so the agent knows whether it is root (`docs/environment.md`). The
+/// so the agent knows whether it is root (`docs/architecture/environment.md`). The
 /// **uid** decides root and the name only labels it: uid 0 reads `root`, or
 /// `toor (root)` when it answers to another name; any other uid reads its
 /// name — never `root`, which a stale `$USER` could otherwise claim — else
@@ -657,7 +657,7 @@ pub fn user_label(uid: Option<u32>, name: Option<&str>) -> String {
 
 /// Assemble the request messages for one turn: the optional system prompt,
 /// then the whole conversation context in order — the multi-turn memory (see
-/// `docs/context.md`). A context message with image attachments becomes the
+/// `docs/architecture/context.md`). A context message with image attachments becomes the
 /// multimodal parts form, each attachment encoded to a `data:` URL by
 /// `encode_image` (the injected I/O seam —
 /// [`crate::images::attachment_data_url`] in production, the session's one
@@ -685,7 +685,7 @@ pub fn build_messages<U: Into<AttachmentUrl>>(
 /// a `[image omitted: …]` text note instead of an `image_url` part, because
 /// the provider would otherwise fail the whole request (OpenRouter 404s
 /// "No endpoints found that support image input"). `Some(true)`/`None`
-/// attach exactly as before. See `docs/tools.md`.
+/// attach exactly as before. See `docs/tools/tools.md`.
 #[must_use]
 pub fn build_messages_for<U: Into<AttachmentUrl>>(
     vision: Option<bool>,
@@ -720,7 +720,7 @@ fn chat_message<U: Into<AttachmentUrl>>(
     let role = message.role.wire_name();
     // A tool result carries its call id; an assistant entry may carry the native
     // tool calls it requested — both replay in the Chat Completions tool shape
-    // (see docs/context.md), and neither ever has image attachments.
+    // (see docs/architecture/context.md), and neither ever has image attachments.
     if let Some(id) = &message.tool_call_id {
         return ChatMessage::tool_result(id, &message.text);
     }
@@ -751,7 +751,7 @@ fn chat_message<U: Into<AttachmentUrl>>(
     // The text arrives already naming where each picture was saved —
     // `[Image #1: /home/…/image-cache/{session}/1.png]`, stamped by
     // `context::context_messages` so Ctrl+D shows the same thing
-    // (docs/image-paste.md).
+    // (docs/input/image-paste.md).
     let mut text = message.text.clone();
     let mut image_parts = Vec::new();
     for path in &message.images {
@@ -797,11 +797,11 @@ impl ReplySource for LlmBackend {
         let turn_context = Arc::clone(&self.turn_context);
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
-        // The run's reply budget, when it has one (docs/headless.md).
+        // The run's reply budget, when it has one (docs/cli/headless.md).
         let round_budget = self.round_budget.clone();
         let hooks = Arc::clone(&self.hooks);
         let secrets = self.secrets.clone();
-        // The mid-turn queue this turn answers to (docs/queue.md): the loop
+        // The mid-turn queue this turn answers to (docs/input/queue.md): the loop
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
         let steer = self.steer.clone();
@@ -809,12 +809,12 @@ impl ReplySource for LlmBackend {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
             // non-vision model gets omission notes instead of parts
-            // (docs/tools.md).
+            // (docs/tools/tools.md).
             // The pictures this context carries are the ones the session
             // keeps encoded for the wire; every other — a backtracked paste,
             // one `/compact` left behind — is let go here, and each of these
             // is encoded on the first turn that sends it and shared by every
-            // turn after (`docs/memory.md`).
+            // turn after (`docs/architecture/memory.md`).
             let carried: Vec<&Path> = context
                 .iter()
                 .flat_map(|message| message.images.iter().map(PathBuf::as_path))
@@ -827,7 +827,7 @@ impl ReplySource for LlmBackend {
                 &context,
                 crate::images::attachment_data_url,
             );
-            // The turn's opening hooks (docs/hooks.md): the SessionStart
+            // The turn's opening hooks (docs/tools/hooks.md): the SessionStart
             // drain, then UserPromptSubmit — here on the backend thread, the
             // codex placement, so nothing ever blocks the loop or the first
             // paint and Esc reaps a slow hook through the runner's cancel
@@ -839,7 +839,7 @@ impl ReplySource for LlmBackend {
             let opening = super::hooks::turn_start(hooks.as_ref(), &prompt, &cancel);
             for note in opening.notes {
                 // A note with no text is the hooks' cell alone: it gave the
-                // model nothing (docs/hooks.md *The hook-run cell*).
+                // model nothing (docs/tools/hooks.md *The hook-run cell*).
                 if !note.text.is_empty() {
                     messages.push(ChatMessage::user(&note.text));
                 }
@@ -855,7 +855,7 @@ impl ReplySource for LlmBackend {
                 }
                 return;
             }
-            // The retained prefix (docs/prompt-caching.md), spliced in only
+            // The retained prefix (docs/providers/prompt-caching.md), spliced in only
             // once the turn is going out: a blocked prompt sends nothing, and
             // taking the prefix for it would cost the next real turn the
             // provider's cached copy. The hook notes above sit past the
@@ -879,7 +879,7 @@ impl ReplySource for LlmBackend {
                     .with_detach_helper(registry.detach_helper())
                     .with_background(registry);
             }
-            // The auto mode classifier's task context (`docs/permissions.md`):
+            // The auto mode classifier's task context (`docs/state/permissions.md`):
             // this turn's user message joins the rolling window, and the tool
             // closures below append one line per action, so a verdict reads
             // the work it sits inside — including the turns before it, since
@@ -896,19 +896,19 @@ impl ReplySource for LlmBackend {
             // terminal StreamDone/Error itself. Each round retries transient
             // failures internally (see `stream_round`). With tools disabled the
             // model never asks for any, so this collapses to a single round —
-            // the old plain-stream behaviour. See `docs/tools.md`. Before each
+            // the old plain-stream behaviour. See `docs/tools/tools.md`. Before each
             // round it takes the registry's completion notice board, so a
             // background shell that finished (or was killed) since the last
             // request is known to the model within this same turn
-            // (docs/background.md). The round's `agent` calls go to the
-            // subagent launcher instead (docs/agent-tool.md).
+            // (docs/tools/background.md). The round's `agent` calls go to the
+            // subagent launcher instead (docs/agents/agent-tool.md).
             agent::run_agent(
                 &tx,
                 &cancel,
                 max_tool_calls,
                 &mut messages,
                 |msgs| {
-                    // `--max-turns` (docs/headless.md): a reply the run's
+                    // `--max-turns` (docs/cli/headless.md): a reply the run's
                     // budget cannot pay for is never asked for.
                     if let Some(budget) = &round_budget
                         && !budget.take()
@@ -922,18 +922,18 @@ impl ReplySource for LlmBackend {
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
-                // (docs/ask.md); a task tool call runs against the shared
-                // list (docs/task-tools.md); everything else goes to the
+                // (docs/tools/ask.md); a task tool call runs against the shared
+                // list (docs/tools/task-tools.md); everything else goes to the
                 // real executor.
                 |call, on_output| {
                     // Every executed call becomes one line of the classifier's
                     // task context — the log a later verdict reads the action
-                    // against (`docs/permissions.md`). Logged before the
+                    // against (`docs/state/permissions.md`). Logged before the
                     // secrets expand, so the reviewer reads placeholders.
                     if let Ok(mut log) = turn_context.lock() {
                         log.record_call(&call.name, &call.arguments);
                     }
-                    // The one seam every call runs through (docs/secrets.md):
+                    // The one seam every call runs through (docs/state/secrets.md):
                     // an acting tool gets its placeholders expanded, and
                     // whatever any tool reports comes back redacted.
                     super::secret_exec::run_with_secrets(
@@ -947,7 +947,7 @@ impl ReplySource for LlmBackend {
                             {
                                 return super::task::run_task_tool(registry, call);
                             }
-                            // A `skill` call (docs/skills.md): read the named
+                            // A `skill` call (docs/tools/skills.md): read the named
                             // `SKILL.md` and hand its body back as the
                             // model-facing result, the cell keeping its one
                             // `Successfully loaded skill` row. Nothing runs,
@@ -962,7 +962,7 @@ impl ReplySource for LlmBackend {
                                     call,
                                 );
                             }
-                            // An `mcp__server__tool` call (docs/mcp.md):
+                            // An `mcp__server__tool` call (docs/tools/mcp.md):
                             // routed to the manager's live connection; without
                             // one the call is declined recoverably.
                             if crate::mcp::is_mcp_tool(&call.name) {
@@ -973,7 +973,7 @@ impl ReplySource for LlmBackend {
                                     ),
                                 };
                             }
-                            // `agent`'s companions (docs/agent-tools.md):
+                            // `agent`'s companions (docs/agents/agent-tools.md):
                             // message, read, stop or list the session's
                             // agents — a settled one's continuation spawned
                             // exactly as a session-view chat spawns one.
@@ -1011,7 +1011,7 @@ impl ReplySource for LlmBackend {
                     )
                 },
                 // What the conversation gained since the last request
-                // (docs/queue.md): the background completions the model has
+                // (docs/input/queue.md): the background completions the model has
                 // not heard about, then the messages the user queued while
                 // this turn was running — the mid-turn queue's delivery.
                 || {
@@ -1061,7 +1061,7 @@ impl ReplySource for LlmBackend {
                 // inline prompt and blocks this thread on the answer, unless a
                 // standing approval already covers it — or, in auto mode, the
                 // classifier reviews the command in the user's stead
-                // (docs/permissions.md).
+                // (docs/state/permissions.md).
                 |call, force_ask| {
                     let classify = |request: &crate::permission::PermissionRequest| {
                         // Render under the lock, classify outside it — the
@@ -1073,8 +1073,8 @@ impl ReplySource for LlmBackend {
                         classifier.classify(request, &context, &cancel)
                     };
                     // An MCP prompt shows the server's own description of the
-                    // tool under the call (docs/mcp.md); a session's, the
-                    // command it runs (docs/interactive-shell.md).
+                    // tool under the call (docs/tools/mcp.md); a session's, the
+                    // command it runs (docs/tools/interactive-shell.md).
                     let describe =
                         |key: &str| describe_for_prompt(key, mcp.as_ref(), background.as_ref());
                     let approval = approval::approve_call(
@@ -1102,8 +1102,8 @@ impl ReplySource for LlmBackend {
                 hooks.as_ref(),
                 // A session's command, for a `bash_session` call's header —
                 // the lookup its permission prompt makes
-                // (docs/interactive-shell.md) — and an agent's task, for an
-                // agent companion's (docs/agent-tools.md).
+                // (docs/tools/interactive-shell.md) — and an agent's task, for an
+                // agent companion's (docs/agents/agent-tools.md).
                 &|id: &str| {
                     background
                         .as_ref()
@@ -1124,7 +1124,7 @@ impl ReplySource for LlmBackend {
     }
 
     /// The classifier's live task context, rendered for the Ctrl+D view
-    /// (`docs/permissions.md`). Read under the lock and handed out as an
+    /// (`docs/state/permissions.md`). Read under the lock and handed out as an
     /// owned string — the boundary must never hold a backend lock across a
     /// draw. A poisoned lock (a panicked tool thread) reports nothing rather
     /// than taking the UI down with it.
@@ -1134,7 +1134,7 @@ impl ReplySource for LlmBackend {
 
     /// The classifier's system prompt — what its `classify` sends, trimmed
     /// the way it sends it — for the Ctrl+D classifier page
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     fn classifier_system_prompt(&self) -> Option<String> {
         Some(self.classifier.system_prompt().to_string())
     }
@@ -1147,7 +1147,7 @@ impl ReplySource for LlmBackend {
     /// body when it has one, else the main prompt, and the subagent note
     /// either way: exactly what `spawn_subagent_run` composes, so the agent
     /// session view's Ctrl+D shows what that agent is actually sent
-    /// (`docs/agent-tool.md`, `docs/subagents.md`).
+    /// (`docs/agents/agent-tool.md`, `docs/agents/subagents.md`).
     fn agent_system_prompt(&self, agent_type: &str) -> Option<String> {
         self.subagent_config().system_prompt_for(agent_type)
     }
@@ -1155,13 +1155,13 @@ impl ReplySource for LlmBackend {
     /// The `<system-reminder>` a subagent of `agent_type` opens on, ahead of
     /// its task — the same `briefing_for` the launch pushes, so the agent
     /// view's Ctrl+D leads with what that agent actually read
-    /// (`docs/subagents.md`).
+    /// (`docs/agents/subagents.md`).
     fn agent_system_reminder(&self, agent_type: &str) -> Option<String> {
         self.subagent_config().briefing_for(agent_type)
     }
 
     /// The tools the next request offers — the set `sync_tool_specs` last
-    /// handed the client, shared by handle (`docs/context-usage.md`).
+    /// handed the client, shared by handle (`docs/architecture/context-usage.md`).
     fn tool_definitions(&self) -> Arc<[ToolDefinition]> {
         Arc::clone(&self.tool_definitions)
     }
@@ -1208,12 +1208,12 @@ impl ReplySource for LlmBackend {
     /// The model a subagent of `agent_type` is launched on when its
     /// definition pins one — read off the same definition
     /// `spawn_subagent_run` switches the client for
-    /// (`docs/agent-context-gauge.md`).
+    /// (`docs/agents/agent-context-gauge.md`).
     fn agent_model(&self, agent_type: &str) -> Option<String> {
         self.subagent_config().pinned_model(agent_type)
     }
 
-    /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
+    /// Send a chat message into a subagent's session (`docs/agents/agent-tool.md`):
     /// queued into its running loop, or a continuation run over its stored
     /// conversation when idle. `false` when agents aren't enabled here or the
     /// id is unknown/busy-less-stored.
@@ -1222,9 +1222,9 @@ impl ReplySource for LlmBackend {
             return AgentChatDelivery::Declined;
         };
         // Still running: the message rides its queue to the next round
-        // boundary, exactly as the main session's does (docs/queue.md) —
+        // boundary, exactly as the main session's does (docs/input/queue.md) —
         // remembered as the user's, since the lead never wrote it
-        // (docs/agent-tools.md).
+        // (docs/agents/agent-tools.md).
         if registry.queue_user_input(id, text) {
             return AgentChatDelivery::Queued;
         }
@@ -1232,7 +1232,7 @@ impl ReplySource for LlmBackend {
             return AgentChatDelivery::Declined;
         };
         // In the conversation already, so no drain will mark it: the
-        // `agentoutput` timeline is told here (docs/agent-tools.md).
+        // `agentoutput` timeline is told here (docs/agents/agent-tools.md).
         registry.note_user_message(id, text);
         messages.push(ChatMessage::user(text));
         spawn_subagent_run(
@@ -1267,7 +1267,7 @@ struct SubagentConfig {
     /// subagent note (`prompts/subagent.md`).
     base_system_prompt: Option<String>,
     /// Its runtime half alone, for a definition whose body replaces the
-    /// persona (`docs/subagents.md`).
+    /// persona (`docs/agents/subagents.md`).
     prompt_context: Option<String>,
     /// The subagent definitions this launch resolves `subagent_type` against
     /// — the shared handle, so a type added mid-session is launchable at once.
@@ -1276,38 +1276,38 @@ struct SubagentConfig {
     detach_helper: Option<std::path::PathBuf>,
     /// The shared background-shell registry, so a subagent's `bash` can
     /// `run_in_background` too — its shells stack into the same footer count
-    /// and ↓ manager, attributed to the launcher (`docs/agent-tool.md`,
-    /// `docs/background.md`).
+    /// and ↓ manager, attributed to the launcher (`docs/agents/agent-tool.md`,
+    /// `docs/tools/background.md`).
     background: Option<crate::background::BackgroundRegistry>,
     /// The shared permission gate, so a subagent's `write`/`edit`/`bash` calls
     /// ask too — the prompt names the agent that asked
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     permissions: Option<PermissionGate>,
     /// The auto mode classifier, so a subagent's `bash` calls are reviewed
-    /// in auto mode exactly like the main turn's (`docs/permissions.md`).
+    /// in auto mode exactly like the main turn's (`docs/state/permissions.md`).
     classifier: SafetyClassifier,
-    /// The session's skills, so a subagent can load one too (`docs/skills.md`)
+    /// The session's skills, so a subagent can load one too (`docs/tools/skills.md`)
     /// — a side agent benefits from an authored `SKILL.md` exactly as the lead
     /// does, and loading one is pure text, so it needs no gate of its own.
     skills: Option<crate::skills::SkillRegistry>,
     /// The session's MCP manager, so a subagent can call the same servers'
-    /// tools (`docs/mcp.md`) — a side agent queries a wiki exactly as the
+    /// tools (`docs/tools/mcp.md`) — a side agent queries a wiki exactly as the
     /// lead does, over the same live connections.
     mcp: Option<super::mcp::McpManager>,
     /// The session's retry budget, so a subagent's rounds retry exactly as
-    /// the main turn's do (`docs/settings.md`).
+    /// the main turn's do (`docs/state/settings.md`).
     max_retries: u32,
     /// The session's tool-round ceiling, so a subagent runs under the same one
-    /// (`0` = none — `docs/settings.md`).
+    /// (`0` = none — `docs/state/settings.md`).
     max_tool_calls: usize,
     /// The session's lifecycle hooks, re-tagged per agent inside
     /// [`spawn_subagent_run`] so `PreToolUse` payloads carry `agent_id` /
     /// `agent_type` and a hook can tell a subagent's call from the lead's
-    /// (`docs/hooks.md`).
+    /// (`docs/tools/hooks.md`).
     hooks: Arc<dyn HookSink>,
     /// The user's secrets, so a subagent's tool calls expand and redact
     /// them exactly as the lead's do — and its briefing names them
-    /// (`docs/secrets.md`).
+    /// (`docs/state/secrets.md`).
     secrets: Option<crate::secrets::SecretRegistry>,
 }
 
@@ -1348,8 +1348,8 @@ impl SubagentConfig {
     }
 
     /// The **briefing** a subagent of `agent_type` opens on: the
-    /// `<system-reminder>` naming the skills it can load (`docs/skills.md`)
-    /// and the secrets its tools can use (`docs/secrets.md`) — `None` when
+    /// `<system-reminder>` naming the skills it can load (`docs/tools/skills.md`)
+    /// and the secrets its tools can use (`docs/state/secrets.md`) — `None` when
     /// neither section has anything to say, because this session has none
     /// or the type's `tools:` withholds every tool that would use them.
     ///
@@ -1393,7 +1393,7 @@ impl SubagentConfig {
     /// definition's own `model.named()`, which is what `spawn_subagent_run`
     /// switches the client to, so the agent view's footer
     /// (`ReplySource::agent_model`) can never name a model the agent was not
-    /// launched on (`docs/agent-context-gauge.md`).
+    /// launched on (`docs/agents/agent-context-gauge.md`).
     fn pinned_model(&self, agent_type: &str) -> Option<String> {
         self.definition(agent_type)
             .and_then(|def| def.model.named().map(str::to_string))
@@ -1412,7 +1412,7 @@ impl SubagentConfig {
 }
 
 /// The subagent tool set a backend last built for the `/context` page, with
-/// the type and the allowlist it was built from (`docs/context-usage.md`).
+/// the type and the allowlist it was built from (`docs/architecture/context-usage.md`).
 #[derive(Debug)]
 struct AgentToolsMemo {
     agent_type: String,
@@ -1422,8 +1422,8 @@ struct AgentToolsMemo {
 
 /// A subagent's tool set: the built-ins its definition's `allowed` list
 /// permits (never `agent` — no nesting), plus the `skill` tool when the
-/// session found any (`docs/skills.md`) and the MCP servers' tools
-/// (`docs/mcp.md`), both through the same allowlist. One function, because
+/// session found any (`docs/tools/skills.md`) and the MCP servers' tools
+/// (`docs/tools/mcp.md`), both through the same allowlist. One function, because
 /// two answer the same question: the launch that **sends** it
 /// ([`spawn_subagent_run`]) and the agent view's `/context` page that
 /// **counts** it (`ReplySource::agent_tool_definitions`).
@@ -1446,7 +1446,7 @@ fn subagent_tool_specs(
 
 /// A subagent's whole briefing — the skills it may load and, behind them,
 /// the secrets its tools can use (the lead's reminder order,
-/// `docs/secrets.md`) — wrapped as one `<system-reminder>`, `None` when
+/// `docs/state/secrets.md`) — wrapped as one `<system-reminder>`, `None` when
 /// neither has anything to say (no registry, every skill turned off, no
 /// secrets).
 ///
@@ -1486,7 +1486,7 @@ const AGENT_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(30
 /// The model-facing acknowledgement of a background agent launch — the tool
 /// result a `run_in_background` `agent` call returns at once. It names the
 /// agent by its task **and its id**, which the companions take back
-/// (`docs/agent-tools.md`), and steers the model off polling: the
+/// (`docs/agents/agent-tools.md`), and steers the model off polling: the
 /// completion is delivered, and a wait is for when the result is needed now.
 #[must_use]
 pub fn agent_launch_text(id: &str, description: &str) -> String {
@@ -1503,7 +1503,7 @@ pub fn agent_launch_text(id: &str, description: &str) -> String {
 /// The model-facing result of a **Ctrl+B handoff** on a running foreground
 /// agent group — the user moved it to the background mid-wait, so the model
 /// must not expect the response in this result (the bash handoff's twin,
-/// `docs/background.md`).
+/// `docs/tools/background.md`).
 #[must_use]
 pub fn agent_handoff_text(id: &str, description: &str) -> String {
     format!(
@@ -1517,7 +1517,7 @@ pub fn agent_handoff_text(id: &str, description: &str) -> String {
 /// The tool result of a settled foreground agent: its final response — or
 /// the reference's placeholder when it answered with nothing, the stopped
 /// note for a user kill, and a failure note otherwise — closed by the line
-/// naming the agent `agentsend` continues (`docs/agent-tools.md`). A user's
+/// naming the agent `agentsend` continues (`docs/agents/agent-tools.md`). A user's
 /// stop is final, so its note offers nothing to continue. Messages the user
 /// sent the agent from its session view while the lead waited are named
 /// between the two (`agents::user_messages_note`): the lead never wrote
@@ -1562,7 +1562,7 @@ struct LaunchedAgent {
 /// under, what the model asked for, and the call it answers — the provider's
 /// own id and the model's verbatim arguments, which the group's record
 /// carries so the next request replays the launch as the provider saw it
-/// (`docs/prompt-caching.md`).
+/// (`docs/providers/prompt-caching.md`).
 fn agent_spec(id: &str, call: &ToolCallRequest, args: &AgentArgs) -> AgentSpec {
     AgentSpec {
         id: id.to_string(),
@@ -1575,7 +1575,7 @@ fn agent_spec(id: &str, call: &ToolCallRequest, args: &AgentArgs) -> AgentSpec {
     }
 }
 
-/// Run one round's `agent` tool calls (`docs/agent-tool.md`): parse each
+/// Run one round's `agent` tool calls (`docs/agents/agent-tool.md`): parse each
 /// call, spawn every subagent **concurrently**, announce the background and
 /// foreground groups (`StreamEvent::AgentBatch`), resolve the background
 /// group at once with launch acknowledgements, wait for the foreground group
@@ -1604,7 +1604,7 @@ fn run_agent_calls(
         };
         // An unknown `subagent_type` is a recoverable error naming the types
         // that exist, not a silent general-purpose agent the model never
-        // asked for (`docs/subagents.md`).
+        // asked for (`docs/agents/subagents.md`).
         if config.definition(args.agent_type()).is_none() {
             results.push((
                 call.id.clone(),
@@ -1622,12 +1622,12 @@ fn run_agent_calls(
         // prompt, the briefing, then the task as the first user message.
         //
         // The briefing leads, exactly as the lead's `<system-reminder>` leads
-        // its own context (`docs/context.md`): it is standing information
+        // its own context (`docs/architecture/context.md`): it is standing information
         // about the session, not an answer to the task, and a roster read
         // *after* the instruction it should have informed is a roster read too
         // late. Assembled here — the one place a launch is built — so a chat
         // continuation, which resumes a message list that already carries it,
-        // never pushes a second copy (`docs/subagents.md`).
+        // never pushes a second copy (`docs/agents/subagents.md`).
         let mut messages = Vec::new();
         if let Some(system) = config.system_prompt_for(args.agent_type()) {
             messages.push(ChatMessage::system(&system));
@@ -1741,7 +1741,7 @@ fn run_agent_calls(
 /// channel via a forwarder, its chat inputs arrive through the registry's
 /// pending-input seam, and its outcome + final message list land back in the
 /// registry for the parent's wait loop / a later continuation. See
-/// `docs/agent-tool.md`.
+/// `docs/agents/agent-tool.md`.
 fn spawn_subagent_run(
     config: &SubagentConfig,
     registry: AgentRegistry,
@@ -1755,7 +1755,7 @@ fn spawn_subagent_run(
     let secrets = config.secrets.clone();
     // Kept whole for the settle-window continuation at the very bottom.
     let respawn_config = config.clone();
-    // The type's definition (`docs/subagents.md`): its tool allowlist, its
+    // The type's definition (`docs/agents/subagents.md`): its tool allowlist, its
     // model, and its system prompt. Resolved here rather than passed in so a
     // chat continuation reads the same file the launch did.
     let definition = config.definition(&agent_type);
@@ -1783,7 +1783,7 @@ fn spawn_subagent_run(
     let max_tool_calls = config.max_tool_calls;
     // The subagent's own view of the hooks: every payload it produces names
     // the agent, so a hook can tell a subagent's call from the lead's
-    // (`docs/hooks.md`).
+    // (`docs/tools/hooks.md`).
     let hooks = config
         .hooks
         .for_subagent(&id, &agent_type)
@@ -1792,7 +1792,7 @@ fn spawn_subagent_run(
         // The classifier's task context for THIS agent's run, seeded from the
         // launch prompt (or the chat message that continued it) — read now,
         // before the reminder/hook notes push more user-role messages that
-        // would win the newest-user-text scan (`docs/permissions.md`).
+        // would win the newest-user-text scan (`docs/state/permissions.md`).
         //
         // The context is the **registry's** (minted with the id in
         // `register`), not a local: the Ctrl+D classifier page reads it from
@@ -1807,7 +1807,7 @@ fn spawn_subagent_run(
         if let Ok(mut log) = turn_context.lock() {
             log.push_request(&super::classifier::latest_user_text(&messages));
         }
-        // `SubagentStart` (docs/hooks.md) runs here, on the agent's **own**
+        // `SubagentStart` (docs/tools/hooks.md) runs here, on the agent's **own**
         // thread rather than at `registry.register`, for two reasons: the
         // parent launching a batch of agents must not block on each one's
         // hook in turn, and whatever the hook returns is context for *this*
@@ -1815,7 +1815,7 @@ fn spawn_subagent_run(
         // wrapped so it never reads as the lead talking. The note goes on the
         // agent's own transcript too, once its channel exists below: the
         // hooks' cell for its session view, and the context it read for its
-        // Ctrl+D (docs/hooks.md *The hook-run cell*).
+        // Ctrl+D (docs/tools/hooks.md *The hook-run cell*).
         let start_note =
             super::hooks::subagent_start_note(hooks.as_ref(), &id, &agent_type, &cancel);
         if let Some(note) = start_note.as_ref().filter(|note| !note.text.is_empty()) {
@@ -1827,7 +1827,7 @@ fn spawn_subagent_run(
         // — a new tool round ends it) and the record `agentoutput` reports
         // from: each call the agent starts, as its `Name(args)` one-liner,
         // and each run of text more work followed, as a progress update
-        // (docs/agent-tools.md, docs/agent-progress.md). The **terminal**
+        // (docs/agents/agent-tools.md, docs/agents/agent-progress.md). The **terminal**
         // event is held back: it goes out through `registry.settle` below,
         // once the outcome is recorded — at once, or to an `agentoutput`
         // waiting on it, which then reports the outcome instead of a notice
@@ -1870,7 +1870,7 @@ fn spawn_subagent_run(
             .with_detach_helper(detach);
         // The shared background registry rides in so the subagent's `bash`
         // can `run_in_background` — every launch attributed to this agent,
-        // and the Ctrl+B latch untouched (docs/agent-tool.md).
+        // and the Ctrl+B latch untouched (docs/agents/agent-tool.md).
         if let Some(bg) = background.clone() {
             executor =
                 executor
@@ -1898,7 +1898,7 @@ fn spawn_subagent_run(
             |call, on_output| {
                 // The agent companions are the lead's alone — never offered
                 // here, and a hallucinated call is declined recoverably, like
-                // a nested launch (docs/agent-tools.md).
+                // a nested launch (docs/agents/agent-tools.md).
                 if tools::is_agent_companion(&call.name) {
                     return tools::ToolOutcome::error(
                         "agents cannot message, wait on or stop other agents",
@@ -1908,7 +1908,7 @@ fn spawn_subagent_run(
                 // and not only where the specs were offered: a model can name
                 // a tool it was never given, and a `tools:` line that only
                 // shaped the request would be a promise the executor doesn't
-                // keep (`docs/subagents.md`).
+                // keep (`docs/agents/subagents.md`).
                 if !allowed.allows(&call.name) {
                     return tools::ToolOutcome::error(crate::subagents::withheld_tool_message(
                         &call.name,
@@ -1916,19 +1916,19 @@ fn spawn_subagent_run(
                     ));
                 }
                 // The classifier's task context, one line per executed call —
-                // the lead's pattern (`docs/permissions.md`), placeholders
+                // the lead's pattern (`docs/state/permissions.md`), placeholders
                 // and all.
                 if let Ok(mut log) = turn_context.lock() {
                     log.record_call(&call.name, &call.arguments);
                 }
-                // The lead's secrets seam, one level down (docs/secrets.md).
+                // The lead's secrets seam, one level down (docs/state/secrets.md).
                 super::secret_exec::run_with_secrets(
                     secrets.as_ref(),
                     call,
                     on_output,
                     |call, on_output| {
                         // A subagent's `skill` call loads the same `SKILL.md`
-                        // the lead would (docs/skills.md).
+                        // the lead would (docs/tools/skills.md).
                         if let Some(registry) = skills
                             .as_ref()
                             .filter(|_| crate::skills::is_skill_tool(&call.name))
@@ -1940,7 +1940,7 @@ fn spawn_subagent_run(
                             );
                         }
                         // …and its MCP calls ride the same live connections
-                        // (docs/mcp.md).
+                        // (docs/tools/mcp.md).
                         if crate::mcp::is_mcp_tool(&call.name) {
                             return match &mcp {
                                 Some(manager) => manager.call_tool(call, &cancel),
@@ -1955,7 +1955,7 @@ fn spawn_subagent_run(
             },
             // The chat seam: messages the user queued into this agent's
             // session arrive at its next round boundary — the main session's
-            // queue, one level down (`docs/queue.md`, `docs/agent-tool.md`).
+            // queue, one level down (`docs/input/queue.md`, `docs/agents/agent-tool.md`).
             || {
                 inputs_registry
                     .take_pending_inputs(&inputs_id)
@@ -1977,7 +1977,7 @@ fn spawn_subagent_run(
                     .collect()
             },
             // A subagent's tool calls ask too — the prompt says which agent
-            // is asking (docs/permissions.md). The event rides tx2, so the
+            // is asking (docs/state/permissions.md). The event rides tx2, so the
             // forwarder tags it with this agent's id like every other; in
             // auto mode its commands go to the same classifier.
             |call, force_ask| {
@@ -2041,9 +2041,9 @@ fn spawn_subagent_run(
         // while a killed or errored agent fires nothing (Claude Code's
         // posture), and the registry settles the moment the run ends rather
         // than after a cleanup hook's timeout. The held terminal event goes
-        // out with the outcome (docs/agent-tools.md *One notice per answer*).
+        // out with the outcome (docs/agents/agent-tools.md *One notice per answer*).
         registry.settle(&id, outcome, messages, terminal);
-        // The settle window (`docs/queue.md`): a message queued after this
+        // The settle window (`docs/input/queue.md`): a message queued after this
         // run's last drain but before `finish` landed sits where nobody will
         // ever read it — the slot was still `busy`, so `spawn_agent_chat`
         // queued instead of continuing, and the roster's terminal event may
@@ -2083,7 +2083,7 @@ fn stream_round(
     // after a `Retrying` announcement + backoff — for a retryable failure that
     // emitted nothing, and for a connection lost under one that did: the
     // `Retrying` voids the failed attempt, its consumers withdrawing what it
-    // streamed, so a retry never duplicates streamed text (docs/offline.md).
+    // streamed, so a retry never duplicates streamed text (docs/providers/offline.md).
     let attempt = || {
         let mut emitted = false;
         // Track the thinking phase so a reasoning burst opens exactly one
@@ -2110,8 +2110,8 @@ fn stream_round(
             if !delta.tool_calls.is_empty() {
                 // The model is generating a tool call: each piece goes out
                 // under its call's slot, so the status keeps ticking
-                // (docs/status-indicator.md) and a `write` previews as its
-                // content arrives (docs/write-streaming.md). Close the
+                // (docs/ui/status-indicator.md) and a `write` previews as its
+                // content arrives (docs/ui/write-streaming.md). Close the
                 // thinking phase first if a reasoning burst preceded the call.
                 emitted = true;
                 if thinking {
@@ -2128,7 +2128,7 @@ fn stream_round(
         // the error and the interrupt settle it where they land, and the
         // retry that may follow voids it — closing it here would commit a
         // `Thought for …` cell only for the retry to take it back
-        // (docs/offline.md *A connection lost mid-reply*).
+        // (docs/providers/offline.md *A connection lost mid-reply*).
         if thinking && result.is_ok() {
             let _ = tx.send(StreamEvent::ThinkingEnd);
         }
@@ -2151,7 +2151,7 @@ fn stream_round(
             // The round's real usage frame (stream_options.include_usage):
             // forward it so the app snaps its tally to the provider's own
             // accounting — one report per round, so an agentic turn
-            // accumulates them (docs/prompt-caching.md).
+            // accumulates them (docs/providers/prompt-caching.md).
             if let Some(usage) = outcome.usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
@@ -2172,7 +2172,7 @@ const CONTEXT_WINDOW_NOTICE: &str = "the reply filled the model's context window
      finished — run /compact to make room, then send a message to go on";
 
 /// What a finished stream means for the agent loop
-/// (`docs/unfinished-replies.md`): a round that asked for tools runs them,
+/// (`docs/architecture/unfinished-replies.md`): a round that asked for tools runs them,
 /// whatever its stop reason; one stopped by the context window or a content
 /// filter fails, saying which, since neither can be continued; one stopped at
 /// the output cap is [`RoundOutcome::CutOff`], which the loop continues; and
@@ -2220,8 +2220,8 @@ fn to_tool_call_specs(calls: &[ToolCallRequest]) -> Vec<ToolCallSpec> {
 }
 
 /// The approve seam's description lookup ([`approval::DescribeTool`]): an
-/// MCP wire name → the server's description of the tool (`docs/mcp.md`), a
-/// session id → the command that session runs (`docs/interactive-shell.md`).
+/// MCP wire name → the server's description of the tool (`docs/tools/mcp.md`), a
+/// session id → the command that session runs (`docs/tools/interactive-shell.md`).
 fn describe_for_prompt(
     key: &str,
     mcp: Option<&super::mcp::McpManager>,
@@ -2277,7 +2277,7 @@ mod tests {
     fn build_messages_translates_native_tool_calls_and_results() {
         // A replayed tool round from history: the assistant `tool_calls` entry
         // and its `tool`-role result become the provider-native wire messages
-        // (not the old bracketed text) — see docs/context.md.
+        // (not the old bracketed text) — see docs/architecture/context.md.
         let context = vec![
             ContextMessage::assistant_tool_calls(
                 "let me check",
@@ -2330,7 +2330,7 @@ mod tests {
         let msgs = build_messages(None, "", &context, fake_encode);
         // The builder splits text and pictures into parts and does not touch
         // the text: naming the saved path is `context_messages`' job, so
-        // Ctrl+D and the wire read alike (`docs/image-paste.md`).
+        // Ctrl+D and the wire read alike (`docs/input/image-paste.md`).
         assert_eq!(
             msgs[0].content,
             MessageContent::Parts(vec![
@@ -2459,7 +2459,7 @@ mod tests {
     fn agent_system_prompt_is_the_main_prompt_plus_the_subagent_note() {
         // What a launched subagent's leading system message actually carries
         // (`subagent_config`) — surfaced through the trait so the agent
-        // session view's Ctrl+D shows the real thing (docs/agent-tool.md).
+        // session view's Ctrl+D shows the real thing (docs/agents/agent-tool.md).
         // Tools off for determinism, like the sibling test above.
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         let prompt = ReplySource::agent_system_prompt(&backend, crate::agents::GENERAL_PURPOSE)
@@ -2491,7 +2491,7 @@ mod tests {
     #[test]
     fn agent_model_is_the_definitions_pinned_model_or_none_when_it_inherits() {
         // What the agent session view's footer names, and what decides whose
-        // context window its gauge runs against (docs/agent-context-gauge.md):
+        // context window its gauge runs against (docs/agents/agent-context-gauge.md):
         // a type pinned to another model runs on it — the same
         // `def.model.named()` the launch switches the client to — while an
         // inheriting type answers `None`, the session's own model.
@@ -2523,7 +2523,7 @@ mod tests {
         // A backend the boundary never handed definitions to — an embedder, a
         // live test — still resolves the two built-ins: the `agent` tool's
         // schema names `general-purpose` as its default, so a launch must not
-        // depend on a file having been found (`docs/subagents.md`).
+        // depend on a file having been found (`docs/agents/subagents.md`).
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         let config = backend.subagent_config();
         assert!(config.definition(crate::agents::GENERAL_PURPOSE).is_some());
@@ -2594,7 +2594,7 @@ mod tests {
 
     #[test]
     fn the_backend_surfaces_the_tool_set_it_sends() {
-        // What `/context` counts the tools from (docs/context-usage.md): the
+        // What `/context` counts the tools from (docs/architecture/context-usage.md): the
         // very set the client sends, each schema serialized as sent.
         let names = |backend: &LlmBackend| -> Vec<String> {
             ReplySource::tool_definitions(backend)
@@ -2648,7 +2648,7 @@ mod tests {
     #[test]
     fn a_subagents_tool_set_is_built_once_until_its_allowlist_moves() {
         // The agent view's `/context` page asks at every loop bottom
-        // (docs/context-usage.md): the same type under the same allowlist is
+        // (docs/architecture/context-usage.md): the same type under the same allowlist is
         // the same set, handed back by handle, while a rescan that rewrote
         // the type's `tools:` in place is a new one.
         let reader = |tools: &str| {
@@ -2678,7 +2678,7 @@ mod tests {
     #[test]
     fn a_types_briefing_follows_its_tools_allowlist() {
         // The skills roster and the `skill` tool travel together
-        // (`docs/subagents.md`): a type that may load a skill is briefed with
+        // (`docs/agents/subagents.md`): a type that may load a skill is briefed with
         // the names it can load; a type whose `tools:` withholds `Skill` is
         // briefed with nothing, since a roster it cannot use is a round spent
         // on a dead end. One rule, read by the launch that sends it and the
@@ -2713,7 +2713,7 @@ mod tests {
         // A subagent starts on a fresh context, so the lead's reminder never
         // reaches it: a type that can run a command or write a file is told
         // the placeholders itself — beside the skills, never the values — and
-        // a type whose tools cannot use one is told nothing (docs/secrets.md).
+        // a type whose tools cannot use one is told nothing (docs/state/secrets.md).
         let mut store = crate::secrets::SecretStore::new();
         store
             .apply(&crate::secrets::SecretDraft {
@@ -2776,7 +2776,7 @@ mod tests {
     #[test]
     fn the_settings_budgets_ride_the_backend_and_default_to_the_library_backstops() {
         // The `/settings` **Error retry** and **Max tool calls** knobs reach
-        // every round through these two builders (docs/settings.md). Left
+        // every round through these two builders (docs/state/settings.md). Left
         // alone, a backend keeps the library's own backstops — an embedder
         // with nobody watching still gets them.
         let plain = LlmBackend::configure(ModelConfig::fallback(), None, false);
@@ -2804,7 +2804,7 @@ mod tests {
     fn an_empty_skill_registry_attaches_nothing() {
         // Offering a tool that can only ever answer "unknown skill" spends the
         // model's attention on a dead end, so an empty set is not attached and
-        // the spec is never sent (`docs/skills.md`).
+        // the spec is never sent (`docs/tools/skills.md`).
         let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
             .with_skills(crate::skills::SkillRegistry::new(Vec::new()));
         assert!(backend.skills.is_none());
@@ -2841,7 +2841,7 @@ mod tests {
         // system-reminder — and a subagent gets a fresh context, so without
         // this one it carries a tool it cannot use without first guessing a
         // name and reading the names back out of the error. Listing and tool
-        // set travel together, on every surface (`docs/skills.md`).
+        // set travel together, on every surface (`docs/tools/skills.md`).
         let registry = crate::skills::SkillRegistry::new(vec![crate::skills::SkillMetadata {
             name: "commit".to_string(),
             description: "Write a commit message".to_string(),
@@ -2885,7 +2885,7 @@ mod tests {
     #[test]
     fn agent_launch_text_names_the_id_and_steers_off_polling() {
         // The id has consumers now — `agentsend`, `agentoutput`, `agentkill`
-        // take it back (docs/agent-tools.md) — so the launch hands it over,
+        // take it back (docs/agents/agent-tools.md) — so the launch hands it over,
         // in the sentence that names the agent rather than as a bare
         // `agentId:` label line.
         let text = agent_launch_text("a7k2m9x4q", "Scan the logs");
@@ -2997,7 +2997,7 @@ mod tests {
     #[test]
     fn augment_with_environment_leaves_a_blank_base_unchanged() {
         // The "empty ALTER_ZERO_SYSTEM_PROMPT → no system message" contract
-        // (docs/context.md) must survive: a blank base gains no environment
+        // (docs/architecture/context.md) must survive: a blank base gains no environment
         // block, so `configure` still drops it to `None`.
         assert_eq!(augment_with_environment("   ", "d", "o", "u", "c"), "   ");
         assert_eq!(augment_with_environment("", "d", "o", "u", "c"), "");
@@ -3026,7 +3026,7 @@ mod tests {
 
     #[test]
     fn augment_with_headless_appends_the_block_last() {
-        // docs/headless.md: the fourth block, after the scratchpad's — the
+        // docs/cli/headless.md: the fourth block, after the scratchpad's — the
         // model learns it runs with nobody watching the way it learns its
         // cwd and its scratchpad.
         let base = augment_with_scratchpad(
@@ -3091,7 +3091,7 @@ mod tests {
     #[test]
     fn augment_with_scratchpad_leaves_a_blank_base_unchanged() {
         // The "empty ALTER_ZERO_SYSTEM_PROMPT → no system message" contract
-        // (docs/context.md), exactly as the environment block honours it.
+        // (docs/architecture/context.md), exactly as the environment block honours it.
         assert_eq!(augment_with_scratchpad("   ", "/tmp/s"), "   ");
         assert_eq!(augment_with_scratchpad("", "/tmp/s"), "");
     }
@@ -3235,7 +3235,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         assert_eq!(specs[0].function.arguments, r#"{"command":"ls"}"#);
     }
 
-    // --- a connection lost mid-reply (docs/offline.md) ---------------------
+    // --- a connection lost mid-reply (docs/providers/offline.md) ---------------------
 
     /// One answer of [`sse_server`]: its `data:` frames, and whether the
     /// connection is **cut** after them — a chunked body that never gets its
@@ -3320,7 +3320,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
     fn a_round_stopped_at_the_output_cap_is_cut_off_rather_than_answered() {
         // The reported stall: a long thought spent the whole output budget,
         // nothing was said, and the turn ended as though the model had
-        // answered (docs/unfinished-replies.md).
+        // answered (docs/architecture/unfinished-replies.md).
         let RoundOutcome::CutOff { text } =
             round_outcome(ended_stream("", "Weighing the options", "length"))
         else {
@@ -3450,7 +3450,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
         // the second streams the whole round. The failed attempt's phase is
         // left open for the retry to void — closing it would commit a
         // `Thought for …` cell the withdrawal then has to take back
-        // (docs/offline.md *A connection lost mid-reply*).
+        // (docs/providers/offline.md *A connection lost mid-reply*).
         let port = sse_server(vec![
             SseAnswer {
                 frames: vec![delta_frame("reasoning_content", "Weighing it")],

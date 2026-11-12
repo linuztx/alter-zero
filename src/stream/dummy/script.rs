@@ -6,13 +6,13 @@
 //! The replies are the offline session's only voice, so they do a job: each
 //! one narrates the demo it accompanies and ends on the **hand-off**
 //! ([`HANDOFF`]) — the two commands that swap the dummy for a real model. See
-//! `docs/dummy-backend.md`.
+//! `docs/architecture/dummy-backend.md`.
 
 use super::super::StreamEvent;
 
 /// The hand-off every user-facing demo closes on: with no provider configured
 /// the session *is* the dummy, and `/login` (a subscription, a pasted key, or
-/// a local model server — `docs/local-models.md`) then `/model` (pick one) are
+/// a local model server — `docs/providers/local-models.md`) then `/model` (pick one) are
 /// the way out. A macro rather than a `const` so the reply literals
 /// can [`concat!`] it in — one source of truth, still a compile-time
 /// `&'static str`.
@@ -40,7 +40,7 @@ pub(in crate::stream) const HANDOFF: &str = handoff!();
 /// closing prose. Its turn is text-only —
 /// no thinking phase and no tool calls, which would split the reply around them
 /// and flush the block early — so the whole forming table previews in the strip
-/// and its block commits at the close (docs/table-streaming.md). This is the
+/// and its block commits at the close (docs/ui/table-streaming.md). This is the
 /// reported blank-band regression's shape: the strip collapses from the tall
 /// forming-table preview to one row in the same frame the block's rows flush,
 /// which the smoke suite guards (the box must stay flush at the bottom).
@@ -48,7 +48,7 @@ pub(in crate::stream) const HANDOFF: &str = handoff!();
 /// The emoji make it the **emoji-table** shape too: a wide grapheme costs two
 /// terminal columns, so a mismeasured one tears the grid's right border out of
 /// line — the reported "emoji cuts the table" (`term::visible_cells`,
-/// docs/table-streaming.md), which the smoke suite guards by asserting every
+/// docs/ui/table-streaming.md), which the smoke suite guards by asserting every
 /// grid row is the same width.
 pub(super) const DUMMY_TABLE_REPLY: &str = concat!(
     "Here's a table with data that uses backticks:\n\n\
@@ -185,7 +185,7 @@ const TOKEN_LENGTHS: [usize; 9] = [4, 1, 3, 2, 5, 1, 3, 2, 6];
 const TOKEN_RUN_CHARS: &[char] = &['*', '_', '~', '`', '#', '-', '|', '=', '>', ':'];
 
 /// Split text into **token-sized** streamable pieces — the stress twin of
-/// [`chunks`] (`docs/slow-stream.md`).
+/// [`chunks`] (`docs/ui/slow-stream.md`).
 ///
 /// A slow model streams tokens, not words: a few characters at a time, cut
 /// without regard to word or line boundaries, so the renderer meets an
@@ -231,7 +231,7 @@ fn is_run_char(c: char) -> bool {
 }
 
 /// The **markdown tour** — the slow-stream stress demo's reply, played for a
-/// prompt mentioning "markdown" (`docs/slow-stream.md`): every block kind the
+/// prompt mentioning "markdown" (`docs/ui/slow-stream.md`): every block kind the
 /// renderer knows in one document, streamed by [`tokens`] as one text-only
 /// message so the incremental renderer carries the whole thing from its
 /// first character to its last, with nothing to split it. It is written so
@@ -300,7 +300,7 @@ pub const MARKDOWN_TOUR: &str = concat!(
 /// line keeping its `\n`), so the dummy streams a `Bash` cell's output the way
 /// the real executor does — the live cell **tails** it as it arrives, before the
 /// authoritative `ToolEnd`. Concatenated, the chunks equal `output`. See
-/// `docs/tool-streaming.md`.
+/// `docs/ui/tool-streaming.md`.
 #[must_use]
 pub(super) fn tool_output_events(output: &str) -> Vec<StreamEvent> {
     output

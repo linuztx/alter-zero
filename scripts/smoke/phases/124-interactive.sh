@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# an interactive session's cells (docs/bash-tools.md). The dummy's
+# an interactive session's cells (docs/tools/bash-tools.md). The dummy's
 # `interactive` demo plays the shape a live model produces: `bash` stopping
 # at a prompt, then `bashsend` answering one question a round until the
 # program exits — every result the real report formatter's. What only the

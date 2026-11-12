@@ -3,7 +3,7 @@
 //! A reasoning-capable model advertises what it supports in the provider's
 //! `/v1/models` record ([`ReasoningSupport`], parsed in [`super::models`]);
 //! the user cycles the active [`ThinkingMode`] with Ctrl+T and the choice
-//! rides the request payload (`docs/reasoning.md`). Pure and unit-tested; no
+//! rides the request payload (`docs/providers/reasoning.md`). Pure and unit-tested; no
 //! HTTP here.
 
 use serde_json::json;
@@ -20,7 +20,7 @@ pub enum ReasoningEffort {
     XHigh,
     Max,
     /// Above `max` — the top rung the ChatGPT backend's newest models offer
-    /// (`docs/chatgpt.md`). No other provider names it, so it only ever
+    /// (`docs/providers/chatgpt.md`). No other provider names it, so it only ever
     /// appears on a model whose own record listed it.
     Ultra,
 }
@@ -171,8 +171,8 @@ impl ReasoningSupport {
 /// A thinking mode's bare effort label, for the two wires that want the level
 /// **on its own** rather than inside [`reasoning_body`]'s object: GitHub
 /// Copilot's chat completions, where it is a top-level `reasoning_effort`
-/// string (`docs/copilot.md`), and the Responses API, where it is the
-/// `effort` field of its own `reasoning` object (`docs/chatgpt.md`).
+/// string (`docs/providers/copilot.md`), and the Responses API, where it is the
+/// `effort` field of its own `reasoning` object (`docs/providers/chatgpt.md`).
 ///
 /// Only an explicit effort rides the wire either way. `On` means "the model's
 /// own default", and `Off` is expressed by **omitting** the parameter —
@@ -191,7 +191,7 @@ pub fn effort_label(mode: ThinkingMode) -> Option<&'static str> {
 /// The request's top-level `reasoning_effort` value for a mode — OpenAI's own
 /// spelling, for a chat-completions server that reads it rather than the
 /// `reasoning` object ([`super::config::ReasoningParam::ReasoningEffort`],
-/// `docs/user-providers.md`). Unlike [`effort_label`]'s opt-in wires, Off has
+/// `docs/providers/user-providers.md`). Unlike [`effort_label`]'s opt-in wires, Off has
 /// a word here — `none` — since omitting the field leaves a reasoning model
 /// at its own default rather than turning it off; `On` sends nothing.
 #[must_use]
@@ -457,7 +457,7 @@ mod tests {
     fn a_reasoning_effort_server_hears_off_as_none() {
         // OpenAI's own top-level string, for a server that reads it rather
         // than the `reasoning` object (`reasoning_param`,
-        // docs/user-providers.md). Unlike Copilot's opt-in, Off has a word
+        // docs/providers/user-providers.md). Unlike Copilot's opt-in, Off has a word
         // here, `none`, and omitting the field would leave a reasoning model
         // at its default instead of turning it off.
         assert_eq!(

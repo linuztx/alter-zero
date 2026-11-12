@@ -1,4 +1,4 @@
-//! The spinner tip's row (`docs/tips.md`): Claude Code's dim `⎿  Tip: …`,
+//! The spinner tip's row (`docs/ui/tips.md`): Claude Code's dim `⎿  Tip: …`,
 //! hanging off the status line in the gutter a tool's output hangs from.
 //!
 //! ```text

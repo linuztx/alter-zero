@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Ctrl+D opens the CONTEXT-DEBUG view (docs/context.md) — the raw
+# Ctrl+D opens the CONTEXT-DEBUG view (docs/architecture/context.md) — the raw
 # LLM context window on the alternate screen: each entry on its role chip
 # (` USER `, ` ASSISTANT `, ` TOOL `) over its text hung on the `⎿` gutter,
 # the conversation verbatim and tool calls in the provider-native form (an
@@ -12,7 +12,7 @@ smoke_begin
 # entry naming that call, the shape a real backend sends), the bottom rule counting the
 # messages, → stepping to the next one, q returning to the conversation. The
 # demo's calls are one parallel batch, so they share one assistant entry and
-# their TOOL results sit below its arguments (docs/prompt-caching.md) — past
+# their TOOL results sit below its arguments (docs/providers/prompt-caching.md) — past
 # the first page of a 24-row terminal, which is why the result check pages
 # down through the view.
 S36="${S}_ctxdebug"

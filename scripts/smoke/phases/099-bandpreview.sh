@@ -5,7 +5,7 @@
 smoke_begin
 
 # a BAND OPENED UNDER A TALL STREAMING PREVIEW keeps the composer
-# (docs/table-streaming.md "The preview slot is budgeted"). The strip's preview
+# (docs/ui/table-streaming.md "The preview slot is budgeted"). The strip's preview
 # was capped against a FIXED chrome allowance — the box, the status line, a
 # footer — so a forming table always spent the region's whole slack. Press `/`
 # (or `?`, or `@`) mid-table on a small terminal and the band asked for rows
@@ -51,7 +51,7 @@ for band_key in "/" "?" "@s"; do
 	# …and neither the band nor the turn's status line was traded away for it.
 	expect_has "$band_pane" -F "Working…" "the status line went missing under the '$band_key' band"
 	# The `?` band's first entry in either wording: under 53 columns it
-	# drops its `for`/`to` to keep two columns (docs/shortcuts.md), which is
+	# drops its `for`/`to` to keep two columns (docs/ui/shortcuts.md), which is
 	# what leaves the strip rows to preview the table in here.
 	case "$band_key" in
 	"/") band_marker="/clear" ;;

@@ -5,7 +5,7 @@
 smoke_begin
 
 # the AGENT SESSION VIEW streams like the main one
-# (docs/agent-view-streaming.md). The view has its own streaming strip, and it
+# (docs/agents/agent-view-streaming.md). The view has its own streaming strip, and it
 # used to render the last row of a BATCH render of the agent's buffer — while
 # its commits went through a `StreamRender`, which withholds a forming table
 # WHOLE. So a subagent streaming a table showed one row (the block's closing

@@ -1,6 +1,6 @@
 //! Token estimation: how many tokens a text costs, without a tokenizer, and
 //! the correction the provider's own usage reports teach it. See
-//! `docs/token-estimate.md`.
+//! `docs/architecture/token-estimate.md`.
 //!
 //! **[`estimate`]** is provider-agnostic. The providers this app talks to
 //! tokenize with a dozen vocabularies (OpenAI's `o200k_base`, Anthropic's,
@@ -778,7 +778,7 @@ mod tests {
     /// Samples of what fills an agent's context, each with its token count
     /// under tiktoken's `o200k_base` (GPT-4o onward) and `cl100k_base`
     /// (GPT-4, and the shape of the Llama 3 / Qwen vocabularies), measured
-    /// when the estimator was fitted (`docs/token-estimate.md`).
+    /// when the estimator was fitted (`docs/architecture/token-estimate.md`).
     const REFERENCE: &[(&str, &str, usize, usize)] = &[
         (
             "english prose",
@@ -866,7 +866,7 @@ mod tests {
         ),
         (
             "urls and paths",
-            "https://github.com/linuztx/alter-zero/blob/main/docs/compact.md?plain=1#L136\n\
+            "https://github.com/linuztx/alter-zero/blob/main/docs/architecture/compact.md?plain=1#L136\n\
              /home/user/alter-zero/src/llm/backend.rs:2022:fn stream_round(\n",
             44,
             44,
@@ -946,7 +946,7 @@ mod tests {
 
     /// Where a provider-agnostic estimate should land between the two
     /// references: nearer the newer, denser vocabulary, which is what most
-    /// providers now serve (`docs/token-estimate.md`).
+    /// providers now serve (`docs/architecture/token-estimate.md`).
     fn midpoint(o200k: usize, cl100k: usize) -> f64 {
         (o200k as f64).powf(0.65) * (cl100k as f64).powf(0.35)
     }
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn a_change_too_small_to_measure_teaches_nothing() {
         // A few hundred tokens are where a chat template's per-message
-        // framing stops drowning the content (docs/token-estimate.md).
+        // framing stops drowning the content (docs/architecture/token-estimate.md).
         let mut calibration = Calibration::default();
         calibration.learn(300, 100);
         assert_eq!(calibration.ratio_permille(), 1000);

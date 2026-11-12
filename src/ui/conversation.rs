@@ -3,14 +3,14 @@
 //!
 //! The repaint is content-anchored and reflows both directions (CLAUDE.md
 //! invariant 3); the tail restores the startup banner over a short conversation
-//! (`docs/header.md`).
+//! (`docs/ui/header.md`).
 
 use super::*;
 
 /// Whether `item` is a `!` shell command's header message (`Role::Shell`).
 /// Such an item gets **no** blank spacer after it: its tool's `⎿` output (or
 /// the live `⎿ Running…` preview) sits flush below, forming one exec cell
-/// (docs/shell-command.md). Shared by [`conversation_lines`] and
+/// (docs/input/shell-command.md). Shared by [`conversation_lines`] and
 /// [`transcript_lines`] so the inline view and the Ctrl+O overlay agree.
 pub(super) fn is_shell_header(item: &HistoryItem) -> bool {
     matches!(item, HistoryItem::Message(m) if m.role == Role::Shell)
@@ -20,8 +20,8 @@ pub(super) fn is_shell_header(item: &HistoryItem) -> bool {
 /// except what the commit path is still holding while the live strip speaks
 /// for it — the **open collapsed group** from `group_start` on
 /// ([`App::tool_group_range`](crate::app::App::tool_group_range),
-/// `docs/tool-groups.md`), else the trailing cells of a **parallel MCP run
-/// still in flight** ([`held_run_len`], `docs/mcp.md`). Every rebuild renders
+/// `docs/ui/tool-groups.md`), else the trailing cells of a **parallel MCP run
+/// still in flight** ([`held_run_len`], `docs/tools/mcp.md`). Every rebuild renders
 /// *this*, so a repaint landing mid-group or mid-run can't paint a line the
 /// commit is about to write.
 #[must_use]
@@ -43,7 +43,7 @@ pub fn committed_history<'a>(
 ///
 /// Unless `verbose` (the `/settings` **Verbose output** row), a run of reads,
 /// searches and listings is one settled line — the one the commit path wrote
-/// when the group closed ([`tool_group_lines`], `docs/tool-groups.md`).
+/// when the group closed ([`tool_group_lines`], `docs/ui/tool-groups.md`).
 #[must_use]
 pub fn conversation_lines(
     history: &[HistoryItem],
@@ -63,7 +63,7 @@ pub fn conversation_lines(
         // A **parallel MCP run** — consecutive cells of one announced batch,
         // all resolved ok — is one act, so it collapses to the single
         // `Called deepwiki 2 times (ctrl+o to expand)` line the commit path
-        // writes ([`tool_commit_lines`], `docs/mcp.md`), spacer included.
+        // writes ([`tool_commit_lines`], `docs/tools/mcp.md`), spacer included.
         if let Some((len, servers)) = super::tool::mcp_run(&history[index..]) {
             lines.push(super::tool::mcp_called_line(&servers));
             lines.push(Line::default());
@@ -75,12 +75,12 @@ pub fn conversation_lines(
         match item {
             // A task tool call renders NOTHING inline — no cell, no spacer:
             // the live checklist is its display, and the record expands only
-            // in the Ctrl+O transcript (docs/task-tools.md).
+            // in the Ctrl+O transcript (docs/tools/task-tools.md).
             HistoryItem::TaskCall(_) => continue,
             // What the hooks said is their `● Ran 1 Stop hook` cell; a
             // note no hook said anything about — a continuation prompt, a
             // note recorded before reports — is cell-less inline, the Ctrl+O
-            // transcript its record (docs/hooks.md *The hook-run cell*).
+            // transcript its record (docs/tools/hooks.md *The hook-run cell*).
             HistoryItem::HookNote(note) => match &note.report {
                 Some(report) => lines.extend(hook_report_lines(report, width)),
                 None => continue,
@@ -93,12 +93,12 @@ pub fn conversation_lines(
             HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
             HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
             // Collapsed: only the `Thought for …` line reaches scrollback —
-            // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
+            // the chain-of-thought expands in Ctrl+O (docs/ui/thinking-stream.md).
             HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),
         }
         // A picture the item carries — an image `read`'s result, a message's
         // Ctrl+V attachments — hangs below the cell, one blank row apart and
-        // flush at the left margin (`docs/images.md`). Empty for everything
+        // flush at the left margin (`docs/ui/images.md`). Empty for everything
         // else, and for every session where images are off.
         lines.extend(super::image::image_block_lines(item, width));
         // Blank spacer after every item — except a shell command's header:
@@ -162,7 +162,7 @@ fn keep_last_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'s
     lines
 }
 
-/// A rebuilt repaint tail with the header banner (docs/header.md) restored
+/// A rebuilt repaint tail with the header banner (docs/ui/header.md) restored
 /// above it: `banner`, a blank spacer, then `tail`. Every purge rebuild goes
 /// through this — the purge dropped scrollback whole, so the banner
 /// unconditionally tops the reconstructed conversation. (An ordinary overlay

@@ -1,5 +1,5 @@
 //! Composer editing: pastes, image attachments, and the `!` shell mode
-//! (`docs/paste.md`, `docs/image-paste.md`, `docs/shell-command.md`).
+//! (`docs/input/paste.md`, `docs/input/image-paste.md`, `docs/input/shell-command.md`).
 
 use super::*;
 
@@ -26,7 +26,7 @@ fn backspace_on_empty_input_is_harmless() {
     assert_eq!(app.input.text(), "");
 }
 
-// ===== large-paste placeholders (docs/paste.md) =====
+// ===== large-paste placeholders (docs/input/paste.md) =====
 
 #[test]
 fn large_paste_shows_a_placeholder_not_the_raw_text() {
@@ -164,7 +164,7 @@ fn backspace_before_a_placeholder_deletes_only_the_preceding_char() {
     assert_eq!(app.pasted.len(), 1, "the placeholder and its paste survive");
 }
 
-// ===== the kill keys stay placeholder-atomic (docs/textarea.md) =====
+// ===== the kill keys stay placeholder-atomic (docs/input/textarea.md) =====
 
 #[test]
 fn ctrl_w_swallows_a_placeholder_whole() {
@@ -196,7 +196,7 @@ fn ctrl_u_swallows_every_placeholder_it_crosses() {
 fn a_kill_over_an_image_placeholder_discards_the_attachment() {
     // The killed image's pair goes with its placeholder, and the orphaned
     // temp file is handed to the boundary for removal — exactly what an
-    // atomic Backspace does (docs/image-paste.md).
+    // atomic Backspace does (docs/input/image-paste.md).
     let mut app = App::new();
     app.attach_image(PathBuf::from("/tmp/kill.png"));
     assert_eq!(app.input.text(), "[Image #1]");
@@ -231,7 +231,7 @@ fn a_kill_leaves_placeholders_outside_its_span_backed() {
 #[test]
 fn a_kill_over_duplicate_placeholders_drops_the_right_pairs() {
     // A merged queue can leave two occurrences of the SAME placeholder text,
-    // each backed by its own pair (docs/image-paste.md). Killing the second
+    // each backed by its own pair (docs/input/image-paste.md). Killing the second
     // occurrence must drop the second pair — and killing both must not trip
     // over its own ordinal bookkeeping (pairs are removed highest ordinal
     // first).
@@ -257,12 +257,12 @@ fn a_kill_over_duplicate_placeholders_drops_the_right_pairs() {
     );
 }
 
-// ===== Ctrl+V image paste (docs/image-paste.md) =====
+// ===== Ctrl+V image paste (docs/input/image-paste.md) =====
 
 #[test]
 fn record_user_message_with_images_attaches_the_paths() {
     // The submit path records the turn's attachments onto the user
-    // message so the conversation context re-sends them (docs/context.md).
+    // message so the conversation context re-sends them (docs/architecture/context.md).
     let mut app = App::new();
     app.record_user_message_with_images("[Image #1] look", vec![PathBuf::from("/tmp/a.png")]);
     let Some(HistoryItem::Message(message)) = app.history.last() else {
@@ -303,7 +303,7 @@ fn ctrl_alt_v_also_requests_an_image_paste() {
 #[test]
 fn cmd_v_requests_an_image_paste_rather_than_typing_a_v() {
     // macOS's Cmd+V does not reach us through a terminal (it is the
-    // emulator's own Paste menu, `docs/image-paste.md`), but a terminal that
+    // emulator's own Paste menu, `docs/input/image-paste.md`), but a terminal that
     // forwards SUPER anyway must not turn it into a literal `v` in the draft —
     // the character arm excludes SUPER for exactly this reason.
     let mut app = App::new();
@@ -392,7 +392,7 @@ fn clearing_the_draft_with_ctrl_c_drops_attached_images() {
     assert!(app.take_submission_images().is_empty());
 }
 
-// ===== discarded temp-PNG bookkeeping (docs/image-paste.md: the boundary
+// ===== discarded temp-PNG bookkeeping (docs/input/image-paste.md: the boundary
 // deletes the files of attachments that will never be submitted) =====
 
 #[test]
@@ -480,7 +480,7 @@ fn record_error_message_appends_a_red_error_to_history() {
 fn interrupt_turn_undo_restores_the_submissions_image_attachments() {
     // An undone submission's Ctrl+V attachments come back with it: the
     // placeholders in the restored draft are backed again, so resubmitting
-    // sends the images (docs/context.md).
+    // sends the images (docs/architecture/context.md).
     let mut app = App::new();
     app.attach_image(PathBuf::from("/tmp/a.png"));
     for c in " look".chars() {
@@ -534,7 +534,7 @@ fn interrupt_turn_undo_rekeys_a_batchs_duplicate_placeholders_per_message() {
 fn queueing_a_draft_mid_turn_carries_its_image_attachments() {
     // A mid-turn Enter must not silently drop a Ctrl+V attachment: the
     // (placeholder, path) pairs ride with the batch and dispatch when its
-    // turn comes (docs/image-paste.md).
+    // turn comes (docs/input/image-paste.md).
     let mut app = App::new();
     app.begin_stream();
     app.attach_image(PathBuf::from("/tmp/img1.png"));
@@ -881,7 +881,7 @@ fn deleting_one_duplicate_named_placeholder_keeps_the_other_pair() {
     // (numbering restarts per draft). Backspacing over ONE occurrence
     // must drop only its own pair — not every pair sharing the name,
     // which deleted the temp file backing the occurrence still in the
-    // composer (docs/image-paste.md).
+    // composer (docs/input/image-paste.md).
     let mut app = App::new();
     app.record_user_message_with_images("[Image #1] first", vec![PathBuf::from("/a.png")]);
     app.record_user_message_with_images("[Image #1] second", vec![PathBuf::from("/b.png")]);

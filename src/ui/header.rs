@@ -1,5 +1,5 @@
 //! The startup banner: the gradient mascot beside the name, cwd, and hint.
-//! See `docs/header.md` and `docs/mascot.md`.
+//! See `docs/ui/header.md` and `docs/ui/mascot.md`.
 
 use super::inline::{inline_spans, wrap_inline};
 use super::theme::*;
@@ -11,7 +11,7 @@ use crate::app::Mascot;
 /// Colour `text` with a left-to-right [`header_gradient_start`] →
 /// [`header_gradient_end`] gradient keyed by absolute display column across
 /// `total` columns, coalescing equal-colour runs into spans. The mascot's
-/// cyan → blue wash (docs/header.md) — `total` is the art block's width, so
+/// cyan → blue wash (docs/ui/header.md) — `total` is the art block's width, so
 /// the wash is uniform down the block and a short row simply stops earlier.
 pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -40,7 +40,7 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
 /// shares (`/hooks`, `/mcp`, `/skills`, the startup review, `/export`, the ↓ manager,
 /// `/login`'s pages, `/donate`, `/secrets`): bold and washed in the active theme's
 /// banner gradient across the title's own width, so a headline follows
-/// `/theme` the way the banner does (`docs/theme.md`).
+/// `/theme` the way the banner does (`docs/ui/theme.md`).
 pub(super) fn page_title_spans(text: &str) -> Vec<Span<'static>> {
     gradient_spans(text, cols(text))
         .into_iter()
@@ -86,7 +86,7 @@ fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
 }
 
 /// A one-row startup notice as scrollback chrome — the checkpoint
-/// pre-flight's `Snapshotting …` line (`docs/checkpoint.md`), committed
+/// pre-flight's `Snapshotting …` line (`docs/state/checkpoint.md`), committed
 /// above the banner by the boundary. The banner's own indent and dim meta
 /// colour, so the two read as one block; clamped with a trailing `…` at a
 /// narrow width (a status row, not prose), like every banner metadata row.
@@ -125,14 +125,14 @@ pub fn startup_paragraph_lines(text: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The one-time telemetry disclosure as a compact, themed card under the
-/// banner (`docs/telemetry.md`): [`notice_card_lines`] over
+/// banner (`docs/ops/telemetry.md`): [`notice_card_lines`] over
 /// `telemetry::notice()`.
 #[must_use]
 pub fn telemetry_notice_lines(width: u16) -> Vec<Line<'static>> {
     notice_card_lines(TELEMETRY_CARD_TITLE, &crate::telemetry::notice(), width)
 }
 
-/// The update notice as the same card (`docs/update.md`): [`notice_card_lines`]
+/// The update notice as the same card (`docs/ops/update.md`): [`notice_card_lines`]
 /// over `update::notice()` — a newer release `latest` is out, this is
 /// `current`, `repo` is where the release page and the installer live, and
 /// `command` updates this install (`update::update_command`).
@@ -241,7 +241,7 @@ pub fn notice_card_lines(heading: &str, body: &str, width: u16) -> Vec<Line<'sta
     lines
 }
 
-/// The startup header banner as scrollback rows (docs/header.md): the
+/// The startup header banner as scrollback rows (docs/ui/header.md): the
 /// session's mascot in the banner gradient, the metadata column beside it.
 /// Pure chrome — the boundary commits it once at launch and restores it atop
 /// every purge rebuild via [`banner_tail`]; it never enters `history`, and
@@ -255,7 +255,7 @@ pub fn header_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// The banner as it would render with `mascot` — the `/mascot` picker's live
 /// preview calls this directly, so the preview and the real banner share one
-/// builder and can never disagree (docs/mascot.md).
+/// builder and can never disagree (docs/ui/mascot.md).
 ///
 /// Two tiers: the mascot banner (art rows flush-left wearing the gradient,
 /// each metadata row at `art width + gap`, clamped with a trailing `…`), or —

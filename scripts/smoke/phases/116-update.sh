@@ -5,7 +5,7 @@
 smoke_begin
 
 # update — the once-a-day update check, its card under the banner, the
-# /settings row, and `alter-zero update` (docs/update.md). The release
+# /settings row, and `alter-zero update` (docs/ops/update.md). The release
 # tooling's stand-in github.com (scripts/release/release_server.py) serves a
 # fake release — the binary under test, packaged as v9.9.9 for this machine
 # by the release tooling's own package_dist, so the archive's layout and
@@ -223,7 +223,7 @@ if [ "$up_dev_rc" = "0" ] || ! printf '%s' "$up_dev" | grep -qF "cargo build dir
 	fail "a cargo build directory was not refused (exit $up_dev_rc)"
 fi
 
-# (f2) …and so is an install a package manager owns (docs/npm.md): the
+# (f2) …and so is an install a package manager owns (docs/ops/npm.md): the
 # binary as a platform package nested under the launcher package, the way
 # `npm install -g` lays them out, and started the way npm starts it —
 # through the bin link to the launcher, npm/bin/alter-zero.js, which finds

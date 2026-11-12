@@ -549,4 +549,4 @@ docker/tests/smoke.sh --engine podman
 The smoke test launches the real CLI inside a container **with no network**
 and a stub collector beside it, which is how it proves telemetry is still on
 without a single test ping reaching production. The design, the measurements
-and what was verified are in [`docs/docker.md`](../docs/docker.md).
+and what was verified are in [`docs/ops/docker.md`](../docs/ops/docker.md).

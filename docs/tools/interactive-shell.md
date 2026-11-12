@@ -1,0 +1,1417 @@
+# Interactive shells — the terminal engine behind the bash tools
+
+> **The tool surface moved on** (`docs/tools/bash-tools.md`). Every `bash` command
+> now runs in a terminal — there is no `tty` flag — under `bash` rather than
+> `sh`, and `bash_session`'s four actions are four tools of their own:
+> `bashsend` types, `bashwait` waits, `bashkill` stops, `bashlist` lists.
+> This document keeps the design history of the first shape and describes
+> the engine all of them still run on (`pty/`): read *a `tty` call* as any
+> `bash` call, and *`bash_session`* as the companion that does that action.
+> `bash_session` itself is still executed, for a resumed conversation that
+> holds calls to it, but no longer offered.
+
+The `bash` tool used to be **execute-only**: a command ran with stdin on
+`/dev/null` and no terminal, and the call waited for it to exit. That is the
+right default — most commands a coding agent runs want exactly that — but a
+large class of useful programs needs more:
+
+- **prompts** — `npm init`, `apt install` (`[Y/n]`), `git add -p`, `ssh`'s
+  host-key question, a script's `read -p`, a password prompt;
+- **REPLs** — `python3`, `node`, `psql`, `sqlite3`, `gdb`, `pdb`, `irb`,
+  a shell that keeps its `cd` and its virtualenv between commands;
+- **full-screen programs** — `vim`, `less`, `htop`, `top`, a `git rebase -i`
+  editor, a scaffolder's arrow-key menu;
+- **programs that only behave on a terminal** — line-buffered progress, colour,
+  `isatty()` checks that change what a tool does, or refuse to run at all.
+
+`bash` gains a `tty` flag that runs the command in a real **pseudo-terminal**
+and returns while it is still running, and a companion tool, **`bash_session`**,
+types into it, waits for it, reads it, and ends it.
+
+## What the model sees
+
+### `bash` — one new parameter
+
+```json
+{"command": "python3 -q", "tty": true}
+```
+
+`tty: true` runs the command in a pseudo-terminal (120 columns × 40 rows) as
+the controlling terminal of a fresh session. The call returns as soon as the
+command **exits**, **stops to wait for input**, or its `timeout` passes —
+whichever comes first. A command that exited reports exactly what a plain
+`bash` call reports (`Exit code: N` over the output). A command still running
+reports the output so far under a one-line frame naming its session:
+
+```
+Running (session b7x2k9m1q, waiting for input)
+>>>
+```
+
+`tty: false` (the default) is unchanged: stdin on `/dev/null`, no terminal, the
+call waits for the exit and kills the command at `timeout`. Non-TTY stays the
+default deliberately — a terminal changes how programs format output
+(colour, progress bars, `\r` redraws), and a batch command gains nothing from
+one. The `bash` description says when to reach for it in one bullet: prompts
+(`[Y/n]`, passwords), REPLs, full-screen programs — *and retry with it when a
+command says it needs a terminal* — preferring a non-interactive flag (`-y`,
+`--yes`) when one exists.
+
+`tty` also combines with `run_in_background`: the command starts in a terminal
+and the call returns at once with its session id, the completion notice
+following when it exits. Every background launch names its session id now, so
+`bash_session` can take any of them back.
+
+### `bash_session` — the companion tool
+
+```json
+{"session_id": "b7x2k9m1q", "input": "import math; print(math.pi)<Enter>"}
+```
+
+| parameter | meaning |
+| --- | --- |
+| `session_id` | required — the id a `bash` call reported |
+| `input` | what to type; a newline presses Enter, and keys go in angle brackets: `<Enter>`, `<Tab>`, `<Esc>`, `<BS>`, `<Up>`/`<Down>`/`<Left>`/`<Right>`, `<PageUp>`, `<C-c>`, `<C-d>`, `<C-z>`, `<M-x>`, `<F1>`… Omit it to just wait for more output. |
+| `timeout` | the most milliseconds to wait for the command to respond (default 10000, max 600000) |
+| `kill` | `true` ends the command and everything it started — only to abandon it |
+
+The result is **only the output printed since the model last looked**, under
+the same frame: `Running (session …)` while it runs, `Exit code: N` once it has
+exited (after which the session is gone), `Stopped (session …)` after a kill.
+At a password prompt the frame says so — `Running (session …, waiting for a
+password — only bashsend can type it)` — which also tells the model that no
+one else can answer it (*A password prompt says so itself*, below).
+A full-screen program — one on the terminal's alternate screen — returns its
+**current screen** instead of a transcript, since a stream of cursor-addressed
+redraws means nothing as text:
+
+```
+Running (session b7x2k9m1q, waiting for input)
+Screen (40x120, cursor at line 3, column 14):
+inserted line
+line one
+line two
+~
+                                                    1,13          All
+```
+
+What the screen shows in colour alone — a menu's selected item, a focused
+button — is named under it, since its text cannot say (*What a full-screen
+program looks like*, below):
+
+```
+Running (session b3vqd0sq1, waiting for input)
+Screen (40x120, cursor at line 17, column 54):
+                                        ┌──────────────┤ Fruit ├───────────────┐
+                                        │ Pick a fruit                         │
+                                        │                                      │
+                                        │            apple  Apple              │
+                                        │            banana Banana             │
+                                        │            cherry Cherry             │
+                                        …
+[Highlighted: line 17 "banana Banana"]
+```
+
+`bash_session` works on every shell the registry holds, not only TTY ones: a
+`run_in_background` command (or one the user moved to the background with
+Ctrl+B) can be waited on and ended the same way. Only a TTY session accepts
+typed text — a background command's stdin is `/dev/null` — but a lone `<C-c>`
+still interrupts one, as a `SIGINT` to its process group. Its output comes
+through a pipe, where no terminal turns each `\n` into `\r\n` (a TTY's
+`onlcr`), so its transcript takes a line feed as a new line
+(`Transcript::for_pipe`, VT's new-line mode). Read as a terminal's line feed,
+which keeps the column, each line of a background server's log began where
+the one before it ended, and past a line's 8192-column cap the newest lines
+were dropped whole.
+
+The description the model reads is short and imperative (`src/llm/tools.rs`,
+pinned under 900 characters by a test): the key notation, **answer one prompt
+per call, ending it with `<Enter>`, and read what it asks next**, **in a
+full-screen program each key acts at once** — `q`, `<Down>` or `<F7>` alone,
+not `q<Enter>`, and a key bar's `7Mkdir` read as `<F7>` — a wait needs no
+input, `kill` is only for abandoning a command (*one that finishes exits by
+itself*), and a password or secret it was not given is never guessed — it
+asks the user. The `input` examples spell Enter as a key (`"y<Enter>"`),
+never `\n` — see *What live models taught the design*.
+
+## Why this shape
+
+**Two tools, not one.** `bash` keeps meaning "run a command"; everything that
+happens *to a running command* goes through `bash_session`. An overloaded
+`bash` (OpenHands' `is_input` flag) serializes the agent onto one terminal and
+makes "is this text a command or keystrokes?" a question the model must answer
+in every call. Two tools with one id between them also make concurrency free:
+several sessions, a subagent's sessions, and background shells all coexist.
+
+**The yield is decided for the model.** Codex's `exec_command`/`write_stdin`
+return after a fixed `yield_time_ms` the model picks, and models pick badly:
+too short and they poll in a loop, too long and every keystroke into a REPL
+waits out the clock. Here the call returns when the command **settles**
+(`pty::settle`, pure and unit-tested):
+
+- it **exited** — at once, once its output is drained;
+- the kernel says a thread of it is **blocked reading its terminal**, or the
+  terminal is **reading a line with echo off** — a password prompt, told by
+  the terminal itself where the kernel cannot see — and it has been quiet for
+  `PROMPT_QUIET` (0.5 s): no prompt and no output of the call's own needed,
+  so a bare `read x` or a `cat` waits too, and so does a wait begun after the
+  prompt came up (*The kernel's word* and *A password prompt says so itself*,
+  below);
+- it printed something and went quiet for `PROMPT_QUIET` (0.5 s) while the
+  terminal **awaits keys** — a prompt (`>>> `, `Password: `, `[Y/n] `) left
+  the cursor mid-line, a full-screen program is on the alternate
+  screen with the terminal out of line mode (*a display*, below, is not one), or the
+  program reads the terminal **key by key** (a menu, an editor, a readline
+  prompt), which is what `waiting for input` says;
+- it is **drawing a screen that never goes quiet** and has had `SCREEN_BUSY`
+  (2 s) since the call's last key — or since its first frame, for a screen
+  switched to since and drawn late (*A screen not yet drawn*, below) — a
+  full-screen program that takes keys, or one that
+  repaints the main screen by cursor addressing while the terminal reads key
+  by key (`top`), redrawing a clock, a meter or an animation faster than
+  every half second. `watch -n 0.1` held a launch for its whole two-minute
+  timeout, since it takes keys all the while and is never quiet; what is on
+  screen by then is the answer (a pure wait still waits — the model asked to
+  watch it change — and a batch command whose progress bar addresses the
+  screen, apt's scroll region, reads no keys and is waited out as before);
+- it has been silent for `LINE_QUIET` (2 s) since the call's input — a command
+  that answered with whole lines and went quiet — or, after a password the
+  call submitted or on a screen switched to and not yet drawn on, for
+  `CHECK_QUIET` (10 s) until the program answers it or draws, provided neither
+  the process probe nor the progress-display check still indicates work;
+- the call's `timeout` passed.
+
+Five things look like a prompt and are not (`SessionIo`'s `awaiting_keys`):
+
+- **a busy program.** `Compiling foo... ` left open while the compiler runs,
+  `Working... ` before a `sleep`, a download stalled mid-bar: the cursor sits
+  after text, as at a prompt. When the kernel sees every process of the
+  session at work — running, sleeping, reading a pipe, waiting on a child —
+  the command is busy whatever its screen shows, and nothing below is asked;
+  so too when it sees the only waits on things other than the terminal —
+  an event loop's socket or timer, `Fetching... ` left open while a Go,
+  Node or asyncio program waits on the network (*The kernel's word*, below);
+- **a display.** `gh run watch` switches to the alternate screen, redraws its
+  status every few seconds and sleeps in between, reading no key — and a
+  quiet alternate screen used to be the surest prompt there was: a wait on it
+  ended after 3 s as `waiting for input`, and a model believed it and killed
+  a command doing exactly what it had asked. Every program that takes keys on
+  the alternate screen turns the terminal's **line mode** (canonical mode) off
+  first — vim, less, nano, htop, btop, mc, whiptail, dialog, fzf, ranger, tig,
+  ncdu, top, watch, the REPLs, measured one by one — since no single key
+  reaches a program in line mode. So the alternate screen counts as a screen
+  that takes keys only with line mode off (or a relay holding the terminal
+  raw for a program behind it, or the mode not read yet); a display left in
+  line mode is judged like the main screen — a prompt by the cursor still
+  asks — and waited out like any command printing as it works
+  (`IoState::drawing_screen`, `SessionIo::set_line_mode`);
+
+- **progress under a hidden cursor.** Pacman hides the cursor (`ESC[?25l`) while it
+  synchronizes package databases and restores it (`ESC[?25h`) afterwards.
+  Its initial 0% bar can sit quiet with the cursor position after the text,
+  before any redraw establishes an animation. Under `sudo`, where the probe
+  cannot inspect the root processes, that position used to make `bashsend`
+  report `waiting for input` just after it submitted the password.
+  Hiding the cursor alone proves nothing: prompt libraries also hide it
+  while drawing questions and menus, including behind relays where the
+  screen is the only evidence. The position is rejected only when the
+  hidden cursor follows a numeric percentage with a progress bar or
+  transfer cue, or the program went back up to rewrite earlier output
+  above the end of its live output. The percentage is checked at the
+  cursor, so old progress text left to its right does not hide a new
+  question. A menu merely moving the cursor back to its question is not a
+  rewrite, and rows explicitly erased when a menu collapses do not extend
+  the live output below its next question; a fresh trailing newline still
+  does. The same check also prevents silence from ending a launch or an
+  input call: it waits to an exit, another input signal or the call's
+  budget. Kernel-observed reads, password prompts, key-reading programs and
+  interactive alternate screens keep their independent input signals and
+  can end that wait;
+- **an animated line.** A progress bar redrawn after a `\r`, a spinner, a
+  counter, dots appended to `Downloading…` — each leaves the cursor exactly
+  where a prompt would, and pauses whenever the download does. The transcript
+  cuts the output into **bursts** (`BURST_SPAN`, 100 ms — the writes of one
+  frame fall inside one) and counts, per line, the bursts that changed the
+  text an earlier burst had left on it — overwritten, erased or extended;
+  a repaint to the same text is no change. A line changed by two bursts since
+  the program was last typed into is **animated**
+  (`Transcript::cursor_line_animated`), and a cursor on it is no prompt,
+  whatever else the terminal says. Typing resets the count — a menu moves its
+  highlight once per key, and that redraw is the answer to the key, not an
+  animation — and so does a fresh line: a question printed after a progress
+  bar is a prompt at once;
+- **a relay's raw mode.** `sudo` (which runs its command in a terminal of its
+  own and relays it, the default since sudo 1.9.14), `ssh` and
+  `docker run -it` hold the session's terminal raw for as long as their
+  command runs. A key-reading program switches off canonical mode but leaves
+  **output processing** (`OPOST`) on — readline, Node, `prompt_toolkit`,
+  `stty -icanon`, `read -n1` all do — while a relay switches that off too,
+  passing through output already processed at the far end. So a terminal
+  counts as read key by key only with `OPOST` still on
+  (`LineMode::reads_keys`); behind a relay the program is judged by its
+  screen alone.
+
+A `bash_session` call with **no input** is a *wait*, and the silence rule does
+not apply to it: a build that pauses between lines is still working, so a
+wait returns only on an exit, a prompt, or its timeout. That is what lets the
+model wait for a long command in one call instead of polling it. A wait also
+asks more of a prompt: one that appears during it must stay quiet for
+`WAIT_PROMPT_QUIET` (3 s), not 0.5 — the model waits because it believes the
+command busy, and a line a busy command leaves open while it works
+(`Reading package lists... `) looks just like a question. A real question
+still ends the wait within seconds.
+
+**A screen not yet drawn** (`Screen::undrawn`, `Observation::undrawn`). btop
+1.4 switches to the alternate screen, then probes its GPU for seconds before
+it draws a thing, and a launch that took the blank for an answer returned it
+after 2 s — a program asleep is no prompt, but it was a full-screen program
+that "never stopped drawing". A screen switched to with nothing on it now has
+nothing to answer and is no screen being drawn: its silence is not a quiet
+line for up to `CHECK_QUIET`, and the call returns with the first frame. The
+busy-screen watch then counts from that frame (`IoState::drawn_at`), not from
+the call's last key: counted from the key, the first piece of a frame written
+in four settled the call, and the model read a quarter of the screen.
+
+**A wait counts what the model has not seen** (`IoState::printed_since`), not
+only what arrives during it. A command that works quietly past `LINE_QUIET`
+returns its call `Running`, and its question often comes up in the seconds
+the model spends deciding what to do next: by the time the model's wait
+begins, the question is already on the screen and prints nothing more. A
+wait that watched only for output of its own sat out its whole timeout
+there — ten minutes, if the model asked for them — wherever the probe could
+not see the program read (`sudo apt install`'s `[Y/n]`, a REPL waiting in
+`poll`, anything off Linux). So the session remembers where the model last
+looked (`SessionIo::look`), and a wait takes everything printed since then as
+new: a question asked while the model decided is as new to it as one asked
+while it waited, and ends the wait by the same `WAIT_PROMPT_QUIET` rule —
+at once, once the question has sat that long. What the model has already
+seen does not: a wait begun on a prompt its last report showed is the model
+choosing to wait, and it waits. The wait still looks for `PROMPT_QUIET` itself
+before it settles on output older than the call, which is what gives the probe
+its word — the monitor probes within a few milliseconds of a wait beginning,
+and a tree it sees at work is busy whatever its last line looks like.
+
+**Where the session stands is read at report time.** `waiting for input` is
+not only how the call's wait happened to end: a poll that saw nothing new ends
+on its timeout, yet the program is no less at its prompt, so the frame is
+recomputed from the terminal when the report is composed
+(`SessionIo::waiting`), by the same rule as the wait — a pure wait that saw
+new output asks for `WAIT_PROMPT_QUIET`, one that saw nothing found the
+program sitting where it was throughout. And a look that found nothing new
+names the line the terminal is still at — `(no new output — still at: Full
+name:)` — so a model that lost track across its polls is told what it is
+being asked. Quiet is measured from the latest input or output, as in the
+wait and the probe. Paced keys can outlast `bashsend`'s budget: its result,
+`bashlist` and a zero-budget `bashwait` must not mistake the old prompt for
+another question while those keys are still being delivered. Their final
+delivery starts the quiet interval afresh.
+
+**A submitted line in Node's REPL is not its next prompt.** Node keeps its
+terminal in key-by-key mode while a top-level `await` runs, and its event
+loop still watches the terminal. Neither signal proves it has finished the
+line. On Linux the session identifies supported Node REPL invocations from
+the terminal foreground process group's command line, then holds one
+complete line submitted at a prompt for its answer. Text typed in separate
+calls and finished with Enter still belongs to that line; a multiline
+submission, or an `.editor` line begun at column zero, starts no new hold.
+The line's own echo, the Enter's whitespace, terminal controls and ordinary
+newline-terminated logs leave it pending. A fresh row matching the remembered
+prompt prefix (including a custom prompt), Node's `... ` / `| ` continuation, or
+its editor-entry banner followed by column zero releases the hold. Visible
+text on the alternate screen or after absolute cursor addressing also
+answers it. Until then raw mode alone does not make it a new question:
+`bashsend` can return `Running`, and `bashwait` can wait for the reply.
+Typeahead or a Ctrl+C the REPL consumes does not itself release the line;
+an actual terminal read seen by the probe remains authoritative, and a
+cursor-shaped nested question can still ask for input.
+
+Recognition accepts an explicit set of Node/V8 runtime options, including
+`--max-old-space-size`, `--max-semi-space-size`, `--initial-old-space-size`
+and `--stack-size` with decimal operands attached after `=`. Space-separated
+numeric operands do not qualify. The boolean `--expose-gc`, `--trace-gc`,
+`--jitless` and their `--no-…` forms are supported too. Underscores are
+accepted in native option names; their operands are left unchanged. Unknown
+options, application modes such as `--run` and `--test`, and script
+invocations still decline recognition. Evaluation needs explicit
+interactive mode. For `ts-node` and
+`tsx`, a known package entry path is recognised directly, as before.
+Other launcher script operands are resolved through symlinks to such an
+entry point; a relative alias belongs to the running process's working
+directory. A launcher name alone is insufficient. A resolution failure
+declines an alias without disabling direct recognition of a known entry
+path. Option operands, preload names and evaluated JavaScript are not
+resolved as script paths.
+
+This is recognition of a foreground REPL, not general tracking of JavaScript
+work. Unrecognised arguments, inaccessible process information, a relay
+hiding the REPL and hosts without Linux's process information retain the
+ordinary rules. Output left mid-line can still resemble a nested question,
+and text shaped exactly like a recognised prompt can release the hold while
+an asynchronous expression is still running. Conversely, an asynchronous
+stdin listener with no visible question can stay `Running`: the same Node
+process was measured with identical terminal descriptors, epoll interests
+and kernel wait state while awaiting stdin and while awaiting a promise
+that never resolves. Releasing the hold on any log line would bring back
+the false prompt during logged awaits. A visible nested question or an
+actual terminal read seen by the probe still provides independent evidence.
+
+**Keys are notation, not escape codes.** Models are unreliable at emitting
+`\u0003` in JSON but fluent in Vim/tmux key notation, so `input` understands
+`<Enter>`, `<C-c>`, `<M-x>`, `<F5>` and friends (case-insensitive; `<lt>` is a
+literal `<`), and modifiers held on any key, in any order and spelling —
+`<C-Left>`, `<S-Up>`, `<M-F7>`, `<Ctrl+Shift+End>`, `<M-Enter>` — sent the
+way xterm sends them (`ESC [ 1 ; 5 D`, the modifiers a parameter of the key's
+own sequence; an ESC in front of a one-byte key under Alt). A model wrote
+`<M-F7>` into `mc` before there was such a key, and `mc`'s command line got
+the six characters. Anything in angle brackets that is not a key name is
+typed as written, so `a<b` and `<div>` survive. On a TTY a newline is sent as `\r` —
+the byte a terminal sends for Enter, which cooked mode turns back into `\n`
+and raw-mode programs (menus, editors) expect. Arrow keys follow the program's
+cursor-key mode (`ESC O A` under DECCKM, `ESC [ A` otherwise), read off the
+emulated screen. A lone `<Esc>` is followed by a short pause before the rest of
+the input, so Vim does not read `<Esc>:` as Alt+`:`.
+
+**Each key once the program has read the last** (`pty::keys::encode`,
+`Pace`, `background::type_keys`). A person's key presses never arrive
+together, and some programs take whatever one read returns as one key press:
+`btop` ignored `<Down><Down>` written at once — six bytes that name no key it
+knows — and dropped `bash` typed into its filter whole, where a letter at a
+time it filtered; `top` took `Mq` for no key, and neither sorted nor quit. So
+every named key is its own write, and text of up to `TYPED_TEXT_MAX` (64)
+characters typed to a program reading the terminal **key by key** — canonical
+mode off (a menu, `top`, a line editor), or a full-screen program — goes a
+character at a time. Each write waits for the program to have **read** the
+one before: the writer asks the terminal's input queue
+(`pty::spawn::InputQueue` — `FIONREAD` on the slave side, after a
+zero-timeout poll, which waits for Linux's line discipline to take in a write
+it hands over from a worker thread; without it the count missed a key still
+on its way, nearly every time), for up to `KEY_READ_WAIT` (1 s) a write — a
+program that has read nothing in that long is not reading, and the rest go
+as typeahead, `KEY_PAUSE` (20 ms) apart. A fixed 20 ms gap used to stand in
+for the read, and a program that took 50 ms over each key got one key in ten.
+Where the queue cannot answer for the program, each write also waits
+`KEY_PAUSE`: a **relay** (sudo's own terminal, ssh, `docker exec -it`,
+`script`) reads each key the moment it lands and hands it to a program out of
+sight, and pacing by the queue alone sent `sudo btop` its filter back to back
+— none of it arrived. A relay is told by the mode it holds the terminal in,
+raw with output processing off (`LineMode::relays`), asked again before every
+key, since the `sudo` a shell was just typed may start one mid-call. A paste,
+text for a program reading whole lines, and longer text (code typed into an
+editor, which any program that takes that much reads as input, not as a key)
+still go in one write; a character is never split, and `\r\n` is still one
+Enter. How long typing takes is up to the program, so the call records the
+most it could take (`typing_bound`) and the writer says when the last key is
+out (`SessionIo::typed` — once every call's keys are, should one call end
+while its keys are still going): the call settles on nothing but an exit or
+its timeout until then, and counts the program's quiet from then
+(`Observation::typing`) — a menu that answered the first key and went quiet
+has not answered the rest. The probe waits for the last key too — a program
+between two of them is blocked reading the next, and asked then the kernel
+would say it waits for input before it has had the last.
+
+**Code is pasted, not typed** (`pty::keys::encode`). An editor's or a REPL's
+auto-indent adds its own indentation to every line typed after a line break,
+so a Python function typed into Vim came out as a staircase — each line
+indented by its own spaces *plus* the line above's — and the file would not
+parse (*What live models taught the design*). A person gets code in by
+pasting it, and a program that tells pasted text from typed keys says so by
+turning on **bracketed-paste mode** (2004): Vim, nano, bash and zsh's line
+editors, Python 3.13's REPL, IPython. So when the program has that mode on
+and the text runs onto **indented** lines, it arrives as a terminal delivers
+a paste: the first line typed as usual — so a command in front of the text,
+Vim's `i`, is still a command — the lines after it as one paste between
+`ESC [ 200 ~` and `ESC [ 201 ~`, and a line break ending the text sent after
+the paste as the Enter key, so a shell or a REPL still runs what it was
+given. Lines parted by `<Enter>` keys count as lines — the same byte on the
+wire, and a model writes code that way too. Text with no indented line is
+typed — Vim's `:%s/a/b/g` then `:wq`, answers to prompts, commands for a shell
+are keys to act on, and a normal-mode paste would insert them instead.
+
+A paste goes only to a program that **inserts** what it is given
+(`keys::Reader`). A shell runs each line it is typed, and a line that starts
+a program leaves the lines after it for that program to read: `python3` and a
+loop for it, sent to an interactive bash in one call, went to bash as one
+paste — python3 started with nothing to read, and the loop ran as shell
+commands. So the session names the terminal's **foreground program** — the
+process at the bottom of its foreground process group
+(`spawn::foreground_program`, `probe::group_program`, Linux's `/proc`); the
+group's leader alone is not enough, since `sh -c 'vim x.py'` keeps vim in the
+shell's group, below the shell that does not exec it — and types to a shell,
+line by line, as a person would. A relay (sudo, ssh, `docker`), or no process
+table to ask, may put anything at the far end: text goes as a paste there only
+on the alternate screen, where it is an editor's to insert.
+
+**Codes a terminal sends to programs are not keys** (`pty::keys::
+strip_output_codes`). A model saved a file in nano with
+`\u000f<Enter>\u001b[?25h` — Ctrl+O, Enter, and *show the cursor* — and nano
+took the ESC for a key and typed `25h` into the file. Colour (`ESC [ … m`),
+mode switches (`ESC [ ? 25 h`) and erases (`ESC [ 2 J`, `ESC [ K`) never come
+from a keyboard, so they are left out of what is typed, and the model is told
+which ones and how keys are named instead (`[Not typed: \e[?25h — …]`). What
+terminals do send passes: arrows, function keys, and mouse reports, whose `<`
+marks them as input.
+
+**Two views of one byte stream.** Everything the program writes is fed to two
+parsers (`pty::screen` and `pty::transcript`):
+
+- a **screen** — the `vt100` crate's emulator at the pty's size, with no
+  scrollback (≈150 KB a session): what a human would see. It is what a
+  full-screen program returns, what the ↓ manager shows, and where the
+  terminal state lives that input depends on (cursor-key mode, bracketed
+  paste). It also **answers terminal queries**: a cursor-position report
+  (`ESC [ 6 n`), device attributes, the colour queries — programs like `vim`
+  and `prompt_toolkit` REPLs ask, and some wait a long time for an answer no
+  pipe ever sends. What `vt100` leaves out is done in front of it, by a
+  pre-pass that follows the stream with a parser of its own and hands every
+  other byte on as it came (*What a full-screen program looks like*, below);
+- a **transcript** — the stream as lines of text, built by our own
+  `vte::Perform`: carriage returns and backspaces overwrite (a progress bar
+  collapses to its final state), erase-in-line and column moves apply, colour
+  and every other escape vanish. It is what an ordinary program returns: the
+  model gets the output since its last look, not a 40-row window of it.
+
+A look delivers **every line that is new or whose text changed** since the
+previous look, in order, and nothing else: each line remembers (hashed) the
+text the model was last handed. The prompt the model answered comes back with
+its answer echoed after it — `>>> import math; print(math.pi)` then `3.14…`
+then the new `>>> ` — because echoing the answer changed that line; a
+progress bar redrawn in place comes back once, as it stands now, even when it
+sits above the line the cursor was on (pacman moves up to redraw a bar), and
+the finished bars around it, unchanged, are not repeated. So the reports and
+the cells built from them append — each call adds what is new, and the
+context never carries the same unchanged line twice. A full-screen program's
+screen is shown under whatever the main screen printed before it took over
+(`git commit`'s hints before the editor), so nothing is lost at the switch. A
+delivery keeps the **tail** when it is over `SESSION_OUTPUT_MAX_BYTES` (32 KB),
+since the newest lines and the prompt are what an interactive step is about,
+and says how many lines it left out.
+
+**What a full-screen program looks like** (`pty::screen`). Driving `htop`,
+`mc`, `dialog`, `whiptail` and `nano` through the tools showed the screen
+view wrong in three ways, each fixed where the bytes come in, for the screen
+and the transcript alike — and `btop` and a differential check against tmux
+(below) found the rest:
+
+- **Runs of one character vanished.** ncurses writes a run of one character
+  — indentation, the gap between two columns, a rule — as the character and
+  REP (`CSI n b`, *repeat it n times*), which `vt100` does not implement: the
+  run became one character and the rest of the row slid left over it. `htop`
+  read `1 root 20` in one row and `67 root        20` in the next, with
+  leftovers like `--m024 --m` at the ends; `dialog`'s boxes were three
+  characters wide; `nano`'s shortcut bar lost its gaps after a save — and
+  a file's indentation, a run of spaces like any other, was open to the
+  same. The
+  pre-pass writes the character again, as many times as asked, capped at a
+  screenful. It also does **insert mode** (`CSI 4 h`), as the emulator's own
+  character insertion, for the program that uses it instead of ICH.
+- **Boxes were letters.** With no UTF-8 locale — any container, CI job or
+  Docker image that sets no `LANG` — ncurses and S-Lang draw lines in the DEC
+  Special Graphics set (`ESC ( 0`, or G1 and SO/SI): the letters `lqqk`,
+  `x  x`, `mqqj`. `whiptail` read `lqqqu Fruit tqqqk`; `mc`'s panels were
+  columns of `x`. `pty::charset` follows the designations and shows the box
+  as the box — `┌──┤ Fruit ├──┐`, `│`, `└──┘`.
+- **A menu's selection was invisible.** A curses program shows which item is
+  selected, which button has the focus, in colour alone: after `<Down>`,
+  `whiptail`'s three items read exactly as before, and `htop` parks the cursor
+  on its function-key bar, so not even the cursor says which process `F9`
+  would kill. The screen now names what it **highlights** under the rows —
+  `[Highlighted: line 17 "banana Banana"]`. A highlight is a run of one
+  background (or reverse video) that stands out from the row above **and**
+  the row below it — judged over the whole run, by majority, so a tab over
+  the start of a header does not cut the header short — and names something:
+  a letter or a digit in it. The box or the backdrop a menu sits on is no
+  highlight (the rows around it share it); runs that touch, or part by a
+  short blank gap, are one; a row of more than three separate ones is a
+  legend — nano's `^G Help  ^O Write Out`, a function-key bar — and is left
+  out; at most eight are named. `htop` names its header and the selected
+  process, `mc` the selected file and the active panel, `dialog` the focused
+  item and button, `less` its search matches, `nano` its title and status
+  line.
+- **A cursor move under another name went nowhere.** `btop` places every
+  cell with HVP (`CSI r ; c f`), which `vt100` does not know: the whole
+  screen piled up in its top-left corner. The pre-pass writes the moves
+  `vt100` knows under their other names — HVP as CUP, HPA (`` CSI n ` ``) as
+  CHA, HPR (`CSI n a`) as CUF, VPR (`CSI n e`) as CUD, IND/NEL (`ESC D`,
+  `ESC E`) as a line feed and a new line, SCOSC/SCORC (`CSI s`, `CSI u`) as
+  DECSC/DECRC — and modes 1047/1048, the alternate screen and the saved
+  cursor switched one at a time, as 47 and DECSC/DECRC.
+- **A line with autowrap off wrapped anyway.** With DECAWM off (`CSI ? 7 l`)
+  a line stops at the margin: what runs past it overwrites the last column,
+  and the cursor stays there. `vt100` wraps regardless; `ranger` writes the
+  screen's bottom-right cell that way, and a status line wider than the
+  screen ran onto the next row. Where the right bytes depend on the cursor,
+  the pre-pass hands the emulator what it has so far and asks where the
+  cursor is (`Out::cursor`): a narrow character with no room takes the last
+  column, a wide one is dropped (tmux's rule), and the cursor is set back
+  onto the last column rather than left waiting to wrap.
+- **Tabs ignored the program's stops.** `vt100` keeps a tab stop every eight
+  columns and nothing else: HTS (`ESC H`) and TBC (`CSI g`, `CSI 3 g`) did
+  nothing, and neither did CBT and CHT (`CSI n Z`, `CSI n I`), a tab back
+  and forward. The pre-pass keeps the stops once a program changes them and
+  moves each tab to the stop it names, by the same question.
+- **A window title was text.** `ESC k … ESC \` names a screen/tmux window;
+  `ranger` sends it whatever the terminal, and `vt100` printed the title at
+  the cursor. It is dropped, up to the BEL or the ESC that ends it.
+
+The pre-pass's own parser has to know where it is, too: it passes plain text
+straight through only between sequences, and the ST that ends a link or a
+title (`ESC \`) ends the string on its ESC while the `\` is still to come —
+taken for text, the `\` left the parser inside an escape sequence, and
+`│Disk` after a link (compilers and systemd print them) became a line feed
+and `isk`.
+
+These were found by a **differential check** (`scripts/pty_oracle.sh`,
+`examples/pty_oracle.rs`): a program runs in the session's pseudo-terminal
+with a script of keys, every byte it writes is recorded and shown through the
+session's emulator, and the same bytes are replayed into a 120×40 tmux pane —
+a mature emulator — and the two screens and cursors diffed. Over `btop`,
+`htop`, `top`, `nano`, `vim`, `nvim`, `less`, `mc`, `dialog`, `whiptail`,
+`fzf`, `ncdu`, `tig`, `ranger`, `micro`, `nnn`, `w3m`, `vifm`, `calcurse`,
+`glances`, `watch`, `man`, the Python, Node and Ruby REPLs, `gdb` and tmux
+itself, the screens now agree cell for cell. Where the two still differ tmux
+is the one that departs from xterm (it ignores CHT, HPR and VPR, and repeats
+no character but ASCII), or the sequence is one only a terminal test suite
+sends (DECALN's screen of `E`s, DECSCA's protected characters).
+
+The cursor is named where a person would see it: after a write to the last
+column the emulator holds it one past the edge, waiting to wrap, and the
+screen said `column 121` of 120. And its **line is quoted** in the heading,
+with `‸` where the cursor is (`Snapshot::cursor_text`, cut to forty characters
+before it and twenty after): `cursor at line 38, column 31` asks a model to
+count thirty-eight rows down, which it does not do, and nano's save prompt —
+the file's name filled in already — had a model type the name again,
+`sysinfo.shsysinfo.sh`, then loop on `Save file under DIFFERENT NAME?`.
+`— "File Name to Write: sysinfo.sh‸"` says the name is there. A **hidden**
+cursor (`ESC [ ? 25 l` — htop, mc, whiptail) is reported as `cursor hidden`
+rather than wherever the program parked it.
+
+**A screen drawn on the main screen stays a screen** (`IoState::screen_view_now`).
+`top` and `dialog` draw on the main screen with absolute addressing, which the
+lines cannot follow, so a look that sees it shows the screen; but `dialog`,
+once drawn, moves its focus with column moves and colours alone, and the next
+look — no addressing since the last — fell back to the lines: `(no new output
+— still at: <  OK  >    <Cancel>)` after a Tab that had moved the focus to
+Cancel. The screen view now sticks: absolute addressing turns it on, output
+that edits in place — a backspace, a relative or column move, a character
+inserted or deleted (`Transcript::edited_in_place`) — keeps it, and output of
+plain lines turns it off, so `clear` then an ordinary command reads as lines
+again.
+
+**The kernel's word** (`pty::probe`, Linux). The screen can only offer a
+shape; the kernel knows. `/proc/PID/task/TID/syscall` names the system call a
+sleeping thread is blocked in, and for a read its first argument is the file
+descriptor, which `/proc/PID/fd/N` resolves to a path. So the monitor walks
+the session's process tree (`/proc/…/children`) and classifies every thread:
+blocked in `read` on the session's terminal — its `/dev/pts/N`, or
+`/dev/tty`, where `ssh` and `git` read a password — is **reading**. Modern GNU
+`cat` can instead block in `splice`, copying terminal input into an internal
+pipe. The probe checks its input descriptor and wait channel
+(`/proc/PID/task/TID/wchan`): `wait_woken` or `n_tty_read` identifies the
+terminal read, while `pipe_wait_writable` means the output pipe is full and
+the program is working. A hidden or unrecognised wait channel remains
+uncertain. A splice whose input is not a terminal is work, even if its
+output is a terminal. A thread waiting in `poll`, `select` or epoll is asked
+what it waits on; anything else is at **work**. A `poll`'s `pollfd` array and
+a `select`'s read set live in the program's own memory, at the address the
+call's arguments give, and
+`/proc/PID/task/TID/mem` reads them under the very permission check the
+syscall line is read under (`ptrace_may_access` in attach mode) — so wherever
+the probe sees a wait, it sees what the wait is on: measured over twenty-odd
+programs, as root and as an unprivileged user, never one without the other.
+Each descriptor waited on for input is resolved through `/proc/PID/fd/N`: the
+session's terminal, or another terminal's slave side (`/dev/pts/M`, where a
+relay runs its program), is a **terminal**; a terminal's master side
+(`/dev/ptmx`, `/dev/pts/ptmx`) is a relay's other end; an epoll instance is
+followed; anything else — a pipe, a socket, an eventfd — is **elsewhere**. An
+**epoll** wait says the same through its instance's interest list,
+`/proc/PID/fdinfo/N`, which names every file it watches — by inode and
+filesystem, which stays true when the descriptor number is closed or reused
+(seen in a set a child shares with its parent), converted from the kernel's
+device encoding to `stat`'s; a file on the session terminal's `devpts` is
+another terminal, and one the masters' names open as is a master. So a wait on
+a terminal **may** be a prompt (a REPL, `vim`, `top`, bash's readline); one on
+a terminal and a master at once is a **relay** (`script`, `sudo`'s own
+terminal — a master alone is a wait on the program behind it, like a pipe);
+one on no terminal waits **elsewhere**; and one the probe cannot read — an
+address no longer mapped, a descriptor closed since, more than
+`WAIT_LIST_MAX` (1024) descriptors — stays a may. That is how every Go, Node,
+libuv, asyncio and tokio program idles: `gh run watch` between redraws is six
+threads parked in futexes and one in `epoll_pwait` on the runtime's own
+eventfd. A `poll` or `select` over no descriptors is a sleep. And a wait no
+prompt can be in is **work** in a process with a descendant at work — one
+whose CPU grew since the last probe, read off `/proc/PID/stat` and kept
+between probes by the monitor (`probe::Work`, keyed by pid and start time so
+a pid taken by a new process is a new process): `cargo build` polls rustc's
+stdout and stderr while rustc compiles its last crate in silence, and a launch
+the model had given ten minutes came back `Running` ten seconds in; npm's event
+loop waits on webpack's pipes, make on its jobserver pipe, the same way. A
+relay's wait is work too, since the program it passes keys to has a terminal of
+its own, where its prompt is seen: `script` over a silent build rides it out.
+A wait on a terminal never is, whatever the children do: bash at its
+prompt over a job in the background, a REPL over the child it started, a raw
+key reader over its workers — counting those as work held their prompts for
+the call's whole `wait`. The terminal's mode could not have told the two
+apart: Python 3.13's REPL, crossterm and Go's `x/term` clear output processing
+as a relay does, so the descriptors decide. A process the last probe did not
+see was started since — work begun, counted before its first tick: at the end
+of a build rustc polls the linker's pipes while the linker, a few milliseconds
+old, has used none, and counting only what it had used found nothing at work
+in that one probe, which handed a build silent for ten seconds back at its
+link. With no reading at all, though, nothing is new. Only a process *above*
+the one at work counts — a program whose own thread computes, or one beside a
+busy sibling, waits on nothing of theirs — and a child alive but idle proves
+nothing. Node's REPL `await`ing a child at work stays beyond that kernel
+distinction: it keeps the terminal in its wait, raw, exactly as it does at
+its prompt. The submitted-line hold described above supplements the probe
+for recognised foreground REPLs. One reader anywhere is `Probe::Reading`, whatever the
+children do; a tree all at work is `Probe::Idle`; a tree with a wait on a
+terminal, or one the probe could not read, is `Probe::Polling`, and one whose
+waits are all elsewhere `Probe::Elsewhere` — which asks nothing (no prompt, no
+password), yet is not at work the way `Idle` is, since a network wait lasts as
+long as a server idles and its silence still ends a launch after
+`LAUNCH_QUIET`: `Building... ` left open over a child that only sleeps comes
+back `Running` then, where a poll it could not read once made it a question
+half a second in. A process the probe may not inspect, or no `/proc` at all,
+is `Probe::Unknown`, which leaves the screen rules in charge, as `Polling`
+does. An answer read off the descriptors is
+taken as read, though the thread may leave its wait while they are looked
+at: the next probe sees where it went. Doubting a wait that moved on — the
+probe once re-read the call and fell back to *may* when it had changed —
+made a busy event loop, in and out of its wait with a new timeout hundreds
+of times a second, a possible prompt again and again: a silent download
+behind `Downloading... ` read as waiting for input in three runs of nine.
+The files are readable only for the user's own processes, so
+`sudo` and everything it runs leave the probe blind: exactly where the relay
+rule above already applies. The monitor probes only a terminal a call is
+waiting on, once it has been quiet `PROBE_QUIET` (0.2 s), at most every
+`PROBE_INTERVAL` (0.2 s) — a handful of file reads — and any output or input
+makes the verdict stale at once. The monitor records the session's activity
+epoch before reading the process tree and accepts the result only if that
+epoch is unchanged: output or input queued or delivered during the read
+cannot be overwritten by its older observation. (Ported from the alternative
+design this one was compared against, *Compared with the terminal-sessions
+design*, below.)
+
+**A password prompt says so itself** (`LineMode::hides_input`). A program
+asking for a password turns the terminal's echo off and reads a whole line —
+`sudo`, `ssh`, `git`'s credential prompt, `getpass`, `read -s` — and that
+mode belongs to the terminal, read through its master, where the probe needs
+the program's own `/proc` files. So it holds exactly where the probe is
+blind: `sudo` runs as root. That blindness once kept a model waiting ten
+minutes. After a wrong password `sudo` checks it, says `Sorry, try again.`
+and asks again — seconds later, after the call that typed the password had
+returned on `LINE_QUIET` — and the model's next call, a wait, saw no output
+of its own to settle on, so it rode out its whole timeout. Now a line read
+with echo off ends any call once the terminal has been quiet `PROMPT_QUIET`
+(0.5 s), as the kernel's read does, and the frame names it:
+`Running (session …, waiting for a password — only bashsend can type it)`.
+The clause used to read `typed input is hidden`, which told the model why its
+answer would not echo but not who could give it one: a model that had no
+password told the user to "enter it in the terminal prompt" — a terminal the
+user cannot reach, since the session is the agent's alone. It now names the
+one way in, so a password the model was not given is one it asks for in chat
+(`docs/tools/bash-tools.md`); the old clause still parses, so a recorded session
+keeps its state row. Two
+guards keep the signal honest (`IoState::password_prompt`). An answer —
+keys that end the line, an Enter or a signal key (`keys::reaches_line_reader`)
+— reaches a program still in its mode, so the mode counts only once the
+program has replied with output — visible text after a submitted password,
+unless the probe sees a terminal read — which is also what makes `sudo`'s
+retry a new prompt; text typed without its Enter has not reached it at all, and the
+prompt stands, with the report's note about the missing Enter. And when the
+probe sees the whole tree at work, the mode asks nothing: a script that turns
+echo off to swallow type-ahead while it works is busy. The monitor reads the
+mode after each chunk of output and on every idle poll (`refresh_line_mode`),
+so a mode switched after the prompt was printed is seen within 20 ms. It is
+detection only: what is typed shows as typed (*Compared with the
+terminal-sessions design*).
+
+**A password handed over is answered in the same call.** sudo breaks the line
+the moment it has read a password, then checks it for a couple of seconds —
+pam's delay on a refusal, longer for a network login — before it says a
+word. The silence rule returned the call mid-check as `(no new output)`, so
+every attempt cost the model a second call to learn the verdict, and a model
+that took the silence for a yes typed its next answer while sudo was still
+checking — with echo back on, into whatever prompt came next. So a call whose
+keys submit a line (`keys::submits_line`, an Enter) at a password prompt
+waits for the program's **answer**: visible text on either screen
+(`Transcript::answered` — the bare line break, spaces and escapes that draw
+nothing are no answer), a fresh prompt, or the exit. A refusal comes back as
+`Sorry, try again.` over the next password prompt; a password let in comes
+back with the command's first words. The pending-answer guard
+(`IoState::answer_pending`) is shared by settling, the screen heuristic and
+password-mode detection: a line break or ANSI-only output must not make
+echo still off, or the old prompt still visible, a request for another
+password. A terminal read the probe actually sees remains authoritative,
+and a retry that visibly prints the same prompt text still counts as an
+answer. The silence rule gives it `CHECK_QUIET`
+(10 s) instead of `LINE_QUIET` — room for any real check, while a command
+that runs on silently once let in still returns `Running` rather than
+holding the call to its timeout.
+
+## Streaming the running cell
+
+A waiting call streams what its report will say as it builds up, and the
+cell shows it the way a terminal would: `ToolProgress::Screen { settled, live
+}` from the executor, `StreamEvent::ToolScreen` on the wire, and
+`App::push_tool_screen` — `settled` text appends for good, `live` rows
+**replace** the `live` rows sent last. A progress bar is one row changing in
+place, never a row per frame; the TUI and the model's context both read it
+once.
+
+For a session the split comes from the transcript (`Transcript::take_stream`):
+lines within the screen's height of the end (`ROWS`, 40) can still be
+redrawn — pacman moves up to redraw a bar — so they stream as `live`; a line
+that scrolled out of reach is final and streams once as `settled`. What
+streams is every line the program has **drawn since the model's last look**,
+as it stands — what it is drawing now, never the lines the model was already
+handed and the program has left alone. That is not quite what the next look
+carries: a look reports what *changed*, so a line drawn back to the text it
+was handed is left out of it. The stream used to follow the look exactly, and
+npm's spinner is what that broke. A `bashwait` on an `npm install` whose
+launch had handed the model the frame `⠏` dropped the spinner's row each time
+the cycle (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, a frame every 80 ms) came back round to `⠏`, so
+once every 800 ms the cell emptied, fell back to `⎿ Running…` for a frame and
+moved the box a row each way. The wait sends at most every `STREAM_INTERVAL`
+(50 ms), only when something changed, `settled` capped at `STREAM_MAX_BYTES`
+(64 KB) a send, and once more as it settles, so the cell ends where the report
+begins. The cell's four-row window ends at the lowest live row **still moving**
+rather than at the output's end — pacman's finished bars sit below the
+ones still downloading, all in reach — `docs/ui/tool-streaming.md` *The
+window follows what is still moving*.
+
+**An update is sampled between two frames, never inside one** (`pty::pace`).
+A program redraws a line in pieces — npm's spinner writes a column move
+(`ESC [1G`), an erase (`ESC [0K`) and the glyph as three writes — and the
+reader can take them apart. An update sampled after the erase showed the line
+blank, and the sampler *locked onto* that moment: the read that woke it was
+the first piece of a frame, so frame after frame the update fell due exactly
+there and the spinner barely reached the screen (fed fourteen frames whose
+pieces landed a millisecond apart, the cell was sent the blank line and a
+single glyph). A due
+update now waits until the output has been still for `FRAME_SETTLE` (10 ms)
+— a frame's pieces land microseconds apart, its frames tens of milliseconds
+— the waiting call sleeping no longer than that pause has left
+(`Pace::hold_left`), so the sample lands in it rather than at the next poll;
+output that never pauses is sampled anyway once an update has waited
+`MAX_HOLD` (100 ms). A plain command on a pipe is paced by the same rule
+(`PipeOutput`), where the sample used to land on the erase's chunk the same
+way.
+
+**Plain commands fold the same way** (`pty::fold`). Plenty of programs draw on
+a pipe as if it were a terminal — curl's meter, tqdm, ffmpeg and rsync
+redraw with `\r` whether or not anyone watches, `--color=always` wraps words
+in escapes — and kept raw, the model read every frame a bar ever drew, joined
+on one line. `Fold` replays the stream one line at a time: `\r` returns to
+the line's start, backspace and the cursor-column escapes (`CSI G`/`C`/`D`)
+move along it, all overwriting; erase-in-line applies; every other escape
+vanishes. Unlike the transcript it is built for data the model may copy back:
+a tab stays a tab, trailing spaces stay, and a line is kept whole up to the
+output cap rather than a terminal's width. A plain `bash` call streams its
+ended lines as `settled` and the line still being drawn as `live`, paced like
+a session (`PipeOutput`, `PIPE_STREAM_INTERVAL`); its result is the folded
+text. A background shell's event stream — the ↓ manager's view and the
+completion note the model reads — is folded by its monitor, while its
+`.output` file keeps every byte as written; a Ctrl+B handoff replays what the
+foreground runner read, raw, into that same fold, so the line in progress
+finishes as one line. The user's `!` commands fold their output too
+(`docs/input/shell-command.md`).
+
+## What live models taught the design
+
+The tool was tuned against real models (`examples/session_probe.rs` drives the
+real agent loop with the real system prompt and prints every model-facing
+result): OpenRouter's `gpt-4.1-mini`, `qwen3-coder`, `gemini-3.6-flash`,
+`kimi-k2.6`, `deepseek-v4-flash` and `glm-5.3-flash`, Ollama Cloud's
+`gpt-oss:120b`, and Venice's `qwen3-coder-480b`, over six scenarios: a signup
+wizard that refuses a pipe, a raw-mode arrow-key menu, a `getpass` password
+prompt (with and without the password in the request), `vim`, a `python3`
+REPL kept open across steps, and a web server started in the background,
+checked with `curl` and ended through `bash_session`. The first round of the
+signup wizard completed in two of eight models; after the changes below,
+seven of eight did (the eighth is a model that emits garbled tool names), and
+every model found the vault code, edited the file in `vim` (or with its
+non-interactive `-c`, which is the better tool) and ended its server. Each
+change answers a failure seen on the wire:
+
+- **A model gave up on "must be run in an interactive terminal".** The `bash`
+  description says to retry with `tty` when a command asks for a terminal,
+  and a failed plain `bash` call whose output says so (`not a tty`,
+  `inappropriate ioctl for device`, `/dev/tty`, … — `tools::tty_hint`) gets a
+  pointer to `tty` appended to the **model's** text only
+  (`ToolOutcome::context`); the cell keeps the command's own words.
+- **`stop` read as "stop waiting".** A model ended a wizard mid-answer. The
+  parameter is `kill` (`stop` still parses), and its bullet says it is only
+  for abandoning a command.
+- **The last answer sent with `kill`.** A model paired what it believed was
+  the final answer with `kill: true`; the program asked one more question and
+  the kill threw the session away. Input with `kill` now types first, waits,
+  and **does not kill a program that answered by asking for more** — the call
+  reports it still waiting, and the model is told why nothing was killed
+  (`pty::report::NOT_KILLED_NOTE`). A program the input ended reports its own
+  exit.
+- **Escaped twice.** A model wrote `"Ada Lovelace\\n"` in its JSON — a
+  backslash and an `n` typed, and no Enter. Input that holds no control
+  character of its own and **ends on an escaped one** (`\n`, `\r`, `\t`, `\e`,
+  `\x03`, `\u0003`) has one level of escaping undone (`pty::keys::parse_input`);
+  a backslash anywhere else — `print("a\nb")`, `C:\\` — is typed as written.
+  The description's examples spell Enter as `<Enter>` too, since a `\n` shown
+  in a description is exactly what that model copied.
+- **Typed but never submitted.** A model typed its answer without Enter, saw
+  it echoed on the screen, and took it as given. When the input ended on typed
+  text and the line is still open, the model is told it is not submitted and
+  to end each answer with `<Enter>` (`UNSUBMITTED_NOTE`). Two signals say the
+  line is open: the terminal is in canonical mode (the program reads whole
+  lines — read off the pty with `tcgetattr`, `pty::spawn::line_mode`), or —
+  for a **line editor** that reads key by key, like Python's readline REPL,
+  where the first signal is silent — the typed text sits echoed on the cursor's
+  line with the cursor right after it (`SessionIo::holds_typed`; never on the
+  alternate screen, where an editor inserts what it is typed). A menu reading
+  key by key already has the keys, echoes nothing, and gets no note. Before
+  the second signal a model polled a REPL three times "waiting for the output
+  to flush" of a line it never submitted; after it, it pressed Enter at once.
+- **Polling a program that waits on it.** A model polled ten times while the
+  program sat at `Full name:`, each report saying only `Running` — the
+  waiting state was recomputed at report time, and the prompt is re-read to
+  the model when nothing is new (see *Where the session stands*).
+- **A menu that never said it was waiting.** An arrow-key menu leaves the
+  cursor at the start of a fresh line, so the cursor rule never called it a
+  prompt, and every launch waited out the 2 s line-quiet fallback. The monitor
+  now reads the terminal's line mode as output arrives: a program reading key
+  by key is waiting when it goes quiet (a relay holding the terminal raw is
+  not — see the pacman run below).
+- **`sudo pacman -Syy` returned eleven times.** Reported from real use: after
+  typing the sudo password, a model waited on the download with a ten-minute
+  `timeout`, and every wait came back within a second or two, framed `waiting
+  for input`, repeating the same finished `multilib … 100%` bar each time.
+  Two causes. sudo relays with the terminal raw, which read as a program
+  waiting on keys, so any pause in the download settled as a prompt; and a
+  look re-sent every line from the one the cursor had sat on, so pacman's
+  bars — the cursor parked on the one still moving — came back again and
+  again. A relay's raw mode is now told apart by its output processing, an
+  animated line is no prompt, a pure wait gives a prompt that appears during
+  it longer, and a look carries only the lines that changed: the same run is
+  one wait, ending on `Exit code: 0` over the bar that moved
+  (`llm::exec`'s `a_relayed_progress_display_is_waited_out_and_reported_once`
+  replays it).
+- **Everything at once.** A model sent all four answers in one input. It works
+  — a terminal buffers typeahead — but the echo lands before each prompt and
+  the transcript reads garbled, and a password prompt that flushes its input
+  (`getpass` does) loses what was typed ahead. The description asks for one
+  prompt per call.
+- **Code typed into Vim came out as a staircase.** Asked to write a Python
+  file in Vim, Ollama Cloud's `gpt-oss:120b` and Venice's `qwen3-coder-480b`
+  both pressed `i` and typed the function: Vim's auto-indent added every
+  line's indentation to the line above's, the saved file raised
+  `IndentationError`, and neither got out — one retyped it three times and
+  quit, the other rewrote it until it hit the tool-call limit. Neither thought
+  of `:set paste`. Indented text now reaches a program in bracketed-paste
+  mode as a paste (*Code is pasted, not typed*), and the same file comes out
+  as it was sent: GLM-5.2 then wrote it in six calls, and `qwen3-coder-480b`
+  finished it too. In a later run `gpt-oss:120b` parted its lines with
+  `<Enter>` keys rather than newlines — the same bytes, and the same
+  staircase — so those count as line breaks for the paste as well.
+  DeepSeek-V4-Pro, writing its lines that way, then wrote the file in three
+  calls, and `gpt-oss:120b` in one.
+- **Keys sent as HTML.** In one run Venice's `qwen3-coder-480b` HTML-escaped
+  every `<` and `>` in its tool arguments: `&lt;Esc&gt;` was typed into Vim
+  as eleven letters, insert mode never ended, and `:wq` went into the file
+  instead of saving it — twice, before the model gave up on Vim and used
+  `write`. The same model sent real `<Enter>`s in other runs. Input holding
+  an escaped **key name** (`&lt;Esc&gt;`, `&lt;Enter&gt;`) is now read as
+  HTML-escaped (`pty::keys::html_escaped`): one level of entities undone
+  throughout, and the model told, since its escaped text in other calls went
+  in as written. `&lt;div&gt;` alone is typed as written: HTML is what an
+  author typing into an editor may mean.
+- **Show the cursor, typed into a file.** `gpt-oss:120b`, saving in nano, sent
+  `\u000f<Enter>\u001b[?25h`: the save worked, and `25h` landed in the file
+  as its last line, which the model found only when the script failed to
+  run. Output codes are now dropped from the input with a note (*Codes a
+  terminal sends to programs are not keys*).
+- **Driving it by hand** (`examples/pty_drive.rs`, a script of tool calls with
+  no model in the loop) found what no model reported, because no model could
+  see it was wrong: the screen view's missing REP, line drawing and
+  highlights (*What a full-screen program looks like*), and a key typed into
+  `top` — `1`, for the per-CPU view — met with *Typed but not submitted*,
+  because `top`'s last row happened to end in `1`. A line editor holding
+  typed text keeps the cursor right after it, so that is now what the note
+  asks for; `top` parks its cursor at the edge of the screen.
+- **btop, three ways.** Driven by hand, `btop` would not start without a UTF-8
+  locale, then drew its whole screen in its top-left corner (HVP), then
+  ignored `<Down><Down>` and a filter typed in one write — a program that
+  takes each read as one key press. With the locale, the aliases and paced
+  keys (*Each key once the program has read the last*) the same script moves the selection and
+  filters. The models that then drove it read its screen correctly and
+  still drove it like a line prompt: `gpt-oss:120b` sent `M<Enter>`,
+  `s<Enter>` and `→<Enter>` (the arrow as a character) until it ran out of
+  calls, and `kimi-k2.6` sorted with `<Left><Enter>` — btop's Enter opens a
+  process. `qwen3-coder-480b` read mc's key bar `7Mkdir` as the digit `7`,
+  which mc typed into its command line, and reported honestly that the
+  directory was not made. The description now says a full-screen program
+  takes each key at once, and that a key bar's number is a function key:
+  `gpt-oss:120b` then sent its keys bare, `kimi-k2.6` sorted btop by memory
+  with `<Right>`s, filtered it and quit, and did the `mc` task in four calls
+  — `<F7>`, `made-in-mc<Enter>`, `<F10>`, `ls`. `qwen3-coder-480b` on Venice,
+  the deployment that ignored the unsubmitted-line note below, still typed
+  `7` and `10`.
+
+A second round of live runs, over Venice and Ollama Cloud models driving
+nano, top, htop and menu installers — and a model left to find what it had
+started in `top` — found more slips the tools refused or mistyped:
+
+- **Numbers written as floats.** `grok-4.5` writes every number as a float
+  (`"timeout": 5000.0`), which the schemas' `number` allows and a strict
+  integer refused — twenty calls in a row on the one error. Counts now take
+  any JSON number, or one in a string, a fraction rounding; flags take
+  `"true"`/`"false"` (`tools::lenient`). Anything else is refused with the
+  reason.
+- **A key copied from a help bar.** `glm-5.3` read nano's `^O Write Out` and
+  sent `"^O"`, which nano inserted as two characters. Input made of nothing
+  but caret names — `^O`, `^X^C`, a lone `^C` — is those keys
+  (`keys::parse_input`): as text it is never what was meant.
+- **Key names without brackets.** `qwen3-coder-480b` drove `htop` with
+  `"F3"`, `"Esc"`, `"F10"` — an `F` and a `3` typed, a search never opened —
+  nineteen times before it decided the process did not exist. To a
+  full-screen program a key name alone can only mean its key, so there it is
+  sent as one (`keys::bare_key`) — but only a name no one types as a word:
+  `F1`–`F12`, `Esc`, the page keys, and `Ctrl+`/`Alt+`/`Shift+` combinations.
+  `end` closing a Ruby block, a `return`, a vim `f3` motion stay text in an
+  editor, and at a line prompt every name is typed.
+- **An Enter spelled twice.** `qwen3-coder-480b` typed its script as
+  `"#!/bin/bash<Enter>\necho …<Enter>\n"` — the newline its JSON's layout,
+  not a second Enter — and nano saved it double-spaced. When every line
+  break in an input opens the text right after an `<Enter>`, one each, they
+  are layout and dropped (`keys::parse_input`); a newline after text is a
+  line of its own, so `"def f():\n    return 1\n<Enter>"` still closes a
+  Python block with its blank line.
+- **An empty `input` meant as Enter.** A model sent `"input": ""` to accept
+  btop's filter, read back a report like any wait's, and carried on as though
+  the key had gone in — its next keys went into the filter rather than to
+  btop. `""` still types nothing (a wait is a wait), but the model is told so,
+  and that Enter is `<Enter>` (`EMPTY_INPUT_NOTE`).
+- **An id run together with the input.** A call arrived as `"session_id":
+  "b…\nparameter=input>\n<Up>"` — the model's `input` leaked into the id
+  somewhere between its tool-call template and the provider's parser — and
+  was answered that no such session was running, while the same reply listed
+  it as running; the model believed the first half and started btop over. An
+  id that is no session but holds exactly one running session's id as a word
+  is now answered with that session, still running, and how to call it.
+  Nothing is typed — keys guessed out of a mangled field could be the wrong
+  ones.
+- **A process started with `&`.** Told that a script started with `&` in a
+  plain call had stopped — the call reaps its process group on the way out —
+  `kimi-k2-6` and `nemotron-3-super` both retried with `run_in_background`
+  and kept the `&`: the task's shell exited at once, and the task's reap
+  stopped the script again. A background launch now drops a lone trailing
+  `&` (`tools::without_trailing_ampersand` — never `&&`, an escaped `\&` or a
+  `>&`), and a plain call that left a process running says it was stopped,
+  pointing at `run_in_background` without the `&` (`tools::REAPED_NOTE`,
+  `subprocess::group_outlives`). On Linux, signal 0 also finds unreaped
+  zombies, so the warning checks `/proc` for live threads: an exited
+  helper alone is no work that was stopped, while workers surviving an
+  exited main thread still count. Unreadable process or task state keeps
+  the conservative warning. The group is cleaned up either way.
+
+Some failures stay with the model, the tool having said what it could. A
+REPL wants a blank line to close a Python block, and a model that sends a
+`def` without one finds its next line swallowed at the `...` prompt — the
+report shows that prompt, and the stronger models read it. A weaker
+deployment (`qwen3-coder-480b` on Venice) ignored the unsubmitted-line note
+three times running and typed three answers onto one line before confirming
+the wrong account; the tool will not press Enter on a model's behalf, since
+`input` is typed as-is and a line split across two calls is legitimate. The
+same model through OpenRouter answered each prompt with `<Enter>` from the
+start.
+
+One failure is not ours: `kimi-k2.6` through OpenRouter is served by several
+upstreams, and one of them (Inceptron) intermittently drops the `input`
+argument from the model's call — its own reasoning says "let me type Ada
+Lovelace" while the call arrives as a bare wait — so the session looks stuck
+at its prompt until another upstream serves a request. Reproduced outside the
+app with a raw request (`provider.order` pinned to each upstream).
+
+## The terminal (`pty::spawn`)
+
+This crate forbids `unsafe`, so the pseudo-terminal is built from `rustix`'s
+safe wrappers (the `pty` feature: `openpt`, `grantpt`, `unlockpt`, `ptsname` —
+Linux opens the peer with `TIOCGPTPEER`). The window size is set with
+`tcsetwinsize` before the child starts, the master is close-on-exec, and our
+copies of the slave are dropped the moment the child holds its own, so the
+master reads `EIO` (end of stream) when the last process lets go of it. The
+master is also where the session reads the program's **line mode**
+(`line_mode` — `ICANON`, `ECHO`, `OPOST`): the pair shares one line
+discipline on Linux and the BSDs, so no slave handle is kept.
+
+The child must make the slave its **controlling terminal**, or a `/dev/tty`
+prompt (`sudo`, `ssh`) would find no terminal at all. That needs
+`setsid(2)` + `TIOCSCTTY` in the child before `exec` — the `pre_exec` hook
+this crate cannot use — so the same tier chain `docs/tools/tty-detach.md` built for
+detaching does it (`subprocess::tty_tiers`):
+
+1. **`setsid -c bash -c {command}`** — util-linux's (and BusyBox's) `-c`/
+   `--ctty` makes stdin the controlling terminal after the `setsid`;
+2. **the helper re-exec** — `{exe} __alter-zero-detached-tty-exec {command}
+   [bash]`: `main()`'s first statement calls `rustix::process::setsid()` and
+   `ioctl_tiocsctty(stdin)` and `exec`s the shell it is named in place (macOS
+   and minimal images, where there is no `setsid` binary);
+3. **no third tier.** The detach chain's last resort — an attached shell —
+   would hand a password prompt the *user's* terminal, the bug the chain exists
+   to prevent, so where neither tier works the command runs on a pipe instead
+   (`background::TtyLaunchError::NoTerminal`, `docs/tools/bash-tools.md`).
+
+The shell is `bash` — the first one on an absolute `PATH` entry, resolved once
+per process (`subprocess::tool_shell`) — and `sh` only where no `bash` is
+installed: `sh` is dash on Debian, Ubuntu and Kali, where `[[ … ]]`, `source`
+and `{1..3}` fail.
+
+Both tiers keep the invariant every kill relies on — `child.id()` is the
+session leader, its process group and its session. Ending a session kills
+every process left in the session and then that group, so a shell's own
+background jobs go too. `pkill -s` finds the session's processes where
+`pkill` can name a session; macOS's `pkill` cannot (Apple builds it without
+`-s`), so there they are found by the session's terminal instead: `ps -t`
+lists them (macOS's own `pkill -t` matches nothing, on macOS 26 at least,
+though `ps -t` lists the terminal's processes). A terminal names its session
+only while the leader lives — hence the session first, the group after
+(`background::signal_session`), and the monitor's kill token, which ends the
+leader too, tripped only once both are done (`BackgroundRegistry::kill`).
+
+The environment is the parent's plus `TERM=xterm-256color` (the terminal the
+emulator implements) and `PAGER=cat`/`GIT_PAGER=cat`/`MANPAGER=cat`/
+`SYSTEMD_PAGER=cat`, so `git log` or `man` prints instead of opening a pager
+nobody asked for — a program the model runs *as* a pager (`less file`) is
+unaffected. Variables that describe the TUI's *own* terminal (`TMUX`,
+`TERM_PROGRAM`, `KITTY_WINDOW_ID`, `COLUMNS`, …) are removed, since they would
+steer a program toward features the session's emulator does not have — and
+`HERDR_PANE_ID` with them, since it names the herdr pane the TUI is drawn in:
+a nested agent's herdr integration reporting under it would make itself the
+pane's owner, after which herdr drops every report alter-zero sends, and
+`herdr … --current` would type into the TUI itself (`docs/architecture/herdr.md`; every
+pipe-run child and MCP server goes without it too). `HERDR_ENV` and herdr's
+socket stay, so the model can still drive herdr — its agent skill checks
+`HERDR_ENV` first.
+
+**A UTF-8 locale where the environment names none** (`spawn::utf8_locale`).
+A container, a CI job or a Docker image often sets no `LANG`, and every
+program in the session then runs in the C locale: ncurses falls back to the
+DEC line-drawing set (read as a box anyway, *What a full-screen program looks
+like*), programs that print UTF-8 print question marks, and `btop` will not
+start at all (`ERROR: No UTF-8 locale detected!`). The emulator is UTF-8
+whatever the host says, so when the variable that decides the character set —
+`LC_ALL`, else `LC_CTYPE`, else `LANG`, the first one set — names no UTF-8
+locale, the session sets one: `C.UTF-8` (`en_US.UTF-8` on macOS, which has
+no `C.UTF-8`), in `LC_ALL` when that is the one set, since it outranks the
+others, else in `LC_CTYPE` (or `LANG` when nothing is set) — so the language
+of messages, dates and sorting stays as the user set it.
+
+## The registry (`background.rs`)
+
+A TTY session is a **background shell** — the registry that already owns every
+process outliving its tool call (`docs/tools/background.md`). That buys the ↓
+manager, the footer count, `kill_all` on `/clear` and quit, subagent
+attribution and the completion notice for free; what the registry gains is:
+
+- **input** — each TTY task has a writer thread fed by a channel (a pty write
+  blocks when the program is not reading, and nothing may block while the
+  task's state is locked); the monitor's query replies ride the same channel;
+- **the two views** — the monitor feeds every chunk to the session's screen and
+  transcript under one lock (`pty::session::SessionIo`), refreshes the line
+  mode, and a waiting call blocks on a condvar beside it;
+- **announcement** — a TTY task launched by a foreground call is registered
+  silently and **announced** (`BgEvent::Started`) only if it outlives the
+  call. A command that finishes inside its own call never appears in the
+  footer or the manager, never posts a notice, and costs nothing but its cell
+  — nor counts against the 16-session cap, which counts announced sessions;
+- **observed exits** — when the model *saw* the exit (a result framed
+  `Exit code: N` or `Stopped`), the `Exited` event says so and no completion
+  notice is posted: the model already has the result, and a `[background] …
+  completed` note after it would be noise, or worse, an automatic follow-up
+  turn. Who reports an exit is a small handshake (`SessionIo::finish`/
+  `end_wait`): a call registers as a waiter *before* it acts on the session,
+  so an exit its own input or kill caused is its to report — and an exit no
+  call saw stays claimable until its note is read, so a call that arrives
+  just after it reports it too (`docs/tools/bash-tools.md` *One notice per exit*);
+- **the screen for the UI** — for a TTY shell the monitor sends
+  `BgEvent::Screen` (throttled to ten a second) instead of line output, and
+  the ↓ manager's details page shows the rendered screen: the prompt it is
+  sitting at, the menu as drawn;
+- **a cap** — `MAX_TTY_SESSIONS` (16) running sessions; one more is refused
+  with the list of the running ones, rather than letting forgotten REPLs pile
+  up unseen;
+- **a question nobody saw** — a session no call waits on that stops at a
+  prompt it printed since the model last looked posts `BgEvent::Waiting`
+  once it has been quiet for `WAITING_NOTICE_QUIET` (3 s), and not again
+  until the model looks: the amber `● Background command "…" is waiting for
+  input` cell, and a note naming the session for `bashsend`
+  (`docs/tools/bash-tools.md`). Only a line shaped like a prompt is probed for it,
+  so an idle server's log never is. Its quiet interval uses the same latest
+  input-or-output clock as reports and probing: queued keys can answer the
+  question, and the interval begins only after their final delivery.
+
+The interim-output file (`{tasks}/{id}.output`) of a TTY session holds the
+cleaned transcript, not the raw escape stream, so `read`ing it is useful too.
+
+## Permissions
+
+Launching a TTY command is a `bash` call like any other and asks the same
+question. **Typing into a session asks too** — otherwise approving `bash`
+once would approve every command later typed into it. The request is its own
+kind, `PermissionKind::Session`: the title `Session input`, the input on one
+line as the body (`print(2 + 2)⏎`), a dim `into python3 · session b7x2k9m1q`
+under it, and option 2 `Yes, and don't ask again for this session` —
+remembered on the gate for the session's life, never written to
+`permissions.json`. Three things keep it quiet in practice:
+
+- a session whose **launch command** a standing allowlist rule covers
+  inherits the rule — `python3 *` already allows `python3 -c "anything"`, so
+  typing into `python3` adds nothing it did not grant;
+- `master` mode never asks, and **auto mode's classifier** reviews session
+  input the way it reviews commands, told the program the keys go to
+  (`prompts/classifier.md`: typing `rm -rf ~⏎` into a shell *is* running it);
+- a **wait**, a **kill**, and a lone **`<C-c>`** never ask: they only observe
+  or end what was already approved.
+
+Lifecycle hooks see the companion calls like any other tool; a matcher may
+name one by its wire name (`bashsend`) or by the name its cell shows
+(`BashSend`) — and the legacy tool as `bash_session` or `BashSession`.
+
+## The cells
+
+- A `bash` call is an ordinary `● Bash(cmd)` cell. When it returns
+  running, the report's frame line — the model's — is stripped, the program's
+  output shows, and the cell closes on a fresh dim corner: `⎿ Waiting for
+  input · session b7x2k9m1q` (or `Waiting for a password · …` at a prompt
+  that reads with echo off, `Still running · …`, or `Stopped · …` after a
+  kill). A command that exited reads exactly like a plain `bash` cell.
+- A companion call is `● BashSend(python3 ← import math⏎)` — the command
+  the session runs (one line, cut at 60 characters), then the input on one
+  line (`⏎` for Enter, `<Down>` for keys) — or `● BashWait(python3)`,
+  `● BashKill(python3)`, over the same output peek and state row
+  (`bashlist` names no session: `● BashList()`). The
+  command is named from the moment the call is announced: the loop asks the
+  registry what the session runs (`summarize_call_naming`), the lookup the
+  permission prompt makes for its `into {command} · session {id}` row, so
+  the header over that prompt names the program the keys go to, and a call
+  the user refused — which never reaches the executor — keeps it too. An id
+  shown to a person says nothing. The executor sends the same header as the
+  call's refined title (`ToolProgress::Title` → `StreamEvent::ToolTitle`);
+  only a session nothing answers to is named by its id (`bnope ← y⏎`). What
+  the model was additionally told (a note about an unsubmitted line or a kill
+  not carried out) is in its context only; Ctrl+D shows it.
+- Both are command cells (`COMMAND_TOOL_NAMES`): the peek folds at
+  `TOOL_FOLD_ROWS`, Ctrl+O shows everything, and a running call tails the
+  transcript live under its clock row — a `bashsend` call's clock naming its
+  own budget (`wait 10s`), a `bashwait` call's the wait it asked for, not
+  `bash`'s two minutes.
+- **Ctrl+B** on a running `bash` launch hands the session to the background
+  (it keeps running, the model is told its id); on a `bashsend` or
+  `bashwait` call it ends the *wait* — the session was already in the
+  background — and the model is told the user moved on. The cell's hint says
+  which: `(ctrl+b to run in background)` under a launch,
+  `(ctrl+b to stop waiting)` under a wait, and nothing under a `bashkill`,
+  which the key does not reach.
+- The ↓ manager's details page shows a TTY shell's current screen.
+
+## Offline demo and tests
+
+The dummy's `interactive` scenario (cue: `interactive` — the whole word,
+since `tty` hides in "pretty" and `repl` in "reply") plays a setup wizard: a
+`bash` launch stopping at `Project name:`, `bashsend` answers each met by the
+next question,
+and the last answer ending the program — one call a round, every result the
+real `pty::report::report`, so the offline cells are the live ones.
+`scripts/smoke.sh` Phase 124 drives it in the real binary and pins what only
+the screen shows: the dim state rows, the headers, and that no frame line or
+`Exit code: 0` ever reaches a cell. `cargo build` followed by
+`scripts/smoke.sh` runs every phase for the full TUI integration coverage
+described in `docs/ops/smoke.md`.
+
+The pure cores — key notation, the transcript, the screen, the settle policy,
+the frames — are unit-tested; the pty spawn, the registry's TTY tasks and the
+executor are tested against real processes (`sh`, `stty`, `python3` when
+present); `tests/detached_exec.rs` proves the helper tier gives the session its
+own controlling terminal. The screen and session tests cover a hidden
+progress cursor, hidden menus and follow-up questions after their old rows
+are erased, and the independent evidence that a program takes input.
+`tests/bash_relay_prompts.rs` exercises those transitions through a real
+`script` relay, including a synchronized pause longer than the input quiet
+cutoff that must complete within the same `bashsend`.
+The probe's `node_runtime_options_keep_the_repl_without_hiding_application_modes`
+pins option spelling, operand handling and application-mode rejection;
+`a_path_compiler_repl_is_resolved_in_its_process_working_directory` checks
+absolute and relative launcher symlinks through real process metadata.
+The executor's `a_node_repl_await_is_waited_for_not_taken_for_a_prompt`
+checks an actual Node await that logs before answering and then accepts
+another line.
+Session tests also cover
+line breaks, spaces and ANSI-only output during a password check, with
+echo on or off, alongside a visibly repeated retry and a probed read.
+The executor's
+`a_password_submission_waits_past_a_hidden_progress_cursor` uses a Linux
+process that denies inspection to reproduce the blind probe, then a password
+read and a paused first progress frame, without sudo or package changes.
+`examples/session_probe.rs` is the live harness;
+`examples/pty_drive.rs` drives the same tools from a script of calls with no
+model in the loop (`$S` standing for the session the last report named) and
+prints what a model would read — how `nano`, `top`, `htop`, `mc`, `dialog`
+and `whiptail` were checked.
+
+## Compared with the terminal-sessions design
+
+This design was compared against another built for the same job — a
+codex-style `write_stdin` over numbered sessions, the command itself run in a
+terminal by default (branch `update/optimistic-planck-fiq8pr`). Three of its
+ideas were better and are ported: streaming the running cell as settled text
+plus live rows (*Streaming the running cell*), a header naming the session's
+command (*The cells*), and the `/proc` probe (*The kernel's word*). Plain
+commands folding their `\r` frames goes one step further than it did: it ran
+every `bash` call in a terminal to get that, where here a plain call keeps its
+pipe — no terminal emulation, no changed `isatty` answer, output that is
+data — and folds it instead. One idea was tried and left out: masking what is
+typed at a prompt that reads with echo off. In use it masked ordinary input
+that was no password, hiding exactly what the header and the permission
+prompt are there to show (a header has no terminal to ask until the executor
+runs, so it masked by default), so typed keys show as typed. What it detected
+is kept for what it can say without hiding anything: a wait ends on a
+password prompt, and the frame names one (*A password prompt says so
+itself*).
+
+Three of this design's choices were kept over it:
+
+- **Changed lines, not a prefix.** It compared each report with the last by
+  their common prefix and resent everything after the first difference; a
+  bar redrawn above finished lines (pacman) resent those lines too. Here each
+  line remembers what the model was handed, so only new or changed lines
+  go out.
+- **A real terminal.** It gave programs `TERM=dumb`, which keeps them simple
+  but breaks what a terminal is for — `vim`, `less`, `top`, arrow-key menus.
+  Here the program gets `xterm-256color` and a real screen (`vt100`),
+  query replies and all.
+- **`tty` is asked for.** A plain call stayed on its pipe, so `git`, `ls` and
+  every tool that changes its output for a terminal behaved as in a script,
+  and the model reached for a terminal only for a program that needed one.
+  This one was later **reversed** (`docs/tools/bash-tools.md`): a mode the model
+  had to pick before the command ran was the flag models got wrong most, and
+  what made the terminal the other design's default — a finished command
+  read back as data, and silence not taken for a question — is now in the
+  engine.
+
+## Limits
+
+- **Unix only** — pseudo-terminals are a Unix facility; elsewhere a command
+  runs on a pipe, as every command once did (`docs/tools/bash-tools.md`).
+- **The prompt heuristic, where the probe cannot decide** — off Linux, for a
+  process run as another user (`sudo` and what it runs), and behind a wait on
+  the terminal itself (a REPL's, a relay's — seen, but a question and a pause
+  look alike from the kernel), the screen decides alone, a password prompt
+  aside (the terminal's mode names that one). There a program that prints
+  its question, a newline, and then waits in canonical mode looks like one
+  between lines of output — on the alternate screen too, where a program in
+  line mode is judged like the main screen: it settles on `LINE_QUIET` and reports `Running`
+  rather than `waiting for input` (the output still shows the question); and
+  a busy command that leaves a line open (`Reading package lists... `) can
+  read as a prompt to a launch or an input call after 0.5 s of quiet, and
+  to a wait after 3 s. Hiding the cursor alone does not change that: a
+  hidden question and a paused status line can look identical. A real
+  question that rewrites earlier output above still-live lower rows, or
+  looks like a percentage progress bar, can also match the display guard
+  when no independent input signal is available. That guard also holds
+  quiet launch and input calls past their ordinary silence cutoffs. A stale
+  progress display can hold the entire requested launch budget, or
+  `bashsend`'s 10 seconds; the screen cannot prove work is still happening.
+  Live relay testing still misses Clack prompts and the initial select from
+  the `prompts` library when their cursor rests at column zero; subsequent
+  `prompts` questions with a cursor on the input line are recognized.
+- **A reader that is not waiting** — a program whose key-listening thread
+  sits in `read` while another thread works reads as waiting to the probe.
+- **A silent asynchronous reader in Node's REPL** — a submitted expression
+  that logs a whole line, then waits for stdin without a prompt or uses an
+  empty `readline.question`, can report `Running`. Its event loop watches the same
+  terminal while a promise is merely pending. Visible nested questions and
+  kernel-observed reads remain detectable; newline logs alone cannot
+  safely distinguish the two cases.
+- **Output that displaces Node's prompt before input** — an asynchronous
+  bootstrap log from `node -i -e`, a `--trace-gc` message or a TSX warning
+  after the initial `> ` can leave the cursor at column zero before the
+  first `bashsend`. The submitted-line hold requires a visible nonempty
+  prompt, so it does not start there and a later await can still look like
+  an input request until the REPL redraws its prompt.
+- **A relative compiler launcher alias after a cwd change** — aliases are
+  resolved against the running process's current cwd. A `ts-node` or `tsx`
+  REPL that calls `process.chdir()` can make its relative alias unresolvable
+  for the next input. Direct known compiler entry paths remain recognised
+  without depending on that resolution.
+- **A splice with no readable wait channel** — a terminal-to-pipe transfer
+  can wait for input or for pipe capacity. Where the kernel hides its wait
+  channel, or names one the probe does not recognise, that distinction stays
+  uncertain and the screen heuristics decide.
+- **A command that runs on silently after its password** holds the call that
+  submitted it for `CHECK_QUIET` (10 s) rather than `LINE_QUIET` (2 s) before
+  it returns `Running`.
+- **A password prompt the terminal cannot show** — one that reads key by key
+  to echo `*` for each (`sudo`'s `pwfeedback`) reads as `waiting for input`;
+  one asked behind a relay (`sudo` inside `ssh`, a `docker run -it` shell)
+  sits on the relay's far terminal and is judged by the screen; one that
+  prints nothing before reading is a plain read to the probe; and a program
+  run as another user that turns echo off to swallow type-ahead, then goes
+  quiet, reads as asking for a password — the probe that would veto it is
+  blind there.
+- **A plain command's fold is one line at a time** — cursor movement between
+  lines (`docker pull`'s multi-line progress drawn with cursor-up) means
+  nothing on a pipe and is dropped; such programs print plain lines when
+  their output is not a terminal. Only a command no terminal could be given
+  to runs on a pipe now.
+- **A question drawn over an animation** — a prompt that replaces a spinner on
+  the spinner's own line inherits its redraw count and reads as animated: a
+  launch or input call returns on `LINE_QUIET` reporting `Running`, and a
+  wait rides it out to its timeout. One printed on a fresh line is a prompt at
+  once.
+- **Behind a relay** — under `sudo`, `ssh` or `docker run -it` the terminal's
+  raw mode says nothing, so a program there waiting for a key with its cursor
+  at the start of a line is not recognised as waiting (one with its prompt
+  text before its cursor can be, even when the cursor is hidden).
+- **A display behind a relay** — `ssh host gh run watch`, or `gh run watch`
+  under a `sudo` that relays: the relay holds the terminal raw, so the line
+  mode says nothing of the display behind it, and the relay's own wait on the
+  terminal (for keys to pass on) is one the probe cannot tell from a
+  prompt. Such a display still reads as `waiting for input` once it goes
+  quiet.
+- **A terminal watched but never read** — a Go program whose terminal
+  descriptor was already non-blocking when it started registers the terminal
+  with its runtime's epoll instance for good, read or not, so its waits stay
+  ones that may be on the terminal and the screen decides, as before. A
+  session opens its terminal blocking, so this takes a program earlier in the
+  same session that left it non-blocking.
+- **A redraw in output that never pauses** — the running cell is sampled in
+  a 10 ms pause between frames (`pty::pace`); output that never leaves one,
+  frames drawn faster than that or a log flooding past a spinner, is sampled
+  once an update has waited 100 ms for one, and can show a frame half drawn
+  for a moment.
+- **Typeahead** — several answers in one input are delivered at once, as a
+  terminal would; a program that flushes pending input before a prompt loses
+  them. The description steers models to one answer per call instead of
+  pacing input line by line.
+- **Keys behind a relay go 20 ms apart** — the input queue says only that the
+  relay read a key, not that the program at its far end did, so a program
+  there slower than `KEY_PAUSE` over each key can still see two in one read.
+- **The reader is named on Linux** — elsewhere no process table says whether
+  a shell reads the terminal, and indented text reaches a program in
+  bracketed-paste mode as a paste only on the alternate screen, so IPython or
+  Python 3.13's REPL there gets code typed, and auto-indents it. Text that
+  starts a program and then types into it in one call goes line by line on a
+  shell; the lines after the first go as typed keys, so a Python 3.13 REPL
+  started that way auto-indents a block it would have taken as a paste in a
+  call of its own.
+- **Highlights are a heuristic** — a selection is found by its background
+  standing out from the rows above and below, so one spanning two rows or
+  more (Vim's visual selection) goes unnamed, as does one in the same colour
+  as the row next to it; a selection shown only by bold or underline is not
+  a background, and is not named either.
+- **Pasting is for indented text** — a program in bracketed-paste mode gets
+  text as a paste only when it runs onto indented lines, so an unindented
+  block still meets its auto-indent — a smart indenter (Vim's `cindent`) can
+  indent a line sent with none — and the first line is typed, so it can
+  still be indented twice when typed after an auto-indented line break.
+  Indented lines sent to Vim in normal mode are inserted rather than run as
+  commands — where typed, they would have been run as a string of
+  normal-mode commands.

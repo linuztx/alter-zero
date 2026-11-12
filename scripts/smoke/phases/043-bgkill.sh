@@ -5,7 +5,7 @@
 smoke_begin
 
 # a background shell killed MID-TURN surfaces IMMEDIATELY
-# (docs/background.md): with a dummy turn in flight, x-stopping the shell in
+# (docs/tools/background.md): with a dummy turn in flight, x-stopping the shell in
 # the ↓ manager commits the red notice where the turn's next round boundary
 # reads it — once the dummy's tool batch resolves, visible while the status
 # line still spins — instead of only after the whole
@@ -26,7 +26,7 @@ wait_for 3 "$S43" -F "· 1 shell"
 # Start a dummy turn, then kill the shell during its pre-stream pause: ↓ lights
 # the footer indicator and Enter opens the manager over the in-flight turn, and
 # x stops the shell — which, it being the last one, closes the band on its own
-# (docs/background.md). No Esc afterwards: with the band already gone that key
+# (docs/tools/background.md). No Esc afterwards: with the band already gone that key
 # would reach the composer and interrupt the very turn this phase measures.
 submit "$S43" 'tell me about it'
 sleep 0.4

@@ -1,4 +1,4 @@
-//! The inline `/skills` menu's rendering (`docs/skills.md`).
+//! The inline `/skills` menu's rendering (`docs/tools/skills.md`).
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -367,7 +367,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     assert_eq!(skills_menu_height(&app, 78, 200), Some(idle + strip));
 }
 
-// --- the no-match page collapses its empty slots (docs/skills.md) ---
+// --- the no-match page collapses its empty slots (docs/tools/skills.md) ---
 
 /// The menu's page on a tall terminal, as trimmed plain rows.
 fn page(app: &App, width: u16) -> Vec<String> {
@@ -626,7 +626,7 @@ fn a_narrow_row_cuts_the_word_but_keeps_the_mark() {
     );
 }
 
-// --- the cursor seat (docs/view-flow.md) ---
+// --- the cursor seat (docs/ui/view-flow.md) ---
 
 #[test]
 fn the_cursor_sits_at_the_end_of_the_search_query() {

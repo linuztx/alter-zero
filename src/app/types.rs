@@ -26,7 +26,7 @@ pub enum Role {
     /// user-style background). Its tool's `⎿` output sits **flush** below it
     /// (no blank spacer), forming the codex-style exec cell. Recorded by
     /// [`App::begin_shell`] when the command starts, so a mid-run resize
-    /// repaints it. See `docs/shell-command.md`.
+    /// repaints it. See `docs/input/shell-command.md`.
     Shell,
 }
 
@@ -44,13 +44,13 @@ pub struct Message {
     /// for user messages — right-aligned below the message in the Ctrl+O
     /// transcript, never inline; other roles record it but don't show it. Empty
     /// when no clock is injected (the unit-test default); set from `App`'s
-    /// clock at the I/O boundary. See `docs/timestamps.md`.
+    /// clock at the I/O boundary. See `docs/ui/timestamps.md`.
     pub timestamp: String,
     /// The temp-file paths of the Ctrl+V images attached to this message
     /// (user messages only — empty for every other role). The `[Image #N]`
     /// placeholders stay in `text`; the paths ride here so the conversation
     /// context can re-send the attachments to a vision backend on later turns
-    /// and a `/resume` restores them. See `docs/image-paste.md`.
+    /// and a `/resume` restores them. See `docs/input/image-paste.md`.
     pub images: Vec<PathBuf>,
 }
 
@@ -63,32 +63,32 @@ pub struct Message {
 pub enum HistoryItem {
     Message(Message),
     Tool(ToolCall),
-    /// A resolved task tool call (`docs/task-tools.md`) — **cell-less
+    /// A resolved task tool call (`docs/tools/task-tools.md`) — **cell-less
     /// inline** (the live checklist is its display; `conversation_lines`
     /// skips it entirely) but recorded for the Ctrl+O transcript, the
     /// context replay, the rollout, and the snapshot the rewinds restore
     /// the list from.
     TaskCall(TaskCallRecord),
     Summary(TurnSummary),
-    /// A background shell's completion notice (`docs/background.md`).
+    /// A background shell's completion notice (`docs/tools/background.md`).
     Background(BackgroundNotice),
     /// A resolved subagent group — the `agent` tool's tree cell
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     AgentGroup(AgentGroup),
-    /// A background agent's completion notice (`docs/agent-tool.md`).
+    /// A background agent's completion notice (`docs/agents/agent-tool.md`).
     AgentNotice(AgentNotice),
     /// A settled thinking phase — the collapsed `Thought for {n} · {t}
     /// tokens` cell whose chain-of-thought expands in the Ctrl+O transcript
-    /// (`docs/thinking-stream.md`).
+    /// (`docs/ui/thinking-stream.md`).
     Reasoning(Reasoning),
-    /// A `/compact` marker (`docs/compact.md`): from here back, the model's
+    /// A `/compact` marker (`docs/architecture/compact.md`): from here back, the model's
     /// context is the compacted shape — [`crate::context::context_messages`]
     /// derives the budgeted recent user texts + the summary bridge in place of
     /// the earlier items. Appended (never a rewrite), so the transcript, the
     /// recorder, and the checkpoint keys are untouched.
     Compaction(Compaction),
     /// What the **lifecycle hooks** put into the conversation mid-turn, and
-    /// what they said (`docs/hooks.md`) — a `Stop` block's continuation
+    /// what they said (`docs/tools/hooks.md`) — a `Stop` block's continuation
     /// feedback, a `UserPromptSubmit`/`SessionStart` hook's additional
     /// context, the `● Ran 1 Stop hook` cell. With a
     /// [`report`](HookNote::report) it is that cell, collapsed inline and
@@ -101,7 +101,7 @@ pub enum HistoryItem {
 }
 
 /// One hook-injected conversation entry — see
-/// [`HistoryItem::HookNote`] and `docs/hooks.md`.
+/// [`HistoryItem::HookNote`] and `docs/tools/hooks.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookNote {
     /// The short transcript heading (`Stop hook`, `UserPromptSubmit hook`).
@@ -112,7 +112,7 @@ pub struct HookNote {
     /// when the hooks gave the model nothing — a cell for a hook that broke,
     /// or a message meant for the user alone.
     pub text: String,
-    /// What the hooks said, as their cell shows it (`docs/hooks.md` *The
+    /// What the hooks said, as their cell shows it (`docs/tools/hooks.md` *The
     /// hook-run cell*); `None` keeps the note cell-less inline.
     pub report: Option<crate::hooks::HookReport>,
     /// Wall-clock stamp (recorded like every item's; never displayed).
@@ -122,7 +122,7 @@ pub struct HookNote {
 impl HookNote {
     /// Whether the note shows inline — it carries the hooks' cell. A note
     /// without one is transcript-only, and lets an open read/search group
-    /// run on through it (`docs/tool-groups.md`).
+    /// run on through it (`docs/ui/tool-groups.md`).
     #[must_use]
     pub const fn has_cell(&self) -> bool {
         self.report.is_some()
@@ -134,7 +134,7 @@ impl HookNote {
 /// funnels through: the status-line tally (input, reply, reasoning, tool
 /// output) and every context estimate. Provider-agnostic and vocabulary-free;
 /// a provider's usage report snaps the tally to its own count, and its
-/// reports calibrate the context estimates (`docs/token-estimate.md`).
+/// reports calibrate the context estimates (`docs/architecture/token-estimate.md`).
 #[must_use]
 pub(crate) fn count_tokens(text: &str) -> usize {
     crate::tokens::estimate(text)
@@ -143,7 +143,7 @@ pub(crate) fn count_tokens(text: &str) -> usize {
 /// A flat token estimate charged per Ctrl+V-attached image
 /// ([`App::count_input_images`]). The protocol carries no real usage and an
 /// image has no text to size, so this is a demo stand-in for a vision model's
-/// per-image cost. See `docs/image-paste.md`.
+/// per-image cost. See `docs/input/image-paste.md`.
 pub(super) const IMAGE_INPUT_TOKENS: usize = 256;
 
 /// Which screen is showing. The conversation is the inline TUI; the tool-output
@@ -158,11 +158,11 @@ pub enum View {
     /// The full-screen tool-output viewer.
     ToolOutput,
     /// The full-screen `/resume` session picker — the other alternate-screen
-    /// overlay (codex's `resume_picker`). See `docs/resume.md`.
+    /// overlay (codex's `resume_picker`). See `docs/state/resume.md`.
     ResumePicker,
     /// The full-screen Ctrl+D context-debug view: the raw LLM context window
     /// (system prompt + every derived context message, placeholders and
-    /// bracketed tool formats unrendered). See `docs/context.md`.
+    /// bracketed tool formats unrendered). See `docs/architecture/context.md`.
     ContextDebug,
     /// The full-screen, read-only Git change review.
     DiffReview,
@@ -177,7 +177,7 @@ impl View {
     /// all?", which is what decides whether the draw tick keeps re-arming the
     /// status animation's clock chain: under an overlay nothing it animates is
     /// visible, and repainting there for no reason is what dropped the
-    /// terminal's text selection mid-turn (`docs/overlay-repaint.md`).
+    /// terminal's text selection mid-turn (`docs/ui/overlay-repaint.md`).
     #[must_use]
     pub const fn is_overlay(self) -> bool {
         matches!(
@@ -188,7 +188,7 @@ impl View {
 }
 
 /// Which page the Ctrl+D view is showing — Tab flips between them
-/// (`docs/context.md`, `docs/permissions.md`). Two windows onto "what is
+/// (`docs/architecture/context.md`, `docs/state/permissions.md`). Two windows onto "what is
 /// this turn actually sending", one key apart: the model's own context, and
 /// the bounded task context auto mode's classifier reads before every
 /// command and MCP call.
@@ -216,7 +216,7 @@ impl DebugPage {
 }
 
 /// Which way a ←/→ press in the Ctrl+D view steps between the page's
-/// entries (`docs/context.md`). The key records only the direction: where
+/// entries (`docs/architecture/context.md`). The key records only the direction: where
 /// the neighbouring entry starts is a fact about the rendered page — its
 /// width, its wrapping — so the draw resolves it
 /// ([`App::resolve_debug_jump`]).
@@ -235,7 +235,7 @@ pub enum EntryJump {
 /// model name and the (display-ready, home-relativized) working directory.
 /// Plain strings — `main.rs` formats them at the I/O boundary
 /// ([`App::set_session_info`]) so the pure core never reads the environment.
-/// See `docs/footer.md`.
+/// See `docs/ui/footer.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     /// The model id the active [`crate::stream::ReplySource`] answers as.
@@ -245,7 +245,7 @@ pub struct SessionInfo {
 }
 
 /// How a [`Toast`] is styled — a neutral confirmation or a failure. Drives the
-/// row's colour in `ui::footer` (dim vs. a softened red). See `docs/toast.md`.
+/// row's colour in `ui::footer` (dim vs. a softened red). See `docs/ui/toast.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     /// A neutral confirmation or soft rejection (dim) — `Copied last message to
@@ -263,7 +263,7 @@ pub enum ToastKind {
 /// user should see but never wants to keep (`/copy`, a model switch, a mid-turn
 /// `/resume`), so nothing lands in [`App::history`]. The expiry is driven at the
 /// I/O boundary via the timestamp pattern (`main.rs`'s `toast_deadline`); the
-/// pure core only holds *what* it says. See `docs/toast.md`.
+/// pure core only holds *what* it says. See `docs/ui/toast.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     /// The message shown (truncated to the width by the renderer).

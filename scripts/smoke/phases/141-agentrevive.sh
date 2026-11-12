@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The reported bug (docs/agent-tools.md *A resume is news when it starts*),
+# The reported bug (docs/agents/agent-tools.md *A resume is news when it starts*),
 # driven through the REAL backend against a stub provider. The lead launches
 # a foreground subagent to create the frontend; the subagent's request is
 # refused, so the lead reads `[agent failed: …]` and goes on with its turn.

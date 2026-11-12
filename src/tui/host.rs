@@ -8,15 +8,15 @@
 //! running on.
 //!
 //! - the wall clock: [`local_timestamp`] (the Ctrl+O transcript's stamp,
-//!   `docs/timestamps.md`), [`utc_stamp`] (rollout write stamps,
-//!   `docs/resume.md`), [`unix_secs`] (input-history `ts`,
-//!   `docs/history-persistence.md`),
+//!   `docs/ui/timestamps.md`), [`utc_stamp`] (rollout write stamps,
+//!   `docs/state/resume.md`), [`unix_secs`] (input-history `ts`,
+//!   `docs/input/history-persistence.md`),
 //! - the agent's environment context: [`local_date`], [`os_context`] and
-//!   [`user_context`] (`docs/environment.md`),
+//!   [`user_context`] (`docs/architecture/environment.md`),
 //! - process identity: [`process_uid`] (the background tasks root,
-//!   `docs/background.md`, and the environment's `User` line) and
+//!   `docs/tools/background.md`, and the environment's `User` line) and
 //!   [`session_id`],
-//! - telemetry (`docs/telemetry.md`): [`utc_day`] (the once-a-day key) and
+//! - telemetry (`docs/ops/telemetry.md`): [`utc_day`] (the once-a-day key) and
 //!   [`random_bytes`] (the install id's entropy).
 
 use alter_zero::llm;
@@ -32,7 +32,7 @@ pub(crate) fn local_timestamp() -> String {
 /// Local date for the agent's environment context — weekday plus ISO date,
 /// e.g. `Sunday 2026-07-19`. Gathered here at the boundary and folded into the
 /// system prompt by [`augment_with_environment`] so the agent knows the day
-/// (see `docs/environment.md`).
+/// (see `docs/architecture/environment.md`).
 ///
 /// [`augment_with_environment`]: alter_zero::llm::backend::augment_with_environment
 pub(crate) fn local_date() -> String {
@@ -44,7 +44,7 @@ pub(crate) fn local_date() -> String {
 /// `/etc/os-release` — e.g. `linux (Ubuntu 24.04.4 LTS)`. Boundary code (reads
 /// the file); the parse is the pure `backend::os_release_name`. Falls back to
 /// the bare platform when the file is missing/unreadable or off Linux (see
-/// `docs/environment.md`).
+/// `docs/architecture/environment.md`).
 pub(crate) fn os_context() -> String {
     let os = std::env::consts::OS;
     if os == "linux" {
@@ -61,7 +61,7 @@ pub(crate) fn os_context() -> String {
 
 /// The user for the agent's environment context — the account this process
 /// runs as, e.g. `root` or `linuztx`, so the agent knows whether it is root
-/// (`docs/environment.md`). The effective uid decides ([`process_uid`], as
+/// (`docs/architecture/environment.md`). The effective uid decides ([`process_uid`], as
 /// `whoami` reports it); the name comes from `/etc/passwd`, else
 /// `$USER`/`$LOGNAME`/`$USERNAME` (macOS and directory-service accounts live
 /// outside the file). Boundary code (reads the uid, the file and the
@@ -154,7 +154,7 @@ pub(crate) fn unix_secs_signed() -> i64 {
 /// The local clock's offset from UTC, in seconds, at the instant `at` (Unix
 /// seconds) — read per instant, so a time across a daylight-saving change
 /// reads the right hour. Handed to `App` once (`App::set_local_offset`): the
-/// `/usage` page's reset times (`docs/usage.md`).
+/// `/usage` page's reset times (`docs/providers/usage.md`).
 pub(crate) fn local_offset(at: i64) -> i32 {
     use chrono::{Offset, TimeZone};
     chrono::Local

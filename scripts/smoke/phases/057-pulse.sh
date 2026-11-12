@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the running bullet's BLINK (docs/tool-pulse.md). A tool in
+# the running bullet's BLINK (docs/ui/tool-pulse.md). A tool in
 # flight no longer shows a blue `●` — it shows the permission prompt's grey,
 # and in the live region that bullet BLINKS: shown for half a second, hidden
 # behind blanks of its own width for the next, the header text keeping its
@@ -71,7 +71,7 @@ pulse_shown="${pulse_rest%% *}"
 pulse_doubles="${pulse_rest#* }"
 # The one grey a bullet may wear: the default theme's `tool_running_color()`
 # (= `tool_waiting_color()`), Catppuccin Mocha's `dim` #7F849C = 127;132;156
-# (docs/theme.md; `ui/palette.rs`). A "grey" here is that grey or darker on
+# (docs/ui/theme.md; `ui/palette.rs`). A "grey" here is that grey or darker on
 # EVERY channel — the text colour, the green and the red all exceed it on
 # some channel — so a darker grey can only be a second shade of the bullet.
 pulse_second_grey="$(printf '%s' "$pulse_colours" | tr ',' '\n' | awk -F';' '

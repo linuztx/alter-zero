@@ -5,7 +5,7 @@
 smoke_begin
 
 # STAGGERED back-to-back prompts — the still-open prompt stays
-# flush at the screen bottom (docs/permissions.md). The dummy's "staggered
+# flush at the screen bottom (docs/state/permissions.md). The dummy's "staggered
 # permission" turn scripts two gated Writes whose prompts differ wildly in
 # height: the first's body caps (the prompt fills the terminal), the second's
 # is one line — and answering the first commits its cell and opens the second

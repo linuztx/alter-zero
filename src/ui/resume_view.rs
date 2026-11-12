@@ -1,4 +1,4 @@
-//! The full-screen `/resume` session picker. See `docs/resume.md`.
+//! The full-screen `/resume` session picker. See `docs/state/resume.md`.
 
 use super::theme::*;
 use super::transcript::{overlay_header, rule_with_label};
@@ -123,7 +123,7 @@ fn resume_toolbar_spans(picker: &ResumePicker, compact: bool) -> Vec<Span<'stati
 }
 
 /// Render the full-screen `/resume` session picker — codex's resume picker,
-/// sized down (docs/resume.md): the slash-tiled title, the type-to-search
+/// sized down (docs/state/resume.md): the slash-tiled title, the type-to-search
 /// line, the dense session rows (windowed to keep the selection **centered**
 /// — the `/model` list's [`centered_window`], so the sessions above *and*
 /// below the highlight stay in view and each ↑/↓ scrolls the next one in,

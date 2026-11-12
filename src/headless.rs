@@ -1,4 +1,4 @@
-//! Headless mode's pure core — `alter-zero -p` (see `docs/headless.md`).
+//! Headless mode's pure core — `alter-zero -p` (see `docs/cli/headless.md`).
 //!
 //! `-p`/`--print` runs one prompt with no screen: the same conversation the
 //! TUI runs, its answer printed to stdout and its progress logged to stderr,
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::app::{HistoryItem, Role};
 
-/// How a headless run reports (`--output-format`, `docs/headless.md`).
+/// How a headless run reports (`--output-format`, `docs/cli/headless.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputFormat {
     /// The answer alone on stdout, the run's log on stderr — what a shell
@@ -53,7 +53,7 @@ impl OutputFormat {
 // ===== the prompt: the argument, stdin, or both =====
 
 /// How long a socket given **beside** a prompt argument may stay silent
-/// before the run goes on without it (`docs/headless.md` *The prompt*): a
+/// before the run goes on without it (`docs/cli/headless.md` *The prompt*): a
 /// parent that leaves it open and never writes to it — Node's `exec`, so
 /// n8n's command node — would otherwise hold the run forever, codex's hang.
 /// Anything at all within it — data or end-of-file — and it is read to its
@@ -62,7 +62,7 @@ impl OutputFormat {
 pub const STDIN_WAIT: Duration = Duration::from_secs(3);
 
 /// How long a run that has nothing left but background subagents waits on
-/// them before stopping them and ending on its last reply (`docs/headless.md`
+/// them before stopping them and ending on its last reply (`docs/cli/headless.md`
 /// *What the run does*) — a bound on an agent that never finishes.
 pub const AGENT_WAIT_DEFAULT: Duration = Duration::from_secs(600);
 
@@ -120,7 +120,7 @@ pub enum StdinRead {
 }
 
 /// How a run reads stdin, given its prompt argument and what stdin is
-/// (`docs/headless.md`): never a terminal unless `-` asks for it; a file
+/// (`docs/cli/headless.md`): never a terminal unless `-` asks for it; a file
 /// always; a pipe to its end, however long its writer takes; and any other
 /// stream in full when it *is* the prompt, but only if it is active within
 /// [`STDIN_WAIT`] when an argument was given beside it.
@@ -167,7 +167,7 @@ pub fn decode_stdin(bytes: Vec<u8>) -> StdinText {
 }
 
 /// The prompt a run answers, from its argument and what stdin carried
-/// (`docs/headless.md`): the argument alone; stdin alone when there is no
+/// (`docs/cli/headless.md`): the argument alone; stdin alone when there is no
 /// argument (or it is `-`); both as codex joins them —
 /// `{prompt}\n\n<stdin>\n{input}\n</stdin>` — so the model knows what
 /// came down the pipe. Blank input adds nothing; `None` when nothing is
@@ -225,7 +225,7 @@ fn within_an_answer(item: &HistoryItem) -> bool {
 /// reports as its failure.
 const UNFINISHED: &str = "the run ended before its turn did";
 
-/// The run's answer (`docs/headless.md`): its last reply — the assistant
+/// The run's answer (`docs/cli/headless.md`): its last reply — the assistant
 /// messages after the last thing that was not one, joined by a blank line,
 /// with what may trail an answer (the turn's summary, a notice settled at
 /// its end) looked past. `run` is the history this run added, so an older
@@ -260,7 +260,7 @@ pub fn final_answer(run: &[HistoryItem]) -> Option<String> {
 }
 
 /// How a headless run ended — what its exit status and the result's
-/// `subtype` say (`docs/headless.md` *Exit status*).
+/// `subtype` say (`docs/cli/headless.md` *Exit status*).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunOutcome {
     /// The last turn completed.
@@ -336,7 +336,7 @@ impl RunOutcome {
 // ===== what the run writes =====
 
 /// One line a run writes, and to which stream. The reporter decides; the
-/// boundary only writes (`docs/headless.md` *Output*: stdout carries the
+/// boundary only writes (`docs/cli/headless.md` *Output*: stdout carries the
 /// answer or the JSON and nothing else, stderr everything else).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Emit {
@@ -355,7 +355,7 @@ pub fn warning(text: &str) -> Emit {
 }
 
 /// What a run that never started writes — no model, no session to continue,
-/// stdin that could not be read (`docs/headless.md` *Exit status*): why, on
+/// stdin that could not be read (`docs/cli/headless.md` *Exit status*): why, on
 /// stderr in every format, and for the JSON formats the result object a
 /// script reads, so `jq .result` meets an error rather than nothing.
 #[must_use]
@@ -378,7 +378,7 @@ pub fn not_started(format: OutputFormat, error: &str, duration: Duration) -> Vec
     out
 }
 
-/// What a toast becomes in a headless run (`docs/headless.md` *Output*):
+/// What a toast becomes in a headless run (`docs/cli/headless.md` *Output*):
 /// an error is said on stderr always; anything else is the step log's, said
 /// only with `--verbose`.
 #[must_use]
@@ -387,7 +387,7 @@ pub fn toast_line(text: &str, error: bool, verbose: bool) -> Option<Emit> {
 }
 
 /// A tool call a headless run refused because it needed approval nobody
-/// could give (`docs/headless.md` *Permissions*) — the result's
+/// could give (`docs/cli/headless.md` *Permissions*) — the result's
 /// `permission_denials` entry, in Claude Code's fields: the tool as the model
 /// called it, the call's id and its input. `agent` adds the subagent type
 /// that asked; the lead's own calls carry none.
@@ -502,7 +502,7 @@ pub struct RunEnd<'a> {
 }
 
 /// Turns what a headless run does into the lines it writes, for one output
-/// format (`docs/headless.md` *Output*). Pure: the boundary feeds it the
+/// format (`docs/cli/headless.md` *Output*). Pure: the boundary feeds it the
 /// events it sees and the history the session settles, and writes what it
 /// hands back.
 #[derive(Debug, Default)]
@@ -1283,7 +1283,7 @@ fn raw_arguments(arguments: &str) -> Option<Box<serde_json::value::RawValue>> {
 /// not JSON.
 #[must_use]
 pub fn compact_json(raw: &str) -> Option<String> {
-    // Validated without building a tree (`docs/memory.md`): a borrowed raw
+    // Validated without building a tree (`docs/architecture/memory.md`): a borrowed raw
     // value is a scan of the text.
     serde_json::from_str::<&serde_json::value::RawValue>(raw).ok()?;
     let mut out = String::with_capacity(raw.len());

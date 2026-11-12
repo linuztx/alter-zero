@@ -29,7 +29,7 @@
 //!   blanking the rows a shrink vacates), repaints the live region, and places
 //!   the hardware cursor — all in **one synchronized update**, so scrollback
 //!   growth and the box repaint land as a single atomic frame (no flushed state
-//!   ever lacks the box — the streaming flicker; see `docs/flicker.md`).
+//!   ever lacks the box — the streaming flicker; see `docs/ui/flicker.md`).
 //!
 //! The hardware cursor is **hidden for the whole body of every frame** and shown
 //! again only at its final prompt seat (each of [`draw`]/[`reflow`] queues a
@@ -42,7 +42,7 @@
 //! A frame that shows **no** cursor ([`ui::cursor_visible`] — a permission
 //! prompt's option list, which is a menu, not a text field) simply skips that
 //! `Show`, so the frame-start `Hide` stands and the cursor stays away for as
-//! long as the options do (`docs/permissions.md`).
+//! long as the options do (`docs/state/permissions.md`).
 //!
 //! [`draw`]: InlineViewport::draw
 //! [`reflow`]: InlineViewport::reflow
@@ -103,7 +103,7 @@ pub struct InlineViewport {
     /// entry/exit deliberately clears `prev`. Dropped on every entry, exit and
     /// failed write, each of which leaves the alternate screen in a state this
     /// baseline no longer describes. See [`overlay_updates`] and
-    /// `docs/overlay-repaint.md`.
+    /// `docs/ui/overlay-repaint.md`.
     ///
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     overlay_prev: Option<Buffer>,
@@ -111,7 +111,7 @@ pub struct InlineViewport {
     /// `pending_history_lines`): [`draw`] writes them above the viewport inside
     /// the same synchronized update as the live-region repaint, so scrollback
     /// growth and the box land atomically — never a flushed frame without the
-    /// box (`docs/flicker.md`). Only [`draw`]/[`reflow`]/[`restore`] flush it —
+    /// box (`docs/ui/flicker.md`). Only [`draw`]/[`reflow`]/[`restore`] flush it —
     /// never [`draw_overlay`] — so a commit made while the Ctrl+O / Ctrl+D /
     /// `/resume` overlay covers the inline view simply **waits here**, and the
     /// overlay's return flushes the whole backlog above the live region
@@ -135,7 +135,7 @@ pub struct InlineViewport {
     ///
     /// A prompt grows like any other region — the chat above it scrolls into
     /// **real** scrollback, so the user can scroll up and read while it asks
-    /// (`docs/permissions.md`). But a scroll is one-way: the collapse back to
+    /// (`docs/state/permissions.md`). But a scroll is one-way: the collapse back to
     /// the composer cannot refill the rows it vacates, and a plain shrink
     /// would strand the box above a band of blank rows. The loop reads this
     /// ([`modal_scrolled`], consumed by [`take_modal_scrolled`]) on the first
@@ -152,11 +152,11 @@ pub struct InlineViewport {
     /// the painted rows move with the screen) — unlike `view.height`, immune
     /// to the between-paint re-syncs of [`set_view_height`]. Read by the loop
     /// ([`painted_bottom`]) to tell a modal region pinned flush at the screen
-    /// bottom from one still floating above it (`docs/permissions.md`), and
+    /// bottom from one still floating above it (`docs/state/permissions.md`), and
     /// by [`paint_frame`] itself to blank exactly the rows the previous
     /// region left **below** the one it just painted — the only clearing a
     /// frame does, now that a commit repaints the region in place instead of
-    /// blanking it first (`docs/slow-stream.md`).
+    /// blanking it first (`docs/ui/slow-stream.md`).
     ///
     /// [`paint_frame`]: InlineViewport::paint_frame
     /// [`set_view_height`]: InlineViewport::set_view_height
@@ -164,7 +164,7 @@ pub struct InlineViewport {
     painted_bottom: u16,
     /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
     /// terminal reports Shift+Enter distinctly from Enter — see
-    /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
+    /// `docs/input/shift-enter.md`). Recorded so [`restore`] and the panic hook only
     /// **pop** the stack when we actually pushed; `false` when the
     /// `ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT` escape hatch is set.
     ///
@@ -172,7 +172,7 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     keyboard_enhanced: bool,
     /// Whether link-marked cells are bracketed with the OSC 8 hyperlink
-    /// escape so a wrapped URL opens whole (`docs/links.md`). Read from
+    /// escape so a wrapped URL opens whole (`docs/ui/links.md`). Read from
     /// `ALTER_ZERO_HYPERLINKS` at [`init`] (default on; the
     /// keyboard-enhancement pattern). Off, the emitter still strips the link
     /// carrier — the interned id must never paint as a real underline colour
@@ -181,7 +181,7 @@ pub struct InlineViewport {
     /// [`init`]: InlineViewport::init
     hyperlinks: bool,
     /// The terminal's graphics capability and the pictures encoded for it
-    /// (`docs/images.md`). Built once in [`init`] — from the environment and
+    /// (`docs/ui/images.md`). Built once in [`init`] — from the environment and
     /// `TIOCGWINSZ`, and where those name nothing, from the terminal's own
     /// answer inside the cursor query's read, never a stdin reader of its
     /// own (invariant 1; `images::Detection` explains what that would cost).
@@ -201,14 +201,14 @@ pub struct InlineViewport {
     /// [`take_typeahead`]: InlineViewport::take_typeahead
     typeahead: Vec<u8>,
     /// A viewport with no terminal behind it — a headless run's
-    /// ([`headless`](InlineViewport::headless), `docs/headless.md`): every
+    /// ([`headless`](InlineViewport::headless), `docs/cli/headless.md`): every
     /// method that would paint returns at once and every commit is dropped
     /// as it is queued, so the session runs whole and shows nothing.
     headless: bool,
 }
 
 /// Where a viewport's escapes go: the terminal — or, for a headless run,
-/// which keeps the session but shows nothing, nowhere (`docs/headless.md`).
+/// which keeps the session but shows nothing, nowhere (`docs/cli/headless.md`).
 /// The sink is defence in depth under [`InlineViewport::headless`]'s early
 /// returns: stdout is a headless run's answer, and an escape that reached
 /// it would corrupt the JSON a script parses.
@@ -286,7 +286,7 @@ impl InlineViewport {
         // the environment could not answer: where it leaves the half-block
         // fallback, the kitty graphics query and `XTVERSION` ride ahead of
         // the cursor query, and the terminal's answers come back in order
-        // (`term::query`, `docs/images.md`). `ratatui_image`'s own stdio
+        // (`term::query`, `docs/ui/images.md`). `ratatui_image`'s own stdio
         // probe is no option — it leaks a reader thread that eats keystrokes
         // on a terminal that never answers (invariant 1, `images::Detection`).
         let detection =
@@ -300,7 +300,7 @@ impl InlineViewport {
         let cursor = replies.cursor;
         // Turn on bracketed paste so a real paste arrives as one `Event::Paste`
         // (a large one collapses to a `[Pasted Content N chars]` placeholder —
-        // see docs/paste.md) instead of a burst of synthetic key presses. Like
+        // see docs/input/paste.md) instead of a burst of synthetic key presses. Like
         // the keyboard-enhancement push below, this is a terminal mode-set with
         // no reply, so it adds no stdin reader (invariant 1 holds).
         let _ = execute!(backend, EnableBracketedPaste);
@@ -310,7 +310,7 @@ impl InlineViewport {
         // terminal report Shift+Enter as a modified Enter instead of a bare `\r`;
         // terminals that don't support it ignore the sequence. We deliberately do
         // *not* call crossterm's `supports_keyboard_enhancement()` probe — it
-        // blocks up to 2s on terminals that never answer. See docs/shift-enter.md.
+        // blocks up to 2s on terminals that never answer. See docs/input/shift-enter.md.
         if keyboard_enhanced {
             let _ = execute!(
                 backend,
@@ -352,7 +352,7 @@ impl InlineViewport {
     }
 
     /// A viewport with no terminal at all, for a headless run
-    /// (`docs/headless.md`): no raw mode, no cursor query, no reader — the
+    /// (`docs/cli/headless.md`): no raw mode, no cursor query, no reader — the
     /// session it serves runs whole, and nothing it would paint is painted.
     /// Every commit is dropped as it is queued ([`insert_before`]), and
     /// every method that writes returns at once.
@@ -399,7 +399,7 @@ impl InlineViewport {
     /// What this terminal can do about pictures: whether one can be drawn at
     /// all, its cell size in pixels, and the protocol's name — the three
     /// facts the loop pushes into [`crate::images::set_policy`] at bootstrap
-    /// (the `set_clock` pattern). See `docs/images.md`.
+    /// (the `set_clock` pattern). See `docs/ui/images.md`.
     #[must_use]
     pub fn image_capability(&self) -> (bool, Option<images::FontSize>, Option<&'static str>) {
         (
@@ -438,7 +438,7 @@ impl InlineViewport {
     /// [`pending_rows`], what the loop's draw tick feeds
     /// [`ui::modal_needs_rebuild`] to catch a modal region about to seat
     /// short of the screen bottom it was painted flush against
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     ///
     /// [`set_view_height`]: InlineViewport::set_view_height
     /// [`view_top`]: InlineViewport::view_top
@@ -486,7 +486,7 @@ impl InlineViewport {
     /// Any lines queued by [`insert_before`] are written above the viewport
     /// first, **inside the same frame** — scrollback growth and the box repaint
     /// land as one atomic update (codex's pending-history pattern; the streaming
-    /// flicker fix, `docs/flicker.md`).
+    /// flicker fix, `docs/ui/flicker.md`).
     ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
@@ -494,7 +494,7 @@ impl InlineViewport {
     /// its scroll keeps the conversation reachable in real scrollback while it
     /// asks — but the one-way move is noted (`modal_scrolled`) so the prompt's
     /// close can purge-rebuild instead of shrinking over the rows it can't
-    /// refill (`docs/permissions.md`).
+    /// refill (`docs/state/permissions.md`).
     ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
     /// [`insert_before`]: InlineViewport::insert_before
@@ -553,7 +553,7 @@ impl InlineViewport {
         // height to THIS frame's height first. A commit that lands in the same
         // frame as a strip collapse — a forming table's whole block committing
         // at its close, shrinking the multi-row preview to one row
-        // (docs/table-streaming.md) — would otherwise reserve the stale taller
+        // (docs/ui/table-streaming.md) — would otherwise reserve the stale taller
         // strip, land the viewport that much higher, and leave the vacated
         // rows as a blank band under the box (invariant 3; the reported bug —
         // the turn-end `set_view_height` reseat only covers the turn-end
@@ -568,7 +568,7 @@ impl InlineViewport {
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
         // A tool-permission prompt grows by this same rule — the chat above
         // it scrolls into the terminal's **real** scrollback, so the user can
-        // scroll up and read while it asks (`docs/permissions.md`; the
+        // scroll up and read while it asks (`docs/state/permissions.md`; the
         // covering geometry this replaces held those rows in no buffer at
         // all, which read as "terminal scroll is disabled" — worst in kitty).
         // But the move is one-way: the collapse back to the composer cannot
@@ -605,7 +605,7 @@ impl InlineViewport {
     /// commit frame is a few KB, a pty read is 4 KB) showed the box vanish and
     /// return once per committed line, which a slow model makes a blink a
     /// second. Overwriting instead leaves such a terminal a partly-updated box
-    /// at worst (`docs/slow-stream.md`). What a frame *does* blank is exactly
+    /// at worst (`docs/ui/slow-stream.md`). What a frame *does* blank is exactly
     /// the rows the last painted region occupied below this one — a shrink's
     /// vacated rows (`repin.clear_below`), or the tail of a region a commit
     /// pushed down by fewer rows than the strip collapsed (`painted_bottom`,
@@ -669,7 +669,7 @@ impl InlineViewport {
     /// I/O happens here (codex's `pending_history_lines`): the next [`draw`] or
     /// [`reflow`] writes them inside the same synchronized update as the
     /// live-region repaint, so the commit and the box land as one atomic frame
-    /// (`docs/flicker.md`). Callers already schedule a frame after every state
+    /// (`docs/ui/flicker.md`). Callers already schedule a frame after every state
     /// change; [`restore`] flushes any leftovers if the app quits first.
     ///
     /// [`draw`]: InlineViewport::draw
@@ -702,7 +702,7 @@ impl InlineViewport {
     /// `insert_before`: draw the lines into the rows above the viewport, scrolling
     /// the screen up only as much as needed, and leave the viewport's rows to
     /// the repaint that follows in the same frame — stale, never blanked
-    /// (`docs/slow-stream.md`).
+    /// (`docs/ui/slow-stream.md`).
     fn write_above(&mut self, mut lines: Vec<Line<'static>>) -> io::Result<()> {
         // One commit can exceed u16 rows (a multi-megabyte paste expands back
         // to its full text on send): chunk it so the `as u16` below is exact —
@@ -738,7 +738,7 @@ impl InlineViewport {
         // Turn the reserved blocks into pictures *before* the rows are
         // addressed: a committed image is written into the terminal's real
         // scrollback exactly once, and scrolls with the text from then on
-        // (`docs/images.md`).
+        // (`docs/ui/images.md`).
         self.images.stamp(&mut buffer);
         let mut cells = buffer.content.as_slice();
 
@@ -773,7 +773,7 @@ impl InlineViewport {
         // presentable boxless state left in a commit frame (it also needed
         // ordering care around a tmux bug that spilled a full clear followed
         // by a scroll into scrollback — moot with no full clear at all).
-        // `docs/slow-stream.md`.
+        // `docs/ui/slow-stream.md`.
         //
         // [`paint_frame`]: InlineViewport::paint_frame
         self.prev = None; // the region's cells on screen are stale, not last-drawn
@@ -822,7 +822,7 @@ impl InlineViewport {
         // purge would place an image the terminal may already have dropped.
         // Re-encoding is the price of a rebuild that is actually correct —
         // and the rebuild is re-measuring every picture for the new width
-        // anyway (`docs/images.md`).
+        // anyway (`docs/ui/images.md`).
         self.images.invalidate();
         Ok(())
     }
@@ -870,7 +870,7 @@ impl InlineViewport {
     /// the tail so it fills the screen and scrolls the overflow into the
     /// now-empty scrollback, then paint the box at its final position —
     /// atomically, so the rebuilt screen never flashes without the box
-    /// (`docs/flicker.md`). The caller passes the **full** history as the
+    /// (`docs/ui/flicker.md`). The caller passes the **full** history as the
     /// tail, since the purge dropped everything.
     ///
     /// Lines still queued by [`insert_before`] are **dropped**, not flushed:
@@ -902,7 +902,7 @@ impl InlineViewport {
         // collapse strands the box above the rows it vacates. Recording this
         // HERE, at the one place every full rebuild goes through, is what
         // keeps every rebuild source honest — the resize purge and the
-        // Ctrl+O / Ctrl+D / agent-view returns alike (`docs/permissions.md`).
+        // Ctrl+O / Ctrl+D / agent-view returns alike (`docs/state/permissions.md`).
         self.modal_scrolled |= ui::region_is_modal(app);
         queue!(self.backend, BeginSynchronizedUpdate)?;
         // Hide the cursor before the rebuild (see [`draw`]): a reflow homes the
@@ -1001,7 +1001,7 @@ impl InlineViewport {
         //
         // [`draw_overlay`]: InlineViewport::draw_overlay
         self.overlay_prev = None;
-        // The pictures don't come along either (`docs/images.md`): kitty keeps
+        // The pictures don't come along either (`docs/ui/images.md`): kitty keeps
         // a *separate image store per screen buffer*, so one transmitted on
         // the primary screen is not addressable from the alternate one and
         // its placeholders resolve to nothing — reserved rows with no picture
@@ -1029,7 +1029,7 @@ impl InlineViewport {
         self.overlay_prev = None;
         // Back on the primary screen, whose image store the overlay never
         // touched — so its encodings are still good and the return costs no
-        // upload at all (`docs/images.md`).
+        // upload at all (`docs/ui/images.md`).
         self.images.enter_screen(false);
         Backend::flush(&mut self.backend)
     }
@@ -1045,7 +1045,7 @@ impl InlineViewport {
     /// Ctrl+D views **while a turn streams**: a terminal drops a mouse
     /// selection when the cells under it are rewritten, and this used to
     /// re-serialize the whole screen on every one of up to 120 frames a second
-    /// (`docs/overlay-repaint.md`).
+    /// (`docs/ui/overlay-repaint.md`).
     ///
     /// With no baseline — the first frame after [`enter_overlay`]'s clear, a
     /// resize, or a write that failed part-way — it falls back to painting
@@ -1063,7 +1063,7 @@ impl InlineViewport {
         let mut buf = Buffer::empty(self.screen);
         render(self.screen, &mut buf);
         // Stamp before the diff, so the baseline describes the picture too and
-        // a still page stays silent (`docs/images.md`, `docs/overlay-repaint.md`).
+        // a still page stays silent (`docs/ui/images.md`, `docs/ui/overlay-repaint.md`).
         self.images.stamp(&mut buf);
         let paint = overlay_paint(self.overlay_prev.as_ref(), &buf);
         // Nothing moved: emit NOTHING. Not a cell, not a synchronized-update
@@ -1150,7 +1150,7 @@ impl InlineViewport {
         // frame repaints the region on the way out, so the flush would leave
         // the old box's rows shifted and torn where the region now sits —
         // blank them, which is what `write_above`'s own clear did for this
-        // one path before commits repainted in place (`docs/slow-stream.md`).
+        // one path before commits repainted in place (`docs/ui/slow-stream.md`).
         let flushed = !self.pending.is_empty();
         self.flush_pending()?;
         if flushed {
@@ -1190,7 +1190,7 @@ impl InlineViewport {
     }
 
     /// Emit cells to the backend, bracketing link-marked runs with the OSC 8
-    /// hyperlink escape so a wrapped URL opens whole (`docs/links.md`). The
+    /// hyperlink escape so a wrapped URL opens whole (`docs/ui/links.md`). The
     /// single choke point **every** cell-writing path goes through —
     /// scrollback commits + `reflow` ([`draw_lines`]), the live-region blit
     /// and diff ([`paint_frame`]), and the alt-screen overlay
@@ -1218,7 +1218,7 @@ impl InlineViewport {
             }
             // A cell carrying a graphics protocol's whole escape sequence
             // (`ForcedWidth` — one column on screen, hundreds of bytes on the
-            // wire; `docs/images.md`) can leave the cursor anywhere: a sixel
+            // wire; `docs/ui/images.md`) can leave the cursor anywhere: a sixel
             // placement clears its area row by row first, and the backend only
             // re-addresses a cell that isn't adjacent to the one before it. So
             // the run ends *behind* the blob, and the next cell starts a fresh
@@ -1345,7 +1345,7 @@ impl InlineViewport {
 /// terminal's cursor already advanced the glyph's full width), shifting the rest
 /// of the row right by one per wide glyph — which misaligned every row-final
 /// `│` and pushed full-width table rows past the terminal edge, where the wrap
-/// "cut" the grid whenever a cell held an emoji (`docs/table-streaming.md`).
+/// "cut" the grid whenever a cell held an emoji (`docs/ui/table-streaming.md`).
 /// Skipping them mirrors ratatui's own `Buffer::diff`, whose `Terminal::flush`
 /// never emits shadowed cells: the backend's position check then issues an
 /// absolute `MoveTo` across the gap, so the next glyph lands on its true column
@@ -1394,7 +1394,7 @@ impl InlineViewport {
 /// only smoke-covered. The diff is [`Buffer::diff`]'s, which is where
 /// [`visible_cells`] took its wide-glyph and VS16 handling from, so a partial
 /// repaint cannot tear a table the full paint gets right.
-/// See `docs/overlay-repaint.md`.
+/// See `docs/ui/overlay-repaint.md`.
 ///
 /// [`Unchanged`]: OverlayPaint::Unchanged
 /// [`Full`]: OverlayPaint::Full
@@ -1451,7 +1451,7 @@ fn visible_cells(
             let cell = &cells[i];
             // A cell the graphics protocol covers must never be written: the
             // escape already painted those columns, and a space over them
-            // punches a hole in the picture (`docs/images.md`). `Buffer::diff`
+            // punches a hole in the picture (`docs/ui/images.md`). `Buffer::diff`
             // honours this itself, so only the direct-emit paths need it.
             if matches!(cell.diff_option, CellDiffOption::Skip) {
                 i += 1;
@@ -1521,7 +1521,7 @@ fn install_panic_hook(keyboard_enhanced: bool) {
 
 /// Environment escape hatch: set this to a truthy value to keep keyboard
 /// enhancement **off** on terminals where the kitty protocol misbehaves (codex's
-/// `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT`). See `docs/shift-enter.md`.
+/// `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT`). See `docs/input/shift-enter.md`.
 const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT";
 
 /// How long the startup read waits for the cursor report before giving up —
@@ -1638,7 +1638,7 @@ mod tests {
 
     #[test]
     fn a_headless_viewport_paints_nothing_and_keeps_nothing() {
-        // docs/headless.md: the session runs whole over it — every paint is
+        // docs/cli/headless.md: the session runs whole over it — every paint is
         // a no-op that succeeds, and a commit is dropped as it is queued, so
         // a long run never accumulates rows nobody will see.
         let mut term = InlineViewport::headless();
@@ -1802,7 +1802,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_overlay_frame_writes_nothing() {
-        // THE fix (docs/overlay-repaint.md): a terminal drops the user's mouse
+        // THE fix (docs/ui/overlay-repaint.md): a terminal drops the user's mouse
         // selection the moment the cells under it are rewritten, and the
         // overlay used to re-serialize every cell of the screen up to 120
         // times a second while a turn streamed — so text in Ctrl+O / Ctrl+D
@@ -1855,7 +1855,7 @@ mod tests {
 
     #[test]
     fn an_overlay_diff_skips_the_cells_shadowed_by_a_wide_glyph() {
-        // The wide-glyph rule every full-cell paint owes (docs/table-streaming.md
+        // The wide-glyph rule every full-cell paint owes (docs/ui/table-streaming.md
         // *Wide glyphs*): emitting a shadow cell prints its space one column
         // past the glyph and drifts the rest of the row. `Buffer::diff` skips
         // them itself — this pins that the diff path inherits it.

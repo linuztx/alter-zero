@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A stand-in for registry.npmjs.org, so the npm packages can be published
-and installed offline (docs/npm.md).
+and installed offline (docs/ops/npm.md).
 
     python3 scripts/release/npm_registry.py DIR
 

@@ -1,5 +1,5 @@
 //! Local model servers — the pure half of `/login`'s **Sign in with a local
-//! model** (`docs/local-models.md`): the address grammar a host typed into
+//! model** (`docs/providers/local-models.md`): the address grammar a host typed into
 //! its field is read in, for a server that speaks chat completions (LM
 //! Studio, or a llama.cpp / vLLM a user described in their own file —
 //! Ollama's own grammar is [`super::ollama::host_url`]), and the sentences a
@@ -174,7 +174,7 @@ pub fn unusable_address(typed: &str, example: &str) -> Verdict {
 }
 
 /// What a local server's connection test found — the `/login` server page's
-/// whole vocabulary (`docs/local-models.md`).
+/// whole vocabulary (`docs/providers/local-models.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// The server answered with its catalog: this many models to chat with.
@@ -196,7 +196,7 @@ pub enum Verdict {
 /// name that will not resolve is a typo, a 404 or a body that is not the
 /// listing is something else listening on that port, and an untrusted
 /// certificate is the one failure fixable from this side — by trusting it
-/// (asking whether to accept it is future work, `docs/local-models.md`).
+/// (asking whether to accept it is future work, `docs/providers/local-models.md`).
 #[must_use]
 pub fn verdict(name: &str, server: &str, result: &Result<Vec<ModelEntry>>) -> Verdict {
     let error = match result {
@@ -221,7 +221,7 @@ pub fn verdict(name: &str, server: &str, result: &Result<Vec<ModelEntry>>) -> Ve
 
 /// The advice for a session's request that a keyless server on **this
 /// machine** refused: the server is not running, which is something to start
-/// rather than an outage to wait out (`docs/offline.md`), said in the `/login`
+/// rather than an outage to wait out (`docs/providers/offline.md`), said in the `/login`
 /// test's own words. `None` for a server elsewhere, whose refusal is the
 /// network and is waited for like any provider's, and for any other cause.
 #[must_use]
@@ -237,7 +237,7 @@ pub fn refused_advice(name: &str, base: &str, message: &str) -> Option<String> {
 const OVERFLOW_TELLS: [&str; 2] = ["greater than the context length", "context length of only"];
 
 /// The advice for a session's request that a keyless server refused, in words
-/// that say what to do (`docs/local-models.md`): a prompt longer than the
+/// that say what to do (`docs/providers/local-models.md`): a prompt longer than the
 /// context LM Studio loaded `model` with, and a token the server wants.
 /// `None` keeps the server's own body, which for everything else is the best
 /// account. `name` is the provider's label and `base` its chat base.
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_session_refused_by_a_server_on_this_machine_is_told_to_start_it() {
-        // docs/offline.md: a refusal from this machine is a server that is
+        // docs/providers/offline.md: a refusal from this machine is a server that is
         // not running, said in the test's own words, rather than the network
         // to wait for.
         let refused = "error sending request for url (http://127.0.0.1:1234/v1/chat/completions): \
@@ -577,7 +577,7 @@ mod tests {
     fn a_prompt_longer_than_the_loaded_context_says_how_to_raise_it() {
         // LM Studio loads a model at a context length of its own (commonly
         // 4096) and refuses a longer prompt in its engine's words — the
-        // agent's first file read is enough (docs/local-models.md).
+        // agent's first file read is enough (docs/providers/local-models.md).
         let advice = |body: &str| {
             refusal_advice(
                 "LM Studio",
@@ -639,7 +639,7 @@ mod tests {
     fn an_untrusted_certificate_names_the_way_to_trust_it() {
         // A self-signed server: the one failure the user can fix without
         // touching the server, by trusting its certificate
-        // (docs/local-models.md — asking to accept it is future work).
+        // (docs/providers/local-models.md — asking to accept it is future work).
         let text = failed(unreachable(
             "error sending request: client error (Connect): \
              invalid peer certificate: UnknownIssuer",

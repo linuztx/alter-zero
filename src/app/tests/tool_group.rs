@@ -1,4 +1,4 @@
-//! Collapsed read/search groups (`docs/tool-groups.md`): which calls join
+//! Collapsed read/search groups (`docs/ui/tool-groups.md`): which calls join
 //! one, how far a group runs through the history, what it counts, and how
 //! the open group is held and closed.
 
@@ -84,7 +84,7 @@ fn every_other_call_keeps_its_own_cell() {
 
 #[test]
 fn an_image_read_keeps_its_own_cell_so_its_picture_still_draws() {
-    // An image `read` is drawn as a picture under its cell (docs/images.md);
+    // An image `read` is drawn as a picture under its cell (docs/ui/images.md);
     // folded into a group's one line it would draw nothing at all.
     for path in ["shot.png", "/tmp/Photo.JPG", "logo.webp", "anim.gif"] {
         assert_eq!(
@@ -247,7 +247,7 @@ fn a_group_runs_through_task_calls_hook_notes_and_thoughts() {
 #[test]
 fn a_hook_note_runs_through_a_group_only_while_it_has_no_cell() {
     // A cell-less note has nothing inline to interrupt the group's line; a
-    // note carrying the hooks' cell (docs/hooks.md *The hook-run cell*) is a
+    // note carrying the hooks' cell (docs/tools/hooks.md *The hook-run cell*) is a
     // cell of its own, which the group's line must land above.
     let note = |report: Option<crate::hooks::HookReport>| {
         HistoryItem::HookNote(crate::app::HookNote {
@@ -678,7 +678,7 @@ fn turning_verbose_off_holds_nothing_the_turn_has_moved_past() {
 #[test]
 fn turning_verbose_off_while_a_scratchpad_write_streams_holds_the_reads() {
     // A write into the scratchpad continues the run rather than ending it
-    // (docs/tool-groups.md *Scratchpad edits*): the reads it follows join it
+    // (docs/ui/tool-groups.md *Scratchpad edits*): the reads it follows join it
     // in the open group. One anywhere else has ended the run.
     let mut app = verbose_turn_with_reads();
     app.set_path_display(pad_paths());
@@ -741,7 +741,7 @@ fn shown_hint(app: &App) -> Option<String> {
 
 #[test]
 fn a_parallel_batch_shows_each_calls_value_in_turn() {
-    // docs/tool-groups.md *The hint row*: a batch of reads resolves in
+    // docs/ui/tool-groups.md *The hint row*: a batch of reads resolves in
     // milliseconds, and a row that followed the newest call showed only the
     // last one's value. Each value holds the row for GROUP_HINT_HOLD, in the
     // order the calls ran, the first one first — and none is skipped, however

@@ -9,7 +9,7 @@
 //! cache's file-state rule is proved by a half-block store drawing into a
 //! `Buffer` with no terminal. The pure half it serves (which cells are
 //! reserved, and how many) lives beside it in [`super::geometry`]. See
-//! `docs/images.md`.
+//! `docs/ui/images.md`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -202,7 +202,7 @@ pub fn kitty_from_env(term: Option<&str>, term_program: Option<&str>, kitty_id: 
 /// A kitty placement holds the whole image as base64 RGBA — a 120-column
 /// screenshot at a 10×20 cell is 1200×600 pixels, ~2.9 MB of pixels and
 /// ~3.8 MB of base64 — and this process idles in the user's terminal all day
-/// (`docs/memory.md`), so the cache is bounded by *bytes*, estimated from the
+/// (`docs/architecture/memory.md`), so the cache is bounded by *bytes*, estimated from the
 /// placement's own geometry rather than by counting entries. Past the budget
 /// the least-recently-drawn picture is dropped; meeting it again costs one
 /// re-encode, never a wrong picture.
@@ -229,7 +229,7 @@ struct Encoded {
     /// place** apart from the picture already encoded: the agent turns the
     /// cat it just showed black and white and reads it again, and the new
     /// cell reserves the same placement — served the cached entry, it showed
-    /// the colour cat (`docs/images.md`, *A file rewritten in place*).
+    /// the colour cat (`docs/ui/images.md`, *A file rewritten in place*).
     state: Option<FileState>,
 }
 
@@ -701,7 +701,7 @@ impl ImageStore {
 /// only the shrunk picture is ever held, so the peak is the block's size
 /// (~3 MB at 120 columns) rather than the file's (8 MB for a 1080p
 /// screenshot, 33 MB for 4K), and the buffer glibc was left holding after
-/// each picture with it (`docs/memory.md`). Everything else — and a PNG the
+/// each picture with it (`docs/architecture/memory.md`). Everything else — and a PNG the
 /// streaming decoder declines, such as an interlaced one — is decoded whole,
 /// refused past [`super::WHOLE_DECODE_MAX_PIXELS`] (where the whole decode
 /// would be the spike this exists to avoid), and **thumbnailed** into the

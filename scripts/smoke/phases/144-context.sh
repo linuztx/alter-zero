@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The `/context` page (docs/context-usage.md): a read-only, composer-replacing
+# The `/context` page (docs/architecture/context-usage.md): a read-only, composer-replacing
 # page that breaks the context window down by what fills it — the system
 # prompt, the built-in tools' schemas, an MCP server's tools, the project's
 # AGENTS.md, the skills and agent-type listings, the conversation — over the

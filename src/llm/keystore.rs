@@ -1,5 +1,5 @@
 //! A minimal `.env` reader/writer for persisting provider API keys
-//! (docs/llm.md).
+//! (docs/providers/llm.md).
 //!
 //! The `/login` onboarding flow collects an API key and saves it here so it
 //! survives across runs; the boundary (`main.rs`) loads the file at startup and
@@ -49,7 +49,7 @@ impl EnvFile {
     /// This is what a rotated OAuth refresh token is written back with: a
     /// sign-in that lands while a refresh is in flight stores its own token,
     /// and the refresh's rotation of the chain that sign-in replaced must not
-    /// overwrite it (`docs/chatgpt.md`).
+    /// overwrite it (`docs/providers/chatgpt.md`).
     ///
     /// # Errors
     /// As [`update`](Self::update).
@@ -244,7 +244,7 @@ fn quote(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// Read the secrets file (`docs/secrets.md`): the store, a missing file
+/// Read the secrets file (`docs/state/secrets.md`): the store, a missing file
 /// being an empty one.
 ///
 /// # Errors
@@ -260,7 +260,7 @@ pub fn load_secrets_file(path: &std::path::Path) -> Result<crate::secrets::Secre
         .map_err(|error| format!("{} won't parse: {error}", path.display()))
 }
 
-/// Change the secrets file (`docs/secrets.md`) as one read-modify-write
+/// Change the secrets file (`docs/state/secrets.md`) as one read-modify-write
 /// under a process-wide lock — two sessions never drop each other's
 /// secrets — written owner-only through a synced temporary file and a
 /// rename, the `.env` store's write. A file that will not parse is
@@ -319,7 +319,7 @@ fn persist_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    // ===== the secrets file (docs/secrets.md) =====
+    // ===== the secrets file (docs/state/secrets.md) =====
 
     fn add(name: &str, value: &str) -> crate::secrets::SecretDraft {
         crate::secrets::SecretDraft {

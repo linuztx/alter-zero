@@ -1,4 +1,4 @@
-//! The ask gate's backend half (`docs/ask.md`): turn an `askuserquestion`
+//! The ask gate's backend half (`docs/tools/ask.md`): turn an `askuserquestion`
 //! call into the [`AskRequest`] the modal shows, and block the tool thread on
 //! the user's decision — [`crate::llm::approval`]'s sibling, for questions
 //! instead of permissions.
@@ -54,14 +54,14 @@ pub fn ask_user(
             ToolOutcome::ok(answered_display(&answers)).with_context(answered_result(&answers))
         }
         // The user turned the question down, either way — which the
-        // rollout records as a rejection (docs/rollout-records.md).
+        // rollout records as a rejection (docs/state/rollout-records.md).
         Some(AskDecision::Declined) => ToolOutcome::error(declined_display(&request.questions))
             .with_context(declined_result())
             .with_error_kind(ToolErrorKind::Rejected),
         Some(AskDecision::Chat) => ToolOutcome::error(chat_display(&request.questions))
             .with_context(chat_result())
             .with_error_kind(ToolErrorKind::Rejected),
-        // The user went idle and the clock ran out (docs/ask.md): red, since
+        // The user went idle and the clock ran out (docs/tools/ask.md): red, since
         // nothing was submitted, while the model is told to keep working.
         Some(AskDecision::TimedOut { answers, after }) => {
             ToolOutcome::error(timed_out_display(&request.questions, &answers, after))
@@ -179,7 +179,7 @@ mod tests {
             gate.resolve(&request.id, decision);
             let outcome = waiter.join().unwrap();
             assert!(!outcome.ok, "nothing was answered");
-            // The user turned the question down (docs/rollout-records.md).
+            // The user turned the question down (docs/state/rollout-records.md).
             assert_eq!(
                 outcome.error_kind,
                 Some(crate::stream::ToolErrorKind::Rejected)
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn a_timeout_resolves_red_and_tells_the_model_to_keep_working() {
-        // Nobody answered in time (docs/ask.md): the call resolves red with
+        // Nobody answered in time (docs/tools/ask.md): the call resolves red with
         // the timeout cell, while the model reads the keep-working result —
         // and the answers given before the user left reach it too.
         for (answers, headline) in [

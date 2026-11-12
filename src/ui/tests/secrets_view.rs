@@ -1,4 +1,4 @@
-//! The `/secrets` page (`docs/secrets.md`): the list and the form, values
+//! The `/secrets` page (`docs/state/secrets.md`): the list and the form, values
 //! masked in the builder.
 
 use super::*;
@@ -366,7 +366,7 @@ fn the_value_never_reaches_a_painted_cell() {
 #[test]
 fn both_titles_wear_the_title_dress() {
     // The list's `Secrets` and the form's `New secret` — the dress every
-    // page title shares (`docs/theme.md`).
+    // page title shares (`docs/ui/theme.md`).
     let mut app = open_with(&[]);
     let title = secrets_view_lines(&app, 80, TALL)
         .into_iter()
@@ -408,7 +408,7 @@ fn every_short_secrets_page_hugs_its_frame() {
     // Whichever page a height builds — the whole list, the headed window,
     // the window alone — no blank row meets either rule, the `↑` slot
     // included: without the header it would sit straight under the top
-    // rule, so that page has no slots (`docs/view-flow.md` *The frame hugs
+    // rule, so that page has no slots (`docs/ui/view-flow.md` *The frame hugs
     // its content*).
     for width in [40_u16, 90] {
         for n in [0_usize, 1, 2, 5, 12] {

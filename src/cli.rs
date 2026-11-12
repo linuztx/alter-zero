@@ -1,5 +1,5 @@
 //! Command-line arguments — the pure core of `--help`, the `[PROMPT]`
-//! shortcut, `--continue` and `--resume` (see `docs/cli.md`).
+//! shortcut, `--continue` and `--resume` (see `docs/cli/cli.md`).
 //!
 //! Claude-Code-style session flags: `--continue` reopens the newest
 //! conversation recorded in the current directory, `--resume {id}` a
@@ -20,8 +20,8 @@
 //! flags).
 //!
 //! A first argument of `mcp` routes to the subcommand family instead
-//! (`docs/mcp-cli.md`): `mcp add`/`add-json`/`remove`/`get`/`list` manage
-//! the **user** MCP config file (`docs/mcp.md`) from a script, answered at
+//! (`docs/cli/mcp-cli.md`): `mcp add`/`add-json`/`remove`/`get`/`list` manage
+//! the **user** MCP config file (`docs/tools/mcp.md`) from a script, answered at
 //! the same pre-TUI boundary as the session flags. The grammar and its
 //! mapping onto [`McpServerConfig`] live here; the file I/O is the
 //! boundary's (`tui::mcp_cli`).
@@ -49,17 +49,17 @@ pub enum Cli {
     /// `--version` / `-V`: print the version line and exit.
     Version,
     /// `mcp …` as the first argument: manage the user MCP config file
-    /// (`docs/mcp-cli.md`).
+    /// (`docs/cli/mcp-cli.md`).
     Mcp(McpCli),
     /// `update` as the first argument: install the newest release over this
-    /// binary when one is out (`docs/update.md`). Takes nothing.
+    /// binary when one is out (`docs/ops/update.md`). Takes nothing.
     Update,
 }
 
-/// A session run's arguments (`docs/cli.md`): which conversation to open,
+/// A session run's arguments (`docs/cli/cli.md`): which conversation to open,
 /// the message to send into it first — `None` opens on an empty composer —
 /// where to run, and whether to run with a screen at all (`-p`,
-/// `docs/headless.md`).
+/// `docs/cli/headless.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionArgs {
     /// How the session starts.
@@ -75,14 +75,14 @@ pub struct SessionArgs {
     pub cwd: Option<PathBuf>,
     /// `--permission-mode`: the run's permission posture — the flag form of
     /// `ALTER_ZERO_PERMISSION_MODE`, outranking it and the project's saved
-    /// mode, and never saved (`docs/permissions.md`).
+    /// mode, and never saved (`docs/state/permissions.md`).
     pub permission_mode: Option<PermissionMode>,
     /// `-p` / `--print`: run headless with these options — no screen, the
-    /// answer on stdout (`docs/headless.md`). `None` is the TUI.
+    /// answer on stdout (`docs/cli/headless.md`). `None` is the TUI.
     pub print: Option<PrintOptions>,
 }
 
-/// A headless run's own options (`docs/headless.md`) — the flags that mean
+/// A headless run's own options (`docs/cli/headless.md`) — the flags that mean
 /// nothing with a screen, so the parse refuses them without `-p`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PrintOptions {
@@ -109,7 +109,7 @@ pub enum SessionStart {
     Resume(Option<String>),
 }
 
-/// One parsed `mcp` subcommand (`docs/mcp-cli.md`). `add` and `add-json`
+/// One parsed `mcp` subcommand (`docs/cli/mcp-cli.md`). `add` and `add-json`
 /// both resolve to [`McpCli::Add`] here — the JSON path routes through the
 /// config module's own entry parser, so there is no second schema to drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +136,7 @@ pub enum McpCli {
     Help,
 }
 
-// ===== the --help pages (docs/cli.md) =====
+// ===== the --help pages (docs/cli/cli.md) =====
 
 /// The `--help` page's description: what running the command *does*, in
 /// one line — both references' shape (codex's "If no subcommand is
@@ -151,7 +151,7 @@ pub const DESCRIPTION: &str = "\
 Starts an interactive session by default; with -p, answers once and exits.";
 
 /// Which `--help` page: the binary's own, or the `mcp` subcommand's
-/// (`docs/mcp-cli.md`). Both render through the one [`help`] renderer, so
+/// (`docs/cli/mcp-cli.md`). Both render through the one [`help`] renderer, so
 /// they share a look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpPage {
@@ -316,7 +316,7 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                 },
             ],
         },
-        // The headless run's own flags (docs/headless.md) — a section of
+        // The headless run's own flags (docs/cli/headless.md) — a section of
         // their own, since they mean nothing without -p.
         Section {
             heading: "Print mode:",
@@ -422,7 +422,7 @@ impl HelpPage {
     }
 }
 
-/// Render a `--help` page (`docs/cli.md`): the title, the description, the
+/// Render a `--help` page (`docs/cli/cli.md`): the title, the description, the
 /// `Usage:` forms (each further one indented to the first), then each
 /// section's heading over its rows — two columns of indent, the literal
 /// cell padded to the page's widest, three more columns, the description,
@@ -509,7 +509,7 @@ pub fn colour_enabled(no_color: Option<&str>, term: Option<&str>) -> bool {
     no_color.is_none_or(str::is_empty) && term != Some("dumb")
 }
 
-// ===== the argument grammar (docs/cli.md) =====
+// ===== the argument grammar (docs/cli/cli.md) =====
 
 /// Parse the process arguments (without `argv[0]`). Usage errors — unknown
 /// flags, a second positional, a blank prompt, a value on `--continue`,
@@ -530,7 +530,7 @@ where
 {
     let mut start: Option<SessionStart> = None;
     let mut prompt: Option<String> = None;
-    // The headless switch and its companions (docs/headless.md), each
+    // The headless switch and its companions (docs/cli/headless.md), each
     // allowed once.
     let mut print: Option<()> = None;
     let mut output_format: Option<OutputFormat> = None;
@@ -539,14 +539,14 @@ where
     let mut permission_mode: Option<PermissionMode> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut args = args.into_iter().peekable();
-    // `mcp` routes as the FIRST argument only (docs/mcp-cli.md) — anywhere
+    // `mcp` routes as the FIRST argument only (docs/cli/mcp-cli.md) — anywhere
     // else it is a prompt like any other word, so the session grammar is
     // untouched.
     if args.peek().is_some_and(|first| first == "mcp") {
         args.next();
         return parse_mcp(args).map(Cli::Mcp);
     }
-    // `update` routes the same way (docs/update.md), and takes nothing: a
+    // `update` routes the same way (docs/ops/update.md), and takes nothing: a
     // flag or a word after it is a mistake to report, not a prompt to run.
     if args.peek().is_some_and(|first| first == "update") {
         args.next();
@@ -655,7 +655,7 @@ where
     }
     let start = start.unwrap_or(SessionStart::Fresh);
     // The headless run's own flags mean nothing with a screen
-    // (docs/headless.md): refused rather than silently ignored.
+    // (docs/cli/headless.md): refused rather than silently ignored.
     let print = match print {
         Some(()) => Some(PrintOptions {
             output_format: output_format.unwrap_or_default(),
@@ -676,7 +676,7 @@ where
         }
     };
     // The picker is a screen: a headless run has to name the session it
-    // continues (docs/headless.md).
+    // continues (docs/cli/headless.md).
     if print.is_some() && start == SessionStart::Resume(None) {
         return Err(
             "--print can't open the session picker: name the session with --resume <ID>, \
@@ -686,7 +686,7 @@ where
     }
     // The picker is interactive and dismissable: a prompt parked behind it
     // would either start a fresh conversation on Esc or have to be dropped,
-    // so the grammar says no up front (docs/cli.md).
+    // so the grammar says no up front (docs/cli/cli.md).
     if prompt.is_some() && start == SessionStart::Resume(None) {
         return Err(
             "--resume needs a session id to send a prompt into (or use --continue)".to_string(),
@@ -733,7 +733,7 @@ fn take_prompt(slot: &mut Option<String>, arg: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse the arguments after a leading `mcp` (`docs/mcp-cli.md`). Usage
+/// Parse the arguments after a leading `mcp` (`docs/cli/mcp-cli.md`). Usage
 /// errors come back as `Err(message)` exactly like [`parse`]'s; the boundary
 /// prints [`usage_error`]'s trailer for the [`HelpPage::Mcp`] page to stderr
 /// and exits 2.
@@ -817,7 +817,7 @@ where
     }
 }
 
-/// `mcp add`'s own grammar (`docs/mcp-cli.md`): flags parse until the first
+/// `mcp add`'s own grammar (`docs/cli/mcp-cli.md`): flags parse until the first
 /// non-flag argument after the name — or a `--` — and from there everything
 /// belongs to the command **verbatim** (codex's trailing capture), so a
 /// child's own `-y`/`--port` flags survive with no separator needed.
@@ -981,7 +981,7 @@ fn parse_header_pair(raw: &str) -> Result<(String, String), String> {
 /// Map the collected `mcp add` pieces onto the config entry — the transport
 /// comes from the **form** (`--url` vs a command), `--transport` only
 /// refines it, and a bare `--url` arms the http→sse fallback (the type-less
-/// `{"url": …}` entry, `docs/mcp.md`).
+/// `{"url": …}` entry, `docs/tools/mcp.md`).
 fn build_add_config(
     url: Option<String>,
     transport: Option<&str>,
@@ -1060,7 +1060,7 @@ where
 }
 
 /// The exit hint printed below the restored terminal after a quit that
-/// recorded a conversation (`docs/cli.md`) — exactly two lines, no indent:
+/// recorded a conversation (`docs/cli/cli.md`) — exactly two lines, no indent:
 ///
 /// ```text
 /// Resume this session with:
@@ -1073,7 +1073,7 @@ pub fn resume_hint(bin: &str, session_id: &str) -> String {
 
 /// What a launch of the interface prints when it cannot start: no terminal
 /// to open (cron, CI, a pipe), or one that never answered the cursor query
-/// (`docs/headless.md`). The cause verbatim, then print mode, which needs no
+/// (`docs/cli/headless.md`). The cause verbatim, then print mode, which needs no
 /// terminal — named, never switched to: a run in which nobody can approve
 /// anything is the caller's choice to make.
 ///
@@ -1113,7 +1113,7 @@ mod tests {
         parse(args.iter().map(ToString::to_string))
     }
 
-    // ===== parse (docs/cli.md) =====
+    // ===== parse (docs/cli/cli.md) =====
 
     /// A TUI run: how it starts, plus its optional `[PROMPT]`.
     fn session(start: SessionStart, prompt: Option<&str>) -> Result<Cli, String> {
@@ -1194,7 +1194,7 @@ mod tests {
         assert!(parsed(&["-c", "-c"]).is_err());
     }
 
-    // ===== the [PROMPT] shortcut (docs/cli.md) =====
+    // ===== the [PROMPT] shortcut (docs/cli/cli.md) =====
 
     #[test]
     fn a_positional_is_the_prompt_of_a_fresh_session() {
@@ -1297,7 +1297,7 @@ mod tests {
         );
     }
 
-    // ===== headless mode (docs/headless.md) =====
+    // ===== headless mode (docs/cli/headless.md) =====
 
     /// A run with these arguments.
     fn run(args: SessionArgs) -> Result<Cli, String> {
@@ -1563,7 +1563,7 @@ mod tests {
         );
     }
 
-    // ===== the exit hint (docs/cli.md) =====
+    // ===== the exit hint (docs/cli/cli.md) =====
 
     #[test]
     fn resume_hint_is_the_two_line_command() {
@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(bin_name(None), "alter-zero");
     }
 
-    // ===== the --help page (docs/cli.md) =====
+    // ===== the --help page (docs/cli/cli.md) =====
 
     /// The plain main page — exactly what a pipe receives, and what the
     /// design doc shows.
@@ -1814,7 +1814,7 @@ Print mode:
         assert!(!colour_enabled(None, Some("dumb")));
     }
 
-    // ===== the update subcommand (docs/update.md) =====
+    // ===== the update subcommand (docs/ops/update.md) =====
 
     #[test]
     fn update_routes_as_the_first_argument_only_and_takes_nothing() {
@@ -1830,7 +1830,7 @@ Print mode:
         ));
     }
 
-    // ===== the mcp subcommand (docs/mcp-cli.md) =====
+    // ===== the mcp subcommand (docs/cli/mcp-cli.md) =====
 
     use crate::mcp::McpServerConfig;
     use std::collections::BTreeMap;
@@ -1847,7 +1847,7 @@ Print mode:
     /// `mcp add` takes a pre-registered OAuth client the way other MCP
     /// clients' CLIs do — `--client-id`, `--callback-port`, and
     /// `--client-secret` as a switch, since a secret on the command line
-    /// lands in the shell history and the process list (`docs/mcp-cli.md`).
+    /// lands in the shell history and the process list (`docs/cli/mcp-cli.md`).
     #[test]
     fn mcp_add_takes_a_preregistered_oauth_client() {
         let Ok(McpCli::Add {
@@ -1953,7 +1953,7 @@ Print mode:
     #[test]
     fn mcp_add_with_a_bare_url_is_http_with_the_sse_fallback() {
         // The default remote add writes the type-less `{"url": …}` shape —
-        // try streamable HTTP, retry as legacy SSE (docs/mcp.md).
+        // try streamable HTTP, retry as legacy SSE (docs/tools/mcp.md).
         let want = Ok(McpCli::Add {
             name: "vercel".to_string(),
             config: McpServerConfig::Http {

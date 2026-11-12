@@ -1,5 +1,5 @@
 //! The `/settings` pure model: the row inventory, value rendering, cycling,
-//! availability, and the `settings.json` round-trip. See `docs/settings.md`.
+//! availability, and the `settings.json` round-trip. See `docs/state/settings.md`.
 
 use super::*;
 
@@ -52,14 +52,14 @@ fn the_defaults_match_the_pre_feature_behaviour() {
     assert!(s.project_docs);
     assert_eq!(s.temperature, None, "no temperature is sent by default");
     // The app ships UNCAPPED where the library's backstop was 20 rounds —
-    // see the dedicated test below and `docs/settings.md`.
+    // see the dedicated test below and `docs/state/settings.md`.
     assert_eq!(s.max_tool_calls, 0);
 }
 
 #[test]
 fn hooks_are_on_until_a_directory_turns_them_off() {
     // Hooks run by default — each one once the user trusts it in the startup
-    // review (docs/config-review.md). Turning them off is exactly what the
+    // review (docs/state/config-review.md). Turning them off is exactly what the
     // directory's entry records, and the default stays off the wire.
     let s = SessionSettings::default();
     assert!(s.hooks, "hooks are on by default");
@@ -75,7 +75,7 @@ fn hooks_are_on_until_a_directory_turns_them_off() {
 
 #[test]
 fn mcp_is_on_until_a_directory_turns_it_off() {
-    // The Hooks posture (docs/mcp.md): every enabled server connects by
+    // The Hooks posture (docs/tools/mcp.md): every enabled server connects by
     // default, and turning MCP off is exactly what the directory's entry
     // records — the default stays off the wire.
     let s = SessionSettings::default();
@@ -154,7 +154,7 @@ fn a_cycled_mcp_row_is_what_the_directory_records_and_its_override_never_sticks(
 #[test]
 fn checkpoints_are_off_until_a_directory_turns_them_on() {
     // A whole-cwd `git add -A` before the first frame, so a directory opts
-    // in rather than out (docs/per-directory-state.md). Turning them on is
+    // in rather than out (docs/state/per-directory-state.md). Turning them on is
     // exactly what its entry records, and the default stays off the wire.
     let s = SessionSettings::default();
     assert!(!s.checkpoints, "checkpoints are off until turned on");
@@ -169,7 +169,7 @@ fn checkpoints_are_off_until_a_directory_turns_them_on() {
 
 #[test]
 fn verbose_output_is_off_so_reads_and_searches_collapse_by_default() {
-    // Claude Code's `verbose: false` default (docs/tool-groups.md): a run of
+    // Claude Code's `verbose: false` default (docs/ui/tool-groups.md): a run of
     // reads, searches and listings collapses into one line until a user
     // asks to see every call. Off stays off the wire; on is what the
     // directory's entry records.
@@ -413,7 +413,7 @@ fn checkpoints_are_active_only_when_both_the_knob_and_the_host_agree() {
 #[test]
 fn json_round_trips_every_changed_value() {
     // Every knob settings.json owns. The per-user rows live elsewhere
-    // (telemetry.json, update.json, tips.json — docs/per-directory-state.md)
+    // (telemetry.json, update.json, tips.json — docs/state/per-directory-state.md)
     // and their own tests pin that they never reach this file.
     let mut s = SessionSettings::default();
     for key in SettingKey::ALL.iter().filter(|k| {
@@ -527,7 +527,7 @@ fn skills_are_not_offered_with_tools_off() {
     // The `skill` tool rides the tool set, so `/settings` → Tools = false
     // withdraws it — and the `<system-reminder>` listing has to go with it.
     // A context that advertises a tool the request never carries is a dead
-    // end the model will spend a round hunting for (`docs/skills.md`).
+    // end the model will spend a round hunting for (`docs/tools/skills.md`).
     let mut s = SessionSettings {
         availability: SettingAvailability {
             checkpoints: true,
@@ -556,7 +556,7 @@ fn skills_are_not_offered_with_tools_off() {
     assert!(!s.skills_offered());
 }
 
-// ===== per-directory settings (docs/per-directory-state.md) =====
+// ===== per-directory settings (docs/state/per-directory-state.md) =====
 
 #[test]
 fn a_pre_directory_file_seeds_every_directory_that_has_no_entry() {
@@ -683,7 +683,7 @@ fn settings_file_round_trips_and_an_empty_one_is_the_old_shape() {
     );
 }
 
-// ===== the Telemetry row (docs/telemetry.md) =====
+// ===== the Telemetry row (docs/ops/telemetry.md) =====
 
 #[test]
 fn the_telemetry_row_is_last_cycles_and_needs_a_config_home() {
@@ -714,7 +714,7 @@ fn the_telemetry_row_is_last_cycles_and_needs_a_config_home() {
 
 #[test]
 fn telemetry_never_reaches_settings_json() {
-    // It is a user preference, not a project's (docs/per-directory-state.md):
+    // It is a user preference, not a project's (docs/state/per-directory-state.md):
     // it lives in telemetry.json beside the install id. So the blob never
     // serializes it, a settings.json that names it is ignored, and
     // `copy_value` never moves it — the PermissionMode pattern.
@@ -733,7 +733,7 @@ fn telemetry_never_reaches_settings_json() {
     assert_eq!(file, SessionSettings::default());
 }
 
-// ===== the Update check row (docs/update.md) =====
+// ===== the Update check row (docs/ops/update.md) =====
 
 #[test]
 fn the_update_check_row_sits_above_telemetry_cycles_and_needs_a_config_home() {
@@ -791,7 +791,7 @@ fn the_update_check_never_reaches_settings_json() {
     assert_eq!(file, SessionSettings::default());
 }
 
-// ===== the Show tips row (docs/tips.md) =====
+// ===== the Show tips row (docs/ui/tips.md) =====
 
 #[test]
 fn the_show_tips_row_is_on_by_default_and_cycles_anywhere() {
@@ -854,7 +854,7 @@ fn show_tips_never_reaches_settings_json() {
 #[test]
 fn ask_timeout_defaults_to_ten_minutes_and_cycles_the_offered_waits() {
     // How long a question waits on an idle user before the agent goes on
-    // without an answer (docs/ask.md). `never` is the far end of the waits.
+    // without an answer (docs/tools/ask.md). `never` is the far end of the waits.
     let s = SessionSettings::default();
     assert_eq!(
         s.ask_timeout(),

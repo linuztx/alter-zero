@@ -1,5 +1,5 @@
 //! The scenario registry: how a prompt picks the demo the dummy plays
-//! (`docs/dummy-backend.md`).
+//! (`docs/architecture/dummy-backend.md`).
 
 use super::super::dummy::scenario::{Cue, Play, SCENARIOS, select};
 use super::super::dummy::script::HANDOFF;
@@ -133,7 +133,7 @@ fn a_gated_scenario_is_only_selected_when_a_gate_is_attached() {
     // The permission demos block on the gate, so they are unreachable
     // without one: the same prompt then falls through to a scripted turn.
     // This is what keeps `turn_events` — which has no gate — able to answer
-    // *any* prompt (docs/permissions.md).
+    // *any* prompt (docs/state/permissions.md).
     for prompt in [
         "auto permission demo",
         "parallel permission demo",
@@ -160,7 +160,7 @@ fn a_gated_scenario_is_only_selected_when_a_gate_is_attached() {
 #[test]
 fn the_agent_demo_is_only_selected_when_the_registry_is_attached() {
     // The subagent demo streams its agent's round on the registry's channel
-    // (`docs/agent-view-streaming.md`) — without one there is nowhere to send
+    // (`docs/agents/agent-view-streaming.md`) — without one there is nowhere to send
     // it, so selection skips it and the prompt falls through to a script,
     // exactly like the gated demos. Its cue also mentions "table", so the
     // fall-through lands on the table demo it deliberately outranks.
@@ -181,7 +181,7 @@ fn the_agent_demo_is_only_selected_when_the_registry_is_attached() {
 
 #[test]
 fn the_ask_demo_is_only_selected_when_an_ask_gate_is_attached() {
-    // The ask demo blocks on the ask gate (`docs/ask.md`) — without one it
+    // The ask demo blocks on the ask gate (`docs/tools/ask.md`) — without one it
     // would park forever, so selection skips it and the prompt falls through
     // to a scripted turn, exactly like the permission demos above.
     let prompt = "ask me some questions";
@@ -220,7 +220,7 @@ fn the_cue_matches_words_case_insensitively_but_markers_exactly() {
 fn every_user_facing_script_acknowledges_attached_images() {
     // The dummy has no vision, so a turn carrying Ctrl+V images opens by
     // acknowledging them — visible proof the typed image channel reached
-    // the backend (docs/image-paste.md). Every scripted scenario the user
+    // the backend (docs/input/image-paste.md). Every scripted scenario the user
     // can talk to must do it; the one exception is the `/compact`
     // summarization request, which the loop builds itself and never
     // attaches images to. A new scenario that forgets fails here.
@@ -248,7 +248,7 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
     // A session on the dummy has no model behind it, and the two commands
     // that fix that are `/login` and `/model`. Whichever demo the user
     // stumbles into must say so — otherwise the offline first run is a dead
-    // end that never explains itself (`docs/dummy-backend.md`). The
+    // end that never explains itself (`docs/architecture/dummy-backend.md`). The
     // `/compact` request is exempt for the same reason as the image
     // acknowledgement: the loop builds it, and its summary is never rendered.
     for (example, scenario) in EXAMPLES.iter().zip(SCENARIOS) {
@@ -269,11 +269,11 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
 
 #[test]
 fn the_download_demo_keeps_its_finished_bars_below_the_moving_ones() {
-    // docs/tool-streaming.md *The window follows what is still moving*: the
+    // docs/ui/tool-streaming.md *The window follows what is still moving*: the
     // shape the running window exists for — pacman's small databases finish
     // early and sit below the bars still downloading — every frame replacing
     // the last, and the report the real formatter's frame over the final
-    // screen (the dummy-backend rule, docs/dummy-backend.md).
+    // screen (the dummy-backend rule, docs/architecture/dummy-backend.md).
     let scenario = SCENARIOS
         .iter()
         .find(|s| s.name == "download")
@@ -337,11 +337,11 @@ fn the_download_demo_keeps_its_finished_bars_below_the_moving_ones() {
 
 #[test]
 fn the_interactive_demo_answers_prompts_through_a_session() {
-    // docs/bash-tools.md: a `bash` launch that stops at a prompt, the
+    // docs/tools/bash-tools.md: a `bash` launch that stops at a prompt, the
     // answers typed one per round with `bashsend`, and an exit the last
     // answer causes — each
     // result the real report formatter's, so the offline cells are the live
-    // ones (the dummy-backend rule, docs/dummy-backend.md).
+    // ones (the dummy-backend rule, docs/architecture/dummy-backend.md).
     use crate::pty::report::{Status, View, Waiting, report};
     let scenario = SCENARIOS
         .iter()
@@ -425,7 +425,7 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
     assert!(ends[2].starts_with("Exit code: 0\n"), "{}", ends[2]);
     // The last answer's install bar streams as the live cell's screen: one
     // row replaced frame by frame, never a frame per row
-    // (docs/interactive-shell.md).
+    // (docs/tools/interactive-shell.md).
     let third = events
         .iter()
         .enumerate()
@@ -461,7 +461,7 @@ fn the_interactive_demo_answers_prompts_through_a_session() {
 
 #[test]
 fn the_scratchpad_demo_writes_then_edits_a_file_in_the_sessions_scratchpad() {
-    // docs/tool-groups.md *Scratchpad edits*: a `write` generated the way a
+    // docs/ui/tool-groups.md *Scratchpad edits*: a `write` generated the way a
     // live model generates one — its arguments in token-sized pieces, so it
     // streams into the group's line — then a one-line `edit`, both into the
     // session's own scratchpad and resolving with the executor's reports.
@@ -523,7 +523,7 @@ fn the_scratchpad_demo_writes_then_edits_a_file_in_the_sessions_scratchpad() {
 
 #[test]
 fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
-    // docs/tool-groups.md: the offline demo of the collapsed read/search
+    // docs/ui/tool-groups.md: the offline demo of the collapsed read/search
     // group — a listing, a thought, a parallel round of a search and two
     // reads, then a command that runs something. Every call before the last
     // is one the group takes and nothing is said between them, so the group
@@ -590,7 +590,7 @@ fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
     );
     // Two thoughts: one between the first two rounds, one after the parallel
     // round — the pause a live model takes before its next call, in which the
-    // row steps through each of the round's values (docs/tool-groups.md *The
+    // row steps through each of the round's values (docs/ui/tool-groups.md *The
     // hint row*).
     let thoughts: Vec<usize> = events
         .iter()
@@ -633,10 +633,10 @@ fn the_explore_demo_reads_its_way_in_and_then_runs_one_command() {
 
 #[test]
 fn the_tasks_demo_drives_a_real_store_through_the_whole_lifecycle() {
-    // The dummy-backend rule (docs/dummy-backend.md): scripted calls resolve
+    // The dummy-backend rule (docs/architecture/dummy-backend.md): scripted calls resolve
     // with the real executor's output. The tasks demo drives a live
     // `TaskStore`, so its result strings and snapshots are byte-for-byte the
-    // live path's (docs/task-tools.md).
+    // live path's (docs/tools/task-tools.md).
     let scenario = SCENARIOS
         .iter()
         .find(|s| s.name == "tasks")
@@ -699,7 +699,7 @@ fn the_finished_twin_ends_with_every_task_ticked() {
     // nothing left. Its turn shows the all-green checklist to the very end
     // (the payoff), and the loop sweeps it at the *next* turn's start — so
     // the offline suite can drive the reported stale-list bug
-    // (`docs/task-tools.md`).
+    // (`docs/tools/task-tools.md`).
     let scenario = SCENARIOS
         .iter()
         .find(|s| s.name == "tasks-finished")
@@ -736,7 +736,7 @@ fn the_finished_twin_ends_with_every_task_ticked() {
 #[test]
 fn a_dollar_mention_of_the_demo_skill_selects_the_skills_demo() {
     // The composer's `$` picker inserts mentions like `$dataviz`
-    // (docs/skill-mentions.md); a prompt carrying one must play the skills
+    // (docs/input/skill-mentions.md); a prompt carrying one must play the skills
     // demo even when the word "skill" never appears, so the offline dummy
     // answers the mention the way a live model would — by loading the skill.
     assert_eq!(gated("use $dataviz to chart this"), "skills");
@@ -745,7 +745,7 @@ fn a_dollar_mention_of_the_demo_skill_selects_the_skills_demo() {
 #[test]
 fn the_init_prompt_never_selects_the_file_change_demo() {
     // `/init` submits a canned prompt about authoring AGENTS.md as an
-    // ordinary user turn (`docs/init.md`). The file-change demo's cue is the
+    // ordinary user turn (`docs/state/init.md`). The file-change demo's cue is the
     // vocabulary that prompt lives in, so — like the `agents.md` guard above
     // it — this pins that the prompt still falls through to the default turn
     // instead of being answered with a scripted `Write` of fizzbuzz.

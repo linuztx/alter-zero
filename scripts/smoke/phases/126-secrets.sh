@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/secrets` page (docs/secrets.md): the user stores a credential — a
+# the `/secrets` page (docs/state/secrets.md): the user stores a credential — a
 # name, a value, a line of context — and the agent uses it by placeholder,
 # `<secret:NAME>`, without the value ever reaching the screen or the model.
 # Driven end to end: the palette entry; the empty page; the form (a typed
@@ -116,7 +116,7 @@ if printf '%s\n' "$refused" | grep -qF "ran-<secret:DEMO_TOKN>"; then
 	fail "the refused command ran"
 fi
 
-# What the user types (docs/secrets.md *What the user types*): the VALUE
+# What the user types (docs/state/secrets.md *What the user types*): the VALUE
 # itself, where the placeholder would go. A `!` command typed with it still
 # runs with it — only the real value hashes to TYPED_SHA, a slice of the hash
 # no earlier step printed — while its header shows the placeholder, and a

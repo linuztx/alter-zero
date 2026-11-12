@@ -1,4 +1,4 @@
-//! The offline permission demos (`docs/permissions.md`).
+//! The offline permission demos (`docs/state/permissions.md`).
 
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use super::*;
 #[test]
 fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
     // The offline mirror of a real batch of gated `bash` calls
-    // (docs/permissions.md): both commands are announced up front, each
+    // (docs/state/permissions.md): both commands are announced up front, each
     // asks before it starts, and the next request follows the previous
     // cell's resolution with **no scripted pause** — the back-to-back
     // prompt timing the covering machinery has to survive. Manual, the mode
@@ -67,7 +67,7 @@ fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
 
 #[test]
 fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
-    // The offline mirror of auto mode (docs/permissions.md): with the
+    // The offline mirror of auto mode (docs/state/permissions.md): with the
     // gate in `Auto`, the read-only listing takes the fast path — no
     // classifier, no note — the heuristic classifier stands in for the user
     // on the test run, which runs with the ToolNote riding it, the delete
@@ -202,7 +202,7 @@ fn the_auto_demo_runs_everything_silently_in_master_mode() {
 #[test]
 fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
     // The offline mirror of the reported gap-under-the-prompt shape
-    // (docs/permissions.md): a batch of two gated `write`s whose prompts
+    // (docs/state/permissions.md): a batch of two gated `write`s whose prompts
     // differ wildly in height — the first's body is long enough to cap on
     // any sane terminal (the prompt fills it), the second's is a single
     // line — with **no scripted pause** between the first cell's
@@ -235,7 +235,7 @@ fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
             StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
             // An approved `write` resolves with the two-text split the live
             // executor sends: the numbered body stays on the cell, the model
-            // reads the one-line ack (`docs/tools.md`).
+            // reads the one-line ack (`docs/tools/tools.md`).
             StreamEvent::ToolAnswered {
                 display, result, ..
             } => {
@@ -279,7 +279,7 @@ fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
 
 #[test]
 fn the_ask_demo_raises_the_questions_and_resolves_with_the_answers() {
-    // The offline `AskUserQuestion` round trip (`docs/ask.md`): the intro
+    // The offline `AskUserQuestion` round trip (`docs/tools/ask.md`): the intro
     // streams, the call is announced, the AskUser request raises the modal,
     // and the submitted answers resolve the cell green via ToolAnswered —
     // the display and the model-facing JSON both built by the real mapping.
@@ -399,7 +399,7 @@ fn declining_the_ask_demo_resolves_red_and_still_closes_the_turn() {
 
 #[test]
 fn a_timed_out_ask_demo_carries_on_without_the_user() {
-    // Nobody answered before the idle clock ran out (docs/ask.md): the cell
+    // Nobody answered before the idle clock ran out (docs/tools/ask.md): the cell
     // resolves red with the timeout headline, the model reads keep-working,
     // and the demo's closing says it carried on rather than stopping.
     let gate = crate::ask::AskGate::new();
@@ -454,7 +454,7 @@ fn a_timed_out_ask_demo_carries_on_without_the_user() {
     );
 }
 
-/// A headless run's gate (docs/headless.md): manual, and nobody to answer.
+/// A headless run's gate (docs/cli/headless.md): manual, and nobody to answer.
 fn unattended_gate() -> crate::permission::PermissionGate {
     let gate = crate::permission::PermissionGate::new();
     gate.set_mode(crate::permission::PermissionMode::Manual);

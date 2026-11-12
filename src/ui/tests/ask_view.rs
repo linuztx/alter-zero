@@ -1,4 +1,4 @@
-//! The `AskUserQuestion` modal's renderer (`docs/ask.md`): the chip strip,
+//! The `AskUserQuestion` modal's renderer (`docs/tools/ask.md`): the chip strip,
 //! the option pages, the preview panel, the Submit review page, and the
 //! resolved cell's headline header.
 
@@ -368,11 +368,11 @@ fn the_page_builds_whole_and_the_paint_bottom_anchors() {
     // A short terminal used to cut the page by dropping its top rows into no
     // buffer at all — the chip strip, the question and the first options were
     // simply gone (the reported "small terminal hides the texts"). The page
-    // now sheds what the choice doesn't need first (`docs/ask.md`), and on a
+    // now sheds what the choice doesn't need first (`docs/tools/ask.md`), and on a
     // terminal shorter than even its smallest page the region clamps to the
     // terminal, the paint bottom-anchors so the interactive tail stays on
     // screen, and the skipped top flows into real scrollback
-    // (`ui::view_flow`, `docs/view-flow.md`).
+    // (`ui::view_flow`, `docs/ui/view-flow.md`).
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
     let full = ask_lines(&app, 80, TALL);
@@ -448,7 +448,7 @@ fn a_shift_enter_entry_renders_multi_line_with_the_cursor_on_the_last_row() {
     // The Other entry is the composer's field: Shift+Enter (here the textarea
     // newline it maps to) breaks the line, both rows render — the first
     // behind `❯ 4. `, the continuation aligned under the text — and the
-    // cursor seats on the continuation row (docs/ask.md).
+    // cursor seats on the continuation row (docs/tools/ask.md).
     let mut app = App::new();
     open(&mut app, vec![coffee_question()]);
     app.on_key(key(KeyCode::Char('4')));
@@ -669,7 +669,7 @@ fn render_ask_paints_the_region() {
 #[test]
 fn a_full_entry_row_keeps_the_caret_inside_the_width() {
     // The Other entry keeps one column for the caret like the composer
-    // (docs/textarea.md): however long the text, the caret's column is
+    // (docs/input/textarea.md): however long the text, the caret's column is
     // inside the 80 the prompt was laid out in — never one past its edge.
     let mut app = App::new();
     open(&mut app, vec![coffee_question()]);
@@ -682,7 +682,7 @@ fn a_full_entry_row_keeps_the_caret_inside_the_width() {
     }
 }
 
-// ===== The idle timeout's countdown (docs/ask.md) =====
+// ===== The idle timeout's countdown (docs/tools/ask.md) =====
 
 /// The closing rule's countdown chip — the span carrying the label text.
 fn countdown_span(app: &App, width: u16) -> Option<Span<'static>> {
@@ -806,7 +806,7 @@ fn a_rule_too_narrow_for_the_countdown_stays_plain_and_the_height_holds() {
     assert_eq!(ask_lines(&app, 80, TALL).len(), wide_before);
 }
 
-// ===== A terminal too short for the whole page (docs/ask.md) =====
+// ===== A terminal too short for the whole page (docs/tools/ask.md) =====
 
 /// The page on a terminal `height` rows tall, as trimmed plain rows.
 fn page_at(app: &App, width: u16, height: u16) -> Vec<String> {

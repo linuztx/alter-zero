@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/release/npm.sh — publish a release to npm: one package per release
 # target holding its binary, then the launcher that depends on them
-# (docs/npm.md).
+# (docs/ops/npm.md).
 #
 #   scripts/release.sh npm 0.12.0                    # dist/ → the registry
 #   scripts/release.sh npm 0.12.0 dist --dry-run     # stage and validate, publish nothing
@@ -9,7 +9,7 @@
 #
 # The assets are proven first (`verify`); a version already on GitHub is
 # fetched back for it with `scripts/release.sh download`, so it can be
-# published to npm by hand (docs/npm.md). Each target's archive becomes a
+# published to npm by hand (docs/ops/npm.md). Each target's archive becomes a
 # platform package, `{launcher}-{os}-{cpu}`: its binary at bin/alter-zero
 # (mode 755), the LICENSE, a README pointing at the launcher, and `os`/`cpu`
 # — plus `libc: glibc` on Linux — so npm installs only the one that runs. The
@@ -71,7 +71,7 @@ command -v node >/dev/null 2>&1 || die "npm: node is not installed"
 command -v npm >/dev/null 2>&1 || die "npm: npm is not installed"
 
 manifest="$(npm_manifest_path)"
-[ -f "$manifest" ] || die "npm: no $manifest — the launcher package (docs/npm.md)"
+[ -f "$manifest" ] || die "npm: no $manifest — the launcher package (docs/ops/npm.md)"
 launcher="$(npm_name)"
 [ "$(npm_version)" = "$version" ] || die "npm: npm/package.json is at $(npm_version), not $version — scripts/release.sh prepare keeps it in step"
 for target in $NPM_TARGETS; do

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A stand-in for github.com's release pages, so install.sh can be tested
-offline against real archives (docs/release.md).
+offline against real archives (docs/ops/release.md).
 
     python3 scripts/release/release_server.py DIST TAG [INSTALLER]
 
@@ -9,7 +9,7 @@ Serves DIST's files at /releases/download/TAG/<name>, redirects
 the app's update check both read the tag off that redirect), answers
 /releases/tag/TAG with a stub page, and — given INSTALLER, a path to
 install.sh — serves it at /install.sh, where `alter-zero update` fetches it
-from a non-GitHub base (docs/update.md). Binds an ephemeral port on
+from a non-GitHub base (docs/ops/update.md). Binds an ephemeral port on
 127.0.0.1 and prints it on the first line of stdout; the selftest and the
 smoke suite point ALTER_ZERO_INSTALL_BASE_URL / ALTER_ZERO_UPDATE_URL at it,
 and `scripts/release.sh download --from`.

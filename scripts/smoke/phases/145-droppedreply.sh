@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# A connection lost under a reply (docs/offline.md *A connection lost
+# A connection lost under a reply (docs/providers/offline.md *A connection lost
 # mid-reply*). The user's report was `request failed: request or response body
 # error: error reading a body from connection: Connection timed out (os error
 # 110)` — a turn killed half-way. A stub chat-completions server answers the

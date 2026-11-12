@@ -1,4 +1,4 @@
-//! The JSON each event writes to a handler's **stdin** (`docs/hooks.md`).
+//! The JSON each event writes to a handler's **stdin** (`docs/tools/hooks.md`).
 //!
 //! Every field name here is `snake_case`, deliberately: the payload half of
 //! the contract is `snake_case` and the verdict half is `camelCase`, and both
@@ -22,7 +22,7 @@ pub struct HookContext {
     /// The conversation's id — its rollout file's, the handle `--resume`
     /// takes (Claude Code's meaning: a `/clear` starts a new one, a
     /// `/resume` adopts the resumed file's). The boundary publishes it live
-    /// as the recorder moves (`docs/hooks.md`); this is the fall-back before
+    /// as the recorder moves (`docs/tools/hooks.md`); this is the fall-back before
     /// it has.
     pub session_id: String,
     /// The rollout file this conversation is recorded to, when one is being
@@ -38,7 +38,7 @@ pub struct HookContext {
     /// `agent_id`'s presence.
     pub agent_id: Option<String>,
     pub agent_type: Option<String>,
-    /// The session's scratchpad (`docs/scratchpad.md`), Claude Code's common
+    /// The session's scratchpad (`docs/tools/scratchpad.md`), Claude Code's common
     /// `scratchpad_dir` — how a hook finds the session's temp tree now that
     /// `session_id` follows the conversation rather than the process.
     /// Omitted when the session has none.

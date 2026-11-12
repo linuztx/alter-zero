@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh — the one-line installer for Alter Zero (docs/release.md).
+# install.sh — the one-line installer for Alter Zero (docs/ops/release.md).
 #
 #   curl -fsSL https://raw.githubusercontent.com/linuztx/alter-zero/main/install.sh | sh
 #

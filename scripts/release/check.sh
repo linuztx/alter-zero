@@ -7,7 +7,7 @@
 # Reports EVERY mismatch before failing. The workflow runs this first on a
 # tag push (with $GITHUB_REF_NAME), CI runs it on every push without a tag,
 # so a commit that bumps Cargo.toml without a changelog entry — or the
-# other way round — never reaches a tag. The rules (docs/release.md):
+# other way round — never reaches a tag. The rules (docs/ops/release.md):
 #
 #   1. Cargo.toml's [package] version is semver.
 #   2. Cargo.lock records the same version for the crate (`--locked` would
@@ -19,7 +19,7 @@
 #   6. With a TAG: it is `vX.Y.Z` for that version, and the `[Unreleased]`
 #      section is empty — an entry left there was written for this release
 #      and never rolled into it.
-#   7. npm/package.json, the npm launcher package (docs/npm.md), names the
+#   7. npm/package.json, the npm launcher package (docs/ops/npm.md), names the
 #      same version and pins exactly one platform package per release
 #      target at it — the launcher installs whichever of them npm picks, so
 #      a stale pin is a binary from another release.
@@ -81,7 +81,7 @@ else
 fi
 
 if [ ! -f "$(npm_manifest_path)" ]; then
-	fail "npm/package.json is missing — the npm launcher package (docs/npm.md)"
+	fail "npm/package.json is missing — the npm launcher package (docs/ops/npm.md)"
 else
 	before="$FAILS"
 	npm_v="$(npm_version)"

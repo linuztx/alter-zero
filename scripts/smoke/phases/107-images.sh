@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# INLINE IMAGES (docs/images.md). A handcrafted rollout carries
+# INLINE IMAGES (docs/ui/images.md). A handcrafted rollout carries
 # an image `read` of a real PNG in the cwd; resuming it must draw the picture
 # in the terminal — flush at the left margin, one blank row under the cell —
 # and Ctrl+O must show the same picture in the transcript. The protocol is

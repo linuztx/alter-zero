@@ -324,7 +324,7 @@ fn tool_lines_wraps_a_long_command_output_line_instead_of_clipping() {
     // The FINISHED (committed) bash cell must wrap a long output line like
     // the Ctrl+O view does, not clip it at the width — the text used to
     // disappear past the terminal edge (the reported bug;
-    // docs/tool-streaming.md).
+    // docs/ui/tool-streaming.md).
     let long = "0123456789".repeat(6); // 60 cols
     let lines = tool_lines(
         &tool("Bash", "cat log", ToolStatus::Ok, &long),
@@ -381,7 +381,7 @@ fn a_finished_shell_output_wraps_a_long_line_showing_every_line() {
 #[test]
 fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
     // The inline streaming tail must wrap like the Ctrl+O view does
-    // (wrap_verbatim — docs/tool-streaming.md), not silently clip at the
+    // (wrap_verbatim — docs/ui/tool-streaming.md), not silently clip at the
     // width: every streamed column stays visible in the live cell.
     let long = "0123456789".repeat(6); // 60 cols
     let t = tool("Bash", "cat log", ToolStatus::Running, &long);
@@ -394,7 +394,7 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
         &PathDisplay::VERBATIM,
     );
     // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows, then
-    // the clock row (docs/tool-streaming.md).
+    // the clock row (docs/ui/tool-streaming.md).
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(
         body.len(),
@@ -417,7 +417,7 @@ fn preview_rows_counts_a_wrapped_running_tail() {
     // Ctrl+B hint), not one row per source line.
     let mut app = App::new();
     // The per-call cell: a reading command collapses into the read/search
-    // group's cell otherwise (docs/tool-groups.md).
+    // group's cell otherwise (docs/ui/tool-groups.md).
     app.settings_mut().verbose = true;
     app.begin_stream();
     app.start_tool("Bash", "cat log", None);
@@ -819,7 +819,7 @@ fn truncate_cols_never_splits_a_zwj_cluster() {
     );
 }
 
-// --- WrapMode: the wrap / count / clip triple (docs/long-lines.md) ---
+// --- WrapMode: the wrap / count / clip triple (docs/ui/long-lines.md) ---
 
 #[test]
 fn wrap_mode_rows_counts_exactly_what_it_would_build() {
@@ -913,7 +913,7 @@ fn wrap_mode_rows_agrees_with_wrap_at_an_exact_fit() {
     }
 }
 
-// --- wrap_output fills a row before a token wider than any row (docs/tools.md) ---
+// --- wrap_output fills a row before a token wider than any row (docs/tools/tools.md) ---
 
 #[test]
 fn wrap_output_fills_the_row_before_a_token_wider_than_any_row() {

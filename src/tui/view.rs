@@ -21,7 +21,7 @@
 //!
 //! A repaint must not lose the in-flight partial reply — it lives in the
 //! streaming buffer, not `history` — so the rebuild re-commits it through the
-//! normal `insert_before` pipeline right after the reflow (`docs/flicker.md`).
+//! normal `insert_before` pipeline right after the reflow (`docs/ui/flicker.md`).
 //! Nor may it reserve rows for a picture it can no longer draw: the purge
 //! drops every encoded picture with the scrollback, so each rebuild first
 //! looks again for the pictures' files ([`recheck_pictures`]).
@@ -48,7 +48,7 @@ use super::Session;
 pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(32);
 
 /// How often an open `/login` device page redraws — the granularity of the
-/// `mm:ss` countdown that is its only moving part. See `docs/copilot.md`.
+/// `mm:ss` countdown that is its only moving part. See `docs/providers/copilot.md`.
 const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
@@ -81,25 +81,25 @@ impl Session<'_> {
         let thinking = self.clocks.thinking_start.map(|start| start.elapsed());
         self.app.set_status_times(elapsed, thinking);
         // The current running command's own elapsed (None when none is
-        // running): the `(Ns)` its cell displays (docs/tool-streaming.md) and,
-        // masked, the delayed Ctrl+B hint's gate (docs/background.md).
+        // running): the `(Ns)` its cell displays (docs/ui/tool-streaming.md) and,
+        // masked, the delayed Ctrl+B hint's gate (docs/tools/background.md).
         self.app
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
         // The animation phase for the live region's pulsing bullets — a phase,
-        // not a measurement: nothing displays it (docs/tool-pulse.md).
+        // not a measurement: nothing displays it (docs/ui/tool-pulse.md).
         let now = self.clocks.loop_start.elapsed();
         self.app.set_pulse(now);
         // The open read/search group's `⎿` row steps through its calls on
         // the same clock, each value held long enough to read
-        // (docs/tool-groups.md *The hint row*).
+        // (docs/ui/tool-groups.md *The hint row*).
         self.app.advance_group_hint(now);
         // The `/usage` page's countdowns run on the wall clock
-        // (docs/usage.md).
+        // (docs/providers/usage.md).
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
         }
         // How long a `/login` device code has left, when one is on screen
-        // (docs/copilot.md).
+        // (docs/providers/copilot.md).
         if self.app.device_login_active() {
             let now = Instant::now();
             self.app.set_device_remaining(
@@ -131,7 +131,7 @@ impl Session<'_> {
 
     /// The framed-view rows that must be **flowed** into scrollback for the
     /// current state — a screen-tall `/mcp`/`/hooks` page's top —
-    /// or `None` when nothing flows (`ui::view_flow`, `docs/view-flow.md`).
+    /// or `None` when nothing flows (`ui::view_flow`, `docs/ui/view-flow.md`).
     /// Capped like every purge-rebuild write.
     pub(crate) fn current_view_flow(&self) -> Option<ui::ViewFlow> {
         let screen = self.term.screen();
@@ -147,7 +147,7 @@ impl Session<'_> {
     /// state — the page navigated, the search narrowed, the menu closed, a
     /// modal covered it — so this draw tick must purge-rebuild instead of
     /// painting in place: the rebuild re-establishes the current flow, or
-    /// clears it and returns the composer (`docs/view-flow.md`). Cheap when
+    /// clears it and returns the composer (`docs/ui/view-flow.md`). Cheap when
     /// no framed view is open and nothing is flowed (both sides `None`).
     pub(crate) fn view_flow_stale(&self) -> bool {
         let screen = self.term.screen();
@@ -164,7 +164,7 @@ impl Session<'_> {
     /// `ui::modal_needs_rebuild`: the just-closed prompt's noted one-way move,
     /// or the still-open prompt about to seat short of the screen bottom it was
     /// painted flush against (a batch's back-to-back prompts of different
-    /// heights — see the draw tick's rebuild arm and `docs/permissions.md`).
+    /// heights — see the draw tick's rebuild arm and `docs/state/permissions.md`).
     pub(crate) fn modal_rebuild_due(&self) -> bool {
         ui::modal_needs_rebuild(
             ui::region_is_modal(&self.app),
@@ -182,7 +182,7 @@ impl Session<'_> {
     /// row for settled prose, every wrapped row of a withheld source line, the
     /// whole forming table — never fewer rows than a token ago less what
     /// committed since, padded with blanks so the box holds still,
-    /// `docs/slow-stream.md` (capped to `ui::stream_preview_max_rows` so a tall tail
+    /// `docs/ui/slow-stream.md` (capped to `ui::stream_preview_max_rows` so a tall tail
     /// tail-follows on a small screen) — computed cheaply by
     /// `ui::StreamRender::preview`; `None` when idle or while a tool runs (the
     /// tool's own header previews instead).
@@ -190,8 +190,8 @@ impl Session<'_> {
     /// pays to re-render the whole reply, and **injects the row count into
     /// `App`** (`App::set_stream_preview_rows`) so `ui::preview_rows` — and with
     /// it [`Session::live_region_height`], the strip layout, and the cursor seat
-    /// — reserve exactly the rows the strip draws. See `docs/markdown.md`,
-    /// `docs/table-streaming.md`.
+    /// — reserve exactly the rows the strip draws. See `docs/ui/markdown.md`,
+    /// `docs/ui/table-streaming.md`.
     ///
     /// **Whose reply** is the view's question, not the loop's: with an agent
     /// session view open the screen shows that agent's conversation, so the
@@ -200,7 +200,7 @@ impl Session<'_> {
     /// makes `committed ++ preview` the reply there too. Previewing the main
     /// buffer instead (or, as before, not at all) left a subagent's forming
     /// table on screen nowhere: withheld by the commit, one row of it in the
-    /// strip (`docs/agent-view-streaming.md`).
+    /// strip (`docs/agents/agent-view-streaming.md`).
     fn stream_preview_lines(&mut self) -> Option<Vec<Line<'static>>> {
         let screen = self.term.screen();
         let max_rows = ui::stream_preview_max_rows(&self.app, screen.width, screen.height);
@@ -234,12 +234,12 @@ impl Session<'_> {
     /// `ui::permission_height` and `render_live` paints it in the composer's
     /// place, so the region simply grows to the prompt like any other view — the
     /// chat above it scrolling into real scrollback (`InlineViewport` notes that
-    /// one-way move for the close's purge rebuild; `docs/permissions.md`).
+    /// one-way move for the close's purge rebuild; `docs/state/permissions.md`).
     pub(crate) fn draw_conversation(&mut self) -> io::Result<()> {
         // Compute the strip preview cheaply once per frame (O(one line); a
         // forming table re-renders just its own block), so the status animation
         // never re-renders the whole reply — and inject its row count so the
-        // layout reserves it. See `docs/markdown.md`, `docs/table-streaming.md`.
+        // layout reserves it. See `docs/ui/markdown.md`, `docs/ui/table-streaming.md`.
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
         let app = &self.app;
@@ -258,7 +258,7 @@ impl Session<'_> {
     pub(crate) fn draw_tool_view(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
         // An agent session view's Ctrl+O shows the *viewed agent's* transcript —
-        // a fresh, bounded build (docs/agent-tool.md); the main cache below is
+        // a fresh, bounded build (docs/agents/agent-tool.md); the main cache below is
         // untouched, so the ordinary open stays warm.
         if let Some(lines) = ui::agent_transcript_lines(&self.app, screen.width) {
             let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
@@ -269,7 +269,7 @@ impl Session<'_> {
                 .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &lines));
         }
         // A backtrack preview open/step requested a scroll to its highlighted
-        // message (docs/backtrack.md): apply the pure decision once — consumed,
+        // message (docs/input/backtrack.md): apply the pure decision once — consumed,
         // so it never fights the user's own scrolling — before the normal clamp.
         if self.app.take_backtrack_scroll() {
             let selection = self.transcript.selection(&self.app, screen.width);
@@ -295,7 +295,7 @@ impl Session<'_> {
     }
 
     /// Render the full-screen `/resume` session picker onto the alternate screen
-    /// (the transcript overlay's twin). See `docs/resume.md`.
+    /// (the transcript overlay's twin). See `docs/state/resume.md`.
     pub(crate) fn draw_resume_picker(&mut self) -> io::Result<()> {
         let app = &self.app;
         self.term
@@ -309,11 +309,11 @@ impl Session<'_> {
     /// animation frame while a turn runs, and rebuilding the O(conversation)
     /// derivation per frame starved the scroll keys on a big context (the
     /// "Ctrl+D freezes" bug) — so the clamp, the step and the render share
-    /// one build. See `docs/context.md`.
+    /// one build. See `docs/architecture/context.md`.
     pub(crate) fn draw_context_view(&mut self) -> io::Result<()> {
         // Tab's other page is a different body under the same chrome, and it
         // is built fresh from the backend rather than served from the cache
-        // (`docs/permissions.md`).
+        // (`docs/state/permissions.md`).
         if self.app.debug_page == DebugPage::Classifier {
             return self.draw_classifier_page();
         }
@@ -330,7 +330,7 @@ impl Session<'_> {
     }
 
     /// Render the Ctrl+D view's **classifier page** (Tab) onto the alternate
-    /// screen — the same chrome, a different body (`docs/permissions.md`).
+    /// screen — the same chrome, a different body (`docs/state/permissions.md`).
     ///
     /// The block is pulled from the **backend** per draw rather than cached:
     /// it grows as the turn runs (every tool call appends a line) and rolls
@@ -348,7 +348,7 @@ impl Session<'_> {
         // `viewed_agent` — this one simply never did.) An agent the registry
         // no longer holds yields `None`, which renders as the page's empty
         // placeholder rather than silently falling back to the lead.
-        // See `docs/permissions.md` / `docs/agent-tool.md`.
+        // See `docs/state/permissions.md` / `docs/agents/agent-tool.md`.
         let context = match self.app.agent_view.as_deref() {
             Some(id) => self.agent_registry.classifier_context(id),
             None => self.models.backend().classifier_context(),
@@ -369,7 +369,7 @@ impl Session<'_> {
         match self.app.view {
             // The modal (permission-prompt) region needs a purge rebuild
             // instead of an in-place paint — two cases, one pure decision
-            // (`ui::modal_needs_rebuild`, `docs/permissions.md`). The prompt
+            // (`ui::modal_needs_rebuild`, `docs/state/permissions.md`). The prompt
             // just CLOSED after the screen moved one-way under it — its own
             // growth scrolled chat into scrollback (the ordinary case), a commit
             // beneath it scrolled, or a rebuild reseated it (a mid-prompt
@@ -386,12 +386,12 @@ impl Session<'_> {
             // (`InlineViewport::reflow`), so its eventual close still purges.
             // (An open agent session view rebuilds itself —
             // `repaint_active_view` routes there.) See
-            // `InlineViewport::take_modal_scrolled` and `docs/permissions.md`.
+            // `InlineViewport::take_modal_scrolled` and `docs/state/permissions.md`.
             // …or a framed view's FLOW went stale — its page navigated, its
             // menu closed, a modal covered it, or a page that must flow has
             // no flow committed yet: the same purge rebuild re-establishes
             // the current flow, or clears it and returns the composer
-            // (`docs/view-flow.md`; the flow check runs first so a prompt
+            // (`docs/ui/view-flow.md`; the flow check runs first so a prompt
             // opening over a flowed menu cleans the flow in the very rebuild
             // that seats the prompt).
             View::Conversation if self.view_flow_stale() || self.modal_rebuild_due() => {
@@ -409,7 +409,7 @@ impl Session<'_> {
     /// Rebuild whatever the inline screen is showing — the **agent session
     /// view** when one is open (a purge rebuild of the agent's transcript),
     /// else the main conversation. The shared resize / rewind repaint
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     pub(crate) fn repaint_active_view(&mut self) -> io::Result<()> {
         if self.app.agent_view.is_some() {
             self.repaint_agent_view()
@@ -435,7 +435,7 @@ impl Session<'_> {
     /// the overlay** (the emulator reflowed the main screen and the queued
     /// lines were rendered at the stale width — `overlay_resized`, consumed
     /// here so only this return purges), and an open **agent session view**,
-    /// which always rebuilds from its own transcript (`docs/agent-tool.md`;
+    /// which always rebuilds from its own transcript (`docs/agents/agent-tool.md`;
     /// its purge drops the queue, whose lines its history regenerates).
     pub(crate) fn overlay_return_repaint(&mut self) -> io::Result<()> {
         if std::mem::take(&mut self.overlay_resized) || self.app.agent_view.is_some() {
@@ -468,7 +468,7 @@ impl Session<'_> {
         let screen = self.term.screen();
         // The purge takes the encoded pictures with it, so a picture whose
         // file has gone since it was drawn — or since the conversation was
-        // recorded — must not reserve its rows again (`docs/images.md`).
+        // recorded — must not reserve its rows again (`docs/ui/images.md`).
         let held = self.app.tool_group_range().map(|range| range.start);
         recheck_pictures(ui::committed_history(
             &self.app.history,
@@ -481,14 +481,14 @@ impl Session<'_> {
         self.render.reset();
         // The preview comes FIRST: it injects the strip's preview row count
         // (`set_stream_preview_rows` — a forming table previews multi-row) that
-        // `live_region_height` below must reserve (docs/table-streaming.md).
+        // `live_region_height` below must reserve (docs/ui/table-streaming.md).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
         let tail = ui::repaint_tail(
             // Only what has actually reached scrollback: the open read/search
             // group, or a parallel MCP run still in flight, has cells
             // recorded but held, and the strip is showing them
-            // (`docs/tool-groups.md`, `docs/mcp.md`).
+            // (`docs/ui/tool-groups.md`, `docs/tools/mcp.md`).
             ui::committed_history(&self.app.history, self.app.tool_queue(), held),
             self.app.streaming_text(),
             &mut self.render,
@@ -498,7 +498,7 @@ impl Session<'_> {
             self.app.settings().verbose,
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
-        // `history` and would otherwise be lost (docs/header.md).
+        // `history` and would otherwise be lost (docs/ui/header.md).
         let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
         // A screen-tall framed view flows its page top into scrollback: the
         // rows ride the tail's very end, so they land directly above the live
@@ -506,7 +506,7 @@ impl Session<'_> {
         // the one place every purge rebuild goes through, so a resize or a
         // rewind under an open menu re-flows at the new state for free; the
         // stored signature is what the draw tick compares
-        // (`docs/view-flow.md`).
+        // (`docs/ui/view-flow.md`).
         let flow = self.current_view_flow();
         self.flowed_view = flow.as_ref().map(|flow| flow.signature);
         if let Some(flow) = flow {
@@ -535,7 +535,7 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Rebuild the screen as an **agent session view** (`docs/agent-tool.md`):
+    /// Rebuild the screen as an **agent session view** (`docs/agents/agent-tool.md`):
     /// purge scrollback + screen (the `/clear` shape — the main conversation
     /// returns the same way), then the banner over the agent's own transcript,
     /// with the live region (the agent's strip + the labelled composer + footer +
@@ -548,7 +548,7 @@ impl Session<'_> {
             return Ok(());
         };
         // Only the agent's committed cells, the main view's rule
-        // (`ui::committed_history`, `docs/mcp.md`) — and its pictures looked
+        // (`ui::committed_history`, `docs/tools/mcp.md`) — and its pictures looked
         // for again, the main rebuild's rule.
         let history = ui::committed_history(&run.history, &run.tool_queue, None).to_vec();
         recheck_pictures(&history);
@@ -557,11 +557,11 @@ impl Session<'_> {
         // the strip's row count (`set_stream_preview_rows`) that
         // `live_region_height` below must reserve — a rebuild that skipped it
         // squeezed a multi-row frontier back to one row for that frame
-        // (`docs/agent-view-streaming.md`).
+        // (`docs/agents/agent-view-streaming.md`).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
         // An agent's session view keeps a cell per call: its commits are
-        // keyed on the records its own run makes (docs/tool-groups.md).
+        // keyed on the records its own run makes (docs/ui/tool-groups.md).
         let mut tail =
             ui::conversation_lines(&history, screen.width, self.app.path_display(), true);
         if let Some(text) = &streaming {
@@ -569,7 +569,7 @@ impl Session<'_> {
         }
         let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
         // A framed view opened from the agent view's own palette renders over
-        // it and flows the same way (`docs/view-flow.md`) — the rebuild is
+        // it and flows the same way (`docs/ui/view-flow.md`) — the rebuild is
         // this view's, so the flow rides this tail.
         let flow = self.current_view_flow();
         self.flowed_view = flow.as_ref().map(|flow| flow.signature);
@@ -599,7 +599,7 @@ impl Session<'_> {
 
 /// Look again for the file behind every picture `history` shows, before it is
 /// laid out — so a picture whose file is gone reserves no rows
-/// (`docs/images.md`, *A picture whose file is gone*).
+/// (`docs/ui/images.md`, *A picture whose file is gone*).
 ///
 /// A `read` names its picture's size in its own fact line and a resumed
 /// conversation keeps that line, while the file can be long gone — a
@@ -622,18 +622,18 @@ pub(crate) fn recheck_pictures(history: &[HistoryItem]) {
 fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     // The `AskUserQuestion` modal replaces the whole region — checked first,
     // like its render branch (the two modals queue, so at most one is open;
-    // docs/ask.md).
+    // docs/tools/ask.md).
     if let Some(height) = ui::ask_height(app, screen.width, screen.height) {
         return height;
     }
     // A pending tool-permission request replaces the whole region — the
     // streaming strip included, since the turn is blocked on the answer. It is
-    // modal, so it is checked first (docs/permissions.md).
+    // modal, so it is checked first (docs/state/permissions.md).
     if let Some(height) = ui::permission_height(app, screen.width, screen.height) {
         return height;
     }
     // The startup review replaces the composer next — only a modal outranks
-    // it, its render branch's order (docs/config-review.md).
+    // it, its render branch's order (docs/state/config-review.md).
     if let Some(height) = ui::config_review_height(app, screen.width, screen.height) {
         return height;
     }
@@ -641,7 +641,7 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     // background manager each replace the **composer** with their own framed
     // body — never the streaming strip, whose rows they reserve above
     // themselves so opening one mid-turn can't hide the running turn (see
-    // docs/llm.md / docs/settings.md / docs/background.md); the open one's
+    // docs/providers/llm.md / docs/state/settings.md / docs/tools/background.md); the open one's
     // height stands in for the composer's.
     if let Some(height) = ui::model_picker_height(app, screen.width, screen.height) {
         return height;
@@ -649,51 +649,51 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::key_onboarding_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/settings` menu, likewise (docs/settings.md).
+    // The inline `/settings` menu, likewise (docs/state/settings.md).
     if let Some(height) = ui::settings_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/mascot` picker, likewise (docs/mascot.md).
+    // The inline `/mascot` picker, likewise (docs/ui/mascot.md).
     if let Some(height) = ui::mascot_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/spinner` picker, likewise (docs/spinner.md).
+    // The inline `/spinner` picker, likewise (docs/ui/spinner.md).
     if let Some(height) = ui::spinner_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/theme` picker, likewise (docs/theme.md).
+    // The inline `/theme` picker, likewise (docs/ui/theme.md).
     if let Some(height) = ui::theme_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/skills` menu, likewise (docs/skills.md).
+    // The inline `/skills` menu, likewise (docs/tools/skills.md).
     if let Some(height) = ui::skills_menu_height(app, screen.width, screen.height) {
         return height;
     }
-    // The read-only `/hooks` menu, likewise (docs/hooks-menu.md).
+    // The read-only `/hooks` menu, likewise (docs/tools/hooks-menu.md).
     if let Some(height) = ui::hooks_menu_height(app, screen.width, screen.height) {
         return height;
     }
-    // The `/secrets` page, likewise (docs/secrets.md).
+    // The `/secrets` page, likewise (docs/state/secrets.md).
     if let Some(height) = ui::secrets_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The read-only `/donate` page, likewise (docs/donate.md).
+    // The read-only `/donate` page, likewise (docs/ui/donate.md).
     if let Some(height) = ui::donate_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The read-only `/export` page, likewise (docs/export.md).
+    // The read-only `/export` page, likewise (docs/ui/export.md).
     if let Some(height) = ui::export_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    // The read-only `/context` page, likewise (docs/context-usage.md).
+    // The read-only `/context` page, likewise (docs/architecture/context-usage.md).
     if let Some(height) = ui::context_usage_height(app, screen.width, screen.height) {
         return height;
     }
-    // The read-only `/usage` page, likewise (docs/usage.md).
+    // The read-only `/usage` page, likewise (docs/providers/usage.md).
     if let Some(height) = ui::usage_page_height(app, screen.width, screen.height) {
         return height;
     }
-    // The `/mcp` manager, likewise (docs/mcp.md).
+    // The `/mcp` manager, likewise (docs/tools/mcp.md).
     if let Some(height) = ui::mcp_menu_height(app, screen.width, screen.height) {
         return height;
     }
@@ -719,7 +719,7 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
 impl Session<'_> {
     /// Ctrl+O: `App::on_key` already flipped the view — sync the overlay. The
     /// transcript cache is deliberately RETAINED across the close
-    /// (`docs/tool-view-performance.md`): its frozen prefix is what makes the
+    /// (`docs/ui/tool-view-performance.md`): its frozen prefix is what makes the
     /// next Ctrl+O instant, and the loop-bottom `transcript.warm` keeps appending
     /// to it as items commit.
     pub(crate) fn toggle_tool_view(&mut self) -> io::Result<()> {
@@ -737,13 +737,13 @@ impl Session<'_> {
             // live region, keeping the terminal's own scrollback (invariant 4
             // / Phase 7). A resize under the overlay forces the purge-rebuild
             // every resize gets, and an open agent session view rebuilds
-            // itself (docs/agent-tool.md).
+            // itself (docs/agents/agent-tool.md).
             self.overlay_return_repaint()
         }
     }
 
     /// Ctrl+D: the raw-context view — the same overlay dance as Ctrl+O
-    /// (`docs/context.md`).
+    /// (`docs/architecture/context.md`).
     pub(crate) fn toggle_context_debug(&mut self) -> io::Result<()> {
         if self.app.view == View::ContextDebug {
             self.term.enter_overlay()?;
@@ -773,18 +773,18 @@ impl Session<'_> {
     pub(crate) fn on_draw_tick(&mut self) -> io::Result<()> {
         self.update_status_times();
         // Inject each background shell's runtime (the boundary owns the started
-        // clocks — docs/background.md), so the manager's details view ticks.
+        // clocks — docs/tools/background.md), so the manager's details view ticks.
         for (id, started) in &self.bg_clocks {
             self.app.set_background_runtime(id, started.elapsed());
         }
-        // …and each running agent's, plus the linger sweep (docs/agent-tool.md).
+        // …and each running agent's, plus the linger sweep (docs/agents/agent-tool.md).
         self.tick_agent_roster();
         self.expire_toast();
         // Before the paint: a question whose idle clock ran out closes in
-        // this very frame (docs/ask.md).
+        // this very frame (docs/tools/ask.md).
         self.tick_ask_clock();
         // …and an open `/usage` page due its minute refresh starts it, the
-        // page keeping its own slow frame (docs/usage.md).
+        // page keeping its own slow frame (docs/providers/usage.md).
         self.tick_usage_page();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
@@ -793,7 +793,7 @@ impl Session<'_> {
         // frames to fire). None of that re-arms under an alternate-screen
         // overlay, where none of it is on screen and a repaint for no reason
         // costs the user their text selection ([`App::wants_animation_frames`],
-        // `docs/overlay-repaint.md`); the chain re-seeds on the first draw after
+        // `docs/ui/overlay-repaint.md`); the chain re-seeds on the first draw after
         // the return.
         if self.app.wants_animation_frames() {
             self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
@@ -803,7 +803,7 @@ impl Session<'_> {
         // the rate its content changes at — and every frame costs a cursor
         // Hide plus a re-seat, which at the status chain's thirty a second is
         // what a terminal with a cursor-trail animation renders as a permanent
-        // shimmer over the page (`docs/copilot.md`).
+        // shimmer over the page (`docs/providers/copilot.md`).
         if self.app.device_login_active() {
             self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
         }
@@ -814,7 +814,7 @@ impl Session<'_> {
     /// paints without it); while it still lingers, keep a frame pending for the
     /// eventual clear — a coalesced keystroke frame can consume the one
     /// [`Session::toast`] scheduled, so re-arming here guarantees the clear fires.
-    /// See `docs/toast.md`.
+    /// See `docs/ui/toast.md`.
     fn expire_toast(&mut self) {
         if let Some(deadline) = self.toast_deadline {
             let now = std::time::Instant::now();

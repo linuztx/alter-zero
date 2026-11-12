@@ -5,7 +5,7 @@
 smoke_begin
 
 # the built-in AGENT DEFINITIONS are seeded as real, editable
-# files (docs/subagents.md). `general-purpose` and `explore` are `agents/*.md`
+# files (docs/agents/subagents.md). `general-purpose` and `explore` are `agents/*.md`
 # under the user config home now, not a `match` in the binary — so the first
 # launch has to WRITE them (with the comments that teach the `tools:`/`model:`
 # keys), a later launch must never clobber one the user edited (seeding that

@@ -1,4 +1,4 @@
-//! GFM table rendering (`docs/markdown.md`, `docs/table-streaming.md`).
+//! GFM table rendering (`docs/ui/markdown.md`, `docs/ui/table-streaming.md`).
 
 use super::*;
 use crate::ui::table::{
@@ -171,7 +171,7 @@ fn table_content_rows_pads_short_rows_to_the_column_count() {
 fn table_content_rows_renders_inline_markdown_in_cells() {
     // Regression (the reported bug): a table cell's `` `code` `` and
     // `**bold**` markers rendered literally instead of being inline-parsed
-    // like prose (docs/markdown.md). They must be styled — backticks and
+    // like prose (docs/ui/markdown.md). They must be styled — backticks and
     // asterisks gone — and the column sized to the *rendered* width
     // (`a.db`, not `` `a.db` ``).
     let lines: Vec<String> = ["| Name  | When |", "|-------|------|", "| `a.db` | **X** |"]
@@ -219,7 +219,7 @@ fn table_content_rows_renders_inline_markdown_in_cells() {
 fn table_grid_draws_separators_between_every_row() {
     // Claude Code's grid look (the user's reference): every data row is
     // framed — a `├──┼──┤` rule between consecutive rows, not just under
-    // the header (docs/table-streaming.md).
+    // the header (docs/ui/table-streaming.md).
     let lines: Vec<String> = ["| a | b |", "|---|---|", "| 1 | 2 |", "| 3 | 4 |"]
         .iter()
         .map(|s| s.to_string())
@@ -473,7 +473,7 @@ fn record_separator_caps_its_width() {
 fn moderately_narrow_table_stays_a_wrapping_grid() {
     // Records must not over-trigger: a moderately narrow table still renders
     // as a box-drawing grid (cells wrap into taller rows). Records only kick
-    // in when the grid is genuinely cramped (docs/table-streaming.md).
+    // in when the grid is genuinely cramped (docs/ui/table-streaming.md).
     let table = "| Name | Email | Role |\n|------|-------|------|\n\
                  | Alice Johnson | alice@example.com | Administrator |\n\
                  | Bob Smith | bob@example.com | Editor |";
@@ -527,7 +527,7 @@ fn table_should_use_records_only_when_narrow_and_cramped() {
 fn table_preview_caps_to_its_newest_rows() {
     // A forming table taller than the strip's budget tail-follows: the cap
     // keeps the NEWEST rows (the frontier stays visible), dropping the top
-    // (docs/table-streaming.md).
+    // (docs/ui/table-streaming.md).
     let mut full = String::from("| A | B |\n|---|---|\n");
     for i in 0..30 {
         full.push_str(&format!("| r{i} | v{i} |\n"));
@@ -580,7 +580,7 @@ fn assistant_table_sizes_columns_from_all_rows() {
     // lock-at-first-data-row streaming sized column 1 from "Time" (4) and
     // column 2 from "03:00 (CEST, GMT+2)" (19), shattering every later row
     // into slivers ("Temp/erat/ure", "10.1 km/h from NNE/(28°)"). Widths
-    // must fit ALL rows (docs/table-streaming.md).
+    // must fit ALL rows (docs/ui/table-streaming.md).
     let text = "**Warsaw, Poland**\n\n\
                 | | |\n\
                 |---|---|\n\
@@ -714,7 +714,7 @@ fn assistant_table_joins_hard_wrapped_rows() {
     // the fragments became phantom one-cell rows (`│ 96.4 ms │ │ │ …`).
     // Inside a leading-pipe table a genuine row starts with `|`; a
     // pipe-carrying line that doesn't is the previous row's tail and must
-    // re-join it (docs/table-streaming.md).
+    // re-join it (docs/ui/table-streaming.md).
     let text = "All three pings completed in parallel. Here's the summary:\n\n\
                 | Host | IP | Packets | Loss | RTT min/avg/max |\n\
                 |------|----|---------|------|-----------------|\n\
@@ -852,7 +852,7 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
     // The mirror image of the backgrounded cell: here the *display* is the
     // richer text (Tab's instructions under the rejection headline) and the
     // model-facing result is the one that never renders — it rides
-    // `context_output` for the derived context (docs/permissions.md).
+    // `context_output` for the derived context (docs/state/permissions.md).
     let tool = ToolCall {
         name: "Write".to_string(),
         args: "hello.py".to_string(),
@@ -978,7 +978,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
     );
 }
 
-// --- markdown tables (docs/markdown.md) ---
+// --- markdown tables (docs/ui/markdown.md) ---
 
 /// The plain text of each content row (span contents concatenated).
 fn rows_text(rows: &[Vec<Span<'static>>]) -> Vec<String> {

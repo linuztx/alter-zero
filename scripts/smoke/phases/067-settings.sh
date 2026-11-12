@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/settings` MENU (docs/settings.md). The session's knobs —
+# the `/settings` MENU (docs/state/settings.md). The session's knobs —
 # until now environment variables you had to know about before launch — listed
 # in the `/model` picker's inline frame, searchable, each cycled with
 # Enter/Space. Drive it end to end: open it from the palette, check the frame

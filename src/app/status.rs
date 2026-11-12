@@ -1,6 +1,6 @@
 //! The turn's live accounting: the [`TurnStatus`] the spinner line renders, the
 //! token tally it counts into, and the [`TurnSummary`] committed when the turn
-//! ends. See `docs/status-indicator.md`.
+//! ends. See `docs/ui/status-indicator.md`.
 
 use super::*;
 
@@ -22,7 +22,7 @@ pub enum TokenArrow {
 /// The live status of the turn in flight, shown as a codex-style status line in
 /// the strip above the input box (`● {verb}… ({elapsed}s · {arrow} {n} tokens ·
 /// Thinking for {m}s)`). `Some` on [`App`] from [`App::begin_stream`] until the
-/// turn ends; see `docs/status-indicator.md`.
+/// turn ends; see `docs/ui/status-indicator.md`.
 ///
 /// `verb`/`done_verb`, `tokens`, and `arrow` are pure turn state. `elapsed` and
 /// `thinking` are **written by the I/O boundary each frame**
@@ -61,18 +61,18 @@ pub struct TurnStatus {
     /// Whether this is a `!` shell-command turn ([`App::begin_shell`]). A shell
     /// turn ends **without** a `"{verb} for Ns"` summary — the committed cell
     /// is its own record ([`App::end_turn`] returns `None`). See
-    /// `docs/shell-command.md`.
+    /// `docs/input/shell-command.md`.
     pub shell: bool,
     /// Set while a failed request is being retried — the connection/send failed
     /// (or a transient status came back) before any content streamed, so the
     /// backend is reconnecting. Rendered as a `retrying {attempt}/{max}` clause
     /// in the status line and cleared the moment content arrives ([`App::push_chunk`]
     /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
-    /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
+    /// [`crate::stream::StreamEvent::Retrying`]. See `docs/providers/llm.md`.
     pub retry: Option<RetryInfo>,
     /// Set while the backend **waits for a lost connection**: no connection
     /// could be made to the provider, and the request is re-sent every few
-    /// seconds for as long as that lasts (`docs/offline.md`). Rendered as the
+    /// seconds for as long as that lasts (`docs/providers/offline.md`). Rendered as the
     /// amber `Waiting for internet…` verb and an `offline for Ns` clause,
     /// with the `No connection to {host}` row hanging under the line. Set by
     /// [`App::set_offline`] from the backend's
@@ -82,7 +82,7 @@ pub struct TurnStatus {
     pub offline: Option<OfflineInfo>,
     /// The tip this turn's line is showing — or last drew, while something
     /// hides it — once the turn has run [`crate::tips::TIP_DELAY`]; drawn by
-    /// [`App::set_status_times`] (`docs/tips.md`). `None` until then, and
+    /// [`App::set_status_times`] (`docs/ui/tips.md`). `None` until then, and
     /// for every status built with no turn behind it (a preview, a copy).
     pub tip: Option<ShownTip>,
 }
@@ -97,7 +97,7 @@ pub struct RetryInfo {
     pub max: u32,
 }
 
-/// A live **lost-connection** indicator (`docs/offline.md`): which host
+/// A live **lost-connection** indicator (`docs/providers/offline.md`): which host
 /// cannot be reached, how many connection attempts have failed since it
 /// last answered, and when the wait began — the turn's own clock reading
 /// (`TurnStatus::elapsed`, or an agent's runtime) at the first announcement,
@@ -150,37 +150,37 @@ pub struct TurnSummary {
     /// The turn's total wall-clock duration in whole seconds.
     pub secs: u64,
     /// Wall-clock stamp of when the turn finished. Recorded but not currently
-    /// displayed — only user-message stamps show. See `docs/timestamps.md`.
+    /// displayed — only user-message stamps show. See `docs/ui/timestamps.md`.
     pub timestamp: String,
     /// How many background shells were still running when the turn ended —
     /// rendered as a `· {n} shells still running` suffix when non-zero
     /// (`Done for 22s · 3 shells still running`). Snapshotted at
     /// [`App::end_turn`] (or the interrupt); not persisted to the session
-    /// file (a resumed session's shells are gone). See `docs/background.md`.
+    /// file (a resumed session's shells are gone). See `docs/tools/background.md`.
     pub shells: usize,
     /// The turn's **real** billed tokens (input + output summed over the
     /// turn's request rounds), from the provider's usage frames
     /// ([`App::apply_usage`]) — rendered as a `· {n} tokens` suffix. `0` when
     /// the backend reported none (the dummy, a `!` shell), which hides the
-    /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
+    /// clause. Persisted with the summary. See `docs/providers/prompt-caching.md`.
     pub tokens: usize,
     /// Tokens the turn's live tally counted on top of [`tokens`](Self::tokens)
     /// that no usage frame ever reported — the app's estimate. Only an
     /// **interrupted** turn has any: a provider reports a round's usage when
     /// the round ends, so the round the Esc cut short never does
-    /// (`docs/interrupt.md`). Folded into the receipt's total, which is then
+    /// (`docs/input/interrupt.md`). Folded into the receipt's total, which is then
     /// marked `≈`; always `0` for a finished turn, whose receipt is never a
     /// guess. Persisted with the summary.
     pub estimated: usize,
     /// How many of those input tokens were served from the provider's prompt
     /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the
-    /// visible proof caching is working. See `docs/prompt-caching.md`.
+    /// visible proof caching is working. See `docs/providers/prompt-caching.md`.
     pub cached: usize,
     /// How many input tokens this turn **wrote** to the provider's prompt
     /// cache (explicit caching bills a write at a premium; an implicit one
     /// reports it or not) — the `({n} written)` half of the receipt's
     /// parenthetical when non-zero, so the turn that *primed* the cache
-    /// shows it did. See `docs/prompt-caching.md`.
+    /// shows it did. See `docs/providers/prompt-caching.md`.
     pub cache_write: usize,
 }
 
@@ -188,7 +188,7 @@ pub struct TurnSummary {
 /// supports and the mode the user has cycled to (Ctrl+T). Lives on
 /// [`App::thinking`]; the footer shows `mode.label()` beside the model name
 /// and the boundary threads the mode into each request. See
-/// `docs/reasoning.md`.
+/// `docs/providers/reasoning.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingState {
     /// The capability parsed from the provider's model record.
@@ -204,7 +204,7 @@ impl App {
     /// [`begin_stream`] with the turn's prompt, so the status shows
     /// `↑ N tokens` while the model spins up before its first chunk (the first
     /// [`push_chunk`] flips the arrow back to `↓`). The tally is **added to**,
-    /// never reset (see `docs/status-indicator.md`). No-op when no turn is in
+    /// never reset (see `docs/ui/status-indicator.md`). No-op when no turn is in
     /// flight.
     ///
     /// [`begin_stream`]: App::begin_stream
@@ -224,7 +224,7 @@ impl App {
     /// lands in its buffer, so the strip's live block shows the model thinking
     /// and the phase can settle into a `Thought for …` cell. With the
     /// display off no phase is ever opened, so this only counts — the
-    /// pre-feature behaviour, unchanged. See `docs/thinking-stream.md`.
+    /// pre-feature behaviour, unchanged. See `docs/ui/thinking-stream.md`.
     ///
     /// [`begin_reasoning`]: App::begin_reasoning
     pub fn push_thinking(&mut self, chunk: &str) {
@@ -244,7 +244,7 @@ impl App {
     /// buffer: the fragment is opaque JSON, never rendered. This keeps the
     /// status count ticking while the model *generates* a tool call, exactly
     /// like reasoning ticks it while the model thinks (see
-    /// `docs/status-indicator.md`). No-op when no turn is in flight.
+    /// `docs/ui/status-indicator.md`). No-op when no turn is in flight.
     pub fn push_tool_call_progress(&mut self, chunk: &str) {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
@@ -257,7 +257,7 @@ impl App {
     /// ([`crate::stream::StreamEvent::ToolCallDelta`]): count it into the
     /// tally exactly as [`push_tool_call_progress`](App::push_tool_call_progress)
     /// does, and fold it into the round's drafts so a `write` previews as its
-    /// content arrives (`docs/write-streaming.md`). Returns whether the piece
+    /// content arrives (`docs/ui/write-streaming.md`). Returns whether the piece
     /// **opened a previewed call** — the boundary's cue to flush the
     /// streaming text before the cell goes up (*flush before you
     /// interleave*). No draft outside a reply, nor in a `/compact` turn,
@@ -271,7 +271,7 @@ impl App {
     }
 
     /// The calls the model is still generating this round, and the previewed
-    /// ones the announced batch took over (`docs/write-streaming.md`).
+    /// ones the announced batch took over (`docs/ui/write-streaming.md`).
     #[must_use]
     pub fn tool_drafts(&self) -> &ToolDrafts {
         &self.tool_drafts
@@ -285,17 +285,17 @@ impl App {
     /// estimates (the next round's stream) tick on top of the snapped base,
     /// and that round's own usage frame snaps again — so the tally is always
     /// "everything billed so far, plus the current round's live estimate".
-    /// No-op when no turn is in flight. See `docs/prompt-caching.md`.
+    /// No-op when no turn is in flight. See `docs/providers/prompt-caching.md`.
     pub fn apply_usage(&mut self, usage: &crate::stream::TokenUsage) {
         if self.status.is_none() {
             return;
         }
         // One frame ends one round: this is where the round's `Thought for
         // …` cells trade their token estimate for the provider's own
-        // `reasoning_tokens` (docs/thinking-stream.md).
+        // `reasoning_tokens` (docs/ui/thinking-stream.md).
         self.snap_round_reasoning(usage.reasoning);
         // The `/context` page's Last request and Since launch rows
-        // (docs/context-usage.md).
+        // (docs/architecture/context-usage.md).
         self.last_usage = Some(*usage);
         self.usage_since_launch.record(usage);
         self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
@@ -307,7 +307,7 @@ impl App {
         // The round's `input` is the provider's own count of the request's
         // whole context: the base the gauge reads from, the estimate of what
         // joins after it added on top, and — against the last report — a
-        // lesson in how this provider counts (docs/token-estimate.md). A
+        // lesson in how this provider counts (docs/architecture/token-estimate.md). A
         // compaction's request is the summarizer's, shaped unlike the
         // conversation's (no tools, the compact prompt): it measures neither.
         if !self.is_compacting() {
@@ -324,7 +324,7 @@ impl App {
     /// `attempt` and the ceiling `max` come straight from the backend's
     /// [`crate::stream::StreamEvent::Retrying`]. Cleared by the next
     /// [`push_chunk`](App::push_chunk)/[`push_thinking`](App::push_thinking) once
-    /// content arrives. No-op when no turn is in flight. See `docs/llm.md`.
+    /// content arrives. No-op when no turn is in flight. See `docs/providers/llm.md`.
     pub fn set_retry(&mut self, attempt: u32, max: u32) {
         if let Some(status) = self.status.as_mut() {
             // A retry means the host answered (badly): any outage is over.
@@ -335,7 +335,7 @@ impl App {
     /// Record that no connection could be made to `host` and the backend is
     /// waiting for it to come back — `attempts` connection attempts have
     /// failed so far — so the status line wears `Waiting for internet…` and
-    /// the `No connection to {host}` row hangs under it (`docs/offline.md`).
+    /// the `No connection to {host}` row hangs under it (`docs/providers/offline.md`).
     /// The first announcement of an outage stamps the wait's start with the
     /// turn clock's current reading; the later ones move the count on and
     /// keep it. Comes straight from the backend's
@@ -357,7 +357,7 @@ impl App {
     }
     /// The lost-connection wait on screen, if any: inside an agent session
     /// view the **viewed agent's** (its strip is that agent's,
-    /// `docs/agent-view-streaming.md`), else the main turn's. What the status
+    /// `docs/agents/agent-view-streaming.md`), else the main turn's. What the status
     /// line's clause and the row under it are built from.
     #[must_use]
     pub fn offline(&self) -> Option<&OfflineInfo> {
@@ -392,8 +392,8 @@ impl App {
     /// calls this once per draw and nowhere else, so the verb it sets *is* the
     /// verb on screen — a turn that ends a few milliseconds past a rotation no
     /// frame drew still settles on the verb the user saw
-    /// (`docs/status-indicator.md`). The spinner tip draws here too, for the
-    /// same reason (`docs/tips.md`).
+    /// (`docs/ui/status-indicator.md`). The spinner tip draws here too, for the
+    /// same reason (`docs/ui/tips.md`).
     pub fn set_status_times(&mut self, elapsed: Duration, thinking: Option<Duration>) {
         if let Some(status) = self.status.as_mut() {
             status.elapsed = elapsed;
@@ -408,7 +408,7 @@ impl App {
         }
         // The tip under the line moves on the same clock — drawn the first
         // frame its slot is on screen, so the cursor moves only when a tip
-        // is actually seen (docs/tips.md).
+        // is actually seen (docs/ui/tips.md).
         self.draw_tip(elapsed);
     }
     /// Inject the current running command's elapsed each frame (the
@@ -418,11 +418,11 @@ impl App {
     /// cell **displays** it — the `bash` cell's `+N lines (Ns · wait …)`
     /// clock row, the `!` shell's `⎿ Running… (Ns)` row
     /// ([`command_elapsed`](App::command_elapsed),
-    /// `docs/tool-streaming.md`) — and the preview delays the `(ctrl+b to run
+    /// `docs/ui/tool-streaming.md`) — and the preview delays the `(ctrl+b to run
     /// in background)` hint on it until a command has run a few seconds, so a
     /// fast command never flashes it
     /// ([`background_hint_elapsed`](App::background_hint_elapsed),
-    /// `docs/background.md`).
+    /// `docs/tools/background.md`).
     pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
         self.command_elapsed = elapsed;
     }
@@ -436,7 +436,7 @@ impl App {
     /// One clock for every blinking bullet, so a round's tool cells and its agent
     /// tree blink in unison rather than each on its own timer. Unlike the
     /// turn's `elapsed` it keeps running between turns, so a background agent's
-    /// live cell animates too. See `docs/tool-pulse.md`.
+    /// live cell animates too. See `docs/ui/tool-pulse.md`.
     pub fn set_pulse(&mut self, pulse: Duration) {
         self.pulse = pulse;
     }
@@ -456,15 +456,15 @@ impl App {
     ///
     /// `None` while a tool-permission prompt is open: the prompt owns
     /// every key, so Ctrl+B does nothing there — and the hint this gates would
-    /// be advertising it (`docs/permissions.md`). Nothing is really *running*
+    /// be advertising it (`docs/state/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
     /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/secrets`,
     /// `/export`, `/context`, `/usage`) own every key the same way, so the
     /// running cell they keep visible above themselves stays hintless while
-    /// one is open (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
-    /// `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`, `docs/donate.md`,
-    /// `docs/secrets.md`, `docs/export.md`, `docs/usage.md`).
+    /// one is open (`docs/tools/background.md`, `docs/providers/llm.md`, `docs/tools/skills.md`,
+    /// `docs/ui/mascot.md`, `docs/ui/spinner.md`, `docs/ui/theme.md`, `docs/ui/donate.md`,
+    /// `docs/state/secrets.md`, `docs/ui/export.md`, `docs/providers/usage.md`).
     #[must_use]
     pub fn background_hint_elapsed(&self) -> Option<Duration> {
         if self.permission.is_some()
@@ -493,7 +493,7 @@ impl App {
     /// resolution). This is what the running cell *displays*: the `bash`
     /// cell's `+N lines (Ns · wait …)` clock row — on its `⎿ Running…`
     /// row before any output — and the `!` shell's `⎿ Running… (Ns)`
-    /// row (`ui::running_command_lines`, `docs/tool-streaming.md`). It is the
+    /// row (`ui::running_command_lines`, `docs/ui/tool-streaming.md`). It is the
     /// command's own clock, never the turn's — a `bash` call that starts a
     /// minute into a turn opens on `(0s)`, not on the status indicator's
     /// `60s` — and it is never masked: a picker or the ↓ band swallows
@@ -509,7 +509,7 @@ impl App {
     /// knows how many rows the preview renders — one for a normal reply, the
     /// whole forming block while a table streams — and `ui::preview_rows` /
     /// `ui::live_height` / `ui::cursor_position` must all reserve exactly what
-    /// the strip draws. See `docs/table-streaming.md`.
+    /// the strip draws. See `docs/ui/table-streaming.md`.
     ///
     /// [`set_status_times`]: App::set_status_times
     pub fn set_stream_preview_rows(&mut self, rows: u16) {

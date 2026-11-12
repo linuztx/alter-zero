@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Fast mode is a per-tier palette command (docs/fast-mode.md): every speed
+# Fast mode is a per-tier palette command (docs/providers/fast-mode.md): every speed
 # tier the active model's listing names becomes a row of its own — `/fast`,
 # `/ultrafast`, whatever a record lists — spliced in after /model, codex's
 # own placement, and nothing about a tier is hardcoded. Two halves prove the
@@ -20,7 +20,7 @@ smoke_begin
 # tier's command switches straight over — with the toast repeating the
 # record's cost statement and the footer wearing the selection's name. The
 # refresh token rides in under the variable's OLD name, which is the rename's
-# compatibility shim under test at the same time (docs/chatgpt.md): the
+# compatibility shim under test at the same time (docs/providers/chatgpt.md): the
 # provider still activates, and the rotation the stub answers with is
 # written back under the NEW name.
 
@@ -67,7 +67,7 @@ def b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 # An access token whose claims name the seat; the app never verifies the
-# signature (docs/chatgpt.md), only reads the payload.
+# signature (docs/providers/chatgpt.md), only reads the payload.
 claims = {
     "https://api.openai.com/auth": {"chatgpt_account_id": "acct-117", "chatgpt_plan_type": "pro"},
     "exp": 4102444800,
@@ -75,7 +75,7 @@ claims = {
 jwt = ".".join([b64url(b'{"alg":"none"}'), b64url(json.dumps(claims).encode()), b64url(b"sig")])
 
 # The catalog: one model, two tiers, in the record's own shape
-# (docs/fast-mode.md). No reasoning levels, so the footer wears no mode word
+# (docs/providers/fast-mode.md). No reasoning levels, so the footer wears no mode word
 # and the tier follows the model name directly.
 catalog = {"models": [{
     "slug": "gpt-5.6-sol",
@@ -237,7 +237,7 @@ t_lists="$(printf '%s\n' "$t_log" | grep -c '^GET /models?client_version=' || tr
 expect_eq "${t_lists:-0}" 1 "the listing was fetched other than once, by the startup probe"
 # …and the rotation the mint answered with landed in the key store under the
 # variable's NEW name — the shim reads the old name, the write-back uses the
-# current one (docs/chatgpt.md).
+# current one (docs/providers/chatgpt.md).
 t_env="$(cat "$SMOKE_CFG/.env" 2>/dev/null)"
 dump "the key store" "$t_env"
 expect_has "$t_env" -F "CHATGPT_CODEX_REFRESH_TOKEN=rt-117-rotated" "the rotated refresh token was not stored under the current variable name"

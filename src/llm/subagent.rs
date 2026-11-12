@@ -1,4 +1,4 @@
-//! Subagent definitions' boundary half (`docs/subagents.md`): find the
+//! Subagent definitions' boundary half (`docs/agents/subagents.md`): find the
 //! `agents/*.md` files on disk, and seed the built-in ones the first time.
 //!
 //! [`crate::llm::skill`]'s sibling — every rule lives in the pure
@@ -50,7 +50,7 @@ const BUILTIN_FILES: [(&str, &str); 2] = [
 /// Deliberately **no `.claude/agents`**, unlike [`super::skill::skill_roots`]:
 /// a `SKILL.md` is inert markdown, while an agent file names a model and a
 /// tool allowlist — silently inheriting another tool's agents would change
-/// which model a task runs on and what it may touch (`docs/subagents.md`).
+/// which model a task runs on and what it may touch (`docs/agents/subagents.md`).
 #[must_use]
 pub fn agent_roots(
     cwd: &Path,
@@ -107,7 +107,7 @@ fn override_dir() -> Option<PathBuf> {
 /// Write the built-in definitions into `dir`, skipping any that are already
 /// there — so a fresh install finds them on disk and can edit them, an
 /// **edited** default is never clobbered, and a release that adds a default
-/// gets it on the next launch (`docs/subagents.md`).
+/// gets it on the next launch (`docs/agents/subagents.md`).
 ///
 /// Best-effort: a directory that cannot be created or a file that cannot be
 /// written is returned as an error for the startup toast, never a failed

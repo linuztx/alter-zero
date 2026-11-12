@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The AskUserQuestion idle timeout (docs/ask.md). With
+# The AskUserQuestion idle timeout (docs/tools/ask.md). With
 # ALTER_ZERO_ASK_TIMEOUT_SECS=8 the dummy's question demo waits eight seconds
 # of IDLENESS: the modal's closing rule counts down, a key press starts the
 # wait over, and once nothing is touched the question resolves unanswered —

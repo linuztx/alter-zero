@@ -1,5 +1,5 @@
 //! Character-level refinement of a diff cell's `-`/`+` line pairs — which
-//! characters of a changed line actually changed (`docs/inline-diff.md`).
+//! characters of a changed line actually changed (`docs/ui/inline-diff.md`).
 //!
 //! Pure: this module knows nothing about terminals, styles or [`ToolCall`]s.
 //! It maps a parsed diff body's `(sign, text)` rows to the **byte ranges** of
@@ -92,7 +92,7 @@ fn merge(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 
 /// Refine one removed/added line pair into the byte ranges that changed, or
 /// `None` when the two lines are too dissimilar for the answer to mean
-/// anything — see `docs/inline-diff.md` for why a replacement is deliberately
+/// anything — see `docs/ui/inline-diff.md` for why a replacement is deliberately
 /// left flat.
 pub(super) fn refine_pair(old: &str, new: &str) -> Option<InlineDiff> {
     if old == new {

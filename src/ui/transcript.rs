@@ -2,7 +2,7 @@
 //!
 //! [`TranscriptCache`] keeps a frozen prefix of per-item rendered rows so
 //! opening the overlay on a long session is O(viewport), not O(history).
-//! See `docs/tool-view-performance.md`.
+//! See `docs/ui/tool-view-performance.md`.
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::cached_lines::CachedLines;
@@ -17,7 +17,7 @@ use super::wrap::cols;
 use super::*;
 
 /// Build the full conversation transcript shown in the tool-output view: the
-/// startup header banner (docs/header.md — the overlay mirrors the inline
+/// startup header banner (docs/ui/header.md — the overlay mirrors the inline
 /// scrollback, which opens with it), then every user/assistant/error message
 /// **and** every tool call's complete output, interleaved in the exact order
 /// they happened (straight from `App::history`), followed by the live tail —
@@ -29,7 +29,7 @@ use super::*;
 /// right-aligned on its own line below the message (`user_stamp_lines`) — the
 /// **only** stamp displayed anywhere (AI replies, tools, and turn summaries
 /// record one but never show it; the inline view never shows any; see
-/// `docs/timestamps.md`).
+/// `docs/ui/timestamps.md`).
 #[must_use]
 pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     transcript_build(app, width).0
@@ -39,7 +39,7 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// in [`transcript_lines`]'s output — the scroll-into-view target
 /// ([`backtrack_scroll`]); `None` when no preview is active. Computed by the
 /// same walk that styles the highlight (`transcript_build`), so the two can
-/// never drift. See `docs/backtrack.md`.
+/// never drift. See `docs/input/backtrack.md`.
 #[must_use]
 pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
     transcript_build(app, width).1
@@ -66,7 +66,7 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
 ///
 /// The second value is `Some(message-row count)` for a **user** message — the
 /// span the Esc-Esc backtrack preview reverses (its timestamp line below stays
-/// normal; see `docs/backtrack.md`) — `None` for everything else.
+/// normal; see `docs/input/backtrack.md`) — `None` for everything else.
 fn transcript_item_lines(
     item: &HistoryItem,
     width: u16,
@@ -88,24 +88,24 @@ fn transcript_item_lines(
         HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width, paths)),
         // A task call is invisible inline but the transcript is the full
         // record: expand it as an ordinary tool cell —
-        // `● TaskCreate(subject)` over its `⎿` result (docs/task-tools.md).
+        // `● TaskCreate(subject)` over its `⎿` result (docs/tools/task-tools.md).
         HistoryItem::TaskCall(t) => lines.extend(tool_full_lines(&t.as_tool_call(), width, paths)),
         HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
         // The transcript expands the group into one `● Agent({description})`
         // cell per subagent — prompt, nested tool headers, response, and the
-        // Done/Interrupted footer (docs/agent-tool.md); the inline view shows
+        // Done/Interrupted footer (docs/agents/agent-tool.md); the inline view shows
         // the collapsed tree cell.
         HistoryItem::AgentGroup(g) => lines.extend(agent_group_full_lines(g, width, paths)),
         HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
         // The transcript expands the marker with its summary body — the
-        // inline view keeps it collapsed (docs/compact.md).
+        // inline view keeps it collapsed (docs/architecture/compact.md).
         HistoryItem::Compaction(c) => lines.extend(compaction_full_lines(c, width)),
         // The transcript is where a thought's whole chain-of-thought lives —
-        // inline it is the one collapsed line (docs/thinking-stream.md).
+        // inline it is the one collapsed line (docs/ui/thinking-stream.md).
         HistoryItem::Reasoning(r) => lines.extend(reasoning_full_lines(r, width)),
         // What the hooks said, expanded — each hook that ran and what it
-        // said (docs/hooks.md *The hook-run cell*); a note without a report
+        // said (docs/tools/hooks.md *The hook-run cell*); a note without a report
         // keeps its label over the text the model read.
         HistoryItem::HookNote(n) => match &n.report {
             Some(report) => lines.extend(hook_report_full_lines(report, width)),
@@ -114,7 +114,7 @@ fn transcript_item_lines(
     }
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them
-    // exactly as scrollback's does (`docs/images.md`).
+    // exactly as scrollback's does (`docs/ui/images.md`).
     lines.extend(super::image::image_block_lines(item, width));
     if !is_shell_header(item) {
         lines.push(Line::default());
@@ -123,7 +123,7 @@ fn transcript_item_lines(
 }
 
 /// The Ctrl+O transcript of the **viewed agent's** session
-/// (`docs/agent-tool.md`), or `None` when no agent view is up (the caller
+/// (`docs/agents/agent-tool.md`), or `None` when no agent view is up (the caller
 /// falls back to the main [`TranscriptCache`]). The banner over the agent's
 /// items (tools expanded, exactly like the main walk) and its live tail —
 /// the in-progress reply and the live tool queue. Built fresh per draw: an
@@ -145,7 +145,7 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     }
     // The agent's open thinking phase, whole — the main tail's order and its
     // reason: the pager has no row budget, unlike the strip's windowed block
-    // (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
+    // (`docs/ui/thinking-stream.md`, `docs/agents/agent-view-streaming.md`).
     if let Some(text) = run.reasoning() {
         lines.extend(reasoning_live_full_lines(text, width));
         lines.push(Line::default());
@@ -158,7 +158,7 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     ));
     // …and what the user typed into this agent while it works — the messages
     // waiting for its next round boundary **and** the Tab follow-up turns
-    // waiting for it to settle. The main tail's rule (`docs/queue.md`): the
+    // waiting for it to settle. The main tail's rule (`docs/input/queue.md`): the
     // Ctrl+O view never hides a pending message, so both sets gate it or a
     // follow-up queued on its own would be invisible here. `queued_lines`
     // reads the viewed agent's own sets, so this is that agent's backlog, not
@@ -267,7 +267,7 @@ pub(super) struct FrozenKey {
     pub(super) cwd: Option<String>,
     /// The theme the rows were painted in — a `/theme` switch re-renders
     /// every frozen item, since their colours are baked into the rows
-    /// (`docs/theme.md`).
+    /// (`docs/ui/theme.md`).
     theme: crate::app::Theme,
 }
 
@@ -287,7 +287,7 @@ struct RenderedItem {
 #[derive(PartialEq, Eq)]
 struct TranscriptSig {
     generation: u64,
-    /// The active theme — the rows' colours depend on it (`docs/theme.md`).
+    /// The active theme — the rows' colours depend on it (`docs/ui/theme.md`).
     theme: crate::app::Theme,
     pub(super) width: u16,
     history_len: usize,
@@ -300,7 +300,7 @@ struct TranscriptSig {
     /// The open thinking phase's length (`None` outside one) — so a thought
     /// streaming under the overlay invalidates the tail exactly like a
     /// streaming tool's output, and Ctrl+O mid-think follows it rather than
-    /// showing a frozen snapshot (`docs/thinking-stream.md`).
+    /// showing a frozen snapshot (`docs/ui/thinking-stream.md`).
     reasoning_len: Option<usize>,
     /// The live tool queue's shape: `(number of live calls, front call status,
     /// front output length)`, `None` when none run. A **parallel batch** shrinks
@@ -309,28 +309,28 @@ struct TranscriptSig {
     /// a running `bash` call **streams** its output
     /// ([`crate::stream::StreamEvent::ToolOutput`]) — so the Ctrl+O overlay
     /// rebuilds and tails the live output rather than showing a frozen snapshot
-    /// (`docs/tool-streaming.md`); without it a single streaming call leaves the
+    /// (`docs/ui/tool-streaming.md`); without it a single streaming call leaves the
     /// queue length and status unchanged and the overlay would go static. See
-    /// `docs/parallel-tools.md`.
+    /// `docs/tools/parallel-tools.md`.
     pub(super) tool_queue: Option<(usize, ToolStatus, usize)>,
     /// The running call's revision ([`App::tool_revision`]): a terminal
     /// session's same-length redraw (`45%` → `46%`) or a refined header
-    /// changes no length above (`docs/interactive-shell.md`).
+    /// changes no length above (`docs/tools/interactive-shell.md`).
     tool_revision: u64,
     /// The round's drafts' revision: a `write` streaming into its cell moves
     /// no length above, and the overlay follows it like a streaming tool's
-    /// output (`docs/write-streaming.md`).
+    /// output (`docs/ui/write-streaming.md`).
     drafts_revision: u64,
     /// How many messages are waiting above the box — the follow-up entries
     /// **and** the ones handed to the running turn. Both, because pushing onto
     /// `App::steered` changes no history length and no tool queue, so a
     /// signature blind to it would leave the overlay frozen on a page that no
-    /// longer matches the strip (`docs/queue.md`).
+    /// longer matches the strip (`docs/input/queue.md`).
     queued_len: usize,
     backtrack_selected: Option<usize>,
     /// The subagent roster's mutation counter — a live agent streaming (its
     /// tree counters, its Ctrl+O cell) invalidates the tail exactly like a
-    /// streaming tool (docs/agent-tool.md).
+    /// streaming tool (docs/agents/agent-tool.md).
     agents_generation: u64,
 }
 
@@ -417,7 +417,7 @@ impl TranscriptCache {
                 theme: super::palette::active_theme(),
             });
             // The header banner tops the transcript exactly as it tops the
-            // inline conversation (docs/header.md) — the overlay mirrors the
+            // inline conversation (docs/ui/header.md) — the overlay mirrors the
             // real scrollback, so Ctrl+O never hides it.
             self.rows.clear();
             self.rows.extend(header_lines(app, width));
@@ -484,8 +484,8 @@ impl TranscriptCache {
     /// assistant text, then every live tool call — the running one followed by
     /// any `⎿ Waiting…` siblings of a parallel batch, in order, so the overlay
     /// shows the full live picture and a waiting call is never hidden under
-    /// Ctrl+O (docs/parallel-tools.md) — then the still-queued backlog
-    /// ([`queued_lines`]' inset rows, docs/queue.md), and the placeholder when
+    /// Ctrl+O (docs/tools/parallel-tools.md) — then the still-queued backlog
+    /// ([`queued_lines`]' inset rows, docs/input/queue.md), and the placeholder when
     /// nothing at all follows the banner.
     fn build_tail(&mut self, app: &App, width: u16) {
         if let Some(text) = app.streaming_text()
@@ -496,14 +496,14 @@ impl TranscriptCache {
             self.rows.extend([Line::default()]);
         }
         // An open thinking phase, whole (the pager has no row budget, unlike
-        // the strip's windowed block) — docs/thinking-stream.md.
+        // the strip's windowed block) — docs/ui/thinking-stream.md.
         if let Some(text) = app.reasoning() {
             self.rows.extend(reasoning_live_full_lines(text, width));
             self.rows.extend([Line::default()]);
         }
         // The live agent group's members expand as their own `● Agent(…)`
         // cells — activity live — before the tool queue, mirroring the strip's
-        // order (docs/agent-tool.md). Committed groups render from history.
+        // order (docs/agents/agent-tool.md). Committed groups render from history.
         if let Some(live) = app.agent_group() {
             for id in &live.ids {
                 if let Some(run) = app.agent(id) {
@@ -595,7 +595,7 @@ impl TranscriptCache {
 /// Every live call of a conversation, expanded for the pager, each over a
 /// blank row: the queue's cells in order — a queued previewed call with the
 /// whole file it streamed under its `Waiting…`/`Running…` corner — then each
-/// call still being generated, every line so far (`docs/write-streaming.md`).
+/// call still being generated, every line so far (`docs/ui/write-streaming.md`).
 /// The one walk the main transcript's tail and an agent's share, so the two
 /// pagers show a streaming file alike.
 fn live_call_full_lines(
@@ -668,7 +668,7 @@ pub fn backtrack_scroll_for(
 /// the `tool_scroll` that brings the highlighted user message into the
 /// pager's body window, or `None` with no selection. Convenience over
 /// [`backtrack_scroll_for`] that builds the selection itself (the draw loop
-/// reuses [`TranscriptCache`]). See `docs/backtrack.md`.
+/// reuses [`TranscriptCache`]). See `docs/input/backtrack.md`.
 #[must_use]
 pub fn backtrack_scroll(app: &App, width: u16, screen_height: u16) -> Option<usize> {
     backtrack_scroll_for(
@@ -717,7 +717,7 @@ pub(super) fn tool_view_separator(width: u16, scroll: usize, max: usize) -> Line
 
 /// [`tool_view_separator`] with a `lead` set into the rule's left end, one
 /// dash in — the Ctrl+D view's `5 messages · ≈1.2k tokens` summary
-/// (`docs/context.md`). The percentage keeps its place; a lead the rule
+/// (`docs/architecture/context.md`). The percentage keeps its place; a lead the rule
 /// cannot hold beside it, a dash between them, is left out whole rather
 /// than cut.
 pub(super) fn labeled_separator(
@@ -815,7 +815,7 @@ fn render_tool_view_window(
     let dim = Style::new().fg(tool_dim_color());
     // While a backtrack preview highlights a message, the close-hint row
     // shows the preview's keys instead (codex's highlighted-pager footer —
-    // docs/backtrack.md); the scroll keys above keep working either way.
+    // docs/input/backtrack.md); the scroll keys above keep working either way.
     // Outside a preview the row tells the truth about Esc: when it would
     // *begin* the preview (idle with a previous user message — the shared
     // `App::overlay_esc_backtracks`, the very predicate the key arm guards

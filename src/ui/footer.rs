@@ -1,7 +1,7 @@
 //! The live region's last row: the session footer and everything that takes
 //! its slot (the Ctrl+R search line, the `!` shell hint, the backtrack hint),
 //! plus the toast above the box and the queued-message rows.
-//! See `docs/footer.md`, `docs/toast.md`, `docs/queue.md`.
+//! See `docs/ui/footer.md`, `docs/ui/toast.md`, `docs/input/queue.md`.
 
 use super::theme::*;
 use super::wrap::{cols, truncate_cols};
@@ -102,7 +102,7 @@ fn queued_signature(app: &App, width: u16) -> u64 {
     let mut hasher = DefaultHasher::new();
     width.hash(&mut hasher);
     // The rows' colours come from the active theme, so a `/theme` switch
-    // must rebuild them too (`docs/theme.md`).
+    // must rebuild them too (`docs/ui/theme.md`).
     super::palette::active_theme().hash(&mut hasher);
     if let Some(agent) = app.viewed_agent() {
         // The branch itself is part of the key: the same texts render as a
@@ -123,7 +123,7 @@ fn queued_signature(app: &App, width: u16) -> u64 {
 /// wrapped to `width` minus the `QUEUED_INDENT` every row is inset by),
 /// concatenated — every pending message shows (no display cap). A **blank row
 /// divides each turn** from the next, so Tab-opened follow-ups read as separate
-/// turns from what is going into the one running (`docs/queue.md`).
+/// turns from what is going into the one running (`docs/input/queue.md`).
 ///
 /// Whose messages depends on which conversation is on screen — the same rows
 /// either way, because a pending message is a pending message:
@@ -163,7 +163,7 @@ fn build_queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if let Some(agent) = app.viewed_agent() {
         // The main branch's shape exactly: what the running loop reads next
         // leads as one undivided block, its Tab follow-up turns come after,
-        // a blank row dividing each of them (`docs/queue.md`).
+        // a blank row dividing each of them (`docs/input/queue.md`).
         for text in &agent.queued {
             lines.extend(user_rows(text));
         }
@@ -188,7 +188,7 @@ fn build_queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 }
             }
             // A queued `!` command renders like the exec cell it becomes: the
-            // red `! command` Role::Shell header (docs/shell-command.md).
+            // red `! command` Role::Shell header (docs/input/shell-command.md).
             QueuedTurn::Shell(cmd) => lines.extend(
                 message_lines(Role::Shell, cmd, inner)
                     .into_iter()
@@ -224,23 +224,23 @@ fn indent_queued_line(line: Line<'static>) -> Line<'static> {
 pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
     // The Ctrl+R search line takes the slot whenever a search is open — even
     // with no session info injected, unlike the ambient footer (no band can be
-    // open during a search; see docs/history-search.md).
+    // open during a search; see docs/input/history-search.md).
     if app.history_search.is_some() {
         return 1;
     }
     // The `!` shell-mode hint takes the slot the same way (no band can be open
-    // in shell mode either; see docs/shell-command.md).
+    // in shell mode either; see docs/input/shell-command.md).
     if app.shell_mode {
         return 1;
     }
     // A primed backtrack's "esc again…" hint likewise (priming requires an
     // empty composer, so no band/search/shell can be open with it; see
-    // docs/backtrack.md).
+    // docs/input/backtrack.md).
     if app.backtrack.primed {
         return 1;
     }
     // The roster selection's hint line likewise (its gate requires an empty
-    // composer with no palette/picker open; see docs/agent-tool.md).
+    // composer with no palette/picker open; see docs/agents/agent-tool.md).
     if app.agent_selection().is_some() {
         return 1;
     }
@@ -250,7 +250,7 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
 /// The primed-backtrack footer line (codex's `esc_backtrack_hint`): the
 /// `FOOTER_INDENT`, the `esc` key bold-cyan like the search-line hint keys,
 /// then the dim ` again to edit previous message` label. Takes the footer
-/// slot while [`crate::app::Backtrack::primed`]. See `docs/backtrack.md`.
+/// slot while [`crate::app::Backtrack::primed`]. See `docs/input/backtrack.md`.
 #[must_use]
 pub fn backtrack_hint_line() -> Line<'static> {
     Line::from(vec![
@@ -267,11 +267,11 @@ pub fn backtrack_hint_line() -> Line<'static> {
 
 /// The footer's single line: the `FOOTER_INDENT`, then `{model} · {cwd}` —
 /// codex's status line with theme colours on: the model in the accent, the
-/// path in green, the ` · ` separators dim (`docs/footer.md`) — cut with a
+/// path in green, the ` · ` separators dim (`docs/ui/footer.md`) — cut with a
 /// trailing `…` when it overflows `width` (codex's
 /// `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable model
 /// carries its thinking mode right beside the name (`{model} {mode}`, Ctrl+T
-/// cycles it — `docs/reasoning.md`), in the status line's thinking colour.
+/// cycles it — `docs/providers/reasoning.md`), in the status line's thinking colour.
 /// Empty when no session info has been injected.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
@@ -285,7 +285,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // zone, like the transcript separator's right-aligned percentage, not
     // another ` · ` segment — so however long the model/cwd/gauge chain
     // grows, the ellipsis truncation below eats the left content and never
-    // the one segment with a safety meaning (docs/permissions.md). Its
+    // the one segment with a safety meaning (docs/state/permissions.md). Its
     // columns (plus a gap) come off the chain's budget up front. Absent
     // while permissions are disabled: nothing asks, and a mode would be a
     // lie. Its colour warms with what the mode runs unasked — manual dim,
@@ -295,8 +295,8 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // The model segment names the conversation on screen: inside a subagent's
     // session view, a type pinned to another model shows that model — and no
     // thinking mode, which the launch dropped along with the session's model
-    // (`docs/subagents.md`) — while an inheriting type keeps the session's
-    // pair (`docs/agent-context-gauge.md`).
+    // (`docs/agents/subagents.md`) — while an inheriting type keeps the session's
+    // pair (`docs/agents/agent-context-gauge.md`).
     let mut segments = match app.viewed_agent_model() {
         Some(pinned) => vec![Span::styled(pinned.to_string(), model_style)],
         None => {
@@ -308,7 +308,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
                 ));
             }
             // The selected speed tier follows the thinking mode — `fast` —
-            // and standard shows nothing (docs/fast-mode.md).
+            // and standard shows nothing (docs/providers/fast-mode.md).
             if let Some(tier) = app.speed.as_ref().and_then(|speed| speed.selected()) {
                 model.push(Span::styled(format!(" {}", tier.label()), qualifier));
             }
@@ -322,9 +322,9 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     // The context gauge — `{used}/{window} ({pct}%)` (e.g. `1.3k/160k
     // (0.8%)`) — whenever the window of the conversation ON SCREEN is known,
     // so the user sees both the raw context size and auto-compact approaching
-    // (docs/compact.md): the main session's pair, or — inside a subagent's
+    // (docs/architecture/compact.md): the main session's pair, or — inside a subagent's
     // session view — that agent's own context against its model's window
-    // (`App::context_gauge`, docs/agent-context-gauge.md; reading the lead's
+    // (`App::context_gauge`, docs/agents/agent-context-gauge.md; reading the lead's
     // pair there was the reported bug). Both counts are humanized by the
     // status line's token formatter; the share keeps one decimal. It rests
     // dim and turns amber, then red, as the window fills — the `/context`
@@ -348,7 +348,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         ));
     }
     // Running background shells append a `· {n} shell(s)` count — the ↓
-    // manager's ambient reminder (docs/background.md). ↓ *focuses* that
+    // manager's ambient reminder (docs/tools/background.md). ↓ *focuses* that
     // segment: it lights up on cyan and waits for the Enter that opens the
     // manager band, while every other segment keeps its dim styling, so the
     // row loses none of its context.
@@ -407,7 +407,7 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
 /// How many rows the transient toast reserves above the box: 0 when none is
 /// live, else 1 (a single row, truncated to the width). Added to the strip by
 /// [`live_height`]/`live_layout`, between the queued messages and the box's
-/// top rule. See `docs/toast.md`.
+/// top rule. See `docs/ui/toast.md`.
 #[must_use]
 pub fn toast_rows(app: &App) -> u16 {
     u16::from(app.toast().is_some())
@@ -416,7 +416,7 @@ pub fn toast_rows(app: &App) -> u16 {
 /// The transient toast's single line: the `TOAST_INDENT` then the message,
 /// dim for an info toast (`toast_color()`) or a softened red for a failure
 /// (`toast_error_color()`), cut with a trailing `…` when it overflows `width`
-/// (like the footer). Empty when no toast is live. See `docs/toast.md`.
+/// (like the footer). Empty when no toast is live. See `docs/ui/toast.md`.
 #[must_use]
 pub fn toast_line(app: &App, width: u16) -> Line<'static> {
     let Some(toast) = app.toast() else {
@@ -441,7 +441,7 @@ pub fn toast_line(app: &App, width: u16) -> Line<'static> {
 /// The `!` shell-mode footer line: the `FOOTER_INDENT` then `Shell mode` in
 /// red (`shell_mode_color()`) — codex's `shell_mode_footer_line`. Shown in the
 /// footer slot whenever the composer holds a `!command` (see
-/// `docs/shell-command.md`).
+/// `docs/input/shell-command.md`).
 #[must_use]
 pub fn shell_mode_line() -> Line<'static> {
     Line::from(vec![

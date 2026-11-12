@@ -1,9 +1,9 @@
 //! The Anthropic **Console sign-in**: Anthropic's OAuth PKCE flow, the
 //! refresh-token store it fills, and the short-lived access token every
-//! request is minted with. See `docs/claude.md`.
+//! request is minted with. See `docs/providers/claude.md`.
 //!
-//! The third sign-in, after GitHub Copilot's device flow (`docs/copilot.md`)
-//! and OpenAI's browser loopback (`docs/chatgpt.md`), and it keeps their
+//! The third sign-in, after GitHub Copilot's device flow (`docs/providers/copilot.md`)
+//! and OpenAI's browser loopback (`docs/providers/chatgpt.md`), and it keeps their
 //! two-layer split exactly: a long-lived token in the `.env` key store,
 //! exchanged (and cached in memory, never written) for the short-lived
 //! credential the API actually takes.
@@ -20,7 +20,7 @@
 //! policy is explicit that third-party clients may not offer Claude.ai login
 //! or route requests through subscription credentials, and that flow
 //! additionally requires impersonating Claude Code's client id, user agent
-//! and system prompt. `docs/claude.md` carries the quote and the reasoning.
+//! and system prompt. `docs/providers/claude.md` carries the quote and the reasoning.
 //!
 //! # Where it differs from the OpenAI flow next door
 //!
@@ -53,7 +53,7 @@ use crate::stream::CancelToken;
 /// The OAuth client id Anthropic's own CLI signs in with. There is no
 /// third-party registration path for this API, so a client that signs a user
 /// in to their own Anthropic account uses it — the same posture
-/// `docs/chatgpt.md` documents for Codex's client id.
+/// `docs/providers/chatgpt.md` documents for Codex's client id.
 pub const CLIENT_ID: &str = "41077d10-94b8-4194-be48-d251e9eb21b4";
 
 /// The Console host the sign-in is approved on.
@@ -94,7 +94,7 @@ const INFERENCE_SCOPES: [&str; 4] = [
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the sign-in page waits for the browser before giving up — the
-/// same patience `docs/chatgpt.md`'s flow keeps, and the number its countdown
+/// same patience `docs/providers/chatgpt.md`'s flow keeps, and the number its countdown
 /// shows.
 pub const AUTH_TIMEOUT: Duration = Duration::from_secs(600);
 

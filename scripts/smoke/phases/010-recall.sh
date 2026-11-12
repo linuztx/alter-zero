@@ -5,7 +5,7 @@
 smoke_begin
 
 # ↑ recalls the last sent message into the input box, ↓ past the
-# newest clears it, and ↑ + Enter RESUBMITS it (docs/input-history.md). The
+# newest clears it, and ↑ + Enter RESUBMITS it (docs/input/input-history.md). The
 # committed user line and the input prompt share the "❯ " glyph, so the
 # assertions count occurrences: recall adds one (box + scrollback), the ↓ clear
 # removes it, and the resubmit commits a second scrollback copy plus a second
@@ -34,7 +34,7 @@ recall_resubmit_count=$(printf '%s\n' "$resubmitted" | grep -cF "❯ $RECALL_MSG
 echo "==== Phase 10: '❯ $RECALL_MSG' lines — after Up=$recall_up_count, after Down=$recall_down_count, after resubmit=$recall_resubmit_count ===="
 tmux kill-session -t "$S7" 2>/dev/null
 
-# Phase 10: ↑/↓ input-history recall (docs/input-history.md). After turn 1 the
+# Phase 10: ↑/↓ input-history recall (docs/input/input-history.md). After turn 1 the
 # committed user line is the only "❯ $RECALL_MSG"; ↑ adds the recalled copy in
 # the input box, ↓ clears it again, and ↑ + Enter commits a second copy.
 if [ "${recall_up_count:-0}" -lt 2 ]; then

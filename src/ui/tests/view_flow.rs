@@ -1,5 +1,5 @@
 //! The view-flow policy: which rows of a screen-tall framed view flow into
-//! scrollback, and the signature the boundary tracks (`docs/view-flow.md`).
+//! scrollback, and the signature the boundary tracks (`docs/ui/view-flow.md`).
 
 use super::*;
 use crate::app::McpPage;
@@ -105,7 +105,7 @@ fn a_page_taller_than_the_terminal_flows_its_top() {
 fn a_covering_modal_suppresses_the_flow() {
     // Eligibility mirrors the render precedence: an open permission prompt
     // paints INSTEAD of the menu, so nothing of the *menu* may flow while it
-    // covers it. The prompt is flow-eligible itself now (docs/view-flow.md),
+    // covers it. The prompt is flow-eligible itself now (docs/ui/view-flow.md),
     // but this short bash prompt fits the terminal whole — so the flow the
     // menu had established must simply clean up, with nothing in its place.
     let mut app = tall_mcp_app();
@@ -170,7 +170,7 @@ fn the_flow_keeps_its_newest_rows_under_the_cap() {
 
 #[test]
 fn a_picker_sheds_rows_where_a_menu_flows() {
-    // The search-line pickers are framed bodies too (docs/view-flow.md), but
+    // The search-line pickers are framed bodies too (docs/ui/view-flow.md), but
     // a terminal shorter than their compact page gets a smaller rung, down
     // to the search line alone, so their pages never flow. Their spot in the
     // precedence chain still sits ahead of the browsing menus: a /settings
@@ -204,7 +204,7 @@ fn a_picker_sheds_rows_where_a_menu_flows() {
 #[test]
 fn a_screen_tall_permission_prompt_flows_its_top() {
     // The permission prompt is a framed view like the rest now
-    // (docs/view-flow.md): a page taller than the terminal flows its static
+    // (docs/ui/view-flow.md): a page taller than the terminal flows its static
     // top — the opening rule, the title, the body's first rows — while the
     // tail block stays painted. Stepping the selection restyles option rows
     // near the page's end, so the flowed top holds its signature and ↑/↓
@@ -275,10 +275,10 @@ fn tall_ask_app() -> App {
 #[test]
 fn a_screen_tall_ask_modal_flows_its_top() {
     // The ask modal is the permission prompt's sibling here too
-    // (docs/view-flow.md): a page taller than the terminal used to drop its
+    // (docs/ui/view-flow.md): a page taller than the terminal used to drop its
     // top rows — the chip strip, the question, the first options — into no
     // buffer at all (the reported "small terminal hides the texts"). The page
-    // sheds what the choice doesn't need first (docs/ask.md); shorter than
+    // sheds what the choice doesn't need first (docs/tools/ask.md); shorter than
     // even its smallest page, the skipped top flows into real scrollback,
     // where the terminal's own scrolling reads it, and the painted tail keeps
     // the interactive rows.
@@ -338,7 +338,7 @@ fn a_screen_tall_ask_modal_flows_its_top() {
 
 /// The ↓ background manager open on one shell's **details** page — the
 /// live-tailing page whose top used to be dropped into no buffer at all on a
-/// short terminal (`docs/background.md`).
+/// short terminal (`docs/tools/background.md`).
 fn tall_background_app() -> App {
     let mut app = App::new();
     app.bg_started(
@@ -366,7 +366,7 @@ fn the_background_managers_details_page_flows_its_top() {
     // title, the status/runtime fields — went into NO buffer at all, so
     // scrolling the terminal up showed the conversation running straight
     // into a headless box. They flow into real scrollback now, like every
-    // other framed view (`docs/view-flow.md`).
+    // other framed view (`docs/ui/view-flow.md`).
     let app = tall_background_app();
     let (width, height) = (60u16, 20u16);
     let lines = crate::ui::background_view_lines(&app, width);
@@ -502,7 +502,7 @@ fn the_managers_list_page_signs_its_rows_like_every_other_menu() {
 }
 
 /// A turn with a `bash` call streaming its output — the strip content the
-/// user reported losing on a short terminal (`docs/strip-flow.md`).
+/// user reported losing on a short terminal (`docs/ui/strip-flow.md`).
 fn streaming_bash_app() -> App {
     let mut app = App::new();
     app.begin_stream();
@@ -549,7 +549,7 @@ fn the_strips_flow_freezes_while_the_command_streams() {
     // tail, the elapsed, the breathing bullet. Signing its rows would
     // purge-rebuild the screen thirty times a second, so it is signed on
     // what the strip is *of* and the flowed rows freeze (the ↓ manager's
-    // rule, `docs/view-flow.md`).
+    // rule, `docs/ui/view-flow.md`).
     let mut app = streaming_bash_app();
     let (width, height) = (60u16, 11u16);
     let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");

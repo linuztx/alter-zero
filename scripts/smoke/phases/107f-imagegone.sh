@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# A PICTURE WHOSE FILE IS GONE (docs/images.md). The reported bug: the agent
+# A PICTURE WHOSE FILE IS GONE (docs/ui/images.md). The reported bug: the agent
 # reads a screenshot it saved under `/tmp`, the machine reboots and `/tmp`
 # goes with it, and resuming the session drew a screenful of blank rows
 # between the `Read image` cell and the reply. The cell's own fact line still

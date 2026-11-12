@@ -1,6 +1,6 @@
 //! The startup read: what [`InlineViewport::init`] asks the terminal before
 //! the first frame, and the pure scanner that sorts out its answer
-//! (`docs/images.md`, *Asking the terminal*).
+//! (`docs/ui/images.md`, *Asking the terminal*).
 //!
 //! Invariant 1 allows one stdin reader, and before the loop's `EventStream`
 //! exists the cursor query's read is it — so that one synchronous read is

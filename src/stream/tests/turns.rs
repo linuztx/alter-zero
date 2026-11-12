@@ -11,7 +11,7 @@ fn a_table_prompt_streams_a_pure_table_turn() {
     // concatenate to the reply, ending in StreamDone. The reply carries a
     // multi-row GFM table with prose AFTER it, so the block closes
     // mid-stream: the strip-collapse geometry the smoke suite guards
-    // (docs/table-streaming.md).
+    // (docs/ui/table-streaming.md).
     let events = turn_events("show me a table", 0);
     let text: String = chunk_text(&events);
     assert_eq!(text, dummy_response("show me a table"));
@@ -48,7 +48,7 @@ fn a_compact_prompt_plays_a_text_only_summary_turn() {
     // /compact's summarization prompt must never trigger the scripted tool
     // batch or thinking phase — codex sends the summarize request with no
     // tools, and the offline path (and smoke.sh) drives this branch
-    // (docs/compact.md).
+    // (docs/architecture/compact.md).
     let events = turn_events(crate::context::SUMMARIZATION_PROMPT, 0);
     assert!(
         events
@@ -73,7 +73,7 @@ fn turn_events_interleaves_at_least_one_tool_call() {
         .count();
     // A resolution is a `ToolEnd` or — for the file tools, whose model-facing
     // ack differs from the numbered body on the cell — a `ToolAnswered`
-    // (`docs/tools.md`).
+    // (`docs/tools/tools.md`).
     let ends = events
         .iter()
         .filter(|e| {
@@ -93,7 +93,7 @@ fn turn_events_announces_a_parallel_batch_before_its_tools() {
     // is emitted *before* the first `ToolStart`, so the UI shows the
     // not-yet-run calls as `⎿ Waiting…`. Each batch entry's `(name, args)`
     // matches the `ToolStart` that runs it, in order. See
-    // `docs/parallel-tools.md`.
+    // `docs/tools/parallel-tools.md`.
     let events = turn_events("hi", 0);
     let batch_pos = events
         .iter()
@@ -134,7 +134,7 @@ fn a_parallel_prompt_triggers_the_vivid_three_call_bash_batch() {
     // A prompt mentioning "parallel" opts into the vivid demo: a single
     // ToolBatch of three `Bash(ping …)` calls announced up front (so the
     // not-yet-run ones show `⎿ Waiting…`), then run in order. The default turn
-    // keeps its compact two-call batch. See `docs/parallel-tools.md`.
+    // keeps its compact two-call batch. See `docs/tools/parallel-tools.md`.
     let events = turn_events("run three pings in parallel", 0);
     let StreamEvent::ToolBatch(items) = events
         .iter()
@@ -229,7 +229,7 @@ fn the_read_cell_carries_the_executor_s_numbered_output() {
     // `llm::tools::format_read`'s `{n:>W} {text}` gutter. That format is what
     // `ui::file_cell_lines` parses into a numbered, syntax-highlighted file
     // cell — canned prose resolves as a plain text peek instead, which is the
-    // difference the user sees. See `docs/dummy-backend.md`.
+    // difference the user sees. See `docs/architecture/dummy-backend.md`.
     let (args, output) = resolved_tool(&turn_events("hello there", 0), "Read");
     assert!(
         args.ends_with(".py"),
@@ -292,7 +292,7 @@ fn plain(line: &ratatui::text::Line<'_>) -> String {
 #[test]
 fn the_hooks_demo_s_refusal_names_the_event_the_hook_and_its_file() {
     // The offline refusal is the live one (`llm::hooks::block_texts`,
-    // docs/hooks.md): the red cell says which event's hook refused, which
+    // docs/tools/hooks.md): the red cell says which event's hook refused, which
     // hook, and the `hooks.json` it is configured in — all three rows inline,
     // never folded behind a hint — while the instruction not to retry is the
     // model's alone.
@@ -354,7 +354,7 @@ fn the_hooks_demo_s_refusal_names_the_event_the_hook_and_its_file() {
 
 #[test]
 fn the_hooks_demo_s_stop_hook_keeps_it_going_under_the_live_cell() {
-    // docs/hooks.md *The hook-run cell*: the demo's closing Stop hook blocks
+    // docs/tools/hooks.md *The hook-run cell*: the demo's closing Stop hook blocks
     // the way a real one does — the feedback is the live wire text, the
     // cell the live builder's report, drawn by the live renderer — and the
     // round it bought streams after it, closing on the hand-off.
@@ -505,11 +505,11 @@ fn every_bash_cell_carries_the_executor_s_exit_code_frame() {
 
 #[test]
 fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
-    // Demo/live parity past the cell (`docs/dummy-backend.md`): a scripted
+    // Demo/live parity past the cell (`docs/architecture/dummy-backend.md`): a scripted
     // `Write`/`Edit` carries the verbatim arguments a real call would — so
     // the offline Ctrl+D shows the same replayed shape — and resolves as the
     // two-text `ToolAnswered` the live executor sends, the numbered body on
-    // the cell and one line to the model (`docs/tools.md`).
+    // the cell and one line to the model (`docs/tools/tools.md`).
     let events = turn_events("show me a diff", 0);
     let mut seen = Vec::new();
     let mut open: Option<(String, String)> = None;
@@ -580,7 +580,7 @@ fn the_scripted_file_calls_carry_their_arguments_and_resolve_with_the_ack() {
 fn the_file_demo_says_which_mode_would_have_asked() {
     // The demo's calls are scripted, so its reply says when real ones would
     // have asked first: in manual mode, not the default. A session starts in
-    // auto (docs/permissions.md), where file changes like these run unasked,
+    // auto (docs/state/permissions.md), where file changes like these run unasked,
     // and the reply used to promise a prompt the user's session never shows.
     let text = chunk_text(&turn_events("show me a diff", 0));
     assert!(text.contains("default **auto** mode"), "{text}");
@@ -589,7 +589,7 @@ fn the_file_demo_says_which_mode_would_have_asked() {
 
 #[test]
 fn a_diff_prompt_scripts_the_write_then_edit_demo() {
-    // The file-change design (`docs/tools.md`) has no offline demo otherwise:
+    // The file-change design (`docs/tools/tools.md`) has no offline demo otherwise:
     // a `Write` shows the whole new file numbered, an `Edit` shows only the
     // changed hunks with `+`/`-` signs the cell tints green and red. The
     // scripted outputs are built by the executor's own renderers, so the
@@ -709,7 +709,7 @@ fn turn_events_resolve_each_tool_before_the_next_starts() {
     // Tools don't nest: after a ToolStart, only its live ToolOutput chunks
     // may appear before the matching ToolEnd — never a second ToolStart — so
     // the loop only ever tracks one running tool at a time. See
-    // `docs/tool-streaming.md`.
+    // `docs/ui/tool-streaming.md`.
     let events = turn_events("anything", 0);
     let mut running = false;
     for event in &events {
@@ -738,7 +738,7 @@ fn turn_events_streams_each_bash_output_before_its_end() {
     // executor frames the result with its `Exit code: N` line only when it
     // resolves, so the live tail shows command output and nothing else. The
     // ToolEnd then carries the framed body (the authoritative full cell). See
-    // `docs/tool-streaming.md`.
+    // `docs/ui/tool-streaming.md`.
     let events = turn_events("run three pings in parallel", 0);
     let mut streamed = String::new();
     let mut resolved = 0;
@@ -884,7 +884,7 @@ fn an_agents_prompt_scripts_the_two_agent_demo() {
 
 #[test]
 fn a_markdown_prompt_streams_a_long_structured_document_token_by_token() {
-    // The slow-stream stress demo (`docs/slow-stream.md`): a prompt
+    // The slow-stream stress demo (`docs/ui/slow-stream.md`): a prompt
     // mentioning "markdown" plays a text-only turn — no thinking phase, no
     // tool calls, so the whole document is ONE message and the incremental
     // renderer carries every block kind from the first character to the
@@ -962,7 +962,7 @@ fn the_markdown_tour_acknowledges_images_and_hands_off() {
 #[test]
 fn every_content_line_of_the_markdown_tour_is_distinct() {
     // The smoke suite proves nothing streams twice by counting each row of
-    // the settled transcript once (`docs/slow-stream.md`): that only works
+    // the settled transcript once (`docs/ui/slow-stream.md`): that only works
     // if no two source lines render alike, so the document is written with
     // every non-blank line distinct — table delimiter rows and fence
     // markers excepted, being structural.
@@ -982,7 +982,7 @@ fn every_content_line_of_the_markdown_tour_is_distinct() {
 #[test]
 fn the_file_change_demo_streams_its_write_like_a_live_model() {
     // The offline demo has to show the file streaming into its cell
-    // (docs/write-streaming.md), so its `write` is generated the way a live
+    // (docs/ui/write-streaming.md), so its `write` is generated the way a live
     // model generates one: the call named under its slot, then its real JSON
     // arguments in token-sized pieces — which decode to the very file the
     // call then writes.

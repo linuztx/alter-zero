@@ -1,5 +1,5 @@
 //! The colour **palettes** — one per [`Theme`] — and the ambient *active*
-//! one every renderer reads. See `docs/theme.md`.
+//! one every renderer reads. See `docs/ui/theme.md`.
 //!
 //! [`super::theme`] names what each colour is *for* (the accent a menu
 //! selects with, the tool bullet's success green, the `⎿` gutter's dim, …)
@@ -79,14 +79,14 @@ pub(super) struct Palette {
     pub purple: Color,
     /// The numbered diff rows' ground — an added row, a removed row, and
     /// the brighter marks under the characters that actually changed
-    /// (`docs/inline-diff.md`).
+    /// (`docs/ui/inline-diff.md`).
     pub diff_add_bg: Color,
     pub diff_del_bg: Color,
     pub diff_add_mark_bg: Color,
     pub diff_del_mark_bg: Color,
     /// The bottom of the `pulse` spinner style's breath (its top is the
     /// text colour; the running tool bullet itself blinks in `dim`,
-    /// `docs/tool-pulse.md`).
+    /// `docs/ui/tool-pulse.md`).
     pub pulse_dim: Color,
     /// The syntax theme the code blocks and file cells are coloured with —
     /// the same family as the chrome, so a reply's code and the frame around
@@ -425,7 +425,7 @@ pub fn active_theme() -> Theme {
 /// Make `theme` the one every renderer on this thread paints with, from now
 /// on — the boundary's call: at bootstrap, before the banner is built, and
 /// on a `/theme` switch, before the purge rebuild that repaints the
-/// conversation in it (`docs/theme.md`). The pure [`crate::app::App::theme`]
+/// conversation in it (`docs/ui/theme.md`). The pure [`crate::app::App::theme`]
 /// records the same choice; the two are kept equal there.
 pub fn activate_theme(theme: Theme) {
     ACTIVE.with(|active| active.set(theme));
@@ -433,7 +433,7 @@ pub fn activate_theme(theme: Theme) {
 
 /// A named colour's bright twin (`Red` → `LightRed`), or the colour itself:
 /// how a theme of the terminal's own sixteen colours gets a second shade of
-/// a hue, where an RGB theme would mix one (`docs/theme.md`).
+/// a hue, where an RGB theme would mix one (`docs/ui/theme.md`).
 #[must_use]
 pub(super) const fn bright(color: Color) -> Color {
     match color {
@@ -451,7 +451,7 @@ pub(super) const fn bright(color: Color) -> Color {
 
 /// Run `f` with `theme` active, then restore whatever was active before —
 /// how the `/theme` picker renders its preview cells in the highlighted
-/// theme while the rest of the screen keeps the session's (`docs/theme.md`),
+/// theme while the rest of the screen keeps the session's (`docs/ui/theme.md`),
 /// and how a test renders under a theme without leaking it. Restores on a
 /// panic too, so an assertion failing inside the closure cannot recolour the
 /// tests that follow it on the same thread.

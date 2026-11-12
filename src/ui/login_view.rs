@@ -1,7 +1,7 @@
 //! The inline `/login` onboarding — the method root, the subscription list,
 //! the sign-in method choice a two-way subscription puts first, the sign-in
 //! page, the API-key provider list and its masked key field. See
-//! `docs/llm.md`, `docs/copilot.md` and `docs/chatgpt.md`.
+//! `docs/providers/llm.md`, `docs/providers/copilot.md` and `docs/providers/chatgpt.md`.
 
 use crate::app::{LocalChoice, ProviderChoice, ServerPage};
 
@@ -341,7 +341,7 @@ fn device_page_lines(device: &DeviceLogin, width: u16) -> Vec<Line<'static>> {
     if !device.verification_uri.is_empty() {
         // The URL wraps rather than being cut — it is the one thing on the
         // page that must arrive exactly — and it is a real **hyperlink**
-        // (`docs/links.md`): every wrapped fragment carries the whole target,
+        // (`docs/ui/links.md`): every wrapped fragment carries the whole target,
         // so clicking the second half opens the same URL as clicking the
         // first. The two pages differ in what leads it and how it is lit. A
         // device page keeps `Visit ` and stays dim, because the code in its
@@ -442,7 +442,7 @@ fn method_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec
     )
 }
 
-/// The sign-in method choice ([`KeyStep::SigninMethod`], `docs/chatgpt.md`):
+/// The sign-in method choice ([`KeyStep::SigninMethod`], `docs/providers/chatgpt.md`):
 /// a `Select {subscription} login method:` title over the ways in the chosen
 /// subscription offers — `Browser login (default)` / `Device code login
 /// (headless)` — over the root's hint ([`question_page_lines`]): the page
@@ -477,7 +477,7 @@ fn signin_method_page_lines(
 
 /// A framed `/login` page built from content **blocks**: top rule, each
 /// non-empty block separated by exactly one blank row, bottom rule — no blank
-/// row hugs either rule (`docs/view-flow.md` *The frame hugs its content*).
+/// row hugs either rule (`docs/ui/view-flow.md` *The frame hugs its content*).
 ///
 /// An empty block contributes nothing at all, which is what lets a page grow
 /// and shrink without leaving a band of blanks behind — the sign-in page
@@ -498,11 +498,11 @@ fn login_page(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>>
 /// What the key step says about the provider it is asking for: the one-line
 /// description from `providers.toml` over the page its keys are created on,
 /// both dim, the URL a real hyperlink like every other URL this flow shows
-/// (`docs/links.md`).
+/// (`docs/ui/links.md`).
 ///
 /// **Wrapped, never cut.** A description that stops mid-word explains nothing
 /// and a clipped link opens nothing; the page's height is its own line count
-/// (`docs/view-flow.md`), so a continuation row costs only itself.
+/// (`docs/ui/view-flow.md`), so a continuation row costs only itself.
 ///
 /// Empty when the file names neither, so a provider with nothing to add gets
 /// exactly the page it had before.
@@ -523,7 +523,7 @@ fn provider_about_lines(choice: &ProviderChoice, width: u16) -> Vec<Line<'static
 
 /// The local server page's title: `Enter your LM Studio server URL` — or,
 /// once the server asked for one, `Enter your LM Studio API token`
-/// (`docs/local-models.md`).
+/// (`docs/providers/local-models.md`).
 pub(super) fn login_server_prompt(name: &str, token: bool) -> String {
     if token {
         format!("Enter your {name} API token")
@@ -592,7 +592,7 @@ fn server_status_lines(page: &ServerPage, width: u16) -> Vec<Line<'static>> {
     })
 }
 
-/// The local server page ([`KeyStep::Server`], `docs/local-models.md`) as
+/// The local server page ([`KeyStep::Server`], `docs/providers/local-models.md`) as
 /// blocks: the title, what the server is (or, on the token step, the
 /// server's own ask), the field, the test's status, and the hint — each
 /// block one blank row from the next, an empty one contributing nothing.
@@ -631,11 +631,11 @@ fn server_page_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static
 /// A `/login` list page: top rule, the `❯` filter, gap, the windowed list
 /// (the `→` under the `❯`), a `(n/total)` counter hanging under the names,
 /// gap, the step's dim hint rows, bottom rule — no blank row hugs either rule
-/// (`docs/view-flow.md` *The frame hugs its content*) — or, on a terminal too
+/// (`docs/ui/view-flow.md` *The frame hugs its content*) — or, on a terminal too
 /// short for that, the family's **compact** page: three rows of the list
 /// between the reserved overflow slots ([`model_compact_list`]), the counter
 /// and the where-keys-are-saved note yielding, so the filter, the
-/// highlighted row and the key hint stay on screen (`docs/view-flow.md` *A
+/// highlighted row and the key hint stay on screen (`docs/ui/view-flow.md` *A
 /// page that sheds rows before it flows*). A list the filter emptied has
 /// nothing to compact.
 ///
@@ -716,7 +716,7 @@ fn list_page_lines(onboarding: &KeyOnboarding, width: u16, height: u16) -> Vec<L
 /// says nothing), the masked `❯` field, and a dim `Enter to save · Esc to go
 /// back` hint. What [`render_key_onboarding`] paints (bottom-anchored) and
 /// `layout::key_onboarding_rows` counts, so the reserved height and the
-/// painted rows can never disagree (`docs/view-flow.md`).
+/// painted rows can never disagree (`docs/ui/view-flow.md`).
 pub(super) fn key_onboarding_lines(
     onboarding: &KeyOnboarding,
     width: u16,
@@ -758,8 +758,8 @@ pub(super) fn key_onboarding_lines(
 
 /// Render the **inline** `/login` onboarding flow into the live region, in
 /// place of the composer. Six steps sharing the `/model` picker's framed look
-/// — bottom-anchored like every framed view (`docs/view-flow.md`). Pure —
-/// `render_live` paints this. See `docs/llm.md` and `docs/copilot.md`.
+/// — bottom-anchored like every framed view (`docs/ui/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/providers/llm.md` and `docs/providers/copilot.md`.
 pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
     super::view_flow::render_framed_tail(
         area,

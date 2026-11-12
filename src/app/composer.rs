@@ -1,6 +1,6 @@
 //! The composer's editing seams around the [`TextArea`](crate::textarea::TextArea):
 //! bracketed-paste placeholders, Ctrl+V image attachments, and the `!` shell
-//! mode. See `docs/paste.md`, `docs/image-paste.md`, `docs/shell-command.md`.
+//! mode. See `docs/input/paste.md`, `docs/input/image-paste.md`, `docs/input/shell-command.md`.
 
 use super::types::IMAGE_INPUT_TOKENS;
 use super::*;
@@ -14,7 +14,7 @@ pub const SHELL_EMPTY_NOTICE: &str = "Type a command after ! to run it locally (
 /// [`command_query`], a shell command obviously contains whitespace). `Some("")`
 /// for a lone `!`. This is what flips the composer into "shell mode" (the red
 /// footer hint) and, on Enter from an idle composer, runs the rest locally. A
-/// port of codex's `is_bash_shell_command`; see `docs/shell-command.md`.
+/// port of codex's `is_bash_shell_command`; see `docs/input/shell-command.md`.
 #[must_use]
 pub fn shell_query(input: &str) -> Option<&str> {
     input.strip_prefix('!')
@@ -79,7 +79,7 @@ impl App {
     /// real text remembered in [`pasted`] for `take_input` to splice back in on
     /// send; a smaller paste is inserted verbatim, indistinguishable from typing
     /// it. The loop only calls this in the conversation view (the Ctrl+O overlay
-    /// has no composer, like typing there). See `docs/paste.md`.
+    /// has no composer, like typing there). See `docs/input/paste.md`.
     ///
     /// [`pasted`]: App::pasted
     pub fn on_paste(&mut self, pasted: &str) {
@@ -88,7 +88,7 @@ impl App {
         // query (readline's paste-into-isearch) instead of editing the doomed
         // preview underneath (the next rerun/cancel set_texts over the
         // composer). Control characters would corrupt the single-row search
-        // line, so they flatten to spaces. See `docs/history-search.md`.
+        // line, so they flatten to spaces. See `docs/input/history-search.md`.
         //
         // [`on_key`]: App::on_key
         if self.history_search.is_some() {
@@ -98,7 +98,7 @@ impl App {
         }
         // The `/secrets` page owns a paste the way it owns every key: into
         // its focused field, never the draft underneath — a pasted value
-        // must not land in a message (`docs/secrets.md`).
+        // must not land in a message (`docs/state/secrets.md`).
         if self.view == View::Conversation && self.secrets_page.is_some() {
             self.paste_into_secrets_page(pasted);
             return;
@@ -116,7 +116,7 @@ impl App {
     }
 
     /// The paste insertion itself, shared by the composer and the ask modal's
-    /// entry fields (`docs/ask.md`): normalise the line endings, then either
+    /// entry fields (`docs/tools/ask.md`): normalise the line endings, then either
     /// collapse an over-threshold paste to its `[Pasted Content N chars]`
     /// placeholder (the real text recorded in [`pasted`](App::pasted)) or
     /// insert the text verbatim, control characters sanitised.
@@ -146,13 +146,13 @@ impl App {
     /// choke point every send/queue path uses in place of a bare
     /// `self.input.take()`, so the model — and the committed record of what was
     /// sent — receives the real content, never a `[Pasted Content N chars]`
-    /// placeholder. See `docs/paste.md`.
+    /// placeholder. See `docs/input/paste.md`.
     ///
     /// …and never a stored secret's value: the spliced text comes back with
     /// every value replaced by its placeholder ([`redact_typed`]), so what the
     /// user types is what the conversation keeps — the bubble, ↑ recall, the
     /// rollout and every request read the placeholder — and the secrets it
-    /// masked are noted for the toast that says so (`docs/secrets.md` *What
+    /// masked are noted for the toast that says so (`docs/state/secrets.md` *What
     /// the user types*).
     ///
     /// [`pasted`]: App::pasted
@@ -173,7 +173,7 @@ impl App {
         // queue paths stage image paths out first); whatever is still attached
         // here is a *drop* — record it so the boundary can remove the temp
         // file. Image placeholders are *not* expanded — they stay in `text`,
-        // only the paths travel a separate channel. See `docs/image-paste.md`.
+        // only the paths travel a separate channel. See `docs/input/image-paste.md`.
         self.discard_attachments();
         // Spliced first, so a value inside a large paste is redacted too.
         let text = if self.pasted.is_empty() {
@@ -194,7 +194,7 @@ impl App {
     /// `backward` is Backspace (vs Delete; see [`crate::paste::placeholder_to_delete`]
     /// for the cursor rules). Returns `false` when the cursor isn't on a
     /// placeholder, leaving the keypress to the normal per-grapheme edit. See
-    /// `docs/paste.md` and `docs/image-paste.md`.
+    /// `docs/input/paste.md` and `docs/input/image-paste.md`.
     pub(super) fn delete_placeholder(&mut self, backward: bool) -> bool {
         if let Some(span) = crate::paste::placeholder_to_delete(
             self.input.text(),
@@ -220,7 +220,7 @@ impl App {
             // scheme's convention): a merged batch's duplicate-named pairs
             // keep backing their other occurrences. The dropped attachment's
             // temp file is orphaned now — hand its path to the boundary for
-            // removal (docs/image-paste.md).
+            // removal (docs/input/image-paste.md).
             if let Some(path) = remove_nth_pair(&mut self.images, &placeholder, ordinal) {
                 self.discarded_images.push(path);
             }
@@ -241,7 +241,7 @@ impl App {
     /// keys in the amend/ask entries): splice the byte `span` out of the
     /// composer, first **widening** it over any pasted/image placeholder it
     /// intersects — a kill must stay as atomic as Backspace on a placeholder
-    /// (`docs/paste.md`), never leaving half a `[Pasted Content N chars]`
+    /// (`docs/input/paste.md`), never leaving half a `[Pasted Content N chars]`
     /// behind backed by a live pair — and dropping the swallowed occurrences'
     /// pairs like [`delete_placeholder`] does (a killed image's temp file goes
     /// to `discarded_images` for the boundary to remove). The cursor lands at
@@ -287,7 +287,7 @@ impl App {
     /// `attach_image`). The placeholder stays in the message text on send; the
     /// path is delivered separately (see [`take_submission_images`]). The loop
     /// calls this at the I/O boundary after [`crate::clipboard`] reads the
-    /// image. See `docs/image-paste.md`.
+    /// image. See `docs/input/image-paste.md`.
     ///
     /// [`images`]: App::images
     /// [`take_submission_images`]: App::take_submission_images
@@ -311,7 +311,7 @@ impl App {
     /// `take_recent_submission_images`), as `(placeholder, path)` pairs: the
     /// loop threads them into `start_turn`, which records each path onto the
     /// message carrying its placeholder and hands the bare paths to
-    /// [`crate::stream::ReplySource::spawn`]. See `docs/image-paste.md`.
+    /// [`crate::stream::ReplySource::spawn`]. See `docs/input/image-paste.md`.
     pub fn take_submission_images(&mut self) -> Vec<(String, PathBuf)> {
         std::mem::take(&mut self.submission_images)
     }
@@ -326,7 +326,7 @@ impl App {
     /// Drain the temp-PNG paths of attachments dropped since the last drain —
     /// the boundary deletes these files after handling each key event (the
     /// pure core records the drops, the file I/O stays in `main.rs`). See
-    /// `docs/image-paste.md`.
+    /// `docs/input/image-paste.md`.
     pub fn take_discarded_images(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.discarded_images)
     }
@@ -334,7 +334,7 @@ impl App {
     /// Count `count` attached images into the live token tally as uploaded input
     /// (arrow ↑), like [`count_user_input`] does for the text, so the status
     /// reflects the images during the backend's pre-stream pause. No-op when no
-    /// turn is in flight. See `docs/image-paste.md`.
+    /// turn is in flight. See `docs/input/image-paste.md`.
     ///
     /// [`count_user_input`]: App::count_user_input
     pub fn count_input_images(&mut self, count: usize) {
@@ -357,7 +357,7 @@ impl App {
             return;
         }
         // An agent session view has no `!` shell — the draft chats with the
-        // agent, so a leading bang is literal text (docs/agent-tool.md).
+        // agent, so a leading bang is literal text (docs/agents/agent-tool.md).
         if self.agent_view.is_some() {
             return;
         }
@@ -379,7 +379,7 @@ impl App {
     /// completion landed while the Ctrl+R search owned the composer: its
     /// placeholder went with the preview text, so the pair must not linger
     /// invisibly and ride the next submission. Orphaned temp files go to the
-    /// boundary's discard list (docs/image-paste.md).
+    /// boundary's discard list (docs/input/image-paste.md).
     pub(super) fn reconcile_images_with_input(&mut self) {
         let text = self.input.text().to_string();
         let mut kept: Vec<(String, PathBuf)> = Vec::new();

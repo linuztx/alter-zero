@@ -8,20 +8,20 @@
 //! ([`next_step`]) — plus a small generic driver ([`run_stream`]) that sequences
 //! the attempts and announces each retry on the event channel. Only the actual
 //! sleep ([`sleep_cancellable`]) touches the clock; everything else is unit-tested
-//! with fakes and no network. See `docs/llm.md`.
+//! with fakes and no network. See `docs/providers/llm.md`.
 //!
 //! Two kinds of failure, two policies. A host that **answers badly** — a
 //! `503`, a reset mid-exchange, a stall — gets the bounded retry: a few
 //! attempts a short backoff apart, then the error. That includes a reply
 //! whose connection broke **under** it: the request is sent again, and the
 //! [`StreamEvent::Retrying`] announcing it voids the failed attempt, so what
-//! it streamed is withdrawn rather than duplicated (`docs/offline.md` *A
+//! it streamed is withdrawn rather than duplicated (`docs/providers/offline.md` *A
 //! connection lost mid-reply*). A host that **cannot be
 //! reached at all** ([`LlmError::Unreachable`]: the machine is offline, or the
 //! host is) gets no budget and no deadline: the driver announces the outage
 //! ([`StreamEvent::Offline`]), waits a few seconds ([`offline_backoff`]), and
 //! tries again, for as long as it takes — Esc is the way out, and the attempt
-//! that gets through is the one that streams. See `docs/offline.md`.
+//! that gets through is the one that streams. See `docs/providers/offline.md`.
 
 use std::time::Duration;
 
@@ -56,7 +56,7 @@ pub enum RetryStep {
     /// No connection could be made to `host`: announce the outage with the
     /// running count of failed attempts (`attempt`, 1-based), wait `wait`,
     /// then try again — **never counted** against the bounded budget
-    /// (`docs/offline.md`).
+    /// (`docs/providers/offline.md`).
     AwaitConnection {
         attempt: u32,
         wait: Duration,
@@ -137,7 +137,7 @@ pub fn offline_backoff(attempt: u32) -> Duration {
 /// once the kernel gave up on a silent path, a stream closed early) or a
 /// stall past the per-operation timeout. Everything else that ends a stream
 /// mid-reply was said by the provider or the decoder, and would say it
-/// again (`docs/offline.md` *A connection lost mid-reply*).
+/// again (`docs/providers/offline.md` *A connection lost mid-reply*).
 fn is_lost_connection(err: &LlmError) -> bool {
     matches!(err, LlmError::Http(_))
 }
@@ -246,7 +246,7 @@ pub fn run_attempts(
         // Each attempt is judged on its own output alone: the `Retrying`
         // that follows a failed one voids it — its consumers withdraw what it
         // streamed — so nothing of an earlier attempt is left to duplicate
-        // (docs/offline.md *A connection lost mid-reply*).
+        // (docs/providers/offline.md *A connection lost mid-reply*).
         let (result, emitted) = attempt();
         let wait = match next_step(&result, attempts, emitted, max) {
             RetryStep::Proceed => return result,
@@ -404,7 +404,7 @@ mod tests {
     fn the_wait_for_a_connection_is_unbounded() {
         // Every retry spent and a hundred failed connects later, the answer is
         // still to wait — the budget is for a host that answers badly, not
-        // for one that cannot be reached (`docs/offline.md`).
+        // for one that cannot be reached (`docs/providers/offline.md`).
         let attempts = Attempts {
             retried: MAX_RETRIES,
             unreachable: 100,
@@ -457,7 +457,7 @@ mod tests {
     }
 
     /// The failure a reply's connection dying under it reaches the driver as
-    /// — the user's report, word for word (`docs/offline.md`).
+    /// — the user's report, word for word (`docs/providers/offline.md`).
     fn dropped_mid_reply() -> AttemptResult {
         AttemptResult::Failed(LlmError::Http(
             "request or response body error: error reading a body from connection: \
@@ -470,7 +470,7 @@ mod tests {
     fn next_step_restarts_a_reply_whose_connection_dropped() {
         // Content had streamed, so re-sending duplicates it — unless the
         // retry withdraws it first, which `Retrying` now announces
-        // (docs/offline.md *A connection lost mid-reply*). The bounded retry,
+        // (docs/providers/offline.md *A connection lost mid-reply*). The bounded retry,
         // numbered and backed off like any other.
         let step = next_step(&dropped_mid_reply(), retried(0), true, MAX_RETRIES);
         assert_eq!(

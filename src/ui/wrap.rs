@@ -191,7 +191,7 @@ fn hanging_first_line(line: &str, first: u16, rest: u16) -> Vec<String> {
 /// pairing of [`wrap_output`] / [`wrap_verbatim`] with the row **count** that
 /// has to agree with them, kept in one type so a `+N lines` hint can never
 /// count rows a *different* wrapper would have produced
-/// (`docs/long-lines.md`). Both ride one range-emitting scan per mode, so
+/// (`docs/ui/long-lines.md`). Both ride one range-emitting scan per mode, so
 /// counting builds no rows at all — which is what lets the running tail's
 /// footer measure the whole retained buffer every animation frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -242,7 +242,7 @@ impl WrapMode {
                     // space at the head of the next row — `total` / ` 12` —
                     // or, before another full-width word, as a row of its own:
                     // a phantom blank row inside `hello` / ` ` / `world` that
-                    // the `+N lines` hint then counted (`docs/long-lines.md`).
+                    // the `+N lines` hint then counted (`docs/ui/long-lines.md`).
                     (Self::Output, _) if is_space => {
                         emit(start..idx);
                         emitted = true;
@@ -319,7 +319,7 @@ impl WrapMode {
     /// `self.wrap(text, width).len()`, counted without building one
     /// (`wrap_mode_rows_counts_exactly_what_it_would_build` pins the two
     /// together). This is what a `+N lines` hint counts: rows the reader would
-    /// see, not source lines (`docs/long-lines.md`).
+    /// see, not source lines (`docs/ui/long-lines.md`).
     pub(super) fn rows(self, text: &str, width: u16) -> usize {
         if width == 0 {
             return text.split('\n').count();
@@ -335,7 +335,7 @@ impl WrapMode {
 /// Whether the word opening at byte `bp` fills the current row from where it
 /// stands rather than moving down whole — Ink's wrap (wrap-ansi's `hard`
 /// mode), which is what gives Claude Code's `Bash(…)` header its filled rows
-/// (`docs/tools.md` *Long headers*). A word that fits a `rest`-wide row
+/// (`docs/tools/tools.md` *Long headers*). A word that fits a `rest`-wide row
 /// never does: it moves down whole, the ordinary word wrap. One that fits on
 /// **no** row is going to be hard-broken anyway, so the only question is
 /// where its first piece goes: it starts here, in the `remaining` columns
@@ -374,7 +374,7 @@ pub(super) fn lerp_color(a: Color, b: Color, t: f32) -> Color {
             Color::Rgb(mix(r0, r1), mix(g0, g1), mix(b0, b1))
         }
         // A named or indexed end has no components to mix (the terminal
-        // owns its value — the ANSI theme, `docs/theme.md`): the gradient
+        // owns its value — the ANSI theme, `docs/ui/theme.md`): the gradient
         // steps from one end to the other at the midpoint instead.
         _ if t < 0.5 => a,
         _ => b,
@@ -418,7 +418,7 @@ pub(super) fn clamp_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'stat
 /// name, or description is never mistaken for the whole thing. The shared
 /// primitive every single-row truncation in the inline views routes through
 /// (wrapping is preferred where the page's height is content-driven —
-/// `docs/view-flow.md`; this is the floor for the rows that must stay one
+/// `docs/ui/view-flow.md`; this is the floor for the rows that must stay one
 /// row).
 pub(super) fn ellipsize(text: &str, max: usize) -> String {
     if cols(text) <= max {
@@ -459,7 +459,7 @@ pub(super) fn blend_color(fg: Color, bg: Color, alpha: f32) -> Color {
             let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)) as u8;
             Color::Rgb(mix(fr, br), mix(fg_, bg_), mix(fb, bb))
         }
-        // No components to mix (a terminal-palette colour, `docs/theme.md`):
+        // No components to mix (a terminal-palette colour, `docs/ui/theme.md`):
         // whichever end the blend is nearer.
         _ if alpha >= 0.5 => fg,
         _ => bg,
@@ -507,7 +507,7 @@ const LEGIBLE_STEPS: u16 = 64;
 /// itself falls short on this ground, the walk goes on past it toward white,
 /// or toward black when `ink` is darker than `bg` (a light theme). When any
 /// of the three is a terminal-palette colour there is no value to measure,
-/// and `fg` comes back as it came (`docs/inline-diff.md`).
+/// and `fg` comes back as it came (`docs/ui/inline-diff.md`).
 pub(super) fn legible_on(fg: Color, bg: Color, ink: Color, min: f32) -> Color {
     let (Some(_), Some(ground), Some(ink_luminance)) = (
         relative_luminance(fg),
@@ -538,9 +538,9 @@ pub(super) fn legible_on(fg: Color, bg: Color, ink: Color, min: f32) -> Color {
 
 /// Where a **breath** is at `elapsed`: a raised cosine easing 0 → 1 → 0 once
 /// per `period`, so a colour driven by it swells and fades rather than
-/// flicking on and off — the `pulse` spinner style's swell (`docs/spinner.md`;
+/// flicking on and off — the `pulse` spinner style's swell (`docs/ui/spinner.md`;
 /// the running tool bullet blinks instead, `tool::tool_pulse_visible`,
-/// `docs/tool-pulse.md`). Pure: the phase derives entirely from the
+/// `docs/ui/tool-pulse.md`). Pure: the phase derives entirely from the
 /// boundary-supplied clock.
 pub(super) fn breath(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
     let period = period.as_secs_f32();
@@ -552,7 +552,7 @@ pub(super) fn breath(elapsed: std::time::Duration, period: std::time::Duration) 
 /// Where a **ping-pong** is at `elapsed`: 0 → 1 → 0 over one `period` at
 /// constant speed, reversing hard at the ends — how the `gravity` ball and
 /// the `wave`'s phase travel the status line's braille track
-/// (`docs/spinner.md`). Computed in whole milliseconds so the way back
+/// (`docs/ui/spinner.md`). Computed in whole milliseconds so the way back
 /// retraces the way out bit for bit: the frame at `T − d` equals the frame
 /// at `T + d`, which is what makes the wave's reflection seamless.
 pub(super) fn ping_pong(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
@@ -568,7 +568,7 @@ pub(super) fn ping_pong(elapsed: std::time::Duration, period: std::time::Duratio
 
 /// Where a **hop** is at `elapsed`: one parabolic arc per `period`, 0 at
 /// take-off and landing, 1 at the apex — gravity with no damping, the
-/// `gravity` ball's bounce (`docs/spinner.md`). Whole-millisecond
+/// `gravity` ball's bounce (`docs/ui/spinner.md`). Whole-millisecond
 /// arithmetic like [`ping_pong`], so the fall mirrors the rise exactly.
 pub(super) fn hop(elapsed: std::time::Duration, period: std::time::Duration) -> f32 {
     let period_ms = period.as_millis().max(1);

@@ -1,4 +1,4 @@
-//! The inline `/spinner` picker view (`docs/spinner.md`).
+//! The inline `/spinner` picker view (`docs/ui/spinner.md`).
 
 use super::*;
 use crate::app::{Spinner, Theme, VERB_ROTATION};
@@ -468,7 +468,7 @@ fn a_standard_terminal_shows_every_caption_whole() {
 #[test]
 fn the_preview_walks_the_verbs_like_a_first_turn() {
     // The sample is a first turn's line, so it moves on to the next verb on
-    // the clock a real turn does (docs/status-indicator.md) — browse for
+    // the clock a real turn does (docs/ui/status-indicator.md) — browse for
     // half a minute and it shows what a long turn would.
     let mut app = open_app();
     app.set_pulse(VERB_ROTATION + Duration::from_millis(120));

@@ -1,6 +1,6 @@
 //! Anonymous usage telemetry — **one ping a day per install**, so the project
 //! can count how many people ran it and where they are, and nothing else
-//! (`docs/telemetry.md`).
+//! (`docs/ops/telemetry.md`).
 //!
 //! This module is the pure half: the `telemetry.json` format
 //! ([`TelemetryFile`]), the install id it keeps, the wire payload ([`Ping`] —
@@ -29,7 +29,7 @@ pub const PAYLOAD_VERSION: u32 = 2;
 
 /// Where the ping goes unless [`ENDPOINT_ENV`] says otherwise: the collector
 /// in `telemetry/`, deployed as the Cloudflare Worker `alter-zero-telemetry`
-/// on its account's `workers.dev` subdomain (`docs/telemetry.md` *Deploying
+/// on its account's `workers.dev` subdomain (`docs/ops/telemetry.md` *Deploying
 /// it*). A deployment that prints a different URL changes this constant.
 pub const DEFAULT_ENDPOINT: &str = "https://alter-zero-telemetry.linuztx.workers.dev/v1/ping";
 
@@ -304,7 +304,7 @@ fn unquote(value: &str) -> &str {
 /// distribution's `ID`, and the version of whichever of those two names the
 /// platform. No prompt, path, model, key, hostname or user name is in reach
 /// of this struct, and `the_payload_carries_exactly_the_seven_fields` pins
-/// the key set so adding one is a deliberate act (`docs/telemetry.md` *What
+/// the key set so adding one is a deliberate act (`docs/ops/telemetry.md` *What
 /// is sent*).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ping {
@@ -401,7 +401,7 @@ pub fn should_ping(file: &TelemetryFile, today: &str, version: &str) -> bool {
 /// - neither set: `None` — defer to the file's `enabled`.
 ///
 /// The verdict seeds the `/settings` row for the run and is never written
-/// back (`config::apply_setting_overrides`, `docs/settings.md`).
+/// back (`config::apply_setting_overrides`, `docs/state/settings.md`).
 #[must_use]
 pub fn enabled_by_env(telemetry: Option<&str>, dnt: Option<&str>) -> Option<bool> {
     let truthy = |v: &str| {
@@ -452,7 +452,7 @@ pub fn user_agent(version: &str) -> String {
 /// Rides the same cached client every provider request uses
 /// (`llm::http_client` at the chat's own timeout) so the ping adds no second
 /// connection pool and no second runtime thread to a process that idles in a
-/// terminal all day (`docs/memory.md`); the shared builder's 10 s connect
+/// terminal all day (`docs/architecture/memory.md`); the shared builder's 10 s connect
 /// timeout bounds a dead collector, and the thread is detached either way.
 ///
 /// # Errors
@@ -567,7 +567,7 @@ mod tests {
         // The machine-readable `ID`, never the pretty name and never the
         // version: "which distributions do we build for" is the question, and
         // `ubuntu 22.04.3 LTS (Jammy Jellyfish)` answers a narrower one about
-        // one machine (`docs/telemetry.md` *The Linux distribution*).
+        // one machine (`docs/ops/telemetry.md` *The Linux distribution*).
         let ubuntu = "NAME=\"Ubuntu\"\nVERSION=\"22.04.3 LTS (Jammy Jellyfish)\"\nID=ubuntu\nID_LIKE=debian\n";
         assert_eq!(distro_from_os_release(ubuntu).as_deref(), Some("ubuntu"));
 
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn the_payload_carries_exactly_the_seven_fields() {
         // The whole wire body, pinned field by field — adding one here is a
-        // deliberate act the doc must describe (`docs/telemetry.md`).
+        // deliberate act the doc must describe (`docs/ops/telemetry.md`).
         let ping = Ping::new(
             "6f1c2a4d9e0b7c3a5f8e1d2c4b6a7980",
             "0.1.0",

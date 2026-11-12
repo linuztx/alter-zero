@@ -2,14 +2,14 @@
 //!
 //! A pasted picture — or one the `read` tool looked at — rides every later
 //! request as a base64 `data:` URL, because the whole conversation is re-sent
-//! each turn (`docs/context.md`). Building that URL is the largest thing a
+//! each turn (`docs/architecture/context.md`). Building that URL is the largest thing a
 //! turn does with memory: for a 6 MB screenshot it used to be the file read
 //! whole, an 8 MB string encoded from it, a copy of that string into the
 //! request's JSON tree and a body grown by doubling — every turn, every
 //! agentic round, on a fresh thread. glibc's dynamic `mmap` threshold puts
 //! blocks of that size on a thread arena's heap, which never shrinks, so the
 //! resident set stepped up by the picture's weight whenever a turn landed on
-//! a new arena and never came back down (`docs/memory.md`, *Every turn
+//! a new arena and never came back down (`docs/architecture/memory.md`, *Every turn
 //! re-sent the picture*).
 //!
 //! So an attachment is encoded **once** — streamed from the file (or from the
@@ -295,7 +295,7 @@ pub fn clear_attachments() {
 }
 
 /// The MIME an attachment is sent under, by extension. The paste path only
-/// ever writes the accepted formats (`docs/image-paste.md`); PNG — its
+/// ever writes the accepted formats (`docs/input/image-paste.md`); PNG — its
 /// transcode target — is the default.
 #[must_use]
 pub fn attachment_mime(path: &Path) -> &'static str {
@@ -324,7 +324,7 @@ fn attachment_format(mime: &str) -> Option<ImageFormat> {
 }
 
 /// Build the encoding for the picture at `path`: the downscaled payload
-/// where **Auto-resize images** calls for one (`docs/images.md`), else the
+/// where **Auto-resize images** calls for one (`docs/ui/images.md`), else the
 /// file itself — streamed into the one string, so the only picture-sized
 /// allocation is the encoding that is kept. The original is read whole only
 /// to shrink it, and only once: the shrunk copy is a sidecar on disk from

@@ -5,7 +5,7 @@
 smoke_begin
 
 # The `/skills` menu on a terminal too short for its whole page
-# (docs/skills.md). Bottom-anchoring the whole page there flowed the search
+# (docs/tools/skills.md). Bottom-anchoring the whole page there flowed the search
 # line and the top of the list into scrollback, so the row Enter would toggle
 # could be off screen. A short terminal now gets the compact page: the
 # description and the counter yield first, then the header, leaving the

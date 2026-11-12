@@ -1,5 +1,5 @@
 //! `alter-zero -p` against the **real built binary** with no terminal
-//! anywhere (`docs/headless.md`): every stream a pipe, the way a cron job, a
+//! anywhere (`docs/cli/headless.md`): every stream a pipe, the way a cron job, a
 //! CI step or an n8n node runs it — the reported failure was the binary
 //! dying on exactly that (`Device not configured`) before it read a prompt.
 //!
@@ -128,7 +128,7 @@ fn events(out: &Output) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// The closing sentence every demo reply ends on (`docs/dummy-backend.md`).
+/// The closing sentence every demo reply ends on (`docs/architecture/dummy-backend.md`).
 const DEMO_HANDOFF: &str = "`/login` signs you in";
 
 // ===== the offline demo: formats, prompts, sessions =====
@@ -502,7 +502,7 @@ const OUTLIVE: &str = "HEADLESS_OUTLIVE";
 const STALL: &str = "HEADLESS_STALL";
 /// What a prompt says to make the stand-in run a command that fails, and
 /// report usage on every reply of that conversation — what the rollout's
-/// `tool` and `usage` lines record (docs/rollout-records.md).
+/// `tool` and `usage` lines record (docs/state/rollout-records.md).
 const RECORD: &str = "HEADLESS_RECORD";
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
@@ -889,7 +889,7 @@ fn a_signal_stops_the_run_and_still_reports() {
     assert_eq!(result["error"], "interrupted by SIGTERM");
 }
 
-// ===== what the rollout records (docs/rollout-records.md) =====
+// ===== what the rollout records (docs/state/rollout-records.md) =====
 
 /// Every line of the one rollout file a world's runs wrote, parsed.
 fn rollout(world: &World) -> Vec<serde_json::Value> {
@@ -1015,7 +1015,7 @@ fn the_rollout_records_each_request_and_how_each_call_ran() {
 fn a_subagents_requests_are_recorded_under_its_id() {
     // A subagent's requests are paid for by the conversation that launched
     // it: their lines land in its rollout, tagged with the id its
-    // `agent_group` entry carries (docs/rollout-records.md).
+    // `agent_group` entry carries (docs/state/rollout-records.md).
     let world = World::new("agent-usage");
     let stand_in = StandIn::start();
     let out = real_run(
@@ -1053,7 +1053,7 @@ fn a_subagents_requests_are_recorded_under_its_id() {
 fn a_compactions_request_is_recorded_as_one() {
     // A conversation continued past its window compacts before the prompt
     // goes out; that summarization's usage line says so and sits right
-    // ahead of the compaction it made (docs/rollout-records.md).
+    // ahead of the compaction it made (docs/state/rollout-records.md).
     let world = World::new("compact-usage");
     let stand_in = StandIn::start();
     let run = |args: &[&str]| {
@@ -1099,7 +1099,7 @@ fn a_compactions_request_is_recorded_as_one() {
 fn the_rollout_says_why_a_call_never_ran() {
     // A headless run refuses what needs an approval nobody can give: the
     // call's line says so, with no exit status and no time — it never ran
-    // (docs/rollout-records.md).
+    // (docs/state/rollout-records.md).
     let world = World::new("refusal-kind");
     let stand_in = StandIn::start();
     let out = real_run(

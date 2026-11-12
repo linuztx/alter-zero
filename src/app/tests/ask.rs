@@ -1,4 +1,4 @@
-//! The inline `AskUserQuestion` modal (`docs/ask.md`): opening stashes the
+//! The inline `AskUserQuestion` modal (`docs/tools/ask.md`): opening stashes the
 //! composer, the tab/row navigation, single- and multi-select answers, the
 //! free-text Other entry, the notes field, the Submit page, and the queueing
 //! against the permission prompt.
@@ -566,7 +566,7 @@ fn arrows_wrap_the_rows_at_both_ends() {
     );
 }
 
-// ===== The read-only overlays stay reachable (docs/ask.md) =====
+// ===== The read-only overlays stay reachable (docs/tools/ask.md) =====
 
 #[test]
 fn the_read_only_overlays_open_over_an_open_question() {
@@ -647,7 +647,7 @@ fn a_question_takes_the_footer_selections_with_the_composer() {
     assert!(!app.background_focused(), "…and does not come back armed");
 }
 
-// ===== The idle timeout (docs/ask.md) =====
+// ===== The idle timeout (docs/tools/ask.md) =====
 
 fn permission(id: &str) -> PermissionRequest {
     PermissionRequest {

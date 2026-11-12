@@ -1,6 +1,6 @@
 //! The bands below the input box: the slash-command palette, the `@` file
 //! picker, and the `?` shortcuts overlay.
-//! See `docs/file-search.md` and `docs/shortcuts.md`.
+//! See `docs/input/file-search.md` and `docs/ui/shortcuts.md`.
 
 use super::theme::*;
 use super::wrap::{cols, truncate_cols, wrap_text};
@@ -12,7 +12,7 @@ use super::*;
 /// continuation rows included, and the `(n/total)` counter under them, never
 /// more than `MENU_MAX_ROWS` (or a single placeholder row when the query
 /// matches nothing). Height-is-the-line-count is the settings/model pickers'
-/// rule (`docs/view-flow.md`): the reserved rows and the painted rows agree
+/// rule (`docs/ui/view-flow.md`): the reserved rows and the painted rows agree
 /// by construction, which is what lets a long description *wrap* instead of
 /// clipping at the width. [`live_height`] adds this; [`render_live`] paints
 /// exactly this many rows.
@@ -179,7 +179,7 @@ fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'s
 }
 
 /// The palette's dim `(n/total)` counter: which match the highlight is on,
-/// of how many — the pickers' counter (`docs/view-flow.md` *A picker's
+/// of how many — the pickers' counter (`docs/ui/view-flow.md` *A picker's
 /// page*), hanging under the command names at [`MENU_INDENT`] the way
 /// theirs hangs under their rows' names. `None` on a terminal too narrow to
 /// hold it whole, since a count cut at the edge would misread (`(1/2` for
@@ -254,7 +254,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// under them, which a terminal too narrow to hold it whole goes without.
 /// Height-is-the-line-count is [`menu_rows`]' rule: [`live_height`] adds this
 /// via [`band_rows`] and [`render_live`] paints exactly this many rows, so the
-/// two agree by construction. See `docs/file-search.md`.
+/// two agree by construction. See `docs/input/file-search.md`.
 #[must_use]
 pub fn file_menu_rows(app: &App, width: u16) -> u16 {
     u16::try_from(file_menu_lines(app, width).len()).unwrap_or(u16::MAX)
@@ -362,7 +362,7 @@ fn file_menu_row(
 /// highlight rides the middle row and the files above *and* below it stay in
 /// view — and capped at `FILE_MENU_MAX_ROWS`, over the palette's dim
 /// `(n/total)` counter: which match is highlighted, of how many the search
-/// found (every match, `docs/file-search.md`) — the total closed by
+/// found (every match, `docs/input/file-search.md`) — the total closed by
 /// `FILE_MENU_PARTIAL_MARK` when the walk stopped at its cap, the list then
 /// being only part of the workspace. Empty when the picker is closed.
 #[must_use]
@@ -418,7 +418,7 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// under them, which a terminal too narrow to hold it whole goes without.
 /// Height-is-the-line-count is [`menu_rows`]' rule: [`live_height`] adds
 /// this via [`band_rows`] and [`render_live`] paints exactly this many rows,
-/// so the two agree by construction. See `docs/skill-mentions.md`.
+/// so the two agree by construction. See `docs/input/skill-mentions.md`.
 #[must_use]
 pub fn skill_menu_rows(app: &App, width: u16) -> u16 {
     u16::try_from(skill_menu_lines(app, width).len()).unwrap_or(u16::MAX)
@@ -478,7 +478,7 @@ fn skill_menu_row(
 /// capped at `SKILL_MENU_MAX_ROWS`, over the palette's dim `(n/total)`
 /// counter: which match is highlighted, of how many the query matched.
 /// Empty when the band is closed (or the cursor has left the mention). See
-/// `docs/skill-mentions.md`.
+/// `docs/input/skill-mentions.md`.
 #[must_use]
 pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     if !app.skill_band_active() {
@@ -514,7 +514,7 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// How many rows the `?` shortcuts band asks for, for `app` at `width`: 0
 /// when closed, otherwise **the built line count** of the whole band
 /// ([`shortcuts_lines`] with no height to cut it to) — as many columns as
-/// `width` holds whole, and so as few rows as fit (`docs/shortcuts.md`).
+/// `width` holds whole, and so as few rows as fit (`docs/ui/shortcuts.md`).
 /// [`live_height`] adds this (via its band parameter); [`render_live`] paints
 /// exactly this many rows wherever the terminal has them — the two agree by
 /// construction, like [`menu_rows`] — and on a terminal too short for them it
@@ -553,7 +553,7 @@ pub fn band_rows(app: &App, width: u16) -> u16 {
 /// entry changes, three ways (codex's quit entry): [`SHORTCUTS_INTERRUPT`]
 /// while a turn is in flight, the [`SHORTCUTS_BACKTRACK`] `esc esc` edit hint
 /// when idle with a previous user message to edit, and its own ` to quit`
-/// only with nothing to backtrack to (docs/backtrack.md).
+/// only with nothing to backtrack to (docs/input/backtrack.md).
 fn shortcut_shown(
     (key, label): (&'static str, &'static str),
     turn_active: bool,
@@ -573,7 +573,7 @@ fn shortcut_shown(
 /// A label without its leading ` for` / ` to` — ` for commands` →
 /// ` commands`, ` to search history` → ` search history` — the terse
 /// wording a narrow terminal gets when the full one would cost the band its
-/// second column (`docs/shortcuts.md`). Every label leads with one
+/// second column (`docs/ui/shortcuts.md`). Every label leads with one
 /// (`every_label_leads_with_a_connective_the_terse_wording_drops`); one that
 /// did not would keep its words.
 fn terse_label(label: &'static str) -> &'static str {
@@ -614,7 +614,7 @@ fn shortcut_widest(entry: (&'static str, &'static str), terse: bool) -> usize {
 }
 
 /// How the `?` band lays its entries out at one terminal width
-/// (`docs/shortcuts.md`): the `SHORTCUTS` entries run **down** each column
+/// (`docs/ui/shortcuts.md`): the `SHORTCUTS` entries run **down** each column
 /// in order (column-major, like `ls`), the first columns one entry longer
 /// when the count does not divide; a column is as wide as the widest text
 /// any of its entries ever shows; two columns sit `gutter` blank columns
@@ -761,7 +761,7 @@ impl ShortcutsGrid {
 /// narrow terminal gets the labels without their `for`/`to` where that
 /// keeps two columns, and one entry per row under that — never an entry cut
 /// mid-word, which is what the paint's clip did to a fixed second column
-/// once (`docs/shortcuts.md`). The `esc` entry follows the context
+/// once (`docs/ui/shortcuts.md`). The `esc` entry follows the context
 /// (`shortcut_shown`).
 ///
 /// A band with more rows than `height` — a terminal too short for the whole

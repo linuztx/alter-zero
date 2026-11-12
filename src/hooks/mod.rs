@@ -1,5 +1,5 @@
 //! Lifecycle hooks — the user's own commands wedged into the agent's
-//! lifecycle (`docs/hooks.md`).
+//! lifecycle (`docs/tools/hooks.md`).
 //!
 //! This module is the **pure** half: the `hooks.json` format, which handlers
 //! an event selects, the JSON payload each event writes to a handler's stdin,
@@ -23,9 +23,9 @@
 //! - `payload` — the per-event stdin JSON.
 //! - `verdict` — parsing one handler's answer and merging several.
 //! - `overview` — the display tree the read-only `/hooks` menu browses
-//!   (`docs/hooks-menu.md`).
+//!   (`docs/tools/hooks-menu.md`).
 //! - `report`  — what one event's hooks did, as the conversation's
-//!   `● Ran 1 Stop hook` cell shows it (`docs/hooks.md` *The hook-run cell*).
+//!   `● Ran 1 Stop hook` cell shows it (`docs/tools/hooks.md` *The hook-run cell*).
 
 mod config;
 mod event;

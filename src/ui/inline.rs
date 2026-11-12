@@ -1,6 +1,6 @@
 //! Inline-span rendering: one markdown line's `**bold**`, `` `code` ``, links
 //! and emphasis turned into styled [`Span`]s, and the word-wrap that keeps those
-//! spans intact across a row boundary. See `docs/markdown.md`.
+//! spans intact across a row boundary. See `docs/ui/markdown.md`.
 
 use crate::links;
 
@@ -14,7 +14,7 @@ use super::*;
 /// URLs — a `[text](url)` target and every bare `http(s)://…` in plain text —
 /// additionally carry the link **carrier** ([`links::linked`]), so each
 /// wrapped fragment of a URL still opens the whole target at the paint
-/// boundary (`docs/links.md`). Code URLs carry targets too, without changing
+/// boundary (`docs/ui/links.md`). Code URLs carry targets too, without changing
 /// their literal text or code styling; the suffix's own `(`/`)` stay prose —
 /// only the target between them is dressed and marked as a link.
 pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(String, Style)> {
@@ -46,7 +46,7 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
                 // parens are decoration this renderer adds, not link text —
                 // they take neither the link dress nor the carrier, so what
                 // the eye reads as the link is exactly what a click opens
-                // (`docs/links.md` *The decoration parens*).
+                // (`docs/ui/links.md` *The decoration parens*).
                 out.extend(
                     inline_spans(text, base)
                         .into_iter()
@@ -70,7 +70,7 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
 }
 
 /// Append a plain-text node's segments under `base`, autolinking bare URLs
-/// (`docs/links.md`): each detected URL takes the markdown-target dress —
+/// (`docs/ui/links.md`): each detected URL takes the markdown-target dress —
 /// [`link_url_color`] + underline, a URL is a URL — plus the carrier that
 /// keeps every wrapped fragment opening the whole target; the prose around it
 /// is untouched.

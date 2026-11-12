@@ -19,7 +19,7 @@ paid for.
 | **Fix a bug** | Start with the failing test that reproduces it, then the fix. Small, obvious fixes need no discussion first. |
 | **Add a feature** | Open an issue and agree a design before you write it — see [Design before implementing](#design-before-implementing). |
 | **Improve the docs** | A `docs/` page that no longer matches the code is a bug. So is a `CHANGELOG.md` entry that does not say what a user will notice. |
-| **Add a model provider** | Usually a `[providers.<id>]` block in [`providers.toml`](providers.toml) — the file's own header documents every key. For your own use alone, the same block in `~/.alter-zero/providers.toml` needs no change here ([`docs/user-providers.md`](docs/user-providers.md)). A provider with a new authentication shape or wire format is a feature: agree it first ([`docs/llm.md`](docs/llm.md)). |
+| **Add a model provider** | Usually a `[providers.<id>]` block in [`providers.toml`](providers.toml) — the file's own header documents every key. For your own use alone, the same block in `~/.alter-zero/providers.toml` needs no change here ([`docs/providers/user-providers.md`](docs/providers/user-providers.md)). A provider with a new authentication shape or wire format is a feature: agree it first ([`docs/providers/llm.md`](docs/providers/llm.md)). |
 
 ## Getting set up
 
@@ -36,7 +36,7 @@ cargo run
 With no provider configured, the app opens its **offline demo** — scripted turns
 whose tool calls resolve through the *real* executors, so the cells are numbered,
 highlighted and red-on-failure like live ones. Most UI work is developed against
-it, and the smoke suite drives it exclusively ([`docs/dummy-backend.md`](docs/dummy-backend.md)).
+it, and the smoke suite drives it exclusively ([`docs/architecture/dummy-backend.md`](docs/architecture/dummy-backend.md)).
 
 <details>
 <summary><strong>Tools you need only for some areas</strong></summary>
@@ -135,7 +135,7 @@ helper it calls (the live-region geometry works this way: `term.rs` acts on
 | `prompts/` | The system prompt, the built-in agent definitions and the built-in skills |
 | `telemetry/`, `docker/` | The collector Worker and the headless Kali image, each with its own tests |
 
-[`docs/module-layout.md`](docs/module-layout.md) is the full map.
+[`docs/architecture/module-layout.md`](docs/architecture/module-layout.md) is the full map.
 
 ### The four invariants
 
@@ -197,7 +197,7 @@ bash scripts/smoke/phases/055-permission.sh   # one phase on its own, output liv
 Adding coverage is adding a file — `scripts/smoke/phases/NNN-slug.sh`, sourcing
 `scripts/smoke/lib.sh` and calling `smoke_begin`. The id, slug and title all come
 from the file, so nothing registers anywhere.
-[`docs/smoke.md`](docs/smoke.md) has the helper vocabulary, the phase contract
+[`docs/ops/smoke.md`](docs/ops/smoke.md) has the helper vocabulary, the phase contract
 and the rules that keep a phase from being flaky. The one to internalise:
 **poll for the state, never fixed-sleep and hope.**
 
@@ -241,7 +241,7 @@ The ones that come up in review:
   decode a picture whole to make a small one.** Resident memory is a feature
   here — the process idles in a terminal all day and glibc does not return a
   freed tree's pages to the OS, so a parse that spikes is a parse that *stays*.
-  [`docs/memory.md`](docs/memory.md) has the measurements and the shapes that fix
+  [`docs/architecture/memory.md`](docs/architecture/memory.md) has the measurements and the shapes that fix
   it; the `tests/*_memory.rs` gates keep them fixed.
 - **The app's name is one constant**, `alter_zero::APP_NAME`. Wording ported from
   another tool arrives carrying *that* tool's product name — re-read a ported
@@ -303,11 +303,11 @@ than in a diff.
 Cutting a release is a maintainer task and is fully scripted: `scripts/release.sh
 prepare X.Y.Z`, a commit, an annotated `vX.Y.Z` tag, a push. The tag push runs
 `.github/workflows/release.yml` — the gate, one build per platform (in the
-`dist` profile, whole-program LTO: [`docs/binary-size.md`](docs/binary-size.md)),
+`dist` profile, whole-program LTO: [`docs/ops/binary-size.md`](docs/ops/binary-size.md)),
 checksums, verification, and a GitHub release whose notes are the changelog's
 section for that version. `workflow_dispatch` rehearses the whole pipeline without publishing
 anything, and every step runs locally the same way
-([`docs/release.md`](docs/release.md)).
+([`docs/ops/release.md`](docs/ops/release.md)).
 
 ## Reporting a security issue
 
@@ -316,8 +316,8 @@ vulnerability reporting on the repository (**Security → Report a vulnerability
 so a fix can ship before the problem is described in public.
 
 An agent that runs commands has a large attack surface by design. The permission
-gate ([`docs/permissions.md`](docs/permissions.md)) and the project-config trust
-gate ([`docs/project-config.md`](docs/project-config.md)) are where that surface
+gate ([`docs/state/permissions.md`](docs/state/permissions.md)) and the project-config trust
+gate ([`docs/state/project-config.md`](docs/state/project-config.md)) are where that surface
 is decided, so a report against either is worth making even if you are not sure
 it is exploitable.
 

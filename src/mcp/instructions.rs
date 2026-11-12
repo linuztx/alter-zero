@@ -1,5 +1,5 @@
 //! The MCP servers' own instructions, as the `<system-reminder>` carries
-//! them (`docs/mcp.md`): a server's `instructions` (from `initialize` or
+//! them (`docs/tools/mcp.md`): a server's `instructions` (from `initialize` or
 //! `server/discover`) say how its tools are meant to be used — which to call
 //! first, what an argument means, what not to do — and the spec offers them
 //! for exactly that, a hint the client "MAY add to the system prompt". They

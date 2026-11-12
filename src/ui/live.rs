@@ -2,10 +2,10 @@
 //! itself, and the band below it.
 //!
 //! Every commit clears and repaints this region inside one synchronized frame,
-//! so no flushed state ever lacks the box (`docs/flicker.md`). The strip's
+//! so no flushed state ever lacks the box (`docs/ui/flicker.md`). The strip's
 //! preview shows a running tool's whole cell — the parallel batch in
-//! `docs/parallel-tools.md`, a streaming command's tail in
-//! `docs/tool-streaming.md`.
+//! `docs/tools/parallel-tools.md`, a streaming command's tail in
+//! `docs/ui/tool-streaming.md`.
 
 use super::agent::{agent_view_preview_lines, agent_view_rule_label};
 use super::file_cell::draft_cell_lines;
@@ -82,16 +82,16 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// long command isn't clipped and the running state shows (req 2); a running `!`
 /// shell command previews one `⎿ Running… (Ns)` row (its elapsed rides here since
 /// the status line is hidden); a streaming reply previews its last line — or the
-/// whole forming table (docs/table-streaming.md) — `stream_preview` is the
+/// whole forming table (docs/ui/table-streaming.md) — `stream_preview` is the
 /// boundary's cheap render of it ([`StreamRender::preview`], falling back to
 /// re-rendering the last line from the buffer when absent, for unit tests).
 /// An **open thinking phase** previews its live block — the blinking
 /// `● Thinking…` header over the tail of the chain-of-thought
-/// (`docs/thinking-stream.md`) — after the agent/tool branches (what is
+/// (`docs/ui/thinking-stream.md`) — after the agent/tool branches (what is
 /// genuinely executing is what the user waits on) and before the reply's,
 /// which cannot be streaming while the model is still thinking; an open
 /// read/search group's cell outranks it, so a thought between two reads opens
-/// no block at all (`docs/tool-groups.md` *Thoughts*).
+/// no block at all (`docs/ui/tool-groups.md` *Thoughts*).
 /// Empty when there is nothing to preview (the pre-stream pause / idle).
 ///
 /// `rows` is the slot the caller reserved ([`fitted_preview_rows`], or the
@@ -112,7 +112,7 @@ pub(super) fn preview_lines(
     if let Some(run) = app.viewed_agent() {
         // The viewed agent's own strip — fed the same boundary-built frontier
         // the main branch below gets, since its commits go through the same
-        // kind of `StreamRender` (`docs/agent-view-streaming.md`).
+        // kind of `StreamRender` (`docs/agents/agent-view-streaming.md`).
         let streaming = run.tool_queue.is_empty()
             && run.drafts().previews().next().is_none()
             && run.reasoning().is_none();
@@ -125,11 +125,11 @@ pub(super) fn preview_lines(
         trim_preview(preview_tool_lines(app, width), rows, false)
     } else if app.tool_drafts().previews().next().is_some() {
         // A `write` the model is still generating, its file streaming into
-        // the cell (docs/write-streaming.md) — before any batch exists, so
+        // the cell (docs/ui/write-streaming.md) — before any batch exists, so
         // it never meets the queue above, and after the backend closed any
         // thinking phase, so it never meets the block below. Under the open
         // read/search group, which a scratchpad write streams into instead
-        // of a cell of its own (docs/tool-groups.md *Scratchpad edits*).
+        // of a cell of its own (docs/ui/tool-groups.md *Scratchpad edits*).
         trim_preview(drafting_lines(app, width), rows, false)
     } else {
         let group = open_group_lines(app, width);
@@ -139,7 +139,7 @@ pub(super) fn preview_lines(
             // blinking: the next call may well be another read. It holds the
             // slot alone through a thought too, which opens no block while
             // the group is up: the status line says the model is thinking
-            // and Ctrl+O shows the text (docs/tool-groups.md *Thoughts*).
+            // and Ctrl+O shows the text (docs/ui/tool-groups.md *Thoughts*).
             trim_preview(group, rows, false)
         } else if let Some(text) = app.reasoning() {
             trim_preview(live_reasoning_lines(text, app.pulse(), width), rows, false)
@@ -166,7 +166,7 @@ pub(super) fn preview_lines(
 /// The strip while the model generates a `write`: the open group — which a
 /// write into the scratchpad joins, counting its lines as they arrive — over
 /// the cells of the writes that are no part of it, among them one whose path
-/// is not out yet (`docs/tool-groups.md` *Scratchpad edits*). The one walk
+/// is not out yet (`docs/ui/tool-groups.md` *Scratchpad edits*). The one walk
 /// [`preview_lines`] and `preview_rows` share for the branch, so the rows
 /// reserved and the rows drawn agree.
 pub(super) fn drafting_lines(app: &App, width: u16) -> Vec<Line<'static>> {
@@ -194,7 +194,7 @@ pub(super) fn drafting_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// The open collapsed group's live cell in the strip — empty when no group is
 /// open (or **Verbose output** is on). The one call [`preview_lines`] and
 /// `preview_rows` share for the branches the group shows in alone, so the
-/// rows reserved and the rows drawn agree (`docs/tool-groups.md`).
+/// rows reserved and the rows drawn agree (`docs/ui/tool-groups.md`).
 pub(super) fn open_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     super::tool_group::live_group_lines(app, width, Some(app.pulse()), true)
 }
@@ -217,24 +217,24 @@ fn trim_preview(mut lines: Vec<Line<'static>>, rows: usize, tail: bool) -> Vec<L
 /// row, a running backend command tool (`bash`) **tailing its streamed
 /// output** (`running_command_lines` — the header + last lines + a
 /// `+N lines (Ns · wait …)` clock row, or `⎿ Running… (Ns · wait …)`
-/// before any output, `docs/tool-streaming.md`), else the plain live
-/// cell whose running bullet pulses (`docs/tool-pulse.md`).
+/// before any output, `docs/ui/tool-streaming.md`), else the plain live
+/// cell whose running bullet pulses (`docs/ui/tool-pulse.md`).
 ///
 /// The one renderer for a live cell, shared by the main strip
 /// ([`preview_tool_lines`]) and the **agent session view's**
 /// ([`super::agent::agent_view_preview_lines`]) — a subagent's running
 /// command tails its output exactly like the main turn's, which a second
-/// thinner copy of this walk did not (`docs/agent-view-streaming.md`).
+/// thinner copy of this walk did not (`docs/agents/agent-view-streaming.md`).
 /// `elapsed` is the **running command's own** runtime — what every `(Ns)`
 /// here shows: the main strip's boundary-injected [`App::command_elapsed`],
 /// the agent view's [`AgentRun::command_elapsed`](crate::agents::AgentRun::command_elapsed)
 /// — never the turn's or the agent's elapsed, which the status line counts.
 /// `live` is that session's running call's live rows and when each last
 /// changed ([`App::live_tail`], [`AgentRun::live_tail`](crate::agents::AgentRun::live_tail)),
-/// which the command tail's window follows (`docs/tool-streaming.md`).
+/// which the command tail's window follows (`docs/ui/tool-streaming.md`).
 ///
 /// `draft` is the call's adopted draft when it is a previewed call the
-/// round streamed (`docs/write-streaming.md`): a queued `Write` keeps the
+/// round streamed (`docs/ui/write-streaming.md`): a queued `Write` keeps the
 /// head of the file it streamed under its `Waiting…`/`Running…` corner
 /// instead of the bare row, so the cell does not collapse and grow back when
 /// it resolves.
@@ -264,10 +264,10 @@ pub(super) fn live_call_lines(
 /// The live tool queue rendered as preview rows: each call's collapsed cell,
 /// blank-line-separated so a **parallel batch** reads like the committed
 /// scrollback (the running call live, each not-yet-started sibling a dim
-/// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A running backend `bash` cell
+/// `⎿ Waiting…` cell — `docs/tools/parallel-tools.md`). A running backend `bash` cell
 /// that has streamed output **tails** it — the header + last lines + a
 /// `+N lines (Ns · wait …)` clock row (`running_command_lines`; the mock,
-/// `docs/tool-streaming.md`) — before any output arrives it is the
+/// `docs/ui/tool-streaming.md`) — before any output arrives it is the
 /// `⎿ Running… (Ns · wait …)` row, the same clock on the corner row. A
 /// lone `!` shell run collapses to its single
 /// `⎿ Running… (Ns)` row (the elapsed rides the preview since a shell turn hides
@@ -281,21 +281,21 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // `elapsed` the status line counts: a `bash` call that started a minute
     // into a turn used to open on `+N lines (60s)`, the status indicator's
     // number copied under a cell that had just begun
-    // (docs/tool-streaming.md). Never masked — `background_hint_elapsed` is
+    // (docs/ui/tool-streaming.md). Never masked — `background_hint_elapsed` is
     // the Ctrl+B hint's *gate*, blanked under a picker that keeps this strip
     // on screen. Zero until the first injection (the boundary injects before
     // every draw; a unit test may not).
     let elapsed = app.command_elapsed().unwrap_or(Duration::ZERO);
     // The shared animation phase every running bullet in this strip blinks
-    // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is a
+    // against (`docs/ui/tool-pulse.md`) — distinct from `elapsed`, which is a
     // measurement and is displayed.
     let pulse = app.pulse();
     let mut lines = Vec::new();
     // The round's live agent group leads the strip — its blue tree cell over
-    // any ordinary tool cells of a mixed round (docs/agent-tool.md).
+    // any ordinary tool cells of a mixed round (docs/agents/agent-tool.md).
     lines.extend(live_agent_group_lines(app, width));
     // A batch whose calls are ALL MCP collapses to one aggregated
-    // `● Calling {servers} {n} times…` cell (`docs/mcp.md`); a mixed batch
+    // `● Calling {servers} {n} times…` cell (`docs/tools/mcp.md`); a mixed batch
     // keeps the ordinary per-cell strip below. `preview_rows` sizes from this
     // same walk, so the count and the paint agree.
     if lines.is_empty()
@@ -303,7 +303,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     {
         return batch;
     }
-    // The open collapsed group (docs/tool-groups.md): the reads it holds and
+    // The open collapsed group (docs/ui/tool-groups.md): the reads it holds and
     // the ones leading the queue are one live cell; the queue's other calls
     // keep cells of their own below it.
     let group = super::tool_group::live_group_lines(app, width, Some(pulse), true);
@@ -330,7 +330,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }
     }
     // Each queued previewed call owns the next adopted draft, in queue order
-    // (docs/write-streaming.md) — the group's own included: a scratchpad
+    // (docs/ui/write-streaming.md) — the group's own included: a scratchpad
     // write it counts took its draft along.
     let mut drafts = app.tool_drafts().queued();
     for tool in app.tool_queue().iter().take(grouped) {
@@ -364,7 +364,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         // own elapsed is boundary-injected each frame
         // (`App::command_elapsed`). Live-only by construction: this renderer
         // never feeds scrollback commits, so the hint is never committed
-        // (docs/background.md).
+        // (docs/tools/background.md).
         if tool.status == ToolStatus::Running
             && let Some(hint) = ctrl_b_hint(tool)
             && app
@@ -378,7 +378,7 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The previewed calls a round is still generating — a `write` streaming
-/// into its cell (`docs/write-streaming.md`) — blank-separated like a batch.
+/// into its cell (`docs/ui/write-streaming.md`) — blank-separated like a batch.
 /// The one builder for the main strip ([`preview_lines`], sized by
 /// `preview_rows` through the same walk) and the agent session view's
 /// ([`super::agent::agent_view_preview_lines`]), so a subagent's file
@@ -408,7 +408,7 @@ pub(super) fn draft_preview_lines(
 
 /// Every row of the streaming strip for `app` at `width`, in paint order:
 /// the preview slot and its trailing gap, the status line with its hanging
-/// rows — the task checklist, else the spinner tip (`docs/tips.md`) — and its
+/// rows — the task checklist, else the spinner tip (`docs/ui/tips.md`) — and its
 /// trailing gap, the queued messages, and the toast on the last row. Exactly
 /// `strip_rows(has_status, preview_n, hang_rows) + queued_rows + toast_rows`
 /// lines, so the rows `live_height` / `live_layout` reserve and the rows this
@@ -417,7 +417,7 @@ pub(super) fn draft_preview_lines(
 /// `preview_n` is the preview slot's size — `render_live` passes the content's
 /// **full ask**, so a squeezed region's strip is taller than its rect and the
 /// bottom anchor drops the head (which `ui::view_flow`'s strip branch
-/// commits to scrollback instead — `docs/strip-flow.md`); `render_strip_above` passes the
+/// commits to scrollback instead — `docs/ui/strip-flow.md`); `render_strip_above` passes the
 /// rows its own split left, where nothing flows and the list fits exactly.
 pub(super) fn strip_lines(
     app: &App,
@@ -432,7 +432,7 @@ pub(super) fn strip_lines(
         lines.push(Line::default());
     }
     // The task checklist directly under the status line (inside the status
-    // slot, above its trailing gap — docs/task-tools.md). Built from the same
+    // slot, above its trailing gap — docs/tools/task-tools.md). Built from the same
     // (app, width) as `task_rows` — the checklist's half of `hang_rows` — so
     // the reserved rows and the painted ones agree by construction.
     let tasks = super::tasks::task_lines(app, width);
@@ -442,8 +442,8 @@ pub(super) fn strip_lines(
         // — suppressed for a `!` shell turn (has_status false), whose elapsed
         // rides the preview above. An agent session view shows the *viewed
         // agent's* synthesized status instead of the main turn's
-        // (docs/agent-tool.md). Either opens with the session's chosen
-        // spinner style (`/spinner`, docs/spinner.md). A blank row stands
+        // (docs/agents/agent-tool.md). Either opens with the session's chosen
+        // spinner style (`/spinner`, docs/ui/spinner.md). A blank row stands
         // in if the status somehow went while `has_status` said otherwise,
         // so the count still matches `strip_rows`' STATUS_ROWS.
         let line = if let Some(run) = app.viewed_agent() {
@@ -455,17 +455,17 @@ pub(super) fn strip_lines(
             ))
         } else {
             // While some task is in progress the spinner wears its
-            // activeForm instead of the turn's verb (docs/task-tools.md).
+            // activeForm instead of the turn's verb (docs/tools/task-tools.md).
             app.status()
                 .map(|status| styled_status_line(status, app.task_verb(), app.spinner(), width))
         };
         lines.push(line.unwrap_or_default());
         // The rows hanging off the status line, in `hang_rows`' sum: the
         // lost-connection row first, right under the line whose verb it
-        // explains (docs/offline.md); then the checklist's `⎿` rows — Claude
-        // Code's live task list (docs/task-tools.md) — or, with no list and
+        // explains (docs/providers/offline.md); then the checklist's `⎿` rows — Claude
+        // Code's live task list (docs/tools/task-tools.md) — or, with no list and
         // no wait, the tip, once the turn has run a few seconds
-        // (docs/tips.md).
+        // (docs/ui/tips.md).
         lines.extend(super::offline::status_offline_lines(app, width));
         lines.extend(tasks);
         lines.extend(super::tips::status_tip_lines(app, width));
@@ -474,7 +474,7 @@ pub(super) fn strip_lines(
         // No status line to hang from (the turn is over, or a `!` shell run
         // owns the strip): the standalone block — its count line over the
         // rows — sits at the strip top instead, so a plan with work left
-        // stays visible while the user reads and types (docs/task-tools.md).
+        // stays visible while the user reads and types (docs/tools/task-tools.md).
         lines.extend(tasks);
         lines.push(Line::default());
     }
@@ -486,7 +486,7 @@ pub(super) fn strip_lines(
     // The transient toast, on the strip's very last row — directly above the
     // box's top rule, below the status/queue when a turn streams and directly
     // above the box when idle. Self-clears after a few seconds (the expiry is
-    // timed at the boundary). See docs/toast.md.
+    // timed at the boundary). See docs/ui/toast.md.
     if toast_rows(app) > 0 {
         lines.push(toast_line(app, width));
     }
@@ -497,7 +497,7 @@ pub(super) fn strip_lines(
 /// content outgrew its rows keeps its *last* ones — the newest streamed rows,
 /// the `+N lines` footer, the status line — and its head goes to scrollback
 /// through `ui::view_flow`'s strip branch rather than nowhere at all
-/// (`docs/strip-flow.md`). A no-op reshuffle while everything fits, which is
+/// (`docs/ui/strip-flow.md`). A no-op reshuffle while everything fits, which is
 /// every terminal with room for the turn.
 fn render_strip(
     strip: Rect,
@@ -525,7 +525,7 @@ fn render_strip(
 /// the frontier's dropped rows are not lost — they are the rows *about to be*
 /// committed — and flowing a frontier that grows on every chunk would re-sign
 /// the flow, and purge-rebuild the screen, once per chunk
-/// (`docs/strip-flow.md`).
+/// (`docs/ui/strip-flow.md`).
 pub(super) fn strip_content_preview_rows(app: &App, width: u16, term_height: u16) -> u16 {
     if strip_preview_is_live_cells(app) {
         preview_rows(app, width)
@@ -555,7 +555,7 @@ fn strip_preview_is_live_cells(app: &App) -> bool {
 /// [`strip_lines`]' length, without building it. The cheap early-out the flow
 /// check runs on every draw tick: a strip that fits its slice cannot flow, and
 /// wrapping every queued message to find that out would cost a build per frame
-/// (`docs/strip-flow.md`).
+/// (`docs/ui/strip-flow.md`).
 ///
 /// An over-estimate at worst, never an under-estimate: for a streaming reply's
 /// frontier the caller passes the *reserved* count and the fallback build can
@@ -571,7 +571,7 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 }
 
 /// The key the strip's scrollback flow is **signed** on
-/// (`ui::view_flow`'s `FlowSign::Frozen`, `docs/strip-flow.md`): what the
+/// (`ui::view_flow`'s `FlowSign::Frozen`, `docs/ui/strip-flow.md`): what the
 /// strip is *of*, with every ticking part left out.
 ///
 /// The strip moves on its own at the turn's 32 ms animation cadence — output
@@ -581,7 +581,7 @@ pub(super) fn strip_content_rows(app: &App, width: u16, preview_n: u16) -> u16 {
 /// which conversation is on screen, whether a turn's status line is up, each
 /// queued call's name/arguments/status, the live agent group's members,
 /// whether a thinking phase is open, and each `write` still being generated
-/// — its path and whether it has finished (`docs/write-streaming.md`). A new
+/// — its path and whether it has finished (`docs/ui/write-streaming.md`). A new
 /// call, a resolution, a new round or the turn ending re-signs it, and so
 /// does a `write` flipping from its tail to its head; a streamed line
 /// does not, so the flowed rows freeze where they were committed. (The width
@@ -610,7 +610,7 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
         group.ids.hash(&mut hasher);
     }
     // The open collapsed group: a read joining it re-signs the strip, a
-    // command's output streaming under it does not (docs/tool-groups.md).
+    // command's output streaming under it does not (docs/ui/tool-groups.md).
     if app.viewed_agent().is_none() {
         app.tool_group_range().hash(&mut hasher);
     }
@@ -618,7 +618,7 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
     // whether it shows the tail it follows while streaming or the head it
     // settles on — never on its rows: a streamed line re-signs nothing,
     // while the flip, which replaces every row, does
-    // (docs/write-streaming.md).
+    // (docs/ui/write-streaming.md).
     let drafts = app
         .viewed_agent()
         .map_or_else(|| app.tool_drafts(), |run| run.drafts());
@@ -633,8 +633,8 @@ pub(super) fn strip_flow_key(app: &App) -> u64 {
 /// `/model` picker, the `/login` flow, the `/settings` menu, the ↓ background
 /// manager band. They stand in for the composer only, so what is executing
 /// stays on screen above them: the running tool's live cell, the spinner
-/// status line, the queued follow-ups, the toast (`docs/llm.md`,
-/// `docs/background.md`). `strip` is the top half of [`view_split`], whose
+/// status line, the queued follow-ups, the toast (`docs/providers/llm.md`,
+/// `docs/tools/background.md`). `strip` is the top half of [`view_split`], whose
 /// bottom half is the view's own frame; `layout::strip_above_rows` reserves
 /// exactly these rows.
 fn render_strip_above(
@@ -665,11 +665,11 @@ fn render_strip_above(
 /// supplied by the caller (the boundary's cheap [`StreamRender::preview`] —
 /// O(one line), or the forming table's rows) instead of re-rendering the whole
 /// reply here (which was O(reply) *every animation frame* and starved the
-/// status spinner — `docs/markdown.md`). A `None` `stream_preview` falls back
+/// status spinner — `docs/ui/markdown.md`). A `None` `stream_preview` falls back
 /// to rendering the last line from the buffer, so unit tests (which don't
 /// thread a `StreamRender`) keep their old behaviour; production always passes
 /// `Some`, its row count injected via [`App::set_stream_preview_rows`] so
-/// [`preview_rows`] sizes the same rows this draws (docs/table-streaming.md).
+/// [`preview_rows`] sizes the same rows this draws (docs/ui/table-streaming.md).
 pub fn render_live_with_preview(
     area: Rect,
     buf: &mut Buffer,
@@ -679,7 +679,7 @@ pub fn render_live_with_preview(
     // The `AskUserQuestion` modal replaces the whole live region — the
     // streaming strip included, since the turn is blocked on the answers.
     // Checked first: the two modals queue behind each other, so at most one
-    // is ever open. See `docs/ask.md`.
+    // is ever open. See `docs/tools/ask.md`.
     if app.ask().is_some() {
         render_ask(area, buf, app);
         return;
@@ -687,13 +687,13 @@ pub fn render_live_with_preview(
     // A pending tool-permission request replaces the whole live region — the
     // streaming strip included, since the turn is blocked on the answer. It
     // wins over every other inline view (it is modal). See
-    // `docs/permissions.md`.
+    // `docs/state/permissions.md`.
     if app.permission().is_some() {
         render_permission(area, buf, app);
         return;
     }
     // The startup review replaces the composer next — only a modal outranks
-    // it, the key routing's order (`docs/config-review.md`). The strip keeps
+    // it, the key routing's order (`docs/state/config-review.md`). The strip keeps
     // its rows above it, like every picker's.
     if app.config_review.is_some() {
         let [strip, body] = view_split(
@@ -712,8 +712,8 @@ pub fn render_live_with_preview(
     // never the streaming strip: a running tool's live cell, the status line,
     // the queued messages and the toast keep their rows above it, so opening
     // `/model` mid-turn never hides the turn it was opened beside (the
-    // reported bug; the ↓ manager band's rule — `docs/llm.md`,
-    // `docs/background.md`). `model_picker_height` reserves the same sum.
+    // reported bug; the ↓ manager band's rule — `docs/providers/llm.md`,
+    // `docs/tools/background.md`). `model_picker_height` reserves the same sum.
     if let Some(picker) = &app.model_picker {
         let [strip, body] = view_split(area, model_picker_rows(picker, area.width, area.height));
         render_strip_above(strip, buf, app, stream_preview);
@@ -730,7 +730,7 @@ pub fn render_live_with_preview(
         render_key_onboarding(body, buf, onboarding);
         return;
     }
-    // …and so does the inline `/settings` menu. See `docs/settings.md`.
+    // …and so does the inline `/settings` menu. See `docs/state/settings.md`.
     if app.settings_picker.is_some() {
         let [strip, body] = view_split(
             area,
@@ -741,7 +741,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the inline `/mascot` picker, the `/settings` menu's twin. See
-    // `docs/mascot.md`.
+    // `docs/ui/mascot.md`.
     if app.mascot_picker.is_some() {
         let [strip, body] = view_split(
             area,
@@ -753,7 +753,7 @@ pub fn render_live_with_preview(
     }
     // …and the inline `/spinner` picker, the `/mascot` picker's twin — the
     // one picker whose subject is the strip it keeps above itself. See
-    // `docs/spinner.md`.
+    // `docs/ui/spinner.md`.
     if app.spinner_picker.is_some() {
         let [strip, body] = view_split(
             area,
@@ -765,7 +765,7 @@ pub fn render_live_with_preview(
     }
     // …and the inline `/theme` picker, codex's theme picker in the family's
     // frame (its preview beside the list on a wide terminal). See
-    // `docs/theme.md`.
+    // `docs/ui/theme.md`.
     if app.theme_picker.is_some() {
         let [strip, body] = view_split(
             area,
@@ -776,7 +776,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the inline `/skills` menu, the `/settings` menu's twin (its
-    // compact page on a short terminal). See `docs/skills.md`.
+    // compact page on a short terminal). See `docs/tools/skills.md`.
     if app.skills_menu.is_some() {
         let [strip, body] = view_split(
             area,
@@ -787,7 +787,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the read-only `/hooks` menu — its body is the built line count,
-    // the ↓ manager band's rule. See `docs/hooks-menu.md`.
+    // the ↓ manager band's rule. See `docs/tools/hooks-menu.md`.
     if app.hooks_menu.is_some() {
         let body_h = u16::try_from(super::hooks_view::hooks_view_lines(app, area.width).len())
             .unwrap_or(u16::MAX);
@@ -797,7 +797,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the read-only `/donate` page, its sibling — the same built-line
-    // body. See `docs/donate.md`.
+    // body. See `docs/ui/donate.md`.
     if app.donate_picker.is_some() {
         let [strip, body] = view_split(
             area,
@@ -808,7 +808,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the `/secrets` page, the same built-line body — its values
-    // masked in the builder. See `docs/secrets.md`.
+    // masked in the builder. See `docs/state/secrets.md`.
     if app.secrets_page.is_some() {
         let [strip, body] = view_split(
             area,
@@ -819,7 +819,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the read-only `/export` page, the `/donate` page's sibling. See
-    // `docs/export.md`.
+    // `docs/ui/export.md`.
     if app.export_picker.is_some() {
         let [strip, body] = view_split(area, super::export_view::export_menu_rows(app, area.width));
         render_strip_above(strip, buf, app, stream_preview);
@@ -827,7 +827,7 @@ pub fn render_live_with_preview(
         return;
     }
     // …and the read-only `/context` page, its sibling too. See
-    // `docs/context-usage.md`.
+    // `docs/architecture/context-usage.md`.
     if app.context_usage.is_some() {
         let [strip, body] = view_split(
             area,
@@ -837,7 +837,7 @@ pub fn render_live_with_preview(
         super::context_usage_view::render_context_usage(body, buf, app);
         return;
     }
-    // …and the read-only `/usage` page, its sibling. See `docs/usage.md`.
+    // …and the read-only `/usage` page, its sibling. See `docs/providers/usage.md`.
     if app.usage_page.is_some() {
         let [strip, body] = view_split(
             area,
@@ -847,7 +847,7 @@ pub fn render_live_with_preview(
         super::usage_view::render_usage_page(body, buf, app);
         return;
     }
-    // …and the `/mcp` manager, the hooks menu's twin. See `docs/mcp.md`.
+    // …and the `/mcp` manager, the hooks menu's twin. See `docs/tools/mcp.md`.
     if app.mcp_menu.is_some() {
         let body_h = u16::try_from(super::mcp_view::mcp_view_lines(app, area.width).len())
             .unwrap_or(u16::MAX);
@@ -863,7 +863,7 @@ pub fn render_live_with_preview(
     // (the user-reported fix). The band is pinned at the bottom with its full
     // height (`Length` wins when the clamped region can't fit both, squeezing
     // the strip first); `background_view_height` reserves the same sum. See
-    // `docs/background.md`.
+    // `docs/tools/background.md`.
     if app.background_view.is_some() {
         let band_h =
             u16::try_from(background_view_lines(app, area.width).len()).unwrap_or(u16::MAX);
@@ -876,7 +876,7 @@ pub fn render_live_with_preview(
     // `@` file picker (band_rows — mutually exclusive). Queued messages render
     // in the strip *above* the box instead; the session-context footer takes
     // the very last row unless a band displaces it, and the agent roster's
-    // rows sit below it (docs/agent-tool.md).
+    // rows sit below it (docs/agents/agent-tool.md).
     let band = band_rows(app, area.width);
     let queued = queued_rows(app, area.width);
     let toast = toast_rows(app);
@@ -908,7 +908,7 @@ pub fn render_live_with_preview(
     // The strip's *content* is built at the preview's full ask, not the rows
     // the region reserved: a squeezed strip then bottom-anchors, keeping its
     // newest rows on screen while its head flows into scrollback frozen
-    // (`ui::view_flow`'s strip branch, `docs/strip-flow.md`). They are the
+    // (`ui::view_flow`'s strip branch, `docs/ui/strip-flow.md`). They are the
     // same list when
     // everything fits, which is the ordinary terminal.
     render_strip(
@@ -921,7 +921,7 @@ pub fn render_live_with_preview(
 
     // The input box: a top/bottom rule framing the wrapped input rows. An
     // agent session view carries the agent's description as a right-aligned
-    // label on the top rule (docs/agent-tool.md).
+    // label on the top rule (docs/agents/agent-tool.md).
     let bx = input_box(
         area, &app.input, has_status, preview_n, hang_n, queued, toast, band, footer, agent_rows,
     );
@@ -974,7 +974,7 @@ pub fn render_live_with_preview(
             // The prompt prefixes the real first line; wrapped/continuation lines
             // get a matching-width indent so the text stays aligned under it. In
             // shell mode the absorbed `!` renders back as a red prompt (`! pwd`
-            // instead of `❯ pwd` — docs/shell-command.md).
+            // instead of `❯ pwd` — docs/input/shell-command.md).
             let (prefix, style) = if i != 0 {
                 (INDENT, Style::default())
             } else if app.shell_mode {
@@ -1009,10 +1009,10 @@ pub fn render_live_with_preview(
     }
 
     // The session-context footer on the region's last row — only when no band
-    // is open (the band takes its place; see docs/footer.md). An open Ctrl+R
-    // search (docs/history-search.md), a `!command` shell mode
-    // (docs/shell-command.md), a primed backtrack (docs/backtrack.md), or the
-    // roster selection's hints (docs/agent-tool.md) take the same slot with
+    // is open (the band takes its place; see docs/ui/footer.md). An open Ctrl+R
+    // search (docs/input/history-search.md), a `!command` shell mode
+    // (docs/input/shell-command.md), a primed backtrack (docs/input/backtrack.md), or the
+    // roster selection's hints (docs/agents/agent-tool.md) take the same slot with
     // their own line.
     if footer > 0 {
         let line = if let Some(search) = app.history_search.as_ref() {
@@ -1030,7 +1030,7 @@ pub fn render_live_with_preview(
     }
 
     // The agent roster below the footer — the persistent `● main` + `◯ …`
-    // list while agents exist (docs/agent-tool.md).
+    // list while agents exist (docs/agents/agent-tool.md).
     if agent_rows > 0 {
         Paragraph::new(agent_list_lines(app, agent_area.width)).render(agent_area, buf);
     }

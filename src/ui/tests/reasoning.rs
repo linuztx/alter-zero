@@ -1,6 +1,6 @@
 //! The thinking stream's three renderers: the live block in the strip, the
 //! collapsed `Thought for …` line, and its Ctrl+O expansion.
-//! See `docs/thinking-stream.md`.
+//! See `docs/ui/thinking-stream.md`.
 
 use super::*;
 use crate::app::Reasoning;
@@ -368,7 +368,7 @@ fn the_transcript_header_never_shimmers() {
 
 #[test]
 fn the_live_bullet_blinks_but_the_committed_one_never_does() {
-    // The blink is live-only, like a running tool's (docs/tool-pulse.md): a
+    // The blink is live-only, like a running tool's (docs/ui/tool-pulse.md): a
     // scrollback commit must never freeze a hidden frame of the animation.
     let shown = live_reasoning_lines("x", Duration::ZERO, 60)[0].spans[0]
         .content

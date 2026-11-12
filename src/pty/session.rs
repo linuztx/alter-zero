@@ -1,4 +1,4 @@
-//! What an interactive session's threads share (`docs/interactive-shell.md`):
+//! What an interactive session's threads share (`docs/tools/interactive-shell.md`):
 //! the two views of its output, when output last arrived, whether it has
 //! exited — and the handshake that decides **who reports the exit**.
 //!
@@ -46,7 +46,7 @@ const BURST_SPAN: Duration = Duration::from_millis(100);
 /// How often a waiting call streams the session to its running cell, at
 /// most — a redrawn progress bar reaches the screen at a steady pace instead
 /// of once per write, each update sampled between two of its frames
-/// ([`super::pace`], `docs/interactive-shell.md`).
+/// ([`super::pace`], `docs/tools/interactive-shell.md`).
 const STREAM_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How long a terminal a call waits on must be quiet — no output, no input —
@@ -179,7 +179,7 @@ struct IoState {
     /// the password, and its silence ends no call.
     awaiting_answer: bool,
     /// The output folded a second time as **data** — tabs and trailing
-    /// spaces kept, both ends kept past the cap (`docs/bash-tools.md`) —
+    /// spaces kept, both ends kept past the cap (`docs/tools/bash-tools.md`) —
     /// for the report of a command that exits inside its own launch. A TTY
     /// session's alone: a pipe's transcript already is its data.
     data: Option<DataView>,
@@ -457,7 +457,7 @@ impl SessionIo {
     /// (Y/n)` in the background would otherwise wait unseen until someone
     /// looked, and a session told of is not told again until the model has
     /// looked at it, so a program that keeps asking cannot start turn after
-    /// turn nobody reads (`docs/bash-tools.md`). Only a line shaped like a
+    /// turn nobody reads (`docs/tools/bash-tools.md`). Only a line shaped like a
     /// prompt counts (`IoState::unseen_prompt_shape`); the probe, when it
     /// can see, rules out a program at work.
     pub fn take_unseen_prompt(&self, min_quiet: std::time::Duration) -> bool {
@@ -478,7 +478,7 @@ impl SessionIo {
     /// event loop asks before it posts that prompt's `… is waiting for input`
     /// note: a companion call's look that came first already showed the model
     /// the prompt, and the note would only reach it after the answer
-    /// (`docs/bash-tools.md`).
+    /// (`docs/tools/bash-tools.md`).
     #[must_use]
     pub fn prompt_seen(&self) -> bool {
         let state = self.lock();
@@ -833,7 +833,7 @@ impl SessionIo {
         let screen_view = state.screen_view_now();
         state.screen_view = screen_view;
         // A command that exited inside its launch, having only written lines:
-        // its output as data, both ends kept (docs/bash-tools.md). Read
+        // its output as data, both ends kept (docs/tools/bash-tools.md). Read
         // before the transcript's look resets what it noticed.
         let data = (matches!(status, Status::Exited(_))
             && !state.looked
@@ -1688,7 +1688,7 @@ mod tests {
     fn a_waiting_call_streams_what_the_look_will_report() {
         // The running cell shows, as it happens, exactly what the look will
         // hand the model: lines out of the cursor's reach appended once, the
-        // rows in reach replaced as they redraw (docs/interactive-shell.md).
+        // rows in reach replaced as they redraw (docs/tools/interactive-shell.md).
         let io = Arc::new(SessionIo::new(true));
         let since = io.begin_wait();
         feed_paced(
@@ -2627,7 +2627,7 @@ mod tests {
     #[test]
     fn a_command_that_exits_in_its_launch_reports_its_output_as_data() {
         // Tabs and trailing spaces are data a model copies back
-        // (docs/bash-tools.md); the transcript is what a person reads, and
+        // (docs/tools/bash-tools.md); the transcript is what a person reads, and
         // expands and trims them.
         let io = Arc::new(SessionIo::waited(true));
         io.absorb(b"col1\tcol2   \r\n");
@@ -2668,7 +2668,7 @@ mod tests {
     fn output_that_moves_back_over_its_lines_keeps_the_transcript() {
         // A multi-line progress display redrawn with cursor-up: the fold,
         // one line at a time, would repeat every redraw — the transcript
-        // follows it (docs/interactive-shell.md).
+        // follows it (docs/tools/interactive-shell.md).
         let io = Arc::new(SessionIo::waited(true));
         io.absorb(b"a\r\nb\r\n\x1b[2Aa!\r\n");
         let _ = io.finish(Some(0));
@@ -2701,7 +2701,7 @@ mod tests {
     #[test]
     fn a_chunk_longer_than_the_transcript_keeps_every_line_in_the_stream() {
         // The stream is the session's log, which a long output's cut names
-        // (docs/bash-tools.md): a burst read in one chunk with more lines
+        // (docs/tools/bash-tools.md): a burst read in one chunk with more lines
         // than the transcript retains lost lines from the middle of it.
         let io = SessionIo::new(true);
         let burst: String = (1..=5000).map(|n| format!("{n}\r\n")).collect();
@@ -2756,7 +2756,7 @@ mod tests {
         // The event loop posts a told prompt's note only while the model has
         // not looked since: a companion call whose look came first already
         // showed it the prompt, and the note would arrive after the answer
-        // it asks for (docs/bash-tools.md).
+        // it asks for (docs/tools/bash-tools.md).
         let io = SessionIo::new(true);
         io.announce();
         io.absorb(b"Use another port? (Y/n) ");
@@ -2816,7 +2816,7 @@ mod tests {
     fn a_program_seen_at_work_outlasts_the_quiet_line() {
         // A command that answered with whole lines and went quiet used to
         // hand its call back after LINE_QUIET whatever it was doing; one the
-        // kernel sees at work is working (docs/bash-tools.md), and runs on to
+        // kernel sees at work is working (docs/tools/bash-tools.md), and runs on to
         // the call's timeout.
         let io = Arc::new(SessionIo::new(true));
         let since = io.begin_wait();
@@ -2838,7 +2838,7 @@ mod tests {
     #[test]
     fn a_wait_on_a_key_reader_whose_prompt_was_seen_returns_at_once() {
         // A REPL at the prompt the model's last look already showed: the wait
-        // ends in a moment, not at its budget (docs/bash-tools.md).
+        // ends in a moment, not at its budget (docs/tools/bash-tools.md).
         let io = Arc::new(SessionIo::new(true));
         io.absorb(b">>> ");
         io.set_reading_keys(true);
@@ -2872,7 +2872,7 @@ mod tests {
         // sudo's retry: `Sorry, try again.` and a fresh prompt, printed
         // between two calls, the terminal reading a hidden line. A pure wait
         // begun after all of it saw no output of its own — it still ends,
-        // as a password prompt (docs/interactive-shell.md).
+        // as a password prompt (docs/tools/interactive-shell.md).
         let io = Arc::new(SessionIo::new(true));
         io.note_input(b"hunter2\r");
         io.absorb(b"\r\nSorry, try again.\r\n[sudo] password for u: ");

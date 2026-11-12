@@ -1,6 +1,6 @@
 //! Put a synthetic screenshot-shaped picture on the X11 clipboard and keep
 //! serving it, for driving the Ctrl+V paste by hand or under a virtual X
-//! server (`docs/image-paste.md`, *Measuring*):
+//! server (`docs/input/image-paste.md`, *Measuring*):
 //!
 //! ```text
 //! Xvfb :99 &

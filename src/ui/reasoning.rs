@@ -1,6 +1,6 @@
 //! The thinking stream's cells: the live block the strip previews, the
 //! collapsed `Thought for …` line it commits, and the Ctrl+O expansion.
-//! See `docs/thinking-stream.md`.
+//! See `docs/ui/thinking-stream.md`.
 //!
 //! While a phase runs it wears the **tool cell's shape** — a `● Thinking…`
 //! header over the chain-of-thought in the `⎿` gutter — because that is what
@@ -56,7 +56,7 @@ fn body_width(width: u16) -> u16 {
 /// strip the bullet blinks (`blink` is the frame clock, [`bullet_span`]) and
 /// the label **shimmers** ([`shimmer_spans_from`]); in the Ctrl+O pager both
 /// render flat (`blink: None`), because that view's cache signature is
-/// deliberately clock-free (`docs/tool-pulse.md`).
+/// deliberately clock-free (`docs/ui/tool-pulse.md`).
 fn thinking_header(blink: Option<Duration>, label: Vec<Span<'static>>) -> Line<'static> {
     let mut spans = vec![bullet_span(tool_running_color(), blink)];
     spans.extend(label);
@@ -126,13 +126,13 @@ pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Lin
 /// The Ctrl+O transcript's view of an **open** phase: the `● Thinking…` header
 /// over the whole thought so far. The pager has no row budget — it
 /// tail-follows the frontier the way it does a streaming `bash` call's output
-/// (`docs/tool-view-performance.md`) — so unlike the strip's block this is not
+/// (`docs/ui/tool-view-performance.md`) — so unlike the strip's block this is not
 /// windowed.
 ///
 /// Rendered **at rest**, bullet and label both: the transcript's cache
 /// signature is deliberately clock-free, so an animation here would either not
 /// move or cost a full-tail re-render every 32 ms for something nobody is
-/// watching (`docs/tool-pulse.md`).
+/// watching (`docs/ui/tool-pulse.md`).
 pub(super) fn reasoning_live_full_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let label = vec![Span::styled(
         REASONING_RUNNING.to_string(),

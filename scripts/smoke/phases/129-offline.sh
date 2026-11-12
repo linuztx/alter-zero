@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The lost-connection wait (docs/offline.md). A provider file points the real
+# The lost-connection wait (docs/providers/offline.md). A provider file points the real
 # backend at a loopback port nothing listens on, so every connect is refused
 # at once — the shape a provider gives from a machine with no route to it.
 # The turn must not fail: the status line wears the amber `Waiting for
@@ -15,7 +15,7 @@ smoke_begin
 # gets through: the reply streams and the turn settles like any other, every
 # trace of the wait gone. A second half interrupts a wait with Esc: nothing
 # streamed, so the submission is undone and the message is back in the
-# composer with no notice (docs/interrupt.md).
+# composer with no notice (docs/input/interrupt.md).
 S129="${S}_offline"
 OFF_CFG="$(mktemp -d "$SMOKE_TMP/offline-cfg.XXXXXX")"
 OFF_DIR="$(work_dir offline)"

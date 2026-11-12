@@ -1,5 +1,5 @@
 //! Finding recorded sessions on disk: the `/resume` picker's listing and the
-//! `--resume {id}` / `--continue` lookups (`docs/resume.md`, `docs/cli.md`).
+//! `--resume {id}` / `--continue` lookups (`docs/state/resume.md`, `docs/cli/cli.md`).
 //!
 //! The sessions root is a dated tree of rollout files
 //! (`{root}/YYYY/MM/DD/rollout-*.jsonl`), and the only hard problem here is
@@ -114,7 +114,7 @@ pub(crate) fn list_sessions(root: Option<&Path>, exclude: Option<&Path>) -> Vec<
 /// (year desc / month desc / day desc / filename desc — the name embeds the
 /// stamp), so the [`RESUME_WALK_CAP`] runaway bound keeps the newest files if
 /// it ever bites. Readdir only — no file contents are touched. Shared by the
-/// `/resume` listing and the CLI id finder (`docs/cli.md`).
+/// `/resume` listing and the CLI id finder (`docs/cli/cli.md`).
 fn rollout_candidates(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     'walk: for year in numeric_dirs_desc(root) {
@@ -146,7 +146,7 @@ fn rollout_candidates(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Resolve `--resume {id}` to a rollout path (`docs/cli.md`), or say why
+/// Resolve `--resume {id}` to a rollout path (`docs/cli/cli.md`), or say why
 /// not — [`resolve_cli`] prints it and exits 1. Accepts, in
 /// order: an existing **path** (the sessions dir is plain files), an exact
 /// rollout **filename**, an exact **id** (the filename segment
@@ -196,7 +196,7 @@ pub(crate) fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBu
 /// `ALTER_ZERO_CONFIG_DIR`, the way the checkpoints root resolves
 /// (`config::checkpoints_root`); `None` disables recording (no HOME and no
 /// override). Shared by the [`SessionRecorder`] and the CLI resolution in
-/// `main` (`docs/cli.md`). It used to fall back to `$HOME` regardless of the
+/// `main` (`docs/cli/cli.md`). It used to fall back to `$HOME` regardless of the
 /// config home, so every session the smoke suite recorded behind its throwaway
 /// config dir landed in the developer's own `/resume` picker.
 pub(crate) fn sessions_root() -> Option<PathBuf> {
@@ -264,7 +264,7 @@ fn read_head(path: &Path, max_lines: usize, cap: u64) -> Option<String> {
 // ===== the loop's `/resume` + backtrack arms =====
 
 impl Session<'_> {
-    /// `/resume` from an idle composer (`docs/resume.md`): scan the sessions dir
+    /// `/resume` from an idle composer (`docs/state/resume.md`): scan the sessions dir
     /// here at the boundary — excluding the file being written — then swap to the
     /// picker on the alternate screen, painted at once (the Ctrl+O
     /// no-black-flash pattern).
@@ -284,7 +284,7 @@ impl Session<'_> {
         // A bare `--resume` boot held its `SessionStart` for the pick; with
         // none made, the fresh conversation it lands in is the one that
         // begins, so its `startup` fires now, in the background
-        // (docs/hooks.md). A no-op when nothing is queued — a picker opened
+        // (docs/tools/hooks.md). A no-op when nothing is queued — a picker opened
         // mid-session closes on a conversation that already began.
         self.models.fire_session_start();
         self.term.exit_overlay()?;
@@ -307,7 +307,7 @@ impl Session<'_> {
             return Ok(());
         };
         let count = items.len();
-        // The code-reset side of resume (docs/checkpoint.md): restore the cwd to
+        // The code-reset side of resume (docs/state/checkpoint.md): restore the cwd to
         // the session's *final* checkpoint so the files match the transcript
         // being loaded. Back up the current tree first (recoverable via the
         // store's reflog); an unknown commit (a session from a different cwd) or
@@ -316,18 +316,18 @@ impl Session<'_> {
         let recorded_model = session::parse_model(&text);
         // The conversation being replaced ends for the hooks — SessionEnd
         // (resume), Claude Code's reason for a switch — before anything of it
-        // is swapped out, so the event names it (docs/hooks.md).
+        // is swapped out, so the event names it (docs/tools/hooks.md).
         self.models.end_conversation("resume");
         let restored = self.restore_final_checkpoint(&session_checkpoints);
         // The loaded pictures — a paste's size, a file gone since the session
         // was recorded — are looked for by the purge rebuild below, which is
-        // what lays the history out (`docs/images.md`).
+        // what lays the history out (`docs/ui/images.md`).
         self.app.load_session(items);
         // The checklist came back with the conversation (the last task
         // record's snapshot) — the shared registry follows, so the model's
-        // next `tasklist` sees the resumed tasks (docs/task-tools.md).
+        // next `tasklist` sees the resumed tasks (docs/tools/task-tools.md).
         self.sync_task_registry();
-        // The model side of the resume (docs/session-model.md): the
+        // The model side of the resume (docs/state/session-model.md): the
         // conversation comes back on the model its file records — before the
         // recorder adopts the file, which is told whether that record is
         // what the session now runs.
@@ -344,7 +344,7 @@ impl Session<'_> {
             torn,
             session_checkpoints,
             // Each request's usage line stays where it sat
-            // (docs/rollout-records.md).
+            // (docs/state/rollout-records.md).
             session::parse_usage(&text),
             self.app.history_generation(),
             recorded_model,
@@ -352,7 +352,7 @@ impl Session<'_> {
         );
         self.record_session_model(false);
         // …and the resumed one begins: SessionStart(resume), in the background
-        // now that the recorder names its id (docs/hooks.md).
+        // now that the recorder names its id (docs/tools/hooks.md).
         self.models.begin_conversation("resume");
         self.term.exit_overlay()?;
         // A resumed session REPLACES the whole conversation: purge-rebuild
@@ -377,7 +377,7 @@ impl Session<'_> {
 
     /// Restore the working directory to the latest checkpoint at or before
     /// `history_len` — the Esc-Esc backtrack's code reset, against the chain this
-    /// session recorded (`docs/checkpoint.md`). The current tree is snapshotted
+    /// session recorded (`docs/state/checkpoint.md`). The current tree is snapshotted
     /// first, so the rewind is recoverable through the store's reflog. `false`
     /// when there is nothing to restore to.
     pub(crate) fn restore_checkpoint_at(&self, history_len: usize) -> bool {

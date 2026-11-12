@@ -1,4 +1,4 @@
-//! Subagent rendering (`docs/agent-tool.md`).
+//! Subagent rendering (`docs/agents/agent-tool.md`).
 
 use super::*;
 use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
@@ -72,7 +72,7 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
     assert_eq!(usize::from(preview_rows(&app, 80)), texts.len());
     // A running tool shows the **same one dim activity row** the tree rows do
     // — the model's own description when it gave one — never a white wrapped
-    // `Bash(...)` header over a `Running…` row (`docs/agent-tool.md`).
+    // `Bash(...)` header over a `Running…` row (`docs/agents/agent-tool.md`).
     app.apply_agent_event(
         "a1",
         &crate::stream::StreamEvent::ToolStart {
@@ -118,7 +118,7 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
 fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
     // A description-less call wears the clean `Name: args` shape, and a long
     // one **clips at the width** rather than wrapping the cell open under a
-    // live counter — all of it dim (`docs/agent-tool.md`).
+    // live counter — all of it dim (`docs/agents/agent-tool.md`).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
@@ -154,7 +154,7 @@ fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
 
 #[test]
 fn a_lone_live_agent_shows_what_it_is_saying() {
-    // The request's own picture (docs/agent-progress.md): while the agent
+    // The request's own picture (docs/agents/agent-progress.md): while the agent
     // talks, its row is its words — `Agent: …`, beside `Bash: …` and
     // `Write: …` — dim, and clipped rather than wrapped like every row.
     let mut app = App::new();
@@ -305,7 +305,7 @@ fn agent_durations_humanize_past_a_minute() {
 
 #[test]
 fn a_resume_notice_wears_the_system_notice_bullet() {
-    // The user started a settled agent again (docs/agent-tools.md): neither
+    // The user started a settled agent again (docs/agents/agent-tools.md): neither
     // an answer nor a failure, so neither green nor red — the informational
     // cyan the system notices wear.
     let notice = crate::app::AgentNotice {
@@ -383,7 +383,7 @@ fn a_live_agent_groups_bullet_blinks_like_a_running_tool() {
     // The tree header is the round's "this is happening now" bullet, so it
     // blinks on the same clock as a running tool cell — the two are on screen
     // together in a mixed round and must not blink out of step
-    // (`docs/tool-pulse.md`): shown in the resting grey, then hidden behind
+    // (`docs/ui/tool-pulse.md`): shown in the resting grey, then hidden behind
     // blanks of its own width so the header text never shifts.
     let mut app = App::new();
     app.begin_stream();
@@ -426,7 +426,7 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
         .map(plain)
         .collect();
     // The id rides the header: the lead names agents by it
-    // (docs/agent-tools.md), and this is where the user can match one.
+    // (docs/agents/agent-tools.md), and this is where the user can match one.
     assert_eq!(texts[0], "● Agent(Fetch Warsaw) · a1");
     assert_eq!(texts[1], "  ⎿  Prompt:");
     assert_eq!(texts[2], "       What is the weather in Fetch Warsaw?");
@@ -548,7 +548,7 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
     assert!(all.contains("Bash(curl wttr.in)"), "{all}");
     // The label is *embedded in* the top rule — `─ Fetch Warsaw ─`, the rule
     // resuming for one cell after the text so it reads as part of the frame
-    // rather than dangling off its end (docs/agent-tool.md).
+    // rather than dangling off its end (docs/agents/agent-tool.md).
     let rule_row = (0..24)
         .map(|y| row(&buf, y, 80))
         .find(|r| r.contains("Fetch Warsaw") && r.contains('─'))
@@ -569,7 +569,7 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
 
 #[test]
 fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection() {
-    // The user-report fix (docs/agent-tool.md): the filled `●` + bright row
+    // The user-report fix (docs/agents/agent-tool.md): the filled `●` + bright row
     // mark the SESSION IN VIEW — inside an agent's session view the highlight
     // sits on that agent, not on `main` — and the `❯` belongs to the active
     // ↑/↓ selection alone, leaving with the focus when Enter/Esc hand the
@@ -620,7 +620,7 @@ fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection(
 
 #[test]
 fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
-    // The linger window (docs/agent-tool.md) exists so the row can be *read*
+    // The linger window (docs/agents/agent-tool.md) exists so the row can be *read*
     // — a finished agent's `◯` wears the tool green (red for a stop) while
     // it waits out the sweep, and the green wins even over the selection.
     let mut app = App::new();
@@ -658,7 +658,7 @@ fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
     );
 }
 
-// ===== The Agent tool's cells + roster (docs/agent-tool.md) =====
+// ===== The Agent tool's cells + roster (docs/agents/agent-tool.md) =====
 
 fn agent_entry(
     id: &str,
@@ -683,7 +683,7 @@ fn agent_entry(
     }
 }
 
-// ===== The agent session view's streaming strip (docs/agent-view-streaming.md) =====
+// ===== The agent session view's streaming strip (docs/agents/agent-view-streaming.md) =====
 
 /// An app with agent `a1` in its own session view, mid-reply on `text`.
 fn streaming_agent_view(text: &str) -> App {
@@ -705,7 +705,7 @@ const FORMING_TABLE: &str = "\
 
 #[test]
 fn an_agent_views_strip_previews_the_rows_its_commits_withheld() {
-    // The reported bug (docs/agent-view-streaming.md): the view's commits go
+    // The reported bug (docs/agents/agent-view-streaming.md): the view's commits go
     // through a `StreamRender`, which withholds a forming table WHOLE — so
     // the strip must show that whole block, not the one row a batch render
     // happened to end on. `committed ++ preview` is the reply, in this view
@@ -757,7 +757,7 @@ fn app_with_injected_rows(mut app: App, rows: usize, width: u16) {
 
 #[test]
 fn an_agent_views_running_command_tails_its_streamed_output() {
-    // Main parity (docs/tool-streaming.md): a subagent's running `bash` call
+    // Main parity (docs/ui/tool-streaming.md): a subagent's running `bash` call
     // tails its output in the strip — the newest lines plus the
     // `+N lines (Ns)` footer — instead of the plain `⎿ Running…` peek.
     use crate::stream::StreamEvent;
@@ -817,7 +817,7 @@ fn agent_summary(app: &App, id: &str) -> crate::app::TurnSummary {
 #[test]
 fn an_agent_views_status_verb_rotates_with_its_runtime() {
     // The session view's line walks the status verbs on the agent's own
-    // clock — the main line's rule (docs/status-indicator.md).
+    // clock — the main line's rule (docs/ui/status-indicator.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
@@ -893,7 +893,7 @@ fn an_agents_chat_continuation_opens_on_the_verb_after_the_last_one_shown() {
 fn an_agent_views_strip_previews_its_thinking_block() {
     // A reasoning subagent shows the same live `● Thinking…` block the main
     // view does, and its status line says `Thinking for Ns`
-    // (docs/thinking-stream.md, docs/agent-view-streaming.md).
+    // (docs/ui/thinking-stream.md, docs/agents/agent-view-streaming.md).
     use crate::stream::StreamEvent;
     let mut app = App::new();
     app.begin_stream();
@@ -921,7 +921,7 @@ fn an_agent_views_strip_previews_its_thinking_block() {
 #[test]
 fn an_agent_views_status_carries_its_lost_connection() {
     // The session view's synthesized status is built from the run, so the
-    // wait shows there exactly as the main turn's does (docs/offline.md).
+    // wait shows there exactly as the main turn's does (docs/providers/offline.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
@@ -945,7 +945,7 @@ fn an_agent_views_status_carries_its_lost_connection() {
 #[test]
 fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
     // The main strip renders a parallel batch as the running call over each
-    // dim `⎿ Waiting…` sibling, blank-separated (docs/parallel-tools.md).
+    // dim `⎿ Waiting…` sibling, blank-separated (docs/tools/parallel-tools.md).
     // The agent session view is the same picture over the agent's own queue:
     // its `ToolBatch` fills `AgentRun::tool_queue` exactly as the main turn's
     // fills `App::tool_queue`, and `agent_view_preview_lines` walks it through
@@ -1036,7 +1036,7 @@ fn an_agent_views_running_call_leads_its_waiting_siblings() {
     assert_eq!(lines[0], "● Bash(echo AAA)");
     // The agent's running command carries the same clock clause the main
     // strip's does — zero here, no per-agent command clock injected — over
-    // the timeout it runs under (docs/tool-streaming.md).
+    // the timeout it runs under (docs/ui/tool-streaming.md).
     assert_eq!(lines[1], "  ⎿  Running… (0s · wait 2m)", "{lines:?}");
     assert_eq!(lines[3], "● Read(notes.md)");
     assert_eq!(lines[4], "  ⎿  Waiting…", "{lines:?}");
@@ -1045,7 +1045,7 @@ fn an_agent_views_running_call_leads_its_waiting_siblings() {
 #[test]
 fn an_agents_ctrl_o_cell_lists_only_the_calls_it_ran() {
     // The cell's `tool_headers` carry no status of their own
-    // (`docs/agent-tool.md`: "the nested tool headers the agent ran"), so a
+    // (`docs/agents/agent-tool.md`: "the nested tool headers the agent ran"), so a
     // not-yet-started `⎿ Waiting…` sibling listed there reads as a call the
     // agent ran while it may yet never run. The running call still belongs:
     // what it is doing now is part of what it has done.
@@ -1089,7 +1089,7 @@ fn a_long_agent_description_is_clipped_so_the_composer_rule_survives() {
     // ratatui's right-aligned title skids an over-wide line off its LEFT end,
     // so the frame read as a sentence with a stray `─` — the head of the
     // description gone and no rule at all. The label is clipped to at most
-    // half the rule now, closed with `…` (docs/agent-tool.md).
+    // half the rule now, closed with `…` (docs/agents/agent-tool.md).
     let mut app = App::new();
     app.set_session_info("dummy_model_name", "~/repo");
     app.begin_stream();
@@ -1179,7 +1179,7 @@ fn the_composer_label_is_a_lit_chip_in_the_themes_accent() {
     // says *which* conversation the composer feeds reads at a glance rather
     // than as dim text embedded in a dim rule. The fill covers the label's
     // own padding spaces and nothing else: the rule before it and the tail
-    // glyph after it keep the border colour and no ground (docs/agent-tool.md).
+    // glyph after it keep the border colour and no ground (docs/agents/agent-tool.md).
     use crate::app::Theme;
     use crate::ui::palette::{palette_of, with_theme};
     use crate::ui::theme::{agent_view_label_bg, agent_view_label_fg, border_color};
@@ -1244,7 +1244,7 @@ fn the_composer_label_is_a_lit_chip_in_the_themes_accent() {
     }
 }
 
-// ===== The file tools' path display on the agent surfaces (docs/tools.md) =====
+// ===== The file tools' path display on the agent surfaces (docs/tools/tools.md) =====
 
 /// The worked example's session policy: launched in `~/Codes/tests`.
 fn session_paths() -> PathDisplay {
@@ -1444,7 +1444,7 @@ fn a_live_agent_cells_nested_headers_shorten_from_the_record() {
 
 #[test]
 fn an_agent_views_strip_streams_the_subagents_write_like_the_main_one() {
-    // Main parity (docs/write-streaming.md): a subagent's file streams into
+    // Main parity (docs/ui/write-streaming.md): a subagent's file streams into
     // its cell in its session view, through the same builder.
     use crate::stream::{StreamEvent, ToolCallFragment};
     let mut app = App::new();

@@ -1,12 +1,12 @@
 //! Cross-session input recall: [`InputHistory`] behind ↑/↓ and the Ctrl+R
 //! reverse search over it ([`HistorySearch`]).
-//! See `docs/input-history.md` and `docs/history-search.md`.
+//! See `docs/input/input-history.md` and `docs/input/history-search.md`.
 
 use super::*;
 
 /// Shell-style ↑/↓ recall of previously submitted inputs — a port of codex's
 /// `ChatComposerHistory` (its in-session `local_history`; no cross-session
-/// persistence or Ctrl+R search). See `docs/input-history.md`.
+/// persistence or Ctrl+R search). See `docs/input/input-history.md`.
 #[derive(Debug, Default)]
 pub struct InputHistory {
     /// The recorded texts, oldest first (newest at the end).
@@ -23,7 +23,7 @@ pub struct InputHistory {
     /// the persistent history file, newest last — the "core queues, boundary
     /// does the I/O" pattern (like `insert_before`'s pending lines). Filled by
     /// [`record`] on a genuine append, drained by [`take_unpersisted`]. Seeded
-    /// entries (already on disk) never land here. See `docs/history-persistence.md`.
+    /// entries (already on disk) never land here. See `docs/input/history-persistence.md`.
     ///
     /// [`record`]: InputHistory::record
     /// [`take_unpersisted`]: InputHistory::take_unpersisted
@@ -31,7 +31,7 @@ pub struct InputHistory {
     /// The last text queued for (or seeded from) the persistent file — the
     /// dedup target for persistence, kept **separate** from `entries`'s
     /// in-memory dedup so a never-persisted [`record_ephemeral`] draft can't
-    /// suppress a genuine submission's write. See `docs/history-persistence.md`.
+    /// suppress a genuine submission's write. See `docs/input/history-persistence.md`.
     ///
     /// [`record_ephemeral`]: InputHistory::record_ephemeral
     last_persisted: Option<String>,
@@ -44,7 +44,7 @@ impl InputHistory {
     /// `record_local_submission`. The persist dedup is against
     /// `last_persisted`, **not** `entries` — so a never-persisted
     /// [`record_ephemeral`] draft can't mask a genuine submission's write (the
-    /// file still collapses adjacent duplicates). See `docs/history-persistence.md`.
+    /// file still collapses adjacent duplicates). See `docs/input/history-persistence.md`.
     ///
     /// [`record_ephemeral`]: InputHistory::record_ephemeral
     pub fn record(&mut self, text: &str) {
@@ -60,7 +60,7 @@ impl InputHistory {
     /// the Ctrl+C-cleared draft. codex keeps cleared drafts in its in-session
     /// `local_history` only, so an abandoned draft doesn't pollute the
     /// cross-session history file, and it never advances `last_persisted`
-    /// (`docs/history-persistence.md`).
+    /// (`docs/input/history-persistence.md`).
     ///
     pub fn record_ephemeral(&mut self, text: &str) {
         self.record_inner(text);
@@ -85,7 +85,7 @@ impl InputHistory {
     /// persistence — but the newest seeded entry becomes the `last_persisted`
     /// dedup target, so a first submission identical to it isn't re-written.
     /// Both ↑/↓ recall and Ctrl+R search read `entries`, so seeding makes both
-    /// span sessions with no other change. See `docs/history-persistence.md`.
+    /// span sessions with no other change. See `docs/input/history-persistence.md`.
     ///
     /// [`record`]: InputHistory::record
     pub fn seed(&mut self, entries: Vec<String>) {
@@ -96,7 +96,7 @@ impl InputHistory {
     }
 
     /// Drain the entries recorded this session that are not yet on disk, for
-    /// the boundary to append. See `docs/history-persistence.md`.
+    /// the boundary to append. See `docs/input/history-persistence.md`.
     pub fn take_unpersisted(&mut self) -> Vec<String> {
         std::mem::take(&mut self.unpersisted)
     }
@@ -139,7 +139,7 @@ impl InputHistory {
     /// texts — codex's Ctrl+R traversal (`chat_composer_history.rs::search`:
     /// lowercased substring match, `seen_texts` dedup). An empty query matches
     /// every entry, though the search session treats that as Idle. See
-    /// `docs/history-search.md`.
+    /// `docs/input/history-search.md`.
     #[must_use]
     pub fn search(&self, query: &str) -> Vec<usize> {
         let needle = query.to_lowercase();
@@ -197,7 +197,7 @@ impl InputHistory {
 /// Ctrl+S/↓ step between matches, Enter accepts the previewed match as an
 /// editable draft, and Esc/Ctrl+C restore the `snapshot`. The footer slot
 /// renders it as `reverse-i-search: {query}` (`ui::search_line`). See
-/// `docs/history-search.md`.
+/// `docs/input/history-search.md`.
 ///
 /// [`query`]: HistorySearch::query
 #[derive(Debug)]
@@ -209,7 +209,7 @@ pub struct HistorySearch {
     /// Whether the composer was in `!` shell mode when the search opened. The
     /// mode is suspended during the search (previews show entries raw) and
     /// restored with the snapshot on cancel; accepting re-derives it from the
-    /// accepted text instead. See `docs/shell-command.md`.
+    /// accepted text instead. See `docs/input/shell-command.md`.
     snapshot_shell: bool,
     /// The footer-owned query typed while the search is active.
     pub query: String,
@@ -317,7 +317,7 @@ impl App {
     /// Open the Ctrl+R reverse history search: snapshot the draft — text and
     /// cursor (codex's `snapshot_draft`) — close the palette (the search owns
     /// the keys from here), and start Idle with an empty query: no preview
-    /// until something is typed. See `docs/history-search.md`.
+    /// until something is typed. See `docs/input/history-search.md`.
     pub(super) fn begin_history_search(&mut self) {
         self.command_menu = None;
         self.file_search = None; // the search owns the keys from here
@@ -508,7 +508,7 @@ impl App {
         // pairs that backed it — discard them (the boundary deletes the
         // orphaned temp files) so a stale attachment can't silently ride the
         // next submission; any `[Image #N]` in the accepted text is an
-        // unbacked marker (docs/image-paste.md). Mirrors the interrupt-undo
+        // unbacked marker (docs/input/image-paste.md). Mirrors the interrupt-undo
         // and backtrack draft-replacement paths.
         self.discard_attachments();
         self.refresh_command_menu(false);

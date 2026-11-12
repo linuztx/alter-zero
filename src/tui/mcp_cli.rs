@@ -1,13 +1,13 @@
-//! The `mcp` subcommand boundary (`docs/mcp-cli.md`): the file I/O and
+//! The `mcp` subcommand boundary (`docs/cli/mcp-cli.md`): the file I/O and
 //! printing behind `alter-zero mcp add/add-json/remove/get/list`, run by
 //! [`super::startup::resolve_cli`] in cooked mode — before the tokio runtime
-//! and the terminal, like every other CLI resolution (`docs/cli.md`).
+//! and the terminal, like every other CLI resolution (`docs/cli/cli.md`).
 //!
 //! The grammar and its mapping onto [`McpServerConfig`] are the pure
 //! `cli`/`mcp` modules'; this file only resolves the user config path, does
 //! the read-modify-write around the pure writers, and maps each outcome to
 //! its message and exit code. Unlike the TUI's best-effort writers
-//! (`docs/mcp.md`), every failure here is loud: a CLI that could not
+//! (`docs/tools/mcp.md`), every failure here is loud: a CLI that could not
 //! persist must say so and exit non-zero.
 
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
     match cmd {
         McpCli::Help => {
             // The subcommand's page, through the same renderer and colour
-            // rule as the main `--help` (docs/cli.md).
+            // rule as the main `--help` (docs/cli/cli.md).
             println!("{}", cli::help(HelpPage::Mcp, stdout_style()));
             0
         }
@@ -168,7 +168,7 @@ fn read_user_file(path: &PathBuf) -> Result<String, String> {
 
 /// Write the updated document — atomically, keeping the file's permissions
 /// (owner-only for a new one) and any symlink to it, creating the config
-/// dir on first use (`docs/mcp-cli.md`).
+/// dir on first use (`docs/cli/mcp-cli.md`).
 fn write_user_file(path: &Path, contents: &str) -> Result<(), String> {
     alter_zero::llm::mcp::write_config_file(path, contents)
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))
@@ -187,7 +187,7 @@ fn parse_document(path: &Path, contents: &str) -> Result<mcp::McpFile, String> {
     Ok(mcp::parse_mcp_file(contents))
 }
 
-/// Map a pure writer's refusal to its message (`docs/mcp-cli.md`).
+/// Map a pure writer's refusal to its message (`docs/cli/mcp-cli.md`).
 fn write_error(err: &McpWriteError, name: &str, path: &Path) -> String {
     match err {
         McpWriteError::InvalidJson(reason) => {
@@ -256,7 +256,7 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
 
 /// A remote entry's URL as a session reaches it — its `${VAR}`s expanded
 /// from this environment, the address its tokens and client secret are
-/// kept under (`docs/mcp.md`) — else as written.
+/// kept under (`docs/tools/mcp.md`) — else as written.
 fn resolved_url(config: &McpServerConfig) -> String {
     let expanded = mcp::expand_config(config, &|name| std::env::var(name).ok());
     expanded
@@ -270,7 +270,7 @@ fn resolved_url(config: &McpServerConfig) -> String {
 /// The client secret `--client-secret` asks for: `MCP_CLIENT_SECRET` when
 /// set, else a prompt with echo off when stdin is a terminal, else one line
 /// of stdin — never a command-line value, which would land in the shell
-/// history and the process list (`docs/mcp-cli.md`).
+/// history and the process list (`docs/cli/mcp-cli.md`).
 fn read_client_secret() -> Result<String, String> {
     use std::io::{BufRead, IsTerminal, Write};
     if let Ok(secret) = std::env::var("MCP_CLIENT_SECRET")

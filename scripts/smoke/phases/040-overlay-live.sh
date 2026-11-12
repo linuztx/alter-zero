@@ -5,7 +5,7 @@
 smoke_begin
 
 # the Ctrl+O tool-output overlay shows a running bash tool's output
-# LIVE (docs/tool-streaming.md) — unlike Claude Code, whose transcript only shows
+# LIVE (docs/ui/tool-streaming.md) — unlike Claude Code, whose transcript only shows
 # tool output once the tool finishes. Open the overlay during a fresh parallel
 # turn and poll for the fix-demonstrating state: a Bash(ping) cell RUNNING with
 # streamed output (an `icmp_seq` line) while BOTH batch siblings still show
@@ -34,7 +34,7 @@ tmux kill-session -t "$S_OVL" 2>/dev/null
 
 # Phase 40: the Ctrl+O overlay shows a running bash tool's output LIVE — a running
 # Bash(ping) cell streamed an `icmp_seq` line while both siblings were still
-# `⎿ Waiting…` (only the live-updating overlay can show that; docs/tool-streaming.md).
+# `⎿ Waiting…` (only the live-updating overlay can show that; docs/ui/tool-streaming.md).
 overlay_waiting=$(printf '%s\n' "$overlay_stream" | grep -c 'Waiting…')
 if [ "${overlay_waiting:-0}" -lt 2 ] || ! printf '%s' "$overlay_stream" | grep -qE 'icmp_seq'; then
 	fail "the Ctrl+O overlay did not show a running bash tool's live output (no streamed 'icmp_seq' line while two siblings were still ⎿ Waiting…) — the overlay stayed static during the stream"

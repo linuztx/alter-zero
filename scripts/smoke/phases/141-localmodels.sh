@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# `/login` → Sign in with a local model (docs/local-models.md). Local stubs stand in
+# `/login` → Sign in with a local model (docs/providers/local-models.md). Local stubs stand in
 # for the servers: an LM Studio listing one language model and one embedding
 # model over its native /api/v1/models, a second LM Studio set to require an
 # API token (401 without `Bearer sk-lm-smoke`), an LM Studio before 0.4 (no
@@ -30,7 +30,7 @@ smoke_begin
 #       is refused, and the saved OLLAMA_HOST stays;
 #   (h) a session on LM Studio's model whose server has stopped ends the turn
 #       on the test's own sentence, never on `Waiting for internet…`
-#       (docs/offline.md);
+#       (docs/providers/offline.md);
 #   (i) in that session, whose shell exports LMSTUDIO_HOST, a working address
 #       saved under /login says the exported variable overrides it, instead
 #       of confirming a connection the session will not use;

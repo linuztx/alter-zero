@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the task tools' live checklist (docs/task-tools.md) — the
+# the task tools' live checklist (docs/tools/task-tools.md) — the
 # "todo" demo drives a real TaskStore: the ⎿ ◻ rows render under the status
 # line while the turn runs (the blocked suffix included), the spinner wears
 # the active task's activeForm, NO task call ever commits a tool cell to the
@@ -86,7 +86,7 @@ fi
 # The demo ends with work left (#1 done, #2 in progress, #3 pending), so the
 # STANDALONE block takes over at rest: the dim count line over the remaining
 # rows, above the composer, gutter-less — there is no spinner left to hang
-# from (docs/task-tools.md). Asserted against the VISIBLE screen: scrollback
+# from (docs/tools/task-tools.md). Asserted against the VISIBLE screen: scrollback
 # still holds the mid-turn frames, whose rows do wear the gutter.
 if [ -z "$tasks_rest" ]; then
 	fail "the turn never settled, so the resting screen was never read"

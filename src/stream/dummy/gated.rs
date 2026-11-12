@@ -1,5 +1,5 @@
 //! The dummy's **gated** turns: the offline permission demos
-//! (`docs/permissions.md`) and the `AskUserQuestion` demo (`docs/ask.md`).
+//! (`docs/state/permissions.md`) and the `AskUserQuestion` demo (`docs/tools/ask.md`).
 //!
 //! Unlike [`super::turns`] these can't be a pure event list — they *ask*, and
 //! then block on the shared [`PermissionGate`](crate::permission::PermissionGate)
@@ -24,7 +24,7 @@ use crate::llm::tools::write_report as created;
 /// is the short red cell the user reads, `result` the longer stop-and-wait
 /// text the *model* receives — which is the real backend's shape, so the
 /// offline demo exercises Tab's amend feedback all the way into the derived
-/// context (`docs/permissions.md`).
+/// context (`docs/state/permissions.md`).
 type Resolution = Result<String, (String, String)>;
 
 /// The gate's record of a demo call it refused unattended: the call as the
@@ -62,9 +62,9 @@ pub(in crate::stream) fn unattended() -> (String, String) {
 
 /// One scripted call's identity, as a live backend would announce it: the
 /// display `kind`, the header `args` summary, the **verbatim** `arguments`
-/// the recorded cell replays next turn (`docs/context.md`), and the short
+/// the recorded cell replays next turn (`docs/architecture/context.md`), and the short
 /// model-facing `ack` for the tools whose cell text is not what the model
-/// reads (`docs/tools.md`).
+/// reads (`docs/tools/tools.md`).
 struct ScriptedTool {
     kind: &'static str,
     args: String,
@@ -97,7 +97,7 @@ impl ScriptedTool {
 
 impl Stage<'_> {
     /// Announce a batch of calls up front, so the ones not yet running show
-    /// as dim `⎿ Waiting…` cells (`docs/parallel-tools.md`).
+    /// as dim `⎿ Waiting…` cells (`docs/tools/parallel-tools.md`).
     fn announce(&self, kind: &str, targets: impl IntoIterator<Item = String>) {
         let _ = self.tx.send(StreamEvent::ToolBatch(
             targets
@@ -125,7 +125,7 @@ impl Stage<'_> {
         if self.gate.allows(request) {
             return Some(Ok(output()));
         }
-        // Nobody to ask — a headless run (docs/headless.md): refused the way
+        // Nobody to ask — a headless run (docs/cli/headless.md): refused the way
         // the real approve seam refuses it, before a request exists.
         if self.gate.refuses_unattended(|| unattended_refusal(request)) {
             return Some(Err(unattended()));
@@ -181,7 +181,7 @@ impl Stage<'_> {
         match resolved {
             // `ack` is the file tools' short model-facing result: the cell
             // still shows the numbered body, so an approved offline write
-            // reads in Ctrl+D exactly as a live one does (`docs/tools.md`).
+            // reads in Ctrl+D exactly as a live one does (`docs/tools/tools.md`).
             Ok(output) => {
                 let _ = match &call.ack {
                     Some(result) if ok => self.tx.send(StreamEvent::ToolAnswered {
@@ -244,7 +244,7 @@ impl Stage<'_> {
     }
 }
 
-/// The scripted `AskUserQuestion` arguments for the ask demo (`docs/ask.md`):
+/// The scripted `AskUserQuestion` arguments for the ask demo (`docs/tools/ask.md`):
 /// three questions exercising every surface — a single-select, a multi-select
 /// (checkboxes + its own `Submit` row), and a preview question (the
 /// side-by-side panel, the `n` notes field). The reference transcript's
@@ -282,7 +282,7 @@ const DUMMY_ASK_ARGS: &str = r#"{"questions":[
   }
 ]}"#;
 
-/// Play the offline `AskUserQuestion` round trip (`docs/ask.md`): stream the
+/// Play the offline `AskUserQuestion` round trip (`docs/tools/ask.md`): stream the
 /// intro, announce the call, raise the question modal and **block on the ask
 /// gate** exactly as the real tool thread does, then resolve the cell —
 /// green with the answers, red for a decline, a `Chat about this` or a
@@ -315,7 +315,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
         args: args.clone(),
     }]));
     // The real executor path: parse, raise `AskUser`, block on the gate, map
-    // the decision onto the split outcome (docs/ask.md).
+    // the decision onto the split outcome (docs/tools/ask.md).
     let outcome = crate::llm::ask::ask_user(stage.gate, stage.tx, stage.cancel, &call);
     if stage.cancel.is_cancelled() {
         return;
@@ -400,7 +400,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     let _ = stage.tx.send(StreamEvent::StreamDone);
 }
 
-/// The dummy's scripted `write` for the permission demo (`docs/permissions.md`).
+/// The dummy's scripted `write` for the permission demo (`docs/state/permissions.md`).
 const DUMMY_PERMISSION_PATH: &str = "hello.py";
 const DUMMY_PERMISSION_CONTENT: &str = "#!/usr/bin/env python3\n\n\
     def main():\n    \
@@ -446,7 +446,7 @@ pub(in crate::stream) fn write_permission_turn(stage: &Stage<'_>) {
 /// terminal, so it fills the screen), the second's a single line. The offline
 /// mirror of the reported gap-under-the-prompt shape: answering the tall
 /// prompt commits its cell and opens the short prompt in the same frame gap,
-/// shrinking the pinned modal region hard (`docs/permissions.md`, the smoke
+/// shrinking the pinned modal region hard (`docs/state/permissions.md`, the smoke
 /// suite's staggered-prompt phase).
 const DUMMY_STAGGERED_BIG_PATH: &str = "big_module.py";
 const DUMMY_STAGGERED_TINY_PATH: &str = "tiny_note.py";
@@ -523,7 +523,7 @@ const DUMMY_PARALLEL_COMMANDS: [(&str, &str, &str, bool); 2] = [
 /// anywhere**: on an approval the cell's `ToolStart`/`ToolEnd` and the *next*
 /// call's `Permission` land in the same instant, so the loop sees a resolved
 /// commit and a reopening modal inside one frame gap — the covering
-/// machinery's hardest timing (`docs/permissions.md`, the smoke suite's
+/// machinery's hardest timing (`docs/state/permissions.md`, the smoke suite's
 /// back-to-back-prompt phase). A rejection resolves that cell red and still
 /// asks for the next call, as the real loop does.
 pub(in crate::stream) fn parallel_permission_turn(stage: &Stage<'_>) {
@@ -587,7 +587,7 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
     ),
 ];
 
-/// Play the offline **auto mode** round trip (`docs/permissions.md`): the
+/// Play the offline **auto mode** round trip (`docs/state/permissions.md`): the
 /// [`DUMMY_AUTO_COMMANDS`] batch announced up front, then — per call, the
 /// real approve seam's disposition — the allowlist first, then in
 /// [`PermissionMode::Auto`] the read-only fast path (a command that provably

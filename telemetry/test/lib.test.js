@@ -1,4 +1,4 @@
-// The collector's pure half (docs/telemetry.md), tested with Node's built-in
+// The collector's pure half (docs/ops/telemetry.md), tested with Node's built-in
 // runner: `node --test test/` from `telemetry/`. No framework, no install.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

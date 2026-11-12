@@ -1,4 +1,4 @@
-//! Pure markdown structure for assistant replies (`docs/markdown.md`).
+//! Pure markdown structure for assistant replies (`docs/ui/markdown.md`).
 //!
 //! The model streams markdown; the picker/scrollback renderer ([`crate::ui`])
 //! needs to treat **fenced code blocks** differently from prose — code must keep
@@ -157,7 +157,7 @@ pub enum LineKind {
 /// state machine that classifies one source line at a time. Feeding the same
 /// lines in order yields exactly the prose/code split [`parse_blocks`] produces,
 /// but without re-scanning the whole reply — which is what lets the streaming
-/// renderer stay O(new line) per chunk (`docs/markdown.md`).
+/// renderer stay O(new line) per chunk (`docs/ui/markdown.md`).
 ///
 /// Prefix-stable: a line's [`LineKind`] depends only on the lines before it, so a
 /// classification, once made, never changes.
@@ -449,7 +449,7 @@ pub fn heading_level(line: &str) -> Option<(u8, &str)> {
     Some((hashes as u8, content))
 }
 
-// --- GFM pipe tables (`docs/markdown.md`). A table is a header row, a
+// --- GFM pipe tables (`docs/ui/markdown.md`). A table is a header row, a
 // **delimiter row** (`|---|:-:|`), and zero+ data rows — all pipe-delimited.
 // Detection needs one line of lookahead (a header is only a header if the next
 // line is a delimiter), and a new row can widen an already-emitted column, so
@@ -501,7 +501,7 @@ fn has_unescaped_pipe(s: &str) -> bool {
 /// Whether `line` is a *candidate* table row — after ≤3 leading spaces, it holds
 /// an unescaped `|`. This is only a candidate: a header row becomes a real table
 /// only when the **next** line is a [`table_delimiter`] (the one-line lookahead
-/// the renderer resolves by buffering — see `docs/markdown.md`).
+/// the renderer resolves by buffering — see `docs/ui/markdown.md`).
 #[must_use]
 pub fn is_table_row(line: &str) -> bool {
     table_indent(line).is_some_and(has_unescaped_pipe)
@@ -518,7 +518,7 @@ pub fn is_table_row(line: &str) -> bool {
 /// commits progressively and can never be re-shaped — and it is the form
 /// models actually emit. Data rows *inside* a confirmed table keep the loose
 /// [`is_table_row`], including the hard-wrapped-tail re-join
-/// (docs/table-streaming.md).
+/// (docs/ui/table-streaming.md).
 #[must_use]
 pub fn is_table_header_candidate(line: &str) -> bool {
     table_indent(line).is_some_and(|t| t.starts_with('|'))
@@ -608,7 +608,7 @@ pub fn table_delimiter(line: &str) -> Option<Vec<Alignment>> {
     Some(aligns)
 }
 
-// --- Inline markdown (`docs/markdown.md`). A prose line's emphasis (`*`/`_`,
+// --- Inline markdown (`docs/ui/markdown.md`). A prose line's emphasis (`*`/`_`,
 // `**`/`__`, and both at once), `~~strike~~`, `` `code` ``, `[text](url)` /
 // `![alt](url)`, `<url>` autolinks, backslash escapes and HTML entities parse
 // into a tree of styled spans; [`crate::ui`] maps each node to a `Style`.
@@ -659,7 +659,7 @@ pub enum Inline {
     },
 }
 
-/// Parse a prose `line` into inline nodes (`docs/markdown.md`). Left-to-right,
+/// Parse a prose `line` into inline nodes (`docs/ui/markdown.md`). Left-to-right,
 /// line-local: an unclosed or non-flanking marker stays literal, so the result
 /// of a **complete** line is final (prefix-stable once the line ends).
 #[must_use]
@@ -1482,7 +1482,7 @@ fn entity_forming(rest: &str) -> bool {
     rest.len() <= 32 && body.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-// --- List items and blockquotes (`docs/markdown.md`). Both are **line-local**
+// --- List items and blockquotes (`docs/ui/markdown.md`). Both are **line-local**
 // (classified by the line's own prefix), so a complete line's rendering is final
 // — prefix-stable while streaming, no holdback needed. [`crate::ui`] styles the
 // marker and hangs the wrapped continuation under the text. ---

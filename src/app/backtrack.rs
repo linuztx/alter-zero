@@ -1,15 +1,15 @@
 //! The Esc-Esc backtrack: prime → transcript preview → rewind + prefill.
-//! See `docs/backtrack.md`.
+//! See `docs/input/backtrack.md`.
 
 use super::*;
 
 /// The transient toast shown when a `/resume` restored the working directory to
-/// the session's checkpoint (`docs/checkpoint.md`) — feedback that the code, not
+/// the session's checkpoint (`docs/state/checkpoint.md`) — feedback that the code, not
 /// just the transcript, was rewound.
 pub const CHECKPOINT_RESTORED_NOTICE: &str = "Restored files to this session's checkpoint";
 
 /// The transient toast shown when an Esc-Esc backtrack reset the working
-/// directory to the rewound-to message's checkpoint (`docs/checkpoint.md`).
+/// directory to the rewound-to message's checkpoint (`docs/state/checkpoint.md`).
 pub const CHECKPOINT_REWOUND_NOTICE: &str = "Reset files to the checkpoint for that message";
 
 /// The Esc-Esc backtrack gesture's state — codex's `BacktrackState`
@@ -17,7 +17,7 @@ pub const CHECKPOINT_REWOUND_NOTICE: &str = "Reset files to the checkpoint for t
 /// gesture, a second Esc previews previous user messages highlighted in the
 /// transcript overlay, Esc/← / → step the highlight, and Enter rewinds the
 /// conversation to the highlighted message and puts its text back in the
-/// composer to edit. See `docs/backtrack.md`.
+/// composer to edit. See `docs/input/backtrack.md`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Backtrack {
     /// The first Esc armed the gesture (codex's `primed` — no timeout); any
@@ -51,7 +51,7 @@ impl App {
 
     /// Is there a previous user message for Esc-Esc to edit? Gates priming
     /// (codex's `has_backtrack_target`) — with no target, idle Esc keeps its
-    /// historical meaning here: quit. See `docs/backtrack.md`.
+    /// historical meaning here: quit. See `docs/input/backtrack.md`.
     #[must_use]
     pub fn has_backtrack_target(&self) -> bool {
         self.history
@@ -67,7 +67,7 @@ impl App {
     /// (`on_key_tool_view`) and its closing hint row (`ui::render_tool_view` —
     /// `q/ctrl+o to quit   esc to edit prev` vs `q/esc/ctrl+o to quit`) share,
     /// so what the hint promises and what the key does can never drift. See
-    /// `docs/backtrack.md`.
+    /// `docs/input/backtrack.md`.
     ///
     /// [`modal_open`](App::modal_open) is what makes the overlays safe to open
     /// from *inside* a tool-permission prompt or an `AskUserQuestion` question
@@ -79,8 +79,8 @@ impl App {
     ///
     /// The read-only `/context` and `/usage` pages let the same two overlays
     /// through, and a rewind begun from one would land back on a page still
-    /// open over the draft it recalled (`docs/context-usage.md`,
-    /// `docs/usage.md`): the overlay opened from it is a look, so its Esc
+    /// open over the draft it recalled (`docs/architecture/context-usage.md`,
+    /// `docs/providers/usage.md`): the overlay opened from it is a look, so its Esc
     /// goes back to the page.
     #[must_use]
     pub fn overlay_esc_backtracks(&self) -> bool {
@@ -140,7 +140,7 @@ impl App {
     /// dance): any pairs backing the clobbered draft are discarded, the
     /// restored placeholders are re-keyed to the message's recorded paths,
     /// and the *later* dropped user messages' attachments — now referenced by
-    /// nothing — are queued for temp-file deletion. See `docs/backtrack.md`.
+    /// nothing — are queued for temp-file deletion. See `docs/input/backtrack.md`.
     ///
     /// [`history`]: App::history
     pub(super) fn confirm_backtrack(&mut self) {
@@ -165,18 +165,18 @@ impl App {
         self.history.truncate(position);
         self.history_generation += 1;
         // A rewind lands between turns, where no group is open — but the
-        // rebuild that follows renders whatever one held (docs/tool-groups.md).
+        // rebuild that follows renders whatever one held (docs/ui/tool-groups.md).
         self.drop_tool_group();
         // The checklist rewinds with the conversation: the last task record
-        // before the cut holds the state it had there (docs/task-tools.md);
+        // before the cut holds the state it had there (docs/tools/task-tools.md);
         // the boundary syncs the shared registry after the rewind.
         self.reset_tasks_from_history();
         // The rewound history's tail can be an older batch-sibling user
         // message — fence it off from the interrupt-undo like a resumed tail.
         self.undo_floor = self.history.len();
-        // The gauge re-seats on the rewound conversation (docs/compact.md),
+        // The gauge re-seats on the rewound conversation (docs/architecture/compact.md),
         // and the last request described the one rewound away
-        // (`docs/context-usage.md`).
+        // (`docs/architecture/context-usage.md`).
         self.refresh_context_used();
         self.last_usage = None;
         self.backtrack = Backtrack::default();

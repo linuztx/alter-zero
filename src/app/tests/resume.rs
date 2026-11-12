@@ -1,8 +1,8 @@
-//! The `/resume` session picker (`docs/resume.md`).
+//! The `/resume` session picker (`docs/state/resume.md`).
 
 use super::*;
 
-// --- session info (the footer under the box; see docs/footer.md) ---
+// --- session info (the footer under the box; see docs/ui/footer.md) ---
 
 #[test]
 fn session_info_is_unset_by_default() {

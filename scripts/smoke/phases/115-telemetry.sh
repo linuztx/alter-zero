@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# telemetry — one anonymous ping a day, disclosed once, off with one setting (docs/telemetry.md)
+# telemetry — one anonymous ping a day, disclosed once, off with one setting (docs/ops/telemetry.md)
 # A local Python stub stands in for the collector: it appends every POST it
 # receives (path, user-agent, body) to a log and answers 204. The launches
 # below UNSET the suite-wide ALTER_ZERO_TELEMETRY=0 (and a developer's own
@@ -118,7 +118,7 @@ case "$tm_line" in
 *) tm_fail "the ping did not hit /v1/ping with the alter-zero/$TM_VERSION user-agent: '$tm_line'" ;;
 esac
 tm_body="${tm_line#/v1/ping alter-zero/$TM_VERSION }"
-# The body is the seven fields and nothing else — the shape docs/telemetry.md
+# The body is the seven fields and nothing else — the shape docs/ops/telemetry.md
 # promises — with the id the file holds and the crate's own version. The suite
 # runs on Linux, so `distro` must be there; `os_version` is checked only if
 # present, because a rolling-release host (Arch, Void) legitimately names none.
@@ -208,7 +208,7 @@ printf '%s\n' "$tm_dnt_row"
 # UNAVAILABLE, not merely false: an opt-out a keystroke could undo is not an
 # opt-out. The row used to be seeded false but stay cyclable, so Space wrote
 # `enabled: true` and sent a ping under DO_NOT_TRACK=1 — with the disclosure
-# never shown, since only the launch path committed it (docs/telemetry.md).
+# never shown, since only the launch path committed it (docs/ops/telemetry.md).
 if ! printf '%s' "$tm_dnt_row" | grep -qE "Telemetry +false \\(unavailable\\)"; then
 	tm_fail "the Telemetry row is not unavailable under DO_NOT_TRACK=1"
 fi
@@ -252,7 +252,7 @@ fi
 # never succeeds must not be retried once per turn. The attempt is remembered
 # in memory for the session — the file's last_ping_day is written only on a
 # 2xx — so a refusing collector costs exactly one attempt per UTC day, and the
-# next LAUNCH is what retries it (docs/telemetry.md).
+# next LAUNCH is what retries it (docs/ops/telemetry.md).
 TM_PORT5="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 TM_LOG5="$TM_CFG/refused.log"
 python3 - "$TM_PORT5" "$TM_LOG5" <<'PY' &
@@ -296,7 +296,7 @@ fi
 if [ "${tm_refused_after:-0}" != "1" ]; then
 	tm_fail "the turn-start day check retried a failing collector (${tm_refused_after:-0} attempts; it must be one per day per session)"
 fi
-# The KEY is always written (every field, always — docs/telemetry.md); what
+# The KEY is always written (every field, always — docs/ops/telemetry.md); what
 # must not appear is a date in it, which is what "delivered" means.
 if grep -qE '"last_ping_day": *"[0-9]' "$TM_CFG/refused/telemetry.json" 2>/dev/null; then
 	tm_fail "a refused ping recorded last_ping_day — the day is only recorded on a 2xx"
@@ -310,7 +310,7 @@ wait "$TM_SERVER5" 2>/dev/null
 # version, recorded once the stub answered — and nothing else changes: no
 # notice again, no new install id. Keyed on the day alone this launch stayed
 # silent until midnight UTC, and the dashboard kept the install on the old
-# version for the day it had updated (docs/telemetry.md *When it is sent*).
+# version for the day it had updated (docs/ops/telemetry.md *When it is sent*).
 sed -i -E 's/"last_ping_version": *"[^"]*"/"last_ping_version": "0.0.0"/' "$TM_CFG/home/telemetry.json"
 if [ "$(tm_field "$TM_CFG/home/telemetry.json" last_ping_version)" != "0.0.0" ]; then
 	tm_fail "could not stage the pre-update file: last_ping_version did not take"

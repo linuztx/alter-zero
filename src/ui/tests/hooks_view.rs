@@ -1,4 +1,4 @@
-//! The `/hooks` menu's rendering (`docs/hooks-menu.md`).
+//! The `/hooks` menu's rendering (`docs/tools/hooks-menu.md`).
 
 use super::*;
 use crate::hooks::{HooksFile, HooksOverview};
@@ -483,7 +483,7 @@ fn the_detail_page_wraps_the_status_message_and_marks_a_cut_source() {
 fn every_built_hooks_row_fits_its_width() {
     // A Line wider than the area silently paint-clips at the buffer's right
     // edge, so the builder never emits one: single-row text ellipsizes and
-    // informational text wraps (docs/view-flow.md).
+    // informational text wraps (docs/ui/view-flow.md).
     use crate::ui::wrap::cols;
     for width in [26u16, 30, 40, 60, 78] {
         let mut app = App::new();
@@ -509,7 +509,7 @@ fn every_built_hooks_row_fits_its_width() {
 fn every_level_title_wears_the_title_dress() {
     // `Hooks`, `PreToolUse - Matchers`, the hook list, `Hook details`: the
     // walk's headline is the one row that says where you are, and it wears
-    // the theme's gradient like every page title (`docs/theme.md`).
+    // the theme's gradient like every page title (`docs/ui/theme.md`).
     let mut app = hooks_app();
     for level in ["events", "matchers", "hooks", "detail"] {
         let lines = hooks_view_lines(&app, 78);
@@ -591,7 +591,7 @@ fn render_paints_the_lines_and_the_cursor_hides_seated_on_the_selection() {
 }
 
 /// The sample read from the user's file, the hooks in `trusted` trusted —
-/// what the loop opens the menu over (`docs/config-review.md`).
+/// what the loop opens the menu over (`docs/state/config-review.md`).
 fn sourced_app(trusted: &'static [&'static str]) -> App {
     let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");
     let overview = HooksOverview::from_file(

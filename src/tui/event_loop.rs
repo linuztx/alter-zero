@@ -46,7 +46,7 @@ use super::startup::Startup;
 /// Run the app to completion.
 ///
 /// `startup` is the CLI's `--continue`/`--resume` directive plus the optional
-/// `[PROMPT]`, applied before the first frame (`docs/cli.md`). Returns the
+/// `[PROMPT]`, applied before the first frame (`docs/cli/cli.md`). Returns the
 /// active session's id when the run recorded a conversation — the exit hint
 /// `main` prints after the terminal is restored — else `None`.
 pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Result<Option<String>> {
@@ -91,10 +91,10 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             Some(result) = session.diff_rx.recv() => session.on_diff_result(result)?,
 
             // 5b. The `/login` device flow's worker: the code to show, then
-            //     the sign-in's verdict (`docs/copilot.md`).
+            //     the sign-in's verdict (`docs/providers/copilot.md`).
             Some(event) = session.device_rx.recv() => session.on_device_event(event),
 
-            // 5c. One subscription's `/usage` read (docs/usage.md).
+            // 5c. One subscription's `/usage` read (docs/providers/usage.md).
             Some(result) = session.usage_rx.recv() => session.on_usage_result(result),
 
             // 6. A finished `/model` fetch from one provider's worker thread.
@@ -115,20 +115,20 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
 
             // 9. A subagent event — its own stream, its settle, or the lead's
-            //    stop or resume of it (docs/agent-tools.md).
+            //    stop or resume of it (docs/agents/agent-tools.md).
             Some(event) = session.agent_rx.recv() => session.on_agent_message(event),
 
             // 10. An MCP server's state changed (a connect resolved, an auth
-            //     flow progressed) — docs/mcp.md.
+            //     flow progressed) — docs/tools/mcp.md.
             Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
 
             // 11. The day's telemetry ping was delivered: record the day and
             //     the version so the next launch today on this version sends
-            //     nothing (docs/telemetry.md).
+            //     nothing (docs/ops/telemetry.md).
             Some(delivered) = session.telemetry_rx.recv() => session.on_telemetry_result(&delivered),
 
             // 12. The update check answered: record what it found and, if
-            //     newer, announce it once the session is idle (docs/update.md).
+            //     newer, announce it once the session is idle (docs/ops/update.md).
             Some(latest) = session.update_rx.recv() => session.on_update_result(&latest),
         }
         session.after_iteration();

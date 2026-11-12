@@ -1,5 +1,5 @@
 //! Tool cells: headers, output peeks, and file-change rendering
-//! (`docs/tools.md`, `docs/tool-streaming.md`).
+//! (`docs/tools/tools.md`, `docs/ui/tool-streaming.md`).
 
 use super::*;
 use crate::ui::theme::{
@@ -44,7 +44,7 @@ fn tool_lines_header_omits_the_parens_when_args_are_empty() {
     assert_eq!(plain(&lines[0]), "● echo hi");
 }
 
-// --- the resolved AskUserQuestion cell (docs/ask.md) ---
+// --- the resolved AskUserQuestion cell (docs/tools/ask.md) ---
 
 #[test]
 fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
@@ -105,7 +105,7 @@ fn a_running_ask_cell_keeps_the_generic_header() {
     );
 }
 
-// --- the auto mode classifier's provenance note (docs/permissions.md) ---
+// --- the auto mode classifier's provenance note (docs/state/permissions.md) ---
 
 /// [`tool`] with the classifier's allowed note riding it.
 fn noted(name: &str, args: &str, status: ToolStatus, output: &str) -> ToolCall {
@@ -264,7 +264,7 @@ fn a_running_bullet_blinks_across_the_pulse_period() {
     // for the first half of every TOOL_PULSE_PERIOD, hidden for the second —
     // a pure function of the boundary-injected frame clock. Hidden is the
     // same width of blanks, so the header text never shifts; shown is the
-    // one resting grey, never a blend of two (docs/tool-pulse.md).
+    // one resting grey, never a blend of two (docs/ui/tool-pulse.md).
     let call = tool("Bash", "cargo test", ToolStatus::Running, "");
     let bullet = |at: Duration| {
         let mut lines = live_tool_lines(&call, 80, at, &PathDisplay::VERBATIM);
@@ -346,7 +346,7 @@ fn a_committed_cell_never_carries_a_pulse_frame() {
 fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
     // A finished command-style backend tool (bash) shows the first
     // TOOL_FOLD_ROWS rows of its output — the head, Claude-Code style — then a
-    // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md); the `!`
+    // `… +N lines (ctrl+o to expand)` hint (docs/ui/tool-streaming.md); the `!`
     // shell cell alone shows its output whole. (This is the mock's finished
     // state.)
     let out = "l1\nl2\nl3\nl4\nl5\nl6";
@@ -413,7 +413,7 @@ fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
     // TOOL_FOLD_ROWS rows between them — the cell is bounded in display rows,
     // so it can never balloon past what four short lines would cost. The hint
     // counts every display row hidden underneath, across all four
-    // (docs/long-lines.md).
+    // (docs/ui/long-lines.md).
     let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
     let out = vec![long; 4].join("\n");
     let lines: Vec<String> = tool_lines(
@@ -445,7 +445,7 @@ fn a_finished_command_peek_skips_the_output_s_leading_blank_lines() {
     // A command whose output opens on a blank line (a `\n` before the real
     // first row — an `echo` with a leading newline, a formatter's spacer)
     // used to spend the cell's first row on nothing. The peek opens at the
-    // first line that has something on it (docs/long-lines.md).
+    // first line that has something on it (docs/ui/long-lines.md).
     let out = "\nl1\nl2\nl3\nl4\nl5";
     let lines: Vec<String> = tool_lines(
         &tool("Bash", "seq", ToolStatus::Ok, out),
@@ -529,7 +529,7 @@ fn a_finished_command_peek_reads_a_blank_only_output_as_no_output() {
 
 #[test]
 fn a_shell_cell_shows_its_whole_output_inline() {
-    // The `!` shell cell does not fold (docs/shell-command.md): the user ran
+    // The `!` shell cell does not fold (docs/input/shell-command.md): the user ran
     // the command to read its output, so every display line shows inline —
     // the same rows the Ctrl+O view paints, the leading blanks the command
     // printed included — with no `… +N lines (ctrl+o to expand)` hint. Only
@@ -596,7 +596,7 @@ fn a_truncated_shell_cell_marks_the_cut_inline() {
     // Output over the in-memory cap used to rely on the `… +N lines` hint to
     // say more followed; with the whole retained output inline, the dim `…`
     // marker the Ctrl+O view appends closes the inline cell too, so the cut
-    // is still visible (docs/shell-command.md).
+    // is still visible (docs/input/shell-command.md).
     let mut t = tool("seq 1 50000", "", ToolStatus::Ok, "1\n2\n3\n4\n5\n6");
     t.shell = true;
     t.truncated = true;
@@ -712,7 +712,7 @@ fn a_non_command_tool_with_raw_multiline_output_shares_the_folded_peek() {
     // A generic backend tool whose output isn't the numbered file-cell format
     // (e.g. the dummy's canned `Read`, or an unknown tool) shows the same
     // folded peek the exec cells do — Claude Code's one tool-result surface:
-    // TOOL_FOLD_ROWS rows, then the hint (docs/tool-streaming.md).
+    // TOOL_FOLD_ROWS rows, then the hint (docs/ui/tool-streaming.md).
     let lines = tool_lines(
         &tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree\nfour\nfive"),
         80,
@@ -742,7 +742,7 @@ fn a_non_command_tool_with_raw_multiline_output_shares_the_folded_peek() {
 fn tool_lines_strips_the_leading_exit_code_frame_from_a_bash_cell() {
     // `tool.output` stays framed (`Exit code: N\n…`) for the model / context
     // replay, but the display drops that first line so the cell reads like
-    // the real command output (docs/tool-streaming.md).
+    // the real command output (docs/ui/tool-streaming.md).
     let out = "Exit code: 0\nhello\nworld";
     let lines = tool_lines(
         &tool("Bash", "echo", ToolStatus::Ok, out),
@@ -862,7 +862,7 @@ fn the_running_footer_names_the_timeout_the_call_runs_under() {
     // The reported ask: beside the elapsed, the footer says how long the
     // command *may* run — the model's own `timeout`, read off the call's
     // verbatim arguments (`ToolCall::arguments`) and humanized as a limit:
-    // `+18 lines (22s · wait 1m 50s)` (docs/tool-streaming.md).
+    // `+18 lines (22s · wait 1m 50s)` (docs/ui/tool-streaming.md).
     let command = "for i in $(seq 1 100); do echo $i; sleep 1; done";
     let out = (1..=22)
         .map(|i| i.to_string())
@@ -899,7 +899,7 @@ fn a_running_command_with_no_output_counts_on_its_running_row() {
     // A silent command used to sit on a bare `⎿ Running…` for as long as it
     // ran. The row carries the clock clause now — `Running… (10s · timeout
     // 2m)` — so the user can see it is alive, and for how much longer at
-    // most (docs/tool-streaming.md).
+    // most (docs/ui/tool-streaming.md).
     let t = tool(
         "Bash",
         r#"python3 -c "import time; time.sleep(100)""#,
@@ -963,7 +963,7 @@ fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
     // Fewer lines than the window: show them all, then the clock row with
     // no `+N lines` count in front of it — `(1s · wait 2m)` — so a
     // command whose output fits still says how long it has run and how long
-    // it may (docs/tool-streaming.md).
+    // it may (docs/ui/tool-streaming.md).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
     let lines = running_command_lines(
         &t,
@@ -1022,7 +1022,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
 #[test]
 fn tool_full_lines_strips_the_exit_code_frame_from_a_bash_cell() {
     // The Ctrl+O full view shows the whole body but, like the inline cell,
-    // drops the `Exit code: N` frame line (docs/tool-streaming.md).
+    // drops the `Exit code: N` frame line (docs/ui/tool-streaming.md).
     let out = "Exit code: 0\nalpha\nbeta";
     let lines = tool_full_lines(
         &tool("Bash", "echo", ToolStatus::Ok, out),
@@ -1086,7 +1086,7 @@ fn tool_lines_running_backend_peek_reads_running_capitalized() {
 fn tool_lines_waiting_shows_a_waiting_peek() {
     // A not-yet-started call in a parallel batch renders `● name(args)` over
     // a dim `⎿ Waiting…` row — the queued-but-not-running state. See
-    // `docs/parallel-tools.md`.
+    // `docs/tools/parallel-tools.md`.
     let lines = tool_lines(
         &tool("Bash", "ping x.com", ToolStatus::Waiting, ""),
         80,
@@ -1109,7 +1109,7 @@ fn tool_lines_waiting_shows_a_waiting_peek() {
 fn tool_lines_colours_a_waiting_bullet_dim_and_still() {
     // The waiting bullet is dim grey — the same hue a running bullet rests on;
     // what tells them apart in the live region is that the running one moves
-    // (`docs/tool-pulse.md`),
+    // (`docs/ui/tool-pulse.md`),
     // since the call hasn't started.
     let lines = tool_lines(
         &tool("Bash", "ping x.com", ToolStatus::Waiting, ""),
@@ -1477,7 +1477,7 @@ fn a_generic_cell_peek_line_wraps_instead_of_clipping() {
     // the old render clipped its tail at the terminal edge. A line within the
     // per-line row budget survives whole; the pathological one is clipped and
     // marked instead (`a_generic_backend_cell_clips_its_single_peeked_line`,
-    // docs/long-lines.md).
+    // docs/ui/long-lines.md).
     let long = "could not read /home/u/missing/file.txt: no such file";
     let width: u16 = 40;
     let lines = tool_lines(
@@ -1671,7 +1671,7 @@ fn edit_cell_shows_numbered_hunks_with_diff_tints() {
     assert_eq!(add_sign.style.fg, Some(tool_diff_add_color()));
     // …every span past the `⎿` indent is tinted end to end — the row's own
     // tint, or the brighter mark tint where the line actually changed
-    // (`docs/inline-diff.md`; here the `1` -> `2`).
+    // (`docs/ui/inline-diff.md`; here the `1` -> `2`).
     assert!(
         del.spans
             .iter()
@@ -2025,7 +2025,7 @@ fn tool_full_lines_expand_tabs_for_display() {
     );
 }
 
-// --- MCP cells (docs/mcp.md) ---
+// --- MCP cells (docs/tools/mcp.md) ---
 
 use crate::ui::theme::{MCP_CALLED_PREFIX, MCP_CALLING_PREFIX, reasoning_label_color};
 use crate::ui::tool::{mcp_batch_lines, tool_commit_lines};
@@ -2044,7 +2044,7 @@ fn mcp_tool(status: ToolStatus, output: &str) -> ToolCall {
 fn a_running_mcp_cell_collapses_to_calling_server() {
     // One line and nothing else: the arguments (and the result) are Ctrl+O's
     // story, so the inline cell doesn't echo a peek of the question
-    // (`docs/mcp.md`).
+    // (`docs/tools/mcp.md`).
     let lines = tool_lines(
         &mcp_tool(ToolStatus::Running, ""),
         100,
@@ -2071,7 +2071,7 @@ fn a_waiting_mcp_sibling_shows_the_waiting_row() {
 #[test]
 fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
     // The settled thinking line's shape: no bullet, dim throughout, the
-    // result text never inline (docs/mcp.md).
+    // result text never inline (docs/tools/mcp.md).
     let lines = tool_lines(
         &mcp_tool(ToolStatus::Ok, "{\"result\": \"long json…\"}"),
         100,
@@ -2163,7 +2163,7 @@ fn a_wide_mcp_header_wraps_to_the_bullets_own_hanging_indent() {
     // `● Deepwiki - ask_question (MCP)` is 31 columns: aligning the wrapped
     // arguments under the opening `(` would spend 40% of the terminal on
     // indent, so a header that wide falls back to the bullet's two columns
-    // and the args get the whole width (`docs/mcp.md`).
+    // and the args get the whole width (`docs/tools/mcp.md`).
     let mut cell = mcp_tool(ToolStatus::Ok, "");
     cell.args = r#"{"repoName":"linuztx/flaredantic","question":"What is this project about? What does it do, what problem does it solve, and how is it typically used?"}"#.to_string();
     let lines = tool_full_lines(&cell, 76, &PathDisplay::VERBATIM);
@@ -2278,7 +2278,7 @@ fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
     // held (its batch continued with a NON-MCP sibling, so it committed its
     // own line at its own ToolEnd), but the bash sibling's commit still
     // counted it into "the run this call ends" and re-emitted it. The hold
-    // decision and the flush must agree on what was held (`docs/mcp.md`).
+    // decision and the flush must agree on what was held (`docs/tools/mcp.md`).
     let mut app = app_calling(&["deepwiki - ask_question (MCP)", "Bash"]);
     app.end_tool("{\"answer\":\"…\"}", true);
     let first = tool_commit_lines(&app.history, app.tool_queue(), 100, &PathDisplay::VERBATIM)
@@ -2365,7 +2365,7 @@ fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
 fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
     // Two calls of one batch resolve: the first holds its line (the run is
     // still going), the second commits both as one `Called … 2 times` line —
-    // the same line the history repaint renders (`docs/mcp.md`).
+    // the same line the history repaint renders (`docs/tools/mcp.md`).
     let mut app = app_calling(&[
         "deepwiki - ask_question (MCP)",
         "deepwiki - read_wiki_structure (MCP)",
@@ -2399,7 +2399,7 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     // history. Painting the held cell there wrote a `Called Deepwiki` line
     // that the run's own `Called Deepwiki 2 times` then followed. Until the
     // run ends the strip's `● Calling Deepwiki 2 times…` speaks for it, so a
-    // rebuild must skip exactly the held cells (`docs/mcp.md`).
+    // rebuild must skip exactly the held cells (`docs/tools/mcp.md`).
     let mut app = app_calling(&[
         "deepwiki - ask_question (MCP)",
         "deepwiki - read_wiki_structure (MCP)",
@@ -2461,7 +2461,7 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     assert_eq!(repaint[..texts.len()], texts[..]);
 }
 
-// --- a turn's death resolves its whole batch (docs/interrupt.md) ---
+// --- a turn's death resolves its whole batch (docs/input/interrupt.md) ---
 
 use crate::ui::tool::resolved_tools_commit_lines;
 
@@ -2611,7 +2611,7 @@ fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
     assert!(!head.contains("ctrl+o"), "no room for the hint at 20 cols");
 }
 
-// --- very long output lines: bounded rows, honest counts (docs/long-lines.md) ---
+// --- very long output lines: bounded rows, honest counts (docs/ui/long-lines.md) ---
 
 #[test]
 fn a_finished_peek_hint_counts_rows_hidden_inside_a_long_line() {
@@ -2750,7 +2750,7 @@ fn a_read_cell_shows_a_very_long_file_line_whole() {
     // A long line the peek's ten rows can hold wraps to every row it needs:
     // it is never cut at a per-line row budget and closed with `…`, which hid
     // the rest of the line from the one cell the user reads
-    // (docs/long-lines.md §7). The lines after it still show while the peek
+    // (docs/ui/long-lines.md §7). The lines after it still show while the peek
     // has room.
     let body = format!(" 1 {}\n 2 short\n 3 tail", "x".repeat(400));
     let lines: Vec<String> = tool_lines(
@@ -2796,7 +2796,7 @@ fn the_peek_cuts_the_line_that_runs_past_its_tenth_row() {
     // needs six: it is started, shown for the three rows left and cut there,
     // its last row closed by a `…` so the cut never reads as the line's end.
     // The peek never grows past its ten rows, however long the line
-    // (docs/long-lines.md §8), and the hint counts the four file lines after
+    // (docs/ui/long-lines.md §8), and the hint counts the four file lines after
     // it.
     let body: String = (1..=12)
         .map(|i| {
@@ -3164,7 +3164,7 @@ fn a_long_diff_row_keeps_its_tint_on_every_wrapped_row() {
 
 #[test]
 fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
-    // The reported mess (`docs/long-lines.md`, "Rows, not lines"): a `curl` of
+    // The reported mess (`docs/ui/long-lines.md`, "Rows, not lines"): a `curl` of
     // a web page — a short `<title>` then minified `<script>` lines — spent
     // FOUR source lines' worth of per-line budget, ten wrapped rows of noise
     // inline. The cell is bounded in the unit the user reads it in: at most
@@ -3194,7 +3194,7 @@ fn a_finished_peek_never_spends_more_rows_than_the_row_ceiling() {
     );
 }
 
-// --- character-level diff marking (docs/inline-diff.md) ---
+// --- character-level diff marking (docs/ui/inline-diff.md) ---
 
 /// The spans of the one rendered row containing `needle`, past the `⎿` indent.
 fn diff_row<'a>(lines: &'a [Line<'a>], needle: &str) -> &'a Line<'a> {
@@ -3343,7 +3343,7 @@ fn the_mark_tint_survives_a_wrap_onto_the_continuation_row() {
         "n".repeat(50)
     );
     // The Ctrl+O expansion, so the assertion is about the wrap and not about
-    // the collapsed cell's per-line row budget (`docs/long-lines.md`).
+    // the collapsed cell's per-line row budget (`docs/ui/long-lines.md`).
     let lines = tool_full_lines(
         &tool("Edit", "a.txt", ToolStatus::Ok, &output),
         40,
@@ -3383,7 +3383,7 @@ fn the_trailing_pad_keeps_the_row_tint_not_the_mark_tint() {
     assert_eq!(last.style.bg, Some(tool_diff_add_bg()));
 }
 
-// --- the changed run's ink reads on its mark (docs/inline-diff.md) ---
+// --- the changed run's ink reads on its mark (docs/ui/inline-diff.md) ---
 
 /// The reported edit, verbatim: a reworded `///` doc comment, whose changed
 /// words are comment-coloured on the bright mark.
@@ -3509,7 +3509,7 @@ fn only_a_mark_too_bright_for_its_ink_changes_the_ink() {
     });
 }
 
-// --- the header keeps the command's own spacing (docs/tools.md) ---
+// --- the header keeps the command's own spacing (docs/tools/tools.md) ---
 
 #[test]
 fn tool_header_keeps_the_commands_space_runs() {
@@ -3640,7 +3640,7 @@ fn tool_header_expands_tabs_in_a_command_for_display() {
     assert_eq!(plain(&lines[0]), "● Bash(cut    -f1)");
 }
 
-// --- the path a file tool's header shows (docs/tools.md "Path display") ---
+// --- the path a file tool's header shows (docs/tools/tools.md "Path display") ---
 
 /// The worked example's session: launched in `~/Codes/tests`, home
 /// `/home/linuztx`. The **header** shortens through the policy; the corner
@@ -3831,7 +3831,7 @@ fn the_verbatim_policy_renders_the_recorded_path_exactly() {
 #[test]
 fn the_live_cell_shortens_the_header_too() {
     // The strip's live cell — a `Write` waiting on the permission gate wears
-    // the header it will commit with (`docs/permissions.md`).
+    // the header it will commit with (`docs/state/permissions.md`).
     let paths = session_paths();
     let cell = tool("Write", "/home/linuztx/hello.py", ToolStatus::Running, "");
     let lines = live_tool_lines(&cell, 80, Duration::ZERO, &paths);
@@ -3882,7 +3882,7 @@ fn the_transcript_reads_the_apps_policy() {
     );
 }
 
-// --- the header wraps and cuts like Claude Code's `Bash(…)` (docs/tools.md) ---
+// --- the header wraps and cuts like Claude Code's `Bash(…)` (docs/tools/tools.md) ---
 
 /// The command from the report, byte for byte.
 const WIKI_CURL: &str = "curl -s --max-time 15 \"https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&format=json&titles=World%20Chess%20Championship%202026\" | head -c 2000";
@@ -4123,7 +4123,7 @@ fn a_heredoc_that_is_not_the_commit_idiom_stays_verbatim() {
     );
 }
 
-// --- the output folds like Claude Code's tool result (docs/long-lines.md) ---
+// --- the output folds like Claude Code's tool result (docs/ui/long-lines.md) ---
 
 /// The report's JSON body — one compact line, as `curl` prints it.
 const WIKI_JSON: &str = r#"{"batchcomplete":"","query":{"pages":{"75936044":{"pageid":75936044,"ns":0,"title":"World Chess Championship 2026"}}}}"#;
@@ -4184,7 +4184,7 @@ fn an_exec_cell_pretty_prints_a_json_line_like_claude_code() {
 #[test]
 fn a_shell_cell_pretty_prints_json_too() {
     // The `!` exec cell reshapes a JSON line the same way — and, unfolded,
-    // shows the whole reshaped document inline (docs/shell-command.md).
+    // shows the whole reshaped document inline (docs/input/shell-command.md).
     let mut t = tool("curl -s api", "", ToolStatus::Ok, WIKI_JSON);
     t.shell = true;
     let lines: Vec<String> = tool_lines(&t, 72, &PathDisplay::VERBATIM)
@@ -4343,7 +4343,7 @@ fn the_fold_shows_three_rows_of_one_long_line_unmarked() {
     );
 }
 
-// --- the header's path is a `file://` link (docs/links.md) ---
+// --- the header's path is a `file://` link (docs/ui/links.md) ---
 
 /// The `(text, target)` pairs of a line's link-carrying spans.
 fn linked_spans(line: &Line) -> Vec<(String, String)> {
@@ -4461,7 +4461,7 @@ fn read_and_edit_headers_link_alike_whatever_form_the_row_shows() {
 
 #[test]
 fn a_wrapped_or_cut_header_path_links_every_fragment_to_the_whole_file() {
-    // The point of the carrier (docs/links.md): a path hard-broken across
+    // The point of the carrier (docs/ui/links.md): a path hard-broken across
     // rows — or cut to the header's column budget — opens the whole file
     // from any fragment, where a terminal's own detection sees row text.
     let paths = session_paths();
@@ -4636,7 +4636,7 @@ fn the_live_cell_and_the_transcript_link_the_header_alike() {
     assert!(linked_spans(&full[1]).is_empty());
 }
 
-// --- interactive sessions (docs/interactive-shell.md) ---
+// --- interactive sessions (docs/tools/interactive-shell.md) ---
 
 #[test]
 fn a_session_cell_shows_its_output_over_a_dim_state_row() {
@@ -4801,7 +4801,7 @@ fn a_running_session_call_shows_the_wait_it_runs_under() {
     );
 }
 
-// --- the running window follows the rows still moving (docs/tool-streaming.md) ---
+// --- the running window follows the rows still moving (docs/ui/tool-streaming.md) ---
 
 #[test]
 fn the_running_window_follows_the_rows_still_moving() {

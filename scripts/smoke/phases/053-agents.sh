@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the Agent tool (docs/agent-tool.md) — the dummy's scripted
+# the Agent tool (docs/agents/agent-tool.md) — the dummy's scripted
 # two-agent demo. A prompt mentioning "agents" announces a foreground group:
 # while it "runs" (AGENT_DELAY) the strip shows the blue `● Running 2 agents…`
 # tree with `⎿ Initializing…` per agent AND the footer roster lists `● main` +

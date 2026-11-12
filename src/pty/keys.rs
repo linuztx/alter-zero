@@ -1,4 +1,4 @@
-//! The `bash_session` tool's `input` notation (`docs/interactive-shell.md`):
+//! The `bash_session` tool's `input` notation (`docs/tools/interactive-shell.md`):
 //! literal text with **named keys in angle brackets** — `<Enter>`, `<C-c>`,
 //! `<Up>`, `<F5>` — parsed into [`InputPart`]s and encoded into the bytes a
 //! terminal sends for them.
@@ -930,7 +930,7 @@ fn key_bytes(key: Key, app_cursor: bool) -> Vec<u8> {
 
 /// Is this input exactly one `<C-c>` — an interrupt, which a shell without a
 /// terminal still honours (as `SIGINT` to its process group) and which asks
-/// no permission (`docs/interactive-shell.md`)?
+/// no permission (`docs/tools/interactive-shell.md`)?
 #[must_use]
 pub fn is_interrupt(parts: &[InputPart]) -> bool {
     match parts {

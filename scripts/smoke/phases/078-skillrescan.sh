@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# skills are RE-WALKED every turn (docs/skills.md). Discovery
+# skills are RE-WALKED every turn (docs/tools/skills.md). Discovery
 # used to run once at startup, so a skill added mid-session — or one the agent
 # had just written for you — stayed invisible until a restart. Boot against an
 # EMPTY skills dir, plant a SKILL.md while the session is running, take one

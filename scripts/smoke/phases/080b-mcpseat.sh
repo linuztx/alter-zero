@@ -8,8 +8,8 @@ smoke_begin
 # the hidden cursor to rest on, and the seat used to fall to the far corner of
 # the bottom rule — where a terminal with a cursor-move animation (kitty) flew
 # to nowhere on every open (the reported bug). It rests just past the closing
-# hint now, the Ctrl+O / Ctrl+D / /resume overlays' rule (docs/mcp.md,
-# docs/view-flow.md). tmux reports the pane's cursor cell whether or not the
+# hint now, the Ctrl+O / Ctrl+D / /resume overlays' rule (docs/tools/mcp.md,
+# docs/ui/view-flow.md). tmux reports the pane's cursor cell whether or not the
 # cursor is shown, so the seat is checked the way Phase 55 checks the
 # permission prompt's: `#{cursor_y}` is 0-based, grep -n 1-based.
 S80B="${S}_mcpseat"

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Esc during a PARALLEL batch (docs/interrupt.md; docs/parallel-tools.md
+# Esc during a PARALLEL batch (docs/input/interrupt.md; docs/tools/parallel-tools.md
 # "Interrupting a batch"). The dummy's "parallel" prompt announces three
 # `Bash(ping …)` calls up front; its output lines are slowed so the first call
 # is still running — its two siblings `⎿ Waiting…` — when Esc lands. Every one
@@ -61,7 +61,7 @@ if ! [ "${google:-0}" -gt 0 ] || ! [ "${google:-0}" -lt "${facebook:-0}" ] ||
 	! [ "${facebook:-0}" -lt "${invalid:-0}" ] || ! [ "${invalid:-0}" -lt "${notice:-0}" ]; then
 	fail "the interrupted cells are not in batch order above the notice (google=$google facebook=$facebook x.invalid=$invalid notice=$notice)"
 fi
-# …and the turn's receipt closes it, under the notice (docs/interrupt.md).
+# …and the turn's receipt closes it, under the notice (docs/input/interrupt.md).
 receipt="$(printf '%s\n' "$interrupted" | grep -nE "^$SUMMARY_RE" | head -1 | cut -d: -f1)"
 if ! [ "${receipt:-0}" -gt "${notice:-0}" ]; then
 	fail "the interrupted batch's receipt does not sit under the notice (notice=$notice receipt=$receipt)"

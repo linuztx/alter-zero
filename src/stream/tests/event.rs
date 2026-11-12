@@ -5,7 +5,7 @@ use crate::stream::{TokenUsage, ToolCallFragment, ToolCallSummary, ToolErrorKind
 
 #[test]
 fn only_what_a_streaming_request_emits_is_attempt_output() {
-    // What a retry voids (docs/offline.md *A connection lost mid-reply*):
+    // What a retry voids (docs/providers/offline.md *A connection lost mid-reply*):
     // the reply text, a thinking phase, a call the model is still generating
     // — everything a request emits while it streams, and nothing that marks
     // where one stopped or the next began.
@@ -67,7 +67,7 @@ fn only_what_a_streaming_request_emits_is_attempt_output() {
     }
 }
 
-// ===== how a call ran (docs/rollout-records.md) =====
+// ===== how a call ran (docs/state/rollout-records.md) =====
 
 #[test]
 fn every_error_kind_reads_back_from_its_rollout_name() {

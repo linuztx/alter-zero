@@ -1,4 +1,4 @@
-//! A pure Server-Sent-Events frame parser (`docs/mcp.md`) — shared by the
+//! A pure Server-Sent-Events frame parser (`docs/tools/mcp.md`) — shared by the
 //! streamable-HTTP response drain and the legacy HTTP+SSE stream, and tested
 //! without a socket. Feed it lines (or raw chunks) as they arrive; it yields
 //! complete events at each blank-line boundary.

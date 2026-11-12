@@ -24,29 +24,29 @@ cargo doc --no-deps --lib                   # intra-doc links must resolve
 cargo build && scripts/smoke.sh             # drive the real binary in tmux (every phase, in parallel)
 scripts/smoke.sh 55 permission              # only some phases (an id, a range, a name substring)
 scripts/smoke.sh --list                     # the phases, their tags and last durations
-bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
-scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
+bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/ops/smoke.md)
+scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/ops/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
-cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/binary-size.md)
+cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/ops/binary-size.md)
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh download X.Y.Z [DIST]   # a published release back into an empty dist/, each archive beside its .sha256, verified (curl or wget, no gh)
-scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/npm.md)
-(cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
+scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/ops/npm.md)
+(cd npm && node --test)                     # the npm launcher's tests (docs/ops/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
-cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
-cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
-cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
+cargo run --release --example mem_probe     # /model parse RSS (docs/architecture/memory.md)
+cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/tools/interactive-shell.md)
+cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/ops/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
-(cd telemetry && node --test)               # the telemetry collector's pure half (docs/telemetry.md)
-docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the latest release; DIR also creates the container on it (docs/docker.md)
+(cd telemetry && node --test)               # the telemetry collector's pure half (docs/ops/telemetry.md)
+docker/build.sh [--engine podman] [DIR]     # the headless Kali image from the latest release; DIR also creates the container on it (docs/ops/docker.md)
 docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /workspace, ports 8080/8888, --clipboard
 python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
-python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # the web-search skill's scripts, offline (docs/skills.md)
+python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # the web-search skill's scripts, offline (docs/tools/skills.md)
 JINA_WEB_SEARCH_LIVE=1 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # plus one real search per Jina engine
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
-(cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/aur.md)
+(cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/ops/aur.md)
 (cd aur/alter-zero-bin && makepkg -Cf && namcap PKGBUILD alter-zero-bin-*.pkg.tar.zst)   # the AUR binary package: the release's own Linux archive, repackaged
 (cd aur/<package> && makepkg --printsrcinfo > .SRCINFO)   # after every PKGBUILD edit — the AUR reads .SRCINFO, never the PKGBUILD
 ```
@@ -73,11 +73,11 @@ and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
 then one release build per platform (Linux x86_64 and arm64, macOS Intel and
 Apple silicon) packaged, checksummed and verified by `scripts/release.sh`, and
 a GitHub release whose notes are `CHANGELOG.md`'s section for the version
-(`docs/release.md`), then the npm packages from the same archives —
+(`docs/ops/release.md`), then the npm packages from the same archives —
 rehearsed on every run in a job holding nothing that can publish, and
 published by `npm-publish`, the one job granted `id-token: write`, only on a
 tag, only when the repository variable `NPM_PUBLISH` is `true` and only in
-the `npm` environment, which npm's trusted publisher names (`docs/npm.md`).
+the `npm` environment, which npm's trusted publisher names (`docs/ops/npm.md`).
 Cutting a release is `scripts/release.sh prepare X.Y.Z`, a commit, an
 annotated tag and a push; `workflow_dispatch` rehearses the whole
 pipeline without publishing, and every step runs locally the same way. Users
@@ -86,7 +86,7 @@ checksum-verified), which the selftest drives against
 `scripts/release/release_server.py`, a stand-in for github.com's release pages.
 
 **`docker/`** packages that same published release on headless **Kali
-Rolling**, for Docker and Podman alike (`docs/docker.md` the design,
+Rolling**, for Docker and Podman alike (`docs/ops/docker.md` the design,
 `docker/README.md` + the plain-text `docker/build.txt` the usage). Nothing is
 compiled: the Dockerfile runs `install.sh` in a stage of its own and copies
 the one binary out. The decision the build script exists for is that
@@ -110,7 +110,7 @@ container cannot grant, so it would not even exec — `setcap -r` plus a
 redirector at priority 1, `kali.download` (its Cloudflare mirror) at 2,
 each priority after a **tab** — a redirector pick that had stopped
 answering failed whole builds, since apt retries the mirror it was sent to,
-never the redirector (`docs/docker.md` *Mirrors*).
+never the redirector (`docs/ops/docker.md` *Mirrors*).
 **Python is a virtualenv at `/opt/az-venv`** activated by `ENV`
 (`VIRTUAL_ENV` + `PATH`), so the agent's own `sh -c` commands inherit it too;
 `/bin/sh` is dash and never reads `.bashrc`. Kali's system Python is PEP 668
@@ -146,7 +146,7 @@ to get wrong. **The `exec` command forwards the terminal's identity** —
 `-e TERM -e COLORTERM -e TERM_PROGRAM -e KITTY_WINDOW_ID -e TMUX`, the
 variables `images::Detection::from_env` actually reads — without which an
 iTerm2-family terminal falls to half-blocks (a kitty-protocol one is still
-found by the startup question, `docs/images.md` *Asking the terminal*) and a
+found by the startup question, `docs/ui/images.md` *Asking the terminal*) and a
 container under tmux cannot know not to ask; it is the documentation, printed
 by `run.sh`, not a wrapper. And
 **`--clipboard` forwards the display server, since `exec -it` carries only
@@ -165,7 +165,7 @@ with the cause and the way around it, instead of whatever arboard's X11 probe
 ran into.
 
 **`aur/`** holds the Arch User Repository recipes for the same tagged
-release (`docs/aur.md`), one directory per AUR repository, each the
+release (`docs/ops/aur.md`), one directory per AUR repository, each the
 `PKGBUILD`, the `.SRCINFO` the AUR actually reads (regenerated, never
 hand-edited) and an allowlist `.gitignore`. **`aur/alter-zero-bin`**
 repackages the release's own Linux archives (`source_x86_64`/
@@ -188,7 +188,7 @@ gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.
 
 **`npm/`** is the npm launcher package, `@linuztx/alter-zero`
-(`docs/npm.md`): `npm install -g` fetches it and exactly one of the four
+(`docs/ops/npm.md`): `npm install -g` fetches it and exactly one of the four
 platform packages its `optionalDependencies` pin —
 `@linuztx/alter-zero-{linux,darwin}-{x64,arm64}`, staged per release target
 by `scripts/release.sh npm` from that target's release archive, with
@@ -227,11 +227,11 @@ Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported a
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
 `ratatui-image` for the inline pictures (`default-features = false`: its
 default `chafa-dyn` links a C library we don't have, and `image-defaults`
-would turn on every `image` codec — see `docs/images.md`), `png` reached
-directly for its row-streaming decoder (`images::fitted`, `docs/memory.md`),
+would turn on every `image` codec — see `docs/ui/images.md`), `png` reached
+directly for its row-streaming decoder (`images::fitted`, `docs/architecture/memory.md`),
 and — Linux only — `x11rb` + `wl-clipboard-rs`, arboard's own backends at
 arboard's own versions, for the clipboard's `image/png` bytes
-(`clipboard::linux`, `docs/image-paste.md`),
+(`clipboard::linux`, `docs/input/image-paste.md`),
 `unicode-width` for display-width math, `unicode-segmentation` for the textarea's
 grapheme-aware cursor/wrapping, and **`tokio`** (current-thread runtime) +
 `tokio-stream` for the async event loop. The `Cargo.toml` `crossterm` entry exists
@@ -247,7 +247,7 @@ whole `time` family), `toml` is parse-only, `regex` keeps `std` + `unicode`
 without its `perf` half (speed-ups for long haystacks the hook matchers never
 search — 0.57 MB) — and `[profile.release]` turns on
 **incremental** compilation, which is what makes a release rebuild after an
-edit ~9–10 s instead of 53 s; `docs/build-time.md` holds the measurements,
+edit ~9–10 s instead of 53 s; `docs/ops/build-time.md` holds the measurements,
 what each knob bought, why `lto = "off"` was measured and refused (a faster
 cold build for a 7–19% slower render path), and what a release build still
 pays for and why (`moxcms` under `image`, the sixel quantiser under
@@ -260,7 +260,7 @@ MB on x86_64 Linux and a render path 4–13% *faster*, for a cold build of
 whole program on every link, which would undo the incremental rebuild. The
 symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catches worker panics on purpose) and
 `opt-level = "s"` (a slower render path) were measured and refused —
-`docs/binary-size.md`.
+`docs/ops/binary-size.md`.
 
 ## Architecture
 
@@ -291,7 +291,7 @@ subtree (`mod` — `DummyAi` + `turn_events` + the playback pacing, `scenario` �
 replies, `turns` — the pure `Cue → Vec<StreamEvent>` turns, `gated` — the ones
 that block on the permission gate, `agent` — the one that streams a launched
 **subagent's own round** on the agent channel, so the agent session view is
-drivable offline, `docs/agent-view-streaming.md`); adding a demo is one `SCENARIOS` entry plus
+drivable offline, `docs/agents/agent-view-streaming.md`); adding a demo is one `SCENARIOS` entry plus
 its turn function plus its example prompt in the suite, and the suite proves
 every entry is still reachable (the two hand-written `if`/`else` chains it
 replaced could retire a demo silently by shadowing its cue). The dummy is what a
@@ -307,7 +307,7 @@ numbered gutter for `Read`, `Wrote …`/`Updated …` via the shared
 `Exit code: N` frame for `Bash` (streamed body first, framed only at the
 `ToolEnd`, exactly as `llm::exec` does) — so the offline cells are numbered,
 syntax-highlighted and red-on-failure like the live ones instead of plain text
-peeks — see `docs/dummy-backend.md`. The three library `mod.rs`es re-export their areas **by name** — never a glob,
+peeks — see `docs/architecture/dummy-backend.md`. The three library `mod.rs`es re-export their areas **by name** — never a glob,
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
 every `crate::app::X` / `ui::y(…)` / `stream::Z` path is what it always was; `src/tui/` needs
 no facade (nothing outside the binary can name it — `main.rs` reaches exactly
@@ -316,25 +316,25 @@ no facade (nothing outside the binary can name it — `main.rs` reaches exactly
 `InlineViewport::headless` with no `EventStream`, nothing asked (an
 unattended permission gate, no `AskUserQuestion`), the answer on stdout,
 problems on stderr and the step log there too with `--verbose`,
-`docs/headless.md`);
-see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
+`docs/cli/headless.md`);
+see `docs/architecture/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `src/tui/`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
 `/resume` session recording + dir scan — `tui::recorder::SessionRecorder`/`list_sessions`,
 whose JSONL format/parse core is the pure `session` module — and the
 cross-session input-history file — `tui::history_store::InputHistoryStore`, whose JSONL
-format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`
+format/parse core is the pure `history` module, `docs/input/history-persistence.md`) — verified via `scripts/smoke.sh`
 (a runner over one file per phase under `scripts/smoke/phases/`, each sourcing
 `scripts/smoke/lib.sh` for its own tmux server, config home and the
-launch/poll/assert vocabulary — `docs/smoke.md`), not
+launch/poll/assert vocabulary — `docs/ops/smoke.md`), not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
-`docs/shift-enter.md` — or its `visible_cells` cell emitter, which skips the
+`docs/input/shift-enter.md` — or its `visible_cells` cell emitter, which skips the
 cells shadowed by a wide emoji/CJK glyph so painted rows never drift — see
-`docs/table-streaming.md` *Wide glyphs* — or the startup read's `term::query`,
+`docs/ui/table-streaming.md` *Wide glyphs* — or the startup read's `term::query`,
 the scanner that sorts the terminal's answers from the keys typed meanwhile
-and the replay of those keys — see `docs/images.md` *Asking the terminal*); `frame`'s async scheduler **task** is smoke-covered too
+and the replay of those keys — see `docs/ui/images.md` *Asking the terminal*); `frame`'s async scheduler **task** is smoke-covered too
 (its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
 the geometry *policy* `term.rs` acts on — live-region height, the box's re-pin,
 the cursor seat — comes from pure `ui` helpers it calls (`ui::live_height`,
@@ -343,22 +343,22 @@ bookkeeping (`init`'s anchor math, `write_above`'s scroll plan, `resized`'s
 re-clamp) is its own, smoke-covered.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
-`docs/async-rewrite.md`; the editable input (textarea) design in
-`docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
-input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
-that history in `docs/history-search.md`; the **cross-session persistence** of
+`docs/architecture/async-rewrite.md`; the editable input (textarea) design in
+`docs/input/textarea.md`; the Esc-interrupt design in `docs/input/interrupt.md`; the ↑/↓
+input-history recall in `docs/input/input-history.md`; the Ctrl+R reverse search over
+that history in `docs/input/history-search.md`; the **cross-session persistence** of
 that input history (an on-disk `history.jsonl` seeding `App::input_history` at
 startup, so ↑/↓ recall *and* Ctrl+R span sessions) in
-`docs/history-persistence.md`; the `!` local shell commands in
-`docs/shell-command.md`; the `?` shortcuts band in
-`docs/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
-`docs/shift-enter.md`; the mid-turn message queue — and its **delivery into the
+`docs/input/history-persistence.md`; the `!` local shell commands in
+`docs/input/shell-command.md`; the `?` shortcuts band in
+`docs/ui/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
+`docs/input/shift-enter.md`; the mid-turn message queue — and its **delivery into the
 running turn** at the next round boundary, main session and subagent session
-alike — in `docs/queue.md`; the
-session-context footer in `docs/footer.md`; the **startup banner** (the
+alike — in `docs/input/queue.md`; the
+session-context footer in `docs/ui/footer.md`; the **startup banner** (the
 gradient mascot beside the bold `Alter Zero (v…)` title, the cwd in the
 footer's path green, and the cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
-every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
+every purge rebuild) in `docs/ui/header.md`, and the **`/mascot` picker** that
 switches it (the `/theme` picker's layout over the six-mascot catalog — a
 `Select mascot` title over a dim subtitle, the rows in the picker family's
 shape over a `(n/total)` counter, a bold-name-over-dim-description caption,
@@ -366,9 +366,9 @@ and a **live banner preview** rendered by the header's own builder, laid
 **beside** the list from 56 columns and stacked under it below that, the
 three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
 short for that page, the family's compact one, the preview yielding
-(`docs/view-flow.md`) — the
-choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
+(`docs/ui/view-flow.md`) — the
+choice persisted **per working directory** in `mascot.json` (`docs/state/per-directory-state.md`) and the switch's purge rebuild redrawing
+the banner at once) in `docs/ui/mascot.md`, and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
 like `/mascot`, over a nine-style catalog — `comet` (the list's first row, and the status line's
 look before there was a catalog), the braille-track `gravity`
@@ -383,12 +383,12 @@ column), animated off the injected frame clock with no turn running
 than its rows so a frame never churns a purge rebuild, its compact page on a
 short terminal keeping three live rows between the reserved slots with the
 glyph column sized off the whole catalog; the choice persisted
-**per working directory** in `spinner.json` (`docs/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
+**per working directory** in `spinner.json` (`docs/state/per-directory-state.md`) and seeded at bootstrap, the styles' frames and colour
 rules in `ui/theme.rs` — `sparkle`/`blocks` wearing the banner gradient,
 `pulse` a raised-cosine breath at the tool bullet's cadence, the two tracks drawn procedurally on a
 braille canvas from whole-millisecond ping-pong/hop curves rather than
 tabled — and the switch needing no rebuild, the status line being
-live-only) in `docs/spinner.md`; the **spinner tip** (Claude Code's dim
+live-only) in `docs/ui/spinner.md`; the **spinner tip** (Claude Code's dim
 `  ⎿  Tip: …` row hanging off the status line — not at once but once the
 turn has run `tips::TIP_DELAY` (3 s), so a quick answer never flashes one;
 the next entry of the `tips::TIPS` catalog each turn and a fresh one every
@@ -403,7 +403,7 @@ the boundary seeds it from the per-user `tips.json` (`App::seed_tips`, the
 unit-test default being no tips), written back at the loop bottom whenever
 it moved, beside the `/settings` **Show tips** switch; `ALTER_ZERO_TIPS`
 seeding the row for a run, and the smoke suite exporting it `0`) in
-`docs/tips.md`; the **lost-connection wait** (`docs/offline.md`: a failed
+`docs/ui/tips.md`; the **lost-connection wait** (`docs/providers/offline.md`: a failed
 send is classified at the `reqwest` seam — `LlmError::transport`,
 `is_connect()` → `LlmError::Unreachable { host, message }`, the cause chain
 kept — and, since a **streamed** body's refused connect surfaces as a body
@@ -434,10 +434,10 @@ mark, popping only reply text and thoughts), `AgentRun::apply`, the
 subagent forwarder's `RunRecorder` — the backend leaving a failed attempt's
 open thought unclosed, the boundary purge-rebuilding whatever had reached
 scrollback under a `Connection lost mid-reply — starting it over` toast
-(`docs/offline.md` *A connection lost mid-reply*, `smoke.sh` Phase 145); Esc
+(`docs/providers/offline.md` *A connection lost mid-reply*, `smoke.sh` Phase 145); Esc
 interrupts and the undo hands the unsent message back; `smoke.sh` Phase
 129), and the **`/theme` picker** that switches
-the whole **colour theme** (`docs/theme.md`: every colour the chrome paints
+the whole **colour theme** (`docs/ui/theme.md`: every colour the chrome paints
 — the accent the pickers select with, the success/error/warning hues, the
 dim, the user bubble, the diff tints, the banner gradient — plus the
 syntect theme the code blocks and file cells are coloured with, one design
@@ -448,7 +448,7 @@ code — Dracula, Nord, Gruvbox, Solarized, Monokai, and `ansi`, the
 terminal's own sixteen colours with bat's `ansi` code theme, so the TUI
 follows the terminal's theme. codex's theme picker in the family's frame:
 a `Select theme` title over a dim subtitle saying what a theme changes, then
-the catalog in the **picker family's shape** (`docs/view-flow.md` *A
+the catalog in the **picker family's shape** (`docs/ui/view-flow.md` *A
 picker's page*: the accent `→` on the selection under the `❯` search line,
 the other rows indented under it, a ten-row centred window — the other
 previewed pickers show five — over the dim `(n/total)` counter, the hint led
@@ -480,7 +480,7 @@ search line (`model_view::compact_page`'s eight rungs, every search-line
 picker's: bottom-anchoring the compact page had flowed the search line, and
 the caret with it, into scrollback); the family rule, and its shared
 pieces (`model_view::first_page_that_fits`, `compact_page`,
-`placeholder_window`), are `docs/view-flow.md` *A page that sheds rows
+`placeholder_window`), are `docs/ui/view-flow.md` *A page that sheds rows
 before it flows*.
 The mechanism: `ui/theme.rs`'s colour `const`s became **accessor functions
 of the same name** (`tool_ok_color()` where the `TOOL_OK_COLOR` const was) reading the
@@ -495,7 +495,7 @@ row caches (`TranscriptCache`, `ContextCache`, the queued-rows memo) key on
 it; `highlight::Highlighter::new(lang, code)` takes its `CodeTheme`
 explicitly and keeps it for the block; `wrap::lerp_color`/`blend_color`
 mix RGB ends and *step* between named ones, which is what lets the ANSI
-theme exist) in `docs/theme.md`; the **`/donate` page** (`docs/donate.md`: the
+theme exist) in `docs/ui/theme.md`; the **`/donate` page** (`docs/ui/donate.md`: the
 project's crypto donation addresses, one command away — the `/hooks`
 browser's sibling, a read-only composer-replacing page with no text entry
 and the hidden cursor seated on its `❯`: a red heart over the
@@ -520,9 +520,9 @@ every box the addresses the highlight is not on collapse to their label
 rows — an accordion, the highlighted one keeping its box and its networks
 under its own label — before the title and the blurb go, and then the
 highlighted address stands alone between the ↑/↓ overflow slots, the
-caution and the hint staying on every page, `docs/view-flow.md` *A page
-that sheds rows before it flows*) in `docs/donate.md`; the
-**`/export` page** (`docs/export.md`: `/copy`'s sibling over the **whole**
+caution and the hint staying on every page, `docs/ui/view-flow.md` *A page
+that sheds rows before it flows*) in `docs/ui/donate.md`; the
+**`/export` page** (`docs/ui/export.md`: `/copy`'s sibling over the **whole**
 conversation — the `/donate` page's shape, a read-only composer-replacing
 two-row page, `❯ 1. Copy to clipboard` over `2. Save to file`, the
 highlighted row's dim description under the list (the `/settings` shape:
@@ -541,7 +541,7 @@ dropped and every row `trim_end`ed, one closing newline — written through
 `-2`, `-3` rather than ever overwriting (`app::export_file_name`, the
 toast naming the file written); an empty conversation is a `Nothing to
 export` toast, never an empty file; `smoke.sh` Phase 122) in
-`docs/export.md`; the **`/context` page** (`docs/context-usage.md`: what
+`docs/ui/export.md`; the **`/context` page** (`docs/architecture/context-usage.md`: what
 fills the context window — the `/export` page's family, read-only and
 composer-replacing, working mid-turn under the strip — counted by the pure
 `context_usage` core from **the very sources the request is built from**:
@@ -557,7 +557,7 @@ messages, shell commands, app notices, replies, tool calls, tool results,
 images and the compaction summary — the user-role text by **origin**, noted
 as the derivation lands it (`context::context_messages_with_origins`) —
 every count the token estimate put in the provider's tokens by what its
-usage frames taught (`tokens::Calibration`, `docs/token-estimate.md`),
+usage frames taught (`tokens::Calibration`, `docs/architecture/token-estimate.md`),
 marked `≈`, while the usage rows under
 it are the provider's own frames (`App::last_usage`, dropped with the
 conversation a `/clear`, `/resume`, rewind or compaction replaces; the
@@ -576,8 +576,8 @@ tool-set revision moves, each text's count read from a per-page
 short terminal, ending on the compact pages' legend window under the title
 row and then that row alone, so it never flows; an overlay opened from the
 page never arming the Esc-Esc rewind (`App::overlay_esc_backtracks`);
-`smoke.sh` Phase 144) in `docs/context-usage.md`; the
-**`/usage` page** (`docs/usage.md`: what is left of every **subscription**
+`smoke.sh` Phase 144) in `docs/architecture/context-usage.md`; the
+**`/usage` page** (`docs/providers/usage.md`: what is left of every **subscription**
 the app is signed in to — `/context`'s family, read-only, composer-replacing,
 working mid-turn under the strip — a section per subscription, the one in use
 first and tagged, its rows indented under its name, each limit a bar of the
@@ -615,7 +615,7 @@ report under an amber reason; nothing signed in a toast, never an empty
 page; Ctrl+O/Ctrl+D passing through over it, `/context`'s rule; the family's
 ladder on a short terminal, folding every section but the highlighted one to
 its fullest limit, then the header into one title row, ending on one folded
-row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
+row per subscription; `smoke.sh` Phase 145) in `docs/providers/usage.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — under a `Select login method` title
 and no filter, three rows being a question — **Sign in with an account**,
@@ -639,7 +639,7 @@ as Ollama's is refused), an unloaded LM Studio model's window unknown
 rather than its maximum, and LM Studio's bare-string stream frame for a
 prompt longer than the loaded context surfaced (`openai::parse_sse_error`)
 as advice to raise it (`local::refusal_advice`),
-`docs/local-models.md`, `smoke.sh` Phase 141.
+`docs/providers/local-models.md`, `smoke.sh` Phase 141.
 Below that root the lists carry **no heading** (each used to repeat the row that opened it, in
 cyan, for two rows that said nothing the hint below them doesn't) and every
 row states its own reachability — `{name} · ✔ configured` when a key or token
@@ -683,9 +683,9 @@ string *instead of* the `reasoning` object, whose unknown-field 400 blames the
 model, and three per-request headers ride along: `X-Initiator` (billing —
 GitHub charges the user's round and not the agent's tool loop),
 `Copilot-Vision-Request` with an image, and `X-Request-Id`) in
-`docs/copilot.md`; the **OpenAI ChatGPT sign-in** — the subscription list's
+`docs/providers/copilot.md`; the **OpenAI ChatGPT sign-in** — the subscription list's
 second row, and the two things a second subscription turned out to need
-(`docs/chatgpt.md`): a second *sign-in shape* and a second *wire format*.
+(`docs/providers/chatgpt.md`): a second *sign-in shape* and a second *wire format*.
 `auth = "chatgpt_codex"` runs OpenAI's **browser PKCE loopback** on the same
 worker Copilot's device flow uses and reports on the same two messages,
 because the two pages are the same page — something to show, then a wait; what
@@ -695,7 +695,7 @@ browser page gives the URL its own row **bare** over `Sign in there — this
 window continues by itself`, shows no code box, and `c` copies the **link** (a
 URL far too long to retype, where a `c` bound to a code that does not exist
 would be dead on the one page that most needs it). Both pages' URLs are real
-**OSC 8 hyperlinks** (`ui::model_view`'s `model_linked_rows`, `docs/links.md`)
+**OSC 8 hyperlinks** (`ui::model_view`'s `model_linked_rows`, `docs/ui/links.md`)
 — stamped on the *unwrapped* text so every hard-broken fragment opens the whole
 target, which is why the browser page needs no verb in front of its link, and
 keeping the caller's colour so the device page's deliberately dim URL gains an
@@ -713,7 +713,7 @@ question rather than a list, Esc from *either* page returning to it with the
 row just tried highlighted, codex's own "on a headless machine press Esc and
 choose the device code"), whose device row runs **Codex's device-code flow**
 (`chatgpt::request_device_code` / `await_device_approval`,
-`docs/chatgpt.md`): `POST {issuer}/api/accounts/deviceauth/usercode` for a
+`docs/providers/chatgpt.md`): `POST {issuer}/api/accounts/deviceauth/usercode` for a
 code (its `interval` arriving as a *string*, floored at a second, five when
 absent), the Copilot device page showing it beside `{issuer}/codex/device`
 with a fifteen-minute countdown, a poll of `/deviceauth/token` that reads
@@ -738,7 +738,7 @@ launch) — only while the store still holds the session's own chain, never
 over a token a newer sign-in stored meanwhile (`EnvFile::update_if`), and a
 fresh sign-in's `forget` clears the bearer cache without waiting behind a
 refresh in flight, whose bearer is then dropped rather than cached
-(`docs/chatgpt.md`; the Claude and Copilot modules follow the same rules). The `chatgpt-account-id` the backend routes on is read out of the
+(`docs/providers/chatgpt.md`; the Claude and Copilot modules follow the same rules). The `chatgpt-account-id` the backend routes on is read out of the
 minted access token's own claims, which is what keeps the store to one value
 with nothing to drift; the cached life comes from the token response's own
 `expires_in` — a **duration**, Copilot's `refresh_in` under OAuth's name, so a
@@ -746,7 +746,7 @@ clock running ahead cannot shorten it — with a five-minute skew off the end,
 falling back to the bearer's absolute `exp` only when the response names
 none, **and a sixty-second floor** for a fresh token that clock reads as
 already expired (one extra mint a minute instead of one, and a rotation, per
-request; `docs/chatgpt.md`). Copilot's
+request; `docs/providers/chatgpt.md`). Copilot's
 `(bearer, base)` seam widened into `auth::request_auth`'s `RequestAuth`
 {bearer, base, headers} to carry that account header — `AuthScheme::ApiKey`
 still answering with the stored key, no override and **no I/O at all**. The
@@ -770,7 +770,7 @@ structural difference is that a tool call arrives **whole** on a single
 pieces that do stream — the name as the item opens, the argument deltas — are
 surfaced for the token tally and the live `write` preview, the finished item
 adding whatever of the call none of them carried, `responses::ToolStreams`,
-`docs/write-streaming.md`). Its
+`docs/ui/write-streaming.md`). Its
 `/models?client_version=…` listing — the query is required, not defaulted —
 answers `{"models": […]}` with `slug`, `context_window` ×
 `effective_context_window_percent` (the share the backend enforces, Copilot's
@@ -780,8 +780,8 @@ included — a rung above `max` that no other provider names and that
 `ReasoningEffort` gained for it. Encrypted reasoning deliberately does **not**
 round-trip: carrying it would mean a new `ChatMessage` field threaded through
 `context`, the rollout and the transcript, so the model re-reasons each round
-— a quality cost, not an error) in `docs/chatgpt.md`, and **fast mode**
-— codex's `/fast`, `docs/fast-mode.md`: a model whose ChatGPT record lists
+— a quality cost, not an error) in `docs/providers/chatgpt.md`, and **fast mode**
+— codex's `/fast`, `docs/providers/fast-mode.md`: a model whose ChatGPT record lists
 a `priority` service tier (`service_tiers: [{id, name, description}]`,
 every model on the account today, `Fast — 1.5x speed, increased usage`) is
 switched to priority processing by **a command per listed tier** — the
@@ -811,7 +811,7 @@ switch to a model listing the same tier — while a pinned subagent model
 model does not list is a request the backend may refuse; verified live
 (`tests/live_caching.rs`); the **Anthropic
 provider** — Claude reached two ways over one **third wire format**
-(`wire_api = "anthropic"`, `src/llm/anthropic.rs`, `docs/claude.md`): a
+(`wire_api = "anthropic"`, `src/llm/anthropic.rs`, `docs/providers/claude.md`): a
 pasted Console key and an **account sign-in**, `auth = "anthropic_console"`,
 whose PKCE loopback runs on the same `/login` browser page ChatGPT's does and
 whose constants come from Anthropic's own published CLI. It is deliberately
@@ -829,7 +829,7 @@ while an OAuth bearer additionally carries the `anthropic-beta:
 oauth-2025-04-20` a pasted key must not send. The two OAuth grants disagree
 about everything (form-encoded code exchange with *no* beta header; JSON
 refresh *requiring* one), refresh tokens rotate through the same write-back
-`docs/chatgpt.md` describes, and a sign-in granting no `user:inference` scope
+`docs/providers/chatgpt.md` describes, and a sign-in granting no `user:inference` scope
 is refused **at the sign-in** rather than at the first turn. The translation
 is `responses.rs`'s contract over a stateful round: the system prompt hoists
 out of `messages` whole, a tool result is a `tool_result` block in a **user**
@@ -844,9 +844,9 @@ reports a few dozen tokens against a 1M window. `capabilities.effort` is the
 `capabilities.image_input` and `max_input_tokens` — the window, not the
 `max_tokens` output cap sitting next to it — and the listing asks
 `limit=1000` because its default page of 20 truncates the catalog with no
-error anywhere) in `docs/claude.md`; the **Ollama provider** — local models
+error anywhere) in `docs/providers/claude.md`; the **Ollama provider** — local models
 over a **fourth wire format** (`wire_api = "ollama"`, `src/llm/ollama.rs`,
-`docs/ollama.md`), Ollama's *native* `/api/chat` rather than its
+`docs/providers/ollama.md`), Ollama's *native* `/api/chat` rather than its
 OpenAI-compatible `/v1`, for the one thing `/v1` cannot carry:
 `options.num_ctx`. Ollama loads a model at a 4096-token context on most
 machines and truncates a longer prompt **silently** from the front, so the
@@ -887,14 +887,14 @@ sign-in to the models Antigravity serves (Gemini, and the Claude and GPT-OSS
 models Google routes through it) on the account's Antigravity quota, over a
 **fifth wire format** (`auth = "google_antigravity"`, `wire_api =
 "cloud_code"`, `src/llm/antigravity.rs` the sign-in, `src/llm/cloud_code.rs`
-the wire, `docs/antigravity.md`). An **unofficial** route, and the `/login`
+the wire, `docs/providers/antigravity.md`). An **unofficial** route, and the `/login`
 row says so: Antigravity's own public desktop OAuth client, Google's PKCE
 loopback on `localhost:51121` (any free port after), `access_type=offline` +
 `prompt=consent` for a refresh token, and the agy CLI `User-Agent` the
 backend gates its catalog on (404 for a hidden model otherwise) — but **no**
 "You are Antigravity" identity prompt, which the backend does not require
 (`no_client_identity_is_ever_injected_into_the_system_instruction` pins the
-system instruction to the user's own prompt, `docs/claude.md`'s line). Every
+system instruction to the user's own prompt, `docs/providers/claude.md`'s line). Every
 request names the account's **Cloud Code project**, so `RequestAuth` gained
 `project` (the one credential fact that rides the body): `loadCodeAssist`
 finds it once per process, and the sign-in — the one place that may wait, on
@@ -928,7 +928,7 @@ seat); `antigravity::auth_advice` words the verification link (Google's own
 host only), a spent quota and when it resets, a rate limit, no capacity and a
 model gone; `smoke.sh` Phase 148 plays the browser against a stub for the
 whole sign-in → onboarding → `/model` → turn → `/usage` path; the **user's own providers**
-(`docs/user-providers.md`): `{config_home}/providers.toml` is **laid over**
+(`docs/providers/user-providers.md`): `{config_home}/providers.toml` is **laid over**
 the embedded shipped table rather than replacing it —
 `ProvidersFile::with_user_layer`, a raw-TOML merge where a new id adds a
 provider and a shipped id is patched key by key (tables merge, anything else
@@ -974,7 +974,7 @@ the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
-parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
+parameter, persisted beside the `/model` selection) in `docs/providers/reasoning.md`;
 the **thinking stream** — that reasoning, *shown* (a phase's
 chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
@@ -989,7 +989,7 @@ wrapped rows — none of it while a collapsed read/search group is open,
 whose cell keeps the strip (the status line's `Thinking for Ns` the one sign,
 the open group outranking the block in `ui::live::preview_lines`) and whose
 line the thought then settles into unseen, Ctrl+O its only view
-(`docs/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
+(`docs/ui/tool-groups.md` *Thoughts*); at the phase's end the cell shape goes
 away entirely and it **collapses** into one committed **bullet-less** two-tone
 `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
 shape, because nothing is happening any more and what is left is a fact about
@@ -1011,7 +1011,7 @@ cell's token estimate is **snapped** to the provider's own
 `completion_tokens_details.reasoning_tokens` — `TokenUsage::reasoning` — when
 the round's usage frame lands, split by weight across a round's several
 phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
-old counted-and-dropped behaviour exactly) in `docs/thinking-stream.md`;
+old counted-and-dropped behaviour exactly) in `docs/ui/thinking-stream.md`;
 the **running bullet's blink** (a tool in flight no longer
 shows a blue `●` — it shows the permission prompt's grey, and in the live
 region that bullet *blinks*, Claude-Code's running dot: shown in that one
@@ -1027,9 +1027,9 @@ between turns), applied in the strip only — `tool_lines` renders at rest so
 a scrollback commit can never freeze the hidden half, and the Ctrl+O
 transcript stays still to keep its cache's signature clock-free; the `pulse`
 spinner style keeps the raised-cosine breath over the `pulse_dim` role) in
-`docs/tool-pulse.md`; the flicker-free frame pipeline
+`docs/ui/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
-`docs/flicker.md`, and its **slow-stream** half in `docs/slow-stream.md` — a
+`docs/ui/flicker.md`, and its **slow-stream** half in `docs/ui/slow-stream.md` — a
 model streaming a few tokens a second keeps every intermediate state on
 screen long enough to read, so the dummy grew a **pace knob**
 (`ALTER_ZERO_CHUNK_DELAY_MS`, `DummyAi::with_chunk_delay`, the startup
@@ -1080,10 +1080,10 @@ used to print as plain rows that opened a truncated URL; `smoke.sh` Phase
 149), and
 `term::draw_cells` — the choke point all four cell-write paths share — strips
 the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
-in `docs/links.md`; the `@` file-path picker (async walk+rank file search below
-the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
+in `docs/ui/links.md`; the `@` file-path picker (async walk+rank file search below
+the box) in `docs/input/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
-`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → the session's
+`docs/input/paste.md`; the **Ctrl+V image paste** (clipboard image → the session's
 paste folder, `{config_home}/image-cache/{session}/N.{ext}` numbered in paste
 order, staged and header-checked before it takes its number → an `[Image #N]`
 composer placeholder whose path rides a separate typed channel to the backend
@@ -1100,7 +1100,7 @@ first, then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices
 with `INCR` segments, capped at `CLIPBOARD_IMAGE_MAX_BYTES` and never
 decoded, since arboard's decode-to-RGBA plus our re-encode was a ~24 MB
 spike per paste and the block that taught glibc to keep the next one,
-`docs/memory.md`) in `docs/image-paste.md`; the **inline images** (`docs/images.md`:
+`docs/architecture/memory.md`) in `docs/input/image-paste.md`; the **inline images** (`docs/ui/images.md`:
 a pasted screenshot and the `read` tool's image reads drawn as **real
 pictures** in the conversation — kitty / iTerm2 / sixel where the terminal
 speaks one, unicode half-blocks everywhere else, via **`ratatui-image`** —
@@ -1132,7 +1132,7 @@ file still has it: the agent turning the cat it just showed black and white
 be served the colour cat from the cache while Ctrl+O, encoding the
 alternate screen's copy fresh, showed the conversion
 (`ImageStore::encode` stats the path per paint — microseconds — a gone file
-keeping its picture rather than retrying per frame; `docs/images.md` *A
+keeping its picture rather than retrying per frame; `docs/ui/images.md` *A
 file rewritten in place*, `smoke.sh` Phase 107d).
 **A screen switch is not the same thing and it is not optional**: kitty (and
 Ghostty) keeps a *separate image store per screen buffer* — its own spec says
@@ -1191,7 +1191,7 @@ for each picture's file (`tui::view::recheck_pictures` → the pure
 `images::recheck_pictures`), and `images::place` reserves nothing for one
 marked missing, cleared by any later sighting — the `read` executor records
 each picture it reads — since a resumed `/tmp` screenshot gone after a
-reboot used to come back as a screenful of blank rows (`docs/images.md` *A
+reboot used to come back as a screenful of blank rows (`docs/ui/images.md` *A
 picture whose file is gone*, `smoke.sh` Phase 107f). Terminal
 detection **adds no stdin reader**: `ratatui_image`'s
 `Picker::from_query_stdio` spawns a reader thread behind a 2 s timeout and
@@ -1216,7 +1216,7 @@ protocol pinned; falling to half-blocks;
 terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**
 (a kitty placement is the whole picture as base64 RGBA), estimated from the
 placement's own geometry, since this process idles in a terminal all day
-(`docs/memory.md`) — and a PNG is **decoded at its fitted size**:
+(`docs/architecture/memory.md`) — and a PNG is **decoded at its fitted size**:
 `images::fitted` streams the file's rows through an area-average shrink into
 the reserved block (or the model's 2000-pixel cap), so the decode peak is the
 block's ~3 MB rather than the file's 8–33 MB, the whole-picture decode having
@@ -1242,7 +1242,7 @@ because every turn used to re-read the paste, re-encode it, copy it into a
 tree and grow the body by doubling, five picture-sized blocks a round that
 glibc's arenas kept, +14 MB whenever a turn landed on a new one, and even
 one exactly-sized body per round still left a body's worth per arena: the
-reported RAM-grows-per-message bug, `docs/memory.md`), and
+reported RAM-grows-per-message bug, `docs/architecture/memory.md`), and
 `tests/image_paste_memory.rs` gates all three stages' resident growth while
 `tests/image_turn_memory.rs` gates the turns after the paste. Three `/settings` rows: **Show images** and **Image
 width** (60/80/120, a *cap*) republish the policy and purge-rebuild so
@@ -1256,7 +1256,7 @@ untouched, which is why an auto-resized read's fact line leads with the
 file's own dimensions and names the sent ones after; `smoke.sh` Phase 107);
 the **Esc-Esc backtrack** (edit a
 previous user message: prime → transcript preview → rewind + prefill) in
-`docs/backtrack.md`; the **`/resume` session picker** (every conversation
+`docs/input/backtrack.md`; the **`/resume` session picker** (every conversation
 recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
 loads it back and appends the turns that follow to the same file — and its
 **CLI twins**: `--continue` reopens the newest session recorded in this cwd,
@@ -1286,8 +1286,8 @@ instead of the old whole-page dump — the loaded
 transcript committed under the banner through `insert_before` — never a
 startup Purge, the user's terminal scrollback survives — and a quit that
 recorded anything printing `Resume this session with: {bin} --resume {id}`
-after `term.restore()`, `docs/cli.md` — and the **`mcp` subcommand family**,
-`docs/mcp-cli.md`: `alter-zero mcp add {name} --url {url}` / `mcp add {name}
+after `term.restore()`, `docs/cli/cli.md` — and the **`mcp` subcommand family**,
+`docs/cli/mcp-cli.md`: `alter-zero mcp add {name} --url {url}` / `mcp add {name}
 [--] {command} [args…]` (plus `add-json`/`remove`/`get`/`list`) edits the
 *user* MCP config file at that same pre-TUI boundary — codex's explicit
 url-or-command grammar with Claude Code's `--transport sse`/`--header`/
@@ -1296,7 +1296,7 @@ http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
 `tui::mcp_cli`) in
-`docs/resume.md`; the **rollout records** an analysis reads (codex's
+`docs/state/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
 the `stream::ToolRun` each resolving event carries, `run_agent` timing the
@@ -1306,7 +1306,7 @@ line with the provider's counts, `agent` on a subagent's and `compact` on a
 compaction's, placed where it finished by `session::history_lines`, kept
 through a rewrite by `session::retain_usage` (a subagent's even past the
 cut, since it was billed) and adopted back on a resume by
-`session::parse_usage`) in `docs/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
+`session::parse_usage`) in `docs/state/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the
 code**, not just the transcript: rewinding restores the working directory to the
@@ -1316,7 +1316,7 @@ I/O is `checkpoint::CheckpointStore`, turn-end snapshots ride
 `dispatch_after_turn`, and restores hang off the `ResumeSession` /
 `ConfirmBacktrack` arms; gated by the per-directory `/settings` **Checkpoints**
 knob — **off until a directory turns it on**, `ALTER_ZERO_CHECKPOINTS` seeding
-it for a run (`docs/per-directory-state.md`) — **and by the cwd
+it for a run (`docs/state/per-directory-state.md`) — **and by the cwd
 being worth snapshotting at all** — because the session-start snapshot's
 whole-cwd `git add -A` runs *before the first frame paints*, in raw mode where
 Ctrl+C is an unread key event, and hashing is O(bytes): a 235 MB cwd measured
@@ -1366,10 +1366,10 @@ snapshot that *does* run announces itself the same way: the probe's bound
 banner via `ui::startup_notice_lines` with one forced frame before the
 O(bytes) `git add -A` blocks, quiet on a warm relaunch since a store with
 nothing new probes as zero) in
-`docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
+`docs/state/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
-`docs/parallel-tools.md`; the **collapsed read/search groups** (Claude Code's
+`docs/tools/parallel-tools.md`; the **collapsed read/search groups** (Claude Code's
 non-verbose tool view, the default unless `/settings` **Verbose output** is
 on: a run of `Read` calls and `bash` commands that only read —
 `read_only::read_kind`'s listings, searches and reads, never an image read —
@@ -1378,7 +1378,7 @@ their own leading clause `Making 1 scratchpad edit +55…` with the edits'
 `+A -D` dim beside it, a scratchpad `write` still being generated
 counted as it streams and its path wrapped under the corner rather than cut
 (`PathDisplay::in_scratchpad` — this session's directory or any session's by
-its layout, so a `/resume` repaints the same line; `docs/tool-groups.md`
+its layout, so a `/resume` repaints the same line; `docs/ui/tool-groups.md`
 *Scratchpad edits*) —
 is one cell, the live `● Searching for 1 pattern, reading 2 files…` over a
 `⎿` hint naming the calls **one at a time in the order they ran** — a
@@ -1386,7 +1386,7 @@ queue, not the reference's throttle, which drops the values a fast parallel
 batch produces during its hold and so jumps to the last: each value held
 `app::GROUP_HINT_HOLD` (the reference's 700 ms) and none skipped,
 `App::advance_group_hint` stepping it on the boundary's frame clock, a
-closed group resetting it (`docs/tool-groups.md` *The hint row*) — its
+closed group resetting it (`docs/ui/tool-groups.md` *The hint row*) — its
 bullet blinking for as long as the group is open, between calls too, then one dim bullet-less `Searched for 1
 pattern, read 2 files (ctrl+o to expand)` line once something that is not a
 read arrives — reply text, a call of another kind, an error, the turn's end;
@@ -1399,7 +1399,7 @@ while it streams, no `Thought for` line once it settles; Ctrl+O always
 verbose, an agent session view per call; the
 dummy's `explore` and `scratchpad` scenarios and `smoke.sh` Phases 146 and
 147, every other phase exporting `ALTER_ZERO_VERBOSE=1`) in
-`docs/tool-groups.md`; the
+`docs/ui/tool-groups.md`; the
 **live-streaming `bash` tool** (a running command
 tails its output — a four-row window ending at the lowest row **still
 moving** (`app::LiveTail`: each live row stamped with the command clock
@@ -1407,7 +1407,7 @@ when its text last changed, a row active within `LIVE_ACTIVE_SPAN` (2 s)
 of the newest change, so pacman's finished bars below the ones still
 downloading never take the window from them, the window filling downward
 rather than shrinking when fewer rows sit above that row, while every
-command whose newest output is at its end gets the plain tail — `docs/tool-streaming.md`
+command whose newest output is at its end gets the plain tail — `docs/ui/tool-streaming.md`
 *The window follows what is still moving*), long lines word-wrapped to the
 width with spaces preserved, + a `+N lines (22s · wait 1m 50s)` footer
 counting every hidden row, below the window as well as above, whose `22s`
@@ -1429,7 +1429,7 @@ into a turn used to open on `(60s)`), the agent session view counting its
 own from the per-agent `AgentRun::command_elapsed` the same way — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
-`docs/tool-streaming.md`; the **bounded peek** (`docs/long-lines.md`: a peek
+`docs/ui/tool-streaming.md`; the **bounded peek** (`docs/ui/long-lines.md`: a peek
 budgeted in *source lines* let ONE pathological line — a minified bundle, a
 2 KB `curl` JSON body — spend the whole cell on itself, twelve rows of wrapped
 noise under a hint claiming `+1 lines` was hidden, and then let FOUR wrapping
@@ -1481,13 +1481,13 @@ other — dropping them from the tally would re-open the `+1 lines` lie in a
 politer dress), an all-blank output is left exactly as it was (no first block
 to prefer, and an empty window would strand the hint with no `⎿` corner), and
 only the backend `bash` cell takes the rule — the `!` shell command, one
-cell shape by design, **no longer folds at all** (`docs/shell-command.md`:
+cell shape by design, **no longer folds at all** (`docs/input/shell-command.md`:
 its whole output shows inline, the `…` cap marker closing a cut one), so it
 takes no policy — while a diff body's spacing (content)
 and an ask cell's `· Q → A` rows keep `BlankPolicy::Keep` and render
 byte-identically; the running *tail* keeps its blanks too, being what the
 command just printed); and the **session scratchpad** (Claude-Code's
-temp directory, `docs/scratchpad.md`: one per-user, per-session temp root —
+temp directory, `docs/tools/scratchpad.md`: one per-user, per-session temp root —
 `{tmp}/alter-zero-{uid}/{session}/` — holding the agent's `scratchpad/`
 beside the background shells' `tasks/` (the pure `scratchpad` module's
 `session_root`/`scratchpad_dir`/`tasks_dir`, the temp dir + uid + session id
@@ -1511,11 +1511,11 @@ so `{root}-elsewhere` is outside), and a `PreToolUse` forced ask still asking �
 and **visibly**, resolving as `Approval::AllowNoted` with the classifier
 note's sibling `SCRATCHPAD_ALLOWED_NOTE` (`⎿ Allowed in the session
 scratchpad`); gated by `ALTER_ZERO_SCRATCHPAD`, relocated by
-`ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/scratchpad.md`; and the **background
+`ALTER_ZERO_SCRATCHPAD_DIR`) in `docs/tools/scratchpad.md`; and the **background
 shells** (a `bash` call's `wait: 0` — or a trailing `&`, or the old
 `run_in_background` — resolves at once with the session id and the
 interim-output path, and a call whose `wait` passes hands its command here
-still running rather than killing it, `docs/bash-tools.md`; the output
+still running rather than killing it, `docs/tools/bash-tools.md`; the output
 path — `{session}/tasks/{id}.output` — while a `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
 running model-`bash`/`!` command to the background mid-run (the live cell hints
 it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
@@ -1544,7 +1544,7 @@ board (`StreamEvent::NoticeDelivered { seq }`, `Steered`'s twin) and the loop
 records the held cell there, else at the turn end; never at a tool boundary,
 which put a note that landed while the model was writing a call *in front of*
 that call, so the transcript and every later context claimed the model had
-read it and ignored it (`docs/background.md` *Where a notice lands*) — while a
+read it and ignored it (`docs/tools/background.md` *Where a notice lands*) — while a
 model-launched note **no agent read** auto-starts a follow-up turn that tells
 the model the result when nothing else is queued (an agent that already heard
 it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
@@ -1559,12 +1559,12 @@ the agent's own call, `AgentRegistry::route_shell_note`/`claim_routed_exit`;
 only a note's own reader takes it back — the lead its board's, a subagent its
 queue's — and a call with nothing to claim is told how the session ended and
 whose it is, off the registry's newest endings (`background::EndedSession`),
-`docs/bash-tools.md` *One notice per exit*) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
-`docs/agent-tool.md`: the model launches autonomous side-agents —
+`docs/tools/bash-tools.md` *One notice per exit*) in `docs/tools/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
+`docs/agents/agent-tool.md`: the model launches autonomous side-agents —
 `description`/`prompt`/`subagent_type`/`run_in_background` (default true) —
 each running its own `run_agent` tool loop over a fresh context on its own
 thread, the **type** coming from an `agents/*.md` **definition** on disk
-(`docs/subagents.md`: Claude Code's agent files — YAML frontmatter naming and
+(`docs/agents/subagents.md`: Claude Code's agent files — YAML frontmatter naming and
 describing the type, optionally pinning a `model:` (`inherit` by default) and
 a `tools:` allowlist (omit for all; `Bash, Read, Skill, mcp__deepwiki__*` —
 capitalized built-ins, MCP wire names, a trailing `*` globbing a server), over
@@ -1602,7 +1602,7 @@ calls, else `{Name}: {args}` (`Write: game.py` — never the header's
 parenthesised `{Name}({args})`), an MCP call as the capitalized
 `{Server}: {tool}` (`Deepwiki: ask_question`), and — while the agent
 talks — `Agent: {its newest paragraph}`, which holds until the next call
-starts (`AgentRun::last_update`, `docs/agent-progress.md`) —
+starts (`AgentRun::last_update`, `docs/agents/agent-progress.md`) —
 Ctrl+B moves the group to the background; a **lone** agent renders
 `● Agent({description})` over that same one activity row instead, and **every**
 such row — tree and lone cell alike — is one **dim, clipped** line
@@ -1662,7 +1662,7 @@ boundary-injected from `Session::agent_thinking_clocks`, the same `/settings`
 **Hide thinking** gate); previewing one batch-rendered row instead, while the
 commits withheld the block whole, was the reported "streaming disappears in
 the subagent TUI" bug, and `/copy` there copied the *lead's* last answer
-rather than the agent's — both `docs/agent-view-streaming.md`. Typing **chats with
+rather than the agent's — both `docs/agents/agent-view-streaming.md`. Typing **chats with
 the agent** (queued into its running loop at the next round boundary via the
 registry's pending-input seam, or a continuation run over its stored message
 list when idle) while the composer keeps its full functionality — the `/`
@@ -1674,7 +1674,7 @@ usage frame's `input` plus the estimate of what joined after it, the
 transcript estimate when a settle saw no frame) against the window of the
 model it runs on, the pinned model named
 when its definition pins one (`App::context_gauge`,
-`docs/agent-context-gauge.md`) — and the agent's turns **end like the main session's**:
+`docs/agents/agent-context-gauge.md`) — and the agent's turns **end like the main session's**:
 each settle records the dim `Done for 59s · 6.1k tokens (2.8k cached)`
 summary on the agent's own transcript (the turn's billed usage, a chat
 continuation resetting the receipt while the roster tally stays cumulative;
@@ -1686,7 +1686,7 @@ the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·
 {tokens} tokens · {s}s)`; the parent's calls replay as native `agent`
 tool_calls + results (`context.rs`), the records round-trip (`session.rs`),
 and subagents never get the `agent` tool — no nesting); and the **agent tools**
-(`docs/agent-tools.md` — `agent`'s four companions, the bash family one level
+(`docs/agents/agent-tools.md` — `agent`'s four companions, the bash family one level
 up, the lead's alone: every launch, foreground result and completion notice
 names the agent's **id**, and `agentsend {agent_id, message}` queues into a
 running agent's next round or **resumes a settled one's stored
@@ -1700,7 +1700,7 @@ run of text the agent wrote before more work an `Agent: …` progress update
 where it said it (whole, up to `AGENT_REPORT_UPDATE_CHARS`; recorded by the
 forwarder's `agents::RunRecorder`, streamed one line each into a waiting
 cell with the read-message marks, a poll copying only what is past its
-`agents::ProgressCursor` — `docs/agent-progress.md`), each
+`agents::ProgressCursor` — `docs/agents/agent-progress.md`), each
 read message marked `— message received —` (placed where its stream
 announces it, `AgentRegistry::announce_read`, on the forwarder's thread
 beside the calls, so a loop running ahead cannot place it early; a message
@@ -1729,12 +1729,12 @@ hook — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
 password prompt like `sudo`'s fails fast in a captured error instead of
-hijacking the TUI and hanging) in `docs/tty-detach.md`; and the
-**bash tools** (`docs/bash-tools.md` — five tools, one action each: `bash
+hijacking the TUI and hanging) in `docs/tools/tty-detach.md`; and the
+**bash tools** (`docs/tools/bash-tools.md` — five tools, one action each: `bash
 {command, wait?, description?}`, `bashsend {session_id, input}`, `bashwait
 {session_id, wait?}`, `bashkill {session_id}`, `bashlist {}`, the companions
 one lowercase word like the task tools, each cell's display name lowercasing
-to its wire name — over `docs/interactive-shell.md`'s engine: the opposite of
+to its wire name — over `docs/tools/interactive-shell.md`'s engine: the opposite of
 the detach on purpose — **every** `bash` call runs `bash -c` (the first
 `bash` on an absolute `PATH` entry, `subprocess::tool_shell`, `sh` only where
 none is installed — dash broke `[[ … ]]`, `source`, `{1..3}`) in a
@@ -1837,7 +1837,7 @@ unreadable process or relay; output shaped like a prompt remains ambiguous
 and a silent async stdin listener can report `Running`, since Node watches
 the same terminal while awaiting a promise. Visible nested questions and
 kernel-observed reads still count
-(`docs/interactive-shell.md`). A waiting call
+(`docs/tools/interactive-shell.md`). A waiting call
 **streams** its running cell as `ToolProgress::Screen { settled, live }` →
 `StreamEvent::ToolScreen` → `App::push_tool_screen`, `live` rows replacing
 the last ones so a bar redraws in place (`Transcript::take_stream`: rows in
@@ -1897,7 +1897,7 @@ permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
 command` title (`· from the {type} agent` when a subagent asked), the target,
 the **whole** numbered content/diff framed by `╌` rules (shown whole — a page
 taller than the terminal bottom-anchors and flows its top into real
-scrollback like every framed view, `docs/view-flow.md`; the `… +N lines`
+scrollback like every framed view, `docs/ui/view-flow.md`; the `… +N lines`
 tail survives only past the `PERMISSION_BODY_MAX_ROWS` per-tick-build safety
 ceiling), the question, and `❯ 1. Yes` / `2. Yes,
 allow all edits during this session (shift+tab)` — for `bash`, `2. Yes, and don't
@@ -1942,7 +1942,7 @@ is that agent's own queue**, its `● Bash(ls -la)` over `⎿ Waiting…` with e
 parallel sibling behind it, the same `queue_chunks` walk the main branch uses,
 since the lead's `● Agent({description})` cell and the main turn's queue belong
 to a screen the user is not looking at (the reported "the subagent TUI shows
-the Agent cell" bug — `docs/agent-view-streaming.md`); telling the two apart
+the Agent cell" bug — `docs/agents/agent-view-streaming.md`); telling the two apart
 needs `PermissionRequest::agent_id`, **which** run asked, stamped by
 `tui::agent`'s handler (the type on `agent` names the asker in the title, but
 two agents share one), and a request from another conversation keeps no
@@ -1960,7 +1960,7 @@ the asked-about call, or the tree that asked — never dropped; on a page that
 blinking bullet and advancing counters, a running call's streamed peek —
 a flowed row is frozen in scrollback, so ticking content would go stale
 there or re-sign the flow into a purge rebuild per tick;
-`context_is_stable`, `docs/view-flow.md`)); the region
+`context_is_stable`, `docs/ui/view-flow.md`)); the region
 **grows like any other** (ordinary `ui::repin`, invariant 3): the chat above
 the prompt scrolls into the terminal's **real scrollback**, so the newest
 messages sit right above the question — Claude Code's picture — and the user
@@ -2026,7 +2026,7 @@ everything, `edit` auto-approves `write`/`edit` while commands still ask,
 every segment an allowlisted program with only its table's flags, and any
 expansion, file redirect, writing flag or `git` in a bare-repo-shaped cwd
 refusing it, `llm::approval`'s fast path under a forced ask
-(`docs/permissions.md` *Read-only commands skip the classifier*) — and
+(`docs/state/permissions.md` *Read-only commands skip the classifier*) — and
 sends any other non-allowlisted `bash` command to the **auto
 mode classifier** — a
 silent LLM safety check on the session's own provider
@@ -2063,7 +2063,7 @@ resolved cell (the `Approval::AllowNoted` → `StreamEvent::ToolNote` →
 the rollout so a `/resume` keeps it, and on a subagent's own transcript via
 the same event; the one inline exception is the quiet resolved MCP cell,
 whose one-line `Called {server}` stays note-less — Ctrl+O and the rollout
-keep its record, `docs/mcp.md`), a **deny** rejects it red (`Denied by auto mode
+keep its record, `docs/tools/mcp.md`), a **deny** rejects it red (`Denied by auto mode
 classifier` + `Reason: …`) through the ordinary `ToolRejected` path with a
 Claude-Code-style stop-or-adjust model text, and a classifier **failure**
 falls back to the ordinary prompt (never an allow); `master` runs
@@ -2094,8 +2094,8 @@ saved mode through `PermissionsFile::starting_mode`, and exported `manual` by
 the default — is never saved), so "don't ask again" and the mode survive a
 restart in the same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled =
 no gate, no footer segment, Shift+Tab explains via toast)) in
-`docs/permissions.md`; and the **`AskUserQuestion` tool** (Claude-Code's
-mid-turn questions, `docs/ask.md`: the model asks 1–4 multiple-choice
+`docs/state/permissions.md`; and the **`AskUserQuestion` tool** (Claude-Code's
+mid-turn questions, `docs/tools/ask.md`: the model asks 1–4 multiple-choice
 questions — `askuserquestion`, offered only when `LlmBackend::with_ask`
 attached the session's `ask::AskGate` (always, in the app; subagents never
 get it) — and its thread **blocks on the gate** exactly like a permission
@@ -2172,8 +2172,8 @@ the model read it), and the tool's own description leaving every unanswered
 outcome to the result, never naming the timeout; the offline dummy's `Play::Asked` scenario (cue
 "ask" + "question") drives the whole round trip through the real
 `ask_user` mapping — three questions: single-select coffee, multi-select
-demo topics, preview+notes code style) in `docs/ask.md`; and the **task
-tools** (Claude-Code's structured task list, `docs/task-tools.md`: the model
+demo topics, preview+notes code style) in `docs/tools/ask.md`; and the **task
+tools** (Claude-Code's structured task list, `docs/tools/task-tools.md`: the model
 plans multi-step work with `taskcreate`/`taskget`/`tasklist`/`taskupdate` —
 Claude Code's schemas minus the `owner`/`metadata` parameters this
 single-agent TUI has no use for, the create additionally *honouring* the
@@ -2235,8 +2235,8 @@ byte-for-byte the live executor's, ending with work outstanding so the
 resting panel and the cross-turn list show, while its `tasks-finished` twin
 (the same cue plus `finish`) walks a two-task list to all-✔ so the
 retirement is drivable too — `smoke.sh` Phases 69 and 70) in
-`docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
-`hooks.json`, ported whole — `docs/hooks.md`: the user's own commands wedged
+`docs/tools/task-tools.md`; and the **lifecycle hooks** (Claude Code's
+`hooks.json`, ported whole — `docs/tools/hooks.md`: the user's own commands wedged
 into the tool loop, `~/.alter-zero/hooks.json` mapping event → matcher groups
 → `{"type":"command"}` handlers, each fed its event as **`snake_case` JSON on
 stdin** and answering with **`camelCase` JSON on stdout** — the asymmetry is
@@ -2322,9 +2322,9 @@ started, so no end, the source dropped). A block
 `ToolCall::context_output`, `/resume`-safe) — the cell what the model reads
 minus its instruction, naming the event, the hook and the `hooks.json`
 `~`-relative (the home the boundary hands the sink, `HookSink::home`), and
-every dim row a hook leaves naming its event (`docs/hooks.md` *What the user
+every dim row a hook leaves naming its event (`docs/tools/hooks.md` *What the user
 sees*) — and every text a hook gives the
-model is codex's terse shape (`docs/hooks.md` *What the model reads*:
+model is codex's terse shape (`docs/tools/hooks.md` *What the model reads*:
 `Blocked by PreToolUse hook: {reason}`, `{event} hook feedback: …`, `Stop
 hook feedback: …`), each decision naming its handler on `Hook: {command}`
 and `Config: {hooks.json}` lines (`ParsedHook::blocked_by`, a `HookOrigin`
@@ -2364,7 +2364,7 @@ the agent's own transcript, a `SubagentStart` note that beats its agent's
 it ran and its `hooks.json`; a silent run leaves no cell, a note with no
 text — the cell of hooks that gave the model nothing — replays nothing and
 is a `hook_report` rollout record an older build skips, and a note without a
-report stays cell-less — `docs/hooks.md` *The hook-run cell*, `smoke.sh`
+report stays cell-less — `docs/tools/hooks.md` *The hook-run cell*, `smoke.sh`
 Phases 72, 150 and 151) and the terminal `PromptBlocked`. `PreToolUse` may
 also **rewrite** the call (`updatedInput` replaces the arguments for the
 gate, the executor and the cell, which names it on a dim `Rewritten by
@@ -2377,29 +2377,29 @@ and its path, which the recorder publishes into a shared `ConversationCell`),
 beside Claude Code's `scratchpad_dir`. The user's file and a project's
 `.alter-zero/hooks.json` union (`HooksFile::merged`, purely additive), and
 every hook in either runs only once the user has trusted it in the startup
-review (`docs/config-review.md`); a malformed file is a red startup
+review (`docs/state/config-review.md`); a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved and **on until a directory turns it off**
-(`docs/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
+(`docs/state/per-directory-state.md`); `ALTER_ZERO_HOOKS` seeds it for a run and
 `ALTER_ZERO_HOOKS_FILE` locates the file; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73,
 Phase 133 the session events through a refusing stub provider, and Phase
 134 a real prompt's `Notification` against a stub asking for one call) in
-`docs/hooks.md`; and the **`/hooks` menu** (Claude Code's `/hooks`
-browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
+`docs/tools/hooks.md`; and the **`/hooks` menu** (Claude Code's `/hooks`
+browser, `docs/tools/hooks-menu.md`: the fourth composer-replacing inline picker —
 no text entry, so the hardware cursor hides while its seat tracks the
 selected `❯` row (the permission prompt's kitty-cursor-trail rule, shared
 with `/mcp` and the startup review — `ui::cursor_visible`) — walking events → matchers →
 hooks → detail over `hooks::HooksOverview`, the digest of every configured
 hook with its trust (an untrusted one's row marked `⚠ not trusted`, its
 detail page's Enter trusting it or no longer, `Action::SetHookTrust`,
-`docs/config-review.md`); ↑/↓/digits/Enter/Esc, a five-row selection-centered window
+`docs/state/config-review.md`); ↑/↓/digits/Enter/Esc, a five-row selection-centered window
 with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
 runner's exit-code semantics, matcher level only for the events whose
 dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
 `UserPromptSubmit` skip it), the detail page's rounded box holding the real
 command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **view
-flow** (`docs/view-flow.md`: a content-driven framed view's page taller than
+flow** (`docs/ui/view-flow.md`: a content-driven framed view's page taller than
 the terminal — an `/mcp` tool detail's long description, a `/hooks` detail's
 wrapped command box — no longer clips
 at the bottom: every framed body paints **bottom-anchored**
@@ -2417,7 +2417,7 @@ runtime advances and its output box tails at the open band's ~30 fps), signs
 the **shell it describes** and its flowed top *freezes* in scrollback rather
 than purge-rebuilding the screen every frame — anchoring alone used to drop
 those rows into no buffer at all, so the conversation ran straight into a
-headless output box, `docs/background.md`, `smoke.sh` Phase 105) where the
+headless output box, `docs/tools/background.md`, `smoke.sh` Phase 105) where the
 terminal's own scrolling reads the whole page — and
 the four windowed pickers (`/model`, `/login`, `/settings`, `/skills`) are
 the same shape now: each render is one **line builder**
@@ -2436,7 +2436,7 @@ rungs of `model_view::compact_page` shed down to the search line alone, a
 placeholder — no match, still loading — standing in the list's place, so
 these pickers never flow on any terminal and their caret seats on the search
 line found in the built page (`view_prompt_row`), never a pinned row;
-`docs/view-flow.md` *A page that sheds rows before it flows*, `smoke.sh`
+`docs/ui/view-flow.md` *A page that sheds rows before it flows*, `smoke.sh`
 Phase 139), so the search line and the highlighted row stay on screen rather
 than flowing away; the
 boundary keeps the flowed rows' signature (`Session::flowed_view`) and
@@ -2447,7 +2447,7 @@ reflow tail), while scrollback commits pause under an active flow
 dispatching under an open screen-tall menu regenerates from history at
 flow-exit instead of tearing the page), `smoke.sh` Phase 85); and the
 **project-level `.alter-zero` config layer and the startup review**
-(`docs/project-config.md` the layer, `docs/config-review.md` the review: a
+(`docs/state/project-config.md` the layer, `docs/state/config-review.md` the review: a
 project's own `{root}/.alter-zero/hooks.json` (union-merged after the user
 file — `HooksFile::merged`) and `{root}/.alter-zero/mcp.json` + the compat
 `{root}/.mcp.json` (first-name-wins ahead of the user file) are read once at
@@ -2518,7 +2518,7 @@ hooks page first — while Phase 83 drives both pages, the persistence, a
 changed hook and server, the `/hooks` and `/mcp` toggles, the `/settings`
 review's Ctrl+C, two sessions answering at once, a malformed store left
 alone and a `/trust` approval carried over in temp projects); and the **`Skill`
-tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
+tool** (Claude Code's skills, `docs/tools/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
 rejected** so an ecosystem skill carrying `allowed-tools:`/`model:` loads
@@ -2601,7 +2601,7 @@ invalidate the prompt cache behind it —
 subagent types (`reminder::reminder_message` wraps the sections,
 `subagents::listing_sections` joining the two listing sections into
 `App::listings` beside `App::user_instructions`, `skills::listing_message`
-being the skills section wrapped alone for a subagent; `docs/subagents.md`),
+being the skills section wrapped alone for a subagent; `docs/agents/subagents.md`),
 since they are one kind of thing (what this session tells the model about
 itself that the tool schemas don't name) and a second fragment would be a
 second place the cached prefix can shift.
@@ -2629,7 +2629,7 @@ agent's incoming skill call/body-result pairs and updated after successful
 loads, enforces this with an "already loaded" result and no body reread.
 Directory identity covers aliases and hook rewrites; deriving it from context
 preserves loads across turns/resumes while allowing reload after the body is
-compacted, cleared or backtracked away (`docs/skills.md`). Nothing runs, so no
+compacted, cleared or backtracked away (`docs/tools/skills.md`). Nothing runs, so no
 permission prompt is raised — the body's own `bash` calls still meet it, and
 the call *does* meet the lifecycle
 hooks like any other (`{"matcher": "Skill"}` selects it —
@@ -2650,7 +2650,7 @@ plain text and the Skill tool's own description tells the model a `$<name>`
 mention is a load request unless its instructions are already in context
 (verified live —
 `live_dollar_mention_loads_the_mentioned_skill`), the composer's **`$`
-mention picker** (`docs/skill-mentions.md`) completing one in place with
+mention picker** (`docs/input/skill-mentions.md`) completing one in place with
 Tab/Enter, and the offline `skills`
 scenario answers `$dataviz` mentions beside its "skill" cue so the demo and
 the smoke suite drive the round trip with no network; the offline `skills` scenario drives the cell
@@ -2716,7 +2716,7 @@ compact pages on 14 and 11 rows); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
-`docs/tool-view-performance.md`; and the **overlay repaint fix** (the two
+`docs/ui/tool-view-performance.md`; and the **overlay repaint fix** (the two
 full-screen views are **copyable while a turn runs**: a terminal drops a mouse
 selection the moment the cells under it are rewritten, and `draw_overlay` used
 to re-serialize **every cell** of the alternate screen on every frame — up to
@@ -2754,7 +2754,7 @@ the bottom still tail-follows, which is what follow is *for* — a new row shift
 the window and costs the selection, ↑ / PageUp / Home disengages it and the page
 holds still. `smoke.sh` Phase 94 measures the silence **and** that the chain
 re-seeds on the return, since a chain left broken would freeze the inline timer
-for the rest of the turn) in `docs/overlay-repaint.md`; and **`/compact` + auto-compact** (codex's
+for the rest of the turn) in `docs/ui/overlay-repaint.md`; and **`/compact` + auto-compact** (codex's
 context compaction, ported append-only: a summarization turn streams the
 model's handoff summary invisibly into `App::compact_buffer`,
 `finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
@@ -2772,20 +2772,20 @@ before the next request; a compaction, rewind or `/resume` moves that count
 by the estimate of the change, keeping the provider's own count of what
 rides every request; before any frame the estimate, the tool schemas'
 included — `tokens::ContextMeter`,
-`docs/token-estimate.md`; **inside an agent
+`docs/architecture/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
-`App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
+`App::context_gauge`, `docs/agents/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
-the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
+attempt per user turn, the cell tagged `· auto`)) in `docs/architecture/compact.md`; and
+the **`/settings` menu** (`docs/state/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
 twenty rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
-`docs/tool-groups.md` —, **Show images**, **Image width**,
-**Auto-resize images** — the three from `docs/images.md` — **Error retry**,
+`docs/ui/tool-groups.md` —, **Show images**, **Image width**,
+**Auto-resize images** — the three from `docs/ui/images.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 **Skills**, **MCP** — the session-wide switch over the `/mcp` servers, on
@@ -2794,18 +2794,18 @@ until a directory turns it off: off stops every server
 while each keeps its own `/mcp` on/off, so on brings back exactly the ones
 that were enabled; `/mcp` still opens under a red off-note, the review's
 servers page waits until MCP is on, and `ALTER_ZERO_MCP` seeds the row
-instead of removing the manager, `docs/mcp.md` —, **Temperature**,
+instead of removing the manager, `docs/tools/mcp.md` —, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
 whole parallel batch, and a round the budget can only partly afford is
 clamped rather than refused whole; **Ask timeout** — how long an
 `AskUserQuestion` question waits on an idle user before the agent goes on
-without an answer, `5m`/**`10m`**/`20m`/`30m`/`1h`/`never`, `docs/ask.md`;
+without an answer, `5m`/**`10m`**/`20m`/`30m`/`1h`/`never`, `docs/tools/ask.md`;
 **Show tips** — the spinner tip,
-`docs/tips.md`, persisted **per user** in `tips.json` beside the walk's
+`docs/ui/tips.md`, persisted **per user** in `tips.json` beside the walk's
 position rather than in `settings.json`; **Update check** — the once-a-day
-newer-release check, `docs/update.md`: one `HEAD` of the repository's
+newer-release check, `docs/ops/update.md`: one `HEAD` of the repository's
 `/releases/latest` per UTC day, the tag read off the redirect it lands on (no
 API, no body, no install id — the `alter-zero/{version}` user agent and
 nothing else), the attempt's day recorded **at the spawn** so a dead network
@@ -2816,7 +2816,7 @@ per-**user** `update.json` beside `telemetry.json` (`enabled`,
 card's own frame, `ui::notice_card_lines`, naming the release page, `alter-zero
 update` — or, for a binary a package manager unpacked under `node_modules`,
 that manager's own command (`update::package_manager` over `current_exe()`,
-`docs/npm.md`) — and the off switch — committed after the first frame and **never
+`docs/ops/npm.md`) — and the off switch — committed after the first frame and **never
 inside a reply** (a result landing mid-turn waits in
 `Session::update_notice_pending` for the idle loop bottom, invariant 4), off
 with the row or `ALTER_ZERO_UPDATE_CHECK=0` (which withdraws the row, the
@@ -2833,7 +2833,7 @@ to `git pull`, not an install to overwrite) and a package manager's install
 (named with its command — the manager would put its own copy back) and running regardless of
 `ALTER_ZERO_UPDATE_CHECK=0`, since an explicit command is the user's own
 request; and **Telemetry** — the anonymous daily
-usage ping, `docs/telemetry.md`: one `POST` a day per install carrying seven
+usage ping, `docs/ops/telemetry.md`: one `POST` a day per install carrying seven
 fields (a payload version, a random 128-bit install id, the app version, the
 OS, the architecture, on Linux the distribution's os-release `ID`, and that
 platform's own version — `VERSION_ID` on Linux, macOS's `ProductVersion` read
@@ -2858,7 +2858,7 @@ to one directory would be a surprise — disclosed once under the banner through
 the themed, wrapped `ui::telemetry_notice_lines` card and stated in full in the root
 **`TELEMETRY.md`** — the user-facing half (what leaves a machine, the three
 off switches, what the server keeps, how to verify it), which the README
-deliberately does not duplicate and which moves whenever `docs/telemetry.md`
+deliberately does not duplicate and which moves whenever `docs/ops/telemetry.md`
 does — every path to a ping routed through the one
 `Session::telemetry_tick` so the notice is committed **before** any send (the
 `/settings` path having shipped a ping with `notice_shown: false` when the two
@@ -2883,7 +2883,7 @@ first page that fits: a long description cut to one row, then the description
 and the counter gone and a `COMPACT_LIST_ROWS` window between the reserved
 `↑`/`↓` slots under the header, then without it, the value column sized off
 every listed row so it holds still,
-`docs/view-flow.md`, `smoke.sh` Phase 139); every value **cycles** — there is no free-text field, so
+`docs/ui/view-flow.md`, `smoke.sh` Phase 139); every value **cycles** — there is no free-text field, so
 Enter and Space mean the same thing on every row and Space never reaches the
 type-to-search (which matches the label *and* the description, so `agents.md`
 finds **Project docs**). The pure model is `settings::SessionSettings` +
@@ -2911,7 +2911,7 @@ own `telemetry.json` and sends today's ping if none has gone yet
 there is no second copy to drift. It persists to its own
 `~/.alter-zero/settings.json` — beside `config.json` and `permissions.json`,
 one file per feature that owns it — **per working directory**
-(`settings::SettingsFile`, `docs/per-directory-state.md`: one entry per cwd
+(`settings::SettingsFile`, `docs/state/per-directory-state.md`: one entry per cwd
 under `projects`, each a **diff from the defaults** so only what the user
 changed reaches the wire, over the file's top-level keys — the seed a
 directory with no entry starts from, and the whole of a pre-directory file),
@@ -2929,7 +2929,7 @@ selection, which a directory launched in for the first time adopts and pins
 as its own at startup — `ModelSession::resolve` via `config::adopt_selection`
 — so a switch elsewhere never moves it; `switch_to` records the directory's
 entry *and* the last selection, `persist` only the directory's own pair) — **and
-the session's own on top of that** (`docs/session-model.md`: the rollout
+the session's own on top of that** (`docs/state/session-model.md`: the rollout
 gains an append-only `model` record — `llm::settings::ModelSelection`, the
 `config.json` entry's own shape — written with the file, on every `/model`
 pick, Ctrl+T cycle and probe answer, the newest winning
@@ -2942,9 +2942,9 @@ again), a provider this machine has no key for keeping the current model
 under a red `Can't resume on …` toast and leaving the record alone — so the
 directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
-Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
+Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/state/per-directory-state.md`, `smoke.sh` Phase 114).
 
-**herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
+**herdr support** (`docs/architecture/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
 the pure `herdr::pane`) the app is its own status authority — herdr has no
 screen rules for it and a third-party agent cannot ship any, so it
@@ -2991,8 +2991,8 @@ it the pane's owner and herdr then drops every alter-zero report for the
 pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
 (herdr's popups get the same environment). A pane's **pictures** owe nothing
 to the reports: herdr's environment names no graphics protocol, so the
-startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
-terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
+startup read asks the terminal (`term::query`, `docs/ui/images.md` *Asking the
+terminal*) and herdr's libghostty answers `OK` (`docs/architecture/herdr.md` *Pictures in
 a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
 turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
 socket (a failed turn through the real backend and a refusing stub provider)
@@ -3003,31 +3003,31 @@ and the fixture unsets every `HERDR_*` variable.
 This is an **inline** TUI: finished messages *and tool calls* flow into the
 terminal's real scrollback; a live region (a rule-framed input box — a codex-style
 **`textarea`** whose cursor moves anywhere (←/→ by grapheme, ↑/↓ across *wrapped*
-rows, Home/End — plus the readline set, `docs/textarea.md`: Ctrl+A/E/B/F/P/N,
+rows, Home/End — plus the readline set, `docs/input/textarea.md`: Ctrl+A/E/B/F/P/N,
 Alt+B/F and Ctrl/Alt+←/→ word motion, the placeholder-atomic kills
 Ctrl+W/U/K + Alt+D/Alt+Backspace, and Ctrl+H backspace) with insert/delete
 at the cursor, growing as the input wraps;
 from an **empty composer (or an unedited recall) ↑/↓ instead step through
 previously submitted inputs** shell-style (`App::input_history`, codex's
 `ChatComposerHistory` — ↓ past the newest clears; **persisted across sessions**
-in an on-disk `history.jsonl` seeded at startup, `docs/history-persistence.md`;
-see `docs/input-history.md`),
+in an on-disk `history.jsonl` seeded at startup, `docs/input/history-persistence.md`;
+see `docs/input/input-history.md`),
 and **Ctrl+R reverse-searches them** codex-style (`App::history_search` — the
 footer slot becomes a `reverse-i-search: {query}` line owning **every** key,
 the newest case-insensitive substring match previews in the composer with the
 query occurrences highlighted, Ctrl+R/↑ and Ctrl+S/↓ step older/newer clamping
 at the ends, Enter accepts the preview as an editable draft seating ↑ at it,
 Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
-`docs/history-search.md`) —
+`docs/input/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's cell when one is executing — its bullet a
-**blinking grey**, `docs/tool-pulse.md` — a backend tool's
+**blinking grey**, `docs/ui/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
 before any output a `⎿ Running… (10s · wait 2m)` row — the command's
 own clock and the wait its call runs under, so a silent command still shows
 it is alive — and once a `bash` command **streams** it
 **tails** its output — `TOOL_PEEK_ROWS` display **rows** ending at the lowest
-row still moving (`App::live_tail`, `docs/tool-streaming.md` *The window
+row still moving (`App::live_tail`, `docs/ui/tool-streaming.md` *The window
 follows what is still moving*), long lines
 word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
 width, spaces preserved), + a
@@ -3035,12 +3035,12 @@ width, spaces preserved), + a
 rows (a bare `(10s · wait 10m)` row when none are), its elapsed
 the command's own runtime (`App::command_elapsed`, never the turn's) and
 its wait the model's own `wait` off the call's verbatim arguments
-(`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
+(`ui::running_command_lines`, `docs/ui/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
-`⎿ Waiting…` sibling, blank-separated, `docs/parallel-tools.md`; the preview slot
+`⎿ Waiting…` sibling, blank-separated, `docs/tools/parallel-tools.md`; the preview slot
 is sized by `ui::preview_rows`, a running `!` shell/streaming reply staying one
-row; `docs/tools.md` — and **budgeted**, since it is the region's only elastic
+row; `docs/tools/tools.md` — and **budgeted**, since it is the region's only elastic
 row: `ui::preview_budget` is what the terminal has left once every other row
 the region owes is paid (the status slot, the queued messages, the toast, the
 box, the band, the footer, the agent roster), `ui::fitted_preview_rows` is the
@@ -3051,7 +3051,7 @@ the end for live cells) — and `live_layout` holds the box's `LIVE_MIN_HEIGHT`
 back **first** as the backstop. A **fixed** allowance was the reported bug:
 pressing `/` under a forming table on a small terminal asked for rows the
 terminal did not have and the constraint solver spent them on the strip, so
-the textarea vanished until the turn ended, `docs/table-streaming.md` *The
+the textarea vanished until the turn ended, `docs/ui/table-streaming.md` *The
 preview slot is budgeted*. What the budget could not afford it used to
 **throw away** — a 13-row terminal lost a running command's `+N lines (Ns)`
 footer and its ctrl+b hint, a 9-row one its whole `⎿` output block, a 4-row
@@ -3069,10 +3069,10 @@ strip moves at the turn's own 32 ms cadence, so it signs
 streaming reply's **frontier** is the one exclusion, since `StreamRender`
 commits its completed lines already and flowing it would re-sign per chunk;
 and the flow is the composer path's alone, a composer-replacing view's own
-page being what flows there. `docs/strip-flow.md`, `smoke.sh` Phase 106), a blank gap row,
+page being what flows there. `docs/ui/strip-flow.md`, `smoke.sh` Phase 106), a blank gap row,
 a codex-style **status line** (`⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
 Thinking for {m}s · esc to interrupt)` — opened by the session's spinner
-style (`docs/spinner.md`; by default `gravity`, a ball hopping along a
+style (`docs/ui/spinner.md`; by default `gravity`, a ball hopping along a
 braille track, and before the catalog always the comet: a
 Larson-scanner sweep, a white head dragging a fading grey tail back and forth
 between dim walls), the verb text
@@ -3093,14 +3093,14 @@ when **nothing had streamed** (no partial, no tool, empty queue) it instead
 **undoes** the submission, the message back in the composer and no notice, and a
 **`!` shell interrupt** commits no notice either (its `⎿ Interrupted by user`
 cell is the record); see
-`docs/interrupt.md`; **idle Esc instead arms the Esc-Esc backtrack** — a second
+`docs/input/interrupt.md`; **idle Esc instead arms the Esc-Esc backtrack** — a second
 Esc previews previous user messages in the transcript overlay and Enter rewinds
 the conversation to the highlighted one, its text back in the composer
-(`App::backtrack`, codex's `BacktrackState`; see `docs/backtrack.md`) — Esc
+(`App::backtrack`, codex's `BacktrackState`; see `docs/input/backtrack.md`) — Esc
 quits only with an empty composer and no user message to backtrack to, a
-typed draft making it a codex-style no-op) — see `docs/status-indicator.md`),
+typed draft making it a codex-style no-op) — see `docs/ui/status-indicator.md`),
 the rows hanging off it (the task checklist, else — once the turn has run
-three seconds — the dim `⎿  Tip: …` spinner tip, `docs/tips.md`; one
+three seconds — the dim `⎿  Tip: …` spinner tip, `docs/ui/tips.md`; one
 `ui::hang_rows` count), then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
@@ -3112,7 +3112,7 @@ narrow pane two columns of labels without their `for`/`to`, then one entry per
 row — and ending on a dim `… +N more` row on a terminal too short for the
 whole band — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
-`docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
+`docs/ui/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
 worker walks the cwd **afresh per query** and ranks it off-thread (so a file
 the agent just created appears immediately — never a startup-cached index;
@@ -3134,7 +3134,7 @@ the path** (replacing the `@token`, a trailing space added, whitespace paths
 quoted), Esc dismisses sticky-per-token; the matched characters are bolded in
 each row (remapped across the name/parent split); suppressed in `!` shell mode
 and mutually exclusive with the palette;
-see `docs/file-search.md`; **and the same slot shows a `$` skill picker** —
+see `docs/input/file-search.md`; **and the same slot shows a `$` skill picker** —
 codex's skill mentions — whenever the cursor is in a usable `$mention`: the
 discovered skills fuzzy-filtered on their names (`skills::mention_token` +
 `rank_skills` over the boundary-injected `App::set_skills` snapshot — the
@@ -3154,7 +3154,7 @@ sticky-per-mention, and a submitted message carrying `$name` makes the model
 mention syntax, so the green `● Skill(name)` cell, the
 context replay and the rollout all come for free; deliberately *not* codex's
 eager `<skill>` injection, which exists because codex has no skill tool);
-see `docs/skill-mentions.md`); plus, *above* the box while a turn streams, **messages
+see `docs/input/skill-mentions.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter go into the turn already running** instead of waiting
 (shown like sent user messages, inset two columns — `  ❯ {msg}` rows in the
 strip under the status line — until the model's **next round boundary** takes
@@ -3211,7 +3211,7 @@ build word-wraps and styles the whole backlog, so with the 32 ms frame chain
 re-arming, a growing queue burned 15% of a core on a screen holding still —
 fifty ~530-character messages measured **75 CPU ticks per five idle seconds
 against a 6-tick empty-queue baseline, now 13**; see
-`docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
+`docs/input/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red
 `Shell mode` hint in the footer slot (Backspace/Esc on the empty shell composer
@@ -3221,7 +3221,7 @@ composer runs the draft under `sh -c` on a background thread as a turn
 background launch — spawns **detached from the controlling terminal** via the
 shared `subprocess` module's setsid detach chain, so a `/dev/tty` password
 prompt like `sudo`'s fails fast instead of printing over the TUI and fighting
-the loop for the keyboard, `docs/tools.md`) committing a codex-style **exec cell** — the `! command`
+the loop for the keyboard, `docs/tools/tools.md`) committing a codex-style **exec cell** — the `! command`
 header on the dark user-style line (a `Role::Shell` message) with the `⎿`
 output **flush** below, `⎿ Running… (Ns)` while it runs (the elapsed rides the
 preview — a shell turn **hides the spinner status line** entirely,
@@ -3230,7 +3230,7 @@ preview — a shell turn **hides the spinner status line** entirely,
 notice — the cell is the record);
 mid-turn it queues as a standalone `Shell` entry run locally when its turn comes
 — codex parity, never merged into a text batch, Alt+Up over it re-enters shell
-mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast**
+mode; see `docs/input/shell-command.md` and `docs/input/queue.md`); plus a **transient toast**
 — a one-row, self-clearing status line pinned at the *bottom of the strip, just
 above the box's top rule* (`App::toast`/`ui::toast_rows`/`toast_line`, threaded
 beside `queued_rows`; dim for info, red for errors). It's raised for
@@ -3239,23 +3239,23 @@ confirmations and soft rejections the user should see but never keep — `/copy`
 rejection — instead of committing a scrollback bullet; it never enters `history`,
 and its expiry is timed at the boundary (`Session::toast_deadline` +
 `Session::toast`, the timestamp pattern, cleared in the draw tick). See
-`docs/toast.md`; plus a one-row
+`docs/ui/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line with its theme colours on, `{model} · {cwd}`
 two-space inset — the model in the accent, the Ctrl+T mode and a speed tier
 in the thinking purple, the cwd green, the gauge dim until it turns amber
 then red as the window fills, the permission mode warming with its autonomy
 (`manual` dim, `edit` blue, `auto` amber, `master` red), the separators dim
-(`docs/footer.md` *Colour*)
+(`docs/ui/footer.md` *Colour*)
 (`dummy_model_name · ~/repo      auto` — the Shift+Tab **permission mode**
-pinned flush at the row's right edge, `docs/permissions.md`, hidden when
+pinned flush at the row's right edge, `docs/state/permissions.md`, hidden when
 permissions are off; a reasoning-capable model carries its Ctrl+T
-thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)
+thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/providers/reasoning.md`)
 — whenever no band is open (the palette/shortcuts
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its
 slot; `App::set_session_info` injects the strings at the boundary
 like the clock, the model name coming from `ReplySource::model_name`; see
-`docs/footer.md`) stays pinned at the bottom. The alternate screen hosts the
+`docs/ui/footer.md`) stays pinned at the bottom. The alternate screen hosts the
 full-screen overlays: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
 invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
@@ -3269,13 +3269,13 @@ rule, `app::message_tokens` — over its text word-wrapped on the `⎿` gutter,
 the one the window opens inside pinned on its top row, the bottom rule
 counting the messages, and an agent session view's title naming the agent;
 `ui::render_context_view`/`ui::context_body` over the pure
-`context::context_messages`, see `docs/context.md`) — whose **Tab** opens its
+`context::context_messages`, see `docs/architecture/context.md`) — whose **Tab** opens its
 second page, auto mode's reviewer's own window: the bounded task context the
 classifier reads before each command, pulled live from the backend per draw
 (`ReplySource::classifier_context` → `App::set_classifier_context`, so it
 tail-follows actions as they land) over a note saying whether the mode
 actually consults it (`ui::classifier_lines` under the same
-`ui::render_context_view` chrome, `docs/permissions.md`). ratatui's `Viewport::Inline` can't change height after startup, so
+`ui::render_context_view` chrome, `docs/state/permissions.md`). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
 whose height is **dynamic** — the input box grows with the wrapped input, the
 streaming strip, the palette band, and the session footer (`ui::live_height`). Four non-obvious
@@ -3292,7 +3292,7 @@ of bug:
    another thread or task that reads stdin (`insert_before` tracks the viewport row
    itself and never queries the cursor). **Any other question for the terminal
    rides in that same read** (`term::query` — today the kitty graphics query and
-   XTVERSION, `docs/images.md` *Asking the terminal*): written ahead of the DSR,
+   XTVERSION, `docs/ui/images.md` *Asking the terminal*): written ahead of the DSR,
    answered in order, the read stopping on the cursor report's last byte so
    everything typed after it reaches the `EventStream` whole, and the keys typed
    *before* it — which the read took in — replayed through the ordinary key
@@ -3302,7 +3302,7 @@ of bug:
    re-exec (`{exe} __alter-zero-detached-exec {cmd}`) the process must `setsid`
    away and `exec` `sh` before it ever touches stdin/stdout or spawns a thread, or
    it would boot a TUI into the caller's pipes and the tty detach would silently
-   break (`docs/tty-detach.md`). Never move it, and never let anything run above it.
+   break (`docs/tools/tty-detach.md`). Never move it, and never let anything run above it.
 
 2. **Greedy word-wrap is prefix-stable** (`ui::wrap_text`): appending text only
    ever changes the *last* wrapped line. This is what makes streaming-to-scrollback
@@ -3311,7 +3311,7 @@ of bug:
    *caching* the rendered rows of already-complete source lines and only rendering
    the newly-arrived tail (so streaming a reply is **O(reply)**, not O(reply²) — it
    replaced a per-chunk *whole-reply* re-render that starved the status animation on
-   long code; see `docs/markdown.md`). `StreamRender::commit` withholds the
+   long code; see `docs/ui/markdown.md`). `StreamRender::commit` withholds the
    still-growing last line (and, inside a fenced code block, the **whole**
    in-progress line — a code line's colour isn't final until its closing `(`/`//`
    streams in, and it may span several wrapped rows), plus any **trailing blank
@@ -3339,7 +3339,7 @@ of bug:
    *modal*** — the tool-permission prompt, `ui::region_is_modal`, the one region
    that can be as tall as the terminal. It *grows* by the same `ui::repin` as
    everything else — the chat it displaces scrolls into the terminal's real
-   scrollback, staying reachable while it asks (`docs/permissions.md`) — but
+   scrollback, staying reachable while it asks (`docs/state/permissions.md`) — but
    those scrolls are one-way, so a plain shrink at the close would strand the
    box above the rows it vacates. `InlineViewport` notes every one-way move
    under an open prompt (`modal_scrolled`, set by `paint_live`'s scrolls and by
@@ -3365,10 +3365,10 @@ of bug:
    coincide with a flush *mid-stream* too — a forming table's whole block commits
    at its close while the multi-row preview drops to one row — `term::paint_live`
    syncs the tracked height to the frame's height before `flush_pending` whenever
-   lines are pending, `docs/table-streaming.md`, guarded by Phase 41). (`insert_before` itself only
+   lines are pending, `docs/ui/table-streaming.md`, guarded by Phase 41). (`insert_before` itself only
    **queues**: the next `term::draw` writes the lines and repaints the live region
    inside one synchronized update, so a commit can never flash a boxless frame —
-   `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the
+   `docs/ui/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the
    conversation repaints from source — a width change stales every wrapped line, and
    a height-only change moves the screen contents out from under the tracked
    viewport row (the emulator scrolls/clips to fit; repainting at the stale row
@@ -3421,8 +3421,8 @@ of bug:
    `⎿ Interrupted by user` (`… by a backend error`), recorded in batch order and
    committed above the notice through `ui::resolved_tools_commit_lines`, so the
    screen keeps a cell per call and the next request replays the whole round
-   with each call's own arguments (`RoundCall::arguments`) — `docs/interrupt.md`,
-   `docs/parallel-tools.md`. The
+   with each call's own arguments (`RoundCall::arguments`) — `docs/input/interrupt.md`,
+   `docs/tools/parallel-tools.md`. The
    Ctrl+O overlay (`ui::render_tool_view` on the alternate
    screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
@@ -3433,16 +3433,16 @@ of bug:
    hint row saying so honestly (`q/ctrl+o to quit   esc to edit prev`, the
    key arm and the row sharing `App::overlay_esc_backtracks`), and while one
    highlights a message the second hint row swaps to the backtrack keys;
-   `docs/backtrack.md`) — showing the **full conversation
+   `docs/input/backtrack.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
    (in-progress reply / the running tool **and any `⎿ Waiting…` batch siblings**,
    the whole `tool_queue` in order) plus the still-queued backlog
    (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
-   `docs/queue.md`). That walk is **O(history)** and re-runs the markdown +
+   `docs/input/queue.md`). That walk is **O(history)** and re-runs the markdown +
    syntax highlighter over the whole transcript, so the loop drives it through a
    **`ui::TranscriptCache`** (a `Session`-owned cache, like `StreamRender`) that
-   builds **incrementally** (`docs/tool-view-performance.md`): committed items
+   builds **incrementally** (`docs/ui/tool-view-performance.md`): committed items
    are immutable and history otherwise only grows — every non-append mutation
    (a `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
    pop) bumps `App::history_generation` — so the cache keeps a **frozen
@@ -3455,7 +3455,7 @@ of bug:
    running `bash` call streaming its output* invalidates it — the last is what
    makes the overlay show the **live streaming output** (unlike Claude Code,
    which only shows a tool's output once it finishes; the overlay tail-follows
-   the frontier, `docs/tool-streaming.md`) — backtrack selection, width)
+   the frontier, `docs/ui/tool-streaming.md`) — backtrack selection, width)
    short-circuits a refresh entirely, so a scroll keypress is a cache hit
    (O(viewport)) and a streamed chunk costs O(live tail), not O(history).
    `draw_tool_view` refreshes it **once** per draw (shared by the scroll clamp
@@ -3465,18 +3465,18 @@ of bug:
    Ctrl+O never opens cold: the switch itself is atomic (`term::enter_overlay`
    only *queues* hide+switch+clear; the first `draw_overlay` flush delivers
    them **with** the painted frame as one write — no blank alt screen for a
-   kitty cursor-trail to streak across, `docs/tool-view-performance.md`).
+   kitty cursor-trail to streak across, `docs/ui/tool-view-performance.md`).
    **The overlay paints diffed, like the inline region** — `draw_overlay`
    emits only `overlay_paint`'s cells and an unchanged frame emits *nothing*,
    which is what keeps a mouse selection alive there while a turn streams
-   (`docs/overlay-repaint.md`); the draw tick correspondingly stops re-arming
+   (`docs/ui/overlay-repaint.md`); the draw tick correspondingly stops re-arming
    the status animation's clock chain under an overlay, where nothing it
    animates is on screen.
    Only the **user** message shows its
    wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
    its own line below the message** — the *only* stamp displayed anywhere
    (AI/tool/summary stamps are recorded but never shown; never inline; the
-   clock is injected via `App::set_clock`, see `docs/timestamps.md`). **While
+   clock is injected via `App::set_clock`, see `docs/ui/timestamps.md`). **While
    the overlay is up the loop keeps draining reply events into `App` and keeps
    committing — the commits merely *queue*** (`insert_before` never does I/O,
    and only the inline `draw`/`reflow`/`restore` flush the queue — never
@@ -3492,7 +3492,7 @@ of bug:
    permission prompt is deliberately *not* on the list — a commit beneath it
    scrolls in above the region, visible at once, and the scroll it causes is
    one of the one-way moves the close's purge rebuild answers —
-   `docs/permissions.md`). **Quitting from the overlay is also a return**:
+   `docs/state/permissions.md`). **Quitting from the overlay is also a return**:
    the `Action::Quit` arm must `exit_overlay` *then* `overlay_return_repaint`
    before breaking — otherwise `restore` lands on the stale streaming strip a turn
    that finished in the overlay left behind, instead of the committed `Done for Ns`
@@ -3518,8 +3518,8 @@ draw the loop writes the computed `elapsed`/`thinking` `Duration`s onto the stat
 pattern). `insert_before` only **queues** its lines: the draw tick writes them and
 repaints the live region in **one synchronized frame** (codex's pending-history
 pattern — no flushed state ever lacks the box, the flicker fix; `reflow` paints the
-same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md`).
-(See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
+same way, and `restore` flushes any quit-before-tick leftovers; `docs/ui/flicker.md`).
+(See `docs/architecture/async-rewrite.md`, `docs/ui/status-indicator.md`.)
 
 ```
 keyboard / resize ──► EventStream ─┐
@@ -3536,7 +3536,7 @@ the ↑/↓ shell-style recall — adjacent duplicates collapse, `/clear` doesn'
 touch it), `insert_before`s it, then spawns one reply via the selected
 `ReplySource` (`backend.spawn(texts.join("\n"), images, tx, cancel)` — the
 Ctrl+V image paths drained from `App::take_submission_images`, see
-`docs/image-paste.md`), keeping the
+`docs/input/image-paste.md`), keeping the
 thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
 **Enter *while a turn is in flight* hands the message to that turn**
 (`steer_draft` → `Action::Steer`, codex's `submit_user_message`) instead of
@@ -3556,17 +3556,17 @@ order (Alt+Up pulls the **last entry** (`drain_last_batch`, `pop_back`) back
 into the composer to edit — a `Messages` batch newline-joined, a `Shell` entry
 as `!command` re-entering shell mode — and with none left asks the boundary for
 the newest still-unread steered message (`Action::ReclaimSteered`); see
-`docs/queue.md`). The
+`docs/input/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,truncated}` pairs
 (with `ToolOutput(chunk)` **live-output** deltas streamed in between — the
-running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
+running `bash` cell tails them via `App::push_tool_output`, `docs/ui/tool-streaming.md`)
 and a `ThinkingStart`/`ThinkingEnd` pair (with `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blinking grey) then commits it collapsed (green/red), and flips its `thinking_start`
 `Instant` so the status line shows/drops `Thinking for Ns` — while the
 reasoning deltas themselves accumulate in `App::reasoning` for the live
 `● Thinking…` block, collapsing at `ThinkingEnd` into the committed
-`Thought for …` cell (`docs/thinking-stream.md`; with
+`Thought for …` cell (`docs/ui/thinking-stream.md`; with
 `ALTER_ZERO_SHOW_THINKING` falsy no buffer is ever opened and they stay opaque,
 counted-only, as they were). Before a tool runs, the backend also streams the model **generating** the call as
 `ToolCallDelta(fragment)` events — `stream::ToolCallFragment { index, name,
@@ -3574,7 +3574,7 @@ arguments }`, the `name`/`arguments` pieces of a `tool_calls` delta under the
 wire's own slot for the call (`openai::Delta::tool_calls`, surfaced ahead of
 the round's batch) — which the loop counts via `App::push_tool_call_fragment`
 so the tally ticks while the call is produced, exactly like reasoning, and
-folds into the round's **drafts** (`app::ToolDrafts`, `docs/write-streaming.md`):
+folds into the round's **drafts** (`app::ToolDrafts`, `docs/ui/write-streaming.md`):
 a `write`'s arguments are decoded as they stream (`app::ArgsScanner`) and the
 strip shows the file being written — `● Write({path})` over a `Writing N
 lines…` corner and the **newest** ten numbered, highlighted rows while the
@@ -3582,7 +3582,7 @@ content arrives (`highlight::LineCache` colouring it incrementally — and
 keeping the colours of **only** the first and newest ten lines,
 `LineCache::windowed`, since a line's segments run ~50 times its text and
 glibc keeps what the process once used; only Ctrl+O and `/export`, which show
-every line, fill a whole-file cache, `docs/memory.md`), the
+every line, fill a whole-file cache, `docs/architecture/memory.md`), the
 **first** ten over the `… +N lines` hint once it has, the committed cell's own
 peek, which a queued `Write` keeps under its `Waiting…`; the piece that opens
 the preview flushes the streaming text first (invariant 4), a subagent's write
@@ -3596,7 +3596,7 @@ via `ALTER_ZERO_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
 there's nothing to preview — `ui::preview_rows` 0 — so the pause is status +
 gap only, no stray empty line, like codex). Then `Chunk`s,
 `ThinkingChunk`s (counted via `App::push_thinking`, and kept for the thinking
-stream's live block when a phase is open — `docs/thinking-stream.md`), the
+stream's live block when a phase is open — `docs/ui/thinking-stream.md`), the
 tool-call generation deltas, and a tool's
 output grow the cumulative token tally on `App::status` (`↓` while replying,
 thinking, or generating a tool call, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
@@ -3608,12 +3608,12 @@ and clears the status). **Esc while the turn is in
 flight returns `Action::Interrupt`** (palette-dismiss still wins; when idle Esc
 arms the Esc-Esc backtrack instead, is a no-op over a typed draft, and quits
 only with an empty composer and no user message to edit —
-`docs/backtrack.md`): the loop cancels + detaches the backend, **swaps the channel** (a stale
+`docs/input/backtrack.md`): the loop cancels + detaches the backend, **swaps the channel** (a stale
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` returns
 either `Kept` — keep the partial, resolve every call in flight as failed
 (`Interrupted by user` — the running one and each `⎿ Waiting…` sibling, all
 recorded, committed and replayed in the next request's context,
-`docs/interrupt.md`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
+`docs/input/interrupt.md`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
 turn** — its cell is the record), clear the status and hand back the turn's
 receipt (built by the one `App::turn_summary` a finished turn's summary
 comes from), which the boundary records under the notice through the shared
@@ -3621,7 +3621,7 @@ comes from), which the boundary records under the notice through the shared
 (none for a shell or `/compact` turn) — **or**
 `Undone` when nothing had streamed and nothing is queued: the submission rolls
 back, its message returned to the composer and dropped from history (the loop
-purge-repaints, no notice; `docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
+purge-repaints, no notice; `docs/input/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
 interrupt (its `Kept` branch) — the loop pops the front queued batch (`App::drain_next_batch`) and
 `start_turn`s it as the next turn (the remaining batches iterate at the
 following turn-ends), so **Esc sends the front batch right away**; the drain
@@ -3636,12 +3636,12 @@ draw flushes, so invariant 4 holds.
 (the `@`-picker primitives `AtToken`/`FileMatch`/`at_token`/`fuzzy_match`/`rank_files`
 live in the pure `file_search` module, and the `/resume` primitives
 `SessionMeta`/`SessionSummary`/`meta_line`/`item_line`/`parse_session`/`preview_of`/
-`relative_age`/`rollout_rel_path` in the pure `session` module — `docs/resume.md`).
+`relative_age`/`rollout_rel_path` in the pure `session` module — `docs/state/resume.md`).
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/providers/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. It lists five commands at a time (`MENU_MAX_COMMANDS`,
 the window centered on the highlight) over a dim `(n/total)` counter in the
 names' column — the pickers' counter, saying which match the highlight is on of
@@ -3659,9 +3659,9 @@ headless/SSH/tmux, then shows a transient `Copied last message to clipboard` toa
 (or a red `Copy failed` toast; with no response yet the pure core returns
 `Toast(COPY_EMPTY_NOTICE)` instead — the `/export`/`/compact` empty rule — so
 `No agent response to copy` is an info toast) — **a self-clearing
-line above the box, not a scrollback bullet** (`docs/toast.md`); the clipboard write is
+line above the box, not a scrollback bullet** (`docs/ui/toast.md`); the clipboard write is
 the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
-see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
+see `docs/ui/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
 every conversation records to a rollout JSONL file (the recorder + dir scan at
 the boundary, the format/parse in the pure `session` module) and the command
 opens a full-screen alt-screen picker (`View::ResumePicker`,
@@ -3672,9 +3672,9 @@ Created` — Tab moves the focus, ←/→ toggle, `Cwd`/`Updated` default),
 Enter → `ResumeSession(path)` loading the file's history via
 `App::load_session` and appending later turns to the same file; Esc clears the
 query first then closes, Ctrl+C closes, mid-turn `/resume` is rejected with a
-transient `Toast` (was a red `ErrorNotice`; `docs/toast.md`) like codex; see
-`docs/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
-pickers, `docs/llm.md`) now open *mid-turn* too** — they only replace the
+transient `Toast` (was a red `ErrorNotice`; `docs/ui/toast.md`) like codex; see
+`docs/state/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
+pickers, `docs/providers/llm.md`) now open *mid-turn* too** — they only replace the
 composer, never the running turn, so their old busy rejections are gone; their
 confirmations are toasts (`smoke.sh` Phase 33). **And "only the composer" is
 literal**: the three composer-replacing pickers (`/model`, `/login`,
@@ -3686,12 +3686,12 @@ splits the region with the view a bottom-pinned `Length` so a short terminal
 squeezes the strip and not the view, `ui::live`'s `render_strip_above`
 paints it, and the cursor seat comes from that same split); taking the whole
 region hid exactly the turn the picker was opened beside — the reported bug,
-which the band had first (`docs/llm.md`, `docs/background.md`,
-`docs/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
+which the band had first (`docs/providers/llm.md`, `docs/tools/background.md`,
+`docs/ui/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
 while a picker is open, the permission-prompt rule, since the picker owns
 every key).
 **`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
-(`docs/init.md`): the canned `prompts/init.md` prompt (generate
+(`docs/state/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as
 a regular user turn — echoed as the `❯` message, recorded, checkpointed — that
 the model's agentic tool loop answers by exploring the repo and writing the file;
@@ -3699,7 +3699,7 @@ mid-turn it is rejected with a `Toast` like `/compact` (codex's
 `available_during_task = false`), it never records into the ↑-recall history,
 and an Esc-undo of the turn restores the literal `/init` (palette reopened),
 not the prompt. **The generated guide feeds back into the model's context**
-(`docs/project-doc.md` — codex's project doc): every turn start re-reads the
+(`docs/state/project-doc.md` — codex's project doc): every turn start re-reads the
 project's `AGENTS.md` files (the pure `project_doc` module — nearest-`.git`
 root→cwd discovery, the first of `AGENTS.override.md`/`AGENTS.md` per dir
 read bytes-lossily, codex's 32 KiB cap via `ALTER_ZERO_PROJECT_DOC_MAX_BYTES`
@@ -3719,7 +3719,7 @@ anything) — in front of the post-`/compact` shape too, never entering
 `history` — so the Ctrl+D view shows it and `App::estimate_context_tokens`
 counts it.
 **`/compact`→`Compact`** —
-codex's manual compaction (`docs/compact.md`): the loop runs the summarization
+codex's manual compaction (`docs/architecture/compact.md`): the loop runs the summarization
 turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
 false)` (the dummy scripts a text-only summary), the reply diverts into
 `App::compact_buffer` (never rendered), and `StreamDone` appends the
@@ -3779,7 +3779,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   as `const`s, and every **colour** as an accessor function of the same name
   (`tool_ok_color()`, `menu_selected_color()`, …) that reads the **active
   theme's** palette (`ui/palette.rs`, one `Palette` table of twenty
-  roles per `/theme` entry; `docs/theme.md`). A new colour is a new role on
+  roles per `/theme` entry; `docs/ui/theme.md`). A new colour is a new role on
   `Palette` filled in every table plus its accessor; a new theme is one
   table; and a colour is never written as a literal `Color::Rgb` outside
   `palette.rs`, since a literal is a colour that ignores the theme. The
@@ -3787,7 +3787,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status
   colours (`tool_waiting_color()` for a batch's not-yet-run `⎿ Waiting…` calls,
-  `docs/parallel-tools.md`), the
+  `docs/tools/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
   cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
@@ -3797,7 +3797,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `reasoning_shimmer_base()` the live label's sweep rests at (codex's grey
   would read as dim), the `reasoning_label_color()` the settled
   line takes from `status_done_color()` on **both** surfaces, and the
-  `REASONING_PEEK_LINES` (3) live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
+  `REASONING_PEEK_LINES` (3) live tail window — see `docs/ui/thinking-stream.md`), the transcript timestamp (`timestamp_color()` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the comet style's white head + mid-grey
@@ -3811,7 +3811,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   each a `StatusVerb` pairing the live form with its past tense, rotated every
   `VERB_ROTATION` (30 s) by `App::set_status_times` and walked on across turns,
   the summary reading the past tense of the verb the line last wore;
-  `docs/status-indicator.md`), the
+  `docs/ui/status-indicator.md`), the
   slash-command palette (`MENU_*` — the `MENU_MARKER` `→ ` and its
   `MENU_INDENT` two-space inset, which every band below the box that lists
   something to pick opens its rows on (its placeholder rows on the inset), the
@@ -3831,7 +3831,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   its cap — and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
   palette helpers, the row count the built line count like `menu_rows`, the
-  window the palette's `centered_window` — see `docs/file-search.md`), the `$`
+  window the palette's `centered_window` — see `docs/input/file-search.md`), the `$`
   skill picker
   (`SKILL_MENU_*` — only its own `SKILL_MENU_MAX_ROWS` (5) cap and
   `SKILL_MENU_NO_MATCH` placeholder: it reuses the file picker's
@@ -3840,7 +3840,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   width, and the palette's dim `(n/total)` counter under the rows;
   `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
   helpers, the row count the built line count like `menu_rows` — see
-  `docs/skill-mentions.md`), the `?` shortcuts
+  `docs/input/skill-mentions.md`), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list in its column-major reading order, the
   `SHORTCUTS_MIN_ROWS` floor, the `SHORTCUTS_MIN_GUTTER`/`SHORTCUTS_MAX_GUTTER`
   range the spare width widens the gaps over, the `… +N more` marker of a band
@@ -3849,7 +3849,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   width whole — in the labels' terse wording (`terse_label`, their leading
   ` for`/` to` dropped) only where the full one cannot make two columns — and
   the band's height is `shortcuts_lines`' built line count,
-  so every width's grid reserves its own rows — `docs/shortcuts.md`), the
+  so every width's grid reserves its own rows — `docs/ui/shortcuts.md`), the
   inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, header (`SETTINGS_TITLE` over the dim
   `SETTINGS_SUBTITLE`, `model_view::picker_header`), indent, `❯` prompt, `→`
@@ -3861,8 +3861,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   and `SETTINGS_MENU_MAX_ROWS` (five rows) — the cursor seated on the search line
   `cursor_position` finds in the page `settings_view_lines` builds
   (`view_prompt_row`, since a short terminal's rungs move it up), the page
-  height the built line count — `docs/view-flow.md` — see
-  `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
+  height the built line count — `docs/ui/view-flow.md` — see
+  `docs/state/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
   rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
   `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the
@@ -3871,14 +3871,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
   `FOOTER_SEPARATOR`, the dim `footer_color()`, plus the cyan
   `footer_focus_bg()`/`footer_focus_fg()` that light the ↓-focused shell-count
-  segment (`docs/background.md`); `footer_rows`/`footer_line`,
+  segment (`docs/tools/background.md`); `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
   `~`-relative path), the transient toast row above the box (`TOAST_*` — the
   two-space `TOAST_INDENT`, the dim `toast_color()` (info) / `toast_error_color()`
   (failure — the theme's red mixed `TOAST_ERROR_DIM_MIX` of the way toward the
   dim, a softened red that still reads as red); `toast_rows`/`toast_line`,
   ellipsis-truncated like the footer — see
-  `docs/toast.md`), the Ctrl+R search line that takes the footer's slot while
+  `docs/ui/toast.md`), the Ctrl+R search line that takes the footer's slot while
   a search is open (`SEARCH_*` — the dim `SEARCH_PROMPT`, the cyan
   `search_query_color()` shared by the bold accept/cancel hint keys, the red
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
@@ -3889,7 +3889,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   footer slot (`backtrack_hint_line`), the preview's reversed user-message
   highlight + scroll target from the single `transcript_build` walk
   (`transcript_selection`/`backtrack_scroll`), and the overlay's swapped
-  key-hint row; see `docs/backtrack.md`), the `!`
+  key-hint row; see `docs/input/backtrack.md`), the `!`
   shell mode (`SHELL_MODE_*`/`SHELL_BULLET` — the red `Shell mode` footer
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
@@ -3900,7 +3900,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   is the backend `bash` cell's alone), every row aligned under the corner
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
-  (`wrap_output`) rather than clipping; `docs/long-lines.md`), `⎿ Running…`
+  (`wrap_output`) rather than clipping; `docs/ui/long-lines.md`), `⎿ Running…`
   live, the same rows uncapped in the Ctrl+O view;
   output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
@@ -3914,10 +3914,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   preview_rows)`/`preview_rows` — the **count** of preview content rows: 0 idle,
   1 for a streaming reply or `!` shell run, N for a running backend tool's whole
   cell (or the whole parallel `tool_queue`: every batched call's cell, running +
-  `⎿ Waiting…`, blank-separated — `docs/parallel-tools.md`); the pre-stream pause
+  `⎿ Waiting…`, blank-separated — `docs/tools/parallel-tools.md`); the pre-stream pause
   reserves **no** empty preview row, like codex, and `preview_budget`/
   `fitted_preview_rows` clamp the count to the rows the region actually has —
-  `docs/table-streaming.md`) —
+  `docs/ui/table-streaming.md`) —
   (`render_live` draws the status line under the preview's gap, or at the strip
   top during the pause) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,
@@ -3959,7 +3959,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   got a four-sentence paragraph in the install flow and it came straight
   back out: it explained a background request, an env var and an off switch
   to a reader who was two lines into running one command — the same rule
-  `docs/telemetry.md` had already written down for the ping ("a privacy
+  `docs/ops/telemetry.md` had already written down for the ping ("a privacy
   statement is a document someone goes looking for, not a section they
   scroll past"). What stays in the main flow is what the reader needs *at
   that moment* in order to act — the one-liner, and the sentence saying the
@@ -3989,7 +3989,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `tests/model_parse_memory.rs` (its own test binary — `VmRSS` is
   process-wide, so the reading needs a test with nothing running beside it).
   Bound network reads too (`MODELS_BODY_MAX_BYTES`, the
-  `SHELL_OUTPUT_MAX_BYTES` posture), and see `docs/memory.md` for the
+  `SHELL_OUTPUT_MAX_BYTES` posture), and see `docs/architecture/memory.md` for the
   end-to-end numbers plus what measured as noise and stays unchanged
   (`ModelPicker::matches`' per-keystroke churn; the marginal cost of a second
   cached HTTP client — the models fetch shares the chat client for the
@@ -4000,7 +4000,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   clipboard's PNG to disk, because a screenshot is the largest allocation
   this process ever makes and glibc's dynamic `mmap` threshold turns the
   second such allocation into a permanent one (three pasted screenshots
-  measured a 103 MB process the other way; `docs/memory.md`). And its
+  measured a 103 MB process the other way; `docs/architecture/memory.md`). And its
   request-shaped third coat: **never allocate anything picture-sized per
   turn** — an attachment is encoded once per session and shared
   (`images::attachment`, `AttachmentUrl`), and the request body is
@@ -4024,8 +4024,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   screen), and missing any one leaves the bug alive in that view alone. Printing
   a shadow spends a third column on a two-column glyph, shifting the rest of the
   row: the emoji that tore a table's right border off the grid
-  (`docs/table-streaming.md` *Wide glyphs*, `smoke.sh` Phase 41). The same
-  emitter owes the **graphics protocols** two more rules (`docs/images.md`): a
+  (`docs/ui/table-streaming.md` *Wide glyphs*, `smoke.sh` Phase 41). The same
+  emitter owes the **graphics protocols** two more rules (`docs/ui/images.md`): a
   `CellDiffOption::Skip` cell is never written (the escape already painted
   those columns, and a space over them punches a hole in the picture), and the
   shadow count comes from `Cell::cell_width()`, never
@@ -4046,22 +4046,22 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   column for the caret**: a word that would land in the field's last column
   wraps to the next row (Claude Code's rule), so the caret always has a cell
   on its own row and the box never grows an empty row for it. See
-  `docs/textarea.md`.
-- **Adding a lifecycle-hook event** (`docs/hooks.md`) is *one defaulted method
+  `docs/input/textarea.md`.
+- **Adding a lifecycle-hook event** (`docs/tools/hooks.md`) is *one defaulted method
   on `llm::hooks::HookSink` plus one call site*. That property is the design;
   a change that makes it untrue — a closure per event on `run_agent`, a new
   `StreamEvent` variant for a verdict that `Approval::Reject` already
   expresses — is the wrong change. Anything a hook must **block** on runs on
   the backend's own thread and **must poll the turn's `CancelToken`** on the
   20 ms cadence, or Esc silently stops working for as long as the hook takes.
-- **A picture is reserved in `ui` and drawn at the boundary** (`docs/images.md`).
+- **A picture is reserved in `ui` and drawn at the boundary** (`docs/ui/images.md`).
   Pure line builders never open an image file: they call `images::place` and
   emit marked blank rows, and `ImageStore::stamp` turns them into a picture in
   the four paint paths. A change that opens a file from `ui`, or that draws in
   three of those four places, is the wrong change — and `fit_cells` must keep
   agreeing with `ratatui_image`'s own `Resize::Fit` to the cell, which its
   differential test is there to keep true.
-- **A framed inline view hugs its rules** (`docs/view-flow.md` *The frame hugs
+- **A framed inline view hugs its rules** (`docs/ui/view-flow.md` *The frame hugs
   its content*). A composer-replacing page is its top rule, its content and
   its bottom rule: the first row of content sits straight under the opening
   rule and the last straight over the closing one, with blank rows only
@@ -4077,7 +4077,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt
   **plus** the paths of any Ctrl+V-pasted images (`images: Vec<PathBuf>` — codex's
   `UserInput::LocalImage` typed channel; a real vision backend reads each file and
-  attaches it, the dummy only acknowledges the count — see `docs/image-paste.md`).
+  attaches it, the dummy only acknowledges the count — see `docs/input/image-paste.md`).
   Stream `StreamEvent::Chunk(..)` per token on the `tokio`
   `UnboundedSender` (its `send` is sync — callable straight from your background
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
@@ -4085,10 +4085,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   stream `StreamEvent::ToolCallDelta(fragment)`s as the model *generates* the call
   (its `name`/`arguments` pieces as `ToolCallFragment`s, each under the call's
   slot in the round — counted like reasoning so the tally ticks while the call
-  is produced, and previewed for a `write`, `docs/write-streaming.md`), then send a
+  is produced, and previewed for a `write`, `docs/ui/write-streaming.md`), then send a
   `StreamEvent::ToolStart{name,args}`, optionally stream `ToolOutput(chunk)`
   live-output deltas while the tool runs (the running cell tails them —
-  `docs/tool-streaming.md`; the real `bash` executor streams completed lines),
+  `docs/ui/tool-streaming.md`; the real `bash` executor streams completed lines),
   then a `ToolEnd{output,ok,truncated}`
   (`truncated: false` from a backend tool — only the `!` shell runner caps); wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`
@@ -4103,7 +4103,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   The loop and
   rendering treat chunks and tool output as opaque text, and count the status
   tokens app-side with a vocabulary-free, provider-agnostic estimate via the
-  `app::count_tokens` → `tokens::estimate` seam (`docs/token-estimate.md`:
+  `app::count_tokens` → `tokens::estimate` seam (`docs/architecture/token-estimate.md`:
   one pass pricing what every byte-pair tokenizer does with words, digits,
   indentation and punctuation, fitted between `o200k_base` and
   `cl100k_base`, nothing loaded or resident) —
@@ -4120,7 +4120,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `stream_options.include_usage` in the payload, and the receipt naming both
   cache halves, `(8k cached · 1.2k written)`; every wire's cached numbers are
   the provider's own, never estimated, and `tests/live_caching.rs` proves each
-  provider on the wire — see `docs/prompt-caching.md`. The derived context
+  provider on the wire — see `docs/providers/prompt-caching.md`. The derived context
   replays every tool round **as the wire carried it**: the provider's own
   call ids, announced first by `StreamEvent::RoundCalls` and stamped onto
   the records with a per-round `batch` number and each call's `position`
@@ -4131,7 +4131,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   cached prefix survives a `/resume`, a backend rebuild and a restart, with
   the backend's retained last request (`llm::wire_history`) covering what
   no record can.
-  **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools.md`):
+  **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools/tools.md`):
   it offers the model `bash`/`read`/`write`/`edit` as Chat Completions function
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model
   requested (emitting the same `ToolStart`/`ToolEnd` events the dummy scripts,
@@ -4140,7 +4140,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (empty, or cut off at the output cap: `RoundOutcome::CutOff`, read off each
   wire's stop reason by `StreamOutcome::stop_reason`) is answered with a
   continuation prompt recorded as a `HookNote`, two in a row at most, then a
-  red error (`docs/unfinished-replies.md`). The pure pieces — the tool defs +
+  red error (`docs/architecture/unfinished-replies.md`). The pure pieces — the tool defs +
   edit engine (`llm::tools`), the streamed `tool_calls` accumulator
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,
@@ -4152,7 +4152,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   outside the cwd — while the header records the argument verbatim and
   **shows** it by the **path display rule** — `llm::tools::header_path`,
   `display_path`'s sibling over one lexical core, carried by the session
-  policy `app::PathDisplay`, `docs/tools.md` *Path display*: relative under
+  policy `app::PathDisplay`, `docs/tools/tools.md` *Path display*: relative under
   the cwd (`hello.py`),
   `~`-relative outside it but under home (`~/hello.py`), absolute elsewhere
   (`/tmp/x.py`) — applied by `ui::tool_header_lines` at render time, inline,
@@ -4189,7 +4189,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   for pre-field rollouts and the `!` shell. Both file schemas close with the
   matching sentence (*do not read the file back to check it*), since a model
   that cannot see why the result shrank reaches for a verifying `read` that
-  uploads the file twice; `docs/tools.md`, `docs/context.md`. Or — for `read` —
+  uploads the file twice; `docs/tools/tools.md`, `docs/architecture/context.md`. Or — for `read` —
   the file numbered by `tools::format_read` in the **same** `{n:>W} {text}`
   gutter (dynamic-width numbers + a space, not the old `cat -n` tab; the UI
   synthesizes the `Read {N} lines` corner; a `read` of an **image**
@@ -4200,14 +4200,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output
   marker, the path served from the session's one shared encoding like a Ctrl+V
-paste (`images::remember_attachment`, `docs/memory.md`); and a model
+paste (`images::remember_attachment`, `docs/architecture/memory.md`); and a model
   whose `/v1/models` record says it **can't** see images (`ModelEntry::vision`
   — detected beside the reasoning support, riding the selection into
   `ModelConfig::vision` and `config.json`) degrades gracefully instead of
   letting the provider 404 the turn: the `read` tool declines the image with a
   recoverable error, attachments become `[image omitted: …]` notes in
   `build_messages_for`, and a Ctrl+V paste raises a red toast;
-  `docs/tools.md` "Image reads"/"Vision detection"). The cell re-styles those rows — dim
+  `docs/tools/tools.md` "Image reads"/"Vision detection"). The cell re-styles those rows — dim
   line numbers, green/red signs (`read`/`created` have none), the content
   syntax-highlighted by the path's extension, added/removed rows on
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
@@ -4218,7 +4218,7 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   the legacy rendering. And where a `-`/`+` pair is an **edit** of a line
   rather than a replacement of one, the **characters that actually differ**
   are lifted off the row tint onto a brighter one and bolded
-  (`ui::inline_diff`, `TOOL_DIFF_*_MARK_BG`, `docs/inline-diff.md`): the muted
+  (`ui::inline_diff`, `TOOL_DIFF_*_MARK_BG`, `docs/ui/inline-diff.md`): the muted
   row tint answers *did this line change*, the bright mark answers *where*, so
   `Bruce Rivera` → `Bruce Rivero` marks the `a` and the `o` instead of painting
   two flat blocks the eye has to compare character by character. The one
@@ -4249,4 +4249,4 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   folded in at the boundary via `backend::augment_with_environment` so the agent
   has context awareness — the `User` line decided by the effective uid, so it
   knows whether it is root) — persona → environment, nothing else: the tool
-  schemas carry their own capability detail (`docs/environment.md`).
+  schemas carry their own capability detail (`docs/architecture/environment.md`).

@@ -178,7 +178,7 @@ echo "PASS: L3 mid-stream resizes reflowed and the turn settled"
 tmux kill-session -t "$S_RS" 2>/dev/null
 
 # --- Phase L4: the [PROMPT] shortcut starts a real turn from the command
-# line, and --resume {id} "…" continues it (docs/cli.md) -------------------
+# line, and --resume {id} "…" continues it (docs/cli/cli.md) -------------------
 S_P="${S}_prompt"
 # Its own sessions dir (L1–L3 recorded theirs in the shared one), so the
 # one-rollout-file check below counts only this phase's conversation; a

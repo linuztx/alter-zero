@@ -1,5 +1,5 @@
 //! The inline background-shell manager band reached with ↓.
-//! See `docs/background.md`.
+//! See `docs/tools/background.md`.
 
 use super::model_view::model_rule;
 use super::theme::*;
@@ -52,7 +52,7 @@ fn bg_list_row(shell: &BackgroundShell, selected: bool, width: u16) -> Line<'sta
 
 /// The manager's **list** page (or its empty state): title, `{n} active
 /// shells`, the windowed selectable rows, and the key hints — all framed by
-/// the picker rules. See `docs/background.md`.
+/// the picker rules. See `docs/tools/background.md`.
 fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
     let shells = app.background();
     let mut lines = vec![model_rule(width), bg_title_line(BG_TITLE, width)];
@@ -93,7 +93,7 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
 /// a `From: {type} agent` field — the rounded output box tailing the last
 /// [`BG_OUTPUT_ROWS`] lines of the live output (streaming in as the shell
 /// runs), a `Showing N lines` caption, and the key hints. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(bg_dim_color());
     let value = Style::new().fg(ai_color());
@@ -192,7 +192,7 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
 /// single source [`render_background_view`] paints and
 /// [`background_view_height`] counts (no row ever wraps, so the count is
 /// width-independent). Empty when the band is closed. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 #[must_use]
 pub fn background_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     match &app.background_view {
@@ -209,13 +209,13 @@ pub fn background_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// Render the **inline** ↓ background manager band into the live region, in
 /// place of the composer — the `/model` picker pattern (see
-/// `docs/background.md`). Pure — `render_live` paints this.
+/// `docs/tools/background.md`). Pure — `render_live` paints this.
 pub fn render_background_view(area: Rect, buf: &mut Buffer, app: &App) {
     // Bottom-anchored so a squeezed terminal keeps the band's interactive
     // tail on screen, and the rows that anchoring skips **flow** into real
     // scrollback like every other framed view — the details page's top rule,
     // its title and its fields used to be dropped into no buffer at all, so
-    // the conversation ran straight into a headless box (`docs/view-flow.md`).
+    // the conversation ran straight into a headless box (`docs/ui/view-flow.md`).
     // Because that page live-tails a running shell, its flow is signed on the
     // shell rather than on its rows (`FlowSign::Frozen`): the flowed top
     // freezes in scrollback instead of purge-rebuilding the screen every tick.

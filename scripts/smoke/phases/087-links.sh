@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# CLICKABLE LINKS (docs/links.md). A URL wider than its row
+# CLICKABLE LINKS (docs/ui/links.md). A URL wider than its row
 # hard-breaks across display rows — this 26-col pane splits the reply's
 # https://github.com/linuztx exactly like the report — and the terminal's own
 # per-row URL detection then opened only the first fragment on click. Every
@@ -23,7 +23,7 @@ submit "$S87" "$USER_MSG"
 # Poll the raw stream for the REPLY's hyperlink open — the one carrying the
 # github URL, which lands when the reply's URL commits — then give the rest of
 # the turn a beat to settle. Any OSC 8 open won't do: the demo's
-# `Read/Edit(about.py)` headers are file:// links now (docs/links.md), and
+# `Read/Edit(about.py)` headers are file:// links now (docs/ui/links.md), and
 # those land with the tool cells, well before the reply streams — a wait that
 # broke on the first open captured the pane mid-tool-loop.
 for _ in $(seq 1 120); do

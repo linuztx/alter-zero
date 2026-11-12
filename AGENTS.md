@@ -38,7 +38,7 @@ Measured on an 8-core Apple-silicon Mac, warm `target/` (not a cold checkout):
 | `scripts/smoke.sh <id>` (one phase) | ~2–20 s | you touched the terminal boundary |
 | `scripts/smoke.sh` (every phase) | minutes, parallel | **only** for `src/tui/`, `term.rs`, rendering/geometry |
 | `cargo build --release` / `--example …` | 40–60 s+, plus a second profile in `target/`, which grows to ~10 GB | only when the task explicitly needs a release artifact |
-| `scripts/release.sh build` / `cargo build --profile dist` | ~4½ min cold on 4 cores, ~2 GB peak, a third profile in `target/`; never incremental (fat LTO relinks the whole program every time) | only when the task is the shipped binary itself — its size, its speed, or the release tooling (`docs/binary-size.md`) |
+| `scripts/release.sh build` / `cargo build --profile dist` | ~4½ min cold on 4 cores, ~2 GB peak, a third profile in `target/`; never incremental (fat LTO relinks the whole program every time) | only when the task is the shipped binary itself — its size, its speed, or the release tooling (`docs/ops/binary-size.md`) |
 
 `target/` grows to ~10 GB and is incremental. Deleting it to "clean up" costs a
 multi-minute full rebuild — don't, unless the user asks.
@@ -126,7 +126,7 @@ BSD).
 `llm/exec.rs` 18, `pty/probe.rs` 8, `clipboard.rs` 4, `subprocess.rs` 4,
 `background.rs` 2, `pty/spawn.rs` 1, `llm/mcp/transport.rs` 1. Each asserts
 something only Linux has — the `/proc` probe, the foreground program's name,
-`setsid` detaching — and `docs/interactive-shell.md` *Limits* says what macOS
+`setsid` detaching — and `docs/tools/interactive-shell.md` *Limits* says what macOS
 does instead. A test of something every platform has stays `cfg(unix)`, with
 its Linux-only lines gated inside it. The modules themselves (`pty/probe`,
 `clipboard/linux`) have Linux-only bodies, and `tests/clipboard_linux.rs` is
@@ -247,7 +247,7 @@ From [`CONTRIBUTING.md`](CONTRIBUTING.md), unchanged:
 - The input line is a `textarea::TextArea`, not a `String`.
 - Never build a `Value` tree for a body you read a few fields from, and never
   decode a picture whole to make a small one — resident memory is a feature
-  here ([`docs/memory.md`](docs/memory.md), the `tests/*_memory.rs` gates).
+  here ([`docs/architecture/memory.md`](docs/architecture/memory.md), the `tests/*_memory.rs` gates).
 - `unsafe_code = "forbid"`. The terminal and the pty are reached through safe
   wrappers (`rustix`), not `pre_exec`.
 - Keep logic out of the I/O boundary: when `tui/` needs a decision, the decision

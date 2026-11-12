@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What the built image promises, checked from inside it (docs/docker.md).
+"""What the built image promises, checked from inside it (docs/ops/docker.md).
 
 Run by docker/tests/smoke.sh, which pipes this file into a throwaway container:
 
@@ -42,14 +42,14 @@ TOOLS = (
 )
 # Forwarding `-e TERM` from these terminals must not break less/nano/git.
 TERMINALS = ("xterm-256color", "tmux-256color", "xterm-kitty", "alacritty", "foot", "wezterm")
-# Every Python tool runs out of this virtualenv (docs/docker.md *Python*).
+# Every Python tool runs out of this virtualenv (docs/ops/docker.md *Python*).
 VENV = "/opt/az-venv"
-# pip's cache, deliberately outside the /root volume (docs/docker.md *Python*).
+# pip's cache, deliberately outside the /root volume (docs/ops/docker.md *Python*).
 PIP_CACHE = "/var/cache/pip"
 # Setting any of these in the image would change what the app reports home.
 TELEMETRY_KEYS = ("ALTER_ZERO_TELEMETRY", "DO_NOT_TRACK", "ALTER_ZERO_TELEMETRY_URL")
 # kali.sources names this list: Kali's redirector, then Kali's CDN for any file
-# the redirector's pick cannot deliver (docs/docker.md *Mirrors*).
+# the redirector's pick cannot deliver (docs/ops/docker.md *Mirrors*).
 MIRROR_LIST = "/etc/apt/kali-mirrors.txt"
 MIRRORS = ("http://http.kali.org/kali/", "http://kali.download/kali/")
 

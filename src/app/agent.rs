@@ -1,10 +1,10 @@
 //! The `Agent` tool's [`App`](super::App) state: the live group, the footer
 //! roster, the recorded groups/notices, and the inline session view.
-//! See `docs/agent-tool.md`.
+//! See `docs/agents/agent-tool.md`.
 
 use super::*;
 
-/// One subagent of a recorded [`AgentGroup`] (`docs/agent-tool.md`). The
+/// One subagent of a recorded [`AgentGroup`] (`docs/agents/agent-tool.md`). The
 /// display fields (`status`, counters, `result`, `tool_headers`) snapshot the
 /// roster at resolution — and are **updated once more** when a background
 /// agent later completes ([`App::settle_agent_completion`], bumping the
@@ -36,7 +36,7 @@ pub struct AgentGroupEntry {
     /// The model-facing tool-result text (immutable — see the struct docs).
     pub output: String,
     /// The provider's own id for the `agent` call this entry answers
-    /// (`ToolCall::call_id`'s twin, `docs/prompt-caching.md`).
+    /// (`ToolCall::call_id`'s twin, `docs/providers/prompt-caching.md`).
     pub call_id: Option<String>,
     /// The model's verbatim arguments for that call, replayed as sent; the
     /// typed fields above rebuild an equivalent object when a record made
@@ -52,7 +52,7 @@ pub struct AgentGroupEntry {
 /// single tree cell — `● {n} agents finished (ctrl+o to expand)` /
 /// `● {n} background agents launched (↓ to manage)` — and expanded in the
 /// Ctrl+O transcript as one `● Agent({description})` cell per entry. See
-/// `docs/agent-tool.md`.
+/// `docs/agents/agent-tool.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentGroup {
     /// Whether the group resolved by *launching in the background* (the calls
@@ -81,12 +81,12 @@ impl AgentGroup {
 /// one-line cell — `● Agent "{description}" finished · 35s` (green) /
 /// `was stopped by user` / `failed` (red) — the background-shell notice's
 /// agent twin. The `result` rides the item for the model's context (the
-/// final response) but is never rendered. See `docs/agent-tool.md`.
+/// final response) but is never rendered. See `docs/agents/agent-tool.md`.
 ///
 /// One kind reports no end ([`resumed`](Self::resumed)): the user's message
 /// started a settled agent again — `● Agent "{description}" was resumed by
 /// user` (cyan) — so the lead stops believing it is over
-/// (`docs/agent-tools.md`).
+/// (`docs/agents/agent-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentNotice {
     pub id: String,
@@ -102,10 +102,10 @@ pub struct AgentNotice {
     /// The messages the user sent the agent directly, in its session view,
     /// that this run answered ([`AgentRun::user_messages`]) — named in the
     /// note so the lead knows the conversation was the user's
-    /// (`docs/agent-tools.md`).
+    /// (`docs/agents/agent-tools.md`).
     pub user_messages: Vec<String>,
     /// The agent did **not** settle: the user's message started it again
-    /// after its run had ended (`docs/agent-tools.md`) — the shell notice's
+    /// after its run had ended (`docs/agents/agent-tools.md`) — the shell notice's
     /// [`waiting`](super::BackgroundNotice::waiting) twin, a notice that
     /// reports no end. `status` is then how that run had ended — what the
     /// lead last heard — `user_messages` the message that resumed it, and
@@ -144,7 +144,7 @@ impl AgentNotice {
     /// The model-facing context note: outcome + the final response — the
     /// bracketed user-role form [`crate::context::context_messages`] sends,
     /// and the automatic follow-up turn's prompt text (the background-shell
-    /// pattern, `docs/background.md`).
+    /// pattern, `docs/tools/background.md`).
     #[must_use]
     pub fn context_text(&self) -> String {
         if self.resumed {
@@ -161,7 +161,7 @@ impl AgentNotice {
             self.result.trim_end_matches('\n')
         };
         // The id rides beside the task: `agentsend` continues the
-        // conversation this note reports on (docs/agent-tools.md).
+        // conversation this note reports on (docs/agents/agent-tools.md).
         let mut text = format!(
             "[background agent] Agent \"{}\" ({}) {outcome}.\n",
             self.description, self.id,
@@ -178,7 +178,7 @@ impl AgentNotice {
     /// The note of a [`resumed`](Self::resumed) agent: it is working again,
     /// on the user's word, over the outcome the lead last heard — and the
     /// task is its, so the lead neither redoes the work nor launches a
-    /// replacement (`docs/agent-tools.md`).
+    /// replacement (`docs/agents/agent-tools.md`).
     fn resumed_text(&self) -> String {
         let after = match self.status {
             AgentStatus::Failed => "failed",
@@ -232,18 +232,18 @@ fn owes_notice(agent: &AgentRun, in_live_group: bool) -> bool {
 /// the roster entries these ids name). Cleared by
 /// [`App::finish_agent_group`]; an interrupt / backend error resolves it
 /// locally (`App::resolve_live_agent_group`) because the channel swap drops
-/// the backend's own `AgentGroupDone`. See `docs/agent-tool.md`.
+/// the backend's own `AgentGroupDone`. See `docs/agents/agent-tool.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentGroupLive {
     pub ids: Vec<String>,
     pub background: bool,
     /// The batch of the round the group was launched in — what its record
-    /// carries when it resolves (`docs/prompt-caching.md`).
+    /// carries when it resolves (`docs/providers/prompt-caching.md`).
     pub batch: Option<u64>,
 }
 
 /// What the user's `x` on a roster row did — the two halves of the
-/// stop-then-clear grammar ([`App::stop_agent`], `docs/agent-tool.md`).
+/// stop-then-clear grammar ([`App::stop_agent`], `docs/agents/agent-tool.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStop {
     /// A **running** agent was interrupted. Its row stays, red, for the
@@ -307,7 +307,7 @@ fn agent_tool_headers(agent: &AgentRun) -> Vec<String> {
 /// cell's for a call still on the run); [`file_tool_header`] is its inverse.
 /// The `args` are the call's summary as recorded — a file tool's path the
 /// model's own — so the entry round-trips the rollout unchanged and the cell
-/// shows the path by the session's rule at paint time (`docs/tools.md` *Path
+/// shows the path by the session's rule at paint time (`docs/tools/tools.md` *Path
 /// display*).
 pub(crate) fn tool_header_text(name: &str, args: &str) -> String {
     format!("{name}({args})")
@@ -331,7 +331,7 @@ pub(crate) fn file_tool_header(header: &str) -> Option<(&str, &str)> {
 }
 
 impl App {
-    // --- Subagents (`docs/agent-tool.md`) ---
+    // --- Subagents (`docs/agents/agent-tool.md`) ---
 
     /// The subagent roster, launch order.
     #[must_use]
@@ -376,12 +376,12 @@ impl App {
     /// spec and open the live group cell. The loop flushed the streaming
     /// segment first (the ToolBatch dance), so the cell slots after the text.
     pub fn start_agent_group(&mut self, background: bool, specs: &[AgentSpec]) {
-        // The round's calls are all made (docs/write-streaming.md).
+        // The round's calls are all made (docs/ui/write-streaming.md).
         self.tool_drafts.seal();
         for spec in specs {
             // The launch's place in the round the backend announced ahead
             // of it, found by the call id its spec carries
-            // (docs/prompt-caching.md); a scripted launch has neither.
+            // (docs/providers/prompt-caching.md); a scripted launch has neither.
             let position = self
                 .round
                 .as_ref()
@@ -446,12 +446,12 @@ impl App {
     /// The other notice an event can owe is a [`resumed`](AgentNotice::resumed)
     /// one: a message the **user** queued while the run was ending reaches a
     /// settled run (`StreamEvent::Steered` — the continuation its own thread
-    /// starts, `docs/queue.md`) and starts it again, which the lead, having
+    /// starts, `docs/input/queue.md`) and starts it again, which the lead, having
     /// heard it end, must hear too — unless it still waits on it in a live
-    /// group, whose result carries the run (`docs/agent-tools.md`).
+    /// group, whose result carries the run (`docs/agents/agent-tools.md`).
     pub fn apply_agent_event(&mut self, id: &str, event: &StreamEvent) -> Option<AgentNotice> {
         // Every request the session makes is billed, a subagent's included:
-        // the `/context` page's Since launch row (docs/context-usage.md).
+        // the `/context` page's Since launch row (docs/architecture/context-usage.md).
         if let StreamEvent::Usage(usage) = event {
             self.usage_since_launch.record(usage);
         }
@@ -514,7 +514,7 @@ impl App {
         // A group resolving in background mode (a `run_in_background` launch,
         // or Ctrl+B moving a running group over) marks its roster entries
         // background, so each later completion posts its notice
-        // (docs/agent-tool.md). Flipping an already-final entry is inert.
+        // (docs/agents/agent-tool.md). Flipping an already-final entry is inert.
         if background {
             for done in results {
                 if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == done.id) {
@@ -631,7 +631,7 @@ impl App {
         Some(group)
     }
 
-    /// `x` on a roster entry — the stop/clear pair (`docs/agent-tool.md`).
+    /// `x` on a roster entry — the stop/clear pair (`docs/agents/agent-tool.md`).
     ///
     /// On a **running** agent it settles the entry as interrupted and leaves
     /// the row in place: the red `◯` lingers for
@@ -703,7 +703,7 @@ impl App {
     /// its exact elapsed. The runtime **alone**: only a drawn frame moves the
     /// status verb ([`set_agent_runtime`](App::set_agent_runtime)), so a turn
     /// that ends a few milliseconds past a rotation no frame drew still names
-    /// the verb its view showed (`docs/status-indicator.md`).
+    /// the verb its view showed (`docs/ui/status-indicator.md`).
     pub fn freeze_agent_runtime(&mut self, id: &str, runtime: Duration) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id)
             && !agent.status.is_final()
@@ -714,7 +714,7 @@ impl App {
 
     /// Open a thinking phase on one agent — the boundary's `ThinkingStart`
     /// handler, called **only when the display is on** (the whole gate; see
-    /// [`AgentRun::begin_reasoning`]). See `docs/agent-view-streaming.md`.
+    /// [`AgentRun::begin_reasoning`]). See `docs/agents/agent-view-streaming.md`.
     ///
     /// [`AgentRun::begin_reasoning`]: crate::agents::AgentRun::begin_reasoning
     pub fn begin_agent_reasoning(&mut self, id: &str) {
@@ -746,7 +746,7 @@ impl App {
     /// Withdraw what agent `id`'s failed reply attempt streamed
     /// ([`AgentRun::withdraw_attempt`]) and report it — the session view runs
     /// this ahead of folding the agent's [`StreamEvent::Retrying`] to learn
-    /// what its screen must give back (`docs/offline.md` *A connection lost
+    /// what its screen must give back (`docs/providers/offline.md` *A connection lost
     /// mid-reply*). The default when nothing went, or no such agent is listed.
     pub fn withdraw_agent_attempt(&mut self, id: &str) -> Withdrawn {
         let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) else {
@@ -781,7 +781,7 @@ impl App {
     /// [`set_agent_thinking`](App::set_agent_thinking) sibling), so its
     /// session view's `bash` tail counts its `+N lines (Ns · wait …)` clock
     /// row from the call's own start rather than the agent's whole runtime
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     pub fn set_agent_command_elapsed(&mut self, id: &str, elapsed: Duration) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
             agent.set_command_elapsed(Some(elapsed));
@@ -804,7 +804,7 @@ impl App {
     /// `observed` when an `agentoutput` waiting on the agent already handed
     /// the lead its outcome — then no notice is owed, though the recorded
     /// group entry still learns the outcome for its Ctrl+O cell
-    /// (`docs/agent-tools.md` *One notice per answer*).
+    /// (`docs/agents/agent-tools.md` *One notice per answer*).
     pub fn apply_agent_settled(
         &mut self,
         id: &str,
@@ -819,7 +819,7 @@ impl App {
         Some(notice)
     }
 
-    /// The **lead** stopped `id` (`agentkill`, `docs/agent-tools.md`):
+    /// The **lead** stopped `id` (`agentkill`, `docs/agents/agent-tools.md`):
     /// settle its row as interrupted, the way the user's `x` does — its
     /// running call resolved, its partial kept — but without claiming the
     /// user stopped it: the row lingers the natural while, offers no `x to
@@ -851,7 +851,7 @@ impl App {
     }
 
     /// The **lead** resumed `id` (`agentsend` on a settled agent,
-    /// `docs/agent-tools.md`): bring its row back — from the roster, from the
+    /// `docs/agents/agent-tools.md`): bring its row back — from the roster, from the
     /// retired list with its whole transcript, or rebuilt on its prompt when
     /// even that has let it go — and mark it background, since its group
     /// resolved long ago and the answer can only reach the lead as a notice.
@@ -878,7 +878,7 @@ impl App {
     /// while the user is inside that agent's session view. Also drops the
     /// selection/view if they pointed at it. The entry itself retires rather
     /// than going — the newest [`crate::agents::AGENT_RETAINED_MAX`] are kept
-    /// for a resume (`docs/agent-tools.md` *Retention*).
+    /// for a resume (`docs/agents/agent-tools.md` *Retention*).
     pub fn remove_agent(&mut self, id: &str) {
         let Some(index) = self.agents.iter().position(|agent| agent.id == id) else {
             return;
@@ -981,14 +981,14 @@ impl App {
     /// session's own for a type that inherits the model, `None` (or a
     /// meaningless 0) for one pinned to a model whose window this session
     /// cannot know, which hides the gauge in that view. See
-    /// `docs/agent-context-gauge.md`.
+    /// `docs/agents/agent-context-gauge.md`.
     pub fn set_agent_context_window(&mut self, window: Option<u64>) {
         self.agent_context_window = window.filter(|&w| w > 0);
     }
 
     /// Inject the model the viewed subagent's type is **pinned** to (from
     /// `ReplySource::agent_model`, beside the window), `None` when it
-    /// inherits the session's. See `docs/agent-context-gauge.md`.
+    /// inherits the session's. See `docs/agents/agent-context-gauge.md`.
     pub fn set_agent_model(&mut self, model: Option<String>) {
         self.agent_model = model.filter(|model| !model.trim().is_empty());
     }
@@ -1006,7 +1006,7 @@ impl App {
     /// **on screen**, or `None` when its window is unknown (no gauge): inside
     /// an agent session view the viewed subagent's own context
     /// ([`AgentRun::context_used`]) against its model's window, otherwise the
-    /// main session's (`docs/agent-context-gauge.md`). The main pair alone —
+    /// main session's (`docs/agents/agent-context-gauge.md`). The main pair alone —
     /// [`context_used`](App::context_used) /
     /// [`context_window`](App::context_window) — keeps driving auto-compact,
     /// a fact about the lead's conversation whatever is on screen.
@@ -1038,7 +1038,7 @@ impl App {
     }
 
     /// A message typed into a **running** agent's session: park it on that
-    /// agent's queue (`docs/queue.md`). It shows above the box until the
+    /// agent's queue (`docs/input/queue.md`). It shows above the box until the
     /// agent's loop takes it at its next round boundary, when
     /// [`StreamEvent::Steered`] turns it into a real user message on that
     /// transcript — the main session's steering, one level down.
@@ -1060,7 +1060,7 @@ impl App {
     /// message typed into a subagent ran as a follow-up turn of the *lead*
     /// conversation once the lead's turn ended). It waits below the steered
     /// rows until that agent's loop settles, when the boundary hands it over
-    /// as a chat continuation. See `docs/queue.md`.
+    /// as a chat continuation. See `docs/input/queue.md`.
     ///
     /// A no-op when no agent session view is open.
     pub fn queue_agent_followup(&mut self, text: &str) {
@@ -1165,7 +1165,7 @@ impl App {
     /// Is the agent on screen still running — i.e. can Tab queue a follow-up
     /// turn against it? The main session's `is_streaming()` one level down,
     /// and the same rule follows from it: an idle Tab is a no-op that keeps
-    /// the draft (`docs/queue.md`).
+    /// the draft (`docs/input/queue.md`).
     #[must_use]
     pub fn viewed_agent_running(&self) -> bool {
         self.viewed_agent()
@@ -1181,7 +1181,7 @@ impl App {
     /// The run it starts answers the user, so its settle owes the lead a
     /// notice naming the message ([`AgentRun::user_messages`]) — even for a
     /// foreground agent, whose group resolved before this conversation began
-    /// and so cannot carry it (`docs/agent-tools.md`).
+    /// and so cannot carry it (`docs/agents/agent-tools.md`).
     ///
     /// And the start itself is news when the agent had **settled**: the lead
     /// last heard it end — finished, failed, stopped — and would otherwise go
@@ -1217,7 +1217,7 @@ impl App {
     /// Where ↓ opens the roster selection: the **last picked** agent's row
     /// when it is still listed, else `0` (the `● main` row). Stepping between
     /// several agents is what this buys — the second visit resumes where the
-    /// first left off instead of restarting at `main` (`docs/agent-tool.md`).
+    /// first left off instead of restarting at `main` (`docs/agents/agent-tool.md`).
     /// Entering an agent's session view is a pick, so Enter-then-↓ comes back
     /// to that agent; walking the `❯` onto `● main` is the way to forget one.
     pub(super) fn agent_selection_start(&self) -> usize {

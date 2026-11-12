@@ -1,4 +1,4 @@
-//! The streamable-HTTP **request-metadata headers** (`docs/mcp.md`):
+//! The streamable-HTTP **request-metadata headers** (`docs/tools/mcp.md`):
 //! the value encoding the `Mcp-Name` and `Mcp-Param-{Name}` headers share,
 //! and the `x-mcp-header` tool-schema extension (2026-07-28, SEP-2243) — a
 //! server marking tool parameters whose values must also ride the request

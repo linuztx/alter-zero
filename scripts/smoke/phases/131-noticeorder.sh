@@ -4,8 +4,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The reported race (docs/background.md *Where a notice lands*,
-# docs/bash-tools.md *One notice per exit*), driven through the REAL backend
+# The reported race (docs/tools/background.md *Where a notice lands*,
+# docs/tools/bash-tools.md *One notice per exit*), driven through the REAL backend
 # against a stub provider whose "model" takes its time:
 #
 # 1. A `bash` call comes back at a prompt (`Password: `), the stub then spends

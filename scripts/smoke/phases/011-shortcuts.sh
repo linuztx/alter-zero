@@ -5,7 +5,7 @@
 smoke_begin
 
 # `?` from an empty composer toggles the shortcuts band below the
-# box (codex's footer shortcut overlay — docs/shortcuts.md); a second `?` hides
+# box (codex's footer shortcut overlay — docs/ui/shortcuts.md); a second `?` hides
 # it; and with a draft in the box `?` is just a character (no band).
 S8="${S}_shortcuts"
 launch "$S8" 80 24

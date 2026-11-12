@@ -15,7 +15,7 @@
 //! streams those bytes into the folder — before arboard is even constructed
 //! — instead of letting arboard decode them to RGBA for us to encode straight
 //! back, a round trip that cost ~24 MB of transient memory per paste and left
-//! a residue behind (`docs/memory.md`); the stream is capped at
+//! a residue behind (`docs/architecture/memory.md`); the stream is capped at
 //! [`CLIPBOARD_IMAGE_MAX_BYTES`] so an owner can't fill the disk. Anything
 //! else is transcoded to PNG, encoded straight into the file rather than
 //! through a growing in-memory buffer. Every path **stages** its bytes in a
@@ -28,7 +28,7 @@
 //! real time, and running it on the loop would freeze the status animations.
 //! The **write** side ([`copy_to_clipboard`]) is codex's `/copy` path: set the
 //! clipboard via arboard, falling back to an OSC 52 terminal escape when there's
-//! no native clipboard (headless / SSH / tmux). See `docs/copy.md`.
+//! no native clipboard (headless / SSH / tmux). See `docs/ui/copy.md`.
 //!
 //! The clipboard/terminal **I/O** here carries no unit tests (like `term.rs`);
 //! the happy paths need a real clipboard server, so they're exercised under
@@ -74,7 +74,7 @@ const NUMBER_RETRIES: u32 = 64;
 /// Where a session's pastes are saved: `{config_home}/image-cache/{session}`
 /// — under the config home rather than the temp dir, so a picture pasted
 /// today is still there tomorrow, for the model to `read` and for a `/resume`
-/// to draw (`docs/image-paste.md`). Pure: the folder itself is created on
+/// to draw (`docs/input/image-paste.md`). Pure: the folder itself is created on
 /// the first paste ([`read_clipboard_image`]), so a session that never
 /// pastes never makes one.
 #[must_use]
@@ -253,7 +253,7 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
     // container entered with `docker exec -it`, an SSH login: the terminal
     // carries keystrokes, never the desktop's selection. Say so at once, and
     // what works instead, rather than let arboard go looking for an X server
-    // and report whatever that probe ran into (`docs/docker.md`).
+    // and report whatever that probe ran into (`docs/ops/docker.md`).
     #[cfg(target_os = "linux")]
     require_display(
         std::env::var_os("DISPLAY").as_deref(),
@@ -317,14 +317,14 @@ pub fn read_clipboard_image(dir: &Path) -> Result<PathBuf, String> {
 /// actionable: the two shapes that look like an image and are not (a file, a
 /// web page's `public.html`) are called out, and the escape hatch is the same
 /// one a display-less Linux session gets — put the picture on disk and ask for
-/// its path (`docs/image-paste.md`).
+/// its path (`docs/input/image-paste.md`).
 pub const NO_IMAGE_ON_CLIPBOARD: &str = "no image on the clipboard — copy a picture itself \
      (not a file, and not a web page's selection), or save it and ask Alter Zero to read its \
      path";
 
 /// Why a Linux paste is refused in a session that names no display, and what
 /// to do instead. It names both variables because the fix is to forward one
-/// (`docs/docker.md` *The clipboard*), and it speaks for **this** agent
+/// (`docs/ops/docker.md` *The clipboard*), and it speaks for **this** agent
 /// ([`crate::APP_NAME`], pinned by a test).
 #[cfg(target_os = "linux")]
 const NO_DISPLAY_REASON: &str = "no desktop clipboard in this session (neither DISPLAY nor \
@@ -518,7 +518,7 @@ const PNG_PICTURE_CHUNKS: [[u8; 4]; 5] = [*b"IHDR", *b"PLTE", *b"tRNS", *b"IDAT"
 /// The kept chunks are copied **verbatim**, CRCs and all, so the pixels
 /// arrive byte for byte with their depth and compression untouched, and the
 /// picture is never decoded: memory is a buffer or two whatever it weighs
-/// (`docs/memory.md`).
+/// (`docs/architecture/memory.md`).
 ///
 /// `Err` for anything that is not a whole PNG — no signature, a first chunk
 /// that is not `IHDR`, a length past the format's 2³¹ − 1, a chunk cut short,
@@ -572,7 +572,7 @@ fn strip_png_metadata(source: &mut impl Read, out: &mut dyn Write) -> Result<u64
 
 /// Store the PNG at `path` in the paste folder `dir` as its next number with
 /// its metadata stripped ([`strip_png_metadata`]) — the macOS conversion's
-/// way in (`macos::coerce_into`, `docs/image-paste.md`). Through
+/// way in (`macos::coerce_into`, `docs/input/image-paste.md`). Through
 /// [`store_image`], so the copy is capped at `max`, header-checked and
 /// numbered like every other paste, and a refused one leaves nothing in the
 /// folder; `path` itself is the caller's to delete.
@@ -598,7 +598,7 @@ fn store_png_without_metadata(dir: &Path, path: &Path, max: u64) -> Result<PathB
 /// sniffs content, not just the extension) is transcoded to a PNG as before.
 /// Either way the result is **our own copy** in the folder, never the user's
 /// path — the composer's discard cleanup deletes what this returns
-/// (docs/image-paste.md).
+/// (docs/input/image-paste.md).
 fn image_from_files(dir: &Path, files: &[PathBuf]) -> Option<Result<PathBuf, String>> {
     for path in files {
         if let Some(ext) = accepted_image_extension(path)
@@ -654,7 +654,7 @@ fn copy_file_into(dir: &Path, path: &Path, ext: &str) -> Result<PathBuf, String>
 /// vector grew by doubling to hold a whole screenshot's PNG, and its freed
 /// capacity was the largest block the paste released — the one that raised
 /// glibc's dynamic `mmap` threshold and turned later same-sized buffers into
-/// a permanent residue (`docs/memory.md`).
+/// a permanent residue (`docs/architecture/memory.md`).
 fn encode_png_into(dir: &Path, image: &image::DynamicImage) -> Result<PathBuf, String> {
     let tmp = staging_file(dir, "png")?;
     {
@@ -683,7 +683,7 @@ fn clipboard_raw_image(clipboard: &mut arboard::Clipboard) -> Option<image::Dyna
 /// lifetime, so dropping it right after `set_text` can clear what was just set —
 /// the caller (the event loop) holds this for the app's lifetime. Empty on other
 /// platforms, whose OS owns the clipboard once set. Codex's `ClipboardLease`. See
-/// `docs/copy.md`.
+/// `docs/ui/copy.md`.
 pub struct ClipboardLease {
     #[cfg(target_os = "linux")]
     _clipboard: arboard::Clipboard,
@@ -696,7 +696,7 @@ pub struct ClipboardLease {
 /// **OSC 52** terminal escape, which reaches the controlling terminal (and so
 /// tmux / the far end of an SSH session) where arboard can't. `Err` only when
 /// both fail, naming each cause. Codex's environment-aware copy, trimmed (see
-/// `docs/copy.md` for the divergences). Boundary I/O — no unit tests; the pure
+/// `docs/ui/copy.md` for the divergences). Boundary I/O — no unit tests; the pure
 /// `base64`/OSC 52 framing it calls is tested.
 pub fn copy_to_clipboard(text: &str) -> Result<Option<ClipboardLease>, String> {
     match arboard_copy(text) {
@@ -773,7 +773,7 @@ const BASE64_ALPHABET: &[u8; 64] =
 /// `bytes`. Hand-rolled to keep the dependency list lean: it's a few lines, pure,
 /// and unit-tested against the RFC vectors. Used to encode the clipboard text for
 /// the OSC 52 escape, and by the LLM backend to embed image attachments as
-/// `data:` URLs (`docs/context.md`).
+/// `data:` URLs (`docs/architecture/context.md`).
 #[must_use]
 pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -810,7 +810,7 @@ pub(crate) fn base64_encode_into(bytes: &[u8], out: &mut String) {
 /// error when `text` exceeds [`OSC52_MAX_BYTES`]. The `c` selects the clipboard
 /// (vs the primary selection); `\x1b]52;c;{b64}\x07` is the BEL-terminated form
 /// terminals and tmux (`set-clipboard`) understand. Pure, so it's unit-tested.
-/// See `docs/copy.md`.
+/// See `docs/ui/copy.md`.
 fn osc52_sequence(text: &str) -> Result<String, String> {
     if text.len() > OSC52_MAX_BYTES {
         return Err(format!(
@@ -850,7 +850,7 @@ mod tests {
         out.into_inner()
     }
 
-    // ===== a session with no display (docs/image-paste.md, docs/docker.md) =====
+    // ===== a session with no display (docs/input/image-paste.md, docs/ops/docker.md) =====
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -926,7 +926,7 @@ mod tests {
         assert!(reason.contains("read its path"), "{reason}");
     }
 
-    // ===== where a paste is saved (docs/image-paste.md) =====
+    // ===== where a paste is saved (docs/input/image-paste.md) =====
 
     #[test]
     fn paste_store_dir_is_a_session_folder_under_the_config_home() {
@@ -1002,7 +1002,7 @@ mod tests {
         assert_eq!(path, dir.join("1.png"));
     }
 
-    // ===== bounding the store (docs/image-paste.md) =====
+    // ===== bounding the store (docs/input/image-paste.md) =====
 
     /// `(folder, bytes, age-in-days)` → the shape the sweep weighs.
     fn folders(rows: &[(&str, u64, u64)]) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
@@ -1080,7 +1080,7 @@ mod tests {
         );
     }
 
-    // ===== Ctrl+V file fast path (docs/image-paste.md) =====
+    // ===== Ctrl+V file fast path (docs/input/image-paste.md) =====
 
     #[test]
     fn accepted_image_extension_recognises_the_backend_formats() {
@@ -1107,7 +1107,7 @@ mod tests {
     fn a_pasted_image_file_is_copied_verbatim_not_transcoded() {
         // A real (tiny) PNG on disk: the fast path must copy its exact bytes
         // into the paste folder — never hand back the user's own path (the
-        // discard cleanup deletes what we return; see docs/image-paste.md).
+        // discard cleanup deletes what we return; see docs/input/image-paste.md).
         let src_dir = tempfile::tempdir().unwrap();
         let src = src_dir.path().join("shot.png");
         image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
@@ -1159,7 +1159,7 @@ mod tests {
         assert!(image::open(&path).is_ok(), "the copy is a valid PNG");
     }
 
-    // ===== the streamed clipboard image (docs/image-paste.md) =====
+    // ===== the streamed clipboard image (docs/input/image-paste.md) =====
 
     #[test]
     fn a_capped_writer_passes_everything_under_the_cap() {
@@ -1253,7 +1253,7 @@ mod tests {
         assert_eq!(back.into_raw(), original.into_raw());
     }
 
-    // ===== the macOS conversion's metadata strip (docs/image-paste.md) =====
+    // ===== the macOS conversion's metadata strip (docs/input/image-paste.md) =====
 
     /// What every metadata chunk [`png_with`] writes carries, so a test can
     /// look for it in the bytes. The zlib-wrapped chunks store it

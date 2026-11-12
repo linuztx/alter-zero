@@ -5,7 +5,7 @@
 smoke_begin
 
 # the conversation stays REACHABLE while a permission prompt is
-# open (docs/permissions.md). The prompt grows like any other region — the
+# open (docs/state/permissions.md). The prompt grows like any other region — the
 # chat above it scrolls into the terminal's real scrollback, so the user can
 # scroll up and re-read what the model said before answering (the covering
 # modal used to hold the newest screenful in NO buffer: not on screen, not in

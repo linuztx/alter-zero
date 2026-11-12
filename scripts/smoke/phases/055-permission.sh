@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# tool permission requests (docs/permissions.md). A "permission"
+# tool permission requests (docs/state/permissions.md). A "permission"
 # prompt makes the dummy raise a scripted `write` request and BLOCK on the gate
 # — exactly as a real backend's tool thread does. The composer draft typed
 # before it arrives must be stashed and handed back; the prompt must show the
@@ -38,7 +38,7 @@ printf '%s\n' "$perm_prompt"
 # jump it makes. `#{cursor_flag}` is tmux's report of DECTCEM (1 shown, 0
 # hidden). Where it *rests* still follows the highlight, straight down the
 # options, so its return when the prompt closes starts somewhere sensible
-# (docs/permissions.md).
+# (docs/state/permissions.md).
 perm_cursor_shown="$(tmux display-message -p -t "$S55" '#{cursor_flag}')"
 perm_cursor_1="$(tmux display-message -p -t "$S55" '#{cursor_x} #{cursor_y}')"
 perm_marker_row=$(printf '%s\n' "$perm_prompt" | grep -n '❯ 1\.' | head -1 | cut -d: -f1)
@@ -94,7 +94,7 @@ echo "==== Phase 55: captured pane (allow-listed — no second prompt) ===="
 printf '%s\n' "$perm_silent"
 tmux kill-session -t "$S55" 2>/dev/null
 # Option 2 on a write prompt is the switch to edit mode, and it PERSISTS per
-# project (docs/permissions.md): the file must record this cwd with mode
+# project (docs/state/permissions.md): the file must record this cwd with mode
 # "edit" before the cleanup below.
 if ! grep -qF '"mode": "edit"' "$SMOKE_CFG/permissions.json" 2>/dev/null; then
 	fail "option 2 did not persist the edit mode to permissions.json"

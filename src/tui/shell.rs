@@ -5,7 +5,7 @@
 //! `ToolEnd`/`StreamDone` pair. Riding the same channel a model reply uses is
 //! what makes the status strip, the Esc interrupt, the resize repaint and the
 //! Ctrl+B hand-off work on a `!` command with no special cases anywhere else
-//! (`docs/shell-command.md`).
+//! (`docs/input/shell-command.md`).
 //!
 //! Three rules the runner obeys, each learned from a bug:
 //!
@@ -39,11 +39,11 @@ use alter_zero::stream::{CancelToken, StreamEvent};
 /// the loop polls `cancel` so an Esc interrupt kills the child and reaps it,
 /// and the registry's Ctrl+B latch so a running command can be **adopted into
 /// the background** mid-run — resolving as `ToolBackgrounded` instead
-/// (docs/background.md). The child leads its own process group (like the
+/// (docs/tools/background.md). The child leads its own process group (like the
 /// model-bash executor), so kills reap backgrounded grandchildren too. A
 /// non-zero exit appends `[exit status: N]` and resolves the cell red. The
 /// I/O boundary — verified by `scripts/smoke.sh` (Phase 19), not unit tests.
-/// See `docs/shell-command.md`.
+/// See `docs/input/shell-command.md`.
 pub(crate) fn spawn_shell_command(
     command: String,
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
@@ -58,8 +58,8 @@ pub(crate) fn spawn_shell_command(
         // (Esc, quit, the registry) reaps the whole tree, and no controlling
         // terminal, so a password prompt (`! sudo …`) fails fast instead of
         // writing over the TUI (the `llm::exec` pattern; see
-        // `subprocess`, docs/shell-command.md).
-        // The user's secrets (docs/secrets.md): a placeholder in the command
+        // `subprocess`, docs/input/shell-command.md).
+        // The user's secrets (docs/state/secrets.md): a placeholder in the command
         // runs as its value — the one copy that ever holds it — while the
         // cell, the history and a Ctrl+B hand-off keep the command as typed.
         // A placeholder naming nothing stored runs nothing: the cell says
@@ -75,7 +75,7 @@ pub(crate) fn spawn_shell_command(
                     ok: false,
                     truncated: false,
                     // Nothing ran: the command named a secret that is not
-                    // stored (docs/rollout-records.md).
+                    // stored (docs/state/rollout-records.md).
                     run: alter_zero::stream::ToolRun::refused(
                         alter_zero::stream::ToolErrorKind::ToolError,
                     ),
@@ -122,7 +122,7 @@ pub(crate) fn spawn_shell_command(
         drop(chunk_tx);
 
         // The command's runtime, from its spawn to its exit — what the
-        // rollout's `tool` line records (docs/rollout-records.md).
+        // rollout's `tool` line records (docs/state/rollout-records.md).
         let started = std::time::Instant::now();
         let ran_for = || Some(alter_zero::stream::ToolRun::millis(started.elapsed()));
         let mut combined: Vec<u8> = Vec::new();
@@ -146,7 +146,7 @@ pub(crate) fn spawn_shell_command(
             // Ctrl+B: hand the run to the background registry mid-flight —
             // it replays what we read so far and keeps streaming from our
             // pipe channel. The cell resolves as backgrounded; the shell turn
-            // ends with no summary as usual (docs/background.md).
+            // ends with no summary as usual (docs/tools/background.md).
             if registry.take_background_request() {
                 let task = registry.adopt(&command, None, false, child, chunk_rx, combined);
                 let _ = tx.send(StreamEvent::ToolBackgrounded {
@@ -200,7 +200,7 @@ pub(crate) fn spawn_shell_command(
         // What a terminal would have shown (`pty::fold`): a `\r` progress bar
         // once, finished, and no colour escapes — the cell and the model's
         // context read the text, not the frames that drew it
-        // (docs/shell-command.md). Lossy UTF-8: a command may emit non-UTF-8
+        // (docs/input/shell-command.md). Lossy UTF-8: a command may emit non-UTF-8
         // bytes; the cap may also cut a multi-byte char (→ one U+FFFD).
         let mut fold = alter_zero::pty::fold::Fold::with_line_cap(cap);
         fold.feed(&combined);
@@ -208,7 +208,7 @@ pub(crate) fn spawn_shell_command(
         let mut output = fold.finish();
         // …and what the command printed is redacted before anything reads
         // it — as a cut tail when the cap bit, since a cut through a value
-        // leaves its first half behind (docs/secrets.md).
+        // leaves its first half behind (docs/state/secrets.md).
         if let Some(secrets) = &secrets {
             output = if truncated {
                 secrets.redact_cut_tail(&output)
@@ -260,7 +260,7 @@ fn drain_shell_pipe(mut pipe: impl io::Read, tx: &std::sync::mpsc::Sender<Vec<u8
 
 /// Append `chunk` to the capped `buf`, marking `truncated` when the cap bites —
 /// bounds peak memory regardless of how much a command emits (codex's
-/// `append_capped` pattern; see `docs/shell-command.md`).
+/// `append_capped` pattern; see `docs/input/shell-command.md`).
 fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize, truncated: &mut bool) {
     if buf.len() < cap {
         let take = (cap - buf.len()).min(chunk.len());
@@ -304,7 +304,7 @@ pub(crate) const SHELL_QUIT_KILL_WINDOW: Duration = Duration::from_millis(250);
 /// memory so a command with huge output (`tree ~/`) can't spike RSS — the
 /// previous "save the full output to a file" approach still read everything into
 /// memory first, which is what we're avoiding (codex caps in memory too). See
-/// `docs/shell-command.md`.
+/// `docs/input/shell-command.md`.
 const SHELL_OUTPUT_MAX_BYTES: usize = 100_000;
 
 #[cfg(test)]

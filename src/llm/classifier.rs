@@ -1,5 +1,5 @@
-//! The **auto mode classifier** (`docs/permissions.md`): the silent LLM
-//! safety check a `bash` command — or an MCP tool call (`docs/mcp.md`) —
+//! The **auto mode classifier** (`docs/state/permissions.md`): the silent LLM
+//! safety check a `bash` command — or an MCP tool call (`docs/tools/mcp.md`) —
 //! goes through in [`PermissionMode::Auto`] instead of the user prompt —
 //! Claude Code's auto-mode classifier, on the session's own provider.
 //!
@@ -22,7 +22,7 @@
 //! instructions, and the action under review sits under its own
 //! `## Action to review` header so what is being judged can't blur into
 //! what already happened. The caps alone bound it, so a verdict on turn
-//! fifty costs what one on turn one did (`docs/permissions.md`). The parse
+//! fifty costs what one on turn one did (`docs/state/permissions.md`). The parse
 //! build are pure and unit-tested; [`SafetyClassifier::classify`] is the one
 //! HTTP boundary, riding the same blocking client and cancel-polling stream
 //! machinery as every other request ([`OpenAiClient::stream_chat`]).
@@ -39,13 +39,13 @@ use crate::stream::CancelToken;
 
 /// The classifier's system prompt — authored in
 /// [`prompts/classifier.md`](../../prompts/classifier.md) (the maintainable-
-/// markdown seam every prompt uses, `docs/environment.md`).
+/// markdown seam every prompt uses, `docs/architecture/environment.md`).
 pub const CLASSIFIER_SYSTEM_PROMPT: &str = include_str!("../../prompts/classifier.md");
 
 /// The header the one action being judged sits under in the classifier's
 /// user message ([`classifier_prompt`]) — shared with the Ctrl+D classifier
 /// page, which draws the request's shape and closes on this header over a
-/// placeholder for the action (`docs/permissions.md`).
+/// placeholder for the action (`docs/state/permissions.md`).
 pub const ACTION_TO_REVIEW_HEADER: &str = "## Action to review";
 
 /// The classifier's one user message: the working directory, the agent's
@@ -61,7 +61,7 @@ pub fn classifier_user_prompt(command: &str, description: Option<&str>, cwd: &st
     format!("Working directory: {cwd}\n{description}Command:\n```\n{command}\n```")
 }
 
-/// The classifier's one user message for a whole request (`docs/mcp.md`): a
+/// The classifier's one user message for a whole request (`docs/tools/mcp.md`): a
 /// `bash` request keeps the [`classifier_user_prompt`] command shape, and an
 /// MCP request gets the tool-call shape — the tool named `{server} - {tool}`
 /// the way the prompt and the cell name it, the server's own description when
@@ -89,7 +89,7 @@ pub fn classifier_request_prompt(request: &PermissionRequest, cwd: &str) -> Stri
                 args = args.unwrap_or("(no arguments)"),
             )
         }
-        // Input typed into a session (`docs/interactive-shell.md`): the
+        // Input typed into a session (`docs/tools/interactive-shell.md`): the
         // program decides what the keys do, so it is named above them; the
         // session id is the harness's bookkeeping and stays out.
         PermissionKind::Session => {
@@ -125,7 +125,7 @@ pub const CONTEXT_MAX_REQUESTS: usize = 10;
 
 /// The character cap on one recorded action line. One pathological call — a
 /// heredoc `bash` command, a huge MCP argument object — must not spend the
-/// whole context budget on itself (`docs/long-lines.md`'s posture, in
+/// whole context budget on itself (`docs/ui/long-lines.md`'s posture, in
 /// prompt form); the cut is closed with `…` so a clipped line can't read as
 /// one that simply ended.
 pub const CONTEXT_ACTION_MAX_CHARS: usize = 160;
@@ -172,7 +172,7 @@ fn action_line(name: &str, arguments: &str) -> String {
 }
 
 /// The **task context** the auto mode classifier reads beside each request
-/// (`docs/permissions.md`): the recent user requests and a bounded,
+/// (`docs/state/permissions.md`): the recent user requests and a bounded,
 /// truncated log of the actions the agent has taken — so a verdict can weigh
 /// whether the action under review *fits the task*, not just whether it
 /// looks safe in a vacuum.
@@ -410,7 +410,7 @@ impl SafetyClassifier {
         cfg.thinking = None;
         // …and at standard speed: a verdict is a few tokens, priority
         // processing bills plan usage, and an overriding classifier model
-        // may list no tier at all (docs/fast-mode.md).
+        // may list no tier at all (docs/providers/fast-mode.md).
         cfg.service_tier = None;
         let cwd = std::env::current_dir()
             .map(|d| d.display().to_string())
@@ -425,7 +425,7 @@ impl SafetyClassifier {
     /// [`classify`](Self::classify) sends it — surfaced through
     /// `ReplySource::classifier_system_prompt` for the Ctrl+D classifier
     /// page, which shows it abridged above the task context
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     #[must_use]
     pub fn system_prompt(&self) -> &'static str {
         CLASSIFIER_SYSTEM_PROMPT.trim()
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn an_mcp_request_prompts_with_the_tool_its_args_and_the_server_description() {
-        // Auto mode classifies MCP calls too (`docs/mcp.md`): the classifier
+        // Auto mode classifies MCP calls too (`docs/tools/mcp.md`): the classifier
         // reads the tool named the way the user knows it, the server's own
         // description of it, and the arguments — fenced like a command, so a
         // multi-line value stays one obvious block.
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn a_session_request_prompts_with_the_program_and_what_is_typed_into_it() {
         // Auto mode reviews input typed into an interactive session
-        // (docs/interactive-shell.md): the program it goes to decides what
+        // (docs/tools/interactive-shell.md): the program it goes to decides what
         // the keys do, so the classifier reads both.
         let request = PermissionRequest {
             id: String::new(),
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn the_system_prompt_briefs_the_classifier_on_stored_secrets() {
         // An action carrying `<secret:NAME>` uses a credential the user
-        // stored for the agent (docs/secrets.md); a rubric that never says so
+        // stored for the agent (docs/state/secrets.md); a rubric that never says so
         // reads a login or an authorization header as credential theft.
         assert!(
             CLASSIFIER_SYSTEM_PROMPT.contains("<secret:NAME>"),
@@ -611,7 +611,7 @@ mod tests {
         assert!(!classifier_user_prompt("ls", Some("  "), "/p").contains("description"));
     }
 
-    // ===== the task context (docs/permissions.md "Auto mode: the classifier") =====
+    // ===== the task context (docs/state/permissions.md "Auto mode: the classifier") =====
 
     /// A context carrying one user request — the common test shape.
     fn ctx(request: &str) -> ClassifierContext {
@@ -966,7 +966,7 @@ mod tests {
         // The session's `/fast` tier is for the conversation; a safety
         // verdict is a few tokens whose speed is not worth the plan usage
         // priority processing bills — and `ALTER_ZERO_CLASSIFIER_MODEL` may
-        // name a model that lists no tier at all (docs/fast-mode.md).
+        // name a model that lists no tier at all (docs/providers/fast-mode.md).
         let mut cfg = ModelConfig::fallback();
         cfg.service_tier = Some("priority".to_string());
         let classifier = SafetyClassifier::new(&cfg);

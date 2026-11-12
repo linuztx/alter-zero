@@ -5,7 +5,7 @@
 smoke_begin
 
 # the conversation stays VISIBLE through a batch's back-to-back
-# prompts (docs/permissions.md). The prompt sits at the bottom like any other
+# prompts (docs/state/permissions.md). The prompt sits at the bottom like any other
 # region, so the just-sent user message, the previous turn, and both batch
 # cells are real rows above it — and the first call's resolved cell commits
 # above the still-open second prompt the moment it lands (no held queue). The
@@ -87,7 +87,7 @@ fi
 # previous turn is checked by its REPLY (its closing hand-off paragraph, right
 # above the just-sent message), not by its user message: a demo turn is a
 # dozen rows taller now that its Read cell renders the real numbered file body
-# (docs/dummy-backend.md), so three of them plus a screen-tall prompt no longer
+# (docs/architecture/dummy-backend.md), so three of them plus a screen-tall prompt no longer
 # fit on a 30-row pane — the older rows scroll into real scrollback, which is
 # what Phase 58 checks with `-S`. What matters here is unchanged: the rows
 # above the prompt are real, visible conversation, not a covered void.

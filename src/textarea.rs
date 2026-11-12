@@ -10,7 +10,7 @@
 //! deletes the spans itself so a kill can stay placeholder-atomic,
 //! `App::kill_span`). Deliberately *without* codex's vim mode, atomic
 //! `@mention` elements, emacs kill-ring/yank, masking, highlights or
-//! keymap-config. See `docs/textarea.md`.
+//! keymap-config. See `docs/input/textarea.md`.
 //!
 //! Everything here is pure (no terminal I/O), so it is unit-tested directly: the
 //! cursor is a byte offset kept on a grapheme boundary, wrapping produces byte
@@ -34,7 +34,7 @@ fn cols(s: &str) -> usize {
 /// cache of wrapped row ranges, and the remembered column for vertical motion.
 /// `Clone` snapshots the whole draft — text *and* cursor — which is how the
 /// Ctrl+R history search restores it on cancel (codex's `ComposerDraft`
-/// snapshot/restore; see `docs/history-search.md`).
+/// snapshot/restore; see `docs/input/history-search.md`).
 #[derive(Debug, Default, Clone)]
 pub struct TextArea {
     /// The raw UTF-8 draft.
@@ -158,7 +158,7 @@ impl TextArea {
 
     /// Replace the byte `range` with `with`, leaving the cursor **after** the
     /// inserted text. Used to swap a typed `@token` for a chosen file path
-    /// (`docs/file-search.md`); unlike [`insert_str`] (which inserts at the
+    /// (`docs/input/file-search.md`); unlike [`insert_str`] (which inserts at the
     /// cursor), this targets an arbitrary span. `range` must fall on char
     /// boundaries (the caller passes [`crate::file_search::at_token`]'s range).
     ///
@@ -177,7 +177,7 @@ impl TextArea {
     }
 
     /// Insert a newline at the cursor (Ctrl+J / Alt+Enter / Shift+Enter — grows
-    /// the box; see `docs/shift-enter.md`).
+    /// the box; see `docs/input/shift-enter.md`).
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
@@ -253,7 +253,7 @@ impl TextArea {
     //
     // The kill keys (Ctrl+W/U/K, Alt+D, Alt+Backspace) delete *spans*, and the
     // composer must widen a span over any pasted placeholder it would cut in
-    // half (`App::kill_span` — docs/paste.md) before deleting, so the targets
+    // half (`App::kill_span` — docs/input/paste.md) before deleting, so the targets
     // are exposed as queries rather than performed here.
 
     /// Where a word-wise left motion or backward word kill reaches from the
@@ -508,7 +508,7 @@ impl TextArea {
     /// shows at the next row's start), and the column is the display width up
     /// to it — `width` itself at the end of a row the wrap left exactly full.
     /// That column is the cell every caller keeps past its text width for the
-    /// caret (`ui::layout::text_field_width`, `docs/textarea.md`), so the
+    /// caret (`ui::layout::text_field_width`, `docs/input/textarea.md`), so the
     /// cursor always has a cell on its own row and never needs an empty row
     /// below it.
     #[must_use]
@@ -573,7 +573,7 @@ fn next_grapheme(text: &str, pos: usize) -> usize {
 /// Claude Code's rule. codex's `wrap_ranges` seats that cursor on an empty
 /// sentinel row instead, and so did this one: the text flush against the
 /// terminal's edge with the caret alone on the row below read as a newline
-/// the user never typed (`docs/textarea.md`).
+/// the user never typed (`docs/input/textarea.md`).
 fn wrap_rows(text: &str, width: u16) -> Vec<Range<usize>> {
     let mut rows = Vec::new();
     let mut line_start = 0;
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(rows(&ta, 5), vec!["hello", "world"]);
         // The space (byte 5) is consumed at the break: rows are [0,5) and
         // [6,11) — and nothing after a full last row: the cursor's cell is the
-        // column the caller keeps past `width` (docs/textarea.md).
+        // column the caller keeps past `width` (docs/input/textarea.md).
         assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11]);
     }
 
@@ -960,7 +960,7 @@ mod tests {
         assert_eq!(ta.cursor_row_col(5), (1, 0), "start of the wrapped 2nd row");
         // Just after "hello", before the space the wrap consumed: the end of
         // a full row is column 5 — the cell past `width` every caller keeps
-        // for the caret (docs/textarea.md), so it stays on its own row.
+        // for the caret (docs/input/textarea.md), so it stays on its own row.
         let ta = at("hello world", 5);
         assert_eq!(ta.cursor_row_col(5), (0, 5), "the reserved column");
     }
@@ -1022,7 +1022,7 @@ mod tests {
         // A row exactly `width` wide is the last one: no empty row follows it
         // for the cursor, whose cell is the column the caller keeps past
         // `width`. An empty trailing row here is what read as a newline the
-        // user never typed (docs/textarea.md).
+        // user never typed (docs/input/textarea.md).
         let ta = TextArea::from_text("abcde");
         assert_eq!(ta.wrapped_rows(5), vec![0..5]);
         assert_eq!(ta.row_count(5), 1, "the box grows for text, not the caret");
@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(ta.wrapped_rows(5), vec![0..2], "re-wrapped after the edit");
     }
 
-    // ===== word motion (alt+b/f, ctrl+←/→ — docs/textarea.md) =====
+    // ===== word motion (alt+b/f, ctrl+←/→ — docs/input/textarea.md) =====
 
     #[test]
     fn word_left_goes_to_the_start_of_the_previous_word() {
@@ -1212,7 +1212,7 @@ mod tests {
         assert_eq!(ta.cursor_row_col(5), (2, 0), "aims for the current column");
     }
 
-    // ===== word/line boundary queries (the kill targets — docs/textarea.md) =====
+    // ===== word/line boundary queries (the kill targets — docs/input/textarea.md) =====
 
     #[test]
     fn prev_word_boundary_is_where_word_left_would_go() {

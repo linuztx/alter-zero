@@ -1,4 +1,4 @@
-//! The `/usage` page (`docs/usage.md`).
+//! The `/usage` page (`docs/providers/usage.md`).
 
 use super::*;
 

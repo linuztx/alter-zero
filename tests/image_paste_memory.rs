@@ -1,5 +1,5 @@
 //! A pasted screenshot's memory cost must stay proportional to what is
-//! **produced**, never to the picture's own pixel count (`docs/memory.md`).
+//! **produced**, never to the picture's own pixel count (`docs/architecture/memory.md`).
 //!
 //! The three places a Ctrl+V paste touches pixels — the paste worker's saved
 //! copy, the picture drawn under its bubble, and the payload sent to the

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/agent-progress.md, driven through the REAL backend against a stub
+# docs/agents/agent-progress.md, driven through the REAL backend against a stub
 # provider. The lead launches one FOREGROUND agent. The agent's first reply
 # is held mid-stream after its first sentence, so the lead's live cell can be
 # read while the agent talks: `⎿  Agent: …`, where the row used to name only
@@ -132,7 +132,7 @@ poll 30 test -e "$HELD" || fail "the agent's first request never reached the stu
 live="$(wait_pane 20 "$S144" -F "⎿  Agent: I'll list the work directory first.")" ||
 	fail "the lead's live agent cell never showed what the agent was saying"
 dump "the lead's live cell while the agent talks" "$live"
-# Matched without its bullet: a running cell's `●` blinks (docs/tool-pulse.md).
+# Matched without its bullet: a running cell's `●` blinks (docs/ui/tool-pulse.md).
 expect_has "$live" -F "Agent(Survey the work directory)" "the lone agent's live cell is missing"
 touch "$GO"
 

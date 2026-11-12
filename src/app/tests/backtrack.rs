@@ -1,4 +1,4 @@
-//! The Esc-Esc backtrack (`docs/backtrack.md`).
+//! The Esc-Esc backtrack (`docs/input/backtrack.md`).
 
 use super::*;
 

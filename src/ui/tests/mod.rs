@@ -71,7 +71,7 @@ pub(super) fn rgb_of(color: Color) -> (u8, u8, u8) {
 }
 
 /// Whether `line` is a page title in the pages' one title dress
-/// (`docs/theme.md`): its words washed in the active theme's banner
+/// (`docs/ui/theme.md`): its words washed in the active theme's banner
 /// gradient — opening on the gradient's start, at least two inks across
 /// them — and bold throughout.
 pub(super) fn wears_the_title_dress(line: &Line) -> bool {
@@ -130,7 +130,7 @@ pub(super) fn row(buf: &Buffer, y: u16, width: u16) -> String {
 /// on the row under the opening rule and ends on the row over the closing
 /// one. Every composer-replacing view shares the terminal with the
 /// conversation above it, so a blank row hugging a rule is a row of the
-/// conversation lost for nothing (`docs/view-flow.md` *The frame hugs its
+/// conversation lost for nothing (`docs/ui/view-flow.md` *The frame hugs its
 /// content*). `what` names the page in a failure.
 #[track_caller]
 pub(super) fn assert_frame_hugs_content(what: &str, page: &[Line<'_>]) {
@@ -224,7 +224,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
     ]
 }
 
-// --- live status line + committed "Done" summary (docs/status-indicator.md) ---
+// --- live status line + committed "Done" summary (docs/ui/status-indicator.md) ---
 
 /// A live status with the given metrics (verb fixed to "Working").
 pub(super) fn status(
@@ -294,7 +294,7 @@ pub(super) fn palette(input: &str, selected: usize) -> App {
     app
 }
 
-// --- /compact: the marker cell (docs/compact.md) ---
+// --- /compact: the marker cell (docs/architecture/compact.md) ---
 
 /// A test marker with no token info (the pre-gauge shape).
 pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
@@ -308,7 +308,7 @@ pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
     }
 }
 
-// --- the session-context footer under the box (docs/footer.md) ---
+// --- the session-context footer under the box (docs/ui/footer.md) ---
 
 /// An app with session info injected, as `main.rs` does at startup.
 pub(super) fn with_session() -> App {
@@ -317,7 +317,7 @@ pub(super) fn with_session() -> App {
     app
 }
 
-// --- the Ctrl+R search line in the footer slot (docs/history-search.md) ---
+// --- the Ctrl+R search line in the footer slot (docs/input/history-search.md) ---
 
 /// An app with `history` recorded and a Ctrl+R search open with `query`
 /// typed, driven through the real key path.
@@ -348,7 +348,7 @@ pub(super) fn file_picker(query: &str, matches: Vec<FileMatch>, selected: usize)
     app
 }
 
-// --- Esc-Esc backtrack rendering (docs/backtrack.md) ---
+// --- Esc-Esc backtrack rendering (docs/input/backtrack.md) ---
 
 /// An app holding two finished exchanges, ready to preview.
 pub(super) fn backtrack_app() -> App {
@@ -363,7 +363,7 @@ pub(super) fn backtrack_app() -> App {
     app
 }
 
-// ===== inline /model picker (docs/llm.md) =====
+// ===== inline /model picker (docs/providers/llm.md) =====
 
 pub(super) fn model_entry(id: &str, provider: &str, name: &str) -> ModelEntry {
     ModelEntry {
@@ -409,7 +409,7 @@ pub(super) fn three_models() -> Vec<ModelEntry> {
     ]
 }
 
-// --- The inline `/login` onboarding flow (docs/llm.md). ---
+// --- The inline `/login` onboarding flow (docs/providers/llm.md). ---
 
 fn login_subscriptions() -> Vec<SubscriptionChoice> {
     vec![SubscriptionChoice {
@@ -442,7 +442,7 @@ fn login_choices() -> Vec<ProviderChoice> {
     ]
 }
 
-/// The local server rows (`docs/local-models.md`): LM Studio and Ollama,
+/// The local server rows (`docs/providers/local-models.md`): LM Studio and Ollama,
 /// each saving its address under a variable of its own.
 pub(super) fn login_locals() -> Vec<LocalChoice> {
     vec![
@@ -471,17 +471,17 @@ pub(super) fn login_locals() -> Vec<LocalChoice> {
 
 /// The row a search-line picker's `❯` search line sits on in its whole and
 /// compact pages — top rule (0), search (1): no blank row hugs the rule
-/// (`docs/view-flow.md` *The frame hugs its content*). A shorter terminal's
+/// (`docs/ui/view-flow.md` *The frame hugs its content*). A shorter terminal's
 /// rungs move it up (`compact_page`), which is why the boundary finds it in
 /// the built page rather than pinning it.
 pub(super) const SEARCH_ROW: u16 = 1;
 
-/// A search-line picker on short terminals (`docs/view-flow.md` *A page that
+/// A search-line picker on short terminals (`docs/ui/view-flow.md` *A page that
 /// sheds rows before it flows*): from thirty rows down to one its page —
 /// `page(height)`, plain rows, the whole page on the taller ones — fits,
 /// keeps its `❯` search line carrying `query`, the `highlighted` row from
 /// two rows up and the `hint` from three, never stacks two blank rows, and
-/// never lets a blank row hug a rule it keeps (`docs/view-flow.md` *The
+/// never lets a blank row hug a rule it keeps (`docs/ui/view-flow.md` *The
 /// frame hugs its content*). Bottom-anchored, the compact page flowed its
 /// search line into scrollback on eight rows, and its highlighted row on
 /// six.
@@ -584,7 +584,7 @@ pub(super) fn login_app_subscription() -> App {
 }
 
 /// …or on ChatGPT Codex's sign-in method choice — the one subscription that
-/// offers two ways in, a browser and a device code (`docs/chatgpt.md`).
+/// offers two ways in, a browser and a device code (`docs/providers/chatgpt.md`).
 pub(super) fn login_app_signin_method() -> App {
     let mut app = App::new();
     let mut subscriptions = login_subscriptions();
@@ -623,7 +623,7 @@ pub(super) fn login_app_device() -> App {
     app
 }
 
-// --- background shells (docs/background.md) ---
+// --- background shells (docs/tools/background.md) ---
 
 pub(super) fn bg_notice(code: Option<i32>, killed: bool) -> crate::app::BackgroundNotice {
     crate::app::BackgroundNotice {
@@ -654,7 +654,7 @@ pub(super) fn spec(id: &str, desc: &str, background: bool) -> crate::stream::Age
 /// `batch`, or `batch` plus **trailing blank rows**: the padding the strip
 /// keeps so it never shrinks between two tokens by more than what moved to
 /// scrollback, and the box never hops up (`StreamRender::preview`'s floor,
-/// `docs/slow-stream.md`). The one tolerance the shared-frontier contract
+/// `docs/ui/slow-stream.md`). The one tolerance the shared-frontier contract
 /// allows, and only in that shape — every content row must match exactly,
 /// and a blank tail row inside an open fence is content on both sides.
 pub(super) fn matches_up_to_padding<T: PartialEq>(

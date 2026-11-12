@@ -1,4 +1,4 @@
-// The collector's pure half (docs/telemetry.md): what a ping must look like,
+// The collector's pure half (docs/ops/telemetry.md): what a ping must look like,
 // what the edge's country becomes, the day arithmetic the window and the
 // retention share, the shape of the stats document, and the dashboard page.
 // Nothing here touches a request, a database or a clock it wasn't handed, so

@@ -6,7 +6,7 @@ smoke_begin
 
 # an alternate-screen overlay is SILENT on a page that has not
 # changed, so its text can be selected and copied WHILE A TURN RUNS
-# (docs/overlay-repaint.md). A terminal drops the user's mouse selection the
+# (docs/ui/overlay-repaint.md). A terminal drops the user's mouse selection the
 # moment the cells under it are rewritten, and the overlay used to
 # re-serialize every cell of the screen on every frame — up to 120 a second
 # while a turn streamed, floored at ~31 by the status animation's clock chain

@@ -33,16 +33,16 @@ USER_MSG="hello there"
 # "hello there" is 11 chars → responses[2], which opens with this phrase.
 EXPECT_REPLY="Happy to help"
 # Every canned demo reply CLOSES on the same hand-off paragraph — the two
-# commands that swap the dummy for a real model (docs/dummy-backend.md). It is
+# commands that swap the dummy for a real model (docs/architecture/dummy-backend.md). It is
 # one shared sentence, pinned by
 # `stream::tests::script::the_handoff_paragraph_closes_every_demo_reply`, so
 # this one marker means "the turn finished streaming" whatever prompt was sent.
 SETTLED_REPLY="Two commands away"
-# The startup banner's tier-independent title word (docs/header.md).
+# The startup banner's tier-independent title word (docs/ui/header.md).
 HEADER_MARK="Alter Zero"
 # A committed turn summary (an ERE; anchor it with ^ where it must start a
 # row): the past tense of the status verb the turn ended on, then " for {n}"
-# (`app::STATUS_VERBS`, docs/status-indicator.md). Wait on this wherever any
+# (`app::STATUS_VERBS`, docs/ui/status-indicator.md). Wait on this wherever any
 # settle will do. A turn that runs past 30s ends on a later verb than it
 # opened on, so no single verb is safe there. A phase that tells turns apart
 # names that turn's verb instead (SUMMARY_TURN1…3, below). The same line lives
@@ -95,16 +95,16 @@ smoke_sanitize_env() {
 		unset "$v"
 	done
 	# The local servers are configured by being *pointed at*
-	# (docs/local-models.md): a developer's own Ollama or LM Studio host — or
+	# (docs/providers/local-models.md): a developer's own Ollama or LM Studio host — or
 	# LM Studio's token, whose name does not end in API_KEY — would make the
 	# /model phases fetch from a server the suite doesn't run.
 	unset OLLAMA_HOST LMSTUDIO_HOST LM_API_TOKEN
-	# A developer's own Google Antigravity sign-in (docs/antigravity.md) —
+	# A developer's own Google Antigravity sign-in (docs/providers/antigravity.md) —
 	# a refresh token whose name ends in no API_KEY, and the project it
 	# bills — would mark that subscription configured and send /model and
 	# /usage to Google; Phase 148 signs in against its own stub instead.
 	unset ANTIGRAVITY_REFRESH_TOKEN ANTIGRAVITY_PROJECT_ID
-	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
+	# Run from inside a herdr pane (docs/architecture/herdr.md), every phase's app would
 	# report its turns to the developer's real herdr — the pane the suite was
 	# started from flickering through a hundred agents' states. The herdr
 	# phase (132) points its own launches at a stub socket.
@@ -116,31 +116,31 @@ smoke_sanitize_env() {
 	# native arboard path wins, the OSC 52 fallback they read back never fires,
 	# and the suite overwrites the developer's real clipboard on its way past.
 	unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
-	# Telemetry (docs/telemetry.md) is opt-out and pings a real collector once
+	# Telemetry (docs/ops/telemetry.md) is opt-out and pings a real collector once
 	# a day per config home — off for the suite, both exported (the tmux
 	# server inherits it) and spelled out in every launch string.
 	export ALTER_ZERO_TELEMETRY=0
-	# …nor may one ask github.com for a newer release (docs/update.md).
+	# …nor may one ask github.com for a newer release (docs/ops/update.md).
 	export ALTER_ZERO_UPDATE_CHECK=0
-	# The spinner tip (docs/tips.md) hangs a row under the status line once a
+	# The spinner tip (docs/ui/tips.md) hangs a row under the status line once a
 	# turn has run three seconds — a row every phase that holds a turn that
 	# long would find in the strip it asserts on. Off for the suite; the
 	# tips phase (125) turns them back on for its own launches.
 	export ALTER_ZERO_TIPS=0
-	# The project's AGENTS.md (docs/project-doc.md) leads every context the
+	# The project's AGENTS.md (docs/state/project-doc.md) leads every context the
 	# app builds, and the suite runs from a real checkout that has one: its
 	# text fills the top of every Ctrl+D view and pushes off the page the rows
 	# a phase reads there. Off for the suite; the /init phase (52) turns it
 	# back on for its own temp project.
 	export ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0
-	# A session starts in auto mode (docs/permissions.md), where the dummy's
+	# A session starts in auto mode (docs/state/permissions.md), where the dummy's
 	# writes run unasked and a real backend's commands meet the classifier —
 	# and the permission phases are about the prompt. Manual for the suite,
 	# exported (a phase's own launch string inherits it) and spelled out in
 	# every launch string; Phase 64 unsets it to cover the default.
 	export ALTER_ZERO_PERMISSION_MODE=manual
 	# Reads, searches and listings fold into one collapsed line unless
-	# Verbose output is on (docs/tool-groups.md) — and the suite's phases
+	# Verbose output is on (docs/ui/tool-groups.md) — and the suite's phases
 	# assert on the per-call cells (`● Read(about.py)`, a numbered peek, a
 	# `● Bash(ls …)` tail). On for the suite, exported and spelled out in
 	# every launch string; Phase 146 turns it off for its own launches.
@@ -223,7 +223,7 @@ smoke_begin() {
 	# Agent definitions are discovered the same way; the two built-ins are seeded
 	# into the temp dir at startup, so it is not empty — it is *known*.
 	SMOKE_AGENTS="$SMOKE_TMP/agents"
-	# Every conversation records a rollout (docs/resume.md). The app keeps them
+	# Every conversation records a rollout (docs/state/resume.md). The app keeps them
 	# under the config home now, but the suite says so explicitly: for a long
 	# time they fell back to `$HOME/.alter-zero/sessions` whatever the config
 	# dir was, and each run left ~100 dummy-backend sessions in the developer's
@@ -375,7 +375,7 @@ launch() {
 	return 0
 }
 # trust_hooks SESSION — answer the startup review's hooks page
-# (docs/config-review.md). A phase that loads a hooks.json meets it on the
+# (docs/state/config-review.md). A phase that loads a hooks.json meets it on the
 # first frame, in place of the composer, until its hooks are trusted: wait
 # for it, trust every hook it lists, and wait for the composer. Launch such a
 # phase with `launch -n` (or `-w` on the review) and call this next; a phase

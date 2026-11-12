@@ -5,7 +5,7 @@
 smoke_begin
 
 # messages submitted WHILE a turn streams go INTO THAT TURN
-# (codex's steering, docs/queue.md): each waits like a user message ("  ❯ …",
+# (codex's steering, docs/input/queue.md): each waits like a user message ("  ❯ …",
 # two-space inset) *above* the box, and the turn takes them at its next round
 # boundary — the end of the dummy's tool batch — where each becomes a real user bubble
 # at column 0 ("❯ world", "❯ again") **while the turn is still running** (the
@@ -59,11 +59,11 @@ tmux kill-session -t "$S9" 2>/dev/null
 
 # Phase 12: a message submitted mid-stream is queued (shown like a user message,
 # inset two columns — "  ❯ world" — above the box, while turn 1 still streams)
-# and auto-sent as its own turn when the first finishes (docs/queue.md).
+# and auto-sent as its own turn when the first finishes (docs/input/queue.md).
 expect_has "$queued_band" -F "  ❯ world" "a message submitted while streaming was not shown queued (two-space inset '  ❯ world') above the box while turn 1 streamed"
 expect_has "$queued_band" -F "  ❯ again" "the second queued message was not shown ('  ❯ again' missing) — is the queued display capped?"
 if [ -z "$queue_midturn" ]; then
-	fail "the queued messages never reached the RUNNING turn — '❯ world'/'❯ again' did not commit at column 0 while the status line was still up (docs/queue.md)"
+	fail "the queued messages never reached the RUNNING turn — '❯ world'/'❯ again' did not commit at column 0 while the status line was still up (docs/input/queue.md)"
 	echo "---- the last frame seen ----" >&2
 	tmux capture-pane -t "$S9" -p -S -120 >&2
 fi

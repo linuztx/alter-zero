@@ -1,4 +1,4 @@
-//! The donation-address catalog and the `/donate` page (`docs/donate.md`).
+//! The donation-address catalog and the `/donate` page (`docs/ui/donate.md`).
 
 use super::*;
 
@@ -303,7 +303,7 @@ fn the_page_owns_every_other_key() {
 #[test]
 fn an_open_page_suppresses_the_ctrl_b_hint_clock_and_asks_no_animation() {
     // The running cell it keeps visible above itself must not advertise a
-    // Ctrl+B the page would swallow (docs/background.md) — and the page is
+    // Ctrl+B the page would swallow (docs/tools/background.md) — and the page is
     // still, so it never re-arms the animation chain on its own.
     let mut app = App::new();
     app.begin_stream();

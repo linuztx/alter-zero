@@ -1,4 +1,4 @@
-//! The permission gate's backend half (`docs/permissions.md`): turn a tool call
+//! The permission gate's backend half (`docs/state/permissions.md`): turn a tool call
 //! into the [`PermissionRequest`] the prompt shows, and block the tool thread on
 //! the user's answer.
 //!
@@ -41,9 +41,9 @@ pub type ClassifyCommand<'a> = dyn Fn(&PermissionRequest) -> Result<ClassifierVe
 
 /// The lookup a prompt's dim description row needs: an MCP wire name → the
 /// server's own one-line description of that tool
-/// ([`crate::llm::mcp::McpManager::tool_description`], `docs/mcp.md`), and a
+/// ([`crate::llm::mcp::McpManager::tool_description`], `docs/tools/mcp.md`), and a
 /// `bash_session` call's session id → the command that session runs
-/// (`docs/interactive-shell.md` — which its allowlist rule then covers). The
+/// (`docs/tools/interactive-shell.md` — which its allowlist rule then covers). The
 /// two key spaces never meet: a wire name starts `mcp__`, a session id is
 /// letters and digits. `None` for an MCP tool leaves the row out; for a
 /// session it means nothing answers to that id, so there is nothing to type
@@ -120,7 +120,7 @@ pub fn permission_request(
             })
         }
         // Typing into a running session asks like a command does
-        // (`docs/bash-tools.md`) — what is typed there runs just the same.
+        // (`docs/tools/bash-tools.md`) — what is typed there runs just the same.
         // `bashwait`, `bashkill` and `bashlist` never ask: a wait only reads,
         // a kill ends a command the model started (the ↓ manager's stop asks
         // nothing either), a list only names them — so they fall through to
@@ -139,7 +139,7 @@ pub fn permission_request(
                 describe,
             )
         }
-        // An MCP call asks too (`docs/mcp.md`): the wire name is the target
+        // An MCP call asks too (`docs/tools/mcp.md`): the wire name is the target
         // (the rule key option 2 remembers), the arguments the one-line
         // `key: "value"` form the resulting cell header shows — so the prompt
         // and the cell name the call identically — and the detail the
@@ -195,8 +195,8 @@ fn session_request(
 /// **block this thread** until the user answers (or the turn is cancelled).
 ///
 /// In [`PermissionMode::Auto`] a `bash` command — or an MCP tool call
-/// (`docs/mcp.md`) — the rules don't cover goes to the **classifier** instead
-/// of the user (`docs/permissions.md`): an allowed verdict runs the call with
+/// (`docs/tools/mcp.md`) — the rules don't cover goes to the **classifier** instead
+/// of the user (`docs/state/permissions.md`): an allowed verdict runs the call with
 /// the [`CLASSIFIER_ALLOWED_NOTE`] on its cell, a denial rejects it with the
 /// classifier's reason on both texts, and a classifier *failure* falls
 /// through to the ordinary prompt below — unless the turn was cancelled out
@@ -205,7 +205,7 @@ fn session_request(
 /// With no `gate` — `ALTER_ZERO_PERMISSIONS` off, or an embedder that built the
 /// backend directly — every call is allowed, exactly as before the feature.
 #[must_use]
-#[allow(clippy::too_many_arguments)] // the gate's full seam set (docs/hooks.md)
+#[allow(clippy::too_many_arguments)] // the gate's full seam set (docs/tools/hooks.md)
 pub fn approve_call(
     gate: Option<&PermissionGate>,
     classify: Option<&ClassifyCommand<'_>>,
@@ -226,7 +226,7 @@ pub fn approve_call(
     // that could not be previewed would never ask. What the prompt, the
     // allowlist and the classifier then read is redacted back to the
     // placeholders — a file the call touches may already hold a value
-    // (docs/secrets.md).
+    // (docs/state/secrets.md).
     let expanded = match secrets.map(|secrets| super::secret_exec::expand_call(secrets, call)) {
         // A placeholder naming nothing stored: nothing of the call may run,
         // so there is nothing to ask — and a refusal decided here cannot be
@@ -251,12 +251,12 @@ pub fn approve_call(
     }
     // A `PreToolUse` hook's `permissionDecision: "ask"` means *put this to the
     // user* — so the standing allowlist is skipped for this call, which is the
-    // whole point of a hook saying it (`docs/hooks.md`).
+    // whole point of a hook saying it (`docs/tools/hooks.md`).
     if !force_ask && gate.allows(&request) {
         return Approval::Allow;
     }
     // A command that provably only reads runs without auto mode's classifier
-    // — Claude Code's read-only fast path (docs/permissions.md): no round
+    // — Claude Code's read-only fast path (docs/state/permissions.md): no round
     // trip, no tokens, and no note, the `read` tool's own posture. It sits
     // with the standing rules, which answer the same "may this run unasked?"
     // without a model; a forced ask still asks, and the asking modes keep
@@ -268,7 +268,7 @@ pub fn approve_call(
     {
         return Approval::Allow;
     }
-    // The session scratchpad (docs/scratchpad.md) sits with the standing rules
+    // The session scratchpad (docs/tools/scratchpad.md) sits with the standing rules
     // rather than beside the classifier: a `write`/`edit` under the session's
     // own temp directory changes nothing of the user's, and the system prompt
     // sends every temporary file there — so it resolves here, before the
@@ -279,7 +279,7 @@ pub fn approve_call(
             note: SCRATCHPAD_ALLOWED_NOTE.to_string(),
         };
     }
-    // `PermissionRequest` (docs/hooks.md) sits exactly where the auto-mode
+    // `PermissionRequest` (docs/tools/hooks.md) sits exactly where the auto-mode
     // classifier does — after the standing rules, before the user — because it
     // answers the same question: *may this run without asking?* A hook that
     // abstains falls through to the classifier and then the prompt, unchanged.
@@ -339,7 +339,7 @@ pub fn approve_call(
             Err(_) => check_failed = true,
         }
     }
-    // Nobody to ask — a headless run (docs/headless.md): everything that
+    // Nobody to ask — a headless run (docs/cli/headless.md): everything that
     // could decide without a human has had its say above, so the call is
     // refused here, before a prompt exists — no request, no wait, and no
     // `Notification`, since nobody is shown anything. The gate keeps the
@@ -366,7 +366,7 @@ pub fn approve_call(
         };
     }
     request.id = gate.next_id();
-    // `Notification(permission_prompt)` waits for the screen (`docs/hooks.md`):
+    // `Notification(permission_prompt)` waits for the screen (`docs/tools/hooks.md`):
     // the moment a human is actually being asked — which `PermissionRequest`,
     // consulted before the classifier, cannot say — is when the loop opens
     // the prompt, not now: a request can queue behind another and be settled
@@ -387,7 +387,7 @@ pub fn approve_call(
         }
         // Tab's amended rejection: the typed instructions ride BOTH texts —
         // the cell's second line (the transcript's only record of them) and
-        // the model's tool result (docs/permissions.md).
+        // the model's tool result (docs/state/permissions.md).
         Some(PermissionDecision::Deny(feedback)) => Approval::Reject {
             display: denied_display(&request, feedback.as_deref()),
             result: denial_result(feedback.as_deref()),
@@ -603,14 +603,14 @@ mod tests {
 
     #[test]
     fn a_write_inside_the_scratchpad_runs_unasked_with_a_note() {
-        // docs/scratchpad.md: the session's own temp dir is outside the user's
+        // docs/tools/scratchpad.md: the session's own temp dir is outside the user's
         // project, so a file change there resolves before the prompt is ever
         // raised — visibly, wearing the dim note.
         let dir = std::env::temp_dir().join("alter-zero-0/s1/scratchpad");
         let path = dir.join("notes.md");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         // Manual: in the modes that let file changes run, the mode covers
-        // the write before the exemption is ever asked (docs/scratchpad.md).
+        // the write before the exemption is ever asked (docs/tools/scratchpad.md).
         let gate = gate_in(crate::permission::PermissionMode::Manual);
         gate.set_scratchpad(Some(dir));
         let call = call(
@@ -688,7 +688,7 @@ mod tests {
     fn a_forced_ask_still_prompts_for_a_scratchpad_write() {
         // A PreToolUse hook's `permissionDecision: "ask"` means *a human
         // decides* — it outranks the standing allowlist, and the scratchpad
-        // exemption sits right beside it (docs/hooks.md).
+        // exemption sits right beside it (docs/tools/hooks.md).
         let dir = std::env::temp_dir().join("alter-zero-0/s1/scratchpad");
         let path = dir.join("notes.md");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -810,8 +810,8 @@ mod tests {
 
     #[test]
     fn a_permission_request_hooks_deny_is_a_hook_block() {
-        // The hook answers in the user's stead (docs/hooks.md): its refusal
-        // is a hook's, and nobody is asked (docs/rollout-records.md).
+        // The hook answers in the user's stead (docs/tools/hooks.md): its refusal
+        // is a hook's, and nobody is asked (docs/state/rollout-records.md).
         let call = call("bash", r#"{"command":"make deploy"}"#);
         let deny = PromptHooks {
             request: Some(HookPermissionVerdict::Deny {
@@ -837,7 +837,7 @@ mod tests {
     #[test]
     fn asking_for_an_explanation_instead_is_the_users_no() {
         // Ctrl+E answers the prompt without running the call: it did not run
-        // because the user did not let it (docs/permissions.md).
+        // because the user did not let it (docs/state/permissions.md).
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = gate_in(crate::permission::PermissionMode::Manual);
         let cancel = CancelToken::new();
@@ -931,7 +931,7 @@ mod tests {
         // Claude Code's Notification(permission_prompt) means a human is
         // being asked: it fires once the prompt is on screen — after
         // PermissionRequest had its say — and never for a call a hook or the
-        // allowlist decided, where nobody is asked (`docs/hooks.md`).
+        // allowlist decided, where nobody is asked (`docs/tools/hooks.md`).
         let call = call("bash", r#"{"command":"make deploy"}"#);
         let asked = PromptHooks::default();
         let (approval, prompted) = approve_with_hooks(&PermissionGate::new(), &asked, &call, true);
@@ -962,7 +962,7 @@ mod tests {
         // Raised while another prompt held the screen, then settled from the
         // queue — a new rule covering it, its agent stopped, an Esc — the
         // prompt never reached the screen, so nobody was asked
-        // (`docs/hooks.md`); and the gate keeps nothing for it afterwards.
+        // (`docs/tools/hooks.md`); and the gate keeps nothing for it afterwards.
         let call = call("bash", r#"{"command":"make deploy"}"#);
         let queued = PromptHooks::default();
         let gate = PermissionGate::new();
@@ -1018,7 +1018,7 @@ mod tests {
         else {
             panic!("expected a rejection");
         };
-        // The user said no (docs/rollout-records.md).
+        // The user said no (docs/state/rollout-records.md).
         assert_eq!(kind, crate::stream::ToolErrorKind::Rejected);
         // Tab's typed instructions ride both texts: the cell's second line
         // (the transcript's only record of them) and the model's tool result.
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(result.contains("use pathlib"), "got {result}");
     }
 
-    // ===== interactive-session input (docs/interactive-shell.md) =====
+    // ===== interactive-session input (docs/tools/interactive-shell.md) =====
 
     #[test]
     fn typing_into_a_session_asks_with_its_command_beside_the_input() {
@@ -1127,7 +1127,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "the user was never asked");
     }
 
-    // ===== an unattended gate: the headless run (docs/headless.md) =====
+    // ===== an unattended gate: the headless run (docs/cli/headless.md) =====
 
     /// `approve_call` for one call on `gate`. An unattended gate must answer
     /// without waiting on anybody, so a regression that raises the prompt
@@ -1172,7 +1172,7 @@ mod tests {
         Approval::Reject {
             display: UNATTENDED_DISPLAY.to_string(),
             result: UNATTENDED_RESULT.to_string(),
-            // Nobody was there to ask (docs/rollout-records.md).
+            // Nobody was there to ask (docs/state/rollout-records.md).
             kind: crate::stream::ToolErrorKind::ApprovalRequired,
         }
     }
@@ -1275,7 +1275,7 @@ mod tests {
         assert_eq!(gate.take_unattended_refusals().len(), 4);
     }
 
-    // ===== the auto mode classifier (docs/permissions.md) =====
+    // ===== the auto mode classifier (docs/state/permissions.md) =====
 
     /// A gate pre-set to `mode`, plus the plumbing every approve test needs.
     fn gate_in(mode: crate::permission::PermissionMode) -> PermissionGate {
@@ -1322,7 +1322,7 @@ mod tests {
 
     #[test]
     fn auto_mode_runs_a_read_only_command_without_the_classifier() {
-        // Claude Code's read-only fast path (docs/permissions.md): a command
+        // Claude Code's read-only fast path (docs/state/permissions.md): a command
         // that provably only reads needs no machine reviewer — no round trip,
         // no tokens — and no note either, the `read` tool's own posture.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1431,7 +1431,7 @@ mod tests {
 
     #[test]
     fn a_forced_ask_outranks_the_read_only_fast_path() {
-        // A `PreToolUse` hook's `ask` means a human decides (docs/hooks.md).
+        // A `PreToolUse` hook's `ask` means a human decides (docs/tools/hooks.md).
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = gate_in(crate::permission::PermissionMode::Auto);
         let cancel = CancelToken::new();
@@ -1815,7 +1815,7 @@ mod tests {
         let gate = PermissionGate::new();
         let cancel = CancelToken::new();
         // Not a read-only command: the gate's default mode is auto, which
-        // would run `sleep 100` unasked (docs/permissions.md).
+        // would run `sleep 100` unasked (docs/state/permissions.md).
         let call = call("bash", r#"{"command":"python3 slow.py"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
@@ -1841,7 +1841,7 @@ mod tests {
             "a reaped wait never allows the call"
         );
     }
-    // ===== the auto mode classifier on MCP calls (docs/mcp.md) =====
+    // ===== the auto mode classifier on MCP calls (docs/tools/mcp.md) =====
 
     #[test]
     fn auto_mode_classifies_an_mcp_call_and_runs_it_with_the_note() {
@@ -2093,7 +2093,7 @@ mod tests {
         assert_eq!(request.kind, PermissionKind::Mcp);
         assert_eq!(request.target, "mcp__deepwiki__ask_question");
         // The body is what the cell header will show — the model's own key
-        // order, the one-line `key: "value"` form (`docs/mcp.md`).
+        // order, the one-line `key: "value"` form (`docs/tools/mcp.md`).
         assert_eq!(request.body, r#"repoName: "a/b", question: "What?""#);
         // …and the detail is the server's own description, trimmed.
         assert_eq!(request.detail.as_deref(), Some("Ask about a repo."));
@@ -2105,7 +2105,7 @@ mod tests {
         assert!(permission_request(&call("mystery", "{}"), None, None).is_none());
     }
 
-    // ===== secrets (docs/secrets.md) =====
+    // ===== secrets (docs/state/secrets.md) =====
 
     fn secrets() -> crate::secrets::SecretRegistry {
         let mut store = crate::secrets::SecretStore::new();

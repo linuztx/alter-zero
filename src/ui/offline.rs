@@ -1,4 +1,4 @@
-//! The lost-connection row (`docs/offline.md`): while the backend waits for a
+//! The lost-connection row (`docs/providers/offline.md`): while the backend waits for a
 //! connection it cannot make, a row hangs off the status line in the gutter a
 //! tool's output hangs from — an animated ripple, then which host is gone,
 //! that the request will be re-sent on its own, and how many attempts have

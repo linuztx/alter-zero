@@ -5,7 +5,7 @@
 //! only place that speaks HTTP. The pure cores — [`config`] (the `providers.toml`
 //! parse), [`thinking`] (the reasoning splitter), [`models::parse_models`], and
 //! the payload/endpoint builders in [`openai`] — are unit-tested; the network
-//! calls are verified by hand. See `docs/llm.md`.
+//! calls are verified by hand. See `docs/providers/llm.md`.
 //!
 //! Streaming runs on a plain OS thread (the
 //! [`ReplySource::spawn`](crate::stream::ReplySource::spawn) contract), so
@@ -70,7 +70,7 @@ pub use tool_arguments::ToolArguments;
 /// One message in a chat-completion request.
 ///
 /// The base shape is `{role, content}`; two optional fields carry the
-/// tool-calling turn (see `docs/tools.md`), both `skip_serializing_if`-guarded
+/// tool-calling turn (see `docs/tools/tools.md`), both `skip_serializing_if`-guarded
 /// so an ordinary system/user/assistant message serializes byte-for-byte as
 /// before:
 /// - `tool_calls` — on an **assistant** message, the function calls the model
@@ -128,7 +128,7 @@ impl ToolCallSpec {
 /// parts array a vision request uses (text + `data:`-URL images). `untagged`
 /// so `Text` serializes as a bare JSON string — the shape every
 /// OpenAI-compatible endpoint accepts — and only image-carrying messages pay
-/// the array form. See `docs/context.md`.
+/// the array form. See `docs/architecture/context.md`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(untagged)]
 pub enum MessageContent {
@@ -143,7 +143,7 @@ pub enum MessageContent {
 pub enum ContentPart {
     Text {
         text: String,
-        /// A prompt-caching breakpoint (`docs/prompt-caching.md`), set on the
+        /// A prompt-caching breakpoint (`docs/providers/prompt-caching.md`), set on the
         /// round's copy of the messages by [`cache::apply_cache_breakpoints`]
         /// for the models that need one; absent — and unserialized — on
         /// every other part.
@@ -172,7 +172,7 @@ impl CacheControl {
 /// the attachment is embedded, never fetched — held by reference: it is the
 /// session's one encoding of the picture ([`AttachmentUrl`]), which every
 /// copy of the messages shares rather than duplicating megabytes of base64
-/// per round (`docs/memory.md`).
+/// per round (`docs/architecture/memory.md`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ImageUrl {
     pub url: AttachmentUrl,
@@ -219,7 +219,7 @@ impl ChatMessage {
 
     /// An assistant message that requested tool calls (its `content` may be
     /// empty when the model only called tools). Echoed back so the provider
-    /// can pair each `role:"tool"` result to its call (see `docs/tools.md`).
+    /// can pair each `role:"tool"` result to its call (see `docs/tools/tools.md`).
     #[must_use]
     pub fn assistant_tool_calls(text: impl Into<String>, tool_calls: Vec<ToolCallSpec>) -> Self {
         Self {
@@ -268,7 +268,7 @@ pub enum LlmError {
     /// resolve, the TCP connect was refused or timed out, the TLS handshake
     /// failed, or the proxy in front of it could not be reached. The machine
     /// is offline, or the host is — and the retry policy *waits* for it
-    /// rather than spending its bounded budget (`docs/offline.md`). `host` is
+    /// rather than spending its bounded budget (`docs/providers/offline.md`). `host` is
     /// the host (and non-default port) the request was for; `message` the
     /// transport's own account, cause chain included.
     Unreachable { host: String, message: String },
@@ -318,7 +318,7 @@ impl LlmError {
     /// carry the error's **whole cause chain**: `reqwest`'s own `Display` stops
     /// at `error sending request for url (…)`, and the part a user can act on
     /// (`Connection refused`, `failed to lookup address information`) is two
-    /// sources down. See `docs/offline.md`.
+    /// sources down. See `docs/providers/offline.md`.
     ///
     /// [`Unreachable`]: LlmError::Unreachable
     /// [`Http`]: LlmError::Http
@@ -346,7 +346,7 @@ impl LlmError {
 /// `host[:port]` for a request URL — the port only when the URL names one
 /// explicitly (`127.0.0.1:11434`), since `api.venice.ai:443` would say
 /// nothing the scheme does not. What the status line's `No connection to …`
-/// row names (`docs/offline.md`).
+/// row names (`docs/providers/offline.md`).
 pub(crate) fn host_label(url: &reqwest::Url) -> String {
     let host = url.host_str().unwrap_or("the provider");
     match url.port() {
@@ -546,7 +546,7 @@ mod tests {
     fn cloning_a_message_shares_its_image_bytes() {
         // A turn's request is built from a copy of the conversation and every
         // agentic round copies it again: an attachment's megabytes of base64
-        // must ride those copies by reference (`docs/memory.md`).
+        // must ride those copies by reference (`docs/architecture/memory.md`).
         let msg = ChatMessage::with_parts(
             "user",
             vec![
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(truncate_chars("hello", 3), "hel…");
     }
 
-    // --- a lost connection (`docs/offline.md`) -----------------------------
+    // --- a lost connection (`docs/providers/offline.md`) -----------------------------
 
     #[test]
     fn an_unreachable_host_displays_as_could_not_reach_it() {
@@ -814,7 +814,7 @@ mod tests {
         // A reqwest error that is not about connecting — here an unsupported
         // scheme, which fails before any socket is opened — keeps the old
         // `Http` shape, so only a connection that cannot be made waits for
-        // one (`docs/offline.md`).
+        // one (`docs/providers/offline.md`).
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
             .build()

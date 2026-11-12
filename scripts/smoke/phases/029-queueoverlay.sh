@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the QUEUE follows into the Ctrl+O overlay (docs/queue.md). While
+# the QUEUE follows into the Ctrl+O overlay (docs/input/queue.md). While
 # turn 1 streams, a message queued mid-turn shows in the transcript view as the
 # inline strip's inset "  ❯ world" row; when the turn reaches its next round
 # boundary UNDER the overlay it takes the message right there (the loop keeps

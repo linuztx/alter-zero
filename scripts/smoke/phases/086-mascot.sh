@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/mascot` picker (docs/mascot.md). The `/theme`
+# the `/mascot` picker (docs/ui/mascot.md). The `/theme`
 # picker's layout over the mascot catalog with a LIVE banner preview: a
 # title over a dim subtitle, the rows' `→` under the search line's `❯` over a
 # five-row window and its counter, the highlighted mascot previewed through
@@ -75,7 +75,7 @@ submit "$S86" "/quit"
 sleep 0.6
 tmux kill-session -t "$S86" 2>/dev/null
 # The persistence half: a fresh process against the same config home boots
-# with sprout in the banner (the bootstrap seed, docs/mascot.md).
+# with sprout in the banner (the bootstrap seed, docs/ui/mascot.md).
 tmux new-session -d -s "$S86" -x 80 -y 30 "$APP_MASCOT"
 sleep 0.8
 mascot_relaunch="$(tmux capture-pane -t "$S86" -p)"

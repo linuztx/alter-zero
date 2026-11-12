@@ -1,6 +1,6 @@
 //! A `write` streaming into its cell must cost memory in proportion to what
 //! the cell **shows** — its first and newest ten lines — not to the file it
-//! is writing (`docs/write-streaming.md`, `docs/memory.md`).
+//! is writing (`docs/ui/write-streaming.md`, `docs/architecture/memory.md`).
 //!
 //! The preview used to keep every line it had coloured: about 0.9 KB of
 //! styled segments a line, ~19 times the file, for as long as the call was

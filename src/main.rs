@@ -3,8 +3,8 @@
 //! This binary does four things and delegates the rest: run the detached-exec
 //! hook, resolve the CLI arguments, open the inline viewport, and run the event
 //! loop — or, with `-p`, run the same session headless, with no viewport at all
-//! (`docs/headless.md`). Everything it drives lives in [`tui`] — one module per area, the way
-//! `app/` and `ui/` are split (see `docs/module-layout.md`) — and the real logic
+//! (`docs/cli/headless.md`). Everything it drives lives in [`tui`] — one module per area, the way
+//! `app/` and `ui/` are split (see `docs/architecture/module-layout.md`) — and the real logic
 //! lives in the library, in pure functions the unit tests can reach.
 //!
 //! The order below is not arbitrary. Two rules govern it:
@@ -15,7 +15,7 @@
 //! terminal and `exec` `sh` before it ever touches stdin/stdout or spawns a
 //! thread — the tokio runtime and the cursor query included — or it would boot a
 //! TUI into the caller's pipes and the tty detach would silently break
-//! (`docs/tty-detach.md`).
+//! (`docs/tools/tty-detach.md`).
 //!
 //! **Invariant 1 (stdin):** [`InlineViewport::init`] queries the cursor position
 //! over stdin *once, synchronously*, before any `EventStream` exists (any other
@@ -42,14 +42,14 @@ fn main() -> io::Result<()> {
     alter_zero::subprocess::run_detached_exec_if_requested();
     // --continue/--resume resolve to a rollout *path* here — and a quoted
     // [PROMPT] rides along to become the first turn — before the tokio
-    // runtime and the terminal boot (docs/cli.md): --help/--version and every
+    // runtime and the terminal boot (docs/cli/cli.md): --help/--version and every
     // resolution failure print to normal cooked-mode stdio and exit — no TUI
     // flash, no raw mode to restore.
     let startup = match resolve_cli() {
         Ok(startup) => startup,
         Err(code) => std::process::exit(code),
     };
-    // `-p`: the same session with no screen (docs/headless.md) — no viewport,
+    // `-p`: the same session with no screen (docs/cli/headless.md) — no viewport,
     // no raw mode, no cursor query, no key reader; its exit status is the
     // run's. Every line it wrote was flushed as it went.
     if startup.print.is_some() {
@@ -83,7 +83,7 @@ async fn tui_main(startup: Startup) -> io::Result<()> {
     // Always restore the terminal (raw mode off, cursor below the box), even if
     // the loop bailed out with an I/O error — then surface the first error.
     let restored = term.restore();
-    // The exit hint (docs/cli.md): printed AFTER restore so its two lines land
+    // The exit hint (docs/cli/cli.md): printed AFTER restore so its two lines land
     // below the box in normal terminal flow — only when the session recorded a
     // conversation (`run` returns the active rollout's id then), echoing the
     // bin name the user actually invoked (`argv[0]`'s basename).

@@ -1,6 +1,6 @@
 //! The mid-turn queue's **delivery seam**: messages the user submitted while a
 //! turn was already running, waiting to be folded into that turn's context at
-//! its next round boundary. See `docs/queue.md`.
+//! its next round boundary. See `docs/input/queue.md`.
 //!
 //! One type, shared by both sides of the app, which is the point: the main
 //! session's queue and a subagent session's queue are the *same* mechanism

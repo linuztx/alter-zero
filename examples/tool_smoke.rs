@@ -47,7 +47,7 @@ fn main() {
             api_base: None,
             // The production shape (main.rs::session_cache_key): a per-process
             // affinity key so multi-round turns pin to one warm cache
-            // (docs/prompt-caching.md).
+            // (docs/providers/prompt-caching.md).
             cache_key: Some(format!("tool-smoke-{}", std::process::id())),
             service_tier: None,
         })
@@ -55,7 +55,7 @@ fn main() {
 
     println!("== model: {model} ==\n== prompt: {prompt}\n");
 
-    // The subagent registry (docs/agent-tool.md): enables the `agent` tool and
+    // The subagent registry (docs/agents/agent-tool.md): enables the `agent` tool and
     // prints each subagent's events dim, tagged by id, from a drain thread.
     let (agent_tx, mut agent_rx) = unbounded_channel::<AgentEvent>();
     let agent_registry = AgentRegistry::new(agent_tx);
@@ -99,7 +99,7 @@ fn main() {
             StreamEvent::ToolBackgrounded { id, output, .. } => {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
-            // The round's wire identity (docs/prompt-caching.md): the TUI
+            // The round's wire identity (docs/providers/prompt-caching.md): the TUI
             // stamps its records with it; the harness has none.
             StreamEvent::RoundCalls(_) => {}
             // A task tool call: cell-less in the TUI; the harness just logs it.
@@ -110,7 +110,7 @@ fn main() {
             }
             // This harness builds its backend with no permission gate, so a
             // request — or the auto mode classifier's note — can never
-            // arrive (docs/permissions.md).
+            // arrive (docs/state/permissions.md).
             StreamEvent::Permission(request) => {
                 println!(
                     "\n\x1b[90m[permission requested: {}]\x1b[0m",
@@ -118,14 +118,14 @@ fn main() {
                 );
             }
             // A hook-injected conversation entry / a blocked prompt
-            // (docs/hooks.md): the harness just logs them.
+            // (docs/tools/hooks.md): the harness just logs them.
             StreamEvent::HookNote { label, text, .. } => {
                 println!("\n\x1b[90m[{label}] {text}\x1b[0m");
             }
             StreamEvent::PromptBlocked { reason } => {
                 println!("\n\x1b[90m[prompt blocked by hook: {reason}]\x1b[0m");
             }
-            // …and no ask gate, so the ask tool is not offered (docs/ask.md).
+            // …and no ask gate, so the ask tool is not offered (docs/tools/ask.md).
             StreamEvent::AskUser(request) => {
                 println!(
                     "\n\x1b[90m[user asked {} question(s)]\x1b[0m",
@@ -140,7 +140,7 @@ fn main() {
             }
             StreamEvent::ToolBatch(items) => {
                 // The model requested a batch of calls at once; the TUI shows the
-                // not-yet-run ones as `⎿ Waiting…` (docs/parallel-tools.md).
+                // not-yet-run ones as `⎿ Waiting…` (docs/tools/parallel-tools.md).
                 println!("\n\x1b[90m[batch of {} tool call(s)]\x1b[0m", items.len());
                 for call in &items {
                     println!(
@@ -171,14 +171,14 @@ fn main() {
             }
             StreamEvent::ToolOutput(chunk) => {
                 // Live output streamed while the tool runs — the TUI tails it in
-                // the running cell (docs/tool-streaming.md). Print it dim, inline.
+                // the running cell (docs/ui/tool-streaming.md). Print it dim, inline.
                 print!("\x1b[90m{chunk}\x1b[0m");
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
             }
             StreamEvent::ToolScreen { settled, .. } => {
                 // A terminal-backed command: print what settled; the live rows
-                // are the TUI's to redraw in place (docs/interactive-shell.md).
+                // are the TUI's to redraw in place (docs/tools/interactive-shell.md).
                 print!("\x1b[90m{settled}\x1b[0m");
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
@@ -195,7 +195,7 @@ fn main() {
                 let color = if ok { "\x1b[32m" } else { "\x1b[31m" };
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
                 // How the call ran, as the rollout records it
-                // (docs/rollout-records.md).
+                // (docs/state/rollout-records.md).
                 println!(
                     "{color}  ⎿ ok={ok} truncated={truncated} exit_code={:?} duration_ms={:?} \
                      error_kind={:?}\x1b[0m\n{head}\n  ---",
@@ -208,7 +208,7 @@ fn main() {
                 display, result, ..
             } => {
                 // Refused at the permission prompt: the cell text, then the
-                // longer instruction the model reads (docs/permissions.md).
+                // longer instruction the model reads (docs/state/permissions.md).
                 println!(
                     "\x1b[31m  ⎿ rejected\x1b[0m\n{display}\n  \x1b[90m→ {result}\x1b[0m\n  ---"
                 );
@@ -225,7 +225,7 @@ fn main() {
             StreamEvent::ToolCallDelta(frag) => {
                 // The model is generating a tool call — show the streamed
                 // name/argument fragments dim (the app counts these tokens
-                // and previews a `write` from them, docs/write-streaming.md).
+                // and previews a `write` from them, docs/ui/write-streaming.md).
                 print!("\x1b[90m{}\x1b[0m", frag.tally_text());
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
@@ -237,13 +237,13 @@ fn main() {
                 println!("\x1b[33m[no connection to {host} — waiting, {attempts} attempts]\x1b[0m");
             }
             // A message queued mid-turn, folded in at a round boundary
-            // (docs/queue.md) — this probe queues none, but print it if one
+            // (docs/input/queue.md) — this probe queues none, but print it if one
             // ever arrives rather than swallowing it.
             StreamEvent::Steered { text } => {
                 println!("\x1b[36m[steered] {text}\x1b[0m");
             }
             // A background note the turn read at a round boundary
-            // (docs/background.md) — this probe attaches no registry, but
+            // (docs/tools/background.md) — this probe attaches no registry, but
             // print it if one ever arrives rather than swallowing it.
             StreamEvent::NoticeDelivered { seq } => {
                 println!("\x1b[36m[notice {seq} delivered]\x1b[0m");

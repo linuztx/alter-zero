@@ -1,4 +1,4 @@
-//! The `AskUserQuestion` idle clock's boundary half (`docs/ask.md`): the
+//! The `AskUserQuestion` idle clock's boundary half (`docs/tools/ask.md`): the
 //! instants the pure [`AskTimer`] is read with, and what its readings do.
 //!
 //! A question waits on the user, and the user may be away. Every key press or

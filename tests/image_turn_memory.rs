@@ -1,5 +1,5 @@
 //! A turn that re-sends a pasted picture must cost the process **nothing
-//! picture-sized** beyond the request body itself (`docs/memory.md`, *Every
+//! picture-sized** beyond the request body itself (`docs/architecture/memory.md`, *Every
 //! turn re-sent the picture*).
 //!
 //! An attachment rides every later request, and each of those used to read

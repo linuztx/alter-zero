@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Cline ships two ways in (docs/cline.md): the pasted key Phase 136 drives,
+# Cline ships two ways in (docs/providers/cline.md): the pasted key Phase 136 drives,
 # for Cline's usage-billed models, and **ClinePass** — the subscription — on
 # the ACCOUNT sign-in the Cline extension and CLI run: a WorkOS device code,
 # then a registration with Cline's own API whose refresh token the key store

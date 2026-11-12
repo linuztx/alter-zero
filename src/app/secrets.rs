@@ -1,6 +1,6 @@
 //! The `/secrets` page: the user's secrets listed by placeholder, their
 //! values masked, and the form that adds or edits one. See
-//! `docs/secrets.md`.
+//! `docs/state/secrets.md`.
 //!
 //! A composer-replacing page like `/donate`, but one that takes text: the
 //! form's three fields are its own — never [`App::input`], which a modal
@@ -13,7 +13,7 @@
 //! message, a `!` command or an answer reaches the conversation as its
 //! placeholder ([`App::redact_typed`]), through the [`SecretRedactor`] the
 //! boundary hands over — which can take a value out of text and nothing
-//! more (`docs/secrets.md` *What the user types*).
+//! more (`docs/state/secrets.md` *What the user types*).
 
 use std::borrow::Cow;
 
@@ -217,7 +217,7 @@ impl App {
     /// Hand over the redacting half of the session's secrets (the boundary,
     /// once at startup): from then on a stored value the user types reaches
     /// the conversation as its placeholder. It shares the store, so a later
-    /// save or delete needs no second call. See `docs/secrets.md` *What the
+    /// save or delete needs no second call. See `docs/state/secrets.md` *What the
     /// user types*.
     pub fn set_secret_redactor(&mut self, redactor: SecretRedactor) {
         self.secret_redactor = redactor;

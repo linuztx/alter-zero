@@ -1,6 +1,6 @@
 //! The thinking stream: the live reasoning buffer, the [`Reasoning`] cell it
 //! settles into, and the provider's reasoning-token snap.
-//! See `docs/thinking-stream.md`.
+//! See `docs/ui/thinking-stream.md`.
 //!
 //! The chain-of-thought a reasoning model streams used to be counted and
 //! thrown away. It is now kept while the phase runs — previewed in the strip,
@@ -74,7 +74,7 @@ impl App {
     /// into a cell at its end.
     ///
     /// A no-op during a `/compact` turn: that turn is invisible by design
-    /// (`docs/compact.md`), and its summarizer's thinking is not conversation.
+    /// (`docs/architecture/compact.md`), and its summarizer's thinking is not conversation.
     pub fn begin_reasoning(&mut self) {
         if self.compact_buffer.is_some() {
             return;
@@ -147,7 +147,7 @@ impl App {
 /// The pure core of [`App::snap_round_reasoning`], shared with
 /// [`crate::agents::AgentRun`]'s own usage arm — a subagent's thinking cells
 /// live on *its* transcript and need the identical snap
-/// (`docs/agent-view-streaming.md`), and one round's accounting rule copied
+/// (`docs/agents/agent-view-streaming.md`), and one round's accounting rule copied
 /// into two places is one that drifts.
 ///
 /// Defensive about its indices: a history mutation between the recording and

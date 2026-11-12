@@ -1,5 +1,5 @@
 //! Memory probe for what a **turn** costs the process while a pasted picture
-//! stays in the conversation (NOT part of the app; `docs/memory.md`).
+//! stays in the conversation (NOT part of the app; `docs/architecture/memory.md`).
 //!
 //! Every request re-sends the whole context, so an attachment pasted once
 //! rides every later turn: the backend thread used to encode it into a

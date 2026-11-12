@@ -1,5 +1,5 @@
 //! The `/donate` page at the boundary: copying an address
-//! (`docs/donate.md`).
+//! (`docs/ui/donate.md`).
 //!
 //! The pure side already decided *what* to copy — the highlighted
 //! [`DonationAddress`] rides [`Action::CopyDonationAddress`] — and what has
@@ -16,7 +16,7 @@ use super::Session;
 
 impl Session<'_> {
     /// Enter, `c`, or a digit on the `/donate` page: copy the address, and
-    /// say which one. The clipboard I/O is `/copy`'s (`docs/copy.md` —
+    /// say which one. The clipboard I/O is `/copy`'s (`docs/ui/copy.md` —
     /// arboard, with the OSC 52 fallback for a headless, SSH or tmux
     /// session, the native lease held for the app's lifetime); only the
     /// confirmation differs, because "Copied last message" would be a lie

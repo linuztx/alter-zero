@@ -9,8 +9,8 @@
 # The build is the one Cargo.toml documents for a packaged release —
 # `cargo build --profile dist --locked --target T`, the release profile with
 # fat LTO over one codegen unit and no incremental cache: a smaller and faster
-# binary for a longer build (docs/binary-size.md), where the `release` profile
-# keeps a developer's quick incremental rebuild (docs/build-time.md) — and
+# binary for a longer build (docs/ops/binary-size.md), where the `release` profile
+# keeps a developer's quick incremental rebuild (docs/ops/build-time.md) — and
 # the binary lands in dist/ as {name}-v{version}-{target}.tar.gz beside its
 # .sha256 (lib.sh's package_dist). Cross-compiling a Linux GNU target from
 # another Linux CPU needs that target's gcc (for oniguruma's and ring's C
