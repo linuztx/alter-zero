@@ -61,9 +61,10 @@ which Ctrl+V reads the clipboard from.
   a braille track and bouncing off both walls; `/spinner` picks among nine
   styles, the comet's Larson-scanner sweep among them (`docs/spinner.md`,
   `ui::spinner_spans`),
-  then a per-turn whimsical **verb** (`Hatching`, `Spelunking`, …, picked
-  deterministically by a turn counter from a sixty-word catalog held to the
-  rules in `docs/status-indicator.md` *The verb catalog*) whose white text
+  then a per-turn whimsical **verb** (`Hatching`, `Spelunking`, …, walked by
+  a turn counter through a sixty-word catalog held to the rules in
+  `docs/status-indicator.md` *The verb catalog*, from a start the boundary
+  picks at random per session) whose white text
   carries a codex-style **shimmer** — a bright-white raised-cosine band
   sweeping the chars every 2 s
   (`ui::shimmer_spans`, ported from openai/codex) — a

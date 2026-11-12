@@ -91,12 +91,14 @@ release heading when a version is cut.
   `Generating…`.** The word beside the spinner came from a list of ten that
   opened on `Working…` and `Generating…` and later read `Computing…` and
   `Synthesizing…`, words any progress bar prints, and a long turn was back on
-  `Generating…` every five minutes. A session's first turn now opens on
-  `Hatching…`, after the default mascot, and the line walks on through
-  `Percolating…`, `Tinkering…`, `Spelunking…`, `Grepping…`, `Untangling…`,
-  `Soldering…`, `Defragging…` and more, a new word every 30 seconds and with
-  each new turn, so a single turn runs half an hour before a word comes round
-  again. The summary still names the verb you watched
+  `Generating…` every five minutes, and every session opened on the same
+  word. Each session now opens on a verb picked at random, and a subagent's
+  view and the `/spinner` preview open on that same one. From there the
+  line walks on through words like `Percolating…`, `Tinkering…`,
+  `Spelunking…`, `Grepping…`, `Untangling…`, `Soldering…` and `Defragging…`,
+  a new word every 30 seconds and with each new turn, so a single turn runs
+  half an hour before a word comes round again. `ALTER_ZERO_FIRST_VERB`
+  pins the first word for a run. The summary still names the verb you watched
   (`Spelunked for 3m 2s`). None of the words is one the screen already uses
   for something else, such as `Running…`, `Waiting…` or `Thinking…`, and
   conversations recorded before this change resume with their summaries as

@@ -31,18 +31,20 @@ use super::*;
 use crate::app::{Spinner, SpinnerRow, StatusVerb};
 
 /// The sample the preview renders: a just-submitted **first** turn's status
-/// — the first status verb, no tokens yet — at `elapsed` since the picker
-/// opened, so the line reads `0s` when the page appears and counts up while
-/// the user browses, moving on to the next verb every
+/// — opening on the session's first verb (`first_verb`, its random pick,
+/// [`App::first_status_verb`](crate::app::App::first_status_verb)), no
+/// tokens yet — at `elapsed` since the picker opened, so the line reads `0s`
+/// when the page appears and counts up while the user browses, moving on to
+/// the next verb every
 /// [`VERB_ROTATION`](crate::app::VERB_ROTATION) as a real turn's line does.
 /// The comet's sweep and the verb's shimmer take their phase from the same
 /// value, exactly as a real turn's do.
-fn sample_status(elapsed: Duration) -> TurnStatus {
-    let verb = StatusVerb::at(StatusVerb::rotated(0, elapsed));
+fn sample_status(first_verb: usize, elapsed: Duration) -> TurnStatus {
+    let verb = StatusVerb::at(StatusVerb::rotated(first_verb, elapsed));
     TurnStatus {
         verb: verb.working,
         done_verb: verb.done,
-        rotates_from: Some(0),
+        rotates_from: Some(first_verb),
         tokens: 0,
         arrow: TokenArrow::Down,
         elapsed,
@@ -175,10 +177,15 @@ fn list_lines(
 
 /// The preview for `spinner` at `width`: the caption ([`caption_lines`] —
 /// the style's name in bold over its description in the frame's dim), a
-/// gap, and the sample status line at `elapsed`, through the status line's
-/// own renderer at `width` (it clamps itself with a dim `…` on a narrow
-/// terminal, exactly as the real one does).
-fn preview_lines(spinner: Spinner, elapsed: Duration, width: u16) -> Vec<Line<'static>> {
+/// gap, and the sample status line opening on `first_verb` at `elapsed`,
+/// through the status line's own renderer at `width` (it clamps itself with
+/// a dim `…` on a narrow terminal, exactly as the real one does).
+fn preview_lines(
+    spinner: Spinner,
+    first_verb: usize,
+    elapsed: Duration,
+    width: u16,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::from(caption_lines(
         &capitalized(spinner.name()),
         spinner.description(),
@@ -186,7 +193,7 @@ fn preview_lines(spinner: Spinner, elapsed: Duration, width: u16) -> Vec<Line<'s
     ));
     lines.push(Line::default());
     lines.push(styled_status_line(
-        &sample_status(elapsed),
+        &sample_status(first_verb, elapsed),
         None,
         spinner,
         width,
@@ -224,6 +231,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16, height: u16) -> Vec<Line
     };
     let rows = app.spinner_rows();
     let elapsed = app.spinner_preview_elapsed();
+    let first_verb = app.first_status_verb();
     let header = picker_header(SPINNER_TITLE, SPINNER_SUBTITLE, width);
     let search = search_line(&picker.query);
     let hint = model_placeholder_row(SPINNER_HINT, model_meta_color(), width);
@@ -260,7 +268,7 @@ pub(super) fn spinner_view_lines(app: &App, width: u16, height: u16) -> Vec<Line
         page(layout().body(
             width,
             &|column_width| list_lines(&rows, selected, elapsed, width, column_width),
-            &|preview_width| preview_lines(spinner, elapsed, preview_width),
+            &|preview_width| preview_lines(spinner, first_verb, elapsed, preview_width),
         ))
     };
     let window = |max| spinner_window(&rows, selected, max, elapsed, width);

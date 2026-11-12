@@ -480,6 +480,18 @@ fn the_preview_walks_the_verbs_like_a_first_turn() {
 }
 
 #[test]
+fn the_preview_opens_on_the_sessions_first_verb() {
+    // The sample is a first turn's line, and a session's first turn opens on
+    // its random first verb (docs/status-indicator.md *The verb catalog*).
+    let mut app = with_session();
+    app.seed_status_verbs(9);
+    app.open_spinner_picker();
+    let live = format!("{}… (0s · esc to interrupt)", STATUS_VERBS[9].working);
+    let texts = texts(&app, WIDE);
+    assert!(texts.iter().any(|t| t.contains(&live)), "{texts:#?}");
+}
+
+#[test]
 fn every_verb_reads_whole_in_the_preview_on_a_standard_terminal() {
     // Browsing long enough walks the sample through the whole table, so
     // every word in it is one an 80-column terminal's preview column shows —

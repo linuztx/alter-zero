@@ -353,9 +353,11 @@ Percolated for 52s                                                   (the verb i
   come from the boundary's own end-of-turn clock: a turn that ends a few
   milliseconds past a rotation no frame drew still settles on the verb the
   last frame wore (`the_summary_names_the_verb_the_last_frame_drew`).
-- **The walk continues across turns.** `App::verb_cursor` is always one past
-  the last verb a line wore — `begin_stream` and every rotation move it — so
-  the next turn opens on a fresh verb, never the one the summary above it just
+- **The walk starts somewhere random and continues across turns.** A
+  session's first turn opens on a verb picked at random at startup (*The
+  verb catalog* below). From there `App::verb_cursor` is always one past the
+  last verb a line wore — `begin_stream` and every rotation move it — so the
+  next turn opens on a fresh verb, never the one the summary above it just
   named, whichever way the turn ended (an interrupt or an error included,
   since the cursor moves with the line, not at a turn-end site).
 - **Fixed verbs stay fixed.** A `!` shell's `Running…` (whose status line is
@@ -372,11 +374,13 @@ Percolated for 52s                                                   (the verb i
   `AgentRun::rotate_verb`), never the freeze the boundary applies as each
   agent event lands (`App::freeze_agent_runtime`, which pins the exact elapsed
   a settle records): only a drawn frame moves the verb, so the agent's
-  `{verb} for Ns` summary names the verb its view showed. A chat continuation
-  opens one verb past the last, like a new main turn.
+  `{verb} for Ns` summary names the verb its view showed. An agent's first
+  turn opens on the session's own first verb (`AgentRun::with_first_verb`,
+  given `App::first_status_verb` at the launch); a chat continuation opens
+  one verb past the last, like a new main turn.
 - **The `/spinner` picker's sample line** is a first turn's line, so it opens
-  on the first verb and walks the table the same way while the user browses
-  (`docs/spinner.md`).
+  on the session's first verb and walks the table the same way while the
+  user browses (`docs/spinner.md`).
 - **Old rollouts read as they were recorded.** Summaries written before the
   pairing (`Done`, `Finished`, `Completed`, `Wrapped up`, `Ready`) still load
   as their own statics (`session::LEGACY_DONE_VERBS`), and so do the past
@@ -389,7 +393,7 @@ Percolated for 52s                                                   (the verb i
 The line's word is there to give the wait some character, and for a long
 time it did not have much. The table had ten entries and opened on
 `Working…`, then `Generating…`, with `Computing…` and `Synthesizing…` further
-down — words any progress bar prints — and the walk restarts at the top every
+down — words any progress bar prints — and the walk restarted at the top every
 session, so the two blandest words were the two every session showed first.
 Ten entries at one per 30 s also meant a long turn came back to `Generating…`
 every five minutes.
@@ -429,27 +433,45 @@ them:
   the receipt either — no `Caching`, whose `Cached for 12s · 3k tokens (2k
   cached)` would say one word twice in two senses.
 
-The table **opens on `Hatching`**: the default mascot is a crested hatchling
-(`docs/mascot.md`), and the first entry is the one every session's first
-turn, every agent's first turn and the `/spinner` preview show — so it is the
-word most people will see most often, and it is this app's own. From there it
-walks a handful of themes in turn so neighbours differ: the mascots
-(`Sprouting`, `Skittering`, `Blooming`, `Glimmering`, `Shimmering` — the last
-one the verb's own shimmer), the kitchen (`Percolating`, `Simmering`,
-`Marinating`, `Fermenting`, …), the workshop (`Tinkering`, `Whittling`,
-`Soldering`, `Tempering`, …), the expedition (`Spelunking`, `Foraging`,
-`Sleuthing`, `Excavating`, …), the study (`Pondering`, `Mulling`,
-`Cogitating`, `Noodling`, …), the alchemist's bench (`Conjuring`,
-`Transmuting`, `Alchemizing`, `Divining`, …), the terminal (`Grepping`,
-`Defragging`, `Overclocking`), the ranch (`Wrangling`, `Herding`,
-`Galloping`) and the bandstand (`Riffing`, `Harmonizing`).
+**The order walks a handful of themes in turn** so neighbours differ: the
+mascots (`Hatching`, `Sprouting`, `Skittering`, `Blooming`, `Glimmering`,
+`Shimmering` — the last one the verb's own shimmer), the kitchen
+(`Percolating`, `Simmering`, `Marinating`, `Fermenting`, …), the workshop
+(`Tinkering`, `Whittling`, `Soldering`, `Tempering`, …), the expedition
+(`Spelunking`, `Foraging`, `Sleuthing`, `Excavating`, …), the study
+(`Pondering`, `Mulling`, `Cogitating`, `Noodling`, …), the alchemist's bench
+(`Conjuring`, `Transmuting`, `Alchemizing`, `Divining`, …), the terminal
+(`Grepping`, `Defragging`, `Overclocking`), the ranch (`Wrangling`,
+`Herding`, `Galloping`) and the bandstand (`Riffing`, `Harmonizing`).
 
-What did **not** change: the walk is still deterministic and still restarts
-at the top of the table each session — no RNG, so the tests and the smoke
-suite know which word each turn wears — and `VERB_ROTATION` is still 30 s.
-The six verbs the old table had that already had some character (`Pondering`,
-`Cooking`, `Brewing`, `Crunching`, `Conjuring`, `Churning`) stay; the four it
-drops restore from old rollouts by value (`session::RETIRED_STATUS_VERBS`). The
+**A session opens on a random verb.** The table's first entry is
+`Hatching`, after the default mascot, a crested hatchling
+(`docs/mascot.md`), but a session does not start there. Starting there made
+`Hatching…` the one word every session's first turn, every agent's first
+turn and the `/spinner` preview showed, launch after launch, which is the
+monotony the catalog exists to end. So the boundary picks the session's
+first verb at startup (`tui::bootstrap`: eight bytes from the OS entropy
+source, `tui::host::random_bytes`, through the pure
+`StatusVerb::opening_index`) and seeds the walk with it
+(`App::seed_status_verbs`, the `App::seed_tips` pattern). A session's first
+turn opens there, and so do every agent's first turn
+(`AgentRun::with_first_verb`, given `App::first_status_verb` at the launch)
+and the `/spinner` preview's sample line: one pick per session, shared, so
+"the session's first verb" is one fact everywhere rather than three. The
+order stays fixed; the random start only chooses where the walk begins, so
+every verb still comes round before any repeats.
+
+**Randomness stays at the boundary.** The pure core never draws a random
+number: it takes the start as a seed, and an `App` nobody seeds (every unit
+test) opens on the table's first entry, so the tests still know which word
+each turn wears. `ALTER_ZERO_FIRST_VERB` pins the start for a run by name
+(the verb's live form, in any case; a name the table does not hold is no
+pin), which is how the smoke suite keeps its phases deterministic.
+
+**What did not change.** `VERB_ROTATION` is still 30 s. The six verbs the
+old table had that already had some character (`Pondering`, `Cooking`,
+`Brewing`, `Crunching`, `Conjuring`, `Churning`) stay; the four it drops
+restore from old rollouts by value (`session::RETIRED_STATUS_VERBS`). The
 agent tree's `⎿ Working…` row is not a status verb — it is a subagent's
 activity before its first call (`docs/agent-tool.md`) — and is unchanged.
 
@@ -457,9 +479,12 @@ activity before its first call (`docs/agent-tool.md`) — and is unchanged.
 `scripts/smoke/lib.sh` and the three standalone scripts) names every past
 tense, `SUMMARY_TURN1`…`3` a launch's first three, and `VERB_TURN1` the live
 word a launch, an agent and the `/spinner` preview open on (the phases that
-find the status line by its word write `"${VERB_TURN1}…"`). All of them are
-pinned by `the_smoke_scripts_summary_patterns_follow_the_verb_table`, which
-names the exact line to paste when the table changes.
+find the status line by its word write `"${VERB_TURN1}…"`). They hold only
+because `lib.sh` exports `ALTER_ZERO_FIRST_VERB="$VERB_TURN1"` (and spells it
+out in every launch string), pinning the suite's walk to the table's first
+entry. All of it is pinned by
+`the_smoke_scripts_summary_patterns_follow_the_verb_table`, which names the
+exact line to paste when the table changes.
 
 ## The shimmer wave (ported from openai/codex)
 

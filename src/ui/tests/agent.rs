@@ -833,6 +833,33 @@ fn an_agent_views_status_verb_rotates_with_its_runtime() {
 }
 
 #[test]
+fn an_agent_opens_on_the_sessions_first_verb() {
+    // The session's random first verb is every agent's opener too, so a
+    // subagent's view no longer always reads the table's first word
+    // (docs/status-indicator.md *The verb catalog*) — even launched after
+    // the main walk has moved on.
+    let mut app = App::new();
+    app.seed_status_verbs(9);
+    app.begin_stream();
+    app.set_status_times(Duration::from_secs(95), None);
+    app.start_agent_group(false, &[spec("a1", "Rotate", false)]);
+    assert_eq!(
+        agent_view_verbs(&app, "a1"),
+        (STATUS_VERBS[9].working, STATUS_VERBS[9].done)
+    );
+}
+
+#[test]
+fn an_agent_rebuilt_on_its_prompt_opens_on_the_sessions_first_verb() {
+    // A resumed agent whose transcript was let go is rebuilt on its prompt
+    // — a fresh run, so a fresh run's opener.
+    let mut app = App::new();
+    app.seed_status_verbs(9);
+    app.resume_agent("a9", "Rebuilt", "general-purpose", "the task");
+    assert_eq!(agent_view_verbs(&app, "a9").0, STATUS_VERBS[9].working);
+}
+
+#[test]
 fn an_agent_turns_summary_names_the_verb_its_view_wore() {
     use crate::stream::StreamEvent;
     let mut app = App::new();

@@ -250,9 +250,10 @@ pub struct AgentRun {
     /// pattern). Frozen at its final value once the agent settles.
     pub runtime: Duration,
     /// The [`crate::app::STATUS_VERBS`] index this turn's session-view
-    /// status line opened on: the table's first verb for the agent's first
-    /// turn, one past the last verb a turn wore for each continuation
-    /// ([`reopen`](Self::reopen)) — the main session's walk, per agent.
+    /// status line opened on: the session's first verb for the agent's first
+    /// turn ([`with_first_verb`](Self::with_first_verb)), one past the last
+    /// verb a turn wore for each continuation ([`reopen`](Self::reopen)) —
+    /// the main session's walk, per agent.
     verb_start: usize,
     /// The index of the verb that line wears now — moved on every
     /// [`crate::app::VERB_ROTATION`] of runtime by the per-frame injection
@@ -406,6 +407,17 @@ impl AgentRun {
         self.call_id = call_id;
         self.arguments = arguments;
         self.position = position;
+        self
+    }
+
+    /// Open the session view's verb walk on `verb` — the session's own first
+    /// verb ([`crate::app::App::first_status_verb`]), so an agent's line
+    /// starts where a new session's does rather than always on the table's
+    /// first word (`docs/status-indicator.md` *The verb catalog*).
+    #[must_use]
+    pub const fn with_first_verb(mut self, verb: usize) -> Self {
+        self.verb_start = verb;
+        self.verb_index = verb;
         self
     }
 

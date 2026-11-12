@@ -181,8 +181,9 @@ navigation — plus the thing a spinner picker exists for: the page is
   `/model` picker's green `✓` after its spinner, and the open seats the
   highlight on it.
 - **The highlighted style previews as a whole status line** — a sample
-  `TurnStatus` (a first turn's: the first status verb, no tokens yet, the
-  verb walking on every 30 s like a real turn's — `docs/status-indicator.md`)
+  `TurnStatus` (a first turn's: the session's first status verb — its
+  random pick, `App::first_status_verb` — no tokens yet, the verb walking on
+  every 30 s like a real turn's — `docs/status-indicator.md`)
   through `ui::styled_status_line`, the *same* renderer the strip's status
   row uses, so what the picker shows and what a turn shows can never
   disagree. Its elapsed is the frame clock **measured from the open**

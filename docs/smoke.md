@@ -165,9 +165,13 @@ turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Hatched`,
 `Percolated`, `Tinkered`, … in order while each stays under 30s — and a phase
 that finds the live status line by its word writes `"${VERB_TURN1}…"`, the
 word a launch's first turn, an agent's and the `/spinner` preview open on.
+A real session opens on a random verb, so the lib pins the suite's first one
+to `VERB_TURN1` (`ALTER_ZERO_FIRST_VERB`, exported and in every launch
+string) — a phase that builds its own launch string inherits the export.
 `app::tests::turn` pins the pattern, its copies in the standalone scripts,
-the per-turn names and `VERB_TURN1` to the verb table, so a verb added,
-dropped or reordered fails `cargo test` rather than a smoke run.
+the per-turn names, `VERB_TURN1` and that export to the verb table, so a
+verb added, dropped or reordered fails `cargo test` rather than a smoke
+run.
 
 A slash-palette row opens on the selection's `→ ` marker or the two-space
 inset every other row wears, so a phase finds one by `PALETTE_ROW`

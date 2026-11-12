@@ -665,15 +665,27 @@ pub struct App {
     /// [`begin_stream`]: App::begin_stream
     /// Private: read through [`status`](App::status).
     status: Option<TurnStatus>,
-    /// The [`STATUS_VERBS`] index the next turn's status line opens on — one
-    /// past the last verb a line wore, so the walk never repeats the verb the
-    /// previous summary just named. Advanced by [`begin_stream`] and by every
-    /// verb rotation ([`set_status_times`]); a fixed-verb turn (`!` shell,
-    /// `/compact`) leaves it alone.
+    /// The [`STATUS_VERBS`] index the next turn's status line opens on — the
+    /// session's random first verb until a turn opens ([`first_verb`]), then
+    /// one past the last verb a line wore, so the walk never repeats the verb
+    /// the previous summary just named. Advanced by [`begin_stream`] and by
+    /// every verb rotation ([`set_status_times`]); a fixed-verb turn (`!`
+    /// shell, `/compact`) leaves it alone.
+    ///
+    /// [`first_verb`]: App::first_status_verb
     ///
     /// [`begin_stream`]: App::begin_stream
     /// [`set_status_times`]: App::set_status_times
     verb_cursor: usize,
+    /// The [`STATUS_VERBS`] index this session's walk opens on — the
+    /// boundary's random pick ([`seed_status_verbs`]), `0` until it is made
+    /// (every unit test). A session's first turn, every agent's first turn
+    /// and the `/spinner` preview all open on it, so none of them always
+    /// reads the table's first word (`docs/status-indicator.md` *The verb
+    /// catalog*).
+    ///
+    /// [`seed_status_verbs`]: App::seed_status_verbs
+    first_verb: usize,
     /// The spinner tip walk's position — the [`crate::tips::TIPS`] index the
     /// next tip shown opens on — or `None` while the boundary has not seeded
     /// one ([`seed_tips`](App::seed_tips), from `tips.json`), which is the

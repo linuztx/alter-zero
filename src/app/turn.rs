@@ -30,6 +30,24 @@ impl StatusVerb {
         STATUS_VERBS[index % STATUS_VERBS.len()]
     }
 
+    /// The walk index a session opens on: the verb `pin` names — its live
+    /// form, in any case, spaces trimmed (`ALTER_ZERO_FIRST_VERB`, for a run
+    /// that must know each turn's word) — else the one `entropy` picks, so a
+    /// session's first verb is random rather than always the table's first.
+    /// A name the table does not hold is no pin. The entropy is the
+    /// boundary's; this stays pure (`docs/status-indicator.md` *The verb
+    /// catalog*).
+    #[must_use]
+    pub fn opening_index(pin: Option<&str>, entropy: u64) -> usize {
+        let pinned = pin.map(str::trim).and_then(|name| {
+            STATUS_VERBS
+                .iter()
+                .position(|verb| verb.working.eq_ignore_ascii_case(name))
+        });
+        // `entropy % len < len`, so the narrowing is exact.
+        pinned.unwrap_or((entropy % STATUS_VERBS.len() as u64) as usize)
+    }
+
     /// The walk index a rotating line has reached `elapsed` into a turn that
     /// opened on `start`: one entry further per whole [`VERB_ROTATION`],
     /// wrapped into the table.
@@ -65,12 +83,13 @@ pub const VERB_ROTATION: Duration = Duration::from_secs(30);
 /// something by (`Running`, `Waiting`, `Thinking`); a regular verb, so the
 /// summary is its own past tense; short enough to read whole in an
 /// 80-column terminal's `/spinner` preview; and enough of them that a single
-/// turn runs half an hour before the line comes back to a word. It opens on
-/// `Hatching` — the default mascot is a crested hatchling — which every
-/// session's first turn, every agent's and the `/spinner` preview start on,
-/// and walks a few themes in turn so neighbours differ: the mascots, the
-/// kitchen, the workshop, the expedition, the study, the alchemist's bench,
-/// the terminal, the ranch, the bandstand.
+/// turn runs half an hour before the line comes back to a word. Its first
+/// entry is `Hatching` — the default mascot is a crested hatchling — where an
+/// unseeded walk starts; a session starts wherever the boundary's random pick
+/// puts it ([`App::seed_status_verbs`]), its agents and the `/spinner`
+/// preview with it. The order walks a few themes in turn so neighbours
+/// differ: the mascots, the kitchen, the workshop, the expedition, the
+/// study, the alchemist's bench, the terminal, the ranch, the bandstand.
 pub const STATUS_VERBS: &[StatusVerb] = &[
     StatusVerb::new("Hatching", "Hatched"),
     StatusVerb::new("Percolating", "Percolated"),
@@ -252,6 +271,27 @@ impl App {
                 report,
                 timestamp,
             }));
+    }
+
+    /// Seed the session's verb walk on `start` (wrapped into the table): the
+    /// verb its first turn opens on, and every agent's first turn and the
+    /// `/spinner` preview with it. The boundary calls this once at startup
+    /// with [`StatusVerb::opening_index`]'s pick, the [`seed_tips`] pattern —
+    /// randomness stays out of the core, and an unseeded walk opens on the
+    /// table's first entry (`docs/status-indicator.md` *The verb catalog*).
+    ///
+    /// [`seed_tips`]: App::seed_tips
+    pub fn seed_status_verbs(&mut self, start: usize) {
+        self.first_verb = start % STATUS_VERBS.len();
+        self.verb_cursor = self.first_verb;
+    }
+
+    /// The [`STATUS_VERBS`] index this session's walk opened on
+    /// ([`seed_status_verbs`](App::seed_status_verbs)) — the verb an agent's
+    /// first turn and the `/spinner` preview open on.
+    #[must_use]
+    pub const fn first_status_verb(&self) -> usize {
+        self.first_verb
     }
 
     /// Begin a reply: open an empty streaming buffer so the live region can

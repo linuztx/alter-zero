@@ -1050,8 +1050,9 @@ fn every_status_verb_pairs_with_its_own_past_tense() {
     // as `Cooked for 12s` — and no verb repeats in either form, or a
     // rotation could show the same word twice running
     // (docs/status-indicator.md). The table opens on `Hatching` — the
-    // default mascot is a crested hatchling — which a session's first turn,
-    // an agent's and the /spinner preview all start on.
+    // default mascot is a crested hatchling — where an unseeded walk (every
+    // unit test) and the smoke suite's pinned one start; a real session
+    // starts wherever the boundary's random pick puts it.
     assert_eq!(
         STATUS_VERBS[0],
         StatusVerb {
@@ -1072,6 +1073,54 @@ fn every_status_verb_pairs_with_its_own_past_tense() {
             "{verb:?} appears once"
         );
     }
+}
+
+#[test]
+fn a_seeded_session_opens_its_first_turn_on_the_seeded_verb() {
+    // The boundary picks the session's first verb at random
+    // (docs/status-indicator.md *The verb catalog*), so no two launches need
+    // open on the same word; the walk goes on from it exactly as before,
+    // the next turn one verb further.
+    let mut app = App::new();
+    app.seed_status_verbs(17);
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, STATUS_VERBS[17].working);
+    app.finish_stream();
+    app.end_turn(1);
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, STATUS_VERBS[18].working);
+}
+
+#[test]
+fn a_seed_past_the_table_wraps_into_it() {
+    let mut app = App::new();
+    app.seed_status_verbs(STATUS_VERBS.len() + 3);
+    assert_eq!(app.first_status_verb(), 3);
+    app.begin_stream();
+    assert_eq!(app.status().unwrap().verb, STATUS_VERBS[3].working);
+}
+
+#[test]
+fn the_opening_verb_is_the_pinned_one_else_the_entropys_pick() {
+    // `ALTER_ZERO_FIRST_VERB` names the live form (any case, spaces
+    // trimmed) for a run that must know each turn's word — the smoke suite;
+    // a name the table does not hold is no pin at all.
+    let brewing = STATUS_VERBS
+        .iter()
+        .position(|verb| verb.working == "Brewing")
+        .expect("Brewing is in the table");
+    assert_eq!(StatusVerb::opening_index(Some("Brewing"), 5), brewing);
+    assert_eq!(StatusVerb::opening_index(Some(" brewing "), 5), brewing);
+    assert_eq!(StatusVerb::opening_index(Some("Generating"), 5), 5);
+    assert_eq!(StatusVerb::opening_index(Some(""), 5), 5);
+    assert_eq!(StatusVerb::opening_index(None, 5), 5);
+    // The pick spans the whole table and never overflows.
+    let len = STATUS_VERBS.len();
+    let picks: std::collections::HashSet<usize> = (0..2 * len as u64)
+        .map(|entropy| StatusVerb::opening_index(None, entropy))
+        .collect();
+    assert_eq!(picks.len(), len, "every verb can open a session");
+    assert!(StatusVerb::opening_index(None, u64::MAX) < len);
 }
 
 #[test]
@@ -1153,6 +1202,12 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
     required.push((
         "scripts/smoke/lib.sh",
         format!("VERB_TURN1=\"{}\"", STATUS_VERBS[0].working),
+    ));
+    // A real session opens on a random verb, so all of the above holds only
+    // because the suite pins the first one to VERB_TURN1.
+    required.push((
+        "scripts/smoke/lib.sh",
+        "export ALTER_ZERO_FIRST_VERB=\"$VERB_TURN1\"".to_string(),
     ));
     for (script, line) in required {
         let path = format!("{}/{script}", env!("CARGO_MANIFEST_DIR"));
