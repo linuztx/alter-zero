@@ -363,6 +363,48 @@ struct Task {
     started: std::time::Instant,
 }
 
+impl Task {
+    /// Where a stop request for this task goes — taken under the registry
+    /// lock and carried out after it is let go.
+    fn stop_target(&self) -> StopTarget {
+        match &self.terminal {
+            Some(terminal) => StopTarget::Session {
+                sid: self.pgid,
+                terminal: terminal.try_clone().ok(),
+            },
+            None => StopTarget::Group(self.pgid),
+        }
+    }
+}
+
+/// Where a stop goes ([`BackgroundRegistry::signal`],
+/// [`BackgroundRegistry::kill`]).
+enum StopTarget {
+    /// A pipe task: its process group.
+    Group(u32),
+    /// A TTY session: every process in it. Its terminal (a handle on the
+    /// master) is held for as long as the stop runs, so the name the
+    /// session's processes are found by cannot pass to another terminal
+    /// meanwhile ([`signal_session`]).
+    Session { sid: u32, terminal: Option<File> },
+}
+
+impl StopTarget {
+    fn signal(&self, signal: &str) {
+        match self {
+            Self::Group(pgid) => signal_group(*pgid, signal),
+            Self::Session { sid, terminal } => signal_session(*sid, terminal.as_ref(), signal),
+        }
+    }
+
+    fn kill(&self) {
+        match self {
+            Self::Group(pgid) => kill_group(*pgid),
+            Self::Session { sid, terminal } => kill_session(*sid, terminal.as_ref()),
+        }
+    }
+}
+
 /// What a [`BgEvent::Started`] says about a task.
 #[derive(Clone)]
 struct Launch {
@@ -594,8 +636,9 @@ impl BackgroundRegistry {
     /// Install the terminal-detach helper — the TUI's own binary
     /// (`crate::subprocess`), the fallback tier that keeps a `/dev/tty`
     /// password prompt (`sudo`) failing fast even where the `setsid` binary
-    /// is absent (macOS). Production only (`main.rs` resolves `current_exe`
-    /// once at startup); without it the chain is just shorter.
+    /// is absent (macOS). `main.rs` resolves `current_exe` once at startup,
+    /// and the tests install the binary cargo built beside them; without it
+    /// the chain is just shorter.
     #[must_use]
     pub fn with_detach_helper(mut self, helper: Option<PathBuf>) -> Self {
         self.detach = helper;
@@ -1060,7 +1103,7 @@ impl BackgroundRegistry {
     /// pipe task's process group — and mark it stopped by request, so its
     /// exit reads as a stop, not a failure (`docs/bash-tools.md`).
     pub fn signal(&self, id: &str, signal: &str) {
-        let (pgid, tty) = {
+        let target = {
             let mut inner = self.inner.lock().expect("registry lock");
             let Some(task) = inner.tasks.get_mut(id) else {
                 return;
@@ -1069,16 +1112,9 @@ impl BackgroundRegistry {
                 return;
             }
             task.killed = true;
-            (task.pgid, task.input.is_some())
+            task.stop_target()
         };
-        #[cfg(unix)]
-        if tty {
-            signal_session(pgid, signal);
-        } else {
-            signal_group(pgid, signal);
-        }
-        #[cfg(not(unix))]
-        let _ = (pgid, tty, signal);
+        target.signal(signal);
     }
 
     /// Type into a TTY session: `chunks` in order, pausing where a chunk asks
@@ -1218,10 +1254,17 @@ impl BackgroundRegistry {
     }
 
     /// Stop a background task: mark it user-killed and SIGKILL its whole
-    /// process group (synchronously — plus the monitor's kill token as the
-    /// portable backstop). The monitor then reports `Exited {killed: true}`.
+    /// process group — a TTY session's whole session — synchronously, with
+    /// the monitor's kill token as the portable backstop. The monitor then
+    /// reports `Exited {killed: true}`.
+    ///
+    /// The token is tripped only once the kill is done: the monitor answers
+    /// it within a poll by killing the leader's group, and where a session
+    /// is found by its terminal (macOS), a dead leader's session has none —
+    /// a sweep that came after it found nothing, and a shell's jobs in
+    /// process groups of their own lived on.
     pub fn kill(&self, id: &str) {
-        let (pgid, tty) = {
+        let (target, backstop) = {
             let mut inner = self.inner.lock().expect("registry lock");
             let Some(task) = inner.tasks.get_mut(id) else {
                 return;
@@ -1230,19 +1273,18 @@ impl BackgroundRegistry {
                 return;
             }
             task.killed = true;
-            task.kill.cancel();
-            (task.pgid, task.input.is_some())
+            (task.stop_target(), task.kill.clone())
         };
-        kill_group(pgid);
-        if tty {
-            kill_session(pgid);
-        }
+        target.kill();
+        backstop.cancel();
     }
 
     /// Stop every running task — the quit and `/clear` sweep. Synchronous
-    /// (direct group kills), so the quit path can't orphan a `ping`.
+    /// (direct group kills), so the quit path can't orphan a `ping`. Each
+    /// task's kill token is tripped after its kill, as in
+    /// [`kill`](Self::kill).
     pub fn kill_all(&self) {
-        let groups: Vec<(u32, bool)> = {
+        let targets: Vec<(StopTarget, CancelToken)> = {
             let mut inner = self.inner.lock().expect("registry lock");
             inner
                 .tasks
@@ -1250,16 +1292,13 @@ impl BackgroundRegistry {
                 .filter(|task| !task.exited)
                 .map(|task| {
                     task.killed = true;
-                    task.kill.cancel();
-                    (task.pgid, task.input.is_some())
+                    (task.stop_target(), task.kill.clone())
                 })
                 .collect()
         };
-        for (pgid, tty) in groups {
-            kill_group(pgid);
-            if tty {
-                kill_session(pgid);
-            }
+        for (target, backstop) in targets {
+            target.kill();
+            backstop.cancel();
         }
     }
 
@@ -2096,21 +2135,135 @@ fn signal_group(pgid: u32, signal: &str) {
 
 /// SIGKILL everything in the **session** `sid` — a TTY session's jobs, which
 /// an interactive shell puts in process groups of their own, where the group
-/// kill cannot reach them. Best-effort: `pkill -s` where there is one.
+/// kill cannot reach them — and then its leader's group. `terminal` is a
+/// handle on the session's terminal, held by the caller until this returns
+/// ([`signal_session`]).
 #[cfg(unix)]
-fn kill_session(sid: u32) {
-    signal_session(sid, "KILL");
+fn kill_session(sid: u32, terminal: Option<&File>) {
+    let path = terminal.and_then(crate::pty::spawn::terminal_path);
+    kill_session_with(PKILL, sid, path.as_deref().and_then(terminal_name));
+}
+
+/// [`kill_session`] with `pkill` the command run as `pkill`. The session goes
+/// first: where its terminal is what names it (macOS), it does so only while
+/// the leader is alive — a dead leader's session has no terminal — so a
+/// group kill first would leave every other job running.
+#[cfg(unix)]
+fn kill_session_with(pkill: &[&str], sid: u32, terminal: Option<&str>) {
+    signal_session_with(pkill, sid, terminal, "KILL");
+    kill_group(sid);
 }
 
 /// Send `signal` to everything in the **session** `sid` — a stop request
-/// reaching a TTY session's jobs too (`docs/bash-tools.md`). Best-effort:
-/// `pkill -s` where there is one.
+/// reaching a TTY session's jobs too (`docs/bash-tools.md`). `terminal` is a
+/// handle on the session's terminal, which the caller holds until this
+/// returns: while it is open, the name it goes by cannot pass to a terminal
+/// another program opens.
 #[cfg(unix)]
-fn signal_session(sid: u32, signal: &str) {
+fn signal_session(sid: u32, terminal: Option<&File>, signal: &str) {
+    let path = terminal.and_then(crate::pty::spawn::terminal_path);
+    signal_session_with(PKILL, sid, path.as_deref().and_then(terminal_name), signal);
+}
+
+/// The command a stop runs as `pkill` — the one on `PATH`. A test passes a
+/// stand-in to the `_with` forms instead.
+#[cfg(unix)]
+const PKILL: &[&str] = &["pkill"];
+
+/// [`signal_session`] with `pkill` the command run as `pkill`, and the
+/// session's terminal by the name `ps -t` takes (`pts/3`, `ttys003`).
+///
+/// `pkill -s` names the session where `pkill` can: procps, BusyBox and the
+/// BSDs. macOS's cannot — Apple builds it without `-s`, so asked for a
+/// session it exits 2 and signals nothing — and there the session's terminal
+/// names it instead: while the leader lives, every process in the session
+/// has that terminal as its controlling terminal, and no process outside the
+/// session can. `ps -t` lists them ([`terminal_pids`]); macOS's `pkill -t`
+/// would not do, since it matches nothing on macOS 26 though `ps -t` lists
+/// the terminal's processes. Where neither answers (no `pkill`, no `ps`, a
+/// leader already gone), the leader's process group takes the signal. Only
+/// one of the three signals anything, so no process gets the signal twice —
+/// a second `SIGINT` means *force quit* to many programs.
+#[cfg(unix)]
+fn signal_session_with(pkill: &[&str], sid: u32, terminal: Option<&str>, signal: &str) {
+    let named = Command::new(pkill[0])
+        .args(&pkill[1..])
+        .arg(format!("-{signal}"))
+        .args(["-s", &sid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if pkill_answered(named.ok().and_then(|status| status.code())) {
+        return;
+    }
+    if let Some(pids) = terminal.and_then(terminal_pids)
+        && !pids.is_empty()
+    {
+        signal_pids(&pids, signal);
+        return;
+    }
+    signal_group(sid, signal);
+}
+
+/// The name `ps -t` takes for the terminal at `path`: the path under `/dev`
+/// (`pts/3` on Linux, `ttys003` on macOS). `None` for a path outside it,
+/// which no `ps` resolves.
+#[cfg(unix)]
+fn terminal_name(path: &std::path::Path) -> Option<&str> {
+    path.strip_prefix("/dev")
+        .ok()?
+        .to_str()
+        .filter(|name| !name.is_empty())
+}
+
+/// The processes whose controlling terminal is `terminal` (its
+/// [`terminal_name`]) — every process of its session, while the session's
+/// leader lives — as `ps -t` lists them: the kernel's own filter, which
+/// procps and macOS answer alike. `None` when `ps` cannot say, or lists
+/// nothing it could match.
+#[cfg(unix)]
+fn terminal_pids(terminal: &str) -> Option<Vec<u32>> {
+    let listing = Command::new("ps")
+        .args(["-t", terminal, "-o", "pid="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    listing
+        .status
+        .success()
+        .then(|| listed_pids(&String::from_utf8_lossy(&listing.stdout)))
+}
+
+/// The process ids a `ps -o pid=` listing names, one a line.
+#[cfg(unix)]
+fn listed_pids(listing: &str) -> Vec<u32> {
+    listing
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+/// Send `signal` (a name `kill -s` takes) to each of `pids` — the shell's
+/// `kill`, as [`signal_group`] sends it. A process that has exited since it
+/// was listed is skipped by `kill` and does not stop the rest.
+#[cfg(unix)]
+fn signal_pids(pids: &[u32], signal: &str) {
     let _ = Command::new("sh")
         .arg("-c")
-        .arg(format!("pkill -{signal} -s {sid} 2>/dev/null"))
+        .arg(format!("kill -{signal} \"$@\" 2>/dev/null"))
+        .arg("sh")
+        .args(pids.iter().map(u32::to_string))
         .status();
+}
+
+/// Did `pkill` take the request — signal what matched (exit 0), or find
+/// nothing to signal (1)? Anything else leaves it undone: a usage error (2 —
+/// macOS's `pkill` asked for `-s`), a failure (3), or no `pkill` to run.
+#[cfg(unix)]
+fn pkill_answered(code: Option<i32>) -> bool {
+    matches!(code, Some(0 | 1))
 }
 
 /// Non-unix fallback: no process groups — the monitor's own `child.kill()`
@@ -2124,7 +2277,11 @@ fn signal_group(_pgid: u32, _signal: &str) {}
 
 /// Non-unix fallback: no sessions to sweep.
 #[cfg(not(unix))]
-fn kill_session(_sid: u32) {}
+fn kill_session(_sid: u32, _terminal: Option<&File>) {}
+
+/// Non-unix fallback: no sessions to signal.
+#[cfg(not(unix))]
+fn signal_session(_sid: u32, _terminal: Option<&File>, _signal: &str) {}
 
 #[cfg(test)]
 mod tests {
@@ -2143,7 +2300,13 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let dir =
             std::env::temp_dir().join(format!("alter-zero-bg-test-{}-{seq}", std::process::id()));
-        (BackgroundRegistry::new(tx, dir), rx)
+        // The helper `main()` installs, so a terminal session starts where
+        // there is no `setsid` binary too (macOS).
+        let helper = crate::subprocess::test_detach_helper().map(std::path::Path::to_path_buf);
+        (
+            BackgroundRegistry::new(tx, dir).with_detach_helper(helper),
+            rx,
+        )
     }
 
     /// Wait (bounded) for the next event.
@@ -2415,6 +2578,258 @@ mod tests {
             }
         }
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// macOS's `pkill`, as it behaves on macOS 26: no `-s` (Apple builds it
+    /// without one, so asking for a session is a usage error, exit 2, that
+    /// signals nothing), and a `-t` that matches nothing (exit 1) although
+    /// `ps -t` lists the terminal's processes. Anything else is the real
+    /// `pkill`'s. A script for `sh -c`, so there is no file to write and
+    /// then exec.
+    #[cfg(unix)]
+    const SESSIONLESS_PKILL: &[&str] = &[
+        "sh",
+        "-c",
+        "for arg do case $arg in -s) echo 'pkill: illegal option -- s' >&2; exit 2;; \
+         -t) exit 1;; esac; done; exec pkill \"$@\"",
+        "pkill",
+    ];
+
+    /// The output a terminal's master reads, chunk by chunk, until every
+    /// process holding the terminal has let go of it.
+    #[cfg(unix)]
+    fn master_reader(master: &File) -> mpsc::Receiver<Vec<u8>> {
+        let mut master = master.try_clone().expect("clones");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = master.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        rx
+    }
+
+    /// Collect a terminal's output until `done` says it has what it waits for.
+    #[cfg(unix)]
+    fn master_read_until(rx: &mpsc::Receiver<Vec<u8>>, done: impl Fn(&str) -> bool) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut out = Vec::new();
+        while std::time::Instant::now() < deadline && !done(&String::from_utf8_lossy(&out)) {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(chunk) => out.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Is process `pid` gone within `limit` — no such process, or a zombie its
+    /// new parent has yet to reap? Asked of `ps`, which both procps and BSD
+    /// answer the same way: a session whose leader died lets go of its
+    /// terminal on macOS even while a job of its lives on, so a released
+    /// terminal proves nothing there.
+    #[cfg(unix)]
+    fn gone_within(pid: u32, limit: Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            let stat = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+            if stat.is_ok_and(|stat| stat.is_empty() || stat.starts_with('Z')) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    /// Wait up to `limit` for `child` to exit; one that does not is killed.
+    #[cfg(unix)]
+    fn exits_within(child: &mut Child, limit: Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = child.try_wait() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        kill_group(child.id());
+        let _ = child.wait();
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_is_named_by_its_path_under_dev() {
+        use std::path::Path;
+        assert_eq!(terminal_name(Path::new("/dev/pts/3")), Some("pts/3"));
+        assert_eq!(terminal_name(Path::new("/dev/ttys003")), Some("ttys003"));
+        assert_eq!(
+            terminal_name(Path::new("/tmp/pts/3")),
+            None,
+            "no ps resolves a terminal outside /dev"
+        );
+        assert_eq!(terminal_name(Path::new("/dev")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ps_listing_gives_the_pids_it_names() {
+        // One pid a line, however `ps` pads it (procps right-aligns, BSD too).
+        assert_eq!(listed_pids("  1005\n 1007\n1008\n"), vec![1005, 1007, 1008]);
+        assert_eq!(listed_pids(""), Vec::<u32>::new());
+        assert_eq!(
+            listed_pids("  PID\n   12\n"),
+            vec![12],
+            "a header is no pid"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_pkill_that_took_the_request_settles_it() {
+        assert!(pkill_answered(Some(0)), "it signalled what matched");
+        assert!(
+            pkill_answered(Some(1)),
+            "nothing matched: nothing to signal"
+        );
+        assert!(
+            !pkill_answered(Some(2)),
+            "a usage error: macOS's pkill has no -s"
+        );
+        assert!(!pkill_answered(Some(3)), "pkill failed");
+        assert!(!pkill_answered(None), "no pkill ran");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_reaches_a_session_whose_pkill_cannot_name_sessions() {
+        // macOS's `pkill` has no `-s`: asked for a session it exits 2 and
+        // signals nothing, so `bashkill`'s SIGINT and SIGTERM never reached
+        // the command there and every stop was a SIGKILL (issue #4). The
+        // session's terminal names it instead.
+        let marker =
+            std::env::temp_dir().join(format!("alter-zero-stopped-session-{}", std::process::id()));
+        let mut session = crate::pty::spawn::spawn(
+            crate::subprocess::test_detach_helper(),
+            &format!(
+                "trap 'echo cleaned > {}; exit 0' TERM; echo up; while :; do sleep 0.1; done",
+                marker.display()
+            ),
+        )
+        .expect("spawns");
+        let rx = master_reader(&session.master);
+        let out = master_read_until(&rx, |out| out.contains("up"));
+        assert!(out.contains("up"), "{out:?}");
+        let path = crate::pty::spawn::terminal_path(&session.master).expect("a terminal path");
+        signal_session_with(
+            SESSIONLESS_PKILL,
+            session.child.id(),
+            terminal_name(&path),
+            "TERM",
+        );
+        let exited = exits_within(&mut session.child, Duration::from_secs(5));
+        let cleaned = std::fs::read_to_string(&marker).unwrap_or_default();
+        std::fs::remove_file(&marker).ok();
+        assert!(exited, "SIGTERM ended the command");
+        assert_eq!(cleaned.trim(), "cleaned", "and it cleaned up first");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kill_reaches_a_sessions_jobs_where_pkill_cannot_name_sessions() {
+        // A shell with job control gives each job a process group of its own,
+        // out of the group kill's reach: the session sweep is what ends it.
+        // Where `pkill` cannot name a session (macOS), the terminal names it
+        // only while the session's leader still holds it.
+        let mut session = crate::pty::spawn::spawn(
+            crate::subprocess::test_detach_helper(),
+            "set -m; sleep 300 & echo \"job=$!\"; wait",
+        )
+        .expect("spawns");
+        let rx = master_reader(&session.master);
+        let out = master_read_until(&rx, |out| {
+            out.split("job=")
+                .nth(1)
+                .is_some_and(|rest| rest.contains('\n'))
+        });
+        let job = out
+            .split("job=")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .and_then(|pid| pid.trim().parse().ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .expect("the job's pid");
+        let leader = rustix::process::Pid::from_child(&session.child);
+        assert_ne!(
+            rustix::process::getpgid(Some(job)).ok(),
+            Some(leader),
+            "the job has a process group of its own"
+        );
+        let path = crate::pty::spawn::terminal_path(&session.master).expect("a terminal path");
+        kill_session_with(SESSIONLESS_PKILL, session.child.id(), terminal_name(&path));
+        let gone = gone_within(
+            job.as_raw_nonzero().get().unsigned_abs(),
+            Duration::from_secs(5),
+        );
+        if !gone {
+            let _ = rustix::process::kill_process(job, rustix::process::Signal::KILL);
+        }
+        let _ = session.child.wait();
+        assert!(gone, "the job was killed with the session: {out:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_kill_sweeps_the_session_before_the_monitor_ends_its_leader() {
+        // The kill as `bashkill` and the quit sweep make it, monitor and all:
+        // the monitor answers the kill token by ending the leader's group,
+        // and a leader that dies before the sweep takes its session's
+        // terminal with it — on macOS, where the terminal is what names the
+        // session, its jobs then outlived the kill. With `pkill` standing in
+        // as macOS's, this failed 19 runs in 20 before the token was tripped
+        // after the kill.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let job_file = dir.path().join("job");
+        let (reg, _rx) = registry();
+        let task = reg
+            .launch_tty(
+                &format!(
+                    "set -m; sleep 300 & echo $! > '{}'; wait",
+                    job_file.display()
+                ),
+                None,
+                None,
+                true,
+            )
+            .expect("launches")
+            .task;
+        let deadline = std::time::Instant::now() + LONG;
+        let job: u32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&job_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                break pid;
+            }
+            assert!(std::time::Instant::now() < deadline, "the job started");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        reg.kill(&task.id);
+        let gone = gone_within(job, Duration::from_secs(5));
+        if let Some(job) = i32::try_from(job)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .filter(|_| !gone)
+        {
+            let _ = rustix::process::kill_process(job, rustix::process::Signal::KILL);
+        }
+        assert!(gone, "the job was killed with its session");
     }
 
     #[test]
@@ -2856,12 +3271,15 @@ mod tests {
         // reads key by key is still one to tell of (docs/bash-tools.md). A
         // display that holds the terminal key by key but waits on a pipe
         // asks nothing either: its wait, read off its memory, is on no
-        // terminal (`pty::probe`).
+        // terminal (`pty::probe`). Only Linux lets the probe read that;
+        // elsewhere the screen decides alone, and a screen held key by key
+        // is one that asks (docs/interactive-shell.md *Limits*).
         let (reg, mut rx) = registry();
         let display = reg
             .launch_tty(DISPLAY_LOOP, None, None, true)
             .expect("launches")
             .task;
+        #[cfg(target_os = "linux")]
         let raw_display = reg
             .launch_tty(
                 &format!("stty -icanon -echo; {DISPLAY_LOOP}"),
@@ -2885,6 +3303,7 @@ mod tests {
             .collect();
         assert_eq!(waiting, [menu.id.as_str()], "{events:?}");
         assert_ne!(display.id, menu.id);
+        #[cfg(target_os = "linux")]
         assert_ne!(raw_display.id, menu.id);
         reg.kill_all();
     }
@@ -3465,13 +3884,15 @@ mod tests {
         reg.kill_all();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_picker_reading_its_terminal_waits_however_its_line_animated() {
         // A picker that animated its line before asking has the screen of a
         // progress bar — but the kernel sees it blocked reading the
         // terminal (`pty::probe`), and that is the word that counts; typed
-        // into, it redraws and waits again.
+        // into, it redraws and waits again. Linux only: elsewhere there is no
+        // probe, and the screen of a progress bar is all there is to go on
+        // (docs/interactive-shell.md *Limits*).
         let (reg, _rx) = registry();
         let launch = reg
             .launch_tty(

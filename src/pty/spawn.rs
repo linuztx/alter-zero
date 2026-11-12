@@ -247,9 +247,11 @@ impl LineMode {
     }
 }
 
-/// The path of the terminal behind `master` (`/dev/pts/N`) — what a process
-/// holding it shows in `/proc/PID/fd`, for the probe
-/// ([`super::probe::probe`]). `None` when the system will not say.
+/// The path of the terminal behind `master` (`/dev/pts/N`, `/dev/ttysNNN`) —
+/// what a process holding it shows in `/proc/PID/fd`, for the probe
+/// ([`super::probe::probe`]), and the name `ps -t` finds a session's
+/// processes by where `pkill -s` cannot (`crate::background`). `None` when
+/// the system will not say.
 #[cfg(unix)]
 #[must_use]
 pub fn terminal_path(master: &std::fs::File) -> Option<std::path::PathBuf> {
@@ -430,6 +432,7 @@ pub fn spawn(detach_helper: Option<&Path>, command: &str) -> std::io::Result<()>
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::subprocess::test_detach_helper;
     use std::io::{Read, Write};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -468,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_session_gets_a_real_terminal_of_the_session_size() {
-        let mut session = spawn(None, "tty; stty size; echo END").expect("spawns");
+        let mut session = spawn(test_detach_helper(), "tty; stty size; echo END").expect("spawns");
         let rx = reader(&session.master);
         let out = read_until(&rx, "END");
         let _ = session.child.wait();
@@ -486,7 +489,7 @@ mod tests {
         // session's terminal (so the model can answer it), never fail and
         // never reach the TUI's.
         let mut session = spawn(
-            None,
+            test_detach_helper(),
             "printf 'pw: ' > /dev/tty; read p < /dev/tty; echo got-$p",
         )
         .expect("spawns");
@@ -506,7 +509,7 @@ mod tests {
         // terminal still processes output — read off the master, the only
         // side of the terminal the session keeps.
         let mut session = spawn(
-            None,
+            test_detach_helper(),
             "printf 'one? '; read x; stty -icanon -echo; printf 'two> '; read y; \
              stty raw; printf 'three'; sleep 30",
         )
@@ -562,7 +565,8 @@ mod tests {
     #[test]
     fn the_input_queue_counts_what_was_typed_and_not_yet_read() {
         use rustix::fs::{Mode, OFlags};
-        let mut session = spawn(None, "stty raw -echo; echo ready; sleep 5").expect("spawns");
+        let mut session =
+            spawn(test_detach_helper(), "stty raw -echo; echo ready; sleep 5").expect("spawns");
         let rx = reader(&session.master);
         assert!(read_until(&rx, "ready").contains("ready"));
         let queue = InputQueue::of(&session.master).expect("the terminal opens");
@@ -593,7 +597,7 @@ mod tests {
         // foreground process group — a shell at its prompt, the job it
         // started, or what a shell running one command runs (`sh` here does
         // not exec a lone command, and stays the group's leader).
-        let mut session = spawn(None, "echo ready; sleep 30").expect("spawns");
+        let mut session = spawn(test_detach_helper(), "echo ready; sleep 30").expect("spawns");
         let rx = reader(&session.master);
         read_until(&rx, "ready");
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -645,32 +649,47 @@ mod tests {
 
     #[test]
     fn the_session_leads_its_own_group_and_session() {
-        let mut session = spawn(None, "ps -o pid=,pgid=,sid= -p $$; echo END").expect("spawns");
+        // The ids come from the kernel, not `ps`: macOS's `ps` has no session
+        // column (its `sess` is a kernel address, shown as 0).
+        let mut session =
+            spawn(test_detach_helper(), "echo \"shell=$$ ready\"; read _").expect("spawns");
         let rx = reader(&session.master);
-        let out = read_until(&rx, "END");
+        let out = read_until(&rx, "ready");
+        let shell = out
+            .split("shell=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|pid| pid.parse::<u32>().ok());
+        assert_eq!(
+            shell,
+            Some(session.child.id()),
+            "the process spawned is the command's shell: {out:?}"
+        );
+        let pid = rustix::process::Pid::from_child(&session.child);
+        assert_eq!(rustix::process::getpgid(Some(pid)), Ok(pid), "pid == pgid");
+        assert_eq!(rustix::process::getsid(Some(pid)), Ok(pid), "pid == sid");
+        (&session.master).write_all(b"\n").expect("ends the read");
         let _ = session.child.wait();
-        let ids: Vec<&str> = out
-            .lines()
-            .next()
-            .expect("a ps row")
-            .split_whitespace()
-            .collect();
-        let pid = session.child.id().to_string();
-        assert_eq!(ids, vec![pid.as_str(); 3], "pid == pgid == sid: {out:?}");
     }
 
     #[test]
     fn the_exit_status_survives_the_layers() {
-        let mut session = spawn(None, "exit 7").expect("spawns");
+        let mut session = spawn(test_detach_helper(), "exit 7").expect("spawns");
         let _rx = reader(&session.master);
         let status = session.child.wait().expect("waits");
         assert_eq!(status.code(), Some(7));
     }
 
     #[test]
-    fn a_stale_helper_path_falls_back_to_setsid() {
+    fn a_stale_helper_path_falls_through_to_the_next_tier() {
+        // A helper whose file is gone (a rebuild replaced the binary
+        // mid-session) is a tier that is not there: the chain moves on — to
+        // util-linux's `setsid`, or where there is none (macOS) to a helper
+        // that is there.
         let stale = std::path::PathBuf::from("/definitely/not/a/real/helper");
-        let mut session = spawn(Some(&stale), "echo ok").expect("spawns");
+        let mut tiers = vec![crate::subprocess::DetachTier::HelperReexec(&stale)];
+        tiers.extend(crate::subprocess::tty_tiers(test_detach_helper()));
+        let mut session = spawn_in(&tiers, "echo ok").expect("spawns");
         let rx = reader(&session.master);
         assert!(read_until(&rx, "ok").contains("ok"));
         let _ = session.child.wait();
@@ -758,7 +777,8 @@ mod tests {
 
     #[test]
     fn the_spawned_command_sees_the_session_environment() {
-        let mut session = spawn(None, "echo \"[$TERM] [$PAGER]\"; echo END").expect("spawns");
+        let mut session =
+            spawn(test_detach_helper(), "echo \"[$TERM] [$PAGER]\"; echo END").expect("spawns");
         let rx = reader(&session.master);
         let out = read_until(&rx, "END");
         let _ = session.child.wait();

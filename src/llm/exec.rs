@@ -1513,6 +1513,14 @@ mod tests {
         // — the read that made the update due — the cell showed the blanked
         // line instead of the spinner, frame after frame; it is sampled in
         // the pause between frames instead (`pty::pace`).
+        //
+        // The pieces are a millisecond apart, spent running rather than
+        // asleep: a sleep ends when the scheduler gets back to it, which on
+        // a loaded runner — macOS's three cores under the whole suite —
+        // came past the pacer's settle often enough to split a frame there
+        // every run. Woken by the sleep between frames, the program draws
+        // a whole frame in one slice, and a millisecond is still far longer
+        // than a read, so the pieces still arrive apart.
         let python = std::env::var_os("PATH").is_some_and(|path| {
             std::env::split_paths(&path).any(|dir| dir.join("python3").is_file())
         });
@@ -1524,7 +1532,9 @@ mod tests {
 os.write(1, b"installing\n")
 for glyph in "abcdefghijkl":
     os.write(1, b"\x1b[1G\x1b[0K")
-    time.sleep(0.001)
+    apart = time.perf_counter() + 0.001
+    while time.perf_counter() < apart:
+        pass
     os.write(1, glyph.encode())
     time.sleep(0.06)
 os.write(1, b"\n")'"#;
@@ -2273,7 +2283,13 @@ os.write(1, b"\n")'"#;
             "alter-zero-exec-bg-test-{}-{seq}",
             std::process::id()
         ));
-        (crate::background::BackgroundRegistry::new(tx, dir), rx)
+        // The helper `main()` installs, so a terminal session starts where
+        // there is no `setsid` binary too (macOS).
+        let helper = crate::subprocess::test_detach_helper().map(std::path::Path::to_path_buf);
+        (
+            crate::background::BackgroundRegistry::new(tx, dir).with_detach_helper(helper),
+            rx,
+        )
     }
 
     #[test]
@@ -2947,13 +2963,16 @@ os.write(1, b"\n")'"#;
         assert!(context.contains("HTML-escaped"), "{context}");
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn indented_lines_reach_a_program_that_takes_pastes_as_one_paste() {
         // vim, bash, Python 3.13: a program in bracketed-paste mode is sent
         // typed code the way a person pastes it, so its auto-indent leaves
         // the indentation alone (docs/interactive-shell.md). This one turns
-        // the mode on and shows exactly what reached it.
+        // the mode on and shows exactly what reached it. Linux only: the
+        // paste goes to the program the process table names, and elsewhere
+        // none does, so on the main screen the code is typed
+        // (docs/interactive-shell.md *Limits*).
         if std::process::Command::new("python3")
             .arg("--version")
             .output()
@@ -4271,8 +4290,10 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         registry.kill_all();
     }
 
-    /// A program that reads two bytes raw and prints them in hex — on the
-    /// alternate screen when `full_screen`, else at a plain prompt.
+    /// A program that reads two bytes raw and prints them in hex, one space
+    /// apart — on the alternate screen when `full_screen`, else at a plain
+    /// prompt. `$k` goes unquoted so the shell splits it into words: GNU
+    /// `od` prints ` 1b 4f`, macOS's pads its columns (`           1b  4f`).
     #[cfg(unix)]
     fn two_byte_reader(full_screen: bool) -> String {
         let (enter, leave) = if full_screen {
@@ -4283,7 +4304,7 @@ os.write(1, b"\r omarchy [##########] 100%\r\nComplete\r\n\x1b[?25h")'"#;
         format!(
             "{enter}stty raw -echo; printf 'keys> '; \
              k=$(dd bs=1 count=2 2>/dev/null | od -An -tx1); \
-             stty sane; {leave}echo \"got:$k\""
+             stty sane; {leave}echo got: $k"
         )
     }
 

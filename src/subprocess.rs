@@ -38,7 +38,8 @@
 //!    degrading back to the attached bug. Opt-in per process (`detach_helper`
 //!    is threaded from `main.rs`, resolved once at startup via
 //!    `current_exe()`): a `cargo test` binary has libtest's `main`, not ours —
-//!    re-execing it would run the test suite instead of the command.
+//!    re-execing it would run the test suite instead of the command — so the
+//!    tests install the binary cargo built beside them instead.
 //! 3. **`Attached`** — the pre-fix plain `sh -c` in its own process group
 //!    (`process_group(0)`), terminal-attached. The last resort so a command
 //!    still runs where neither detach route exists.
@@ -137,6 +138,40 @@ pub fn is_executable_file(path: &Path) -> bool {
     {
         path.is_file()
     }
+}
+
+/// The detach helper the tests spawn through: the `alter-zero` binary cargo
+/// built beside the running test binary ([`built_binary_beside`]) — the
+/// helper `main()` installs, so a test reaches the tier a machine with no
+/// `setsid` binary (macOS) runs on. A test binary cannot be the helper
+/// itself: its `main` is libtest's, which would run the suite instead of the
+/// command. `None` until the binary is built — `cargo test` builds it,
+/// `cargo test --lib` alone does not (`docs/tty-detach.md` *Testing*).
+#[cfg(test)]
+#[must_use]
+pub(crate) fn test_detach_helper() -> Option<&'static Path> {
+    static HELPER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    HELPER
+        .get_or_init(|| {
+            let test_exe = std::env::current_exe().ok()?;
+            built_binary_beside(&test_exe).filter(|bin| is_executable_file(bin))
+        })
+        .as_deref()
+}
+
+/// Where cargo leaves the `alter-zero` binary for the test binary at
+/// `test_exe`: beside the `deps/` directory the test binary sits in
+/// (`target/debug/deps/alter_zero-…` → `target/debug/alter-zero`), else
+/// beside the test binary itself.
+#[cfg(test)]
+fn built_binary_beside(test_exe: &Path) -> Option<PathBuf> {
+    let mut dir = test_exe
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())?;
+    if dir.ends_with("deps") {
+        dir = dir.parent()?;
+    }
+    Some(dir.join(format!("alter-zero{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// One way to spawn the shell child, in [`tiers`]' preference order. See the
@@ -660,6 +695,28 @@ mod tests {
     }
 
     #[test]
+    fn a_tests_helper_is_the_binary_cargo_built_beside_it() {
+        // `main()` installs its own binary as the helper; a test binary has
+        // libtest's `main`, so the tests use the `alter-zero` binary cargo
+        // builds next to the `deps/` directory they run from.
+        let bin = format!("alter-zero{}", std::env::consts::EXE_SUFFIX);
+        assert_eq!(
+            built_binary_beside(Path::new("/w/target/debug/deps/alter_zero-0123abcd")),
+            Some(PathBuf::from("/w/target/debug").join(&bin))
+        );
+        assert_eq!(
+            built_binary_beside(Path::new("/w/target/x/release/deps/alter_zero-0123abcd")),
+            Some(PathBuf::from("/w/target/x/release").join(&bin))
+        );
+        // A test binary copied out of `deps/` looks beside itself.
+        assert_eq!(
+            built_binary_beside(Path::new("/w/bin/alter_zero-0123abcd")),
+            Some(PathBuf::from("/w/bin").join(&bin))
+        );
+        assert_eq!(built_binary_beside(Path::new("alter_zero")), None);
+    }
+
+    #[test]
     fn the_tool_shell_is_the_first_bash_on_path() {
         let path = OsString::from("relative:/opt/none::/usr/local/bin:/usr/bin");
         let installed =
@@ -864,7 +921,7 @@ mod tests {
     #[test]
     fn a_detached_command_leads_its_own_session() {
         let mut child = spawn_detached_shell(
-            None,
+            test_detach_helper(),
             r#"stat=$(cat /proc/$$/stat); rest=${stat##*) }; set -- $rest; [ "$4" = "$$" ] && echo LEADER || echo MEMBER"#,
         )
         .expect("spawns");

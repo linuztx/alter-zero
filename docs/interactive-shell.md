@@ -1066,8 +1066,15 @@ and `{1..3}` fail.
 
 Both tiers keep the invariant every kill relies on — `child.id()` is the
 session leader, its process group and its session. Ending a session kills
-that group and every process left in the session (`pkill -s`), so a shell's
-own background jobs go too.
+every process left in the session and then that group, so a shell's own
+background jobs go too. `pkill -s` finds the session's processes where
+`pkill` can name a session; macOS's `pkill` cannot (Apple builds it without
+`-s`), so there they are found by the session's terminal instead: `ps -t`
+lists them (macOS's own `pkill -t` matches nothing, on macOS 26 at least,
+though `ps -t` lists the terminal's processes). A terminal names its session
+only while the leader lives — hence the session first, the group after
+(`background::signal_session`), and the monitor's kill token, which ends the
+leader too, tripped only once both are done (`BackgroundRegistry::kill`).
 
 The environment is the parent's plus `TERM=xterm-256color` (the terminal the
 emulator implements) and `PAGER=cat`/`GIT_PAGER=cat`/`MANPAGER=cat`/

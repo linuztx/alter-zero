@@ -529,19 +529,26 @@ fn an_unattended_gate_refuses_the_demo_subagents_call_too() {
         .with_permissions(gate.clone())
         .with_agents(registry);
     let (tx, mut rx) = unbounded_channel();
+    // The demo is paced for a person — its narration, the agent's pre-roll,
+    // then the rest of the narration once the agent is done: some fifteen
+    // seconds, so the watchdog only stands in for a hang. At ten it cut the
+    // demo short every time, and on a loaded machine before the agent asked.
     let handle = dummy.spawn(
         "launch a subagent that needs permission".to_string(),
         vec![],
         vec![],
         tx,
-        watchdog(Duration::from_secs(10)),
+        watchdog(Duration::from_secs(60)),
     );
+    let mut done = false;
     while let Some(event) = rx.blocking_recv() {
         if matches!(event, StreamEvent::StreamDone) {
+            done = true;
             break;
         }
     }
     handle.join().unwrap();
+    assert!(done, "the demo ran to its end, not to the watchdog");
     while let Ok(event) = agent_rx.try_recv() {
         if let AgentEvent::Stream {
             event: StreamEvent::Permission(request),

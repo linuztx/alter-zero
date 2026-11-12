@@ -2527,7 +2527,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn probe_until(command: &str, want: Probe) -> Probe {
         use crate::pty::spawn::{spawn, terminal_path};
-        let mut session = spawn(None, command).expect("spawns");
+        let mut session = spawn(crate::subprocess::test_detach_helper(), command).expect("spawns");
         let path = terminal_path(&session.master).expect("the terminal has a path");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut last = Probe::Unknown;
@@ -2602,7 +2602,7 @@ mod tests {
             return;
         }
         let mut session = spawn(
-            None,
+            crate::subprocess::test_detach_helper(),
             "python3 -c 'import asyncio\nasync def tick():\n    while True:\n        \
              await asyncio.sleep(0.001)\nasyncio.run(tick())'",
         )
@@ -2641,7 +2641,7 @@ mod tests {
         use crate::pty::spawn::{spawn, terminal_path};
         use std::io::Write;
         use std::time::{Duration, Instant};
-        let mut session = spawn(None, command).expect("spawns");
+        let mut session = spawn(crate::subprocess::test_detach_helper(), command).expect("spawns");
         let path = terminal_path(&session.master).expect("the terminal has a path");
         let pid = session.child.id();
         (&session.master)

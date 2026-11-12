@@ -1,11 +1,11 @@
 # .github/workflows/ci.yml — the project's gate, on every push to main and
 # every pull request (docs/release.md). Each job is one thing a contributor
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
-# --check` + `clippy -D warnings` + `test` + `doc`), the smoke suite over the
-# real binary in tmux, the release tooling's own fixture tests plus the
-# version/changelog agreement and the npm launcher's tests, the telemetry
-# collector's pure-half tests, and the scripts the built-in web-search skill
-# seeds.
+# --check` + `clippy -D warnings` + `test` + `doc`, all but `fmt` on macOS
+# too), the smoke suite over the real binary in tmux, the release tooling's
+# own fixture tests plus the version/changelog agreement and the npm
+# launcher's tests, the telemetry collector's pure-half tests, and the
+# scripts the built-in web-search skill seeds.
 # The release workflow re-runs the gate and the tooling tests before it builds
 # anything, and the headless Kali container has its own workflow
 # (container.yml).
@@ -45,6 +45,40 @@ jobs:
         with:
           shared-key: debug
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo doc --no-deps --lib
+
+  test-macos:
+    # The gate, `fmt` aside, on macOS, which the README promises
+    # beside Linux. On Linux alone, a test or a code path that leans on GNU
+    # `ps` or `od`, procps' `pkill -s` or `/proc` passes by accident of the
+    # platform: `bashkill` never sent SIGTERM on a Mac, and nothing here
+    # could see it. macOS has no `setsid` binary, so the app gives a command
+    # its terminal through its own binary's helper re-exec; the library's
+    # tests start their terminal sessions the same way, through the
+    # `alter-zero` binary `cargo test` builds beside them
+    # (docs/tty-detach.md *Testing*) — the tier a Mac runs on, and every
+    # tool the tests run is macOS's own.
+    name: clippy · test · doc (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: No setsid on PATH
+        # Fail rather than pass on another tier if an image ever ships one:
+        # the terminal tests must start their sessions through the helper.
+        run: |
+          if command -v setsid; then
+            echo "::error::setsid is on PATH; this job tests the helper tier macOS runs on"
+            exit 1
+          fi
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      # The code behind `cfg(not(target_os = "linux"))` and
+      # `cfg(target_os = "macos")` is linted nowhere else.
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo doc --no-deps --lib

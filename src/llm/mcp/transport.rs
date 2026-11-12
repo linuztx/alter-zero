@@ -1975,7 +1975,7 @@ mod tests {
             &["-c".to_string(), script.to_string()],
             &BTreeMap::new(),
             None,
-            None,
+            crate::subprocess::test_detach_helper(),
         )
         .expect("spawn sh")
     }

@@ -444,7 +444,9 @@ so `bashsend` can answer it), the amber `● Background command "…" is waiting
 for input` cell settled at the next safe boundary, the idle follow-up turn
 started for a model launch — while the shell keeps its row
 (`docs/bash-tools.md`). Ending one (`bashkill`) sends `SIGINT`, then
-`SIGTERM`, then kills its process group and everything left in its session.
+`SIGTERM`, then kills everything left in its session and its process group —
+the session found by its id, or, where `pkill` has no `-s` (macOS), by its
+terminal (`docs/interactive-shell.md`).
 A session that ends with **no call waiting** — its note unread — stays
 claimable until that note is read: a companion call naming it then reports the
 exit itself and the note is not owed (`docs/bash-tools.md` *One notice per

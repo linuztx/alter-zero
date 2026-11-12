@@ -83,7 +83,8 @@ is real and surfaces):
    `BackgroundRegistry` (`with_detach_helper` → `detach_helper()`), which
    every runner already shares. A `cargo test` binary has libtest's `main`,
    not ours — re-execing it would run the test suite instead of the command —
-   so test processes simply don't install a helper.
+   so the tests install the `alter-zero` binary cargo built beside them
+   instead (*Testing*).
 3. **Attached `sh -c` + `process_group(0)`** — the pre-fix behavior, the last
    resort where neither detach route exists (still fully killable, but
    sharing the controlling terminal).
@@ -160,6 +161,17 @@ a terminal?" saw non-tty fds before and after. The new session only removes
   helper path** (the chain falls through). `tests/detached_exec.rs` drives
   the **real built binary** (`CARGO_BIN_EXE`): the executor end-to-end, and
   the helper re-exec tier directly — the macOS-representative path.
+- **The library's own tests** start their sessions and detached commands
+  through the helper too, where there is no `setsid` binary: the registries,
+  the session spawns and the detach fixtures install the `alter-zero` binary
+  cargo built beside the test binary (`subprocess::test_detach_helper` —
+  `target/debug/alter-zero` for `target/debug/deps/alter_zero-…`). On Linux
+  `setsid` comes first and the helper is only behind it; on macOS, which
+  ships no `setsid`, the helper is the tier every terminal test runs on, as
+  the app does there — the CI macOS job checks that no `setsid` is on
+  `PATH`. `cargo test` builds the binary before it runs anything;
+  `cargo test --lib` alone does not, so on a Mac a fresh checkout needs a
+  `cargo build` first, and a change to the helper itself a rebuild.
 - **Smoke** — `scripts/smoke.sh` Phase 44 drives a `!`-shell command that
   writes to `/dev/tty` inside a real tmux pty and asserts it fails fast
   inside the cell (`No such device or address`) with nothing printed over
