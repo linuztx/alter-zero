@@ -1,7 +1,7 @@
 # .github/workflows/ci.yml — the project's gate, on every push to main and
 # every pull request (docs/release.md). Each job is one thing a contributor
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
-# --check` + `clippy -D warnings` + `test` + `doc`, the last two on macOS
+# --check` + `clippy -D warnings` + `test` + `doc`, all but `fmt` on macOS
 # too), the smoke suite over the real binary in tmux, the release tooling's
 # own fixture tests plus the version/changelog agreement and the npm
 # launcher's tests, the telemetry collector's pure-half tests, and the
@@ -50,7 +50,7 @@ jobs:
       - run: cargo doc --no-deps --lib
 
   test-macos:
-    # The gate's tests and doc build on macOS, which the README promises
+    # The gate, `fmt` aside, on macOS, which the README promises
     # beside Linux. On Linux alone, a test or a code path that leans on GNU
     # `ps` or `od`, procps' `pkill -s` or `/proc` passes by accident of the
     # platform: `bashkill` never sent SIGTERM on a Mac, and nothing here
@@ -60,7 +60,7 @@ jobs:
     # `alter-zero` binary `cargo test` builds beside them
     # (docs/tty-detach.md *Testing*) — the tier a Mac runs on, and every
     # tool the tests run is macOS's own.
-    name: test · doc (macOS)
+    name: clippy · test · doc (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -77,6 +77,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: debug
+      # The code behind `cfg(not(target_os = "linux"))` and
+      # `cfg(target_os = "macos")` is linted nowhere else.
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo doc --no-deps --lib
 

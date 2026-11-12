@@ -100,9 +100,9 @@ modules breaks the links that pointed at it.
 
 ## Linux vs macOS — what actually differs
 
-CI runs the gate and the smoke suite on `ubuntu-latest`, and the gate's
-`cargo test` and `cargo doc` on `macos-latest` too (the `test · doc (macOS)`
-job, beside the clipboard tests and the smoke readers' selftest). Both are
+CI runs the gate and the smoke suite on `ubuntu-latest`, and the gate but
+`fmt` on `macos-latest` too (the `clippy · test · doc (macOS)` job, beside the
+clipboard tests and the smoke readers' selftest). Both are
 expected to be green, so a red `cargo test --lib` is yours on either — once a
 Mac has the `alter-zero` binary built (below). Know which platform you are on
 before you diagnose anything: the two compile different code
