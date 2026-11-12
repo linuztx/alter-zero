@@ -606,6 +606,12 @@ impl ModelSession {
         self.backend.model_name()
     }
 
+    /// Whether a real provider/model/key resolved (the inverse of the offline
+    /// demo). The banner hint reads it through `App::offline_demo`.
+    pub(crate) fn is_real_backend(&self) -> bool {
+        self.real_backend
+    }
+
     /// The active model's id as the *selection* names it — what a rebuild and
     /// the `/model` picker's "current" marker key off.
     pub(crate) fn active_model(&self) -> &str {
@@ -1855,7 +1861,20 @@ impl Session<'_> {
     /// Run after any switch that changes which model answers.
     pub(crate) fn sync_backend_info(&mut self) {
         let name = self.models.model_name();
+        let offline = !self.models.is_real_backend();
+        // The dummy fallback can still remember a saved provider selection;
+        // the footer's bracket names who answers, so the demo has none.
+        let provider = if offline {
+            String::new()
+        } else {
+            self.models
+                .active_provider()
+                .unwrap_or_default()
+                .to_string()
+        };
         self.app.set_session_info(name, self.cwd_display.clone());
+        self.app.set_session_provider(provider);
+        self.app.set_offline_demo(offline);
         // The backend's system prompt rides into App so the Ctrl+D view shows the
         // whole context window (docs/context.md). None for the dummy. The
         // subagent variant (the main prompt + the subagent note) rides beside it

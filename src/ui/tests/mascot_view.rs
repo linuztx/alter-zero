@@ -161,7 +161,7 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
             "▙▄▙▄▟▄▟",
             "Alter Zero (v",
             "~/alter-zero",
-            "/login   /model",
+            "/ commands   @ files",
         ] {
             assert!(
                 texts.iter().any(|t| t.contains(expect)),
@@ -259,7 +259,7 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
         .find(|t| t.trim_start().starts_with("(1/6)"))
         .expect("the counter");
     assert!(
-        counter.contains("/login   /model   /resume"),
+        counter.contains("/ commands   @ files   ? shortcuts"),
         "the banner's hint row beside the counter: {texts:#?}"
     );
 }

@@ -62,7 +62,6 @@ pub(super) fn page_title_line(text: &str, width: u16) -> Line<'static> {
 /// dim `(v…)` version, the cwd in the footer's path colour (only with
 /// session info), and the cyan command hint.
 fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
-    let accent = Style::new().fg(header_accent_color());
     let dim = Style::new().fg(header_meta_color());
     let mut rows: Vec<Vec<Span<'static>>> = vec![vec![
         Span::styled(HEADER_NAME, Style::new().add_modifier(Modifier::BOLD)),
@@ -74,15 +73,32 @@ fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
             Style::new().fg(header_cwd_color()),
         )]);
     }
-    let mut hint: Vec<Span<'static>> = Vec::new();
-    for (i, token) in HEADER_HINT.iter().enumerate() {
-        if i > 0 {
-            hint.push(Span::styled("   ", dim));
-        }
-        hint.push(Span::styled(*token, accent));
-    }
-    rows.push(hint);
+    rows.push(hint_spans(app));
     rows
+}
+
+/// The banner's hint row: on the offline demo, the one action that changes it;
+/// otherwise the three entry points the composer has beyond typing a message —
+/// `/` commands, `@` files, `?` shortcuts — the sigils in the accent and their
+/// names dim. See `docs/header.md`.
+fn hint_spans(app: &App) -> Vec<Span<'static>> {
+    let accent = Style::new().fg(header_accent_color());
+    let dim = Style::new().fg(header_meta_color());
+    if app.offline_demo() {
+        return vec![
+            Span::styled("Connect a model → ", dim),
+            Span::styled("/login", accent),
+        ];
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (sigil, name)) in HEADER_HINTS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   ", dim));
+        }
+        spans.push(Span::styled(*sigil, accent));
+        spans.push(Span::styled(format!(" {name}"), dim));
+    }
+    spans
 }
 
 /// A one-row startup notice as scrollback chrome — the checkpoint

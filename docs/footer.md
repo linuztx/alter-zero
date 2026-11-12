@@ -131,11 +131,14 @@ the banner does (`docs/theme.md`). Colour marks what the row **names**; the
 punctuation between the names stays dim:
 
 ```
-  gpt-6.1-terra medium fast · ~/Codes/rust/alter-zero · 0/475k (0.0%)       master
+  [magpie]deepseek-v4.1-flash medium fast · ~/Codes/rust/alter-zero · 0/475k (0.0%)       master
 ```
 
 - **model** — `footer_model_color()`, the accent: what the session talks to
-  is the row's first fact. A subagent's pinned model wears it too.
+  is the row's first fact; the `[provider]` bracket is the row's dim
+  (`footer_color()`), so the provider frames the model without competing with
+  it. A subagent's pinned model wears the accent too (no bracket — the pin
+  carries no provider).
 - **thinking mode and speed tier** — `footer_qualifier_color()`, the status
   line's thinking purple (`status_thinking_color()`), one colour for what
   Ctrl+T and a tier's command turn; the `Thinking for Ns` clause above the

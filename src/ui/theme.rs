@@ -1520,7 +1520,8 @@ pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
 /// The narrowest preview column the side-by-side page lays out: the banner
-/// keeps its art beside its title and its `/login /model /resume` hint (36
+/// keeps its art beside its title and its `/ commands   @ files   ? shortcuts`
+/// hint (36
 /// columns) and every caption reads whole (37), with a little room left for
 /// the cwd row, which the banner `…`-cuts as it always has. A terminal with
 /// less than the list, the gap and this stacks the preview under the list.
@@ -3033,7 +3034,8 @@ pub(super) const HEADER_NAME: &str = crate::APP_NAME;
 /// The command hint beside the mascot — bare `/token`s in the accent colour,
 /// three-space separated. Deliberately prose-free so it can't collide with
 /// the smoke suite's `for commands` / footer markers.
-pub(super) const HEADER_HINT: &[&str] = &["/login", "/model", "/resume"];
+pub(super) const HEADER_HINTS: &[(&str, &str)] =
+    &[("/", "commands"), ("@", "files"), ("?", "shortcuts")];
 
 /// Columns between the mascot art's right edge and the metadata column —
 /// two, per the user's spec (a wider gap read as detached).

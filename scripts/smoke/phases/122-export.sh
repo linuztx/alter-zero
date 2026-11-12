@@ -42,7 +42,9 @@ if ls "$EXDIR"/conversation-*.txt >/dev/null 2>&1; then
 fi
 # A reply, settled (its closing hand-off committed and the screen still).
 submit "$S122" "hello there"
-export_settled="$(wait_settled 15 "$S122" -F "$SETTLED_REPLY")"
+# The dummy streams at its 45 ms chunk pace; on a loaded Mac the scripted
+# reply (text + Read/Edit/Bash) needs more than 15 s to reach its hand-off.
+export_settled="$(wait_settled 30 "$S122" -F "$SETTLED_REPLY")"
 echo "==== Phase 122: the reply settled ===="
 printf '%s\n' "$export_settled"
 expect_has "$export_settled" -F "$SETTLED_REPLY" "the dummy reply never settled"
@@ -114,8 +116,8 @@ else
 	if ! head -3 "$export_file" | grep -qF "$HEADER_MARK (v"; then
 		fail "the file does not open with the startup banner's title row"
 	fi
-	expect_file_has "$export_file" -F "/login   /model   /resume" "the file does not carry the banner's hint row"
-	if [ "$(grep -nF "/login   /model   /resume" "$export_file" | head -1 | cut -d: -f1)" -ge "$(grep -nF "❯ hello there" "$export_file" | head -1 | cut -d: -f1)" ]; then
+	expect_file_has "$export_file" -F "Connect a model → /login" "the file does not carry the banner's hint row"
+	if [ "$(grep -nF "Connect a model → /login" "$export_file" | head -1 | cut -d: -f1)" -ge "$(grep -nF "❯ hello there" "$export_file" | head -1 | cut -d: -f1)" ]; then
 		fail "the banner does not sit above the conversation in the file"
 	fi
 	if grep -qE '[[:space:]]$' "$export_file"; then

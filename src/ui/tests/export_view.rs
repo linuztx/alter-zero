@@ -354,7 +354,7 @@ fn export_text_is_the_transcript_as_plain_text_in_order() {
 fn export_text_opens_with_the_startup_banner() {
     // The export is the Ctrl+O page as text, top to bottom — and that page
     // opens with the startup banner the terminal did: the mascot beside
-    // `Alter Zero (v…)`, the cwd, the `/login   /model   /resume` hint, one
+    // `Alter Zero (v…)`, the cwd, the `/ commands   @ files   ? shortcuts` hint, one
     // blank, then the conversation.
     let mut app = with_session();
     app.record_user_message("hello");
@@ -370,9 +370,9 @@ fn export_text_opens_with_the_startup_banner() {
         "the export opens on the banner's first row: {lines:?}"
     );
     assert!(pos("Alter Zero (v") < pos("~/alter-zero"), "{lines:?}");
-    assert!(pos("~/alter-zero") < pos("/login   /model   /resume"));
+    assert!(pos("~/alter-zero") < pos("/ commands   @ files   ? shortcuts"));
     let hello = pos("❯ hello");
-    assert!(pos("/login   /model   /resume") < hello);
+    assert!(pos("/ commands   @ files   ? shortcuts") < hello);
     assert_eq!(
         lines[hello - 1],
         "",

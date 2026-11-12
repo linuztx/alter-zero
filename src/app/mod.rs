@@ -705,6 +705,12 @@ pub struct App {
     /// ([`App::set_session_info`]). `None` — the unit-test default — means no
     /// footer row. See `docs/footer.md`.
     pub session: Option<SessionInfo>,
+    /// Whether the active backend is the offline demo (no provider, model and
+    /// key resolved). The startup banner's hint reads it: the demo names
+    /// `/login`, a configured session teaches the command/file/shortcut keys.
+    /// Injected at the I/O boundary ([`App::set_offline_demo`]) beside the
+    /// session info. See `docs/header.md`.
+    pub offline_demo: bool,
     /// How a file tool's path reads on screen — the cwd-relative /
     /// `~`-relative / absolute rule of [`PathDisplay`], injected once at the
     /// I/O boundary ([`App::set_path_display`]) beside the session info. The
@@ -1027,10 +1033,38 @@ impl App {
         {
             self.context_meter.model_changed();
         }
+        let provider = self
+            .session
+            .as_ref()
+            .map(|session| session.provider.clone())
+            .unwrap_or_default();
         self.session = Some(SessionInfo {
             model,
+            provider,
             cwd: cwd.into(),
         });
+    }
+
+    /// Record the active provider's id for the footer's `[provider]` bracket
+    /// (the `set_session_info` pattern: the boundary knows the id, the pure
+    /// core only displays it). No-op before session info exists.
+    pub fn set_session_provider(&mut self, provider: impl Into<String>) {
+        if let Some(session) = self.session.as_mut() {
+            session.provider = provider.into();
+        }
+    }
+
+    /// Record whether the active backend is the offline demo — the banner
+    /// hint's one state bit (the `set_session_info` pattern). See
+    /// `docs/header.md`.
+    pub fn set_offline_demo(&mut self, offline: bool) {
+        self.offline_demo = offline;
+    }
+
+    /// Whether the active backend is the offline demo (no provider resolved).
+    #[must_use]
+    pub fn offline_demo(&self) -> bool {
+        self.offline_demo
     }
 
     /// Inject the active model's reasoning capability + mode (a `/model`

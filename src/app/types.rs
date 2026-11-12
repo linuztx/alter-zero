@@ -240,6 +240,10 @@ pub enum EntryJump {
 pub struct SessionInfo {
     /// The model id the active [`crate::stream::ReplySource`] answers as.
     pub model: String,
+    /// The active provider's id (its `providers.toml` key), shown as the
+    /// footer's `[provider]` bracket. Empty for the offline demo, which has
+    /// no provider. See `docs/footer.md`.
+    pub provider: String,
     /// The working directory, already formatted for display (`~`-relative).
     pub cwd: String,
 }

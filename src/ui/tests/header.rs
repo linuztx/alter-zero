@@ -61,7 +61,7 @@ fn header_shows_mascot_title_cwd_and_hint() {
         text.contains("~/alter-zero"),
         "cwd from the session: {text:?}"
     );
-    for token in ["/login", "/model", "/resume"] {
+    for token in ["/ commands", "@ files", "? shortcuts"] {
         assert!(text.contains(token), "hint token {token}: {text:?}");
     }
     // The retired wordmark tiers and tagline are gone.
@@ -87,7 +87,7 @@ fn header_rows_compose_art_beside_the_metadata() {
     assert_eq!(plain(&lines[1]), format!("{}~/alter-zero", pad(art[1])));
     assert_eq!(
         plain(&lines[2]),
-        format!("{}/login   /model   /resume", pad(art[2]))
+        format!("{}/ commands   @ files   ? shortcuts", pad(art[2]))
     );
     assert_eq!(lines.len(), art.len());
 }
@@ -116,7 +116,7 @@ fn header_meta_block_seats_lower_beside_a_taller_mascot() {
             mascot.name()
         );
         assert!(
-            plain(&lines[2]).contains("/login"),
+            plain(&lines[2]).contains("commands"),
             "{}: hint on row 2",
             mascot.name()
         );
@@ -182,8 +182,8 @@ fn header_cwd_wears_the_footers_path_colour_and_hint_is_cyan() {
     let hint = lines[2]
         .spans
         .iter()
-        .find(|s| s.content.contains("/login"))
-        .expect("a hint token span");
+        .find(|s| s.content == "/")
+        .expect("a hint sigil span");
     assert_eq!(hint.style.fg, Some(crate::ui::theme::header_accent_color()));
 }
 
@@ -261,7 +261,7 @@ fn header_without_a_session_still_shows_mascot_and_version() {
         !text.contains("~/"),
         "no cwd row without a session: {text:?}"
     );
-    assert!(text.contains("/login"), "the hint still shows: {text:?}");
+    assert!(text.contains("commands"), "the hint still shows: {text:?}");
 }
 
 #[test]
@@ -530,4 +530,27 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
             }
         });
     }
+}
+
+#[test]
+fn the_hint_points_at_login_until_a_model_is_configured() {
+    // The banner's hint is state-aware (#24 follow-up): a session on the
+    // offline demo has no model to switch or resume, so it names the one
+    // action that changes that; a configured session teaches the three
+    // entry points instead of three arbitrary commands.
+    let mut app = with_session();
+    app.set_offline_demo(true);
+    let text = header_text(&app, 90);
+    assert!(text.contains("Connect a model → /login"), "{text:?}");
+    assert!(
+        !text.contains("@ files"),
+        "no discovery row before a model: {text:?}"
+    );
+    app.set_offline_demo(false);
+    let text = header_text(&app, 90);
+    assert!(
+        text.contains("/ commands   @ files   ? shortcuts"),
+        "the configured hint teaches the three entry points: {text:?}"
+    );
+    assert!(!text.contains("/login"), "{text:?}");
 }

@@ -1193,3 +1193,41 @@ fn footer_line_shows_the_speed_tier_beside_the_thinking_mode() {
         "  dummy_model_name ultrafast · ~/alter-zero"
     );
 }
+
+#[test]
+fn the_footer_brackets_the_provider_and_shows_the_models_suffix() {
+    // #24 follow-up: the model title under the box reads
+    // `[provider]model-suffix` — the provider in the footer's dim, the model
+    // in its accent — instead of a wire id like
+    // `commandcode/deepseek/deepseek-v4.1-flash`. The full id stays in
+    // `/model` and Ctrl+O.
+    let mut app = App::new();
+    app.set_session_info("deepseek/deepseek-v4.1-flash", "~/x");
+    app.set_session_provider("magpie");
+    let line = footer_line(&app, 120);
+    let text = plain(&line);
+    assert!(
+        text.starts_with("  [magpie]deepseek-v4.1-flash · ~/x"),
+        "{text}"
+    );
+    let provider = line
+        .spans
+        .iter()
+        .find(|span| span.content == "[magpie]")
+        .expect("the provider bracket");
+    assert_eq!(
+        provider.style.fg,
+        Some(footer_color()),
+        "the bracket is dim"
+    );
+    let model = line
+        .spans
+        .iter()
+        .find(|span| span.content == "deepseek-v4.1-flash")
+        .expect("the model suffix");
+    assert_eq!(
+        model.style.fg,
+        Some(footer_model_color()),
+        "the model keeps the accent"
+    );
+}

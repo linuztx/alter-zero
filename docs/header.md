@@ -11,7 +11,7 @@ as the conversation grows — exactly like Claude Code's welcome banner.
 ```
  ▙▄▙▄▟▄▟   Alter Zero (v0.1.0)
 ▝▜▄███▄▛▘  ~/inline-tui
-  ▘▘ ▝▝    /login   /model   /resume
+  ▘▘ ▝▝    / commands   @ files   ? shortcuts
 ```
 
 - **Mascot** — the selected mascot's art (crest by default, switched with
@@ -28,8 +28,12 @@ as the conversation grows — exactly like Claude Code's welcome banner.
   (`header_cwd_color()` is `footer_cwd_color()`, `docs/footer.md`), so the
   path is one colour at both ends of the screen. Skipped when no session info
   is injected.
-- **Hint** — bare command tokens (`/login`, `/model`, `/resume`) in the cyan
-  accent, three-space separated (dim separators).
+- **Hint** — state-aware: a configured session shows the three entry points
+  beyond typing a message — `/ commands`, `@ files`, `? shortcuts` — with the
+  sigils in the cyan accent and their names dim, three-space separated (dim
+  separators). A session on the offline demo (no provider, model and key
+  resolved) shows the one action that changes that instead:
+  `Connect a model → /login`.
 
 The metadata rows sit in one aligned column at `art width + 2`, and the
 block is **vertically centered** in a mascot taller than it, ties resolving
@@ -41,7 +45,7 @@ is exactly the metadata's height *with* a session; the live case is the
 ```
  ▙▄▙▄▟▄▟
 ▝▜▄███▄▛▘  Alter Zero (v0.1.0)
-  ▘▘ ▝▝    /login   /model   /resume
+  ▘▘ ▝▝    / commands   @ files   ? shortcuts
 ```
 
 Art rows without a metadata neighbour render alone (no trailing pad), and

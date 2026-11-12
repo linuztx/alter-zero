@@ -46,7 +46,7 @@ layout (`docs/theme.md`):
     sprout
     twin         ▙▄▙▄▟▄▟   Alter Zero (v0.18.0)
     skiter      ▝▜▄███▄▛▘  ~/alter-zero
-    (1/6)         ▘▘ ▝▝    /login   /model   /resume
+    (1/6)         ▘▘ ▝▝    / commands   @ files   ? shortcuts
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ On a narrower one the same preview stacks under the list:
 
    ▙▄▙▄▟▄▟   Alter Zero (v0.14.0)
   ▝▜▄███▄▛▘  ~/alter-zero
-    ▘▘ ▝▝    /login   /model   /resume
+    ▘▘ ▝▝    / commands   @ files   ? shortcuts
 
   ↑/↓ to navigate · Type to search · Enter to choose …
 ──────────────────────────────────────────────────────
@@ -99,8 +99,8 @@ its description in the frame's dim.
   preview sits beside the list once the terminal has room for the list
   column (the widest row the catalog can paint, 12 columns), then
   `MASCOT_PREVIEW_GAP` (4, the `/theme` gap), then `MASCOT_PREVIEW_MIN_COLS`
-  (40: the banner keeps its art beside its title and its `/login /model
-  /resume` hint, 36 columns, and every caption reads whole, 37). That is 56
+  (40: the banner keeps its art beside its title and its `/ commands   @ files
+  ? shortcuts` hint, 36 columns, and every caption reads whole, 37). That is 56
   columns, so every standard terminal gets it. Under that the preview stacks
   under the list after a gap, inset two columns. There is one breakpoint, and
   at it the banner still seats its art and every caption reads whole

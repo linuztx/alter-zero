@@ -273,6 +273,17 @@ pub fn backtrack_hint_line() -> Line<'static> {
 /// carries its thinking mode right beside the name (`{model} {mode}`, Ctrl+T
 /// cycles it — `docs/reasoning.md`), in the status line's thinking colour.
 /// Empty when no session info has been injected.
+/// The part of a model id a provider already implies: the last path segment —
+/// `commandcode/deepseek/deepseek-v4.1-flash` reads `deepseek-v4.1-flash` under
+/// its `[provider]` bracket. A bare id stays whole; a trailing slash keeps the
+/// full id rather than showing an empty suffix.
+fn model_suffix(model: &str) -> &str {
+    match model.rsplit_once('/') {
+        Some((_, tail)) if !tail.is_empty() => tail,
+        _ => model,
+    }
+}
+
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
@@ -300,7 +311,16 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let mut segments = match app.viewed_agent_model() {
         Some(pinned) => vec![Span::styled(pinned.to_string(), model_style)],
         None => {
-            let mut model = vec![Span::styled(session.model.clone(), model_style)];
+            let mut model = Vec::with_capacity(4);
+            if !session.provider.is_empty() {
+                model.push(Span::styled(format!("[{}]", session.provider), dim));
+            }
+            let shown = if session.provider.is_empty() {
+                session.model.clone()
+            } else {
+                model_suffix(&session.model).to_string()
+            };
+            model.push(Span::styled(shown, model_style));
             if let Some(thinking) = &app.thinking {
                 model.push(Span::styled(
                     format!(" {}", thinking.mode.label()),
