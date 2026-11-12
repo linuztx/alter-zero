@@ -170,7 +170,7 @@ Connect to a supported subscription service, API provider, or local model server
 | **Anthropic** | API key or account sign-in through the Anthropic Console. | Usage is billed to your API organisation with either method. |
 | **Cline** | API key. | The models behind the Cline extension and CLI, through [Cline's OpenAI-compatible API](https://app.cline.bot) — Anthropic, OpenAI, Google and more, billed to your account's credits. |
 | **ClinePass** | Subscription ($9.99/month), with a Cline account sign-in. | 2-5x usage on Cline's curated open coding models — the plan's `cline-pass/…` models appear in `/model`. |
-| **Google Antigravity** | Google account sign-in in the browser. | Gemini, Claude and GPT-OSS on your Antigravity quota. Unofficial: Google may restrict accounts used outside Antigravity ([details](docs/antigravity.md)). |
+| **Google Antigravity** | Google account sign-in in the browser. | Gemini, Claude and GPT-OSS on your Antigravity quota. Unofficial: Google may restrict accounts used outside Antigravity ([details](docs/providers/antigravity.md)). |
 | **OpenRouter** | API key. | Access models from multiple providers through one account. |
 | **Ollama** | Local model: enter your server's address, which is tested before it's saved; no key required. | Run inference on your own machine with locally hosted models. |
 | **LM Studio** | Local model: enter your server's address, tested the same way; a token only if the server requires one. | Run the models you downloaded in [LM Studio](https://lmstudio.ai/download); start its server first. |
@@ -192,7 +192,7 @@ api_key_url = "https://console.groq.com/keys"
 api_base = "https://api.groq.com/openai/v1"
 ```
 
-Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a model with `/model`. Both re-read the file, so there's no need to restart. A block that names a built-in provider changes only the keys it sets. [`docs/user-providers.md`](docs/user-providers.md) covers every key, local servers that need no key, and what each error message means.
+Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a model with `/model`. Both re-read the file, so there's no need to restart. A block that names a built-in provider changes only the keys it sets. [`docs/providers/user-providers.md`](docs/providers/user-providers.md) covers every key, local servers that need no key, and what each error message means.
 
 </details>
 
@@ -209,10 +209,10 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 
 - **Review at the approval prompt.** Inspect proposed file content, diffs, and commands before approving them. Approve once, allow a session rule, or reject with instructions using **Tab**. **Ctrl+E** asks for a command explanation.
 - **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
-- **Run it without a screen.** `alter-zero -p "…"` answers one prompt for a script, a cron job or a CI step: the answer on stdout, or JSON with `--output-format`, and an exit status to branch on. Nothing waits for a reply; `--permission-mode` decides what runs unasked. See [headless mode](docs/headless.md).
+- **Run it without a screen.** `alter-zero -p "…"` answers one prompt for a script, a cron job or a CI step: the answer on stdout, or JSON with `--output-format`, and an exit status to branch on. Nothing waits for a reply; `--permission-mode` decides what runs unasked. See [headless mode](docs/cli/headless.md).
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
 - **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook, yours or a project's, and any new project MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
-- **Credentials by placeholder.** Store a credential with `/secrets` and the agent can use its placeholder without seeing the value. See [how secrets are stored and used](docs/secrets.md).
+- **Credentials by placeholder.** Store a credential with `/secrets` and the agent can use its placeholder without seeing the value. See [how secrets are stored and used](docs/state/secrets.md).
 
 ### Give the agent the right tools
 
@@ -340,7 +340,7 @@ alter-zero -p "Run the test suite and summarize the failures" > report.md
 git diff origin/main | alter-zero -p --output-format json "Review this diff"
 ```
 
-[Headless mode](docs/headless.md) covers the output formats, exit codes and permission modes.
+[Headless mode](docs/cli/headless.md) covers the output formats, exit codes and permission modes.
 
 Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
 

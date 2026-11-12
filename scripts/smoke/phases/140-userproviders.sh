@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# A user's own providers.toml (docs/user-providers.md). The file in the
+# A user's own providers.toml (docs/providers/user-providers.md). The file in the
 # config home is laid over the built-in providers: a new id is a provider
 # beside the shipped ones, never instead of them. A local stub stands in for
 # an OpenAI-compatible API — it lists its models as a bare JSON array, the

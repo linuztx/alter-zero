@@ -1,5 +1,5 @@
 //! The `/donate` page: the project's crypto donation addresses, and the
-//! read-only inline page that shows them. See `docs/donate.md`.
+//! read-only inline page that shows them. See `docs/ui/donate.md`.
 //!
 //! The eleventh composer-replacing inline picker, and the `/hooks` browser's
 //! sibling ([`super::hooks_menu`]): **no text entry** — navigation and copy

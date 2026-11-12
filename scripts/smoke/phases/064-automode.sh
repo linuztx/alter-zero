@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The permission modes end to end (docs/permissions.md). Every other phase
+# The permission modes end to end (docs/state/permissions.md). Every other phase
 # runs with ALTER_ZERO_PERMISSION_MODE=manual exported; these launches unset
 # it, so the session comes up in the DEFAULT — auto — with the footer saying
 # so before any key is pressed. In auto the dummy's "auto permission" demo is
@@ -41,7 +41,7 @@ expect_has "$auto_done" -F "● Bash(ls -la)" "the read-only command's cell is m
 expect_has "$auto_done" -F "● Bash(pytest -q)" "the classifier-allowed command's cell is missing"
 expect_has "$auto_done" -F "⎿  Allowed by auto mode classifier" "the allowed cell lacks its classifier note row"
 # The listing never met the classifier: nothing between its cell and the
-# test run's may carry the note (docs/permissions.md, the read-only fast path).
+# test run's may carry the note (docs/state/permissions.md, the read-only fast path).
 listing_cell="$(sed -n '/● Bash(ls -la)/,/● Bash(pytest -q)/p' <<<"$auto_done")"
 expect_lacks "$listing_cell" -F "Allowed by auto mode classifier" "the read-only listing went through the classifier"
 expect_has "$auto_done" -F "Denied by auto mode classifier" "the delete was not denied by the classifier"

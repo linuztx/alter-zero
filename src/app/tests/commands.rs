@@ -1,5 +1,5 @@
 //! The slash-command palette and its effects (`/clear`, `/copy`, `/init` —
-//! `docs/init.md`).
+//! `docs/state/init.md`).
 
 use super::*;
 
@@ -90,20 +90,20 @@ fn palette_descriptions_are_concise_and_product_name_free() {
     };
     assert_eq!(desc("quit"), "Exit the app");
     // The hooks browser is also where a hook's trust changes
-    // (docs/config-review.md), so it says so in the palette.
+    // (docs/state/config-review.md), so it says so in the palette.
     assert_eq!(
         desc("hooks"),
         "Browse hooks and trust or stop trusting each one"
     );
     // `/trust` is gone: hooks and project MCP servers are asked about at
     // startup instead, and managed in `/hooks` and `/mcp`
-    // (docs/config-review.md).
+    // (docs/state/config-review.md).
     assert!(
         COMMANDS.iter().all(|c| c.name != "trust"),
         "/trust is no longer a command"
     );
     // `/login` has three ways in, and a description naming only a key sends
-    // someone with a local server looking for one (docs/local-models.md).
+    // someone with a local server looking for one (docs/providers/local-models.md).
     assert_eq!(
         desc("login"),
         "Sign in, add an API key, or connect a local model"
@@ -192,7 +192,7 @@ fn leaving_and_re_entering_command_mode_reopens_the_palette() {
     );
 }
 
-// --- /init (docs/init.md) ---
+// --- /init (docs/state/init.md) ---
 
 #[test]
 fn the_palette_lists_init_with_a_concise_description() {
@@ -301,7 +301,7 @@ fn opening_the_picker_abandons_the_palette_and_shortcuts() {
     assert!(app.command_menu.is_none());
 }
 
-// ===== the per-tier speed commands (docs/fast-mode.md) =====
+// ===== the per-tier speed commands (docs/providers/fast-mode.md) =====
 
 fn fast_tier() -> ServiceTier {
     ServiceTier::new("priority", "Fast", "1.5x speed, increased usage")

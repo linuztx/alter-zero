@@ -1,9 +1,9 @@
 //! The persisted `/model` selection — kept **per working directory**, so each
 //! project runs the model that was picked *in* it, with the last choice made
 //! anywhere seeding a directory launched in for the first time
-//! (`docs/per-directory-state.md`). Written to `~/.alter-zero/config.json` by
+//! (`docs/state/per-directory-state.md`). Written to `~/.alter-zero/config.json` by
 //! the boundary (`tui::config`); the parse/serialize here is **pure and
-//! unit-tested**, like the `.env` keystore's. See `docs/llm.md`.
+//! unit-tested**, like the `.env` keystore's. See `docs/providers/llm.md`.
 
 use std::collections::BTreeMap;
 
@@ -48,24 +48,24 @@ pub struct Settings {
     pub model: Option<String>,
     /// The saved model's reasoning capability + chosen mode, when it supports
     /// thinking — restored at startup so the Ctrl+T cycle needs no refetch.
-    /// See `docs/reasoning.md`.
+    /// See `docs/providers/reasoning.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
     /// The saved model's image-input support, when its `/v1/models` record
     /// said either way — restored at startup so the backend gates image
     /// attachments without a re-probe. Absent = unknown (a legacy file, or a
     /// provider whose records don't say) — the probe finds out. See
-    /// `docs/tools.md`.
+    /// `docs/tools/tools.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
     /// The saved model's context window in tokens, when its `/v1/models`
     /// record reported one — restored at startup so the footer's
     /// `{used}/{window} ({pct}%)` gauge (and the auto-compact trigger) work
-    /// without a re-probe. Absent = unknown. See `docs/compact.md`.
+    /// without a re-probe. Absent = unknown. See `docs/architecture/compact.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
     /// The saved model's speed tiers and the choice over them
-    /// (`docs/fast-mode.md`) — restored at startup so the tier commands
+    /// (`docs/providers/fast-mode.md`) — restored at startup so the tier commands
     /// start where they left off and the tier rides the first request. Absent = unknown (a
     /// legacy file) — the probe finds out; the empty blob is the marker for a
     /// model known to list none.
@@ -74,7 +74,7 @@ pub struct Settings {
     /// One entry per working directory (its absolute path): the selection
     /// made *in* that directory, or the last one pinned there at its first
     /// launch. Omitted when empty, so a file with no entries is byte-for-byte
-    /// the old shape. See `docs/per-directory-state.md`.
+    /// the old shape. See `docs/state/per-directory-state.md`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub projects: BTreeMap<String, ModelSelection>,
 }
@@ -88,22 +88,22 @@ pub struct Settings {
 pub struct ModelSelection {
     /// The provider id (e.g. `openrouter`) — read through
     /// `canonical_provider`, so a directory's entry, or a rollout's
-    /// `model` record (`docs/session-model.md`), written under an id the
+    /// `model` record (`docs/state/session-model.md`), written under an id the
     /// provider has since shed still lands on it.
     #[serde(deserialize_with = "canonical_provider")]
     pub provider: String,
     /// The model id.
     pub model: String,
-    /// The model's reasoning capability + chosen mode (`docs/reasoning.md`).
+    /// The model's reasoning capability + chosen mode (`docs/providers/reasoning.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
-    /// The model's image-input support (`docs/tools.md`).
+    /// The model's image-input support (`docs/tools/tools.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
-    /// The model's context window in tokens (`docs/compact.md`).
+    /// The model's context window in tokens (`docs/architecture/compact.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
-    /// The model's speed tiers and the `/fast` choice (`docs/fast-mode.md`).
+    /// The model's speed tiers and the `/fast` choice (`docs/providers/fast-mode.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<SpeedSettings>,
 }
@@ -182,7 +182,7 @@ impl ModelSelection {
 
 /// The persisted reasoning state, as plain labels so a hand-edited or
 /// future-versioned file still loads ([`ThinkingSettings::to_state`] skips
-/// what it can't parse). See `docs/reasoning.md`.
+/// what it can't parse). See `docs/providers/reasoning.md`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThinkingSettings {
     /// `Some(false)` records "this model has no thinking" so startup doesn't
@@ -272,7 +272,7 @@ impl ThinkingSettings {
     }
 }
 
-/// The persisted speed state (`docs/fast-mode.md`): the tiers the model's
+/// The persisted speed state (`docs/providers/fast-mode.md`): the tiers the model's
 /// record listed and the selected one's wire id, kept beside the thinking
 /// blob. The **empty** blob (`{}`) records "this model lists no tier" so
 /// startup doesn't re-probe `/models` for it, the way
@@ -368,7 +368,7 @@ impl Settings {
     }
 
     /// The same settings with the saved model's context window attached
-    /// (`None` = the record didn't report one). See `docs/compact.md`.
+    /// (`None` = the record didn't report one). See `docs/architecture/compact.md`.
     #[must_use]
     pub fn with_context(mut self, context: Option<u64>) -> Self {
         self.context = context;
@@ -376,14 +376,14 @@ impl Settings {
     }
 
     /// The same settings with the saved model's speed blob attached (`None`
-    /// = unknown). See `docs/fast-mode.md`.
+    /// = unknown). See `docs/providers/fast-mode.md`.
     #[must_use]
     pub fn with_speed(mut self, speed: Option<SpeedSettings>) -> Self {
         self.speed = speed;
         self
     }
 
-    // ----- per-directory selections (docs/per-directory-state.md) -----
+    // ----- per-directory selections (docs/state/per-directory-state.md) -----
 
     /// The last selection made anywhere — the top-level fields — when both
     /// halves of the pair are there. A half-written file (a model with no
@@ -478,8 +478,8 @@ impl Settings {
 }
 
 /// Does an environment pin outrank a saved selection? The startup precedence
-/// (`docs/llm.md`), asked again when a resume brings a conversation's own
-/// model back (`docs/session-model.md`): `ALTER_ZERO_MODEL` pins the model
+/// (`docs/providers/llm.md`), asked again when a resume brings a conversation's own
+/// model back (`docs/state/session-model.md`): `ALTER_ZERO_MODEL` pins the model
 /// for the run whatever the record says, and `ALTER_ZERO_PROVIDER` alone pins
 /// the provider — a saved pair applies only under the provider it was saved
 /// with, since a different provider may not serve that model at all. Both
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn a_saved_selection_naming_the_legacy_chatgpt_id_reads_as_the_renamed_provider() {
         // The provider was `openai_chatgpt` before it was named for what it
-        // is (docs/chatgpt.md); a config.json written then still loads — the
+        // is (docs/providers/chatgpt.md); a config.json written then still loads — the
         // top-level last selection and a directory's entry alike — and is
         // written back under the new id. Every other id is itself.
         let s = Settings::parse(
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn the_context_window_round_trips_and_omits_when_absent() {
-        // The saved model's context window (docs/compact.md) — restored at
+        // The saved model's context window (docs/architecture/compact.md) — restored at
         // startup so the footer gauge shows without a re-probe.
         let s = Settings::for_selection("p", "m").with_context(Some(128_000));
         assert_eq!(Settings::parse(&s.to_json()).context, Some(128_000));
@@ -651,7 +651,7 @@ mod tests {
     fn vision_round_trips_and_legacy_files_load_with_none() {
         // The saved model's image-input support is persisted beside the
         // thinking blob so startup needs no re-probe; a legacy file simply
-        // has it unknown (the probe finds out). See docs/tools.md.
+        // has it unknown (the probe finds out). See docs/tools/tools.md.
         let s =
             Settings::for_selection("openrouter", "openai/gpt-oss-120b").with_vision(Some(false));
         let restored = Settings::parse(&s.to_json());
@@ -678,7 +678,7 @@ mod tests {
         assert!(!json.contains("model"), "unset fields are skipped: {json}");
     }
 
-    // ===== per-directory selections (docs/per-directory-state.md) =====
+    // ===== per-directory selections (docs/state/per-directory-state.md) =====
 
     fn own(provider: &str, model: &str) -> ModelSelection {
         ModelSelection::new(provider, model)
@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(Settings::parse(&json), s);
     }
 
-    // ===== the speed blob (docs/fast-mode.md) =====
+    // ===== the speed blob (docs/providers/fast-mode.md) =====
 
     fn fast_tier() -> ServiceTier {
         ServiceTier::new("priority", "Fast", "1.5x speed, increased usage")
@@ -902,7 +902,7 @@ mod tests {
         );
     }
 
-    // ===== the environment pin over a conversation's own model (docs/session-model.md) =====
+    // ===== the environment pin over a conversation's own model (docs/state/session-model.md) =====
 
     #[test]
     fn an_environment_pin_outranks_a_sessions_recorded_selection() {

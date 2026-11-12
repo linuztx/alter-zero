@@ -1,5 +1,5 @@
 //! Speed tiers — the pure core behind the per-tier commands, `/fast` and
-//! whatever else a model lists (`docs/fast-mode.md`).
+//! whatever else a model lists (`docs/providers/fast-mode.md`).
 //!
 //! Codex's *fast mode* is a **service tier** on the request: a model whose
 //! `/models` record lists a tier with the wire id `priority` can be asked
@@ -27,7 +27,7 @@ pub const STANDARD_LABEL: &str = "standard";
 /// increased usage`), which the tier's palette row and its toast repeat so
 /// the price of the speed is said where it is bought. Serializable because `config.json`
 /// keeps the listed tiers beside the model selection, the way it keeps the
-/// reasoning ladder (`docs/per-directory-state.md`).
+/// reasoning ladder (`docs/state/per-directory-state.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceTier {
     /// The wire value (`service_tier: "priority"`).
@@ -125,7 +125,7 @@ impl ServiceTier {
 /// `App::speed`; each listed tier is a palette command that runs
 /// [`SpeedState::toggle`] on it, the footer shows [`SpeedState::label`]
 /// beside the model name, and the boundary threads [`SpeedState::tier`]
-/// into each request (`docs/fast-mode.md`).
+/// into each request (`docs/providers/fast-mode.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeedState {
     /// The tiers the model offers, in the record's order — the palette's
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn a_tier_round_trips_through_json_and_omits_an_empty_description() {
-        // The blob `config.json` keeps (`docs/per-directory-state.md`): the
+        // The blob `config.json` keeps (`docs/state/per-directory-state.md`): the
         // legacy marker's tier has no description to write.
         let json = serde_json::to_string(&fast()).unwrap();
         assert_eq!(serde_json::from_str::<ServiceTier>(&json).unwrap(), fast());

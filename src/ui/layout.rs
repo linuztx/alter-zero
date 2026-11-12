@@ -3,8 +3,8 @@
 //!
 //! Pure policy — `term.rs` calls these and does the terminal I/O itself
 //! (`docs/design.md`). The rows it sizes are the streaming strip
-//! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
-//! `docs/file-search.md`) and the footer (`docs/footer.md`).
+//! (`docs/ui/status-indicator.md`), the bands (`docs/ui/shortcuts.md`,
+//! `docs/input/file-search.md`) and the footer (`docs/ui/footer.md`).
 
 use super::agent::agent_preview_rows;
 use super::live::preview_tool_lines;
@@ -18,7 +18,7 @@ use super::*;
 /// - the **status line** (`has_status`: a turn is active *and* it is not a `!`
 ///   shell turn — a shell run hides the spinner status entirely, showing its
 ///   elapsed in the `⎿ Running… (Ns)` preview instead, see [`strip_has_status`]
-///   and `docs/shell-command.md`);
+///   and `docs/input/shell-command.md`);
 /// - the **preview** (`preview_rows` content rows: a reply whose buffer is
 ///   non-empty previews one row; a running backend tool previews its *whole*
 ///   collapsed cell — the wrapped `● name(args)` header **plus** its `⎿ Running…`
@@ -30,7 +30,7 @@ use super::*;
 /// pause is status + gap only (no empty preview line, codex parity); a shell run
 /// is one preview row + gap only (no status); and idle it collapses to nothing.
 /// The **hanging rows** (`hang_rows` — [`hang_rows`]: the task checklist,
-/// `docs/task-tools.md`, else the spinner tip, `docs/tips.md`) sit inside the
+/// `docs/tools/task-tools.md`, else the spinner tip, `docs/ui/tips.md`) sit inside the
 /// status slot, directly under the status line and above its trailing gap, so
 /// their `⎿` rows visually hang off the spinner the way tool output hangs off
 /// its header (0 when no turn is active and no list is left — the checklist
@@ -76,13 +76,13 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 pub fn preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
     // tool cells, its thinking block, or its reply's uncommitted frontier
-    // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
+    // (docs/agents/agent-tool.md, docs/agents/agent-view-streaming.md). The branch mirrors
     // the main one below, so `agent_preview_rows` owns it.
     if let Some(run) = app.viewed_agent() {
         return agent_preview_rows(app, run, width);
     }
     // A live agent group previews its whole tree cell (over the tool queue's
-    // cells when a mixed round runs both — docs/agent-tool.md); a live tool
+    // cells when a mixed round runs both — docs/agents/agent-tool.md); a live tool
     // queue previews every call's cell (a **parallel batch** shows the
     // running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
     // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
@@ -91,16 +91,16 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
         return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
     }
     // A `write` still being generated previews its streaming cell
-    // (docs/write-streaming.md), sized from the walk the strip draws.
+    // (docs/ui/write-streaming.md), sized from the walk the strip draws.
     if app.tool_drafts().previews().next().is_some() {
         let lines = super::live::drafting_lines(app, width);
         return u16::try_from(lines.len()).unwrap_or(u16::MAX);
     }
     // The open read/search group's cell holds the slot alone — between
     // rounds, and through a thought, which opens no block while the group is
-    // up (docs/tool-groups.md *Thoughts*); else an open thinking phase
+    // up (docs/ui/tool-groups.md *Thoughts*); else an open thinking phase
     // previews its live block, the `● Thinking…` header plus the tail it
-    // shows (docs/thinking-stream.md). Sized from the same walks the strip
+    // shows (docs/ui/thinking-stream.md). Sized from the same walks the strip
     // draws, so the two agree by construction.
     let group = super::live::open_group_lines(app, width).len();
     if group > 0 {
@@ -115,10 +115,10 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // line, the whole forming table — padded with blank rows to the height
     // it had a token ago, less what committed since, so a closing ``` or a
     // re-laid-out table never drops rows and bounces the box
-    // (docs/slow-stream.md). Only the
+    // (docs/ui/slow-stream.md). Only the
     // boundary's `StreamRender` knows that height, so it injects the count each
     // frame via [`App::set_stream_preview_rows`] (the `set_status_times`
-    // pattern; docs/table-streaming.md) and this reports it verbatim — a floor
+    // pattern; docs/ui/table-streaming.md) and this reports it verbatim — a floor
     // here would reserve a row [`preview_lines`] does not draw, tripping its
     // `debug_assert`. 1 until a draw injects one (`App::begin_stream`'s
     // default), which is also what the `None` render fallback draws. The
@@ -132,7 +132,7 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
 
 /// Rows the streaming strip's **preview slot** may take inside a live region
 /// of `height` — the one budget the whole pipeline spends
-/// (docs/table-streaming.md *The preview slot is budgeted*).
+/// (docs/ui/table-streaming.md *The preview slot is budgeted*).
 ///
 /// The preview is the region's only elastic row: everything else it holds is
 /// decided by state the frame cannot negotiate with — the status line and the
@@ -232,7 +232,7 @@ pub fn fitted_preview_rows(app: &App, width: u16, height: u16) -> u16 {
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip
 /// rows a multi-row (forming-table) preview may take at this terminal height
 /// before it tail-follows its newest rows — [`preview_budget`] exactly, so the
-/// renderer never spends a row the strip cannot reserve (docs/table-streaming.md).
+/// renderer never spends a row the strip cannot reserve (docs/ui/table-streaming.md).
 #[must_use]
 pub fn stream_preview_max_rows(app: &App, width: u16, term_height: u16) -> usize {
     usize::from(preview_budget(app, width, term_height))
@@ -241,14 +241,14 @@ pub fn stream_preview_max_rows(app: &App, width: u16, term_height: u16) -> usize
 /// Whether the streaming strip shows the **status line** (the spinner + timer +
 /// `esc to interrupt`): true while a turn is active, **except a `!` shell
 /// turn**, which suppresses the whole status row and shows its elapsed in the
-/// `⎿ Running… (Ns)` preview instead (docs/shell-command.md). Idle → false
+/// `⎿ Running… (Ns)` preview instead (docs/input/shell-command.md). Idle → false
 /// (no turn). Used by [`render_live`]/[`cursor_position`]/`main.rs` to feed
 /// `strip_rows` (and to gate the status render in [`render_live`]).
 #[must_use]
 pub fn strip_has_status(app: &App) -> bool {
     // An agent session view shows the *viewed agent's* status while it runs
     // — the main turn's spinner belongs to the main screen
-    // (docs/agent-tool.md).
+    // (docs/agents/agent-tool.md).
     if let Some(run) = app.viewed_agent() {
         return !run.status.is_final();
     }
@@ -257,8 +257,8 @@ pub fn strip_has_status(app: &App) -> bool {
 
 /// The rows **hanging off the status line**, inside its slot and above its
 /// trailing gap: the lost-connection row while the backend waits for the
-/// network (`docs/offline.md`), the task checklist (`docs/task-tools.md`),
-/// and — with neither to show — the spinner tip (`docs/tips.md`). They share
+/// network (`docs/providers/offline.md`), the task checklist (`docs/tools/task-tools.md`),
+/// and — with neither to show — the spinner tip (`docs/ui/tips.md`). They share
 /// one slot, so they share this one count, and every caller hands it to
 /// `strip_rows` / [`live_height`] / `live_layout` / `input_box` where the
 /// checklist's alone used to go — the sum spelled once, so the rows the
@@ -290,7 +290,7 @@ fn field_width(width: u16) -> u16 {
 /// landed in it wraps to the next row instead (Claude Code's rule). The
 /// alternative was the text flush against the terminal's edge with the caret
 /// dropped to an empty row below, which read as a newline the user never
-/// typed (`docs/textarea.md`). Every field that renders the textarea sizes
+/// typed (`docs/input/textarea.md`). Every field that renders the textarea sizes
 /// itself through here — the composer, the ask modal's entries, Tab's amend
 /// field — so the three cannot disagree.
 pub(super) fn text_field_width(cells: u16) -> u16 {
@@ -348,7 +348,7 @@ pub fn live_height(
 /// once for a given `(app, width, height)` so nothing downstream can hand
 /// [`live_height`] and [`live_layout`] different numbers. `render_live`
 /// builds one to lay the region out; [`strip_paint_rows`] builds the same one
-/// to learn how tall the strip will be (`docs/strip-flow.md`).
+/// to learn how tall the strip will be (`docs/ui/strip-flow.md`).
 pub(super) struct LiveRows {
     pub(super) has_status: bool,
     pub(super) preview: u16,
@@ -417,7 +417,7 @@ pub(super) fn live_layout_for(area: Rect, rows: &LiveRows) -> [Rect; 5] {
 /// live region at this terminal size — [`live_layout`]'s strip slice, from
 /// the very numbers `render_live` passes it, so the strip flow and the strip
 /// paint can never disagree about how tall the strip is
-/// (`docs/strip-flow.md`).
+/// (`docs/ui/strip-flow.md`).
 ///
 /// Only the composer path: a composer-replacing view splits the region with
 /// [`view_split`] instead, and there the view's own page is what flows.
@@ -444,11 +444,11 @@ pub fn strip_paint_rows(app: &App, width: u16, term_height: u16) -> u16 {
 /// The `/model` picker, the `/login` flow, the `/settings` menu and the ↓
 /// background manager band all replace the **composer** — never the running
 /// turn (they open mid-turn precisely because the turn streams on its own
-/// thread, `docs/llm.md`). So what is executing stays on screen above them:
+/// thread, `docs/providers/llm.md`). So what is executing stays on screen above them:
 /// the running tool's live cell, the spinner status line, the queued
 /// follow-ups, the toast. Taking the whole region instead hid exactly the turn
 /// the user opened the view beside — the reported bug, first for the band
-/// (`docs/background.md`) and then for the pickers.
+/// (`docs/tools/background.md`) and then for the pickers.
 ///
 /// Saturating: the queue is uncapped, and the callers clamp the sum to the
 /// terminal height anyway.
@@ -498,7 +498,7 @@ fn view_cursor_y(area: Rect, body: Rect, row: u16) -> u16 {
 /// taller than its body paints from `view_body_skip` down, so every page row
 /// shifts up by the skip — clamped at the body top when the row itself is
 /// scrolled off (the flow holds it in scrollback then, where a hardware
-/// cursor cannot sit — `docs/view-flow.md`).
+/// cursor cannot sit — `docs/ui/view-flow.md`).
 fn anchored_view_row(page_rows: u16, body: Rect, row: u16) -> u16 {
     let skip = super::view_flow::view_body_skip(usize::from(page_rows), body.height);
     row.saturating_sub(u16::try_from(skip).unwrap_or(u16::MAX))
@@ -514,7 +514,7 @@ pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
 
 /// The rows the `/model` picker's own frame occupies — the built page's line
 /// count (`model_view_lines`), so the height and the paint agree by
-/// construction (`docs/view-flow.md`). What [`model_picker_height`] reserves
+/// construction (`docs/ui/view-flow.md`). What [`model_picker_height`] reserves
 /// under the strip, and what [`render_live`] hands [`render_model_picker`].
 pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16, height: u16) -> u16 {
     u16::try_from(super::model_view::model_view_lines(picker, width, height).len())
@@ -545,7 +545,7 @@ pub fn model_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
 /// `/model` picker it **replaces** the composer — and the streaming strip with
 /// it, since the turn is blocked on the answer. Exactly the rows
 /// [`permission_lines`] builds, clamped to the terminal. See
-/// `docs/permissions.md`.
+/// `docs/state/permissions.md`.
 #[must_use]
 pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.permission()?;
@@ -559,7 +559,7 @@ pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 /// composer: the streaming strip (a running tool's live cell, the status
 /// line, the queued messages, the toast) keeps its rows **above** the band,
 /// so opening the manager mid-turn never hides what is executing (the
-/// user-reported fix, `docs/background.md`). The band's own height is the
+/// user-reported fix, `docs/tools/background.md`). The band's own height is the
 /// built line count ([`background_view_lines`]) **at the terminal's real
 /// width** — the details page's Command field wraps, so the count is
 /// width-dependent — the sum clamped to the terminal.
@@ -627,7 +627,7 @@ pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -
 /// Whether the live region is an **inline modal** — the tool-permission
 /// prompt or the `AskUserQuestion` modal, the inline views that can be as
 /// tall as the whole terminal and whose close needs special care
-/// (`docs/permissions.md`, `docs/ask.md`).
+/// (`docs/state/permissions.md`, `docs/tools/ask.md`).
 ///
 /// The prompt grows through the ordinary [`repin`] like every other region —
 /// the chat above it scrolls into the terminal's *real* scrollback, so the
@@ -649,7 +649,7 @@ pub fn region_is_modal(app: &App) -> bool {
 
 /// Whether this draw must **purge-rebuild** the conversation instead of
 /// painting the live region in place — the pure decision behind the loop's
-/// rebuild arm, the sibling of [`region_is_modal`] (`docs/permissions.md`).
+/// rebuild arm, the sibling of [`region_is_modal`] (`docs/state/permissions.md`).
 /// Both cases answer the same problem: the modal prompt's scrolls are
 /// one-way, so a plain shrink strands the region above rows it cannot refill.
 ///
@@ -750,7 +750,7 @@ pub(super) fn live_layout(
     // normally spends it before we get here) — and every row nobody claimed
     // grows the box, so a region that fits lands exactly where the solver put
     // it. (The band and the footer never actually compete: `footer_rows`
-    // reports 0 while a band is open, `docs/footer.md`.)
+    // reports 0 while a band is open, `docs/ui/footer.md`.)
     let mut spare = area.height;
     let floor = LIVE_MIN_HEIGHT.min(spare);
     spare -= floor;
@@ -875,7 +875,7 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
 /// seats it either way, so a terminal that ignores the hide — and the cursor's
 /// return when the prompt closes — starts from somewhere meaningful.
 ///
-/// The ask modal follows the same rule (`docs/ask.md`): its option pages are
+/// The ask modal follows the same rule (`docs/tools/ask.md`): its option pages are
 /// menus (no cursor), and the caret comes back for the free-text Other entry
 /// and the notes field.
 #[must_use]
@@ -888,7 +888,7 @@ pub fn cursor_visible(app: &App) -> bool {
     }
     // The no-text-entry pickers (`/hooks`, the startup review, `/mcp`) and
     // the ↓ manager band are menus too — same rule
-    // (`docs/config-review.md`, `docs/mcp.md`). The `/mcp` Auth page's
+    // (`docs/state/config-review.md`, `docs/tools/mcp.md`). The `/mcp` Auth page's
     // `URL >` field *is* typed into, so its caret stays, the amend-field
     // exception again.
     if app.hooks_menu.is_some()
@@ -904,7 +904,7 @@ pub fn cursor_visible(app: &App) -> bool {
     // The `/login` device page is a wait, not a field — the same menu rule: a
     // kitty cursor trail would streak across it on every countdown tick. The
     // sign-in method choice above it has nothing to type into either
-    // (`docs/chatgpt.md`), nor has the method root, a titled question.
+    // (`docs/providers/chatgpt.md`), nor has the method root, a titled question.
     if let Some(onboarding) = &app.key_onboarding
         && matches!(
             onboarding.step,
@@ -915,7 +915,7 @@ pub fn cursor_visible(app: &App) -> bool {
     }
     // A local server page waiting on its connection test, or showing an
     // address its provider block fixes, has no field to type into either
-    // (`docs/local-models.md`).
+    // (`docs/providers/local-models.md`).
     if let Some(onboarding) = &app.key_onboarding
         && onboarding.step == KeyStep::Server
         && !onboarding.server_takes_typing()
@@ -926,7 +926,7 @@ pub fn cursor_visible(app: &App) -> bool {
         return menu.page == crate::app::McpPage::Auth;
     }
     // The `/secrets` list is a menu; its form is typed into
-    // (`docs/secrets.md`).
+    // (`docs/state/secrets.md`).
     if let Some(page) = &app.secrets_page {
         return page.form.is_some();
     }
@@ -979,7 +979,7 @@ fn is_text_row(line: &ratatui::text::Line<'_>) -> bool {
 }
 
 /// The row of a built page's first **text** line — a question page's title,
-/// which every rung of its ladder keeps at the top (`docs/view-flow.md`).
+/// which every rung of its ladder keeps at the top (`docs/ui/view-flow.md`).
 /// `None` on a page with no text at all.
 fn title_row(lines: &[ratatui::text::Line<'_>]) -> Option<u16> {
     lines
@@ -993,7 +993,7 @@ fn title_row(lines: &[ratatui::text::Line<'_>]) -> Option<u16> {
 /// selection marker span — the views are content-driven, so the row is
 /// wherever the content put it. The [`view_split`] the paint uses seats the
 /// body under any streaming strip, and a body taller than its area is
-/// painted **bottom-anchored** ([`view_body_skip`], `docs/view-flow.md`), so
+/// painted **bottom-anchored** ([`view_body_skip`], `docs/ui/view-flow.md`), so
 /// the marker's page row is shifted by the same skipped top rows.
 ///
 /// A page with no painted marker — a detail view, an empty `/mcp` or
@@ -1063,7 +1063,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // permission prompt's rule, so a terminal's cursor animation lands on
     // the option being chosen while `cursor_visible` hides the cursor over
     // the menu. The builder computed the seat with the rows, so the two can
-    // never drift (`docs/ask.md`); the far corner is only the fallback for
+    // never drift (`docs/tools/ask.md`); the far corner is only the fallback for
     // a seat the height clamp dropped off the page.
     if app.ask().is_some() {
         if let Some((x, y)) = super::ask_view::ask_cursor(app, area.width, area.height) {
@@ -1122,7 +1122,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     }
     // The startup review, next in the render order: a menu, so the hidden
     // cursor seats on its highlighted `❯` the `/hooks` way
-    // (`docs/config-review.md`).
+    // (`docs/state/config-review.md`).
     if app.config_review.is_some() {
         let lines = super::config_review_view::config_review_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
@@ -1189,24 +1189,24 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return menu_marker_seat(&lines, area);
     }
     // The read-only `/donate` page seats on its highlighted `❯` the same way
-    // (docs/donate.md).
+    // (docs/ui/donate.md).
     if app.donate_picker.is_some() {
         let lines = super::donate_view::donate_view_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
-    // …and the read-only `/export` page, its sibling (docs/export.md).
+    // …and the read-only `/export` page, its sibling (docs/ui/export.md).
     if app.export_picker.is_some() {
         let lines = super::export_view::export_view_lines(app, area.width);
         return menu_marker_seat(&lines, area);
     }
     // …and the read-only `/context` page, on its highlighted legend row
-    // (docs/context-usage.md).
+    // (docs/architecture/context-usage.md).
     if app.context_usage.is_some() {
         let lines = super::context_usage_view::context_usage_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
     // …and the read-only `/usage` page, on its highlighted section's head
-    // (docs/usage.md).
+    // (docs/providers/usage.md).
     if app.usage_page.is_some() {
         let lines = super::usage_view::usage_view_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
@@ -1214,7 +1214,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The `/secrets` page: its list seats on the highlighted `❯` like
     // `/donate`; its form puts the caret in the focused field, at the seat
     // the builder reports — three fields make "the row with the `❯`" a
-    // question the lines alone cannot answer (docs/secrets.md).
+    // question the lines alone cannot answer (docs/state/secrets.md).
     if app.secrets_page.is_some() {
         let build = super::secrets_view::secrets_build(app, area.width, area.height);
         let Some((col, row)) = build.cursor else {
@@ -1231,7 +1231,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the field's row **found** in the page the paint builds
     // (`view_prompt_row`'s rule): the notes under the field wrap with the
     // width, so a row counted up from the region's bottom landed under the
-    // field on a narrow terminal. See `docs/mcp.md`.
+    // field on a narrow terminal. See `docs/tools/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
         if menu.page == crate::app::McpPage::Auth {

@@ -1,6 +1,6 @@
 //! The `/context` page's pure core: what fills the context window, by
 //! category, and what the provider said about the requests that carried it.
-//! See `docs/context-usage.md`.
+//! See `docs/architecture/context-usage.md`.
 //!
 //! [`breakdown`] takes the window **as the request carries it** — the system
 //! prompt, the tool schemas exactly as the client serializes them, the
@@ -404,7 +404,7 @@ impl Slice {
 
 /// The system prompt's blocks, one per markdown heading — the persona's
 /// `# System prompt`, the `## Environment` and `## Scratchpad` blocks the
-/// boundary appends (`docs/environment.md`) — each labelled by its heading
+/// boundary appends (`docs/architecture/environment.md`) — each labelled by its heading
 /// and running to the next one; a `#` line inside a fenced example is that
 /// block's text. Text ahead of the first heading (an override prompt with no
 /// headings at all) is a block of its own.
@@ -988,7 +988,7 @@ mod tests {
 
     /// The MCP servers' instructions, the reminder's last section, are a
     /// slice of their own — one part per server — and a server's text can't
-    /// pose as another section's header (`docs/mcp.md`).
+    /// pose as another section's header (`docs/tools/mcp.md`).
     #[test]
     fn mcp_instructions_are_their_own_slice_one_part_per_server() {
         let secrets = secrets_section();

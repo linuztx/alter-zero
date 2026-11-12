@@ -1,5 +1,5 @@
 //! Tool-call bookkeeping and the parallel batch queue
-//! (`docs/tools.md`, `docs/parallel-tools.md`).
+//! (`docs/tools/tools.md`, `docs/tools/parallel-tools.md`).
 
 use super::*;
 
@@ -16,7 +16,7 @@ fn start_tool_marks_a_running_tool_not_yet_in_history() {
     assert!(app.history.is_empty(), "a running tool is not yet history");
 }
 
-// --- how a call ran (docs/rollout-records.md) ---
+// --- how a call ran (docs/state/rollout-records.md) ---
 
 fn failed_run() -> crate::stream::ToolRun {
     crate::stream::ToolRun {
@@ -68,7 +68,7 @@ fn a_run_reaches_the_running_call_alone() {
 fn start_tool_records_the_verbatim_arguments_on_the_call() {
     // The header summary is lossy on purpose (`● Write(a.py)`), so the raw
     // arguments ride beside it — that is what the derived context replays
-    // (`docs/context.md`). It must land on a batch sibling too: a batch no
+    // (`docs/architecture/context.md`). It must land on a batch sibling too: a batch no
     // round announced (the offline dummy) carries only the summary, so its
     // queued `Waiting` cell is filled in when its own ToolStart flips it to
     // `Running` (an announced round fills it in up front — see
@@ -216,7 +216,7 @@ fn reject_tool_keeps_the_model_facing_result_beside_the_cell_text() {
     // A permission rejection resolves red like any failure, but with TWO
     // texts: the short cell line the user reads and the longer instruction
     // the model read. Only keeping both lets the derived context replay what
-    // was really sent — Tab's amend feedback included (docs/permissions.md).
+    // was really sent — Tab's amend feedback included (docs/state/permissions.md).
     let mut app = App::new();
     app.start_tool("Write", "hello.py", None);
     let finished = app
@@ -252,7 +252,7 @@ fn an_ordinary_call_reads_its_own_output_as_the_model_facing_text() {
 #[test]
 fn a_rejections_token_tally_charges_the_text_the_model_reads() {
     // The tally counts what the next request uploads. For a rejection that is
-    // the long instruction, not the one-line cell (docs/status-indicator.md).
+    // the long instruction, not the one-line cell (docs/ui/status-indicator.md).
     let long = "The user doesn't want to proceed with this tool use. The tool use was rejected. \
                 STOP what you are doing and wait for the user to tell you how to proceed.";
     let mut app = App::new();
@@ -298,7 +298,7 @@ fn set_tool_truncated_is_a_noop_when_no_tool_is_running() {
 
 #[test]
 fn set_tool_note_rides_the_running_call_into_history() {
-    // The auto mode classifier's note (docs/permissions.md): recorded on the
+    // The auto mode classifier's note (docs/state/permissions.md): recorded on the
     // running call right after its ToolStart, kept by end_tool so the
     // committed cell (and a /resume of it) can append the provenance row.
     let mut app = App::new();
@@ -354,7 +354,7 @@ fn set_tool_note_ignores_a_waiting_sibling_and_an_idle_queue() {
 #[test]
 fn push_tool_output_tails_the_running_tool() {
     // Live streaming: each ToolOutput chunk appends to the running call's
-    // output so the cell tails it (docs/tool-streaming.md).
+    // output so the cell tails it (docs/ui/tool-streaming.md).
     let mut app = App::new();
     app.start_tool("Bash", "ping -c 2 x", None);
     app.push_tool_output("line 1\n");
@@ -386,7 +386,7 @@ fn push_tool_output_does_not_tail_a_waiting_batch_sibling() {
 
 #[test]
 fn a_screen_update_appends_settled_text_and_replaces_the_live_tail() {
-    // A terminal session streams its screen (docs/interactive-shell.md):
+    // A terminal session streams its screen (docs/tools/interactive-shell.md):
     // settled text is final and appends, and the live rows replace the ones
     // the last update sent — a progress bar is one row changing in place.
     let mut app = App::new();
@@ -514,7 +514,7 @@ fn background_tool_resolves_the_front_call_as_backgrounded() {
     );
 }
 
-// --- the file tools' path display (docs/tools.md "Path display") ---
+// --- the file tools' path display (docs/tools/tools.md "Path display") ---
 
 /// The session policy of the worked example: launched in
 /// `~/Codes/tests`, home `/home/linuztx`.
@@ -651,7 +651,7 @@ fn the_app_holds_the_verbatim_policy_until_the_boundary_injects_one() {
 #[test]
 fn the_header_link_is_the_files_absolute_url() {
     // The `● Write(hello.py)` header's `file://` target names the whole
-    // file, whatever short form the row shows (docs/links.md).
+    // file, whatever short form the row shows (docs/ui/links.md).
     let paths = paths();
     assert_eq!(
         paths
@@ -713,7 +713,7 @@ fn an_announced_round_stamps_the_provider_ids_and_one_batch_on_every_record() {
     // order. The batch announcement lists the two visible calls; the task
     // call resolves through its own event. Every record ends up carrying
     // the provider's id for its call and the round's one batch id
-    // (docs/prompt-caching.md).
+    // (docs/providers/prompt-caching.md).
     let mut app = App::new();
     app.begin_stream();
     app.open_round(vec![
@@ -762,7 +762,7 @@ fn an_announced_round_stamps_each_records_position_in_the_models_order() {
     // resolves first and the task call rides its own event, so the records
     // land in another order — each carries the index the model gave its
     // call, which is what lets the replay restore the wire's order
-    // (docs/prompt-caching.md).
+    // (docs/providers/prompt-caching.md).
     let mut app = App::new();
     app.begin_stream();
     app.open_round(vec![
@@ -833,7 +833,7 @@ fn an_announced_round_gives_each_waiting_call_the_models_own_arguments() {
     // The batch announcement carries only the header summaries; the round
     // ahead of it carries the model's verbatim arguments, so a call that
     // never reaches its own ToolStart still records exactly what the model
-    // asked for (docs/interrupt.md).
+    // asked for (docs/input/interrupt.md).
     let ping = r#"{"command":"ping google.com -c 10","timeout":60000}"#;
     let ls = r#"{"command":"ls -la","description":"List files"}"#;
     let mut app = App::new();
@@ -870,7 +870,7 @@ fn an_interrupted_round_replays_every_call_the_model_made() {
     // still carry BOTH calls — one assistant message, under the provider's own
     // ids and with the model's own arguments — each answered `Interrupted by
     // user`, then the notice. A call missing from the context is a call the
-    // model no longer knows it made (docs/interrupt.md).
+    // model no longer knows it made (docs/input/interrupt.md).
     let ping = r#"{"command":"ping google.com -c 10","timeout":60000}"#;
     let ls = r#"{"command":"ls -la","description":"List files"}"#;
     let mut app = App::new();
@@ -952,7 +952,7 @@ fn each_announced_round_is_its_own_batch_and_a_new_turn_forgets_the_last() {
     assert_eq!(app.open_round_batch(), None, "a new turn opens on no round");
 }
 
-// --- the live tail: which rows are still moving (docs/tool-streaming.md) ---
+// --- the live tail: which rows are still moving (docs/ui/tool-streaming.md) ---
 
 #[test]
 fn live_tail_stamps_a_redrawn_row_and_keeps_the_rest() {

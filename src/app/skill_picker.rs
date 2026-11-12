@@ -1,7 +1,7 @@
 //! The `$` skill-mention picker's [`App`](super::App) state: the codex-style
 //! popup that fuzzy-matches the discovered skills while the cursor sits in a
 //! `$mention`, and the Tab/Enter accept that completes it in place.
-//! See `docs/skill-mentions.md`.
+//! See `docs/input/skill-mentions.md`.
 
 use super::*;
 

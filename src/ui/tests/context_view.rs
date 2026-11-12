@@ -1,4 +1,4 @@
-//! The Ctrl+D context-debug overlay (`docs/context.md`).
+//! The Ctrl+D context-debug overlay (`docs/architecture/context.md`).
 
 use super::*;
 use crate::ui::theme::{
@@ -356,7 +356,7 @@ fn the_system_reminder_markers_recede_from_what_they_wrap() {
 
 #[test]
 fn context_lines_show_the_user_instructions_first() {
-    // The AGENTS.md section (docs/project-doc.md) opens the window's first
+    // The AGENTS.md section (docs/state/project-doc.md) opens the window's first
     // user entry inside the one `<system-reminder>` — right after the system
     // prompt, in front of the conversation, exactly what the request carries.
     let mut app = context_fixture();
@@ -432,7 +432,7 @@ fn context_lines_list_image_attachments_under_their_message() {
             .iter()
             .any(|t| t == "  ⎿  [Image #1: /tmp/shot.png] what is this?"),
         "the placeholder names the saved file, exactly as the wire carries \
-         it — this view is what was sent (`docs/image-paste.md`): {texts:?}"
+         it — this view is what was sent (`docs/input/image-paste.md`): {texts:?}"
     );
     assert!(
         texts.iter().any(|t| t == "     image: /tmp/shot.png"),
@@ -699,7 +699,7 @@ fn a_body_too_short_to_spare_a_row_pins_nothing() {
 fn an_agent_session_view_shows_the_subagents_own_system_prompt() {
     // The wire hands a subagent the MAIN prompt with the subagent note
     // appended (`prompts/subagent.md`, via `LlmBackend::subagent_config` —
-    // docs/agent-tool.md); the agent session view's Ctrl+D must show that
+    // docs/agents/agent-tool.md); the agent session view's Ctrl+D must show that
     // prompt, or the note can never be verified. The body derives from the
     // agent's own transcript, and the AGENTS.md section stays main-only
     // (subagents get none).
@@ -790,7 +790,7 @@ fn the_tiling_never_glues_a_slash_onto_a_title() {
 #[test]
 fn an_agents_context_view_leads_with_the_briefing_it_opened_on() {
     // A launched subagent opens on the skills `<system-reminder>` and reads
-    // its task behind it (`docs/subagents.md`), so its Ctrl+D has to lead
+    // its task behind it (`docs/agents/subagents.md`), so its Ctrl+D has to lead
     // with the reminder: a view that showed the task alone claimed the agent
     // was sent less than it was, and one that showed the reminder *after* the
     // task would misreport the order the agent read them in.
@@ -845,7 +845,7 @@ fn the_main_view_keeps_the_main_prompt_beside_a_stored_agent_prompt() {
     );
 }
 
-// ===== the ContextCache (docs/context.md) =====
+// ===== the ContextCache (docs/architecture/context.md) =====
 //
 // The Ctrl+D view redraws every animation frame while a turn runs, and the
 // derived-context walk + wrap is O(conversation) — rebuilt per frame it froze
@@ -982,7 +982,7 @@ fn context_cache_tracks_the_viewed_agents_window() {
     assert!(back.iter().any(|t| t == "  ⎿  hello"), "{back:?}");
 }
 
-// ===== Ctrl+D context-debug view (docs/context.md) =====
+// ===== Ctrl+D context-debug view (docs/architecture/context.md) =====
 
 /// A conversation with a system prompt, a user turn, a raw tool record,
 /// and a summary — everything the context window derives from.
@@ -997,7 +997,7 @@ fn context_fixture() -> App {
 fn the_context_cache_rebuilds_when_the_theme_changes() {
     // The role chips are coloured, so the cached window is pinned on the
     // active theme: a `/theme` switch rebuilds it in the new palette
-    // (`docs/theme.md`).
+    // (`docs/ui/theme.md`).
     use crate::app::Theme;
     use crate::ui::palette::{palette_of, with_theme};
     let mut app = App::new();
@@ -1051,7 +1051,7 @@ fn frame(input: u64) -> crate::stream::TokenUsage {
 fn the_estimates_count_in_what_the_providers_reports_taught() {
     // Two usage reports that counted the conversation's growth at three
     // halves of the estimate: the view's figures follow, so they and the
-    // footer's gauge speak the provider's tokens (docs/token-estimate.md).
+    // footer's gauge speak the provider's tokens (docs/architecture/token-estimate.md).
     let mut app = context_fixture();
     app.begin_stream();
     let first = whole_estimate(&app);

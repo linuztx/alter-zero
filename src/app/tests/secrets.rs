@@ -1,6 +1,6 @@
 //! The `/secrets` page: the list, the add/edit form and its key grammar —
 //! and what the user types, which reaches the conversation with every stored
-//! value replaced by its placeholder (`docs/secrets.md`).
+//! value replaced by its placeholder (`docs/state/secrets.md`).
 
 use super::*;
 use crate::ask::{AskDecision, AskOption, AskQuestion, AskRequest};
@@ -397,7 +397,7 @@ fn closing_the_page_forgets_the_draft() {
     assert!(page(&app).form.is_none());
 }
 
-// ===== what the user types (docs/secrets.md *What the user types*) =====
+// ===== what the user types (docs/state/secrets.md *What the user types*) =====
 
 /// `ROOT_PASSWORD`'s value — what the user types where they mean the secret.
 const VALUE: &str = "hunter2-staging";

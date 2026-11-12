@@ -1,5 +1,5 @@
 -- Adds the two payload-v2 columns to a table created before it
--- (`docs/telemetry.md` *The platform*). A database created from the current
+-- (`docs/ops/telemetry.md` *The platform*). A database created from the current
 -- `schema.sql` already has both and does not need this — SQLite has no
 -- `ADD COLUMN IF NOT EXISTS`, so running it there is a "duplicate column
 -- name" error and nothing worse.

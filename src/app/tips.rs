@@ -1,4 +1,4 @@
-//! The spinner tip's walk (`docs/tips.md`): which catalog tip a turn's status
+//! The spinner tip's walk (`docs/ui/tips.md`): which catalog tip a turn's status
 //! line shows, when it draws one, and what keeps the row — and the walk —
 //! still.
 //!
@@ -10,7 +10,7 @@
 use super::*;
 use crate::tips::{tip, tip_slot};
 
-/// The tip a turn's status line is showing (`docs/tips.md`): which catalog
+/// The tip a turn's status line is showing (`docs/ui/tips.md`): which catalog
 /// entry, and the rotation slot it was drawn for. A later slot draws the next
 /// tip; every frame of the same slot keeps this one — hidden or not — so a
 /// checklist that comes and goes, or **Show tips** toggled off and on, brings
@@ -56,9 +56,9 @@ impl App {
     /// but the clock: a seeded walk, **Show tips** on, a status line of the
     /// main session's own to hang from (not a `!` shell turn, which has none,
     /// nor an agent session view, whose line is the subagent's), no task
-    /// checklist, which takes the slot (`docs/task-tools.md`), no lost
+    /// checklist, which takes the slot (`docs/tools/task-tools.md`), no lost
     /// connection, whose `No connection to …` row takes it too
-    /// (`docs/offline.md`) — and the
+    /// (`docs/providers/offline.md`) — and the
     /// strip actually on screen: an inline modal replaces the whole live
     /// region and an overlay covers it, and a tip drawn under either would be
     /// spent without being seen.

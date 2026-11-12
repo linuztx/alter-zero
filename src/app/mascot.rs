@@ -1,6 +1,6 @@
 //! The banner mascot: the catalog of block-character creatures the startup
 //! header draws beside its metadata, the session's selected one, and the
-//! inline `/mascot` picker that switches it. See `docs/mascot.md`.
+//! inline `/mascot` picker that switches it. See `docs/ui/mascot.md`.
 //!
 //! The picker is the `/settings` family's shape — same inline frame, same
 //! own-every-key search grammar — over one row per mascot, with the page
@@ -8,7 +8,7 @@
 //! it through the same builder the startup header uses, so the preview can
 //! never disagree with what Enter produces). The choice persists to
 //! `{config_home}/mascot.json` at the boundary (`tui::config`) — **per
-//! working directory**, `config.json`'s rule (`docs/per-directory-state.md`);
+//! working directory**, `config.json`'s rule (`docs/state/per-directory-state.md`);
 //! the pure format is the [`MascotFile`] instance of the [`LookFile`] the two
 //! looks share.
 
@@ -73,7 +73,7 @@ impl Mascot {
 
     /// The block-character art, one `&str` per row, drawn verbatim (leading
     /// spaces included — a `\`-continued literal would strip them). Every
-    /// glyph is single-width (`docs/table-streaming.md` *Wide glyphs*).
+    /// glyph is single-width (`docs/ui/table-streaming.md` *Wide glyphs*).
     #[must_use]
     pub const fn art(self) -> &'static [&'static str] {
         match self {
@@ -110,7 +110,7 @@ impl Mascot {
 }
 
 /// The `mascot.json` side of the catalog: the key the file records a choice
-/// under, over the name mapping above (`docs/per-directory-state.md`).
+/// under, over the name mapping above (`docs/state/per-directory-state.md`).
 impl Look for Mascot {
     const KEY: &'static str = "mascot";
 

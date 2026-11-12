@@ -9,7 +9,7 @@
 //!
 //! A block is `rows` lines of `cols` marked spaces, one blank line above it,
 //! flush at the left margin — deliberately *not* indented into the tool
-//! cell's `⎿` gutter, so a picture gets the full width. See `docs/images.md`.
+//! cell's `⎿` gutter, so a picture gets the full width. See `docs/ui/images.md`.
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -44,7 +44,7 @@ pub fn item_images(item: &HistoryItem) -> Vec<(String, (u32, u32))> {
 /// What the boundary looks for again before it lays a conversation out from
 /// history ([`images::recheck_pictures`]), so it cannot ask the registry what
 /// it already knows: a paste's size and a file found gone are exactly what
-/// that look records (`docs/images.md`, *A picture whose file is gone*).
+/// that look records (`docs/ui/images.md`, *A picture whose file is gone*).
 #[must_use]
 pub fn item_image_paths(item: &HistoryItem) -> Vec<String> {
     match item {

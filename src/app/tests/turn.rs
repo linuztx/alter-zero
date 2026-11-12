@@ -1,5 +1,5 @@
 //! The turn lifecycle: streaming, the status tally, interrupts, and the
-//! committed summary (`docs/status-indicator.md`, `docs/interrupt.md`).
+//! committed summary (`docs/ui/status-indicator.md`, `docs/input/interrupt.md`).
 
 use super::*;
 use crate::stream::{StreamEvent, TokenUsage, ToolCallFragment, ToolCallSummary};
@@ -202,7 +202,7 @@ fn fail_stream_without_a_tool_carries_none() {
     assert!(failure.tools.is_empty());
 }
 
-// --- Esc interrupts the in-flight turn, codex-style (docs/interrupt.md) ---
+// --- Esc interrupts the in-flight turn, codex-style (docs/input/interrupt.md) ---
 
 #[test]
 fn esc_interrupts_while_a_turn_is_active() {
@@ -226,7 +226,7 @@ fn esc_with_the_palette_open_only_dismisses_it_even_mid_turn() {
 
 #[test]
 fn a_backend_error_says_each_call_died_with_the_turn() {
-    // docs/rollout-records.md: the running call records how long it had run
+    // docs/state/rollout-records.md: the running call records how long it had run
     // (the command clock the running cell shows); a sibling that never
     // started records only why it failed.
     let mut app = App::new();
@@ -308,7 +308,7 @@ fn interrupt_turn_with_no_output_undoes_the_submission() {
     // The user submitted "Hi", the backend produced nothing, then Esc:
     // instead of a `Conversation interrupted` notice the whole turn is
     // undone — "Hi" goes back into the composer and out of history, and
-    // nothing is recorded (docs/interrupt.md, the "no output yet" case).
+    // nothing is recorded (docs/input/interrupt.md, the "no output yet" case).
     let mut app = App::new();
     app.record_user_message("Hi");
     app.begin_stream();
@@ -467,7 +467,7 @@ fn interrupt_mid_batch_resolves_the_running_call_and_every_waiting_sibling() {
     // `⎿ Waiting…` sibling queued behind it resolve as `Interrupted by user`,
     // in the batch's order, and each one is recorded — so the transcript keeps
     // a cell for every call the model asked for, and the next turn's context
-    // replays the whole round (docs/interrupt.md, docs/parallel-tools.md).
+    // replays the whole round (docs/input/interrupt.md, docs/tools/parallel-tools.md).
     // Dropping the siblings erased calls the model had made from everything
     // after the Esc.
     let mut app = App::new();
@@ -578,7 +578,7 @@ fn fail_stream_mid_batch_resolves_every_call_in_the_batch() {
 }
 
 /// Interrupt a turn that streamed something, handing back the receipt the
-/// keep path built (`docs/interrupt.md`, "The receipt an interrupted turn
+/// keep path built (`docs/input/interrupt.md`, "The receipt an interrupted turn
 /// keeps").
 fn interrupted_receipt(app: &mut App, elapsed_secs: u64) -> Option<TurnSummary> {
     let InterruptedTurn::Kept { summary, .. } =
@@ -653,7 +653,7 @@ fn the_interrupted_receipt_keeps_reported_usage_apart_from_the_estimate() {
     // number — and the next one streamed until the Esc. That round never
     // reports, so its share can only be the estimate: the receipt keeps the
     // provider's tokens as they were and carries the rest as `estimated`,
-    // its cache halves the frame's alone (docs/prompt-caching.md).
+    // its cache halves the frame's alone (docs/providers/prompt-caching.md).
     let mut app = App::new();
     app.begin_stream();
     app.apply_usage(&crate::stream::TokenUsage {
@@ -722,7 +722,7 @@ fn the_interrupted_receipt_counts_the_shells_still_running() {
 
 #[test]
 fn a_finished_turn_estimates_nothing() {
-    // The receipt that is never a guess (docs/prompt-caching.md): a finished
+    // The receipt that is never a guess (docs/providers/prompt-caching.md): a finished
     // turn's tokens are the frames' alone — bare when none came — so it has
     // no estimated share whatever its live tally said.
     let mut app = App::new();
@@ -897,7 +897,7 @@ fn clear_mid_turn_wipes_the_streaming_state_and_records_nothing() {
 #[test]
 fn esc_undo_of_an_init_turn_restores_the_command_not_the_prompt() {
     // Esc in the pre-stream window undoes the submission into the
-    // composer (docs/interrupt.md). For an /init turn the user typed
+    // composer (docs/input/interrupt.md). For an /init turn the user typed
     // "/init", not the 1.8KB canned prompt — flooding the composer with
     // text the user never held (which a follow-up Ctrl+C would then
     // record into ↑ recall) breaks the no-recall guarantee, so the undo
@@ -959,7 +959,7 @@ fn init_mid_turn_is_rejected_with_a_toast() {
 fn apply_usage_tracks_the_context_size_from_the_usage_frame() {
     // The round's `input` is the whole re-sent context, counted by the
     // provider — the gauge's reading until something joins it
-    // (docs/token-estimate.md).
+    // (docs/architecture/token-estimate.md).
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_stream();
@@ -1047,7 +1047,7 @@ fn enter_runs_copy_returning_the_last_assistant_text() {
 fn copy_with_no_assistant_message_is_a_toast() {
     // Nothing to copy is the `/export` and `/compact` empty case — a soft
     // rejection the user needn't keep, so the same plain info toast rather
-    // than a red failure (docs/toast.md).
+    // than a red failure (docs/ui/toast.md).
     let mut app = App::new();
     app.record_user_message("just me");
     type_str(&mut app, "/copy");
@@ -1078,7 +1078,7 @@ fn copy_dispatches_mid_turn_instead_of_queuing() {
     assert!(app.queued.is_empty(), "nothing was queued");
 }
 
-// --- live status indicator (see docs/status-indicator.md) ---
+// --- live status indicator (see docs/ui/status-indicator.md) ---
 
 #[test]
 fn idle_has_no_status_and_begin_stream_starts_one() {
@@ -1104,7 +1104,7 @@ fn every_status_verb_pairs_with_its_own_past_tense() {
     // must be one verb — a table edit can never leave `Brewing…` settling
     // as `Cooked for 12s` — and no verb repeats in either form, or a
     // rotation could show the same word twice running
-    // (docs/status-indicator.md). The table opens on the neutral `Working`
+    // (docs/ui/status-indicator.md). The table opens on the neutral `Working`
     // a session's first turn, an agent's and the /spinner preview start on.
     assert_eq!(
         STATUS_VERBS[0],
@@ -1167,7 +1167,7 @@ fn the_smoke_scripts_summary_patterns_follow_the_verb_table() {
 fn the_summary_is_the_past_tense_of_the_verb_the_line_wore() {
     // Consistency, not a second roll of the dice: a line that said
     // `Working…` settles as `Worked for …`, and so on down the table, one
-    // short turn per verb (docs/status-indicator.md).
+    // short turn per verb (docs/ui/status-indicator.md).
     let mut app = App::new();
     for verb in STATUS_VERBS {
         app.begin_stream();
@@ -1206,7 +1206,7 @@ fn verbs_at(app: &mut App, elapsed: Duration) -> (&'static str, &'static str) {
 #[test]
 fn the_status_verb_moves_on_every_thirty_seconds() {
     // The turn's own clock rotates the line: a quick turn keeps one verb, a
-    // long one gets a fresh word each half minute (docs/status-indicator.md).
+    // long one gets a fresh word each half minute (docs/ui/status-indicator.md).
     let mut app = App::new();
     app.begin_stream();
     assert_eq!(
@@ -1466,7 +1466,7 @@ fn apply_usage_snaps_the_tally_to_the_real_total() {
     // The provider's usage frame counts what the estimate never saw (the
     // system prompt, the re-sent context), so it REPLACES the ticked
     // estimate rather than adding to it — and later estimates tick on
-    // top of the snapped base (docs/prompt-caching.md).
+    // top of the snapped base (docs/providers/prompt-caching.md).
     use crate::stream::TokenUsage;
     let mut app = App::new();
     app.begin_stream();
@@ -1625,7 +1625,7 @@ fn streamed_content_clears_the_retry_indicator() {
     );
 }
 
-// ===== a lost connection (docs/offline.md) =====
+// ===== a lost connection (docs/providers/offline.md) =====
 
 #[test]
 fn a_fresh_turn_is_not_offline() {
@@ -1727,7 +1727,7 @@ fn a_lost_connection_and_a_bounded_retry_never_show_together() {
     );
 }
 
-// ===== a connection lost mid-reply (docs/offline.md) =====
+// ===== a connection lost mid-reply (docs/providers/offline.md) =====
 
 /// Fold one reply event the way the boundary does (`tui::stream`) for the
 /// events these tests stream: noted by [`App::track_attempt`] first, then
@@ -1963,7 +1963,7 @@ fn a_round_boundary_closes_the_mark_even_when_it_records_nothing() {
 
 #[test]
 fn the_settled_history_stops_where_a_retry_could_take_back() {
-    // What a headless run may print (docs/headless.md): records an attempt
+    // What a headless run may print (docs/cli/headless.md): records an attempt
     // made are tentative until the attempt ends, since a retry withdraws
     // them; everything before is settled.
     let mut app = streaming_turn();
@@ -2105,7 +2105,7 @@ fn end_turn_when_idle_returns_none_and_records_nothing() {
 
 #[test]
 fn take_turn_summary_builds_without_recording_then_record_pushes() {
-    // The split behind end_turn (docs/background.md): take_turn_summary
+    // The split behind end_turn (docs/tools/background.md): take_turn_summary
     // clears the status and builds the summary but does NOT record it, so
     // the boundary can settle a background completion pending at turn end
     // *between* the two — landing the notice above the Done summary in
@@ -2143,7 +2143,7 @@ fn take_turn_summary_is_none_for_an_idle_or_shell_turn() {
 
 #[test]
 fn a_completion_pending_at_turn_end_records_above_the_summary() {
-    // The turn-end settle ordering (docs/background.md): a background
+    // The turn-end settle ordering (docs/tools/background.md): a background
     // shell that finished during the final assistant text — with no tool
     // call after it to settle at — must still land its notice ABOVE the
     // Done summary, in both history and (via the same order) scrollback,
@@ -2365,7 +2365,7 @@ fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
 #[test]
 fn an_interrupted_shell_turn_keeps_no_receipt() {
     // The cell is the record here too: a finished `!` command has no summary
-    // either (docs/shell-command.md).
+    // either (docs/input/shell-command.md).
     let mut app = App::new();
     app.begin_shell("sleep 5");
     assert_eq!(interrupted_receipt(&mut app, 4), None);
@@ -2427,7 +2427,7 @@ fn set_thinking_seeds_the_state() {
 #[test]
 fn ctrl_t_cycles_the_thinking_mode() {
     // Ctrl+T — the cycle moved off Shift+Tab, which cycles the permission
-    // mode now (docs/reasoning.md).
+    // mode now (docs/providers/reasoning.md).
     let mut app = App::new();
     app.set_thinking(Some((
         trio_support(),
@@ -2489,7 +2489,7 @@ fn ctrl_t_mid_turn_cycles_for_the_next_turn() {
 #[test]
 fn slash_model_opens_the_picker_mid_turn() {
     // /model only swaps the composer, never the running turn, so it opens
-    // regardless of turn state (docs/toast.md). The *loop* does the fetch.
+    // regardless of turn state (docs/ui/toast.md). The *loop* does the fetch.
     let mut app = App::new();
     app.begin_stream();
     type_chars(&mut app, "/model");
@@ -2511,7 +2511,7 @@ fn end_turn_snapshots_the_running_shell_count() {
 
 #[test]
 fn record_hook_note_slots_after_the_flushed_segment() {
-    // The Stop-continuation dance (docs/hooks.md): the loop flushes the
+    // The Stop-continuation dance (docs/tools/hooks.md): the loop flushes the
     // streamed text, records the note, and the next round streams a fresh
     // segment — three history items, in order, and the buffer stays open.
     let mut app = App::new();
@@ -2544,7 +2544,7 @@ fn record_hook_note_slots_after_the_flushed_segment() {
 
 #[test]
 fn block_prompt_rolls_the_submission_back_and_keeps_hook_notes() {
-    // A UserPromptSubmit block (docs/hooks.md): the prompt leaves history
+    // A UserPromptSubmit block (docs/tools/hooks.md): the prompt leaves history
     // (nothing the hook censored reaches a later context), the text returns
     // to the composer, a SessionStart hook's note recorded after it
     // survives, and the red notice carries the reason alone.

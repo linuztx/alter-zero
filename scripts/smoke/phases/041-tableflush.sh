@@ -7,7 +7,7 @@ smoke_begin
 # a streamed TABLE keeps the box flush at the bottom. The dummy's
 # "table" reply streams a 10-row GFM grid with prose after it, so the whole
 # block commits in ONE flush at its close while the strip collapses from the
-# tall forming-table preview to a single row (docs/table-streaming.md). That
+# tall forming-table preview to a single row (docs/ui/table-streaming.md). That
 # flush must sync to the collapsed height first — pre-fix it reserved the stale
 # taller strip below the grid, so the box rose off the bottom and a blank band
 # was left beneath it (the reported bug).
@@ -29,7 +29,7 @@ printf '%s\n' "$tableflush_pane"
 # against the 24-row pane: flush-at-bottom puts it on the last row; the bug
 # left it floating ~a strip-height higher with blank rows beneath.
 tableflush_footer_row=$(printf '%s\n' "$tableflush_pane" | grep -nF 'dummy_model_name ·' | tail -1 | cut -d: -f1)
-# The EMOJI half of the table bug (docs/table-streaming.md): the demo table's
+# The EMOJI half of the table bug (docs/ui/table-streaming.md): the demo table's
 # Description cells open with a two-column ✅/❌, and every grid row on screen
 # must still be exactly as wide as the border rows. Pre-fix the draw paths also
 # printed the blank filler cell ratatui reserves *after* a wide grapheme, so an
@@ -68,7 +68,7 @@ tmux kill-session -t "$S41" 2>/dev/null
 
 # Phase 41: a streamed table's close-flush keeps the box flush at the bottom —
 # the footer ends the turn on the pane's last row, not floating above a blank
-# band (docs/table-streaming.md; the flush syncs to the collapsed strip height).
+# band (docs/ui/table-streaming.md; the flush syncs to the collapsed strip height).
 expect_has "$tableflush_pane" -F "│ 10 │ Regex" "the streamed table's grid rows never reached the screen"
 if [ "${tableflush_footer_row:-0}" -lt 23 ]; then
 	fail "after the table turn the footer sits on row ${tableflush_footer_row:-none} of the 24-row pane: the box rose off the bottom, leaving a blank band beneath it"

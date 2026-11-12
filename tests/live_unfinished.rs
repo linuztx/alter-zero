@@ -1,5 +1,5 @@
 //! Live tests for the unfinished-reply continuation
-//! (`docs/unfinished-replies.md`) on Anthropic's Messages wire, through the
+//! (`docs/architecture/unfinished-replies.md`) on Anthropic's Messages wire, through the
 //! production pipeline: the provider's config resolved through
 //! `ProvidersFile::model_config` as the boundary resolves it,
 //! `LlmBackend::spawn`, the agent loop, the real wire. What no stub can show

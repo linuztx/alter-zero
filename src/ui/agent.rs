@@ -1,6 +1,6 @@
 //! Subagent rendering: the live `● Running {n} agents…` tree, the recorded
 //! group cells, the footer roster, and the inline session view.
-//! See `docs/agent-tool.md`.
+//! See `docs/agents/agent-tool.md`.
 
 use super::theme::*;
 use super::tool::{bullet_span, result_row, shown_args};
@@ -58,7 +58,7 @@ fn clip_cols(text: &str, max: usize) -> String {
 /// for the label, its two padding spaces and the [`AGENT_VIEW_RULE_TAIL`]
 /// included, the description cut with [`TOOL_HEADER_ELLIPSIS`] — which keeps
 /// the *head* (what the agent is for) and always leaves the rest reading as a
-/// rule (`docs/agent-tool.md`).
+/// rule (`docs/agents/agent-tool.md`).
 ///
 /// `None` once the budget cannot hold the mark **and** one real character
 /// beside it: a lone ` … ─` names nothing, so a rule that narrow keeps its
@@ -166,7 +166,7 @@ fn agent_group_header(
 }
 
 /// A **single** agent's `● Agent({description})` cell header — the tool-cell
-/// look a lone launch keeps instead of the group tree (`docs/agent-tool.md`).
+/// look a lone launch keeps instead of the group tree (`docs/agents/agent-tool.md`).
 /// `blink` as in [`agent_group_header`].
 fn agent_cell_header(color: Color, blink: Option<Duration>, description: &str) -> Line<'static> {
     Line::from(vec![
@@ -200,7 +200,7 @@ fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
 /// The **live** cell of a lone agent — `● Agent({description})` over its
 /// sticky `⎿ {activity}` line (`Initializing…` before any event, then the
 /// newest call's `{Name}: {detail}` / `{Name}({args})`), instead of a
-/// one-row tree (`docs/agent-tool.md`).
+/// one-row tree (`docs/agents/agent-tool.md`).
 ///
 /// The activity row is the *tree row's* row: **dim and clipped**, whatever
 /// the agent is doing. A running call used to break that shape here alone —
@@ -214,7 +214,7 @@ fn single_live_agent_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     // The same blinking grey bullet a running tool cell has — this *is* the
-    // round's running cell (`docs/tool-pulse.md`).
+    // round's running cell (`docs/ui/tool-pulse.md`).
     let mut lines = vec![agent_cell_header(
         tool_running_color(),
         Some(app.pulse()),
@@ -236,7 +236,7 @@ fn single_live_agent_lines(
     lines
 }
 
-/// A **committed** agent group's tree cell (`docs/agent-tool.md`):
+/// A **committed** agent group's tree cell (`docs/agents/agent-tool.md`):
 /// `● {n} background agents launched (↓ to manage · ctrl+o to expand)` over
 /// description-only rows for a background launch, else `● {n} agents
 /// finished (ctrl+o to expand)` over counter rows with a `⎿ Done` /
@@ -329,7 +329,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
 
 /// The **live** agent group's tree cell — the strip preview while the round's
 /// agents run: a blinking-grey `● Running {n} agents… (ctrl+o to expand)`
-/// header (the running tool cell's blink, `docs/tool-pulse.md`) over
+/// header (the running tool cell's blink, `docs/ui/tool-pulse.md`) over
 /// live tree rows (counters ticking, the status row showing each agent's
 /// current activity). Rendered from the roster entries the live group names;
 /// an id already swept renders nothing (it settled long ago).
@@ -344,7 +344,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     }
     // A lone agent keeps the tool-cell look — `● Agent({description})` over
-    // its live state — instead of a one-row tree (docs/agent-tool.md).
+    // its live state — instead of a one-row tree (docs/agents/agent-tool.md).
     if let [run] = runs.as_slice() {
         return single_live_agent_lines(app, run, live.background, width);
     }
@@ -367,7 +367,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     // The whole group can be moved to the background with Ctrl+B — the
     // delayed discoverability hint, exactly like a running bash cell's
-    // (docs/background.md). Live-only by construction.
+    // (docs/tools/background.md). Live-only by construction.
     if !live.background
         && app
             .background_hint_elapsed()
@@ -381,10 +381,10 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// A background agent's completion notice cell: the coloured `●` — green for
 /// a clean finish, red for a stop/failure — over the one-line headline
 /// (`Agent "{description}" finished · 35s`). The final response the notice
-/// carries is context-only, never rendered. See `docs/agent-tool.md`.
+/// carries is context-only, never rendered. See `docs/agents/agent-tool.md`.
 ///
 /// A resume — the user started a settled agent again — is neither, so it
-/// wears the system notices' cyan (`docs/agent-tools.md`).
+/// wears the system notices' cyan (`docs/agents/agent-tools.md`).
 #[must_use]
 pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<Line<'static>> {
     let color = if notice.resumed {
@@ -417,7 +417,7 @@ pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<L
 /// [`crate::agents::AgentRun`], so the two views share one renderer.
 pub(super) struct AgentCellView {
     /// The registry id — the header names it, since the lead addresses agents
-    /// by it (`docs/agent-tools.md`).
+    /// by it (`docs/agents/agent-tools.md`).
     pub(super) id: String,
     pub(super) description: String,
     pub(super) status: crate::agents::AgentStatus,
@@ -464,9 +464,9 @@ impl AgentCellView {
         // is part of what it has done. Its not-yet-started `⎿ Waiting…`
         // siblings do not: this cell lists headers with no status of their
         // own, so a queued call would read as one the agent ran
-        // (`docs/parallel-tools.md`). Once one resolves it is on the history
+        // (`docs/tools/parallel-tools.md`). Once one resolves it is on the history
         // walked above — an interrupt records each as `Interrupted by user`
-        // (`docs/interrupt.md`). The main transcript can show them live
+        // (`docs/input/interrupt.md`). The main transcript can show them live
         // because `tool_full_lines` carries each call's status row.
         if let Some(running) = run
             .tool_queue
@@ -498,7 +498,7 @@ impl AgentCellView {
 /// (bullet coloured by status), the `⎿ Prompt:` block, the nested tool-call
 /// headers it ran, the `⎿ Response:` block once a final response exists, and
 /// the `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` /
-/// `⎿ Interrupted` / `⎿ Failed` footer. See `docs/agent-tool.md`.
+/// `⎿ Interrupted` / `⎿ Failed` footer. See `docs/agents/agent-tool.md`.
 pub(super) fn agent_cell_lines(
     cell: &AgentCellView,
     width: u16,
@@ -532,7 +532,7 @@ pub(super) fn agent_cell_lines(
             Style::new().fg(tool_args_color()),
         ),
         // The id, dim: what the lead's `AgentSend`/`AgentOutput` calls and its
-        // replies name the agent by (docs/agent-tools.md).
+        // replies name the agent by (docs/agents/agent-tools.md).
         Span::styled(format!("{AGENT_ID_SEPARATOR}{}", cell.id), dim),
     ])];
     // ⎿  Prompt: over the indented prompt body.
@@ -556,7 +556,7 @@ pub(super) fn agent_cell_lines(
             .max(1);
         for header in &cell.tool_headers {
             // A recorded `Name(args)` one-liner — a file tool's shows its
-            // path by the session's rule (`docs/tools.md` *Path display*),
+            // path by the session's rule (`docs/tools/tools.md` *Path display*),
             // every other as recorded; `app::file_tool_header` is the
             // formatter's own inverse, so the grammar lives in one place.
             let header = match crate::app::file_tool_header(header) {
@@ -660,7 +660,7 @@ pub fn agent_list_rows(app: &App) -> u16 {
 /// view (main demoting to the dim `◯` ring) — while the `❯` marker belongs
 /// to the active ↑/↓ selection alone and leaves with it when the focus
 /// returns to the composer. Finished agents' bullets colour green/red for
-/// their linger. See `docs/agent-tool.md`.
+/// their linger. See `docs/agents/agent-tool.md`.
 #[must_use]
 pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let agents = app.visible_agents();
@@ -809,11 +809,11 @@ pub fn agent_hint_line(app: &App) -> Line<'static> {
 /// interrupt)` shape, without the interrupt hint's meaning changing: Esc
 /// leaves the view). Built per draw from the roster entry, the agent's open
 /// thinking phase included (`Thinking for Ns`, boundary-injected like the
-/// runtime — `docs/agent-view-streaming.md`), its verb the one the agent
+/// runtime — `docs/agents/agent-view-streaming.md`), its verb the one the agent
 /// walked to on its own clock
 /// ([`AgentRun::status_verb`](crate::agents::AgentRun::status_verb)) — the
 /// main line's rotation, whose past tense the agent's turn summary records
-/// (`docs/status-indicator.md`).
+/// (`docs/ui/status-indicator.md`).
 #[must_use]
 pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatus {
     // The verb the run walked to on its own clock (`AgentRun::rotate_verb`);
@@ -830,7 +830,7 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
         shell: false,
         retry: run.retry,
         offline: run.offline.clone(),
-        // A subagent's line hangs no tip (docs/tips.md).
+        // A subagent's line hangs no tip (docs/ui/tips.md).
         tip: None,
     }
 }
@@ -849,7 +849,7 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
 /// does. Rendering that fallback while the commits withheld a whole block was
 /// the reported "streaming disappears" bug — `committed ++ preview` must be
 /// the reply here as much as in the main view (CLAUDE.md invariant 2,
-/// `docs/agent-view-streaming.md`).
+/// `docs/agents/agent-view-streaming.md`).
 ///
 /// The [`preview_lines`]/[`preview_rows`] pair calls this for a viewed agent
 /// so the two agree.
@@ -863,7 +863,7 @@ pub(super) fn agent_view_preview_lines(
     if !run.tool_queue.is_empty() {
         let mut lines = Vec::new();
         // A queued previewed call keeps the file it streamed, the main
-        // strip's rule (docs/write-streaming.md).
+        // strip's rule (docs/ui/write-streaming.md).
         let mut drafts = run.drafts().queued();
         for (i, tool) in run.tool_queue.iter().enumerate() {
             if i > 0 {
@@ -873,9 +873,9 @@ pub(super) fn agent_view_preview_lines(
                 .then(|| drafts.next())
                 .flatten();
             // A live strip like the main one — the agent's running call
-            // blinks here too (`docs/tool-pulse.md`) and a running command
+            // blinks here too (`docs/ui/tool-pulse.md`) and a running command
             // tails its streamed output under the `(Ns · wait …)` clock
-            // row, on its `⎿ Running…` row before any (`docs/tool-streaming.md`). The
+            // row, on its `⎿ Running…` row before any (`docs/ui/tool-streaming.md`). The
             // elapsed is the **command's** own — boundary-injected per agent
             // like the thinking phase's, `AgentRun::command_elapsed` — never
             // the agent's whole `runtime`, which its status line shows: a
@@ -893,14 +893,14 @@ pub(super) fn agent_view_preview_lines(
         return lines;
     }
     // A `write` the agent is still generating streams into its cell, the
-    // main strip's next branch (docs/write-streaming.md).
+    // main strip's next branch (docs/ui/write-streaming.md).
     if run.drafts().previews().next().is_some() {
         return super::live::draft_preview_lines(run.drafts(), pulse, width, paths);
     }
     // An open thinking phase previews its live block, after the tool branch
     // and before the reply's — what is genuinely executing is what the user
     // waits on, and the model cannot be streaming a reply while it thinks
-    // (the main strip's order, `docs/thinking-stream.md`).
+    // (the main strip's order, `docs/ui/thinking-stream.md`).
     if let Some(text) = run.reasoning() {
         return super::reasoning::live_reasoning_lines(text, pulse, width);
     }
@@ -925,7 +925,7 @@ pub(super) fn agent_view_preview_lines(
 /// reports the boundary-injected frontier height
 /// ([`crate::app::App::stream_preview_rows`]), because only the boundary's
 /// `StreamRender` knows how many rows it withheld
-/// (`docs/agent-view-streaming.md`, `docs/table-streaming.md`).
+/// (`docs/agents/agent-view-streaming.md`, `docs/ui/table-streaming.md`).
 pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width: u16) -> u16 {
     if run.tool_queue.is_empty()
         && run.drafts().previews().next().is_none()

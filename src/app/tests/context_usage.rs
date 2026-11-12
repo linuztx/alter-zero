@@ -1,4 +1,4 @@
-//! The `/context` page (`docs/context-usage.md`).
+//! The `/context` page (`docs/architecture/context-usage.md`).
 
 use super::*;
 
@@ -556,7 +556,7 @@ fn a_subagents_frames_feed_its_own_ledger_and_the_sessions() {
     );
 }
 
-// ===== counted in the provider's tokens (docs/token-estimate.md) =====
+// ===== counted in the provider's tokens (docs/architecture/token-estimate.md) =====
 
 /// Teach `app` that its provider counts the conversation's growth at three
 /// halves of the estimate: two usage frames around `added`.

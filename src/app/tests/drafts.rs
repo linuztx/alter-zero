@@ -1,5 +1,5 @@
 //! The calls a model is still **generating**: the incremental argument
-//! decoder and the round's draft bookkeeping (`docs/write-streaming.md`).
+//! decoder and the round's draft bookkeeping (`docs/ui/write-streaming.md`).
 
 use super::*;
 use crate::stream::ToolCallFragment;
@@ -158,7 +158,7 @@ fn every_two_piece_split_decodes_what_serde_reads() {
 #[test]
 fn a_decoded_value_only_ever_grows_whatever_the_split() {
     // The render cache keys on this: every prefix of the stream decodes to a
-    // prefix of the whole value (docs/write-streaming.md) — of what serde
+    // prefix of the whole value (docs/ui/write-streaming.md) — of what serde
     // reads in it — fed one character at a time, the worst split a stream
     // can make.
     for json in SAMPLES {
@@ -228,7 +228,7 @@ fn a_piece_naming_write_opens_a_preview_that_decodes_as_the_rest_streams() {
 fn a_streaming_write_colours_only_the_lines_its_cell_can_show() {
     // The strip's cell shows the first and newest lines, so that is all the
     // draft's peek keeps coloured — a line's segments run ~50 times its text
-    // (docs/memory.md). The whole file is coloured only when a view asks for
+    // (docs/architecture/memory.md). The whole file is coloured only when a view asks for
     // every line: Ctrl+O, `/export`.
     let content: String = (1..=500).map(|i| format!("v{i} = {i}\n")).collect();
     let encoded = serde_json::to_string(&content).expect("a string encodes");
@@ -399,7 +399,7 @@ fn every_change_moves_the_revision() {
     moved(&drafts, "a clear");
 }
 
-// --- the App's drafts: the main session's round (docs/write-streaming.md) ---
+// --- the App's drafts: the main session's round (docs/ui/write-streaming.md) ---
 
 /// An app mid-turn: a user message sent and the reply open.
 fn turn() -> App {
@@ -583,7 +583,7 @@ fn every_turn_edge_drops_the_drafts() {
 
 #[test]
 fn an_esc_after_a_previewed_write_streamed_interrupts_rather_than_undoing() {
-    // The undo is for a turn that showed nothing (docs/interrupt.md); a file
+    // The undo is for a turn that showed nothing (docs/input/interrupt.md); a file
     // streaming into its cell is something.
     let mut app = turn();
     for piece in write_pieces("a.py", "A\n") {

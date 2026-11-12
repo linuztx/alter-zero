@@ -1,4 +1,4 @@
-//! `alter-zero -p`: the session with no screen (`docs/headless.md`).
+//! `alter-zero -p`: the session with no screen (`docs/cli/headless.md`).
 //!
 //! A headless run is the TUI's own [`Session`] — the same bootstrap, the same
 //! turn starts, the same stream folding, notice settling and follow-up turns
@@ -56,7 +56,7 @@ const SIGTERM: i32 = 15;
 
 // ===== before the runtime: the prompt =====
 
-/// Read a headless run's prompt (`docs/headless.md` *The prompt*): the
+/// Read a headless run's prompt (`docs/cli/headless.md` *The prompt*): the
 /// argument, stdin, or both, by [`core::stdin_read`]'s rule. Runs in
 /// `resolve_cli`, before the runtime and before anything starts, so a usage
 /// mistake prints and exits like every other one: [`Halt::Usage`] for
@@ -196,7 +196,7 @@ pub(crate) fn write(emits: &[Emit]) {
 // ===== the signals =====
 
 /// The two signals a headless run answers by shutting down rather than
-/// dying (`docs/headless.md` *Exit status*). Either may fail to install —
+/// dying (`docs/cli/headless.md` *Exit status*). Either may fail to install —
 /// the run then simply has the default action for it.
 struct Signals {
     interrupt: Option<tokio::signal::unix::Signal>,
@@ -236,7 +236,7 @@ async fn next_signal(signal: &mut Option<tokio::signal::unix::Signal>) -> Option
 // ===== the run =====
 
 /// Run one headless session to its end and return the process's exit status
-/// (`docs/headless.md`): bootstrap, wait for the MCP servers, submit the
+/// (`docs/cli/headless.md`): bootstrap, wait for the MCP servers, submit the
 /// prompt, fold every event until the session is idle with nothing left
 /// running that owes it a turn, then shut down and report.
 pub(crate) async fn run(mut startup: Startup) -> i32 {
@@ -273,11 +273,11 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
     let start = session.run_start_info(resumed);
     write(&reporter.start(&start.as_start()));
     // A conversation past its window compacts before the prompt goes out —
-    // the TUI's idle-boundary rule, run once here (docs/compact.md).
+    // the TUI's idle-boundary rule, run once here (docs/architecture/compact.md).
     session.after_headless_iteration(true);
     let mut prompt = interrupted.is_none().then_some(prompt);
     // How long the run may sit with nothing left but background subagents
-    // at work, and since when it has (docs/headless.md).
+    // at work, and since when it has (docs/cli/headless.md).
     let agent_wait = core::agent_wait(std::env::var(core::AGENT_WAIT_ENV).ok().as_deref());
     let mut agents_since: Option<Instant> = None;
     let mut stopped_agents: Vec<String> = Vec::new();
@@ -391,7 +391,7 @@ impl Session<'_> {
     }
 
     /// Say what the startup review would have asked about and nobody could
-    /// (`docs/headless.md` *Trust*): it stays off, exactly as after a
+    /// (`docs/cli/headless.md` *Trust*): it stays off, exactly as after a
     /// declined review, and an interactive run in this directory asks.
     fn report_held_for_review(&mut self) {
         let mut hooks = 0;

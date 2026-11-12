@@ -1,9 +1,9 @@
 //! The per-directory persistence the two **looks** share — the banner mascot
-//! (`mascot.json`, `docs/mascot.md`) and the status spinner (`spinner.json`,
-//! `docs/spinner.md`). A look is a fact about a *project* as much as a
+//! (`mascot.json`, `docs/ui/mascot.md`) and the status spinner (`spinner.json`,
+//! `docs/ui/spinner.md`). A look is a fact about a *project* as much as a
 //! `/model` choice is: the repo that wears the gem beside the scratch
 //! directory that wears the hatchling. Both files follow `config.json`'s
-//! per-directory rule (`docs/per-directory-state.md`):
+//! per-directory rule (`docs/state/per-directory-state.md`):
 //!
 //! ```json
 //! {
@@ -65,10 +65,10 @@ pub struct LookFile<T: Look> {
     pub projects: BTreeMap<String, T>,
 }
 
-/// The `mascot.json` file (`docs/mascot.md`).
+/// The `mascot.json` file (`docs/ui/mascot.md`).
 pub type MascotFile = LookFile<crate::app::Mascot>;
 
-/// The `spinner.json` file (`docs/spinner.md`).
+/// The `spinner.json` file (`docs/ui/spinner.md`).
 pub type SpinnerFile = LookFile<crate::app::Spinner>;
 
 /// The map key the directories' entries live under.

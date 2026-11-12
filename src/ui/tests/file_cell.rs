@@ -1,5 +1,5 @@
 //! The streaming `write` cell: a file written into its cell while the model
-//! writes it (`docs/write-streaming.md`).
+//! writes it (`docs/ui/write-streaming.md`).
 
 use super::*;
 use crate::app::{ToolDraft, ToolDrafts};
@@ -222,7 +222,7 @@ fn the_tail_is_the_newest_rows_of_the_whole_view_when_lines_wrap() {
 fn a_finished_write_with_a_long_line_shows_the_head_the_committed_cell_will() {
     // The head and the committed cell share the peek's rule: a long line the
     // peek starts is shown for the rows its ten have left and cut there
-    // (docs/long-lines.md §8), and the cell is the same either side of the
+    // (docs/ui/long-lines.md §8), and the cell is the same either side of the
     // call resolving.
     let mut content = String::new();
     for i in 1..=12 {
@@ -361,7 +361,7 @@ fn docstring_then_code() -> String {
 
 #[test]
 fn the_cells_rows_are_the_ctrl_o_views_rows() {
-    // The strip colours only the lines its cell shows (docs/memory.md); the
+    // The strip colours only the lines its cell shows (docs/architecture/memory.md); the
     // rows it shows must be exactly the Ctrl+O view's — which colours every
     // line — for the same lines, styles and all.
     let body = |lines: &[Line<'static>]| lines[2..].to_vec();
@@ -417,7 +417,7 @@ fn the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget() {
     // The strip builds a streaming write's cell several times a frame, so the
     // window must not cost the whole line it shows the end of: the tail of a
     // long printable line is found by arithmetic rather than by wrapping the
-    // rows it drops (docs/long-lines.md §7). Wrapped whole, this ~1 MB line
+    // rows it drops (docs/ui/long-lines.md §7). Wrapped whole, this ~1 MB line
     // costs tens of milliseconds a build.
     let content = "{\"k\":123,\"deep\":[1,2,3]},".repeat(40_000);
     let drafts = drafts_with("a.json", &content, false);
@@ -442,7 +442,7 @@ fn the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget() {
 fn the_head_of_a_huge_finished_line_stays_inside_the_frame_budget() {
     // Once the content has arrived the strip shows the head instead, and
     // keeps building it several times a frame while the call waits and runs.
-    // The head is the line's first ten rows, cut there (docs/long-lines.md
+    // The head is the line's first ten rows, cut there (docs/ui/long-lines.md
     // §8), so a build wraps those rows and stops; wrapping the whole ~1 MB
     // line to keep ten of its rows costs tens of milliseconds a build.
     let content = "{\"k\":123,\"deep\":[1,2,3]},".repeat(40_000);

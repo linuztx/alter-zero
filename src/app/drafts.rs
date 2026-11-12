@@ -1,6 +1,6 @@
 //! The calls a model is still **generating**, previewed live: the incremental
 //! decoder that reads a call's arguments as they stream, and the round's
-//! drafts. See `docs/write-streaming.md`.
+//! drafts. See `docs/ui/write-streaming.md`.
 //!
 //! A `write` call's `content` is the largest thing a model generates in a
 //! turn, and it used to reach the screen only once the round had finished.
@@ -187,7 +187,7 @@ impl StringDecoder {
 /// where parsing the arguments so far on every piece would cost quadratic
 /// time — and `serde_json` cannot read an unfinished object anyway. Nested
 /// objects, arrays and scalars are skipped; only string fields are kept,
-/// which is all a preview needs (`docs/write-streaming.md`).
+/// which is all a preview needs (`docs/ui/write-streaming.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArgsScanner {
     state: Scan,
@@ -325,7 +325,7 @@ fn nested_step(c: char, depth: u32, in_string: bool, escaped: bool) -> Scan {
 }
 
 /// The wire tools whose generation previews live, each with the display name
-/// its queued cell wears (`docs/write-streaming.md`). One entry today: a
+/// its queued cell wears (`docs/ui/write-streaming.md`). One entry today: a
 /// `write`'s content is the long stream worth watching; every other call is
 /// tracked so its pieces land in the right slot, and nothing of it is shown.
 const PREVIEWED_TOOLS: &[(&str, &str)] = &[("write", "Write")];
@@ -370,7 +370,7 @@ pub struct ToolDraft {
 /// **peek** — its first and newest lines — and its cache keeps only those
 /// ([`LineCache::windowed`]): a line's segments run ~50 times its text, so a
 /// 2,000-line file coloured whole was ~1.9 MB held for the call's life, and
-/// glibc keeps what a process has once used (`docs/memory.md`). The Ctrl+O
+/// glibc keeps what a process has once used (`docs/architecture/memory.md`). The Ctrl+O
 /// transcript and `/export` show **every** line; their cache starts empty and
 /// is filled only when one of them asks.
 #[derive(Default, Clone)]
@@ -478,7 +478,7 @@ impl ToolDraft {
 }
 
 /// The calls of the round now being generated, and the previewed ones the
-/// announced batch took over (`docs/write-streaming.md`).
+/// announced batch took over (`docs/ui/write-streaming.md`).
 ///
 /// One per conversation: `App` keeps the main session's and every
 /// [`crate::agents::AgentRun`] its own. The lifecycle is the round's — pieces
@@ -538,7 +538,7 @@ impl ToolDrafts {
 
     /// Whether [`push`](Self::push)ing `fragment` would open a previewed call
     /// — asked without folding it, for the agent session view, whose segment
-    /// flush runs before its fold (`docs/write-streaming.md`).
+    /// flush runs before its fold (`docs/ui/write-streaming.md`).
     #[must_use]
     pub fn opens_preview(&self, fragment: &ToolCallFragment) -> bool {
         if !previewed_wire(&fragment.name) {

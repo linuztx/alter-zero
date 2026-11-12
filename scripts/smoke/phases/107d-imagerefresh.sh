@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# A FILE THAT CHANGED UNDERNEATH (docs/images.md). The agent downloads a
+# A FILE THAT CHANGED UNDERNEATH (docs/ui/images.md). The agent downloads a
 # picture, shows it, converts it in place — same path, same pixel size — and
 # reads it again: the new cell must show the NEW picture. An encoded picture
 # is cached per placement, and a placement interns on (path, cols, rows), so

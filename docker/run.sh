@@ -1,5 +1,5 @@
 #!/bin/sh
-# docker/run.sh — create and start the Alter Zero Kali container (docs/docker.md).
+# docker/run.sh — create and start the Alter Zero Kali container (docs/ops/docker.md).
 #
 #   docker/run.sh                          # /workspace is a named volume
 #   docker/run.sh ~/projects/site          # /workspace is that folder on your machine

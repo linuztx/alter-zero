@@ -1,10 +1,10 @@
-# LLM provider definitions (docs/llm.md).
+# LLM provider definitions (docs/providers/llm.md).
 #
 # These are the providers the app ships with; this file is embedded in the
 # binary. To add one of your own — any OpenAI-compatible API, or a local
 # server such as llama.cpp or vLLM — don't copy this file: write the
 # block in ~/.alter-zero/providers.toml, which is laid over these
-# (docs/user-providers.md). A block there with a new id adds a provider, and
+# (docs/providers/user-providers.md). A block there with a new id adds a provider, and
 # one naming a provider here changes only the keys it sets.
 #
 # A shipped provider is a [providers.<id>] block below.
@@ -13,7 +13,7 @@
 #   - `api_model_base` is optional — the endpoint the /model picker lists models
 #     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
 #     A path relative to the chat base (`../api/v1`) follows that base to
-#     whatever host it is pointed at (LM Studio's, docs/local-models.md).
+#     whatever host it is pointed at (LM Studio's, docs/providers/local-models.md).
 #   - Everything under `kwargs` is passed through to the client as-is, so nested
 #     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
 #     chat-completions endpoint; other keys are forwarded in the request body.
@@ -36,17 +36,17 @@
 #     that needs none. It also decides the `/login` list a provider is under:
 #     Sign in with an account, Sign in with an API key, or Sign in with a
 #     local model, whose page tests the server's address before saving it
-#     (docs/local-models.md).
+#     (docs/providers/local-models.md).
 #   - `wire_api` (optional) is the request shape: chat completions by default,
-#     `responses`, `anthropic`, `ollama`, or `cloud_code` (docs/chatgpt.md,
-#     docs/claude.md, docs/ollama.md, docs/antigravity.md).
+#     `responses`, `anthropic`, `ollama`, or `cloud_code` (docs/providers/chatgpt.md,
+#     docs/providers/claude.md, docs/providers/ollama.md, docs/providers/antigravity.md).
 #   - `drop_params` (optional) lists top-level request fields the provider's
 #     server refuses (`prompt_cache_key`, `stream_options`, …), taken out of
-#     every request after everything else is set (docs/user-providers.md).
+#     every request after everything else is set (docs/providers/user-providers.md).
 #   - `reasoning_param` (optional) is the field a chat-completions server reads
 #     the Ctrl+T thinking level from: OpenRouter's `reasoning` object by
 #     default, or `reasoning_effort` for OpenAI's own top-level string, which
-#     OmniRoute's route to Claude models reads (docs/user-providers.md).
+#     OmniRoute's route to Claude models reads (docs/providers/user-providers.md).
 #
 # The active provider/model is chosen with `ALTER_ZERO_PROVIDER` /
 # `ALTER_ZERO_MODEL`, or interactively with the `/model` picker, and persists to
@@ -54,7 +54,7 @@
 # `ALTER_ZERO_DUMMY=1` — the app falls back to the built-in dummy backend, so it
 # always runs offline. Add a key in-app with `/login` (saved to ~/.alter-zero/.env).
 #
-# Prompt caching needs no configuration here (docs/prompt-caching.md): the
+# Prompt caching needs no configuration here (docs/providers/prompt-caching.md): the
 # payload builder marks `cache_control` breakpoints for the models that need
 # them (anthropic/…, qwen/… ids), sends a per-session `prompt_cache_key`
 # (plus `session_id` on OpenRouter bases) for cache affinity, and asks every
@@ -76,19 +76,19 @@ api_model_base = "https://api.venice.ai/api/v1"
 api_base = "https://api.agent-zero.ai/venice/v1"
 
 # No static `disable_thinking` here: the Shift+Tab thinking mode drives it per
-# request (docs/reasoning.md). The table itself must stay — its presence is how
+# request (docs/providers/reasoning.md). The table itself must stay — its presence is how
 # the payload builder knows this is a Venice-family provider whose
 # `disable_thinking` toggle must track the mode.
 [providers.a0_venice.kwargs.venice_parameters]
 include_venice_system_prompt = false
 
-# Venice.ai reached **directly** (docs/venice.md) — the Agent Zero API above is
+# Venice.ai reached **directly** (docs/providers/venice.md) — the Agent Zero API above is
 # these same models through Agent Zero's proxy, and this is the API behind it,
 # unlocked by a key from your own Venice account. One wire, one request: the
 # chat-completions endpoint, the `venice_parameters` table below (the
 # Venice-family marker the payload builder syncs `disable_thinking` to the
-# Ctrl+T mode on, docs/reasoning.md), the `prompt_cache_key` affinity hint
-# Venice documents (docs/prompt-caching.md), and the `model_spec` capability
+# Ctrl+T mode on, docs/providers/reasoning.md), the `prompt_cache_key` affinity hint
+# Venice documents (docs/providers/prompt-caching.md), and the `model_spec` capability
 # sniffs the catalog already parses — the proxy lists from this very base. So
 # only the base and the key differ, and no `api_model_base` is needed: it
 # chats where it lists. The key variable is the id's default, `VENICE_API_KEY`.
@@ -109,7 +109,7 @@ include_venice_system_prompt = false
 
 # GitHub Copilot is a *subscription*, not a pasted key: `auth` puts it in
 # `/login`'s subscription list, where Enter runs GitHub's device flow
-# (docs/copilot.md). What `api_key_env` stores is the resulting long-lived
+# (docs/providers/copilot.md). What `api_key_env` stores is the resulting long-lived
 # GitHub OAuth token; every request exchanges it for the short-lived Copilot
 # bearer the API actually takes, so nothing here is sent verbatim. The editor
 # identity headers are load-bearing — Copilot answers 400 without
@@ -134,7 +134,7 @@ Openai-Intent = "conversation-panel"
 api_base = "https://api.githubcopilot.com"
 
 # Ollama, the local model server, over its **native** API rather than its
-# OpenAI-compatible `/v1` — hence `wire_api` (docs/ollama.md). The native wire
+# OpenAI-compatible `/v1` — hence `wire_api` (docs/providers/ollama.md). The native wire
 # is what lets a request set the context window (`options.num_ctx`), which
 # `/v1` silently drops; without it every model runs at the server's default
 # (4096 tokens on most machines) and the conversation is silently truncated.
@@ -162,7 +162,7 @@ api_base_env = "OLLAMA_HOST"
 [providers.ollama.kwargs]
 api_base = "http://127.0.0.1:11434"
 
-# LM Studio's local server (docs/local-models.md), reached over its
+# LM Studio's local server (docs/providers/local-models.md), reached over its
 # OpenAI-compatible `/v1` the way any chat-completions provider is. Like the
 # local Ollama above it needs no key (`auth = "optional_key"`) and is
 # configured by being *pointed at*: `/login` → Sign in with a local model →
@@ -221,7 +221,7 @@ api_base = "https://openrouter.ai/api/v1"
 # OpenAI's ChatGPT seat is a *subscription* too, and a second kind of sign-in:
 # `/login` runs OpenAI's PKCE loopback flow in the browser — or, on a headless
 # machine, Codex's own device code; Enter on the row asks which
-# (docs/chatgpt.md). What `api_key_env` stores is the long-lived **refresh**
+# (docs/providers/chatgpt.md). What `api_key_env` stores is the long-lived **refresh**
 # token; every request mints a ~1h access token from it, so nothing here is
 # sent verbatim. The backend speaks the **Responses** API, not chat
 # completions — hence `wire_api` — and `originator` is server-side
@@ -248,7 +248,7 @@ api_base = "https://chatgpt.com/backend-api/codex"
 # Anthropic's own API, reached with a **pasted key**. It speaks the Messages
 # API rather than chat completions — hence `wire_api` — and the key rides
 # `x-api-key` rather than `Authorization: Bearer`, which the auth seam decides
-# from the pair (`docs/claude.md`). `anthropic-version` is required on every
+# from the pair (`docs/providers/claude.md`). `anthropic-version` is required on every
 # request; it pins the wire format, so it belongs in the file beside the base.
 [providers.anthropic]
 name = "Anthropic"
@@ -264,7 +264,7 @@ anthropic-version = "2023-06-01"
 api_base = "https://api.anthropic.com/v1"
 
 # The same API reached with an **Anthropic account sign-in** instead of a
-# pasted key: `/login` runs Anthropic's own Console PKCE flow (docs/claude.md).
+# pasted key: `/login` runs Anthropic's own Console PKCE flow (docs/providers/claude.md).
 # What `api_key_env` stores is the long-lived **refresh** token; every request
 # mints a short-lived access token from it, so nothing here is sent verbatim.
 # The `anthropic-beta: oauth-2025-04-20` an OAuth bearer additionally needs is
@@ -273,7 +273,7 @@ api_base = "https://api.anthropic.com/v1"
 #
 # This is deliberately NOT a Claude Pro/Max subscription sign-in: Anthropic's
 # usage policy does not permit a third-party client to offer Claude.ai login
-# or route requests through subscription credentials (docs/claude.md). Usage
+# or route requests through subscription credentials (docs/providers/claude.md). Usage
 # here bills to the account's API organisation, exactly as a pasted key does.
 [providers.anthropic_console]
 name = "Anthropic Console"
@@ -294,7 +294,7 @@ api_base = "https://api.anthropic.com/v1"
 # `/models` names ids and nothing else, so the picker lists the catalog Cline's
 # clients read instead — `api_model_base` + `/models` is
 # `/api/v1/ai/cline/models`, public and OpenRouter-shaped, whose records carry
-# each model's context window, image input and reasoning (docs/cline.md).
+# each model's context window, image input and reasoning (docs/providers/cline.md).
 [providers.cline]
 name = "Cline"
 api_model_base = "https://api.cline.bot/api/v1/ai/cline"
@@ -308,7 +308,7 @@ api_base = "https://api.cline.bot/api/v1"
 # curated set of open coding models) — on the same API, reached with a Cline
 # **account sign-in** instead of a pasted key: `/login` runs Cline's own
 # device-code flow (WorkOS, the way its extension and CLI sign in,
-# docs/cline.md). What `api_key_env` stores is the long-lived **Cline refresh
+# docs/providers/cline.md). What `api_key_env` stores is the long-lived **Cline refresh
 # token** the sign-in registers; every request mints a short-lived access
 # token from it, sent as `Bearer workos:<jwt>`, so nothing here is sent
 # verbatim. The plan's models are addressed by their `cline-pass/…` slugs,
@@ -329,7 +329,7 @@ api_base = "https://api.cline.bot/api/v1"
 
 # Google Antigravity — the models Antigravity serves (Gemini, and the Claude
 # and GPT-OSS models Google routes through it) on a Google account's
-# Antigravity quota, reached with a **Google sign-in** (docs/antigravity.md).
+# Antigravity quota, reached with a **Google sign-in** (docs/providers/antigravity.md).
 # `/login` runs Google's PKCE flow in the browser on Antigravity's own public
 # desktop OAuth client, and what `api_key_env` stores is the long-lived Google
 # **refresh** token; every request mints a short-lived access token from it

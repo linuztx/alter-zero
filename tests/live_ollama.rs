@@ -1,4 +1,4 @@
-//! Live Ollama integration tests (`docs/ollama.md`) — the full production
+//! Live Ollama integration tests (`docs/providers/ollama.md`) — the full production
 //! pipeline against a real server: the `/api/tags` + `/api/show` catalog,
 //! `LlmBackend::spawn` → the native `/api/chat` NDJSON stream →
 //! `StreamEvent`s, with thinking, a tool round, an image, the window the
@@ -135,7 +135,7 @@ fn red_png() -> PathBuf {
 #[ignore = "needs a running Ollama with qwen3:1.7b, gemma3:270m and moondream pulled"]
 fn live_catalog_carries_capabilities_and_windows() {
     // The three capability questions answered off `/api/tags` + `/api/show`
-    // (docs/ollama.md): vision and thinking off the capabilities list, the
+    // (docs/providers/ollama.md): vision and thinking off the capabilities list, the
     // window off the model's own maximum under the cap.
     let cfg = config(&thinking_model(), None, None);
     let models = fetch_models(&cfg, &CancelToken::new()).expect("the catalog");
@@ -283,7 +283,7 @@ fn live_image_round_on_a_vision_model() {
 #[ignore = "needs a running Ollama with gemma3:270m pulled"]
 fn live_num_ctx_is_what_the_server_loads() {
     // The reason the native wire exists: the window the session gauges
-    // against is the window the server holds (docs/ollama.md). `/api/ps`
+    // against is the window the server holds (docs/providers/ollama.md). `/api/ps`
     // reports the loaded model's context length.
     let cfg = config("gemma3:270m", None, Some(6144));
     let backend = LlmBackend::configure(cfg.clone(), None, false);
@@ -306,7 +306,7 @@ fn live_num_ctx_is_what_the_server_loads() {
 #[ignore = "needs a running Ollama with gemma3:270m pulled"]
 fn live_refusals_are_explained() {
     // A model that isn't there, and a capability the model lacks — both in
-    // words that say what to do (docs/ollama.md).
+    // words that say what to do (docs/providers/ollama.md).
     let missing = backend("definitely-not-a-model:latest", None, None);
     let events = run(&missing, "hi", vec![]);
     let Some(StreamEvent::Error(reason)) = events.last() else {

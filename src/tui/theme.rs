@@ -1,5 +1,5 @@
 //! The `/theme` picker at the boundary: applying a selection
-//! (`docs/theme.md`).
+//! (`docs/ui/theme.md`).
 //!
 //! The pure side ([`alter_zero::app::App::theme`]) already holds the new
 //! theme when the picker's Enter lands here; what has to *happen* — the
@@ -24,7 +24,7 @@ impl Session<'_> {
     /// banner, every cell, the in-flight partial — under the palette
     /// [`ui::activate_theme`] has just made ambient; the transcript and
     /// context caches key on that same theme and rebuild on their next read
-    /// (`docs/theme.md`). The toast is raised first so the rebuilt frame
+    /// (`docs/ui/theme.md`). The toast is raised first so the rebuilt frame
     /// already carries the confirmation, and the palette switches before
     /// the rebuild so the rebuild is what paints it.
     pub(crate) fn select_theme(&mut self, theme: Theme) -> io::Result<()> {

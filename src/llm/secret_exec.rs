@@ -1,4 +1,4 @@
-//! Secrets at the tool boundary (`docs/secrets.md`): the seam every model
+//! Secrets at the tool boundary (`docs/state/secrets.md`): the seam every model
 //! tool call passes through on its way to the executor — the main turn's
 //! and a subagent's alike — where `<secret:NAME>` placeholders become
 //! values and values become placeholders again.
@@ -382,7 +382,7 @@ mod tests {
     fn a_call_naming_a_secret_that_is_not_stored_is_refused_before_it_runs() {
         // Run as written, a slip reaches the tool as the literal text — typed
         // at a password prompt, sent as a bearer token, written into a
-        // config file that then looks done (docs/secrets.md).
+        // config file that then looks done (docs/state/secrets.md).
         let secrets = secrets();
         for original in [
             call(

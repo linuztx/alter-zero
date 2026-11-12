@@ -1,4 +1,4 @@
-//! The page a browser sign-in lands on (`docs/callback-page.md`): every
+//! The page a browser sign-in lands on (`docs/providers/callback-page.md`): every
 //! browser sign-in's, since they share one callback (`super`) — an MCP
 //! server's, ChatGPT's, the Anthropic Console's and Google Antigravity's.
 //!

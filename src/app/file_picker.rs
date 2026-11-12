@@ -1,6 +1,6 @@
 //! The `@` file picker's [`App`](super::App) state: the query round-trip with
 //! the boundary's background walker and the Tab/Enter path insertion.
-//! See `docs/file-search.md`.
+//! See `docs/input/file-search.md`.
 
 use super::*;
 
@@ -9,7 +9,7 @@ use super::*;
 /// these come from the **filesystem** asynchronously, so they're stored here.
 /// The boundary dispatches a search whenever [`App::file_search_query`] changes
 /// and feeds results back via [`App::set_file_matches`]. See
-/// `docs/file-search.md`.
+/// `docs/input/file-search.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileSearch {
     /// Index of the highlighted match.
@@ -77,7 +77,7 @@ impl App {
 
     /// The active `@token` query the boundary should search for — `None` when the
     /// picker is closed (or in shell mode). The loop dispatches a file search
-    /// whenever this changes; see `docs/file-search.md`.
+    /// whenever this changes; see `docs/input/file-search.md`.
     #[must_use]
     pub fn file_search_query(&self) -> Option<String> {
         if self.file_search.is_none() || self.shell_mode {
@@ -91,7 +91,7 @@ impl App {
     /// search was dispatched) are dropped; otherwise they replace the band's
     /// matches, clear the `waiting` flag, and clamp the highlight. `truncated`
     /// says the walk behind them stopped at its cap, which the band's count
-    /// owns up to (`docs/file-search.md`).
+    /// owns up to (`docs/input/file-search.md`).
     pub fn set_file_matches(&mut self, query: &str, matches: Vec<FileMatch>, truncated: bool) {
         // Compare against the *live* token so a result that raced the user's
         // typing is discarded (the loop also re-dispatches on every change).

@@ -5,7 +5,7 @@
 smoke_begin
 
 # Alt+Up pulls back a message the running turn has NOT read yet
-# (docs/queue.md). Submit "hello there", Enter "oops typo" mid-stream — it waits
+# (docs/input/queue.md). Submit "hello there", Enter "oops typo" mid-stream — it waits
 # inset above the box — then Alt+Up: only the shared queue knows whether the
 # loop has taken it, so the boundary pops it and hands it back. The row goes and
 # the text returns to the composer as an editable draft, with the turn still

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# /resume SESSION RECORDING + PICKER (docs/resume.md). Every
+# /resume SESSION RECORDING + PICKER (docs/state/resume.md). Every
 # conversation records to a rollout JSONL file under ALTER_ZERO_SESSIONS_DIR
 # (created lazily on the first user message — the session_meta line first). A
 # second launch's /resume opens the full-screen session picker (the

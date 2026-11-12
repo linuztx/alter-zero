@@ -3,7 +3,7 @@
 //! [`App::on_key`](super::App::on_key) is pure: it mutates state and returns one
 //! of these for `main.rs` to carry out (spawn a turn, quit, copy, …). The
 //! boundary each variant crosses is documented with the feature that owns it —
-//! `docs/interrupt.md`, `docs/queue.md`, `docs/copy.md`, `docs/resume.md`; the
+//! `docs/input/interrupt.md`, `docs/input/queue.md`, `docs/ui/copy.md`, `docs/state/resume.md`; the
 //! seam itself is `docs/design.md`.
 
 use super::*;
@@ -21,27 +21,27 @@ pub enum Action {
     None,
     /// The user submitted a (non-empty) message; start a reply for it. Any
     /// Ctrl+V-attached images travel separately — the loop drains
-    /// [`App::take_submission_images`] for their paths. See `docs/image-paste.md`.
+    /// [`App::take_submission_images`] for their paths. See `docs/input/image-paste.md`.
     Submit(String),
     /// The user pressed Ctrl+V (or Ctrl+Alt+V) to paste an image. The decision is
     /// pure; the loop does the clipboard I/O ([`crate::clipboard`]) and calls
     /// [`App::attach_image`] on success (or commits a red notice on failure). See
-    /// `docs/image-paste.md`.
+    /// `docs/input/image-paste.md`.
     PasteImage,
     /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
     /// loop syncs the full-screen overlay to the now-updated [`App::view`].
     ToggleToolView,
     /// Enter confirmed an Esc-Esc backtrack: [`App::history`] is already
     /// truncated to the chosen message and the composer prefilled. The loop
-    /// resets the code to that point's checkpoint (`docs/checkpoint.md`), then
+    /// resets the code to that point's checkpoint (`docs/state/checkpoint.md`), then
     /// leaves the overlay and repaints — the same return path as
     /// [`Action::ToggleToolView`]'s exit branch. Distinguished from a plain
     /// overlay toggle so the loop knows a rewind (not just a view change)
-    /// happened. See `docs/backtrack.md`.
+    /// happened. See `docs/input/backtrack.md`.
     ConfirmBacktrack,
     /// The user toggled the Ctrl+D context-debug view (or closed it with
     /// q/Esc). The loop syncs the overlay to the now-updated [`App::view`],
-    /// exactly like [`Action::ToggleToolView`]. See `docs/context.md`.
+    /// exactly like [`Action::ToggleToolView`]. See `docs/architecture/context.md`.
     ToggleContextDebug,
     /// A one-off system notice (e.g. the hint an empty `!` shell posts). The
     /// loop records it as a [`Role::System`] message and commits it to
@@ -54,15 +54,15 @@ pub enum Action {
     /// to the system clipboard. The decision is pure — with no response to copy
     /// the command returns [`Action::Toast`] instead — and the loop does the
     /// clipboard I/O ([`crate::clipboard::copy_to_clipboard`]) and raises the
-    /// success/failure toast — codex's `/copy`. See `docs/copy.md`.
+    /// success/failure toast — codex's `/copy`. See `docs/ui/copy.md`.
     Copy(String),
     /// The user pressed Enter on a `!`-prefixed line from an idle composer: run
     /// the carried command (the text after the `!`, trimmed) locally. The loop
     /// echoes `❯ !command`, calls [`App::begin_shell`], and spawns it. See
-    /// `docs/shell-command.md`.
+    /// `docs/input/shell-command.md`.
     RunShell(String),
     /// Enter while a **model turn is running**: hand this text to that turn
-    /// (`docs/queue.md`). `App::steer_draft` has already consumed the
+    /// (`docs/input/queue.md`). `App::steer_draft` has already consumed the
     /// composer and parked the text in [`App::steered`]; the boundary pushes
     /// it onto the shared [`SteerQueue`](crate::steer::SteerQueue) the
     /// backend drains at its next round boundary, so the model reads it
@@ -72,7 +72,7 @@ pub enum Action {
     /// the turn already running: ask the boundary for it back. Only the shared
     /// queue knows whether the turn has read it yet — if it has not, the
     /// boundary hands the text to [`App::recall_steered`]; if it has, there is
-    /// nothing to edit and the press does nothing. See `docs/queue.md`.
+    /// nothing to edit and the press does nothing. See `docs/input/queue.md`.
     ReclaimSteered,
     /// [`ReclaimSteered`](Action::ReclaimSteered) inside an **agent session
     /// view**, with no follow-up turn of that agent's left to edit: ask the
@@ -80,7 +80,7 @@ pub enum Action {
     /// registry knows whether the round boundary has taken it — if it has
     /// not, the boundary hands the text to [`App::recall_agent_chat`]; if it
     /// has, there is nothing to edit and the press does nothing. See
-    /// `docs/queue.md`.
+    /// `docs/input/queue.md`.
     ReclaimAgentChat {
         /// The agent whose session is on screen.
         id: String,
@@ -94,11 +94,11 @@ pub enum Action {
     /// and spawns the request on a one-off **tools-free** backend — the
     /// summary streams into the compact buffer (never rendered) and
     /// [`App::finish_compact`] appends the marker at `StreamDone`. See
-    /// `docs/compact.md`.
+    /// `docs/architecture/compact.md`.
     Compact,
     /// `/resume` from an idle composer: open the session picker. The *loop*
     /// scans the sessions dir (the fs I/O stays at the boundary) and hands the
-    /// result to [`App::open_resume_picker`]. See `docs/resume.md`.
+    /// result to [`App::open_resume_picker`]. See `docs/state/resume.md`.
     OpenResumePicker,
     /// The `/resume` picker was dismissed (Esc on an empty query, or Ctrl+C —
     /// codex's from-a-session picker closes rather than quits): [`App::view`]
@@ -109,7 +109,7 @@ pub enum Action {
     /// file at this path. The loop reads + parses it (the I/O), calls
     /// [`App::load_session`], and adopts the file for further recording —
     /// or commits a red notice if the read fails, the current conversation
-    /// unharmed (codex). See `docs/resume.md`.
+    /// unharmed (codex). See `docs/state/resume.md`.
     ResumeSession(PathBuf),
     /// Raise a transient info [`Toast`](crate::app::Toast) above the box — a
     /// confirmation or soft rejection that self-clears (e.g. `/resume` or
@@ -117,13 +117,13 @@ pub enum Action {
     /// [`App::show_toast`] and arms the boundary's expiry timer; nothing is
     /// committed to scrollback. Error toasts (a `/copy` failure, a bad model
     /// switch) are raised by the boundary directly, so this carries only the
-    /// info text. See `docs/toast.md`.
+    /// info text. See `docs/ui/toast.md`.
     Toast(String),
     /// `/model` from an idle composer: open the inline model picker. The *loop*
     /// spawns a worker to fetch the provider's model list (the HTTP stays at the
     /// boundary) and feeds it back via [`App::set_models`]. Unlike `/resume`,
     /// the picker is **inline** (it grows the bottom region in place), not an
-    /// alternate-screen overlay. See `docs/llm.md`.
+    /// alternate-screen overlay. See `docs/providers/llm.md`.
     OpenModelPicker,
     /// The inline model picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::model_picker`] is already cleared; the loop just repaints the
@@ -131,13 +131,13 @@ pub enum Action {
     CloseModelPicker,
     /// Enter in the model picker: switch the active backend to this
     /// provider/model. The loop rebuilds the backend, updates the footer
-    /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.
+    /// ([`App::set_session_info`]), and collapses the picker. See `docs/providers/llm.md`.
     /// `reasoning` is the picked entry's parsed thinking capability (from the
     /// same `/v1/models` fetch that listed it), so a successful switch seeds
     /// the Ctrl+T cycle without refetching — `None` for a model with no
-    /// reasoning. See `docs/reasoning.md`. `vision` is the entry's parsed
+    /// reasoning. See `docs/providers/reasoning.md`. `vision` is the entry's parsed
     /// image-input support, gating attachments on the rebuilt backend —
-    /// `None` when the record didn't say. See `docs/tools.md`.
+    /// `None` when the record didn't say. See `docs/tools/tools.md`.
     SelectModel {
         provider: String,
         id: String,
@@ -145,30 +145,30 @@ pub enum Action {
         vision: Option<bool>,
         /// The picked entry's context window (`/v1/models` `context_length`),
         /// seeding the footer gauge + auto-compact without a refetch — `None`
-        /// when the record didn't report one. See `docs/compact.md`.
+        /// when the record didn't report one. See `docs/architecture/compact.md`.
         context: Option<u64>,
         /// The picked entry's listed **speed tiers** (the ChatGPT backend's
         /// `service_tiers`), seeding `/fast` without a refetch — empty for a
-        /// model that lists none. See `docs/fast-mode.md`.
+        /// model that lists none. See `docs/providers/fast-mode.md`.
         service_tiers: Vec<ServiceTier>,
     },
     /// Ctrl+T cycled the thinking mode ([`App::thinking`] already advanced
     /// to the carried mode). The loop rebinds the *next* turn's backend to it,
     /// persists the choice, and presents the `Thinking: {mode}` toast (arming
     /// its expiry — why this isn't a direct `show_toast`). See
-    /// `docs/reasoning.md`.
+    /// `docs/providers/reasoning.md`.
     SetThinking(ThinkingMode),
     /// A tier's palette command (`/fast`, `/ultrafast`, …) toggled the speed
     /// tier ([`App::speed`] already moved to the carried selection — `None`
     /// is standard). The loop rebinds the *next* turn's backend to it,
     /// persists the choice beside the model selection, and presents the
     /// `Speed: {tier}` toast (arming its expiry — why this isn't a direct
-    /// `show_toast`). See `docs/fast-mode.md`.
+    /// `show_toast`). See `docs/providers/fast-mode.md`.
     SetSpeed(Option<ServiceTier>),
     /// `/settings`: open the inline settings menu. Like `/model` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to fetch;
     /// it just repaints (the rows derive from state it already has). See
-    /// `docs/settings.md`.
+    /// `docs/state/settings.md`.
     OpenSettings,
     /// The settings menu was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::settings_picker`] is already cleared; the loop repaints the
@@ -180,21 +180,21 @@ pub enum Action {
     /// reload the project doc, then persist `settings.json` and toast the new
     /// value. The two knobs that need nothing — `HideThinking` and
     /// `AutoCompact` — are read straight off `App` where they are used. See
-    /// `docs/settings.md`.
+    /// `docs/state/settings.md`.
     SettingChanged(crate::settings::SettingKey),
     /// `/hooks`: open the read-only hooks browser. Like `/model` it works
     /// mid-turn — it only replaces the composer. The *loop* digests the
     /// runner's own parsed `hooks.json` into the overview and hands it to
     /// [`App::open_hooks_menu`] (the `/resume` picker's injection seam), so
     /// the browser and the dispatcher can never disagree. See
-    /// `docs/hooks-menu.md`.
+    /// `docs/tools/hooks-menu.md`.
     OpenHooksMenu,
     /// The `/hooks` menu was dismissed (Esc from the events level, or
     /// Ctrl+C): [`App::hooks_menu`] is already cleared; the loop just
     /// repaints the collapsed region.
     CloseHooksMenu,
     /// Enter on a `/hooks` detail page: trust the hook (`trusted`), or stop
-    /// trusting it (`docs/config-review.md`). The menu already shows the new
+    /// trusting it (`docs/state/config-review.md`). The menu already shows the new
     /// state; the loop records it in `trust.json` and rebinds the hooks the
     /// session runs.
     SetHookTrust {
@@ -203,7 +203,7 @@ pub enum Action {
         identity: crate::trust::HookIdentity,
         trusted: bool,
     },
-    /// A page of the startup review was answered (`docs/config-review.md`):
+    /// A page of the startup review was answered (`docs/state/config-review.md`):
     /// the page is already off screen (and the review closed after its last
     /// page); the loop records what the answer means in `trust.json` and
     /// applies it live — trusted hooks rebound into the backend, servers
@@ -214,7 +214,7 @@ pub enum Action {
     /// mid-turn — it only replaces the composer. The *loop* takes the
     /// registry's snapshot and hands it to [`App::open_skills_menu`] (the
     /// same injection seam), so the menu and the set the model is offered can
-    /// never disagree. See `docs/skills.md`.
+    /// never disagree. See `docs/tools/skills.md`.
     OpenSkillsMenu,
     /// The `/skills` menu was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::skills_menu`] is already cleared; the loop just repaints the
@@ -224,12 +224,12 @@ pub enum Action {
     /// copy already moved (so the row updates in the same frame); the loop
     /// makes it true of the session — the shared registry, the re-rendered
     /// listing, the backend rebuild, this project's `skills.json` entry — and
-    /// confirms with a toast. See `docs/skills.md`.
+    /// confirms with a toast. See `docs/tools/skills.md`.
     SkillToggled { name: String, enabled: bool },
     /// `/mascot`: open the inline mascot picker. Like `/settings` it works
     /// mid-turn — it only replaces the composer; a switch repaints the banner
     /// at the next purge rebuild. The loop has nothing to fetch (the catalog
-    /// is a const); it just repaints. See `docs/mascot.md`.
+    /// is a const); it just repaints. See `docs/ui/mascot.md`.
     OpenMascotPicker,
     /// The mascot picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::mascot_picker`] is already cleared; the loop repaints the
@@ -238,13 +238,13 @@ pub enum Action {
     /// Enter/Space in the mascot picker: [`App::mascot`] already moved. The
     /// loop persists `mascot.json`, purge-rebuilds so the banner at the top
     /// of scrollback redraws with the new mascot at once, and confirms with
-    /// a toast. See `docs/mascot.md`.
+    /// a toast. See `docs/ui/mascot.md`.
     SelectMascot(Mascot),
     /// `/spinner`: open the inline spinner-style picker. Like `/mascot` it
     /// works mid-turn — it only replaces the composer, and the running turn's
     /// status line is exactly what a switch changes, on the next frame. The
     /// loop has nothing to fetch (the catalog is a const); it just repaints.
-    /// See `docs/spinner.md`.
+    /// See `docs/ui/spinner.md`.
     OpenSpinnerPicker,
     /// The spinner picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::spinner_picker`] is already cleared; the loop repaints the
@@ -252,12 +252,12 @@ pub enum Action {
     CloseSpinnerPicker,
     /// Enter/Space in the spinner picker: [`App::spinner`] already moved. The
     /// loop persists `spinner.json` and confirms with a toast — no rebuild,
-    /// the status line being live-region-only. See `docs/spinner.md`.
+    /// the status line being live-region-only. See `docs/ui/spinner.md`.
     SelectSpinner(Spinner),
     /// `/theme`: open the inline colour-theme picker. Like `/spinner` it
     /// works mid-turn — it only replaces the composer. The loop has nothing
     /// to fetch (the catalog is a const); it just repaints. See
-    /// `docs/theme.md`.
+    /// `docs/ui/theme.md`.
     OpenThemePicker,
     /// The theme picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::theme_picker`] is already cleared; the loop repaints the
@@ -266,12 +266,12 @@ pub enum Action {
     /// Enter/Space in the theme picker: [`App::theme`] already moved. The
     /// loop activates the palette, persists `theme.json`, purge-rebuilds so
     /// every committed row wears the new colours at once, and confirms with
-    /// a toast. See `docs/theme.md`.
+    /// a toast. See `docs/ui/theme.md`.
     SelectTheme(Theme),
     /// `/donate`: open the read-only donation-address page. Like `/hooks` it
     /// works mid-turn — it only replaces the composer. The loop has nothing
     /// to fetch (the catalog is a const); it just repaints. See
-    /// `docs/donate.md`.
+    /// `docs/ui/donate.md`.
     OpenDonatePicker,
     /// The donation page was dismissed (Esc, or Ctrl+C):
     /// [`App::donate_picker`] is already cleared; the loop repaints the
@@ -279,12 +279,12 @@ pub enum Action {
     CloseDonatePicker,
     /// Enter, `c`, or a digit on the donation page: copy this address to the
     /// system clipboard. The loop does the I/O and raises the toast, like
-    /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
+    /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/ui/donate.md`.
     CopyDonationAddress(DonationAddress),
     /// `/secrets`: the page is already open ([`App::secrets_page`]). Like
     /// `/skills` it works mid-turn — it only replaces the composer. The loop
     /// reloads `secrets.json`, so a secret another session added is listed,
-    /// and injects what the page may know. See `docs/secrets.md`.
+    /// and injects what the page may know. See `docs/state/secrets.md`.
     OpenSecretsPage,
     /// The page was dismissed (Esc from the list, or Ctrl+C):
     /// [`App::secrets_page`] is already cleared; the loop repaints the
@@ -294,7 +294,7 @@ pub enum Action {
     /// it to `secrets.json` as one read-modify-write, then answers with
     /// [`App::secret_saved`] (the list, the reminder and the toast follow)
     /// or [`App::secret_save_failed`]. The draft's value `Debug`-prints as
-    /// `<redacted>`. See `docs/secrets.md`.
+    /// `<redacted>`. See `docs/state/secrets.md`.
     SaveSecret(crate::secrets::SecretDraft),
     /// A confirmed `d` on the list: remove this secret from `secrets.json`.
     DeleteSecret(String),
@@ -305,7 +305,7 @@ pub enum Action {
     /// what fills it, and what the provider said about the cache. Like
     /// `/donate` it works mid-turn — it only replaces the composer. The pure
     /// open already counted the window; the loop pulls the backend's tool
-    /// set at the loop bottom (`docs/context-usage.md`).
+    /// set at the loop bottom (`docs/architecture/context-usage.md`).
     OpenContextUsage,
     /// The context page was dismissed (Esc, or Ctrl+C):
     /// [`App::context_usage`] is already cleared; the loop repaints the
@@ -316,7 +316,7 @@ pub enum Action {
     /// ([`App::open_usage_page`]) and reads each one off its provider — or,
     /// with none signed in, toasts
     /// [`USAGE_EMPTY_NOTICE`](crate::app::USAGE_EMPTY_NOTICE) and opens nothing
-    /// (`docs/usage.md`).
+    /// (`docs/providers/usage.md`).
     OpenUsagePage,
     /// `r` on the usage page: read every subscription again.
     RefreshUsagePage,
@@ -329,7 +329,7 @@ pub enum Action {
     /// `/export`: open the read-only export page — the conversation as
     /// plain text, to the clipboard or a file. Like `/donate` it works
     /// mid-turn — it only replaces the composer. The loop has nothing to
-    /// fetch (the rows are a const); it just repaints. See `docs/export.md`.
+    /// fetch (the rows are a const); it just repaints. See `docs/ui/export.md`.
     OpenExportPicker,
     /// The export page was dismissed (Esc, or Ctrl+C):
     /// [`App::export_picker`] is already cleared; the loop repaints the
@@ -340,13 +340,13 @@ pub enum Action {
     /// plain text at the terminal's width and writes it where the target
     /// says — the clipboard through `/copy`'s path, or a
     /// `conversation-YYYY-MM-DD-HHMMSS.txt` in the cwd — then raises the
-    /// toast. See `docs/export.md`.
+    /// toast. See `docs/ui/export.md`.
     Export(ExportTarget),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to
     /// [`App::open_mcp_menu`] (the same injection seam), so the rows can
-    /// never disagree with the connections. See `docs/mcp.md`.
+    /// never disagree with the connections. See `docs/tools/mcp.md`.
     OpenMcpMenu,
     /// The `/mcp` manager was dismissed (Esc from the list, or Ctrl+C):
     /// [`App::mcp_menu`] is already cleared; the loop just repaints the
@@ -355,12 +355,12 @@ pub enum Action {
     /// One `/mcp` operation to apply against the live manager
     /// (`tui::mcp::Session::apply_mcp_op`) — connection work runs on worker
     /// threads, completions re-inject the snapshot via the MCP event
-    /// channel. See `docs/mcp.md`.
+    /// channel. See `docs/tools/mcp.md`.
     McpOp(McpOp),
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to
-    /// [`App::open_key_onboarding`]. See `docs/llm.md`.
+    /// [`App::open_key_onboarding`]. See `docs/providers/llm.md`.
     OpenKeyOnboarding,
     /// The onboarding flow was dismissed (Esc/Ctrl+C): [`App::key_onboarding`]
     /// is already cleared; the loop just repaints the collapsed region.
@@ -369,9 +369,9 @@ pub enum Action {
     /// that provider's sign-in — `provider` the id (e.g. `github_copilot`),
     /// `kind` which of its flows to run, since ChatGPT Codex's device code
     /// and its browser flow open the same page and only the row says which
-    /// (`docs/chatgpt.md`). The pure core already opened the page; the loop
+    /// (`docs/providers/chatgpt.md`). The pure core already opened the page; the loop
     /// runs the flow on a worker thread and feeds what to show back through
-    /// [`App::set_device_code`]. See `docs/copilot.md`.
+    /// [`App::set_device_code`]. See `docs/providers/copilot.md`.
     StartDeviceLogin {
         /// The provider id whose sign-in runs.
         provider: String,
@@ -386,7 +386,7 @@ pub enum Action {
     CopyDeviceCode(String),
     /// Enter on the key-entry step: persist `key` to `env_var` in the `.env`
     /// file. The loop writes the file, updates its in-memory secrets, and
-    /// commits a system notice. See `docs/llm.md`.
+    /// commits a system notice. See `docs/providers/llm.md`.
     SaveApiKey {
         /// The provider id the key belongs to (for the confirmation notice).
         provider: String,
@@ -399,7 +399,7 @@ pub enum Action {
     /// server's models at `test`'s address, with its token — before anything
     /// is saved. The pure core already shows the page waiting; the loop runs
     /// the test on a worker thread and hands the verdict back through
-    /// [`App::finish_server_test`]. See `docs/local-models.md`.
+    /// [`App::finish_server_test`]. See `docs/providers/local-models.md`.
     TestLocalServer {
         /// The provider id whose server is tested (e.g. `lmstudio`).
         provider: String,
@@ -413,7 +413,7 @@ pub enum Action {
     /// with this registry id. The decision is pure; the loop kills the
     /// process group via the `background::BackgroundRegistry`, and the
     /// resulting `Exited` event removes the row / commits the stopped notice.
-    /// See `docs/background.md`.
+    /// See `docs/tools/background.md`.
     KillBackground(String),
     /// `x` on an agent in the footer roster: stop the subagent with this id —
     /// or, on a row that has already settled, clear it.
@@ -421,28 +421,28 @@ pub enum Action {
     /// the roster for its longer linger; the clear takes it off); the loop
     /// cancels the subagent thread via the `agents::AgentRegistry`, arms the
     /// sweep, and commits/settles whatever the resolution produced. See
-    /// `docs/agent-tool.md`.
+    /// `docs/agents/agent-tool.md`.
     StopAgent(String),
     /// Enter on an agent in the footer roster: open that agent's own inline
     /// session view ([`App::agent_view`] is already set). The loop
     /// purge-rebuilds the screen with the agent's transcript (banner + its
-    /// history + live tail). See `docs/agent-tool.md`.
+    /// history + live tail). See `docs/agents/agent-tool.md`.
     ViewAgent(String),
     /// Leave the agent session view back to the main conversation
     /// ([`App::agent_view`] is already cleared): the loop purge-rebuilds the
-    /// main transcript, mid-stream partial included. See `docs/agent-tool.md`.
+    /// main transcript, mid-stream partial included. See `docs/agents/agent-tool.md`.
     LeaveAgentView,
     /// Enter inside an agent session view: send `text` to that agent —
     /// queued into its running loop at the next round boundary, or spawning
     /// a chat continuation over its stored conversation when idle (the
     /// registry decides). The transcript already shows the message
-    /// ([`App::agent_chat`] recorded it). See `docs/agent-tool.md`.
+    /// ([`App::agent_chat`] recorded it). See `docs/agents/agent-tool.md`.
     AgentChat { id: String, text: String },
     /// Ctrl+B while a command is running (a model `bash` call or a `!` shell
     /// turn): move it to the background. The loop raises the registry's
     /// background request; the runner's poll loop consumes it, hands the
     /// child off, and resolves the cell as
-    /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
+    /// [`ToolStatus::Backgrounded`]. See `docs/tools/background.md`.
     MoveToBackground,
     /// Shift+Tab toggled the permission mode (manual → edit → auto → master) — from the
     /// composer, or from an open `bash` prompt (whose own question the
@@ -452,7 +452,7 @@ pub enum Action {
     /// now covers, and presents the confirming toast. (Option 2 on a
     /// `write`/`edit` prompt switches the mode through
     /// [`ResolvePermission`](Self::ResolvePermission) instead.) See
-    /// `docs/permissions.md`.
+    /// `docs/state/permissions.md`.
     SetPermissionMode(PermissionMode),
     /// The user answered the inline tool-permission prompt. The prompt is
     /// already closed (and the composer draft restored); the loop applies
@@ -464,7 +464,7 @@ pub enum Action {
     /// The whole `request` rides along because the rules live at the boundary
     /// and need it, not just the id. Esc is *not* one of these — it abandons
     /// the request and returns [`Action::Interrupt`] instead. See
-    /// `docs/permissions.md`.
+    /// `docs/state/permissions.md`.
     ResolvePermission {
         request: PermissionRequest,
         decision: PermissionDecision,
@@ -475,7 +475,7 @@ pub enum Action {
     /// [`crate::ask::AskGate`] under `id`, waking the tool thread blocked on
     /// it. Unlike a permission Esc this never interrupts the turn: a decline
     /// resolves the call and the model reads the stop-and-wait result. See
-    /// `docs/ask.md`.
+    /// `docs/tools/ask.md`.
     ResolveAsk {
         id: String,
         decision: crate::ask::AskDecision,
@@ -486,7 +486,7 @@ pub enum Action {
 
 /// One `/mcp` operation ([`Action::McpOp`]) — the typed vocabulary the menu
 /// dispatches and `tui::mcp::Session::apply_mcp_op` carries out against the
-/// live manager. See `docs/mcp.md`.
+/// live manager. See `docs/tools/mcp.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpOp {
     /// Re-connect one server (the detail page's `Reconnect`, and `Enable`'s

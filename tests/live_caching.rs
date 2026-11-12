@@ -1,5 +1,5 @@
 //! Live prompt-caching verification, one test per provider
-//! (`docs/prompt-caching.md`): the full production pipeline — the provider's
+//! (`docs/providers/prompt-caching.md`): the full production pipeline — the provider's
 //! config resolved through `ProvidersFile::model_config` exactly as the
 //! boundary resolves it, `LlmBackend::spawn`, the real wire — driven twice
 //! over one salted ~5k-token system prompt, so turn 2 re-sends a prefix turn 1
@@ -37,11 +37,11 @@
 //!
 //! `live_chatgpt_cache_diagnostics` is the A/B run that found the ChatGPT
 //! backend keys its cache on Codex's `session_id`/`conversation_id` headers
-//! rather than the body's `prompt_cache_key` (`docs/chatgpt.md`); it prints
+//! rather than the body's `prompt_cache_key` (`docs/providers/chatgpt.md`); it prints
 //! rather than asserts, so it stays useful when the backend drifts again.
 //!
 //! The two sign-ins whose refresh token **rotates** (Anthropic Console,
-//! ChatGPT — `docs/claude.md`, `docs/chatgpt.md`) refuse to run without
+//! ChatGPT — `docs/providers/claude.md`, `docs/providers/chatgpt.md`) refuse to run without
 //! `ALTER_ZERO_LIVE_TOKEN_STORE`: the mint may retire the token it was given,
 //! and the rotated one is written back only to a store path, so a run without
 //! one would strand the caller with a token the provider no longer honours.
@@ -164,7 +164,7 @@ fn two_turns(backend: &LlmBackend) -> (TokenUsage, TokenUsage) {
     (first, second)
 }
 
-/// How a provider's cache answers a warm request (`docs/prompt-caching.md`).
+/// How a provider's cache answers a warm request (`docs/providers/prompt-caching.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CacheReads {
     /// Explicit breakpoints: the prefix a marked request wrote is read back
@@ -310,7 +310,7 @@ fn live_openrouter_growing_conversation_keeps_cache() {
 #[ignore = "hits the network; needs OPENROUTER_API_KEY; costs about a cent"]
 fn live_openrouter_marks_the_previous_tool_result_and_reads_it_back() {
     // Breakpoint ③ on a *tool* message in the middle of the conversation —
-    // the previous request's frontier (`docs/prompt-caching.md`), where the
+    // the previous request's frontier (`docs/providers/prompt-caching.md`), where the
     // old placement only ever marked a user message. OpenRouter's Anthropic
     // routing accepted the marker on a frontier tool message; this is the
     // request that carries one mid-conversation, and it must both be
@@ -481,7 +481,7 @@ fn live_venice_claude_caches_without_our_own_breakpoints() {
 #[test]
 #[ignore = "hits the network; needs VENICE_API_KEY"]
 fn live_venice_direct_second_turn_reads_the_prefix_from_cache() {
-    // The direct provider (`docs/venice.md`) is the proxy's twin: the same
+    // The direct provider (`docs/providers/venice.md`) is the proxy's twin: the same
     // request — `venice_parameters`, `prompt_cache_key`, no markers of ours —
     // sent to Venice's own base with a key from the user's own account. What
     // the proxy test proves about Venice's implicit cache must hold here
@@ -553,7 +553,7 @@ fn live_openrouter_latest_alias_id_gets_breakpoints_and_caches() {
 // ---------------------------------------------------------------------------
 
 /// The Messages-wire round trip both Anthropic providers share
-/// (`docs/claude.md`): breakpoints on the last system block and the
+/// (`docs/providers/claude.md`): breakpoints on the last system block and the
 /// conversation frontier, the usage summed from the uncached remainder plus
 /// both cache figures. Turn 1 writes, turn 2 reads — and `input` on turn 2
 /// is still the whole prompt, not the few dozen uncached tokens Anthropic
@@ -657,7 +657,7 @@ fn print_raw_anthropic_usage_frames(cfg: &ModelConfig, system: &str) {
 #[test]
 #[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
 fn live_chatgpt_responses_second_turn_reads_the_prefix_from_cache() {
-    // The Responses wire (`docs/chatgpt.md`): the system prompt hoisted into
+    // The Responses wire (`docs/providers/chatgpt.md`): the system prompt hoisted into
     // `instructions`, `prompt_cache_key` riding every request, the usage
     // frame's `input_tokens_details.cached_tokens` parsed. OpenAI caches an
     // identical prefix automatically past 1024 tokens.
@@ -739,7 +739,7 @@ fn live_chatgpt_cache_diagnostics() {
 #[test]
 #[ignore = "hits the network; needs OLLAMA_API_KEY"]
 fn live_ollama_cloud_reports_usage_but_no_cache_detail() {
-    // The native `/api/chat` wire (`docs/ollama.md`) reports the final
+    // The native `/api/chat` wire (`docs/providers/ollama.md`) reports the final
     // frame's `prompt_eval_count` / `eval_count` and nothing about caching —
     // there is no such field on that API. The tally is real (the whole
     // prompt, both turns); the cached share is honestly zero rather than a
@@ -796,7 +796,7 @@ fn live_copilot_reports_its_usage_frame() {
 #[test]
 #[ignore = "hits the network; needs CHATGPT_CODEX_REFRESH_TOKEN + ALTER_ZERO_LIVE_TOKEN_STORE"]
 fn live_chatgpt_fast_mode_is_listed_and_a_priority_request_is_served() {
-    // Codex's fast mode on the wire (`docs/fast-mode.md`): the listing names
+    // Codex's fast mode on the wire (`docs/providers/fast-mode.md`): the listing names
     // the tier per model, and a request carrying `service_tier: "priority"`
     // beside the routing hint is served like any other. The same one-word
     // prompt runs at standard and at fast — one sample each, timed for the

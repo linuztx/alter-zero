@@ -1,9 +1,9 @@
-//! The reply backend and everything that selects it (`docs/llm.md`).
+//! The reply backend and everything that selects it (`docs/providers/llm.md`).
 //!
 //! [`ModelSession`] owns the answer to "who replies, and how": the provider
 //! table, the resolved key, the active model, its reasoning mode
-//! (`docs/reasoning.md`), its image support and context window
-//! (`docs/tools.md`, `docs/compact.md`) — plus the `Box<dyn ReplySource>` all
+//! (`docs/providers/reasoning.md`), its image support and context window
+//! (`docs/tools/tools.md`, `docs/architecture/compact.md`) — plus the `Box<dyn ReplySource>` all
 //! of that resolves to. It exists because those knobs move **together**:
 //! `/model`, `/login`, Ctrl+T and the startup capability probe each rebuild
 //! the backend from the same set, and a rebuild that forgot part of it used to
@@ -21,7 +21,7 @@
 //!   `config.json`, so persisting its reasoning state can't hijack the saved
 //!   default (see [`ModelSession::persist`]).
 //! - **The selection is the working directory's.** `config.json` keeps one
-//!   entry per cwd (`docs/per-directory-state.md`): a `/model` switch here
+//!   entry per cwd (`docs/state/per-directory-state.md`): a `/model` switch here
 //!   is this directory's from now on, and a directory launched in for the
 //!   first time takes the last selection made anywhere and pins it as its own
 //!   at startup — so a switch elsewhere never moves it afterwards.
@@ -29,7 +29,7 @@
 //!   session starts on; the conversation's rollout records the model it
 //!   actually runs ([`ModelSession::session_selection`]), and a resume
 //!   brings that back through [`ModelSession::restore`] without writing
-//!   `config.json` (`docs/session-model.md`) — so two instances in one
+//!   `config.json` (`docs/state/session-model.md`) — so two instances in one
 //!   directory each keep their own model.
 //!
 //! The dummy backend is the fallback throughout, so the app always runs
@@ -66,7 +66,7 @@ type Thinking = (ReasoningSupport, ThinkingMode);
 pub(crate) struct ModelSession {
     /// The provider table: the built-ins with the user's own `providers.toml`
     /// laid over them, or `ALTER_ZERO_PROVIDERS_FILE` alone
-    /// (`docs/user-providers.md`). Re-read whenever `/login` or `/model`
+    /// (`docs/providers/user-providers.md`). Re-read whenever `/login` or `/model`
     /// opens, so a provider added mid-session is there without a restart.
     providers: ProvidersFile,
     /// What the startup read found wrong with the provider file, held for
@@ -86,7 +86,7 @@ pub(crate) struct ModelSession {
     /// `config.json`'s path; `None` disables persistence (no config home).
     settings_path: Option<std::path::PathBuf>,
     /// The working directory as `config.json` keys its entries — which entry
-    /// this session reads and writes (`docs/per-directory-state.md`).
+    /// this session reads and writes (`docs/state/per-directory-state.md`).
     project: String,
     /// The (provider, model) pair `config.json` currently records **for this
     /// directory**. Thinking / vision / context writes attach to **this** pair
@@ -94,14 +94,14 @@ pub(crate) struct ModelSession {
     persisted_selection: Option<(String, String)>,
     /// The sampling temperature riding every request — seeded from
     /// `ALTER_ZERO_TEMPERATURE`, then owned by the `/settings` **Temperature**
-    /// knob (`docs/settings.md`).
+    /// knob (`docs/state/settings.md`).
     temperature: Option<f32>,
     /// Whether the `bash`/`read`/`write`/`edit`/`agent` tools are offered —
     /// seeded from `ALTER_ZERO_TOOLS`, then owned by the `/settings` **Tools**
     /// knob. Every rebuild reads it, so a switch mid-session sticks.
     tools: bool,
     /// The retry budget every round carries — the `/settings` **Error retry**
-    /// knob (`docs/settings.md`).
+    /// knob (`docs/state/settings.md`).
     max_retries: u32,
     /// The tool-round ceiling every turn carries — the `/settings` **Max tool
     /// calls** knob, `0` (the default) being no limit at all.
@@ -110,16 +110,16 @@ pub(crate) struct ModelSession {
     system_prompt: Option<String>,
     /// Its runtime half alone — the environment and scratchpad blocks — for a
     /// subagent definition whose body replaces the persona
-    /// (`docs/subagents.md`). Resolved once at startup beside it, so every
+    /// (`docs/agents/subagents.md`). Resolved once at startup beside it, so every
     /// rebuild inherits it by clone.
     prompt_context: Option<String>,
-    /// `ALTER_ZERO_STALL_MS` — the test-only wedged backend (`docs/interrupt.md`).
+    /// `ALTER_ZERO_STALL_MS` — the test-only wedged backend (`docs/input/interrupt.md`).
     stall_ms: Option<u64>,
     /// `ALTER_ZERO_CONTEXT_WINDOW`, which outranks whatever a provider reports.
     env_context_window: Option<u64>,
     /// The `ALTER_ZERO_PROVIDER` / `ALTER_ZERO_MODEL` pins, read once: they
     /// decide the startup selection, and outrank a resumed conversation's
-    /// recorded model the same way (`docs/session-model.md`).
+    /// recorded model the same way (`docs/state/session-model.md`).
     env_provider: Option<String>,
     env_model: Option<String>,
     /// The live selection: which provider, which model, what it can do.
@@ -129,10 +129,10 @@ pub(crate) struct ModelSession {
     active_context: Option<u64>,
     /// The thinking mode the live backend was built with, so a rebuild the
     /// user didn't ask for (a `/settings` knob) carries it forward instead of
-    /// silently dropping the Ctrl+T choice (`docs/reasoning.md`).
+    /// silently dropping the Ctrl+T choice (`docs/providers/reasoning.md`).
     active_thinking: Option<ThinkingMode>,
     /// The speed tiers the active model lists and the `/fast` selection
-    /// riding its requests (`docs/fast-mode.md`) — `None` when it lists
+    /// riding its requests (`docs/providers/fast-mode.md`) — `None` when it lists
     /// none (or the support is not yet known: the probe finds out). Tracked
     /// for `active_thinking`'s reason: a rebuild the user didn't ask for must
     /// carry the tier forward.
@@ -146,7 +146,7 @@ pub(crate) struct ModelSession {
     speed_known: bool,
     /// The session's own selection — the pair the live backend runs plus
     /// what the session knows about it — which the rollout records so a
-    /// resume brings the conversation back on it (`docs/session-model.md`).
+    /// resume brings the conversation back on it (`docs/state/session-model.md`).
     /// `None` on the dummy (and the stalled test backend).
     session_selection: Option<ModelSelection>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
@@ -165,26 +165,26 @@ pub(crate) struct ModelSession {
     /// doc). Cheap `Arc` clones of the loop's own registries.
     registry: BackgroundRegistry,
     agents: AgentRegistry,
-    /// The session's mid-turn message queue (`docs/queue.md`) — re-attached
+    /// The session's mid-turn message queue (`docs/input/queue.md`) — re-attached
     /// on every rebuild like the registries, so a `/model` switch or a
     /// `/settings` change never leaves the loop pushing into a queue no
     /// backend is draining.
     steer: alter_zero::steer::SteerQueue,
     permissions: Option<PermissionGate>,
     /// The `AskUserQuestion` gate — `None` in a headless run, where nobody
-    /// could answer, so the tool is never offered (`docs/headless.md`).
+    /// could answer, so the tool is never offered (`docs/cli/headless.md`).
     ask: Option<alter_zero::ask::AskGate>,
-    /// A headless run's reply budget (`--max-turns`, `docs/headless.md`),
+    /// A headless run's reply budget (`--max-turns`, `docs/cli/headless.md`),
     /// re-attached on every rebuild like the registries; `None` in the TUI.
     round_budget: Option<alter_zero::llm::agent::RoundBudget>,
-    /// The shared task list (docs/task-tools.md) — enables the four task
+    /// The shared task list (docs/tools/task-tools.md) — enables the four task
     /// tools on every rebuild.
     tasks: alter_zero::tasks::TaskRegistry,
-    /// The subagent definitions (`docs/subagents.md`) — the shared handle
+    /// The subagent definitions (`docs/agents/subagents.md`) — the shared handle
     /// every rebuild re-attaches, so a type the per-turn rescan found is
     /// launchable without one.
     subagents: alter_zero::subagents::SubagentRegistry,
-    /// The discovered skills (`docs/skills.md`) — enables the `skill` tool on
+    /// The discovered skills (`docs/tools/skills.md`) — enables the `skill` tool on
     /// every rebuild, held even when the `/settings` **Skills** row is off so
     /// turning it back on needs no rescan. `skills_enabled` is the knob.
     skills: alter_zero::skills::SkillRegistry,
@@ -199,21 +199,21 @@ pub(crate) struct ModelSession {
     /// [`Self::skills_offered`] need a rebuild. Re-deriving both sides would
     /// make them equal by construction and rebuild either never or always.
     skills_attached: bool,
-    /// The session's MCP manager (`docs/mcp.md`) — `None` when the feature is
+    /// The session's MCP manager (`docs/tools/mcp.md`) — `None` when the feature is
     /// off. Re-attached on every rebuild like the registries above; the
     /// tracked `mcp_fingerprint` is the *last build's* offered wire-name set,
     /// so [`Self::refresh_mcp`] rebuilds only when a connection change
     /// actually flipped what the request carries.
     mcp: Option<alter_zero::llm::mcp::McpManager>,
     mcp_fingerprint: Vec<String>,
-    /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
+    /// The user's lifecycle hooks (`docs/tools/hooks.md`), re-attached on every
     /// rebuild like the registries above. Held as the *setup* rather than a
     /// built sink because a payload names the model, and a `/model` switch
     /// must not leave a stale name on the wire — `session_backend` builds the
     /// sink from the config it is handed.
     hooks: Option<HookSetup>,
     /// Whether the startup review is holding `SessionStart` back
-    /// (`docs/config-review.md`): its sources stay queued until
+    /// (`docs/state/config-review.md`): its sources stay queued until
     /// [`Self::release_session_start`], so a hook trusted on the review's
     /// first page still hears the `startup` it was configured for.
     session_start_held: bool,
@@ -265,20 +265,20 @@ impl ModelSession {
         // happens deep on a backend thread with no path in hand — so tell the
         // module where the store is, once. Without this the retired token
         // stays on disk and the next launch is a forced re-login
-        // (`docs/chatgpt.md`).
+        // (`docs/providers/chatgpt.md`).
         llm::chatgpt::set_store_path(env_file_path.clone());
         // And where its sign-in flows go, when the environment points them
         // somewhere other than OpenAI's own auth server — read here, at the
-        // boundary, and handed in once (`docs/chatgpt.md`).
+        // boundary, and handed in once (`docs/providers/chatgpt.md`).
         if let Some(issuer) = config::openai_issuer() {
             llm::chatgpt::set_issuer(issuer);
         }
         // Anthropic rotates its refresh token the same way, and the write-back
-        // happens just as deep on a backend thread (`docs/claude.md`).
+        // happens just as deep on a backend thread (`docs/providers/claude.md`).
         llm::claude::set_store_path(env_file_path.clone());
         // Cline's account sign-in rotates one too, and talks to two hosts —
         // WorkOS and Cline's own API — each overridable for the smoke
-        // suite's local stand-in (`docs/cline.md`).
+        // suite's local stand-in (`docs/providers/cline.md`).
         llm::cline::set_store_path(env_file_path.clone());
         if let Some(base) = config::cline_auth_base() {
             llm::cline::set_auth_base(base);
@@ -289,7 +289,7 @@ impl ModelSession {
         // Google's refresh token can rotate too, and the Antigravity sign-in
         // reads three overrides: its OAuth host (the smoke suite's stub), the
         // `User-Agent` the backend gates its catalog on, and a project to
-        // bill (`docs/antigravity.md`).
+        // bill (`docs/providers/antigravity.md`).
         llm::antigravity::set_store_path(env_file_path.clone());
         if let Some(base) = config::google_oauth_base() {
             llm::antigravity::set_oauth_base(base);
@@ -301,12 +301,12 @@ impl ModelSession {
             llm::antigravity::set_project(project);
         }
         // GitHub's REST API — Copilot's token exchange and the `/usage`
-        // quota read — overridable the same way (docs/usage.md).
+        // quota read — overridable the same way (docs/providers/usage.md).
         if let Some(base) = config::github_api_base() {
             llm::copilot::set_github_api(base);
         }
         // The persisted `/model` selection (`~/.alter-zero/config.json`), per
-        // working directory (docs/per-directory-state.md): this directory's
+        // working directory (docs/state/per-directory-state.md): this directory's
         // own entry, or — launched in for the first time — the last selection
         // made anywhere, pinned as this directory's own right here so a later
         // switch elsewhere never moves it.
@@ -316,7 +316,7 @@ impl ModelSession {
         let saved_provider = saved.as_ref().map(|s| s.provider.clone());
         // The `/settings` knobs the backend is built around — already merged
         // with their `ALTER_ZERO_*` overrides by the caller
-        // (`config::apply_setting_overrides`, docs/settings.md).
+        // (`config::apply_setting_overrides`, docs/state/settings.md).
         let temperature = settings.temperature;
         let tools = settings.tools;
         let max_retries = settings.error_retry;
@@ -329,7 +329,7 @@ impl ModelSession {
         let subagents = subagents.clone();
         let system_prompt = config::system_prompt(cwd, scratchpad).map(|prompt| {
             // A headless run — the one session that carries a reply budget —
-            // tells the model nobody is watching (docs/headless.md).
+            // tells the model nobody is watching (docs/cli/headless.md).
             if round_budget.is_some() {
                 llm::backend::augment_with_headless(&prompt)
             } else {
@@ -337,12 +337,12 @@ impl ModelSession {
             }
         });
         // The runtime half alone, for an agent definition whose body replaces
-        // the persona (docs/subagents.md).
+        // the persona (docs/agents/subagents.md).
         let prompt_context = config::prompt_context(cwd, scratchpad);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
         // Read as this build spells it: a shell still exporting the ChatGPT
-        // Codex provider's old id pins the same provider (`docs/chatgpt.md`).
+        // Codex provider's old id pins the same provider (`docs/providers/chatgpt.md`).
         let env_provider = std::env::var("ALTER_ZERO_PROVIDER")
             .ok()
             .filter(|s| !s.is_empty())
@@ -369,7 +369,7 @@ impl ModelSession {
         // pairing — like saved_model it applies only when that exact selection
         // resolved. Outer None = support unknown (the probe below finds out);
         // Some(None) = known non-reasoner; Some(Some(state)) = seed the
-        // Ctrl+T cycle. See docs/reasoning.md.
+        // Ctrl+T cycle. See docs/providers/reasoning.md.
         let selection_is_saved = active_provider == saved_provider
             && env_model.is_some()
             && env_model == saved.as_ref().map(|s| s.model.clone());
@@ -390,7 +390,7 @@ impl ModelSession {
             .as_ref()
             .and_then(|s| s.context)
             .filter(|_| selection_is_saved);
-        // The saved speed blob (docs/fast-mode.md) — the same rule: None =
+        // The saved speed blob (docs/providers/fast-mode.md) — the same rule: None =
         // unknown (the probe finds out), the empty blob = a model known to
         // list no tier, else the tiers and the /fast choice to seed from.
         let saved_speed: Option<SpeedSettings> = saved
@@ -417,7 +417,7 @@ impl ModelSession {
                     saved_vision,
                     // The window the first request is built with — the env
                     // override outranking the saved one, as the gauge's own
-                    // `context_window` reads them (docs/ollama.md).
+                    // `context_window` reads them (docs/providers/ollama.md).
                     env_context_window.or(saved_context),
                     startup_speed.as_ref().and_then(|s| s.tier.clone()),
                 )
@@ -427,7 +427,7 @@ impl ModelSession {
         // capability state and its probe only make sense against a live provider.
         // `ALTER_ZERO_STALL_MS` preempts both with the test-only wedged backend.
         let real_backend = stall_ms.is_none() && real_config.is_some();
-        // The session's own selection (docs/session-model.md): the pair the
+        // The session's own selection (docs/state/session-model.md): the pair the
         // real backend runs, with the facts the file recorded for it when
         // they apply — an unknown fact stays unknown, so a resume probes for
         // it exactly as this launch does.
@@ -445,7 +445,7 @@ impl ModelSession {
                     .with_vision(saved_vision)
                     .with_context(saved_context)
                     // …and the /fast state, so a resume comes back on the
-                    // tier the conversation was running (docs/fast-mode.md).
+                    // tier the conversation was running (docs/providers/fast-mode.md).
                     .with_speed(saved_speed.clone())
             });
         let backend: Box<dyn ReplySource> = match (stall_ms, real_config) {
@@ -473,22 +473,22 @@ impl ModelSession {
                 // The subagent registry rides the dummy too: the "subagent"
                 // demo streams a launched agent's own round on that channel,
                 // which is the only offline way to drive the agent session
-                // view (`docs/agent-view-streaming.md`).
+                // view (`docs/agents/agent-view-streaming.md`).
                 let dummy = DummyAi::with_startup_delay(config::startup_delay())
                     // …and the per-chunk pace, so `ALTER_ZERO_CHUNK_DELAY_MS`
                     // makes the demo stream as slowly as a struggling model
-                    // (docs/slow-stream.md).
+                    // (docs/ui/slow-stream.md).
                     .with_chunk_delay(config::chunk_delay())
                     // …and the session's scratchpad, where its scratchpad demo
-                    // writes (docs/tool-groups.md *Scratchpad edits*).
+                    // writes (docs/ui/tool-groups.md *Scratchpad edits*).
                     .with_scratchpad(scratchpad.map(Path::to_path_buf))
                     .with_agents(agents.clone())
                     // …and the mid-turn queue, so the offline demo takes a
                     // queued message once its tool round resolves, exactly as
-                    // a real round boundary does (docs/queue.md) — and the
+                    // a real round boundary does (docs/input/queue.md) — and the
                     // notice board beside it, so a background notice that
                     // lands mid-turn settles where the turn reads it
-                    // (docs/background.md).
+                    // (docs/tools/background.md).
                     .with_steer(steer.clone())
                     .with_background(registry.clone());
                 // The asking demo only where somebody can answer it.
@@ -505,7 +505,7 @@ impl ModelSession {
         // The active model tracks what the backend actually answers as, so a
         // dummy fallback shows `dummy_model_name`.
         let active_model = backend.model_name();
-        // The capability probe (docs/reasoning.md, docs/tools.md): when the
+        // The capability probe (docs/providers/reasoning.md, docs/tools/tools.md): when the
         // real backend is active but the saved settings don't say whether its
         // model reasons or sees images (an env-selected model, or the first run
         // since the upgrade that added the blob), fetch the provider's
@@ -596,12 +596,12 @@ impl ModelSession {
 
     /// Whether a real model answers — not the offline demo — which a
     /// headless run requires unless the demo was asked for
-    /// (`docs/headless.md`).
+    /// (`docs/cli/headless.md`).
     pub(crate) const fn is_real(&self) -> bool {
         self.real_backend
     }
 
-    /// The model id the footer shows (`docs/footer.md`).
+    /// The model id the footer shows (`docs/ui/footer.md`).
     pub(crate) fn model_name(&self) -> String {
         self.backend.model_name()
     }
@@ -613,13 +613,13 @@ impl ModelSession {
     }
 
     /// The footer gauge + auto-compact window: the env override wins, else the
-    /// active model's known window (`docs/compact.md`).
+    /// active model's known window (`docs/architecture/compact.md`).
     pub(crate) fn context_window(&self) -> Option<u64> {
         self.env_context_window.or(self.active_context)
     }
 
     /// The window a **subagent's** gauge runs against
-    /// (`docs/agent-context-gauge.md`): a type that inherits the model shares
+    /// (`docs/agents/agent-context-gauge.md`): a type that inherits the model shares
     /// [`context_window`](Self::context_window), while one pinned to another
     /// model has a window this session never learned — the listing is read
     /// for the *selected* model only — so only the `ALTER_ZERO_CONTEXT_WINDOW`
@@ -634,13 +634,13 @@ impl ModelSession {
     }
 
     /// Whether the active model is known **not** to accept images — the Ctrl+V
-    /// paste warning's gate (`docs/tools.md`).
+    /// paste warning's gate (`docs/tools/tools.md`).
     pub(crate) fn is_blind(&self) -> bool {
         self.active_vision == Some(false)
     }
 
     /// Is this the test-only stalled backend? It ignores scripted replies, so
-    /// `/compact` and auto-compaction opt out (`docs/interrupt.md`).
+    /// `/compact` and auto-compaction opt out (`docs/input/interrupt.md`).
     pub(crate) fn is_stalled_test_backend(&self) -> bool {
         self.stall_ms.is_some()
     }
@@ -657,14 +657,14 @@ impl ModelSession {
     }
 
     /// What the startup read found wrong with the provider file, for
-    /// bootstrap's toast — taken once (`docs/user-providers.md`).
+    /// bootstrap's toast — taken once (`docs/providers/user-providers.md`).
     pub(crate) fn take_provider_issues(&mut self) -> Vec<String> {
         std::mem::take(&mut self.provider_issues)
     }
 
     /// Re-read the provider table, so the page about to open is built from
     /// the file as it is now — a provider written mid-session, by hand or by
-    /// the agent itself, is there without a restart (`docs/user-providers.md`).
+    /// the agent itself, is there without a restart (`docs/providers/user-providers.md`).
     ///
     /// The live backend is untouched: it was built from a resolved config and
     /// keeps streaming on it. Only what reads the table next — the page, a
@@ -702,7 +702,7 @@ impl ModelSession {
 
     /// The **API-key** rows the `/login` flow shows, each tagged with whether
     /// a key already resolves. A subscription provider is not among them —
-    /// there is no key to paste for one (`docs/copilot.md`).
+    /// there is no key to paste for one (`docs/providers/copilot.md`).
     pub(crate) fn provider_choices(&self) -> Vec<ProviderChoice> {
         config::provider_choices(&self.providers, &self.env_file)
     }
@@ -715,7 +715,7 @@ impl ModelSession {
 
     /// The **local model** rows the `/login` flow shows — the servers whose
     /// key is optional — each with the address in force
-    /// (`docs/local-models.md`).
+    /// (`docs/providers/local-models.md`).
     pub(crate) fn local_choices(&self) -> Vec<LocalChoice> {
         config::local_choices(&self.providers, &self.env_file)
     }
@@ -727,7 +727,7 @@ impl ModelSession {
     /// real request would send it. The provider's label rides along for the
     /// verdict's sentences, and its own address as the example a typo is
     /// answered with. `None` when the provider left the table. See
-    /// `docs/local-models.md`.
+    /// `docs/providers/local-models.md`.
     pub(crate) fn local_test_config(
         &self,
         provider: &str,
@@ -757,7 +757,7 @@ impl ModelSession {
     /// (`config::resolve_env`), so an exported value meaning anything else is
     /// what every request uses. A host is compared as the server it names
     /// (`localhost:1234` and `http://localhost:1234/v1` are one address), a
-    /// token as typed. See `docs/local-models.md`.
+    /// token as typed. See `docs/providers/local-models.md`.
     pub(crate) fn exported_overrides(&self, provider: &str, var: &str, saved: &str) -> bool {
         let Some(exported) = std::env::var(var).ok().filter(|v| !v.is_empty()) else {
             return false;
@@ -791,7 +791,7 @@ impl ModelSession {
     }
 
     /// A subscription provider's configured base — the host its sign-in sets
-    /// the account up on (`docs/antigravity.md`).
+    /// the account up on (`docs/providers/antigravity.md`).
     pub(crate) fn subscription_base(&self, provider: &str) -> Option<String> {
         self.providers
             .get(provider)
@@ -817,7 +817,7 @@ impl ModelSession {
     }
 
     /// The active model's speed state — what `App::set_speed` is fed after
-    /// every switch, probe and startup (`docs/fast-mode.md`). `None` when the
+    /// every switch, probe and startup (`docs/providers/fast-mode.md`). `None` when the
     /// model lists no tier or none is known yet.
     pub(crate) fn speed_state(&self) -> Option<SpeedState> {
         self.active_speed.clone()
@@ -839,7 +839,7 @@ impl ModelSession {
     /// The resolved config for a provider/model with the given capabilities,
     /// or `None` when the provider isn't in the table. `context` is the
     /// window a request is built with — the env override outranks it here
-    /// exactly as it outranks the gauge (`docs/ollama.md`).
+    /// exactly as it outranks the gauge (`docs/providers/ollama.md`).
     fn config_for(
         &self,
         provider: &str,
@@ -910,7 +910,7 @@ impl ModelSession {
     /// Rebuild the *current* selection's backend — what every `/settings` knob
     /// that changes the request's shape needs. A no-op on the dummy (there is
     /// no request to reshape) and on a selection whose config isn't usable.
-    /// See `docs/settings.md`.
+    /// See `docs/state/settings.md`.
     fn rebuild_current(&mut self) {
         if !self.real_backend {
             return;
@@ -932,21 +932,21 @@ impl ModelSession {
     }
 
     /// The `/settings` **Tools** knob: offer (or withhold) the tool set from
-    /// here on. See `docs/settings.md`.
+    /// here on. See `docs/state/settings.md`.
     pub(crate) fn set_tools(&mut self, tools: bool) {
         self.tools = tools;
         self.rebuild_current();
     }
 
     /// Whether the session runs its hooks at all — the `/settings` **Hooks**
-    /// row (`docs/hooks.md`). What it runs is the trusted share of the
-    /// configured hooks (`docs/config-review.md`).
+    /// row (`docs/tools/hooks.md`). What it runs is the trusted share of the
+    /// configured hooks (`docs/state/config-review.md`).
     pub(crate) fn hooks_enabled(&self) -> bool {
         self.hooks.as_ref().is_some_and(|setup| setup.enabled)
     }
 
     /// Swap the parsed hooks config the session runs — the trust seam
-    /// (`docs/config-review.md`): every review answer and `/hooks` toggle
+    /// (`docs/state/config-review.md`): every review answer and `/hooks` toggle
     /// rebinds the trusted share of the user's and the project's hooks. The
     /// setup exists even over an empty file so this can swap one in. The
     /// rebuild carries it into the next backend build; the live handles
@@ -961,7 +961,7 @@ impl ModelSession {
     /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) — fired
     /// by the next [`fire_session_start`](Self::fire_session_start), or the
     /// next turn's drain when the session had no hooks or real backend to
-    /// fire it on (`docs/hooks.md`). A no-op without hooks.
+    /// fire it on (`docs/tools/hooks.md`). A no-op without hooks.
     fn queue_session_source(&self, source: &str) {
         if let Some(setup) = &self.hooks
             && let Ok(mut sources) = setup.handles.sources.lock()
@@ -970,7 +970,7 @@ impl ModelSession {
         }
     }
 
-    /// The sink the **boundary's** events fire on (`docs/hooks.md`): `None`
+    /// The sink the **boundary's** events fire on (`docs/tools/hooks.md`): `None`
     /// without a real backend — the offline demo runs no hooks, so it fires
     /// no boundary events either — or without hooks to run.
     fn boundary_hooks(&self) -> Option<alter_zero::llm::hooks::CommandHooks> {
@@ -984,7 +984,7 @@ impl ModelSession {
 
     /// Fire the queued `SessionStart` sources now, in the background —
     /// Claude Code's timing: the user can type at once, and the first turn
-    /// waits for the hooks so their context still lands (`docs/hooks.md`).
+    /// waits for the hooks so their context still lands (`docs/tools/hooks.md`).
     /// Without hooks or a real backend the sources stay queued for the first
     /// turn that has both.
     pub(crate) fn fire_session_start(&self) {
@@ -997,7 +997,7 @@ impl ModelSession {
     }
 
     /// Hold `SessionStart` while the startup review asks what may run
-    /// (`docs/config-review.md`): every fire leaves its sources queued.
+    /// (`docs/state/config-review.md`): every fire leaves its sources queued.
     pub(crate) fn hold_session_start(&mut self) {
         self.session_start_held = true;
     }
@@ -1051,7 +1051,7 @@ impl ModelSession {
 
     /// Replace every pending source with `source` — the boot path's variant:
     /// a `--continue`/`--resume` boot crossed a *resume* boundary, not the
-    /// startup one bootstrap seeded before it knew (`docs/hooks.md`).
+    /// startup one bootstrap seeded before it knew (`docs/tools/hooks.md`).
     pub(crate) fn set_session_source(&self, source: &str) {
         if let Some(setup) = &self.hooks
             && let Ok(mut sources) = setup.handles.sources.lock()
@@ -1063,7 +1063,7 @@ impl ModelSession {
 
     /// Mark the next spawned turn as **loop-initiated** (a background
     /// completion's follow-up): its prompt is synthesized, so the
-    /// `UserPromptSubmit` hook must not fire for it (`docs/hooks.md`).
+    /// `UserPromptSubmit` hook must not fire for it (`docs/tools/hooks.md`).
     pub(crate) fn mark_synthetic_turn(&self) {
         self.set_synthetic_turn(true);
     }
@@ -1072,7 +1072,7 @@ impl ModelSession {
     /// **user** turn. Only a sink running the turn's hooks consumes the mark,
     /// so one set while hooks were off (or on the offline demo, which runs
     /// none) used to outlive its turn and silence the user's next real
-    /// prompt's `UserPromptSubmit` (`docs/hooks.md`).
+    /// prompt's `UserPromptSubmit` (`docs/tools/hooks.md`).
     pub(crate) fn clear_synthetic_turn(&self) {
         self.set_synthetic_turn(false);
     }
@@ -1097,14 +1097,14 @@ impl ModelSession {
     }
 
     /// The `/settings` **Skills** knob: whether the `skill` tool and the
-    /// listing are offered from here on (`docs/skills.md`).
+    /// listing are offered from here on (`docs/tools/skills.md`).
     pub(crate) fn set_skills(&mut self, enabled: bool) {
         self.skills_enabled = enabled;
         self.rebuild_current();
     }
 
     /// Whether a build right now would put the `agent` spec on the wire — the
-    /// gate the agent-type listing rides (`docs/subagents.md`). The registry
+    /// gate the agent-type listing rides (`docs/agents/subagents.md`). The registry
     /// is attached to every real build, so this is the tools knob plus the
     /// dummy, which scripts its agent demo rather than being offered a spec.
     pub(crate) fn agents_offered(&self) -> bool {
@@ -1124,7 +1124,7 @@ impl ModelSession {
     /// one. The handle is shared, so the executor and the listing already saw
     /// the change; this is only about the **tool set**, which is decided when
     /// `with_skills` runs: turning the last skill off has to withdraw the spec
-    /// rather than leave a tool that can only fail (`docs/skills.md`).
+    /// rather than leave a tool that can only fail (`docs/tools/skills.md`).
     ///
     /// Rebuilds only when that verdict actually flips. Toggling one of five
     /// skills changes nothing about the request's shape, and this runs every
@@ -1137,7 +1137,7 @@ impl ModelSession {
     }
 
     /// Re-attach the MCP manager after its connections moved — a server
-    /// connected, failed, was disabled or re-authenticated (`docs/mcp.md`).
+    /// connected, failed, was disabled or re-authenticated (`docs/tools/mcp.md`).
     /// The handle is shared (the executor already routes through the live
     /// connections); this is only about the **tool set**, decided when
     /// `with_mcp` ran — so it rebuilds only when the offered wire-name set
@@ -1188,7 +1188,7 @@ impl ModelSession {
         // The /fast choice carries across the switch when the new model
         // lists the same tier — codex keeps its configured tier for any
         // model that supports it — and falls back to standard otherwise
-        // (docs/fast-mode.md).
+        // (docs/providers/fast-mode.md).
         let speed = SpeedState::new(service_tiers, self.active_tier());
         let tier = speed.as_ref().and_then(|s| s.tier.clone());
         let Some(cfg) = self
@@ -1221,17 +1221,17 @@ impl ModelSession {
         // anywhere, which is what the next new directory starts with.
         config::save_selection(self.settings_path.as_deref(), &self.project, &selection);
         // …and this session's own, which its rollout records
-        // (docs/session-model.md).
+        // (docs/state/session-model.md).
         self.session_selection = Some(selection);
         // A session that ran the offline demo until now — a `/login`, then a
         // pick — has its `startup` still queued: it fires now, on the backend
-        // that makes it real (docs/hooks.md). A no-op for one already real.
+        // that makes it real (docs/tools/hooks.md). A no-op for one already real.
         self.fire_session_start();
         true
     }
 
     /// Bring a resumed conversation back on the model its rollout recorded
-    /// (`docs/session-model.md`): a [`switch_to`](Self::switch_to) minus the
+    /// (`docs/state/session-model.md`): a [`switch_to`](Self::switch_to) minus the
     /// `config.json` write — a resume chooses nothing, and the directory's
     /// entry stays what a *new* session starts on. The recorded thinking
     /// mode, vision and window ride the rebuild; a fact the record never
@@ -1267,7 +1267,7 @@ impl ModelSession {
             .map(llm::ThinkingSettings::to_seed);
         let seed = thinking.clone().flatten();
         let mode = seed.as_ref().map(|(_, mode)| *mode);
-        // The recorded `/fast` state the same way (docs/fast-mode.md): the
+        // The recorded `/fast` state the same way (docs/providers/fast-mode.md): the
         // blob's tiers and the tier chosen among them, `None` while the
         // record never learned any — so a conversation switched to fast
         // comes back on it rather than silently at standard speed.
@@ -1297,7 +1297,7 @@ impl ModelSession {
         self.speed_known = recorded.speed.is_some();
         self.session_selection = Some(recorded.clone());
         // What the record never learned, the probe finds out — the startup
-        // rule (docs/reasoning.md, docs/tools.md, docs/fast-mode.md). It
+        // rule (docs/providers/reasoning.md, docs/tools/tools.md, docs/providers/fast-mode.md). It
         // replaces any probe still queued for the model this one supersedes.
         self.probe = (thinking.is_none() || recorded.vision.is_none() || recorded.speed.is_none())
             .then(|| {
@@ -1319,7 +1319,7 @@ impl ModelSession {
     }
 
     /// The session's own selection, for the rollout's `model` record
-    /// (`docs/session-model.md`); `None` on the dummy.
+    /// (`docs/state/session-model.md`); `None` on the dummy.
     pub(crate) fn session_selection(&self) -> Option<&ModelSelection> {
         self.session_selection.as_ref()
     }
@@ -1349,7 +1349,7 @@ impl ModelSession {
     }
 
     /// Rebind the *next* turn's backend so a `/fast` selection rides its
-    /// request (`docs/fast-mode.md`) — `rebind_thinking`'s twin: the running
+    /// request (`docs/providers/fast-mode.md`) — `rebind_thinking`'s twin: the running
     /// turn streams on its own thread, untouched. `tier` is the selected
     /// tier's wire id, `None` for standard; a model listing no tier has no
     /// state to move and is left alone.
@@ -1381,7 +1381,7 @@ impl ModelSession {
     /// onto the pair `config.json` already records for this directory: an
     /// env-overridden selection never writes back (env always wins, never
     /// sticks), so persisting its thinking would hijack the saved default.
-    /// The session's own record follows either way (`docs/session-model.md`):
+    /// The session's own record follows either way (`docs/state/session-model.md`):
     /// a resumed conversation on a model other than the entry's still keeps
     /// its facts fresh in its rollout.
     pub(crate) fn persist(&mut self, thinking: Option<&Thinking>) {
@@ -1397,7 +1397,7 @@ impl ModelSession {
             .with_context(self.active_context)
             // Nothing at all while the tiers are still unknown — the empty
             // blob would stop the next launch's probe
-            // (`SpeedSettings::recorded`, docs/fast-mode.md).
+            // (`SpeedSettings::recorded`, docs/providers/fast-mode.md).
             .with_speed(SpeedSettings::recorded(
                 self.speed_known,
                 self.active_speed.as_ref(),
@@ -1412,8 +1412,8 @@ impl ModelSession {
         self.session_selection = Some(selection);
     }
 
-    /// Apply the capability probe's answer for `provider` (`docs/reasoning.md`,
-    /// `docs/tools.md`): read the active model's record, adopt its reasoning /
+    /// Apply the capability probe's answer for `provider` (`docs/providers/reasoning.md`,
+    /// `docs/tools/tools.md`): read the active model's record, adopt its reasoning /
     /// vision / context, rebind the next turn's backend when that changes what
     /// a request looks like, and persist so later startups seed from the file
     /// instead of probing. Returns the thinking state for `App`. A record for
@@ -1436,7 +1436,7 @@ impl ModelSession {
         let vision = entry.and_then(|entry| entry.vision);
         let context = entry.and_then(|entry| entry.context);
         // The listed speed tiers, keeping the current /fast choice only when
-        // the record still offers it (docs/fast-mode.md).
+        // the record still offers it (docs/providers/fast-mode.md).
         let speed = SpeedState::new(
             entry
                 .map(|entry| entry.service_tiers.clone())
@@ -1448,7 +1448,7 @@ impl ModelSession {
         // ride it, a known-blind model whose attachments must degrade
         // (Some(true)/None both attach — nothing to rebind for), a selected
         // tier the record no longer lists, or — on the one wire that sends
-        // it — a window now known (docs/ollama.md).
+        // it — a window now known (docs/providers/ollama.md).
         let window_matters = context.is_some() && self.wire_sends_context(provider);
         let tier_dropped = tier != self.active_tier();
         if (thinking.is_some() || vision == Some(false) || window_matters || tier_dropped)
@@ -1476,7 +1476,7 @@ impl ModelSession {
 
     /// The one-off **tools-free** backend a `/compact` turn runs on (codex
     /// sends the summarize request with no tools): the same persona +
-    /// environment prompt, no background-notice injection. See `docs/compact.md`.
+    /// environment prompt, no background-notice injection. See `docs/architecture/compact.md`.
     ///
     /// `None` whenever the session itself isn't talking to a real model — the
     /// dummy, `ALTER_ZERO_DUMMY`, or the stalled test backend — and the caller
@@ -1513,7 +1513,7 @@ impl ModelSession {
                     self.system_prompt.clone(),
                     /*tools_enabled=*/ false,
                 );
-                // The compact events (docs/hooks.md): PreCompact's context
+                // The compact events (docs/tools/hooks.md): PreCompact's context
                 // becomes extra summarization instructions, PostCompact hears
                 // the summary — via the wrapper, so the ordinary session
                 // events (UserPromptSubmit, Stop, the source drain) can never
@@ -1547,7 +1547,7 @@ impl ModelSession {
         // subscription's stored token. `provider_choices` answers a different
         // question (which providers `/login` offers a key field for), and
         // fetching from that list would leave a signed-in GitHub Copilot with
-        // no models in the picker at all (`docs/copilot.md`).
+        // no models in the picker at all (`docs/providers/copilot.md`).
         let configured: Vec<ProviderChoice> =
             config::all_provider_choices(&self.providers, &self.env_file)
                 .into_iter()
@@ -1565,7 +1565,7 @@ impl ModelSession {
         configured.len()
     }
 
-    /// The signed-in subscriptions the `/usage` page reads (`docs/usage.md`):
+    /// The signed-in subscriptions the `/usage` page reads (`docs/providers/usage.md`):
     /// every provider `/login` lists under *Sign in with an account* whose stored
     /// credential resolves, by name, each with the config its read resolves
     /// its credential through, its own usage page — and whether it is the
@@ -1627,7 +1627,7 @@ impl ModelSession {
 }
 
 /// What [`ModelSession::restore`] did about a resumed conversation's
-/// recorded model (`docs/session-model.md`).
+/// recorded model (`docs/state/session-model.md`).
 pub(crate) enum Restore {
     /// The session now runs the record; the Ctrl+T seed for `App` (`None`
     /// = the model has no thinking, or its support is still unknown and a
@@ -1645,7 +1645,7 @@ pub(crate) enum Restore {
 }
 
 /// What a resume did about the recorded model
-/// ([`Session::restore_session_model`], `docs/session-model.md`).
+/// ([`Session::restore_session_model`], `docs/state/session-model.md`).
 pub(crate) struct ModelRestore {
     /// The session now runs the record — what the recorder is told, so a
     /// record it could not honour is kept rather than overwritten by the
@@ -1659,7 +1659,7 @@ pub(crate) struct ModelRestore {
 
 /// Build a session [`LlmBackend`] with the **full shared attachment set** —
 /// Everything the boundary knows about the user's lifecycle hooks
-/// (`docs/hooks.md`), held so that **every** backend rebuild re-attaches them —
+/// (`docs/tools/hooks.md`), held so that **every** backend rebuild re-attaches them —
 /// the registries' pattern, and for the same reason: a rebuild that dropped
 /// them would silently stop guarding for the rest of the session.
 ///
@@ -1672,7 +1672,7 @@ pub(crate) struct HookSetup {
     pub(crate) file: std::sync::Arc<alter_zero::hooks::HooksFile>,
     /// The session's startup id — the payload's `session_id` until the
     /// recorder publishes the conversation's (which is this same id for a
-    /// fresh session's first conversation, `docs/hooks.md`).
+    /// fresh session's first conversation, `docs/tools/hooks.md`).
     pub(crate) session_id: String,
     /// Where handlers run.
     pub(crate) cwd: std::path::PathBuf,
@@ -1680,7 +1680,7 @@ pub(crate) struct HookSetup {
     /// (`trust::hooks_project_dir`), the `cwd` outside a repository.
     pub(crate) project_dir: std::path::PathBuf,
     /// The tty-detach helper, so a hook child is severed from the terminal
-    /// like every other shell child (`docs/tty-detach.md`).
+    /// like every other shell child (`docs/tools/tty-detach.md`).
     pub(crate) detach_helper: Option<std::path::PathBuf>,
     /// The `/settings` **Hooks** row. `false` attaches nothing, so toggling it
     /// off mid-session genuinely stops running them.
@@ -1688,14 +1688,14 @@ pub(crate) struct HookSetup {
     /// The live handles — the gate (a Ctrl+T cycle reaches the very next
     /// payload), the conversation the recorder publishes, the queued and the
     /// background SessionStart, and the synthetic-turn mark — shared into
-    /// every sink built, surviving each rebuild (`docs/hooks.md`).
+    /// every sink built, surviving each rebuild (`docs/tools/hooks.md`).
     pub(crate) handles: alter_zero::llm::hooks::HookHandles,
     /// The session's scratchpad, for the payloads' `scratchpad_dir` — `None`
-    /// when the session has none (`docs/scratchpad.md`).
+    /// when the session has none (`docs/tools/scratchpad.md`).
     pub(crate) scratchpad_dir: Option<std::path::PathBuf>,
     /// The user's home, which a refused call's cell names its hook's
     /// `hooks.json` from — `~/.alter-zero/hooks.json`, as the startup review
-    /// names it (`docs/hooks.md` *What the user sees*).
+    /// names it (`docs/tools/hooks.md` *What the user sees*).
     pub(crate) home: Option<std::path::PathBuf>,
 }
 
@@ -1710,7 +1710,7 @@ impl HookSetup {
 
     /// The concrete sink [`sink`](Self::sink) wraps — what the compact turn
     /// wraps in its own `CompactHooks` instead and the boundary fires its
-    /// session events on (`docs/hooks.md`) — so they can never build
+    /// session events on (`docs/tools/hooks.md`) — so they can never build
     /// different payloads.
     pub(crate) fn command_hooks(
         &self,
@@ -1776,61 +1776,61 @@ fn session_backend(
     round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
-    // names the model that is about to answer (docs/hooks.md).
+    // names the model that is about to answer (docs/tools/hooks.md).
     let model = cfg.model.clone();
     // `configure` rather than `with_system_prompt`: the tool toggle is the
     // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
     // is passed in rather than re-read from the environment per build
-    // (`docs/settings.md`).
+    // (`docs/state/settings.md`).
     let mut backend = LlmBackend::configure(cfg, system_prompt, tools)
         .with_max_retries(max_retries)
         .with_max_tool_calls(max_tool_calls)
         // The runtime half of the prompt, for a subagent definition whose
-        // body replaces the persona (docs/subagents.md).
+        // body replaces the persona (docs/agents/subagents.md).
         .with_prompt_context(prompt_context)
         .with_background(registry.clone())
         .with_agents(agents.clone())
         // The subagent definitions the `agent` tool's types come from
-        // (docs/subagents.md) — the shared handle, so the per-turn rescan
+        // (docs/agents/subagents.md) — the shared handle, so the per-turn rescan
         // reaches this backend without a rebuild.
         .with_subagents(subagents.clone())
-        // The mid-turn message queue (docs/queue.md): every build drains the
+        // The mid-turn message queue (docs/input/queue.md): every build drains the
         // same one, so a message queued against the turn a `/model` switch
         // replaced still reaches its successor.
         .with_steer(steer.clone())
-        // The shared task list (docs/task-tools.md): enables the four task
+        // The shared task list (docs/tools/task-tools.md): enables the four task
         // tools — always attached; the checklist is the session's, so every
         // rebuild re-binds the same registry.
         .with_tasks(tasks.clone());
-    // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
+    // The ask gate (docs/tools/ask.md): enables the `askuserquestion` tool —
     // attached wherever somebody can answer (asking is not a permission),
-    // which is everywhere but a headless run (docs/headless.md).
+    // which is everywhere but a headless run (docs/cli/headless.md).
     if let Some(ask) = ask {
         backend = backend.with_ask(ask.clone());
     }
-    // A headless run's reply budget (`--max-turns`, docs/headless.md): every
+    // A headless run's reply budget (`--max-turns`, docs/cli/headless.md): every
     // request the lead sends counts against it, over every rebuild.
     if let Some(budget) = round_budget {
         backend = backend.with_round_budget(budget.clone());
     }
-    // The discovered skills (docs/skills.md): enables the `skill` tool, and
+    // The discovered skills (docs/tools/skills.md): enables the `skill` tool, and
     // rides every rebuild so a `/model` switch keeps them. `None` is the
     // `/settings` **Skills** row off; an empty registry attaches nothing.
     if let Some(skills) = skills {
         backend = backend.with_skills(skills.clone());
     }
-    // The MCP servers' tools (docs/mcp.md): one `mcp__server__tool` spec per
+    // The MCP servers' tools (docs/tools/mcp.md): one `mcp__server__tool` spec per
     // connected server's tool — a manager with nothing connected attaches
     // nothing, and `refresh_mcp` re-runs this build when that changes.
     if let Some(manager) = mcp {
         backend = backend.with_mcp(manager.clone());
     }
-    // The tool-permission gate (docs/permissions.md) — absent when
+    // The tool-permission gate (docs/state/permissions.md) — absent when
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
     if let Some(gate) = permissions {
         backend = backend.with_permissions(gate.clone());
     }
-    // The user's lifecycle hooks (docs/hooks.md). Built here, per rebuild, so
+    // The user's lifecycle hooks (docs/tools/hooks.md). Built here, per rebuild, so
     // the payload's `model` is whatever is about to answer — a `/model` switch
     // cannot leave a stale name on the wire. `None` (no file, nothing runnable
     // in it, or the `/settings` **Hooks** row off) leaves the backend's no-op
@@ -1838,7 +1838,7 @@ fn session_backend(
     if let Some(sink) = hooks.and_then(|setup| setup.sink(&model)) {
         backend = backend.with_hooks(sink);
     }
-    // The user's secrets (docs/secrets.md) ride the shell registry every
+    // The user's secrets (docs/state/secrets.md) ride the shell registry every
     // runner already shares, so every rebuild re-attaches the one store and
     // a `/secrets` save reaches the next tool call without a rebuild.
     if let Some(secrets) = registry.secrets() {
@@ -1857,19 +1857,19 @@ impl Session<'_> {
         let name = self.models.model_name();
         self.app.set_session_info(name, self.cwd_display.clone());
         // The backend's system prompt rides into App so the Ctrl+D view shows the
-        // whole context window (docs/context.md). None for the dummy. The
+        // whole context window (docs/architecture/context.md). None for the dummy. The
         // subagent variant (the main prompt + the subagent note) rides beside it
         // so an agent session view's Ctrl+D shows what a launched agent is
-        // actually sent (docs/agent-tool.md).
+        // actually sent (docs/agents/agent-tool.md).
         let prompt = self.models.backend().system_prompt();
         self.app.set_system_prompt(prompt);
         // The classifier's rubric rides beside it for the Ctrl+D classifier
-        // page (docs/permissions.md). None for the dummy, which has no
+        // page (docs/state/permissions.md). None for the dummy, which has no
         // classifier.
         let classifier_prompt = self.models.backend().classifier_system_prompt();
         self.app.set_classifier_system_prompt(classifier_prompt);
         self.sync_agent_view_context();
-        // The footer gauge + auto-compact window (docs/compact.md).
+        // The footer gauge + auto-compact window (docs/architecture/compact.md).
         let window = self.models.context_window();
         self.app.set_context_window(window);
         // The skill listing is budgeted off that same window (1% of it, in
@@ -1881,7 +1881,7 @@ impl Session<'_> {
     /// Push the **viewed** subagent type's system prompt *and its briefing*
     /// into `App`, so an agent session view's Ctrl+D shows what *that* agent
     /// was sent — its definition's own body when it has one, and the skills
-    /// `<system-reminder>` its fresh context opened on (`docs/subagents.md`).
+    /// `<system-reminder>` its fresh context opened on (`docs/agents/subagents.md`).
     /// With no view open the default type answers, which is what a launch
     /// with no `subagent_type` gets.
     ///
@@ -1901,7 +1901,7 @@ impl Session<'_> {
         // The view's footer, too, is the viewed type's: the model it runs on
         // when its definition pins one, and the window its context gauge runs
         // against — the session's for an inheriting type, unknown (no gauge)
-        // for a pinned one (`docs/agent-context-gauge.md`).
+        // for a pinned one (`docs/agents/agent-context-gauge.md`).
         let pinned = self.models.backend().agent_model(&agent_type);
         let window = self.models.agent_context_window(pinned.is_none());
         self.app.set_agent_context_window(window);
@@ -1911,8 +1911,8 @@ impl Session<'_> {
     /// Render the session's `<system-reminder>` **listing sections** into
     /// `App` (`subagents::listing_sections` → `App::listings`), so the one
     /// block the derived context leads with carries them behind the
-    /// project's AGENTS.md instructions (`docs/skills.md`,
-    /// `docs/subagents.md`; the wrapping is `context::context_messages_full`'s).
+    /// project's AGENTS.md instructions (`docs/tools/skills.md`,
+    /// `docs/agents/subagents.md`; the wrapping is `context::context_messages_full`'s).
     ///
     /// Two sections, gated separately because they are two different tools:
     ///
@@ -1929,7 +1929,7 @@ impl Session<'_> {
     /// The composer's `$` picker rides the skills gate: the **enabled**
     /// snapshot goes into `App` beside the reminder (`App::set_skills`), so
     /// the picker can only ever complete a mention the listing names and the
-    /// registry's lookup will honour (`docs/skill-mentions.md`). Every site
+    /// registry's lookup will honour (`docs/input/skill-mentions.md`). Every site
     /// that changes what is offered — the per-turn rescan, a `/skills`
     /// toggle, the `/settings` Skills/Tools rows, a `/model` switch — already
     /// funnels through here, which is what keeps the two in step.
@@ -1956,7 +1956,7 @@ impl Session<'_> {
         } else {
             String::new()
         };
-        // The user's secrets (docs/secrets.md), last: they change least
+        // The user's secrets (docs/state/secrets.md), last: they change least
         // often, and every section behind a changed one re-renders into the
         // prompt cache. Gated on Tools — a placeholder only ever becomes a
         // value inside a tool call.
@@ -1965,7 +1965,7 @@ impl Session<'_> {
         } else {
             String::new()
         };
-        // The connected MCP servers' own instructions (docs/mcp.md), after
+        // The connected MCP servers' own instructions (docs/tools/mcp.md), after
         // the secrets: servers connect after the first frame and come and
         // go, and only what follows a changed section re-renders into the
         // prompt cache. Gated on Tools, as their tools are.
@@ -1989,7 +1989,7 @@ impl Session<'_> {
     }
 
     /// Say that the provider file had problems — the skills toast's rule
-    /// (`docs/user-providers.md`): a provider the user wrote that silently
+    /// (`docs/providers/user-providers.md`): a provider the user wrote that silently
     /// never appears makes "my provider isn't in /login" and "I typo'd the
     /// file" read as two unrelated problems. One row names the first issue;
     /// the rest are counted.
@@ -2008,13 +2008,13 @@ impl Session<'_> {
 
     /// Re-read the provider file before a page built from it opens —
     /// `/login`'s lists and `/model`'s fetch — and say what is wrong with it
-    /// (`docs/user-providers.md`).
+    /// (`docs/providers/user-providers.md`).
     pub(crate) fn reload_providers(&mut self) {
         let issues = self.models.reload_providers();
         self.report_provider_issues(&issues);
     }
 
-    /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it
+    /// `/model` from an idle composer (`docs/providers/llm.md`): open the inline picker (it
     /// replaces the composer — no alternate screen) and fetch every configured
     /// provider's list off-thread in parallel; the picker shows each as it lands
     /// and merges them into one list. With none configured, skip the fetch and
@@ -2040,10 +2040,10 @@ impl Session<'_> {
     }
 
     /// Enter on a picker row: rebuild the backend for the chosen provider/model
-    /// (`docs/llm.md`). The picker is already closed (`on_key` did it); cancel any
+    /// (`docs/providers/llm.md`). The picker is already closed (`on_key` did it); cancel any
     /// pending fetch, then switch if the config is usable (has a key), else keep
     /// the current backend. The outcome is a transient toast — a mid-turn switch
-    /// must not split the streaming reply in scrollback (`docs/toast.md`).
+    /// must not split the streaming reply in scrollback (`docs/ui/toast.md`).
     pub(crate) fn select_model(
         &mut self,
         provider: &str,
@@ -2055,7 +2055,7 @@ impl Session<'_> {
     ) {
         self.models.cancel_model_fetch();
         // The picked entry's reasoning support seeds the Ctrl+T cycle at its
-        // default mode (medium where offered) — docs/reasoning.md.
+        // default mode (medium where offered) — docs/providers/reasoning.md.
         let thinking = reasoning.map(|support| {
             let mode = support.default_mode();
             (support, mode)
@@ -2070,11 +2070,11 @@ impl Session<'_> {
         ) {
             self.sync_backend_info();
             self.app.set_thinking(thinking);
-            // …and its listed speed tiers seed /fast (docs/fast-mode.md).
+            // …and its listed speed tiers seed /fast (docs/providers/fast-mode.md).
             let speed = self.models.speed_state();
             self.app.set_speed(speed);
             // The pick is this conversation's model from here on — its
-            // rollout records it (docs/session-model.md).
+            // rollout records it (docs/state/session-model.md).
             self.record_session_model(true);
             self.toast(format!("Switched model to {id}"), ToastKind::Info);
         } else {
@@ -2087,7 +2087,7 @@ impl Session<'_> {
     /// refused `/model` pick and a refused resume share. A subscription has
     /// no env var to "set" — you sign in to it, and naming
     /// GITHUB_COPILOT_TOKEN would send the user looking for a key to paste
-    /// that does not exist (`docs/copilot.md`). A host-configured provider
+    /// that does not exist (`docs/providers/copilot.md`). A host-configured provider
     /// never lands here: no key, no refusal.
     fn login_fix(&self, provider: &str) -> String {
         if self.models.is_subscription(provider) {
@@ -2098,7 +2098,7 @@ impl Session<'_> {
     }
 
     /// Mirror the session's model selection into the recorder
-    /// (`docs/session-model.md`), after every site that moves it or learns
+    /// (`docs/state/session-model.md`), after every site that moves it or learns
     /// about it: a `/model` pick (`chosen`, which also overrides a kept
     /// record), a Ctrl+T cycle, the probe's answer, a resume. The recorder
     /// flushes a changed selection as the rollout's next `model` line at the
@@ -2114,7 +2114,7 @@ impl Session<'_> {
     }
 
     /// Bring a resumed conversation back on the model its rollout recorded
-    /// (`docs/session-model.md`) — the `/resume` picker's arm and the
+    /// (`docs/state/session-model.md`) — the `/resume` picker's arm and the
     /// `--continue`/`--resume` boot alike. On a restore the footer, the
     /// Ctrl+D prompts, the context gauge and the Ctrl+T seed follow, and a
     /// probe is spawned for whatever the record never learned. `None` (a
@@ -2134,7 +2134,7 @@ impl Session<'_> {
                 self.sync_backend_info();
                 self.app.set_thinking(thinking);
                 // …and the tier it was running, so the footer and `/fast`
-                // agree with the request (docs/fast-mode.md).
+                // agree with the request (docs/providers/fast-mode.md).
                 let speed = self.models.speed_state();
                 self.app.set_speed(speed);
                 self.spawn_pending_probe();
@@ -2164,7 +2164,7 @@ impl Session<'_> {
 
     /// Spawn the capability probe [`ModelSession`] has queued, if any — at
     /// bootstrap, and after a resume onto a model whose facts the record
-    /// never learned (`docs/session-model.md`). Its answer lands on
+    /// never learned (`docs/state/session-model.md`). Its answer lands on
     /// `probe_rx`, gated by `probe_pending`.
     pub(crate) fn spawn_pending_probe(&mut self) {
         if let Some((provider, cfg)) = self.models.take_probe() {
@@ -2173,7 +2173,7 @@ impl Session<'_> {
     }
 
     /// Ctrl+T advanced the thinking mode (the pure state already moved —
-    /// `docs/reasoning.md`). Rebind the *next* turn's backend so the mode rides
+    /// `docs/providers/reasoning.md`). Rebind the *next* turn's backend so the mode rides
     /// its request (the running turn streams on its own thread, untouched — the
     /// `/model` pattern), persist the choice beside the model selection, and
     /// confirm with a transient toast.
@@ -2190,7 +2190,7 @@ impl Session<'_> {
     }
 
     /// A tier's palette command toggled the speed tier (the pure state
-    /// already moved — `docs/fast-mode.md`). Rebind the *next* turn's backend so the tier
+    /// already moved — `docs/providers/fast-mode.md`). Rebind the *next* turn's backend so the tier
     /// rides its request (the running turn streams on its own thread,
     /// untouched — the Ctrl+T pattern), persist the choice beside the model
     /// selection, and confirm with a transient toast that repeats the
@@ -2229,8 +2229,8 @@ impl Session<'_> {
         }
     }
 
-    /// The startup capability probe answered (`docs/reasoning.md`,
-    /// `docs/tools.md`): adopt the active model's reasoning / image / context
+    /// The startup capability probe answered (`docs/providers/reasoning.md`,
+    /// `docs/tools/tools.md`): adopt the active model's reasoning / image / context
     /// facts, rebind the next turn's backend if that changes a request, and
     /// persist — so later startups seed from the file instead of probing. A
     /// `/model` switch that raced the probe already knows those facts first-hand
@@ -2246,16 +2246,16 @@ impl Session<'_> {
             && let Some(thinking) = self.models.apply_probe(provider, &entries)
         {
             self.app.set_thinking(thinking);
-            // The listed speed tiers, for /fast (docs/fast-mode.md).
+            // The listed speed tiers, for /fast (docs/providers/fast-mode.md).
             let speed = self.models.speed_state();
             self.app.set_speed(speed);
             let window = self.models.context_window();
             self.app.set_context_window(window);
             // An inheriting subagent's gauge shares that window
-            // (`docs/agent-context-gauge.md`).
+            // (`docs/agents/agent-context-gauge.md`).
             self.sync_agent_view_context();
             // …and the session's record learns the same facts
-            // (docs/session-model.md).
+            // (docs/state/session-model.md).
             self.record_session_model(false);
             self.frame.schedule_frame();
         }
@@ -2266,7 +2266,7 @@ impl Session<'_> {
     /// A finished `/model` fetch from one provider's worker thread: merge its
     /// models into the open picker, or record the failure beside the providers
     /// that did load. Both are no-ops if the picker was already dismissed. See
-    /// `docs/llm.md`.
+    /// `docs/providers/llm.md`.
     pub(crate) fn on_model_fetch(
         &mut self,
         label: String,

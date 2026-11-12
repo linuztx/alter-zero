@@ -1,6 +1,6 @@
 //! Background shells: the roster behind `run_in_background` and Ctrl+B, the
 //! ↓ manager band, and the completion notices they post.
-//! See `docs/background.md`.
+//! See `docs/tools/background.md`.
 
 use super::*;
 
@@ -9,7 +9,7 @@ use super::*;
 /// 0)` — green bullet on success, red on failure or a user stop). The
 /// `output_tail` rides the item for the model's context
 /// ([`crate::context::context_messages`]) but is never rendered — the model
-/// summarises it in the automatic follow-up turn. See `docs/background.md`.
+/// summarises it in the automatic follow-up turn. See `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundNotice {
     /// The human description shown in the headline: the model-supplied
@@ -28,15 +28,15 @@ pub struct BackgroundNotice {
     /// The launching subagent's **type label** (`general-purpose`), when a
     /// subagent launched the shell — the headline's ` · from the {type}
     /// agent` suffix and the context note's attribution
-    /// (`docs/agent-tool.md`). `None` = the main conversation.
+    /// (`docs/agents/agent-tool.md`). `None` = the main conversation.
     pub origin: Option<String>,
     /// The session did not end: it **stopped to ask for input** nobody was
-    /// there to see (`docs/bash-tools.md`). Still running, so the note names
+    /// there to see (`docs/tools/bash-tools.md`). Still running, so the note names
     /// its session for `bashsend`/`bashkill`, and `output_tail` is its
     /// screen; `code` and `killed` say nothing.
     pub waiting: bool,
     /// Wall-clock stamp of when the completion was recorded. Recorded but not
-    /// displayed, like tool stamps. See `docs/timestamps.md`.
+    /// displayed, like tool stamps. See `docs/ui/timestamps.md`.
     pub timestamp: String,
 }
 
@@ -116,7 +116,7 @@ impl BackgroundNotice {
 /// itself lives in the boundary's `background::BackgroundRegistry`; its
 /// events — start, output lines, exit — are applied here). An exited shell
 /// leaves the list ([`App::bg_exited`]): the completion notice is the record.
-/// See `docs/background.md`.
+/// See `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundShell {
     /// The registry task id (`bvyo7tkbe`, …).
@@ -131,7 +131,7 @@ pub struct BackgroundShell {
     pub from_model: bool,
     /// The launching **subagent** (id + type), when one launched it — shown
     /// as the details page's `From:` field and used to route the completion
-    /// note back into that agent's loop (`docs/agent-tool.md`). `None` = the
+    /// note back into that agent's loop (`docs/agents/agent-tool.md`). `None` = the
     /// main conversation.
     pub origin: Option<crate::background::BgOrigin>,
     /// The live output **tail** (capped at `BG_TAIL_MAX_BYTES`, trimmed to
@@ -163,7 +163,7 @@ const BG_NOTICE_TAIL_MAX_LINES: usize = 30;
 /// while idle): the loop records a [`BackgroundNotice`] for it, its
 /// [`context_text`](BgCompletion::context_text) having already been posted
 /// onto the registry's notice board for the in-flight agent. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BgCompletion {
     pub id: String,
@@ -172,7 +172,7 @@ pub struct BgCompletion {
     pub from_model: bool,
     /// The launching subagent, when one did — the boundary routes the note
     /// into that agent's running loop first, falling back to the shared
-    /// board when it already settled (`docs/agent-tool.md`).
+    /// board when it already settled (`docs/agents/agent-tool.md`).
     pub origin: Option<crate::background::BgOrigin>,
     /// Exit code, or `None` when the process died to a signal.
     pub code: Option<i32>,
@@ -182,7 +182,7 @@ pub struct BgCompletion {
     /// session [`waiting`](Self::waiting), its screen as it asks.
     pub output_tail: String,
     /// Not an exit: the session stopped to ask for input nobody saw
-    /// ([`App::bg_waiting`], `docs/bash-tools.md`), and runs on.
+    /// ([`App::bg_waiting`], `docs/tools/bash-tools.md`), and runs on.
     pub waiting: bool,
 }
 
@@ -234,7 +234,7 @@ impl BgCompletion {
 /// and the loop records the held notice right there, which is the one place
 /// the transcript can put it without claiming the model read it earlier than
 /// it did. What no agent reads settles at the turn's end, to ride the next
-/// turn's context. See `docs/background.md`.
+/// turn's context. See `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held<T> {
     pub seq: Option<u64>,
@@ -244,7 +244,7 @@ pub struct Held<T> {
 /// Which page of the ↓ background manager band is showing. The band is
 /// **inline** (it replaces the composer, exactly like the `/model` picker —
 /// never an alternate-screen [`View`]) and owns every key while open. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackgroundView {
     /// The shell list (`Background` / `{n} active shells` / selectable rows).
@@ -297,7 +297,7 @@ fn ceil_char_boundary(s: &str, at: usize) -> usize {
 }
 
 impl App {
-    /// The running background shells, oldest first (see `docs/background.md`).
+    /// The running background shells, oldest first (see `docs/tools/background.md`).
     #[must_use]
     pub fn background(&self) -> &[BackgroundShell] {
         &self.background
@@ -364,7 +364,7 @@ impl App {
     }
 
     /// Replace a TTY session's output with its screen as it now stands (the
-    /// registry's `BgEvent::Screen` — `docs/interactive-shell.md`): a
+    /// registry's `BgEvent::Screen` — `docs/tools/interactive-shell.md`): a
     /// terminal is a picture, not a log, so each screen supersedes the last
     /// and the details box shows what a terminal would. Unknown ids (a screen
     /// racing its shell's removal) are dropped.
@@ -392,7 +392,7 @@ impl App {
     /// the list selection re-clamps), and the **last** shell exiting closes
     /// the band outright — the manager only ever shows while something is
     /// running, so with nothing left to manage the composer comes back
-    /// instead of an empty page (docs/background.md); `None` for an unknown
+    /// instead of an empty page (docs/tools/background.md); `None` for an unknown
     /// id (already swept — e.g. by `/clear` — so no notice is owed).
     pub fn bg_exited(&mut self, id: &str, code: Option<i32>, killed: bool) -> Option<BgCompletion> {
         let index = self.background.iter().position(|shell| shell.id == id)?;
@@ -402,7 +402,7 @@ impl App {
             // to keep lit — and so does the band it is the entry point for:
             // the manager is a view onto *running* shells, so the page that
             // outlives them all is just a dead end asking to be dismissed
-            // (docs/background.md).
+            // (docs/tools/background.md).
             self.background_focus = false;
             self.background_view = None;
         } else {
@@ -432,7 +432,7 @@ impl App {
     }
 
     /// A background session stopped to ask for input nobody saw (the
-    /// registry's `BgEvent::Waiting`, `docs/bash-tools.md`): its notice, for
+    /// registry's `BgEvent::Waiting`, `docs/tools/bash-tools.md`): its notice, for
     /// the loop to settle like a completion's — posted for the model, and
     /// recorded at the next safe boundary — while the shell **stays** in the
     /// list, still running. `None` for an unknown id.
@@ -475,7 +475,7 @@ impl App {
     /// Drain the held completions (empty when none is held) — what no agent
     /// read: the loop settles them at every turn end (`StreamDone`, `Error`,
     /// and the Esc interrupt alike) and at an idle arrival, to ride the next
-    /// turn's context. See `docs/background.md`.
+    /// turn's context. See `docs/tools/background.md`.
     pub fn take_pending_bg_completions(&mut self) -> Vec<Held<BgCompletion>> {
         self.pending_bg.drain(..).collect()
     }
@@ -502,13 +502,13 @@ impl App {
     /// Can Ctrl+B move the current command to the background? True while the
     /// front tool is a **running command** — a model `bash` call (a `tty`
     /// one included), a `bash_session` call waiting on its session (the wait
-    /// ends, the session runs on — `docs/interactive-shell.md`) or a `!`
+    /// ends, the session runs on — `docs/tools/interactive-shell.md`) or a `!`
     /// shell turn — the only runners that poll the registry's background
     /// request — **or while a foreground agent group runs** (its wait loop
     /// polls the same latch and hands the rest of the group over,
-    /// `docs/agent-tool.md`) **or while an `agentoutput` waits** on an agent
-    /// (the wait ends, the agent runs on — `docs/agent-tools.md`). See
-    /// `docs/background.md`.
+    /// `docs/agents/agent-tool.md`) **or while an `agentoutput` waits** on an agent
+    /// (the wait ends, the agent runs on — `docs/agents/agent-tools.md`). See
+    /// `docs/tools/background.md`.
     #[must_use]
     pub fn can_move_to_background(&self) -> bool {
         if self
@@ -557,7 +557,7 @@ impl App {
     }
 
     /// Keys while the footer's shell indicator is lit — the step ↓ takes
-    /// *before* the band opens (Claude-Code-style, `docs/background.md`).
+    /// *before* the band opens (Claude-Code-style, `docs/tools/background.md`).
     /// `Enter` opens the manager the indicator points at; `Esc`, `↑` and
     /// `Ctrl+C` dismiss the highlight; a second `↓` keeps it (there is only
     /// the one indicator). Returns `None` for every other key — the highlight
@@ -570,7 +570,7 @@ impl App {
         }
         match key.code {
             // A *plain* Enter opens the band. Alt/Shift+Enter stay the newline
-            // keys (docs/shift-enter.md) — they fall through below, dismissing
+            // keys (docs/input/shift-enter.md) — they fall through below, dismissing
             // the highlight and inserting the newline, like Ctrl+J does.
             KeyCode::Enter
                 if !key
@@ -581,7 +581,7 @@ impl App {
                 Some(Action::None)
             }
             // A second ↓ steps past the shell indicator into the agent
-            // roster's selection when one is listed (`docs/agent-tool.md`) —
+            // roster's selection when one is listed (`docs/agents/agent-tool.md`) —
             // onto the last picked agent's row when there is one, else
             // `● main`; with no roster it keeps the highlight (the one
             // indicator).
@@ -612,7 +612,7 @@ impl App {
     /// key (routed at the top of [`on_key`](App::on_key)), like the `/model`
     /// picker. List: ↑/↓ move wrapping at the ends, Enter views the
     /// highlighted shell, `x` stops it, Esc/Ctrl+C close. Details: ← back to
-    /// the list, Esc/Enter/Space close, `x` stops. See `docs/background.md`.
+    /// the list, Esc/Enter/Space close, `x` stops. See `docs/tools/background.md`.
     pub(super) fn on_key_background(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.close_background_view();

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# TAB queues a message as a SEPARATE follow-up turn (docs/queue.md),
+# TAB queues a message as a SEPARATE follow-up turn (docs/input/queue.md),
 # unlike Enter which hands it to the turn already running. Submit "hello there",
 # then queue "world" with Enter and "later" with TAB while turn 1 streams: both
 # show inset above the box ("  ❯ world", "  ❯ later"), divided by a blank
@@ -36,7 +36,7 @@ echo "==== captured pane (the Tab follow-up ran as a separate second turn) ===="
 printf '%s\n' "$tabqueue"
 tmux kill-session -t "$S18" 2>/dev/null
 
-# Phase 21: TAB queues a SEPARATE follow-up turn (docs/queue.md). While turn 1
+# Phase 21: TAB queues a SEPARATE follow-up turn (docs/input/queue.md). While turn 1
 # streams, "world" (Enter) and "later" (Tab) both show inset above the box; then
 # turn 1 reads "world" and "later" runs as a SEPARATE turn 2, so a second turn
 # summary MUST appear — unlike Phase 12's all-Enter drive, which asserts the

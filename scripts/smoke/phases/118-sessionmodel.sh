@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# PER-SESSION model (docs/session-model.md). config.json's directory entry is
+# PER-SESSION model (docs/state/session-model.md). config.json's directory entry is
 # what a NEW session starts on; every conversation's rollout records the
 # model it actually runs on (a `model` sidecar line, the newest winning), and
 # a resume brings THAT back. Two instances in one directory: (a) the first
@@ -178,7 +178,7 @@ sm_h_styled="$(pane "$S118" -e)"
 note "--resume of a record naming an unreachable provider"
 printf '%s\n' "$sm_h"
 expect_has "$sm_h" -F "Can't resume on ghost" "no toast said the recorded model could not be restored"
-# An error toast wears the theme's red softened toward the dim (docs/toast.md):
+# An error toast wears the theme's red softened toward the dim (docs/ui/toast.md):
 # on the fixture's default Mocha, #ca89a4 — never the error bullet's #f38ba8.
 sm_h_toast="$(printf '%s\n' "$sm_h_styled" | grep -F "Can't resume on ghost")"
 expect_has "$sm_h_toast" -F '38;2;202;137;164' "the error toast is not in the softened red"

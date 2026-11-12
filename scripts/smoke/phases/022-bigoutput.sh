@@ -5,7 +5,7 @@
 smoke_begin
 
 # a `!` command with HUGE output is CAPPED IN MEMORY, not buffered
-# whole (docs/shell-command.md). Run a command producing >100KB (over the cap):
+# whole (docs/input/shell-command.md). Run a command producing >100KB (over the cap):
 # the cell renders the whole retained head INLINE — the `!` shell cell never
 # folds, so there is no `+N lines (ctrl+o to expand)` hint — closed by the
 # `…` truncation marker where the cap cut it, NO temp file is written (the

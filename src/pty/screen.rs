@@ -1,5 +1,5 @@
 //! A terminal's output as **a screen** — what a person would see
-//! (`docs/interactive-shell.md`).
+//! (`docs/tools/interactive-shell.md`).
 //!
 //! [`Screen`] is the `vt100` emulator at the pseudo-terminal's size with no
 //! scrollback (≈150 KB a session). It is the view a full-screen program is
@@ -28,7 +28,7 @@
 //! names cursor moves go by (HVP, HPA, HPR, VPR, IND, NEL, SCOSC); and the
 //! screen/tmux window title (`ESC k`), which is not text. The differential
 //! check against tmux over a sweep of programs — `scripts/pty_oracle.sh`,
-//! `docs/interactive-shell.md` — is how the list was found.
+//! `docs/tools/interactive-shell.md` — is how the list was found.
 
 use unicode_width::UnicodeWidthChar as _;
 

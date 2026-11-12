@@ -1,5 +1,5 @@
 //! The `/model` list parse must stay memory-proportional to what it **keeps**,
-//! not to the body it reads (`docs/memory.md`).
+//! not to the body it reads (`docs/architecture/memory.md`).
 //!
 //! An aggregator's `/v1/models` body is mostly fields this app never shows:
 //! OpenRouter's 417-record list is 669 KB of JSON, of which `benchmarks`,

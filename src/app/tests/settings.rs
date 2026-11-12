@@ -1,4 +1,4 @@
-//! The inline `/settings` menu's state and key map (`docs/settings.md`).
+//! The inline `/settings` menu's state and key map (`docs/state/settings.md`).
 
 use super::*;
 
@@ -202,7 +202,7 @@ fn typing_filters_on_the_label_and_the_description() {
     assert_eq!(labels(&app), vec!["Project docs"]);
 
     // The row that folds scratchpad edits into the collapsed line says so
-    // (docs/tool-groups.md *Scratchpad edits*).
+    // (docs/ui/tool-groups.md *Scratchpad edits*).
     app.on_key(key(KeyCode::Esc));
     type_query(&mut app, "scratchpad");
     assert_eq!(labels(&app), vec!["Verbose output"]);

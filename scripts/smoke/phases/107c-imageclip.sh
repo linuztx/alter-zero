@@ -5,7 +5,7 @@
 smoke_begin
 
 # a picture TALLER THAN THE PAGER still draws its visible part
-# (docs/images.md). Ctrl+O opens pinned to the bottom, so a tall picture starts
+# (docs/ui/images.md). Ctrl+O opens pinned to the bottom, so a tall picture starts
 # *above* the window and its first visible row carries a non-zero row index —
 # which the first version had no way to draw from, leaving a screenful of
 # reserved-but-empty rows on the most ordinary open there is. A 100x600 PNG at

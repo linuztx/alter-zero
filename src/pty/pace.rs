@@ -1,5 +1,5 @@
 //! When a running command's cell is sent its next update
-//! (`docs/interactive-shell.md` *Streaming the running cell*).
+//! (`docs/tools/interactive-shell.md` *Streaming the running cell*).
 //!
 //! A program redrawing a line writes each frame in pieces — npm's spinner
 //! sends a column move, an erase and the glyph as three writes — and the

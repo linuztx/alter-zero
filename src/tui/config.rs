@@ -1,7 +1,7 @@
 //! What the boundary reads out of the environment before anything runs: the
 //! provider table, the API-key store, the persisted `/model` selection,
 //! `/settings` knobs and `/mascot`/`/spinner` looks (each per working
-//! directory, `docs/per-directory-state.md`), the per-project permission
+//! directory, `docs/state/per-directory-state.md`), the per-project permission
 //! rules, and where each of those files lives.
 //!
 //! Everything here is a *lookup* — resolve a path, read a file, merge the
@@ -17,7 +17,7 @@
 //! must never kill the TUI, so [`save_selection`] / [`save_setting`] /
 //! [`save_permissions`] swallow their errors.
 //!
-//! See `docs/llm.md`, `docs/permissions.md`, `docs/checkpoint.md`.
+//! See `docs/providers/llm.md`, `docs/state/permissions.md`, `docs/state/checkpoint.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ use super::host::{self, local_date, os_context, user_context};
 
 /// Is the built-in dummy backend forced on? (`ALTER_ZERO_DUMMY` set to a truthy
 /// value). Keeps `smoke.sh` — which sets nothing — on the dummy, and lets a
-/// developer force it even with a key configured. See `docs/llm.md`.
+/// developer force it even with a key configured. See `docs/providers/llm.md`.
 pub(crate) fn dummy_forced() -> bool {
     std::env::var("ALTER_ZERO_DUMMY").ok().is_some_and(|v| {
         matches!(
@@ -53,7 +53,7 @@ pub(crate) fn dummy_forced() -> bool {
 }
 
 /// The user's own provider file — `{config_home}/providers.toml`, beside the
-/// `.env` store its keys go to (`docs/user-providers.md`). `None` with no
+/// `.env` store its keys go to (`docs/providers/user-providers.md`). `None` with no
 /// config home: the built-ins alone.
 pub(crate) fn user_providers_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("providers.toml"))
@@ -61,7 +61,7 @@ pub(crate) fn user_providers_path() -> Option<PathBuf> {
 
 /// Read the provider table, and what was wrong with the file it came from —
 /// one row per problem, each led by the file (`~`-relative), for the toast
-/// that says so (`docs/user-providers.md`):
+/// that says so (`docs/providers/user-providers.md`):
 ///
 /// - `ALTER_ZERO_PROVIDERS_FILE` names a file that stands **alone**: its
 ///   providers and none of the built-ins, which is what keeps a smoke run
@@ -77,7 +77,7 @@ pub(crate) fn user_providers_path() -> Option<PathBuf> {
 /// not have written, and a provider block there could send a stored key to a
 /// host of its choosing before the first frame — the startup capability probe
 /// lists models unasked. That is the risk the startup review exists for
-/// (`docs/project-config.md`), so the file is read from the config home only.
+/// (`docs/state/project-config.md`), so the file is read from the config home only.
 ///
 /// # Errors
 /// Why the file could not be used at all — unreadable, not TOML, no table of
@@ -160,7 +160,7 @@ pub(crate) fn resolve_env(env_file: &EnvFile, name: &str) -> Option<String> {
 
 /// Resolve a provider's API key: its own env var (process env then `.env`),
 /// else the name that variable had before a rename (a token stored under
-/// `OPENAI_CHATGPT_REFRESH_TOKEN` still signs in — `docs/chatgpt.md`), else
+/// `OPENAI_CHATGPT_REFRESH_TOKEN` still signs in — `docs/providers/chatgpt.md`), else
 /// the generic `ALTER_ZERO_API_KEY`. Empty values count as unset.
 pub(crate) fn resolve_api_key(
     providers: &ProvidersFile,
@@ -181,11 +181,11 @@ pub(crate) fn resolve_api_key(
 /// merged in), or `None` when the provider isn't in the file. `thinking` is
 /// the mode riding the request payload — `None` for a model with no
 /// reasoning (or a fetch that doesn't care, like the `/models` listing). See
-/// `docs/reasoning.md`. `vision` is the model's known image-input support —
+/// `docs/providers/reasoning.md`. `vision` is the model's known image-input support —
 /// `Some(false)` makes the backend degrade attachments instead of letting
 /// the provider fail the turn; `None` = unknown, attach optimistically. See
-/// `docs/tools.md`. `context` is the window the session gauges against,
-/// which the Ollama wire sends as `options.num_ctx` (`docs/ollama.md`).
+/// `docs/tools/tools.md`. `context` is the window the session gauges against,
+/// which the Ollama wire sends as `options.num_ctx` (`docs/providers/ollama.md`).
 ///
 /// A provider whose base is environment-configurable (`api_base_env` —
 /// Ollama's `OLLAMA_HOST`) has that variable resolved here, the way the key
@@ -235,7 +235,7 @@ pub(crate) fn resolve_api_base(
 /// `session_id`) so this session's requests keep landing on the same
 /// provider/server and hitting its warm prompt cache; a fresh key on the next
 /// run just means one cold request. Boundary code — the time read stays out
-/// of the pure core (see `docs/prompt-caching.md`).
+/// of the pure core (see `docs/providers/prompt-caching.md`).
 pub(crate) fn session_cache_key() -> &'static str {
     static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     KEY.get_or_init(|| {
@@ -251,8 +251,8 @@ pub(crate) fn session_cache_key() -> &'static str {
 /// A subscription provider is excluded — it is signed in to, not keyed, and
 /// listing it beside the others would offer a key field for a flow that has
 /// none — and so is a server whose key is optional: it is pointed at, under
-/// **Sign in with a local model** ([`local_choices`]). See `docs/llm.md`,
-/// `docs/copilot.md` and `docs/local-models.md`.
+/// **Sign in with a local model** ([`local_choices`]). See `docs/providers/llm.md`,
+/// `docs/providers/copilot.md` and `docs/providers/local-models.md`.
 pub(crate) fn provider_choices(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -287,7 +287,7 @@ fn choices_where(
             let configured = is_configured(providers, env_file, &id);
             // What the key step introduces the provider with, and where its
             // keys are made: both come from the file, so adding a provider is
-            // still one `[providers.<id>]` block (`docs/llm.md`).
+            // still one `[providers.<id>]` block (`docs/providers/llm.md`).
             let description = provider
                 .and_then(|p| p.description.clone())
                 .unwrap_or_default();
@@ -311,11 +311,11 @@ fn choices_where(
 /// no key is configured by being *pointed at* instead: its host variable
 /// resolving (`OLLAMA_HOST`, `LMSTUDIO_HOST`, which `/login` writes once the
 /// connection test passes), or the environment naming it the active provider
-/// outright (`docs/local-models.md`). Without that rule every `/model` open
+/// outright (`docs/providers/local-models.md`). Without that rule every `/model` open
 /// would fetch from a server most users don't run and paint its refusal in
 /// red. And a keyless provider naming no host variable at all — a local
 /// llama.cpp or vLLM server a user described in their own file — is
-/// configured by that description alone (`docs/user-providers.md`).
+/// configured by that description alone (`docs/providers/user-providers.md`).
 fn is_configured(providers: &ProvidersFile, env_file: &EnvFile, id: &str) -> bool {
     let provider = providers.get(id);
     let keyed = resolve_api_key(providers, env_file, id).is_some();
@@ -335,7 +335,7 @@ fn is_configured(providers: &ProvidersFile, env_file: &EnvFile, id: &str) -> boo
 /// their own) — with what its page needs: the variable its address is saved
 /// under, the address in force (that variable's value, else the file's own
 /// server address, the API path left for the config to add back), and the
-/// variable a token would go to. See `docs/local-models.md`.
+/// variable a token would go to. See `docs/providers/local-models.md`.
 pub(crate) fn local_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Vec<LocalChoice> {
     providers
         .providers
@@ -366,7 +366,7 @@ pub(crate) fn local_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Ve
 /// the API path the config adds back (`http://127.0.0.1:1234` for LM Studio's
 /// `…/v1`); Ollama's base, in its own grammar, is its address already. What
 /// the `/login` field offers when nothing is stored, and the example a typo
-/// is answered with (`docs/local-models.md`).
+/// is answered with (`docs/providers/local-models.md`).
 pub(crate) fn own_address(provider: &Provider) -> String {
     let base = provider.kwargs.api_base.trim();
     if provider.wire_api == llm::WireApi::Ollama {
@@ -378,7 +378,7 @@ pub(crate) fn own_address(provider: &Provider) -> String {
 
 /// The **subscription** rows the `/login` flow shows: every provider whose
 /// `auth` names a sign-in flow, described by the file and tagged with whether
-/// a token already resolves. See `docs/copilot.md`.
+/// a token already resolves. See `docs/providers/copilot.md`.
 pub(crate) fn subscription_choices(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -404,16 +404,16 @@ pub(crate) fn subscription_choices(
 fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
     match auth {
         // The browser by default, and OpenAI's device code for a headless
-        // machine — the two flows Codex itself offers (`docs/chatgpt.md`).
+        // machine — the two flows Codex itself offers (`docs/providers/chatgpt.md`).
         AuthScheme::ChatGptCodex => vec![SigninKind::BrowserLink, SigninKind::DeviceCode],
-        // A browser page with a link and a wait (`docs/claude.md`,
-        // `docs/antigravity.md`).
+        // A browser page with a link and a wait (`docs/providers/claude.md`,
+        // `docs/providers/antigravity.md`).
         AuthScheme::AnthropicConsole | AuthScheme::GoogleAntigravity => {
             vec![SigninKind::BrowserLink]
         }
         // One flow each, a device code: GitHub's own for Copilot, and Cline's
         // WorkOS one, which is also the way its extension and CLI sign in
-        // (`docs/cline.md`).
+        // (`docs/providers/cline.md`).
         AuthScheme::GithubCopilot | AuthScheme::ClineAccount => vec![SigninKind::DeviceCode],
         AuthScheme::ApiKey | AuthScheme::OptionalKey => vec![SigninKind::DeviceCode],
     }
@@ -424,7 +424,7 @@ fn signin_kinds(auth: AuthScheme) -> Vec<SigninKind> {
 /// override, so file persistence is disabled). Every per-user file resolves
 /// under it — `providers.toml`, the `.env` key store, the checkpoints root and
 /// the sessions root (`resume::sessions_root`) alike — so moving it moves the
-/// whole state dir. See `docs/llm.md`.
+/// whole state dir. See `docs/providers/llm.md`.
 pub(crate) fn config_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ALTER_ZERO_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
@@ -450,7 +450,7 @@ pub(crate) fn load_env_file(path: &Path) -> EnvFile {
 
 /// The persisted `/model` selections' path (`{config_home}/config.json`), or
 /// `None` when there's no config home — persistence is then disabled. See
-/// `docs/llm.md`.
+/// `docs/providers/llm.md`.
 pub(crate) fn settings_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("config.json"))
 }
@@ -459,7 +459,7 @@ pub(crate) fn settings_file_path() -> Option<PathBuf> {
 /// (`{config_home}/permissions.json`) — the "don't ask again" command rules
 /// and the manual/edit mode, keyed by project directory — or `None` when
 /// there's no config home (persistence is then disabled, and every session
-/// starts asking afresh). See `docs/permissions.md`.
+/// starts asking afresh). See `docs/state/permissions.md`.
 pub(crate) fn permissions_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("permissions.json"))
 }
@@ -493,7 +493,7 @@ pub(crate) fn save_permission_mode(path: Option<&Path>, project: &str, mode: Per
 /// first, so entries other projects wrote meanwhile survive, and `change`
 /// moves across only what changed in this project's — best-effort like
 /// `save_settings`: a write failure is swallowed (a read-only home must never
-/// kill the TUI). See `docs/permissions.md`.
+/// kill the TUI). See `docs/state/permissions.md`.
 fn save_permissions(path: Option<&Path>, change: impl FnOnce(&mut PermissionsFile)) {
     let Some(path) = path else {
         return;
@@ -506,7 +506,7 @@ fn save_permissions(path: Option<&Path>, change: impl FnOnce(&mut PermissionsFil
     let _ = std::fs::write(path, file.to_json());
 }
 
-/// Load the user's `hooks.json` (`docs/hooks.md`).
+/// Load the user's `hooks.json` (`docs/tools/hooks.md`).
 ///
 /// Returns the parsed file and, when something was wrong with it, the message
 /// to raise. Deliberately **not** the `load_permissions` best-effort posture:
@@ -539,7 +539,7 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
 }
 
 /// Whether the project-level `.alter-zero` config layer is discovered at all
-/// (`docs/project-config.md`) — `ALTER_ZERO_PROJECT_CONFIG`, default on.
+/// (`docs/state/project-config.md`) — `ALTER_ZERO_PROJECT_CONFIG`, default on.
 /// Falsy = no project hooks/MCP discovery and so nothing of a project's in
 /// the startup review — and the smoke suite's hermeticity switch, since its
 /// phases run with cwd inside a real checkout.
@@ -548,7 +548,7 @@ pub(crate) fn project_config_enabled() -> bool {
 }
 
 /// `{config_home}/trust.json` — what the user trusted to run
-/// (`docs/config-review.md`). No override var of its own (the
+/// (`docs/state/config-review.md`). No override var of its own (the
 /// `permissions.json` posture): `ALTER_ZERO_CONFIG_DIR` moves it.
 pub(crate) fn trust_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("trust.json"))
@@ -556,7 +556,7 @@ pub(crate) fn trust_json_path() -> Option<PathBuf> {
 
 /// The user's `hooks.json` (`ALTER_ZERO_HOOKS_FILE`, else
 /// `{config_home}/hooks.json`) as an **absolute** path — the file's key in
-/// `trust.json` (`docs/config-review.md`). A relative override kept as
+/// `trust.json` (`docs/state/config-review.md`). A relative override kept as
 /// written would be one key for a different file in every directory, so a
 /// hook trusted in one would be trusted wherever the same relative path
 /// named another file.
@@ -600,7 +600,7 @@ pub(crate) fn load_trust_file(
 /// it at a temp dir, the `ALTER_ZERO_SESSIONS_DIR` pattern), else
 /// `~/.alter-zero/checkpoints`. `None` (no HOME and no override) disables
 /// checkpoints. Each working directory gets one isolated store under this root
-/// ([`checkpoint::store_git_dir`]). See `docs/checkpoint.md`.
+/// ([`checkpoint::store_git_dir`]). See `docs/state/checkpoint.md`.
 pub(crate) fn checkpoints_root() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("ALTER_ZERO_CHECKPOINTS_DIR") {
         return Some(PathBuf::from(dir));
@@ -616,7 +616,7 @@ pub(crate) fn tmp_dir() -> Option<PathBuf> {
     std::env::var_os("TMPDIR").map(PathBuf::from)
 }
 
-// ===== the session's temp layout (docs/scratchpad.md) =====
+// ===== the session's temp layout (docs/tools/scratchpad.md) =====
 
 /// This session's temp root — `{temp}/alter-zero-{uid}/{session}`, the parent
 /// of both the agent's scratchpad and the background shells' `tasks` dir. The
@@ -629,7 +629,7 @@ pub(crate) fn session_tmp_root(session: &str) -> PathBuf {
 
 /// Is the scratchpad on? On by default; a falsy `ALTER_ZERO_SCRATCHPAD` turns
 /// it off entirely — no directory, no `## Scratchpad` block in the system
-/// prompt, and no permission exemption (`docs/scratchpad.md`).
+/// prompt, and no permission exemption (`docs/tools/scratchpad.md`).
 pub(crate) fn scratchpad_enabled() -> bool {
     env_flag("ALTER_ZERO_SCRATCHPAD")
 }
@@ -642,7 +642,7 @@ pub(crate) fn scratchpad_enabled() -> bool {
 /// off, or the directory could not be created. Pointing the model at a path
 /// that does not exist — and refusing its writes there in the same breath —
 /// is worse than saying nothing, so the whole feature hangs off this one
-/// answer (`docs/scratchpad.md`).
+/// answer (`docs/tools/scratchpad.md`).
 pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
     if !scratchpad_enabled() {
         return None;
@@ -653,7 +653,7 @@ pub(crate) fn prepare_scratchpad(session_root: &Path) -> Option<PathBuf> {
 }
 
 /// Where this session's **pasted images** are saved: `{config_home}/image-cache/{session}`
-/// (`clipboard::paste_store_dir`, docs/image-paste.md) — under the config
+/// (`clipboard::paste_store_dir`, docs/input/image-paste.md) — under the config
 /// home rather than `/tmp`, so a picture pasted today is still there for a
 /// `/resume` tomorrow. With no config home at all (no `HOME`, no override)
 /// the same layout under the system temp dir. Created by the paste worker,
@@ -680,7 +680,7 @@ fn image_cache_cap() -> u64 {
 /// (`clipboard::evictable_paste_dirs` — oldest first, empty ones always,
 /// never the live session's `keep`), so the store a `/resume` reads from
 /// stays bounded without an age rule that would drop a conversation still
-/// worth resuming (`docs/image-paste.md`).
+/// worth resuming (`docs/input/image-paste.md`).
 ///
 /// Best-effort and **stat-only**: it sums each folder's file sizes without
 /// reading a byte, so a store of a few hundred sessions costs milliseconds
@@ -725,7 +725,7 @@ fn folder_bytes(dir: &Path) -> u64 {
 /// The session's image-payload cache, **created**: `{session_root}/images`,
 /// where the backend keeps the downscaled copy of every picture it sends so a
 /// later turn re-sending an attachment reads a small file instead of decoding
-/// the original again (`docs/images.md` "Memory"). `None` when it could not
+/// the original again (`docs/ui/images.md` "Memory"). `None` when it could not
 /// be created — payloads are then rebuilt per turn, exactly as before the
 /// cache existed. Not gated with the scratchpad: it is the backend's own
 /// working space, never something the model is told about.
@@ -738,7 +738,7 @@ pub(crate) fn prepare_image_cache(session_root: &Path) -> Option<PathBuf> {
 /// off for the session — `ALTER_ZERO_CHECKPOINT_MAX_FILES` /
 /// `ALTER_ZERO_CHECKPOINT_MAX_BYTES` over the defaults, each accepting a
 /// plain count or a `k`/`m`/`g` suffix and each taking `0` as *no limit*.
-/// See `docs/checkpoint.md`.
+/// See `docs/state/checkpoint.md`.
 pub(crate) fn checkpoint_budget() -> checkpoint::SnapshotBudget {
     let limit = |name: &str, default: u64| {
         checkpoint::parse_size_limit(std::env::var(name).ok().as_deref(), default)
@@ -766,7 +766,7 @@ pub(crate) fn load_settings(path: Option<&Path>) -> Settings {
 
 /// Write `config.json` whole, creating the config home first. Best-effort — a
 /// write failure is swallowed (like the session recorder) so it can never
-/// kill the TUI; a `None` path (no config home) no-ops. See `docs/llm.md`.
+/// kill the TUI; a `None` path (no config home) no-ops. See `docs/providers/llm.md`.
 fn write_settings(path: Option<&Path>, settings: &Settings) {
     let Some(path) = path else {
         return;
@@ -782,7 +782,7 @@ fn write_settings(path: Option<&Path>, settings: &Settings) {
 /// first time, the last selection made anywhere, **pinned** as the
 /// directory's own right here (`Settings::adopt`, the file written only when
 /// that changed) so a later switch elsewhere never moves it. `None` when
-/// nothing was ever chosen. See `docs/per-directory-state.md`.
+/// nothing was ever chosen. See `docs/state/per-directory-state.md`.
 pub(crate) fn adopt_selection(path: Option<&Path>, project: &str) -> Option<ModelSelection> {
     let mut saved = load_settings(path);
     if saved.adopt(project) {
@@ -793,9 +793,9 @@ pub(crate) fn adopt_selection(path: Option<&Path>, project: &str) -> Option<Mode
 
 /// Persist a `/model` choice made in `project` — the pair plus the model's
 /// reasoning state, so the Ctrl+T cycle needs no refetch next run
-/// (`docs/reasoning.md`), its image-input support, so the attachment gate
-/// needs no re-probe (`docs/tools.md`), and its context window
-/// (`docs/compact.md`) — as the directory's entry **and** the last selection
+/// (`docs/providers/reasoning.md`), its image-input support, so the attachment gate
+/// needs no re-probe (`docs/tools/tools.md`), and its context window
+/// (`docs/architecture/compact.md`) — as the directory's entry **and** the last selection
 /// made anywhere. A read-modify-write ([`save_permissions`]' pattern): the
 /// file is re-read first, so entries other directories wrote meanwhile
 /// survive. Best-effort like every write here.
@@ -839,14 +839,14 @@ pub(crate) fn thinking_settings_of(
 /// Does this session ask before a `write`/`edit`/`bash` runs? On by default;
 /// disabled by a falsy `ALTER_ZERO_PERMISSIONS` (`0`/`false`/`no`/`off`), which
 /// starts the session with no gate so every tool runs unasked — the pre-feature
-/// behaviour. See `docs/permissions.md`.
+/// behaviour. See `docs/state/permissions.md`.
 pub(crate) fn permissions_enabled() -> bool {
     env_flag("ALTER_ZERO_PERMISSIONS")
 }
 
 /// The mode `ALTER_ZERO_PERMISSION_MODE` seeds this run with — outranking the
 /// project's saved mode, never saved (`permission::mode_by_env` decides,
-/// `docs/permissions.md`).
+/// `docs/state/permissions.md`).
 pub(crate) fn permission_mode_seed() -> Option<PermissionMode> {
     let value = std::env::var("ALTER_ZERO_PERMISSION_MODE").ok();
     alter_zero::permission::mode_by_env(value.as_deref())
@@ -868,7 +868,7 @@ fn env_flag(name: &str) -> bool {
 /// An **explicitly set** `ALTER_ZERO_*` on/off flag, or `None` when the
 /// variable is absent. The `/settings` seed needs the distinction [`env_flag`]
 /// erases: an unset variable must leave the saved value alone, where a set one
-/// overrides it for this run. See `docs/settings.md`.
+/// overrides it for this run. See `docs/state/settings.md`.
 fn env_flag_set(name: &str) -> Option<bool> {
     std::env::var(name).ok().map(|v| {
         !matches!(
@@ -878,20 +878,20 @@ fn env_flag_set(name: &str) -> Option<bool> {
     })
 }
 
-// ===== the `/settings` menu's persisted knobs (docs/settings.md) =====
+// ===== the `/settings` menu's persisted knobs (docs/state/settings.md) =====
 
 /// The `/settings` file path (`{config_home}/settings.json`) — its own file
 /// beside `config.json` (the `/model` selections) and `permissions.json` (the
 /// per-project rules), so one feature's write can never clobber another's;
 /// like both of those it is keyed by working directory inside
-/// (`docs/per-directory-state.md`). `None` when there's no config home;
+/// (`docs/state/per-directory-state.md`). `None` when there's no config home;
 /// persistence is then disabled.
 pub(crate) fn settings_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("settings.json"))
 }
 
 /// The per-project skill on/off file — `{config_home}/skills.json`
-/// (`docs/skills.md`). `None` (no config home) disables persistence: the
+/// (`docs/tools/skills.md`). `None` (no config home) disables persistence: the
 /// session's toggles still work, they just don't survive a restart.
 pub(crate) fn skills_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("skills.json"))
@@ -899,15 +899,15 @@ pub(crate) fn skills_json_path() -> Option<PathBuf> {
 
 /// The secrets file — `{config_home}/secrets.json`, per **user** like the
 /// `.env` key store (a credential belongs to the person, not the directory)
-/// and written owner-only (`docs/secrets.md`). `None` (no config home)
+/// and written owner-only (`docs/state/secrets.md`). `None` (no config home)
 /// disables persistence: the page still works for the session.
 pub(crate) fn secrets_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join(alter_zero::secrets::SECRETS_FILE_NAME))
 }
 
 /// The banner-mascot file — `{config_home}/mascot.json`, its own file beside
-/// the rest (one file per feature that owns it, `docs/mascot.md`), keyed by
-/// working directory inside (`docs/per-directory-state.md`). `None` (no
+/// the rest (one file per feature that owns it, `docs/ui/mascot.md`), keyed by
+/// working directory inside (`docs/state/per-directory-state.md`). `None` (no
 /// config home) disables persistence: the `/mascot` switch still works, it
 /// just doesn't survive a restart.
 pub(crate) fn mascot_json_path() -> Option<PathBuf> {
@@ -915,7 +915,7 @@ pub(crate) fn mascot_json_path() -> Option<PathBuf> {
 }
 
 /// The spinner-style file — `{config_home}/spinner.json`, its own file like
-/// `mascot.json` (one file per feature that owns it, `docs/spinner.md`) and
+/// `mascot.json` (one file per feature that owns it, `docs/ui/spinner.md`) and
 /// keyed by working directory the same way. `None` (no config home) disables
 /// persistence: the `/spinner` switch still works, it just doesn't survive a
 /// restart.
@@ -948,7 +948,7 @@ fn write_look_file<T: Look>(path: &Path, file: &LookFile<T>) {
 /// directory's own right here (`LookFile::adopt`, the file written only when
 /// that changed) so a later choice elsewhere never moves it — the
 /// [`adopt_selection`] rule. `None` when nothing was ever chosen: the
-/// catalog's default. See `docs/per-directory-state.md`.
+/// catalog's default. See `docs/state/per-directory-state.md`.
 pub(crate) fn adopt_look<T: Look>(path: Option<&Path>, project: &str) -> Option<T> {
     let mut file = load_look_file::<T>(path);
     if file.adopt(project)
@@ -975,14 +975,14 @@ pub(crate) fn save_look<T: Look>(path: Option<&Path>, project: &str, look: T) {
 
 /// The colour-theme file — `{config_home}/theme.json`, its own file like
 /// `mascot.json` and `spinner.json` (one file per feature that owns it,
-/// `docs/theme.md`). `None` (no config home) disables persistence: the
+/// `docs/ui/theme.md`). `None` (no config home) disables persistence: the
 /// `/theme` switch still works, it just doesn't survive a restart.
 pub(crate) fn theme_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("theme.json"))
 }
 
 /// The telemetry file — `{config_home}/telemetry.json`, its own file like
-/// `theme.json` (one file per feature that owns it, `docs/telemetry.md`):
+/// `theme.json` (one file per feature that owns it, `docs/ops/telemetry.md`):
 /// the install id, the on/off switch, the last delivered day and whether
 /// the one-time notice has been shown. `None` (no config home) disables the
 /// feature outright — nowhere to keep an id means no ping, since a fresh
@@ -1009,7 +1009,7 @@ pub(crate) fn load_telemetry_file(path: Option<&Path>) -> alter_zero::telemetry:
 /// another's. Best-effort like [`save_theme`]: a failed write is swallowed
 /// (a read-only home must never kill the TUI) and a `None` path (no config
 /// home) edits nothing — the feature is off there anyway
-/// (`docs/telemetry.md`).
+/// (`docs/ops/telemetry.md`).
 pub(crate) fn update_telemetry_file(
     path: Option<&Path>,
     edit: impl FnOnce(&mut alter_zero::telemetry::TelemetryFile),
@@ -1031,7 +1031,7 @@ pub(crate) fn update_telemetry_file(
 /// Where OpenAI's sign-in flows go: `ALTER_ZERO_OPENAI_ISSUER` when set and
 /// non-empty (the smoke suite's local stand-in for the auth server, or a
 /// fork's own), else `None` — the module's built-in default stands
-/// (`docs/chatgpt.md`).
+/// (`docs/providers/chatgpt.md`).
 pub(crate) fn openai_issuer() -> Option<String> {
     std::env::var(alter_zero::llm::chatgpt::ISSUER_ENV)
         .ok()
@@ -1041,7 +1041,7 @@ pub(crate) fn openai_issuer() -> Option<String> {
 
 /// Where Cline's sign-in talks to WorkOS: `ALTER_ZERO_CLINE_AUTH_BASE` when
 /// set and non-empty (Phase 137's local stub, or a fork's own), else `None` —
-/// `https://api.workos.com` stands (`docs/cline.md`).
+/// `https://api.workos.com` stands (`docs/providers/cline.md`).
 pub(crate) fn cline_auth_base() -> Option<String> {
     nonempty_env(alter_zero::llm::cline::AUTH_BASE_ENV)
 }
@@ -1055,7 +1055,7 @@ pub(crate) fn cline_api_base() -> Option<String> {
 
 /// Where the Google Antigravity sign-in's token and userinfo calls go:
 /// `ALTER_ZERO_GOOGLE_OAUTH_BASE` when set and non-empty (the smoke suite's
-/// stub), else `None` — Google's own hosts stand (`docs/antigravity.md`).
+/// stub), else `None` — Google's own hosts stand (`docs/providers/antigravity.md`).
 pub(crate) fn google_oauth_base() -> Option<String> {
     nonempty_env(alter_zero::llm::antigravity::OAUTH_BASE_ENV)
 }
@@ -1075,7 +1075,7 @@ pub(crate) fn antigravity_project() -> Option<String> {
 /// Where GitHub's REST API calls go — the Copilot token exchange and the
 /// `/usage` quota read: `ALTER_ZERO_GITHUB_API_BASE` when set and non-empty
 /// (Phase 145's stub, or a fork's own), else `None` —
-/// `https://api.github.com` stands (`docs/usage.md`).
+/// `https://api.github.com` stands (`docs/providers/usage.md`).
 pub(crate) fn github_api_base() -> Option<String> {
     nonempty_env(alter_zero::llm::copilot::GITHUB_API_ENV)
 }
@@ -1104,7 +1104,7 @@ pub(crate) fn telemetry_endpoint() -> String {
 /// `ALTER_ZERO_TELEMETRY`, or a set `DO_NOT_TRACK`.
 ///
 /// This is what makes the opt-out *hard* rather than a mere seed
-/// (`docs/telemetry.md`): the `/settings` row reports itself unavailable, so
+/// (`docs/ops/telemetry.md`): the `/settings` row reports itself unavailable, so
 /// it cannot be cycled back on, and `telemetry_active()` stays false however
 /// the row is set. Every other `ALTER_ZERO_*` override only seeds its row —
 /// but the others are preferences, and this one is a statement that nothing
@@ -1118,7 +1118,7 @@ pub(crate) fn telemetry_forbidden_by_env() -> bool {
 /// What the environment says about telemetry for this run —
 /// `ALTER_ZERO_TELEMETRY` in the app's on/off grammar, outranked by a set
 /// `DO_NOT_TRACK` — or `None` to defer to `telemetry.json`
-/// (`telemetry::enabled_by_env`, `docs/telemetry.md`).
+/// (`telemetry::enabled_by_env`, `docs/ops/telemetry.md`).
 fn telemetry_env_override() -> Option<bool> {
     let telemetry = std::env::var(alter_zero::telemetry::TELEMETRY_ENV).ok();
     let dnt = std::env::var(alter_zero::telemetry::DNT_ENV).ok();
@@ -1126,7 +1126,7 @@ fn telemetry_env_override() -> Option<bool> {
 }
 
 /// The update-check file — `{config_home}/update.json`, its own per-user
-/// file like `telemetry.json` (`docs/update.md`).
+/// file like `telemetry.json` (`docs/ops/update.md`).
 pub(crate) fn update_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join(alter_zero::update::UPDATE_FILE_NAME))
 }
@@ -1184,7 +1184,7 @@ pub(crate) fn update_check_forbidden_by_env() -> bool {
 
 /// The spinner-tips file — `{config_home}/tips.json`, its own per-user file
 /// like `update.json`: the **Show tips** switch and where the walk through
-/// the catalog left off (`docs/tips.md`).
+/// the catalog left off (`docs/ui/tips.md`).
 pub(crate) fn tips_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join(alter_zero::tips::TIPS_FILE_NAME))
 }
@@ -1272,7 +1272,7 @@ pub(crate) fn save_skills_file(
 
 /// The `settings.json` file **as it holds them** — every directory's entry
 /// over the seed, no environment merged in (`settings::SettingsFile`,
-/// `docs/per-directory-state.md`). The caller picks the cwd's entry
+/// `docs/state/per-directory-state.md`). The caller picks the cwd's entry
 /// (`SettingsFile::settings_for`) and merges the overrides over that
 /// ([`apply_setting_overrides`]). An absent, unreadable or corrupt file yields
 /// the defaults (`load_settings`'s posture — never block startup).
@@ -1288,7 +1288,7 @@ pub(crate) fn load_settings_file(path: Option<&Path>) -> SettingsFile {
 /// [`load_saved_settings`]'s blob is what it *writes back* to.
 pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionSettings {
     // `ALTER_ZERO_SHOW_THINKING` names the *shown* side; the row is its
-    // inverse (docs/thinking-stream.md).
+    // inverse (docs/ui/thinking-stream.md).
     if let Some(show) = env_flag_set("ALTER_ZERO_SHOW_THINKING") {
         settings.hide_thinking = !show;
     }
@@ -1296,13 +1296,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
         settings.tools = on;
     }
     // The **Verbose output** row: every tool call its own cell for the run
-    // (docs/tool-groups.md) — the smoke suite exports it so its phases keep
+    // (docs/ui/tool-groups.md) — the smoke suite exports it so its phases keep
     // the per-call cells they assert on.
     if let Some(on) = env_flag_set("ALTER_ZERO_VERBOSE") {
         settings.verbose = on;
     }
     // `ALTER_ZERO_HOOKS` seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
-    // seeds Tools — an override for this run, never saved (docs/hooks.md).
+    // seeds Tools — an override for this run, never saved (docs/tools/hooks.md).
     // It used to be ANDed over the row instead, which could only ever turn
     // hooks *off*; with the row off by default it has to turn them on too.
     if let Some(on) = env_flag_set("ALTER_ZERO_HOOKS") {
@@ -1314,7 +1314,7 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
         settings.checkpoints = alter_zero::checkpoint::enabled_by_env(Some(&value));
     }
     // The project-doc knob's env form is a byte budget, whose documented off
-    // switch is `0` (docs/project-doc.md).
+    // switch is `0` (docs/state/project-doc.md).
     if let Some(budget) = std::env::var("ALTER_ZERO_PROJECT_DOC_MAX_BYTES")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -1325,7 +1325,7 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
         settings.skills = on;
     }
     // `ALTER_ZERO_MCP` seeds the **MCP** row the way `ALTER_ZERO_HOOKS`
-    // seeds Hooks — an override for this run, never saved (docs/mcp.md). A
+    // seeds Hooks — an override for this run, never saved (docs/tools/mcp.md). A
     // falsy value used to remove the manager outright; now the session
     // starts with MCP off, which `/settings` can turn back on.
     if let Some(on) = env_flag_set("ALTER_ZERO_MCP") {
@@ -1336,7 +1336,7 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     }
     // The Ask timeout row: `ALTER_ZERO_ASK_TIMEOUT_SECS` seeds it for the
     // run, `0` meaning never — a wait the menu doesn't list still reads whole
-    // (`1m 30s`), which is how the smoke suite sits one out (docs/ask.md).
+    // (`1m 30s`), which is how the smoke suite sits one out (docs/tools/ask.md).
     if let Some(secs) = std::env::var("ALTER_ZERO_ASK_TIMEOUT_SECS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -1346,13 +1346,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     // The Telemetry row: `ALTER_ZERO_TELEMETRY` (and the cross-tool
     // `DO_NOT_TRACK`, which outranks it) seed it for the run over the value
     // `telemetry.json` supplied — an override, never saved
-    // (`docs/telemetry.md`).
+    // (`docs/ops/telemetry.md`).
     if let Some(on) = telemetry_env_override() {
         settings.telemetry = on;
     }
     // The Show tips row: `ALTER_ZERO_TIPS` seeds it for the run over the
     // value `tips.json` supplied, the `ALTER_ZERO_TOOLS` grammar — not a
-    // privacy switch, so it never withdraws the row (`docs/tips.md`).
+    // privacy switch, so it never withdraws the row (`docs/ui/tips.md`).
     if let Some(on) = env_flag_set(alter_zero::tips::TIPS_ENV) {
         settings.tips = on;
     }
@@ -1367,7 +1367,7 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
 /// other directories wrote meanwhile survive. Best-effort like
 /// [`save_permissions`]: a write failure is swallowed (a read-only home must
 /// never kill the TUI) and a `None` path (no config home) no-ops. See
-/// `docs/settings.md`, `docs/per-directory-state.md`.
+/// `docs/state/settings.md`, `docs/state/per-directory-state.md`.
 pub(crate) fn save_setting(
     path: Option<&Path>,
     project: &str,
@@ -1400,7 +1400,7 @@ pub(crate) fn startup_delay() -> Duration {
 /// The dummy's pause after every streamed piece of reply text:
 /// [`stream::CHUNK_DELAY`] unless `ALTER_ZERO_CHUNK_DELAY_MS` overrides it —
 /// the startup delay's twin, and how the offline backend mimics a model
-/// streaming a few tokens a second (`docs/slow-stream.md`; the smoke suite's
+/// streaming a few tokens a second (`docs/ui/slow-stream.md`; the smoke suite's
 /// slow-stream phase drives the inline pipeline at that pace).
 pub(crate) fn chunk_delay() -> Duration {
     std::env::var("ALTER_ZERO_CHUNK_DELAY_MS")
@@ -1422,7 +1422,7 @@ pub(crate) fn temperature() -> Option<f32> {
 /// during the pre-first-token pause — so `scripts/smoke.sh` can prove an Esc
 /// interrupt stays responsive even then. Never used in normal operation (it
 /// preempts the real/dummy backend only when the env var is set). See
-/// `docs/interrupt.md`.
+/// `docs/input/interrupt.md`.
 pub(crate) fn stall_ms() -> Option<u64> {
     std::env::var("ALTER_ZERO_STALL_MS")
         .ok()
@@ -1432,7 +1432,7 @@ pub(crate) fn stall_ms() -> Option<u64> {
 /// `ALTER_ZERO_CONTEXT_WINDOW`: the model's context window, overriding
 /// whatever the provider reports (and the only way to get a footer gauge on
 /// the dummy). Zero — a window that would divide by nothing — is ignored. See
-/// `docs/compact.md`.
+/// `docs/architecture/compact.md`.
 pub(crate) fn context_window_override() -> Option<u64> {
     std::env::var("ALTER_ZERO_CONTEXT_WINDOW")
         .ok()
@@ -1444,9 +1444,9 @@ pub(crate) fn context_window_override() -> Option<u64> {
 /// (`prompts/alter_zero.md`) unless `ALTER_ZERO_SYSTEM_PROMPT` overrides it
 /// (an empty value sends no system prompt at all — `with_system_prompt` drops
 /// blanks). Either way we fold in the runtime environment — date, os, user,
-/// cwd — so the agent has context awareness (`docs/environment.md`), and —
+/// cwd — so the agent has context awareness (`docs/architecture/environment.md`), and —
 /// when the session has one — the `## Scratchpad` block pointing every
-/// temporary file at the session's own directory (`docs/scratchpad.md`), for
+/// temporary file at the session's own directory (`docs/tools/scratchpad.md`), for
 /// an assembled persona → environment → scratchpad. The values are
 /// gathered here at the boundary (the `set_clock` pattern), the assembly is
 /// the pure `backend::augment_with_environment`/`augment_with_scratchpad`.
@@ -1478,7 +1478,7 @@ pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<Str
 /// — when the session has one — the scratchpad block, without the persona.
 ///
 /// What a subagent definition whose body *replaces* the persona still carries
-/// (`docs/subagents.md`): the date, the os, the user, the cwd and where
+/// (`docs/agents/subagents.md`): the date, the os, the user, the cwd and where
 /// temporary files go are facts about this session, and an agent that doesn't
 /// know them writes into `/tmp` and guesses the year. Built from the same two pure
 /// renderers `system_prompt` composes with, from the same boundary reads, so
@@ -1509,14 +1509,14 @@ pub(crate) fn mcp_user_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mcp.json"))
 }
 
-/// The OAuth token store (`docs/mcp.md`).
+/// The OAuth token store (`docs/tools/mcp.md`).
 pub(crate) fn mcp_auth_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mcp-auth.json"))
 }
 
 /// Sweep away the **retired** era cache (`{config_home}/mcp-era.json`).
 /// Nothing reads it any more — the era and the protocol revision are
-/// re-derived from the server at every connect (`docs/mcp.md`) — and a file
+/// re-derived from the server at every connect (`docs/tools/mcp.md`) — and a file
 /// left behind implies a feature that no longer exists, with a stale
 /// revision written in it. Best-effort: our own cache, our own to drop.
 pub(crate) fn remove_retired_mcp_era_cache() {

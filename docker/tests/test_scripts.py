@@ -1,4 +1,4 @@
-"""docker/build.sh and docker/run.sh, with no engine and no network (docs/docker.md).
+"""docker/build.sh and docker/run.sh, with no engine and no network (docs/ops/docker.md).
 
     python3 -m unittest discover -s docker/tests -p 'test_*.py' -v
 
@@ -411,7 +411,7 @@ class RunTests(ScriptCase):
 
     def test_it_prints_the_command_that_forwards_the_terminals_identity(self):
         # The five variables are what let the app pick real graphics over
-        # half-blocks (docs/images.md); the README shows this exact command.
+        # half-blocks (docs/ui/images.md); the README shows this exact command.
         for engine in ("docker", "podman"):
             result, _ = self.run_sh("--engine", engine)
             flat = " ".join(result.stdout.replace("\\\n", " ").split())

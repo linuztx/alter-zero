@@ -1,4 +1,4 @@
-//! The `Skill` tool's boundary half (`docs/skills.md`): find the skills on
+//! The `Skill` tool's boundary half (`docs/tools/skills.md`): find the skills on
 //! disk, and run one `skill` call against them.
 //!
 //! [`crate::llm::task`]'s sibling — every rule lives in the pure
@@ -22,7 +22,7 @@ use crate::skills::{
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
 /// teaches public webpage and PDF retrieval; `web-search` searches the web
 /// with its own scripts; `yt-dlp` teaches media downloads and `flaredantic`
-/// teaches public localhost sharing through external CLIs (`docs/skills.md`).
+/// teaches public localhost sharing through external CLIs (`docs/tools/skills.md`).
 /// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
@@ -107,7 +107,7 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
 /// `permissions.json` and `settings.json` do. The `.claude/skills` rows are
 /// deliberate: a skill is portable markdown with no tool-specific behaviour in
 /// it, the ecosystem writes them there, and reading the directory costs one
-/// `read_dir` that usually returns `NotFound`. See `docs/skills.md`.
+/// `read_dir` that usually returns `NotFound`. See `docs/tools/skills.md`.
 #[must_use]
 pub fn skill_roots(
     cwd: &Path,
@@ -175,7 +175,7 @@ pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf
 /// already there** — so a fresh install finds them on disk and can edit them,
 /// a later launch never discards those edits, and a deleted one comes back.
 ///
-/// The agent definitions' rule, for the same reason (`docs/subagents.md` —
+/// The agent definitions' rule, for the same reason (`docs/agents/subagents.md` —
 /// a seed that overwrote would silently replace the user's own copy on every
 /// restart). Turning a built-in skill *off* is `/skills`, which persists;
 /// deleting the folder only lasts until the next launch.
@@ -397,7 +397,7 @@ impl LoadedSkills {
 /// That split is [`ToolOutcome::context`] — the seam built for the ask tool —
 /// so everything downstream is inherited: the green `ToolAnswered` event, the
 /// recorded `context_output`, the context replay, the rollout round-trip.
-/// See `docs/skills.md`.
+/// See `docs/tools/skills.md`.
 ///
 /// An unknown name resolves **red and recoverable** with the available names
 /// listed, so the model can correct itself in the same turn.
@@ -931,7 +931,7 @@ mod tests {
     #[test]
     fn a_body_documenting_dollar_arguments_reaches_the_model_intact() {
         // The executor renders the body with no substitution pass at all
-        // (docs/skills.md), so a skill whose instructions *talk about*
+        // (docs/tools/skills.md), so a skill whose instructions *talk about*
         // `$ARGUMENTS` hands the model those words rather than a blank.
         let tmp = tempfile::tempdir().expect("tempdir");
         write_skill(
@@ -1068,7 +1068,7 @@ mod tests {
         assert!(outcome.context.expect("body").contains("new body"));
     }
 
-    // ===== built-in skills (docs/skills.md) =====
+    // ===== built-in skills (docs/tools/skills.md) =====
 
     #[test]
     fn seeded_flaredantic_is_listed_and_loads_on_demand() {
@@ -1550,7 +1550,7 @@ mod tests {
     #[test]
     fn seeding_never_clobbers_a_skill_the_user_edited() {
         // A seed that overwrote would silently discard the user's own edits on
-        // every restart — the agent definitions' rule (docs/subagents.md).
+        // every restart — the agent definitions' rule (docs/agents/subagents.md).
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().to_path_buf();
         write_skill(&root, "skill-creator", &skill_md("Mine.", "my own body"));

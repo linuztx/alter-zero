@@ -3,7 +3,7 @@
 //!
 //! `main.rs` opens the viewport and calls [`event_loop::run`]; everything else
 //! about running the app lives in here, split one module per area the way
-//! `app/` and `ui/` are (see `docs/module-layout.md`). The library stays pure —
+//! `app/` and `ui/` are (see `docs/architecture/module-layout.md`). The library stays pure —
 //! `App` decides, `ui` renders, and this tree is the only place that reads a
 //! clock, touches the filesystem, spawns a thread, or writes to a terminal.
 //!
@@ -33,26 +33,26 @@
 //! | [`actions`] | The [`alter_zero::app::Action`] dispatch — one method per key-press outcome. |
 //! | [`turn`] | Starting and ending turns: user, queued, `!` shell, background follow-up, `/compact`. |
 //! | [`stream`] | Folding one streamed reply event into `App` + scrollback. |
-//! | [`agent`] | Subagent events, the roster's clocks, the linger sweep (`docs/agent-tool.md`). |
-//! | [`background`] | Background-shell events and settling their notices (`docs/background.md`). |
-//! | [`permission`] | The permission gate's session rules and the prompt's answers (`docs/permissions.md`). |
+//! | [`agent`] | Subagent events, the roster's clocks, the linger sweep (`docs/agents/agent-tool.md`). |
+//! | [`background`] | Background-shell events and settling their notices (`docs/tools/background.md`). |
+//! | [`permission`] | The permission gate's session rules and the prompt's answers (`docs/state/permissions.md`). |
 //! | [`view`] | Drawing: the inline region, the overlays, the repaints, the status clocks. |
 //! | [`commit`] | Writing finished lines to scrollback — the one place invariant 4 is enforced. |
-//! | [`models`] | The reply backend and everything that selects it (`docs/llm.md`). |
+//! | [`models`] | The reply backend and everything that selects it (`docs/providers/llm.md`). |
 //! | [`config`] | Reading the environment: providers, keys, settings, permission rules. |
 //! | [`bootstrap`] | Assembling a [`Session`] before the first frame. |
-//! | [`startup`] | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
-//! | [`headless`] | `alter-zero -p`: the same session with no screen — its loop, its streams, its exit status (`docs/headless.md`). |
-//! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
+//! | [`startup`] | The `--continue`/`--resume` argument resolution (`docs/cli/cli.md`). |
+//! | [`headless`] | `alter-zero -p`: the same session with no screen — its loop, its streams, its exit status (`docs/cli/headless.md`). |
+//! | [`recorder`] | Mirroring history to a rollout file (`docs/state/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
-//! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
-//! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/telemetry.md`). |
-//! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
-//! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/update.md`). |
-//! | [`herdr`] | Telling the herdr pane this session runs in what it is doing: the loop-bottom sync into the library's tracker and worker, and the failed-turn hold (`docs/herdr.md`). |
-//! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
-//! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
-//! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
+//! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/state/settings.md`). |
+//! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/ops/telemetry.md`). |
+//! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/ops/update.md`). |
+//! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/ops/update.md`). |
+//! | [`herdr`] | Telling the herdr pane this session runs in what it is doing: the loop-bottom sync into the library's tracker and worker, and the failed-turn hold (`docs/architecture/herdr.md`). |
+//! | [`history_store`] | The cross-session input history (`docs/input/history-persistence.md`). |
+//! | [`shell`] | The `!` command runner (`docs/input/shell-command.md`). |
+//! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/providers/usage.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list / usage jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
@@ -135,23 +135,23 @@ pub(crate) struct Session<'t> {
     term: &'t mut InlineViewport,
     /// The pure conversation state — the only thing that *decides* anything.
     app: App,
-    /// Who replies, and how (`docs/llm.md`).
+    /// Who replies, and how (`docs/providers/llm.md`).
     models: ModelSession,
 
-    // ----- renderers and caches (all incremental; see docs/markdown.md) -----
+    // ----- renderers and caches (all incremental; see docs/ui/markdown.md) -----
     /// Commits the in-flight reply to scrollback as it streams — O(reply) over
     /// the whole stream, and the strip's cheap preview line.
     render: ui::StreamRender,
     /// The same, for an open agent session view's own transcript
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     agent_render: ui::StreamRender,
     /// The Ctrl+O overlay's incrementally-built transcript, retained across
     /// closes and warmed at the loop bottom so it never opens cold
-    /// (`docs/tool-view-performance.md`).
+    /// (`docs/ui/tool-view-performance.md`).
     transcript: ui::TranscriptCache,
     /// The Ctrl+D overlay's built context window, rebuilt only when its
     /// signature changes — per frame the O(conversation) derivation starved
-    /// the scroll keys on a big context (`docs/context.md`).
+    /// the scroll keys on a big context (`docs/architecture/context.md`).
     context: ui::ContextCache,
     /// Detects a paste / fast-type burst so its redraws coalesce.
     burst: PasteBurst,
@@ -159,15 +159,15 @@ pub(crate) struct Session<'t> {
     // ----- the boundary's clocks and deadlines (the set_status_times pattern) -----
     /// The live status indicator's clocks.
     clocks: StatusClocks,
-    /// When the transient toast above the box should self-clear (`docs/toast.md`).
+    /// When the transient toast above the box should self-clear (`docs/ui/toast.md`).
     toast_deadline: Option<Instant>,
-    /// The `AskUserQuestion` idle clock (`docs/ask.md`): read by the draw
+    /// The `AskUserQuestion` idle clock (`docs/tools/ask.md`): read by the draw
     /// tick, started over by every key or paste, resolving the waiting
     /// questions unanswered on [`Self::ask`] when it runs out — on this
     /// thread, so an answer and the expiry can never race.
     ask_timer: alter_zero::ask::AskTimer,
     /// When each background shell started, so the manager's Runtime ticks
-    /// (`docs/background.md`).
+    /// (`docs/tools/background.md`).
     bg_clocks: HashMap<String, Instant>,
     /// When each running subagent started, so the roster's elapsed ticks.
     agent_clocks: HashMap<String, Instant>,
@@ -175,7 +175,7 @@ pub(crate) struct Session<'t> {
     /// sibling of `StatusClocks::thinking_start`, so its session view's
     /// status line shows `Thinking for Ns` and the settle knows the phase's
     /// wall-clock. An entry exists only while that agent is thinking
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     agent_thinking_clocks: HashMap<String, Instant>,
     /// When each subagent's **current running command** started — the
     /// per-agent sibling of `StatusClocks::command_start`, injected each
@@ -184,10 +184,10 @@ pub(crate) struct Session<'t> {
     /// `ToolStart`, never from the agent's runtime. Inserted at that
     /// `ToolStart`; **pruned by the roster tick** from the run's own queue —
     /// an agent without a running front call loses its entry — rather than
-    /// removed at each resolution path (`docs/agent-view-streaming.md`).
+    /// removed at each resolution path (`docs/agents/agent-view-streaming.md`).
     agent_command_clocks: HashMap<String, Instant>,
     /// When each finished subagent's row should sweep off the roster
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     agent_expiry: HashMap<String, Instant>,
 
     // ----- the loop's own channels: what wakes it, and what it sends on -----
@@ -201,14 +201,14 @@ pub(crate) struct Session<'t> {
     /// the viewport's synchronous cursor query, in [`Session::bootstrap`].
     /// `None` in a headless run, which has no terminal to read — and must not
     /// open one: crossterm opens the controlling terminal as the stream is
-    /// built (`docs/headless.md`).
+    /// built (`docs/cli/headless.md`).
     events: Option<EventStream>,
     /// Whether this session runs **headless** — `alter-zero -p`, the same
-    /// session over a viewport that paints nowhere (`docs/headless.md`):
+    /// session over a viewport that paints nowhere (`docs/cli/headless.md`):
     /// nothing asked, nothing shown, toasts on stderr.
     headless: bool,
     /// A headless run's `--verbose`: its info toasts reach stderr too, beside
-    /// the errors every headless run reports (`docs/headless.md` *Output*).
+    /// the errors every headless run reports (`docs/cli/headless.md` *Output*).
     headless_verbose: bool,
     /// A headless run's reply budget (`--max-turns`), shared with every
     /// backend build — what the run reports as its `num_turns`. `None` in
@@ -220,20 +220,20 @@ pub(crate) struct Session<'t> {
     draw_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
     /// The reply channel a turn streams on. Both ends are swapped wholesale by
     /// [`Session::abandon_inflight`] so a detached backend can't reach the next
-    /// turn (`docs/interrupt.md`).
+    /// turn (`docs/input/interrupt.md`).
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     reply_rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
     /// Queries for the `@` file-search worker and its ranked matches, plus the
     /// last query sent — the dedupe that keeps an unchanged token from
-    /// re-walking the tree (`docs/file-search.md`).
+    /// re-walking the tree (`docs/input/file-search.md`).
     file_req_tx: std::sync::mpsc::Sender<String>,
     file_rx: tokio::sync::mpsc::UnboundedReceiver<FileSearchResult>,
     last_file_query: Option<String>,
     /// Where this session's pasted images are saved —
     /// `{config_home}/image-cache/{session}`, numbered in paste order
-    /// (`docs/image-paste.md`). Handed to each paste worker, which creates it.
+    /// (`docs/input/image-paste.md`). Handed to each paste worker, which creates it.
     paste_dir: PathBuf,
-    /// A Ctrl+V clipboard read's result channel (`docs/image-paste.md`).
+    /// A Ctrl+V clipboard read's result channel (`docs/input/image-paste.md`).
     img_tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
     img_rx: tokio::sync::mpsc::UnboundedReceiver<Result<PathBuf, String>>,
     /// Git review workers report by generation so closed reviews cannot reopen.
@@ -241,20 +241,20 @@ pub(crate) struct Session<'t> {
     diff_rx: tokio::sync::mpsc::UnboundedReceiver<diff::DiffResult>,
     diff_generation: u64,
     /// The `/login` workers' channel — a sign-in's device flow
-    /// (`docs/copilot.md`) or a local server's connection test
-    /// (`docs/local-models.md`), one at a time — the `CancelToken` Esc reaps
+    /// (`docs/providers/copilot.md`) or a local server's connection test
+    /// (`docs/providers/local-models.md`), one at a time — the `CancelToken` Esc reaps
     /// either with, and when the shown code expires — the countdown the page
     /// ticks, injected per draw like every other clock.
     device_tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
     device_rx: tokio::sync::mpsc::UnboundedReceiver<DeviceEvent>,
     device_cancel: Option<CancelToken>,
     device_expires: Option<Instant>,
-    /// The `/model` picker's fetch results (`docs/llm.md`), and the startup
+    /// The `/model` picker's fetch results (`docs/providers/llm.md`), and the startup
     /// capability probe's own channel — separate so a concurrently-open picker
-    /// can't confuse the results (`docs/reasoning.md`).
+    /// can't confuse the results (`docs/providers/reasoning.md`).
     model_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     model_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
-    /// The `/usage` page's reads (`docs/usage.md`): one worker per signed-in
+    /// The `/usage` page's reads (`docs/providers/usage.md`): one worker per signed-in
     /// subscription reports here, and the token a closed page or a newer
     /// round cancels them with.
     usage_tx: tokio::sync::mpsc::UnboundedSender<usage::UsageResult>,
@@ -262,30 +262,30 @@ pub(crate) struct Session<'t> {
     usage_cancel: Option<CancelToken>,
     /// The probe's sender is kept because a probe is spawned more than
     /// once: at bootstrap, and by a resume whose recorded model has facts
-    /// this session never learned (`docs/session-model.md`).
+    /// this session never learned (`docs/state/session-model.md`).
     probe_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
     probe_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
-    /// Background shells (`docs/background.md`) and subagents
-    /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
+    /// Background shells (`docs/tools/background.md`) and subagents
+    /// (`docs/agents/agent-tool.md`) — never swapped, because both outlive turns.
     bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
     agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    /// MCP server state changes (`docs/mcp.md`) — never swapped either;
+    /// MCP server state changes (`docs/tools/mcp.md`) — never swapped either;
     /// connections outlive turns like background shells.
     mcp_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::llm::mcp::McpEvent>,
-    /// The telemetry ping worker's report (`docs/telemetry.md`): the UTC day
+    /// The telemetry ping worker's report (`docs/ops/telemetry.md`): the UTC day
     /// it delivered and the version the ping carried, which the **loop**
     /// then records in `telemetry.json` — the worker never writes the file,
     /// so it can't race the `/settings` toggle's write. Silent on failure.
     telemetry_tx: tokio::sync::mpsc::UnboundedSender<alter_zero::telemetry::Delivery>,
     telemetry_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::telemetry::Delivery>,
     /// The UTC day this **session** last spawned a ping for, successful or
-    /// not (`docs/telemetry.md`). Two jobs: the turn-start rollover check
+    /// not (`docs/ops/telemetry.md`). Two jobs: the turn-start rollover check
     /// compares against it and returns without touching the file on the
     /// common path, and it bounds a failing collector to one attempt per day
     /// per session rather than one per turn — the file's `last_ping_day`,
     /// written only on a `2xx`, is still what retries the next launch.
     telemetry_attempted: Option<String>,
-    /// The update check worker's report (`docs/update.md`): the newest
+    /// The update check worker's report (`docs/ops/update.md`): the newest
     /// release it found, which the **loop** then records in `update.json`
     /// and announces — the telemetry channel's twin.
     update_tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -297,7 +297,7 @@ pub(crate) struct Session<'t> {
     /// not land in the middle of a reply, so it waits here for the loop
     /// bottom to find the session idle (`Session::flush_pending_update_notice`).
     update_notice_pending: Option<String>,
-    /// The line to the herdr pane this session runs in (`docs/herdr.md`):
+    /// The line to the herdr pane this session runs in (`docs/architecture/herdr.md`):
     /// what it is telling herdr and the worker that writes to herdr's
     /// socket. `None` outside herdr — and until bootstrap starts it after
     /// the first frame, so a slow socket can never delay that frame.
@@ -308,12 +308,12 @@ pub(crate) struct Session<'t> {
 
     // ----- registries, the gate, the stores -----
     /// Background shells: the `run_in_background` launches, Ctrl+B hand-offs,
-    /// and the shared notice board (`docs/background.md`).
+    /// and the shared notice board (`docs/tools/background.md`).
     registry: BackgroundRegistry,
     /// Subagents: the `agent` tool's roster and its threads
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     agent_registry: AgentRegistry,
-    /// The **mid-turn message queue** (`docs/queue.md`): what the user
+    /// The **mid-turn message queue** (`docs/input/queue.md`): what the user
     /// submitted while a turn was already running, waiting for that turn's
     /// next round boundary. This side pushes; the backend thread drains.
     /// `App::steered` is the mirror the strip renders — and the one that
@@ -321,42 +321,42 @@ pub(crate) struct Session<'t> {
     /// reclaim at every turn end goes through both.
     steer: alter_zero::steer::SteerQueue,
     /// The tool-permission gate and this project's saved rules
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     permissions: PermissionStore,
     /// The `AskUserQuestion` gate the modal's answers post on
-    /// (`docs/ask.md`) — always present (asking is not a permission), shared
+    /// (`docs/tools/ask.md`) — always present (asking is not a permission), shared
     /// by every backend build.
     ask: alter_zero::ask::AskGate,
     /// The shared task list the task tools operate on
-    /// (`docs/task-tools.md`) — the loop syncs it to `App::tasks` after every
+    /// (`docs/tools/task-tools.md`) — the loop syncs it to `App::tasks` after every
     /// history rewind so the model's next `tasklist` agrees with the strip.
     task_registry: alter_zero::tasks::TaskRegistry,
-    /// The skills on disk (`docs/skills.md`) — the set every backend build
+    /// The skills on disk (`docs/tools/skills.md`) — the set every backend build
     /// offers the `skill` tool over, and the source of the
     /// `<system-reminder>` listing the derived context leads with. Re-walked
     /// at every turn start ([`Session::rescan_skills`]), so a skill added
     /// mid-session — or written by the agent itself — is live on the next
     /// turn instead of waiting for a restart.
     skill_registry: alter_zero::skills::SkillRegistry,
-    /// The subagent definitions on disk (`docs/subagents.md`) — the
+    /// The subagent definitions on disk (`docs/agents/subagents.md`) — the
     /// `agents/*.md` types a launch resolves `subagent_type` against, and the
     /// source of the agent half of the `<system-reminder>`. Re-walked at
     /// every turn start ([`Session::rescan_agents`]) beside the skills, so a
     /// type added mid-session — or written by the agent itself — is
     /// launchable on the next turn.
     subagents: alter_zero::subagents::SubagentRegistry,
-    /// The user's secrets (`docs/secrets.md`) — the one store the `/secrets`
+    /// The user's secrets (`docs/state/secrets.md`) — the one store the `/secrets`
     /// page edits, the reminder lists and every tool call expands and
     /// redacts with. The same handle the shell registry carries to the
     /// executor, the `!` runner and every backend build.
     secrets: alter_zero::secrets::SecretRegistry,
-    /// The MCP servers (`docs/mcp.md`): every declared server's live
+    /// The MCP servers (`docs/tools/mcp.md`): every declared server's live
     /// connection state, the tool specs the backend folds in, and the OAuth
     /// flows. Built at every bootstrap, whatever the `/settings` **MCP** row
     /// (seeded by `ALTER_ZERO_MCP`) says — it switches the manager on and off
     /// for the session, so there is always one to switch.
     mcp: alter_zero::llm::mcp::McpManager,
-    /// What the startup review decides over (`docs/config-review.md`):
+    /// What the startup review decides over (`docs/state/config-review.md`):
     /// `trust.json`, the user's hooks file and the project's `.alter-zero`
     /// layer, read once at bootstrap — every review answer and `/hooks` or
     /// `/mcp` toggle records through it, and the hooks the session runs are
@@ -364,7 +364,7 @@ pub(crate) struct Session<'t> {
     trust: trust::TrustState,
     /// A `[PROMPT]` from the command line, held while the startup review
     /// asks what may run, so the first turn starts with its answers
-    /// (`docs/config-review.md`).
+    /// (`docs/state/config-review.md`).
     held_prompt: Option<String>,
     /// The `SKILL.md` files whose parse failure has already been raised as a
     /// toast, so the rescan doesn't repeat itself every turn. Re-seeded from
@@ -375,22 +375,22 @@ pub(crate) struct Session<'t> {
     /// as a toast — [`reported_skill_errors`](Self::reported_skill_errors)'s
     /// twin, one feature over (`alter_zero::subagents::unreported_errors`).
     reported_agent_errors: std::collections::BTreeSet<std::path::PathBuf>,
-    /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
+    /// Mirrors history to the `/resume` rollout file (`docs/state/resume.md`).
     recorder: SessionRecorder,
-    /// The cross-session input history (`docs/history-persistence.md`).
+    /// The cross-session input history (`docs/input/history-persistence.md`).
     hist_store: InputHistoryStore,
-    /// Per-turn working-directory snapshots (`docs/checkpoint.md`).
+    /// Per-turn working-directory snapshots (`docs/state/checkpoint.md`).
     checkpoints: CheckpointStore,
     /// Where the `/settings` knobs persist (`settings.json`, this directory's
-    /// entry — `docs/per-directory-state.md`); `None` disables persistence,
-    /// like `config.json`'s path (`docs/settings.md`). The live values
+    /// entry — `docs/state/per-directory-state.md`); `None` disables persistence,
+    /// like `config.json`'s path (`docs/state/settings.md`). The live values
     /// themselves live on `App` — one copy, read where they are used; a save
     /// is a read-modify-write over the file itself, moving across only the
     /// key the user cycled, so an `ALTER_ZERO_*` override merged in at startup
     /// never becomes the saved default.
     settings_path: Option<PathBuf>,
     /// The spinner tip walk's position as `tips.json` last recorded it
-    /// (`docs/tips.md`): the loop bottom writes the file back only when
+    /// (`docs/ui/tips.md`): the loop bottom writes the file back only when
     /// `App::tip_cursor` has moved off it, so an ordinary iteration costs an
     /// integer compare and no I/O.
     tips_saved: Option<usize>,
@@ -400,13 +400,13 @@ pub(crate) struct Session<'t> {
     inflight: Option<(CancelToken, JoinHandle<()>)>,
     /// Backend threads whose turn was interrupted or `/clear`ed: cancelled and
     /// **detached**, swept here when finished. Never joined on the loop — that
-    /// was the interrupt-lag freeze (`docs/interrupt.md`).
+    /// was the interrupt-lag freeze (`docs/input/interrupt.md`).
     reaping: Vec<JoinHandle<()>>,
 
     // ----- odds and ends the boundary has to remember -----
     /// Keeps the last `/copy`'s native clipboard selection alive (Linux/arboard
     /// serves it from a thread tied to the `Clipboard`'s lifetime). Held only
-    /// for its `Drop` — never read (`docs/copy.md`).
+    /// for its `Drop` — never read (`docs/ui/copy.md`).
     clipboard_lease: Option<ClipboardLease>,
     /// Whether the terminal was resized while an overlay covered the inline
     /// view, which upgrades that return's repaint to a purge rebuild
@@ -415,7 +415,7 @@ pub(crate) struct Session<'t> {
     /// The signature of the framed-view rows currently **flowed** into
     /// scrollback — a screen-tall `/mcp`/`/hooks` page's top,
     /// committed above the live region so the terminal's own scrolling reads
-    /// the whole page (`ui::view_flow`, `docs/view-flow.md`). `None` when
+    /// the whole page (`ui::view_flow`, `docs/ui/view-flow.md`). `None` when
     /// nothing is flowed. The draw tick compares it against the current
     /// state's signature and answers any mismatch — a navigation, a resize,
     /// the close — with the standard purge rebuild, which re-establishes (or
@@ -431,7 +431,7 @@ pub(crate) struct Session<'t> {
 
 /// The live status indicator's clocks, bundled (the impurity kept at the
 /// boundary): the pure `App` only ever sees the *computed* durations, via
-/// `set_status_times`. See `docs/status-indicator.md`.
+/// `set_status_times`. See `docs/ui/status-indicator.md`.
 pub(crate) struct StatusClocks {
     /// When the turn was submitted — the elapsed timer and the verb's shimmer
     /// phase. `None` when no turn is in flight.
@@ -442,10 +442,10 @@ pub(crate) struct StatusClocks {
     /// `ToolStart`; or a `!` shell run, set in `Session::run_shell`) began —
     /// cleared when it resolves (`ToolEnd`/`ToolBackgrounded`) and at each turn
     /// start. Drives the delayed `(ctrl+b to run in background)` hint via
-    /// `App::set_command_elapsed` (`docs/background.md`).
+    /// `App::set_command_elapsed` (`docs/tools/background.md`).
     command_start: Option<Instant>,
     /// When the event loop started — the epoch of the **animation phase** every
-    /// blinking bullet blinks against (`App::set_pulse`, `docs/tool-pulse.md`).
+    /// blinking bullet blinks against (`App::set_pulse`, `docs/ui/tool-pulse.md`).
     /// Unlike the others this is never cleared: one monotonic clock, so a
     /// round's tool cells and its agent tree stay in step, and a background
     /// agent's live cell keeps animating between turns.

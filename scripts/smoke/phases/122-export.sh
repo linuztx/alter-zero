@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/export` page (docs/export.md). `/copy`'s sibling over the WHOLE
+# the `/export` page (docs/ui/export.md). `/copy`'s sibling over the WHOLE
 # conversation: a read-only two-row page — `❯ 1. Copy to clipboard` over
 # `2. Save to file`, the highlighted row's description under the list, a
 # key hint — that closes on the pick. Launched in a throwaway cwd so the

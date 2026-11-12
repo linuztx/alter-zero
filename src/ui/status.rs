@@ -1,7 +1,7 @@
 //! The live status line — the session's spinner, shimmering verb, token
-//! tally (`docs/spinner.md` for the styles; `gravity` is the default) — and
+//! tally (`docs/ui/spinner.md` for the styles; `gravity` is the default) — and
 //! the dim `Done for Ns` summary it commits.
-//! See `docs/status-indicator.md`.
+//! See `docs/ui/status-indicator.md`.
 
 use super::theme::*;
 use super::wrap::{blend_color, breath, clamp_spans, cols, hop, lerp_color, ping_pong};
@@ -24,8 +24,8 @@ use crate::app::Spinner;
 /// text plus `2 × `[`SHIMMER_PADDING`]). The status verb rests on the page
 /// titles' gradient instead ([`status_verb_shimmer_spans`]) — or on the
 /// warning [`status_offline_color`] while the connection is gone, *amber
-/// with a white glint* (`docs/offline.md`). The thinking stream's
-/// `Thinking…` (`docs/thinking-stream.md`) passes the near-white
+/// with a white glint* (`docs/providers/offline.md`). The thinking stream's
+/// `Thinking…` (`docs/ui/thinking-stream.md`) passes the near-white
 /// [`reasoning_shimmer_base`], so it reads as *bold white with a brighter
 /// wave* — a header, not a metric. Same motion, different floor.
 ///
@@ -39,7 +39,7 @@ pub(super) fn shimmer_spans_from(text: &str, elapsed: Duration, base: Color) -> 
 /// The status verb's shimmer: `text` resting in the page titles' dress —
 /// [`status_verb_color`], the banner gradient across the verb's own width,
 /// keyed by display column as a title's is — under the same sweep toward
-/// [`shimmer_highlight`] (`docs/status-indicator.md`).
+/// [`shimmer_highlight`] (`docs/ui/status-indicator.md`).
 fn status_verb_shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
     let total = cols(text);
     shimmer_spans_over(text, elapsed, |col| status_verb_color(col, total))
@@ -84,7 +84,7 @@ fn shimmer_spans_over(
 
 /// A style's frame table and how long each frame shows — the catalog's
 /// *look*, kept in `theme` beside every other styling decision
-/// (`docs/spinner.md`). `None` for the two **track** styles, which draw
+/// (`docs/ui/spinner.md`). `None` for the two **track** styles, which draw
 /// themselves ([`track_spans`]): their motion runs on two independent
 /// periods, so a table of their frames would run to hundreds of entries. The
 /// one-frame `pulse` never steps; it moves by colour alone ([`glyph_color`]).
@@ -108,7 +108,7 @@ fn spinner_frames(spinner: Spinner) -> Option<(&'static [&'static str], Duration
 const BRAILLE_DOTS: [[u8; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
 
 /// A braille **track**: [`SPINNER_TRACK_CELLS`] cells of 2 × 4 dots — the
-/// canvas the `gravity` ball and the `wave` draw on (`docs/spinner.md`), a
+/// canvas the `gravity` ball and the `wave` draw on (`docs/ui/spinner.md`), a
 /// port of the braille canvas in the bouncing-indicator lab this pair of
 /// styles comes from. Each cell carries one colour (a cell is one glyph):
 /// the dim [`status_detail_color`] until something coloured lands on it.
@@ -244,10 +244,10 @@ fn draw_wave(track: &mut Track, elapsed: Duration) {
 /// glyph sets, and where the theme's accent reaches the status line:
 ///
 /// - `sparkle` and `blocks` walk the banner's cyan → blue gradient
-///   (`docs/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
+///   (`docs/ui/header.md`) — the spark by its bloom level (`·` cyan, `✽` blue,
 ///   back down the fade), the block by its turn;
 /// - `pulse` breathes a raised cosine at the running tool bullet's cadence
-///   ([`breath`], `docs/spinner.md`) from [`spinner_pulse_dim`] to white;
+///   ([`breath`], `docs/ui/spinner.md`) from [`spinner_pulse_dim`] to white;
 /// - `bars` brightens with height, [`spinner_bars_low`] at `▁` to white at `█`;
 /// - everything else wears the comet head's white.
 ///
@@ -281,7 +281,7 @@ fn glyph_color(spinner: Spinner, index: usize, len: usize, elapsed: Duration) ->
 }
 
 /// The spinner opening the status line, in the session's chosen `spinner`
-/// style (`docs/spinner.md`): the style's frame for `elapsed` (one frame per
+/// style (`docs/ui/spinner.md`): the style's frame for `elapsed` (one frame per
 /// its interval, looping), as spans that end in the separator space before
 /// the verb. The comet is its own shape ([`comet_spans`], one span per cell),
 /// the two track styles draw themselves ([`track_spans`], one span per cell
@@ -346,7 +346,7 @@ pub use crate::app::{format_elapsed, format_timeout};
 /// trailing `.0` dropped — `15k`), one-decimal millions past that (`1.2M`).
 /// Real provider usage counts the whole re-sent context per round, so an
 /// agentic turn's tally runs to six digits — unreadable raw in a one-line
-/// status (`docs/prompt-caching.md`).
+/// status (`docs/providers/prompt-caching.md`).
 #[must_use]
 pub fn format_token_count(tokens: usize) -> String {
     /// One-decimal `value/scale` with a trailing `.0` dropped (`8.1`, `15`).
@@ -372,7 +372,7 @@ pub fn format_token_count(tokens: usize) -> String {
 /// flight:
 /// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} |
 /// · offline for {d}][ · Thinking for {m}] · esc to interrupt)` — the verb
-/// `Waiting for internet` while no connection can be made (`docs/offline.md`).
+/// `Waiting for internet` while no connection can be made (`docs/providers/offline.md`).
 ///
 /// It opens with the spinner (`spinner_spans`) and the verb
 /// text **shimmers** — a bright band sweeping its chars, which rest in the
@@ -391,14 +391,14 @@ pub fn format_token_count(tokens: usize) -> String {
 ///
 /// This is [`styled_status_line`] in the catalog's default style
 /// ([`Spinner::Gravity`], the ball on its braille track); the strip itself
-/// passes the session's own chosen style (`docs/spinner.md`).
+/// passes the session's own chosen style (`docs/ui/spinner.md`).
 #[must_use]
 pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
     status_line_with_verb(status, None, width)
 }
 
 /// [`status_line`] with the verb **overridden** — the task checklist's
-/// spinner rule (`docs/task-tools.md`): while some task is in progress the
+/// spinner rule (`docs/tools/task-tools.md`): while some task is in progress the
 /// line wears its `activeForm` (`Setting up project structure…`) instead of
 /// the turn's whimsical verb, Claude Code's
 /// `currentTodo.activeForm ?? randomVerb`. `None` keeps the turn's own verb;
@@ -411,7 +411,7 @@ pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>, width: u16
 }
 
 /// [`status_line_with_verb`] opening with the `spinner` **style** the session
-/// chose in `/spinner` (`docs/spinner.md`) — the one renderer behind the
+/// chose in `/spinner` (`docs/ui/spinner.md`) — the one renderer behind the
 /// strip's status row (main turn and agent session view alike, passing
 /// [`crate::app::App::spinner`]) and behind the picker's live preview, so the
 /// two can never disagree. Every style ends its spans in the separator space,
@@ -430,7 +430,7 @@ pub fn styled_status_line(
     // over the turn's own verb and over a task's activeForm alike, since
     // waiting is all the turn is doing — resting on the warning amber under
     // the same shimmer, so the state is told apart by colour as well as by
-    // word (docs/offline.md).
+    // word (docs/providers/offline.md).
     // Otherwise the verb rests in the page titles' dress — the banner
     // gradient across its own width — under the same sweep.
     spans.extend(match status.offline {
@@ -493,9 +493,9 @@ pub fn styled_status_line(
 /// The committed turn summary: dim, bullet-less `"{verb} for {elapsed}"`
 /// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
 /// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
-/// running` suffix when either applies (`docs/background.md`,
-/// `docs/prompt-caching.md`); an interrupted turn's total carries the
-/// estimate's share too, marked `≈` (`docs/interrupt.md`). Shown inline (it
+/// running` suffix when either applies (`docs/tools/background.md`,
+/// `docs/providers/prompt-caching.md`); an interrupted turn's total carries the
+/// estimate's share too, marked `≈` (`docs/input/interrupt.md`). Shown inline (it
 /// flows into scrollback) and in the transcript like any other
 /// [`HistoryItem`]. **Word-wrapped** to
 /// `width`: the full chain runs past 60 columns and the rows are permanent
@@ -512,9 +512,9 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
         // this turn *wrote* to the cache, so the turn that primed it shows
         // it did (an explicit-caching provider bills that write at a
         // premium). A zero half is omitted; absent usage (the dummy, a `!`
-        // shell) keeps the bare shape. See docs/prompt-caching.md. An
+        // shell) keeps the bare shape. See docs/providers/prompt-caching.md. An
         // interrupted turn adds the share its cut round never reported, and
-        // the mark says the total is partly a guess (docs/interrupt.md).
+        // the mark says the total is partly a guess (docs/input/interrupt.md).
         let mark = if summary.estimated > 0 {
             SUMMARY_ESTIMATE_MARK
         } else {
@@ -552,7 +552,7 @@ pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
 /// `●` bullet — green for a clean exit, red for a failure or a user stop —
 /// over the wrapped one-line headline (`Background command "{description}"
 /// completed (exit code 0)`). The output tail the notice carries is
-/// context-only and never rendered. See `docs/background.md`.
+/// context-only and never rendered. See `docs/tools/background.md`.
 #[must_use]
 pub fn background_notice_lines(
     notice: &crate::app::BackgroundNotice,

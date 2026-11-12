@@ -1,6 +1,6 @@
 //! The assistant message renderer: markdown blocks, fenced code with syntax
 //! highlighting, headings, lists, and quotes — driven line by line so it stays
-//! prefix-stable while streaming. See `docs/markdown.md`.
+//! prefix-stable while streaming. See `docs/ui/markdown.md`.
 
 use std::borrow::Cow;
 
@@ -15,7 +15,7 @@ use super::*;
 /// (see `AssistantRenderer::heading_rows`) and the whole line carries text
 /// *modifiers only*, no foreground colour, so a heading reads like codex's:
 /// h1 bold+underlined, h2 bold, h3 bold+italic, h4–h6 italic. See
-/// `docs/markdown.md`.
+/// `docs/ui/markdown.md`.
 fn heading_style(level: u8) -> Style {
     let modifier = match level {
         1 => Modifier::BOLD | Modifier::UNDERLINED,
@@ -58,7 +58,7 @@ pub(super) fn code_content_rows(
 /// The first `keep` of the rows [`code_content_rows`] breaks `segments` into
 /// at `width`, and whether the line goes on past them — the head of a long
 /// line without wrapping its tail, which is what the file peek keeps of the
-/// line it cuts at its ceiling (`docs/long-lines.md` §8). The greedy break
+/// line it cuts at its ceiling (`docs/ui/long-lines.md` §8). The greedy break
 /// only ever looks back, so the head of the whole wrap is the wrap of the
 /// head: the scan stops at the first grapheme that would open a row past
 /// `keep`, and a 1 MB line costs what its first rows cost.
@@ -122,7 +122,7 @@ fn code_rows_up_to(
 /// The last `keep` of the rows [`code_content_rows`] breaks `segments` into
 /// at `width`, and how many rows come before them — the tail of a long line
 /// without wrapping its head, which is what a streaming file's window shows
-/// several times a frame (`docs/long-lines.md` §7).
+/// several times a frame (`docs/ui/long-lines.md` §7).
 ///
 /// When every byte is printable ASCII each character is one grapheme one
 /// column wide, so row `k` starts at byte `k * width` and the rows before the
@@ -167,7 +167,7 @@ pub(super) fn code_content_tail_rows(
     (code_content_rows(&tail, width), dropped)
 }
 
-/// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`), by
+/// Build an assistant reply's lines, markdown-aware (`docs/ui/markdown.md`), by
 /// driving one [`AssistantRenderer`] over its source lines: prose word-wraps
 /// with its inline markdown styled, lists and quotes render codex's way, blocks
 /// sit one blank row apart, and **code blocks render verbatim** — each source
@@ -238,7 +238,7 @@ pub(super) fn row_is_blank(line: &Line<'_>) -> bool {
 }
 
 /// What a scope's last block was — the fact codex's spacing reads
-/// (`docs/markdown.md` *Block layout*): a paragraph an unbroken next text line
+/// (`docs/ui/markdown.md` *Block layout*): a paragraph an unbroken next text line
 /// continues, a list a matching item joins, or any other block the next one
 /// is set apart from by one blank row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -320,7 +320,7 @@ struct Item {
 /// the calls, so a completed line's rows never change: every row depends only
 /// on the lines before it and the line itself. That is what lets scrollback
 /// commits and the strip preview cost O(new line) instead of O(whole reply).
-/// See `docs/markdown.md`.
+/// See `docs/ui/markdown.md`.
 ///
 /// The very first row emitted across the whole message carries the coloured
 /// role bullet; every later row is indented under it. `Clone` lets [`StreamRender`]
@@ -364,14 +364,14 @@ pub(super) struct AssistantRenderer {
     /// lines lose that many for the item instead of the item's whole indent,
     /// so the code keeps the indentation it was written with.
     fence_lenient: Vec<(usize, usize)>,
-    /// In-progress GFM table accumulation (`docs/markdown.md`). A table is not
+    /// In-progress GFM table accumulation (`docs/ui/markdown.md`). A table is not
     /// prefix-stable — a later row can widen a column — so its source lines are
     /// buffered here and rendered **whole** only when the block closes (a line
     /// that does not continue it, or end-of-message via [`Self::flush`]).
     pub(super) table: TableState,
 }
 
-/// The [`AssistantRenderer`]'s GFM-table state machine (docs/table-streaming.md).
+/// The [`AssistantRenderer`]'s GFM-table state machine (docs/ui/table-streaming.md).
 /// A candidate header is held in `PendingHeader` until the next line confirms it
 /// (a matching [`markdown::table_delimiter`]) — the one-line lookahead a pipe
 /// table needs — then `Buffering` accumulates the data rows, emitting **nothing**,
@@ -398,7 +398,7 @@ pub(super) enum TableState {
     },
 }
 
-/// A list item's rendered marker (`docs/markdown.md`), codex's geometry:
+/// A list item's rendered marker (`docs/ui/markdown.md`), codex's geometry:
 /// `depth` levels deep it sits [`LIST_NEST_WIDTH`] columns per level in; a
 /// bullet is [`LIST_BULLET`] (or a task's box), an ordered item its number
 /// right-aligned in the level's padding and dressed in [`list_marker_color`]
@@ -1255,7 +1255,7 @@ impl AssistantRenderer {
     /// phase that emits **no rows**: the block renders whole only when it
     /// closes, so [`StreamRender::commit`] withholds the trailing line while
     /// this holds (like [`Self::in_code`]) and [`StreamRender::preview`] shows
-    /// the forming block instead (docs/table-streaming.md). It also gates
+    /// the forming block instead (docs/ui/table-streaming.md). It also gates
     /// feeding an *empty* trailing line into a clone — that would close the
     /// block early on a chunk boundary that landed right after a newline.
     pub(super) fn in_table(&self) -> bool {

@@ -1,4 +1,4 @@
-//! The inline `/skills` menu's state and key map (`docs/skills.md`).
+//! The inline `/skills` menu's state and key map (`docs/tools/skills.md`).
 
 use super::*;
 

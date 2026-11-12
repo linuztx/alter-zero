@@ -1,5 +1,5 @@
 //! Cross-session input-history file — the pure core (see
-//! `docs/history-persistence.md`).
+//! `docs/input/history-persistence.md`).
 //!
 //! The composer's ↑/↓ recall and Ctrl+R reverse search read
 //! [`InputHistory::entries`]; to make them span sessions we persist every

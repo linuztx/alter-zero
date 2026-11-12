@@ -14,7 +14,7 @@ smoke_begin
 # `x to clear`; the second `x` is what takes it off. Then the selection's
 # **memory**: Esc + ↓ comes back to the row the user last picked instead of
 # restarting on `● main`, and Enter into an agent's session view is a pick too
-# — the ↓ after it lands on that agent (`docs/agent-tool.md`).
+# — the ↓ after it lands on that agent (`docs/agents/agent-tool.md`).
 S54="${S}_bgagents"
 launch "$S54" 100 44
 submit "$S54" "call background agents for the weather"

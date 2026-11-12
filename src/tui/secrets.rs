@@ -1,4 +1,4 @@
-//! The `/secrets` page at the boundary (`docs/secrets.md`): the file under a
+//! The `/secrets` page at the boundary (`docs/state/secrets.md`): the file under a
 //! save or a delete, the reload when the page opens, the clipboard copy of a
 //! placeholder, and the sync that keeps the page, the `<system-reminder>`
 //! and the shared store agreeing.
@@ -37,7 +37,7 @@ impl Session<'_> {
     /// (`App::take_masked_secrets`): the bubble no longer shows what was
     /// typed, and this says why. Raised before the send's own action runs,
     /// so a refusal that action answers with (a subagent declining a chat)
-    /// is the toast left showing (docs/secrets.md *What the user types*).
+    /// is the toast left showing (docs/state/secrets.md *What the user types*).
     pub(crate) fn toast_masked_secrets(&mut self) {
         if let Some(notice) = masked_notice(&self.app.take_masked_secrets()) {
             self.toast(notice, ToastKind::Info);
@@ -91,7 +91,7 @@ impl Session<'_> {
     }
 
     /// `c` on the list: the placeholder — never the value — to the
-    /// clipboard, through `/copy`'s path (`docs/copy.md`), for pasting into
+    /// clipboard, through `/copy`'s path (`docs/ui/copy.md`), for pasting into
     /// a message. The page stays open.
     pub(crate) fn copy_secret_placeholder(&mut self, name: &str) {
         let text = placeholder(name);

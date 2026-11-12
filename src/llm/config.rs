@@ -1,12 +1,12 @@
 //! Provider configuration — the pure parse of `providers.toml`, the user's own
 //! file laid over the shipped one ([`ProvidersFile::with_user_layer`],
-//! `docs/user-providers.md`), and the resolution of a chosen
+//! `docs/providers/user-providers.md`), and the resolution of a chosen
 //! provider/model/key into a [`ModelConfig`] the
 //! [`super::openai::OpenAiClient`] consumes.
 //!
 //! Pure and unit-tested: env reads and the file read happen at the boundary
 //! (`tui::config`), which hands the file's text and the resolved
-//! [`Selection`] in. See `docs/llm.md`.
+//! [`Selection`] in. See `docs/providers/llm.md`.
 
 use std::collections::BTreeMap;
 
@@ -25,11 +25,11 @@ const DEFAULT_PROVIDERS_TOML: &str = include_str!("../../providers.toml");
 pub enum AuthScheme {
     /// GitHub Copilot: `/login` runs GitHub's device flow and stores the
     /// resulting OAuth token, which each request exchanges for a short-lived
-    /// Copilot bearer. See `docs/copilot.md`.
+    /// Copilot bearer. See `docs/providers/copilot.md`.
     GithubCopilot,
     /// OpenAI's ChatGPT seat: `/login` runs OpenAI's PKCE loopback flow and
     /// stores the resulting **refresh** token, which each request mints a
-    /// short-lived access token from. See `docs/chatgpt.md`.
+    /// short-lived access token from. See `docs/providers/chatgpt.md`.
     ///
     /// Renamed explicitly: `rename_all = "snake_case"` spells this variant
     /// `chat_gpt_codex`, and an `auth` value that doesn't match falls
@@ -45,7 +45,7 @@ pub enum AuthScheme {
     /// API organisation, exactly as a pasted key does.
     ///
     /// Deliberately *not* the Claude Pro/Max subscription sign-in — see
-    /// `docs/claude.md` for the policy that rules that one out.
+    /// `docs/providers/claude.md` for the policy that rules that one out.
     ///
     /// `rename_all = "snake_case"` already spells this `anthropic_console`,
     /// which is the value the provider file uses — unlike
@@ -57,7 +57,7 @@ pub enum AuthScheme {
     /// A **Cline account**: `/login` runs Cline's own device-code sign-in
     /// (WorkOS, the flow its extension and CLI use) and stores the resulting
     /// refresh token, which each request mints a short-lived access token
-    /// from — sent as `Bearer workos:<jwt>`. See `docs/cline.md`.
+    /// from — sent as `Bearer workos:<jwt>`. See `docs/providers/cline.md`.
     ///
     /// A separate provider from the pasted-key `cline` next door
     /// (providers.toml), exactly as `anthropic_console` is separate from
@@ -73,7 +73,7 @@ pub enum AuthScheme {
     /// resulting **refresh** token, which each request mints a short-lived
     /// access token from — and the account's Cloud Code project is looked up
     /// once beside it, since every request names one. See
-    /// `docs/antigravity.md`.
+    /// `docs/providers/antigravity.md`.
     ///
     /// `rename_all = "snake_case"` spells this `google_antigravity`, which is
     /// the value the provider file uses. A test pins it for the same silent
@@ -87,7 +87,7 @@ pub enum AuthScheme {
     /// fall back to the dummy. Such a provider is `/login`'s **Use a local
     /// model** list, its requests carry no cache breakpoints, and a refusal
     /// from this machine is advice rather than the offline wait. See
-    /// `docs/ollama.md` and `docs/local-models.md`.
+    /// `docs/providers/ollama.md` and `docs/providers/local-models.md`.
     OptionalKey,
     /// `Authorization: Bearer {api_key}` — a key the user pastes, and the
     /// scheme every OpenAI-compatible provider uses. The **fallback** for an
@@ -119,32 +119,32 @@ impl AuthScheme {
 /// Which request/response wire format a provider speaks. Kept apart from
 /// [`AuthScheme`] on purpose: how you *authenticate* and what shape the
 /// request takes are two questions, and an OpenAI API key can reach the
-/// Responses API just as a ChatGPT sign-in can. See `docs/chatgpt.md`.
+/// Responses API just as a ChatGPT sign-in can. See `docs/providers/chatgpt.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WireApi {
     /// OpenAI's **Responses** API: `{api_base}/responses`, an `input` array of
     /// typed items under a top-level `instructions`, and its own SSE event
-    /// vocabulary. See `docs/chatgpt.md`.
+    /// vocabulary. See `docs/providers/chatgpt.md`.
     Responses,
     /// Anthropic's **Messages** API: `{api_base}/messages`, a top-level
     /// `system` beside a `messages` array of typed content blocks, and its own
     /// SSE event vocabulary. Reached by a pasted key *or* by a Claude
     /// subscription — which is exactly why it is a `wire_api` and not a
-    /// consequence of [`AuthScheme`]. See `docs/claude.md`.
+    /// consequence of [`AuthScheme`]. See `docs/providers/claude.md`.
     Anthropic,
     /// Ollama's **native** chat API: `{api_base}/api/chat`, an NDJSON stream
     /// rather than SSE, tool-call arguments as objects, images as bare
     /// base64, and — the reason it exists beside Ollama's own OpenAI-compatible
     /// `/v1` — an `options.num_ctx` the session sets the context window with.
-    /// See `docs/ollama.md`.
+    /// See `docs/providers/ollama.md`.
     Ollama,
     /// Google's **Cloud Code Assist** API — the backend Google Antigravity
     /// (and Gemini CLI) talk to: `{api_base}/v1internal:streamGenerateContent`,
     /// Gemini's `generateContent` request (`contents` of typed `parts`, a
     /// top-level `systemInstruction`, `functionDeclarations`) wrapped in a
     /// `{project, model, request}` envelope, and its SSE answer wrapped in a
-    /// `{response}` one. See `docs/antigravity.md`.
+    /// `{response}` one. See `docs/providers/antigravity.md`.
     CloudCode,
     /// **Chat Completions**: `{api_base}/chat/completions` with `messages`.
     /// The default, and the **fallback** for an unrecognised value
@@ -157,13 +157,13 @@ pub enum WireApi {
 }
 
 /// Which request field a chat-completions server reads the Ctrl+T thinking
-/// mode from (`docs/reasoning.md`). A server publishing a reasoning ladder is
+/// mode from (`docs/providers/reasoning.md`). A server publishing a reasoning ladder is
 /// most often OpenRouter-shaped and reads the `reasoning` object; one that
 /// reads OpenAI's own top-level `reasoning_effort` string instead — OmniRoute's
 /// route to Claude models, which ignores the object — says so in its block
-/// (`docs/user-providers.md`). Only the chat-completions wire reads it: every
+/// (`docs/providers/user-providers.md`). Only the chat-completions wire reads it: every
 /// other wire spells the mode its own API's way, and GitHub Copilot's is
-/// decided by its sign-in (`docs/copilot.md`).
+/// decided by its sign-in (`docs/providers/copilot.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningParam {
@@ -188,7 +188,7 @@ pub struct Provider {
     /// Human-readable label shown in `/login`, the picker footer and logs.
     /// Optional in a user's file: a block that names none is called by its
     /// id, so a local server can be its base and nothing else
-    /// (`docs/user-providers.md`). Every shipped block names one.
+    /// (`docs/providers/user-providers.md`). Every shipped block names one.
     #[serde(default)]
     pub name: String,
     /// How this provider authenticates — a pasted key by default.
@@ -222,7 +222,7 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     /// An environment variable whose value **replaces** [`Kwargs::api_base`]
     /// when set — Ollama's own `OLLAMA_HOST`, in Ollama's own grammar
-    /// (`docs/ollama.md`). Resolved at the boundary like the key (process
+    /// (`docs/providers/ollama.md`). Resolved at the boundary like the key (process
     /// env, then the `.env` store) and handed in as [`Selection::api_base`].
     /// `None` for a provider whose base only the file names.
     #[serde(default)]
@@ -237,7 +237,7 @@ pub struct Provider {
     #[serde(default)]
     pub kwargs: Kwargs,
     /// Top-level request fields this provider's server refuses, taken out of
-    /// every request after everything else is set (`docs/user-providers.md`).
+    /// every request after everything else is set (`docs/providers/user-providers.md`).
     /// Every request carries `stream_options` and `prompt_cache_key`, and a
     /// strict server answers a field it does not know with an error — while
     /// TOML has no null, so a kwarg can replace such a field but never remove
@@ -251,7 +251,7 @@ pub struct Provider {
     /// Every top-level key of the block this build does not read. Kept rather
     /// than dropped so a user's own file can be told about a typo — a misspelt
     /// key otherwise reads as configuration while changing nothing
-    /// (`docs/user-providers.md`). Always empty for a shipped provider, which
+    /// (`docs/providers/user-providers.md`). Always empty for a shipped provider, which
     /// a test pins.
     #[serde(flatten)]
     pub unread: BTreeMap<String, toml::Value>,
@@ -318,8 +318,8 @@ impl Provider {
     /// optional and that names no host variable has nothing left to set: the
     /// block pointing at it *is* the configuration — a local LM Studio,
     /// llama.cpp or vLLM server described in a user's own file
-    /// (`docs/user-providers.md`). Ollama names `OLLAMA_HOST`, so it is
-    /// configured by being pointed at instead (`docs/ollama.md`), and no
+    /// (`docs/providers/user-providers.md`). Ollama names `OLLAMA_HOST`, so it is
+    /// configured by being pointed at instead (`docs/providers/ollama.md`), and no
     /// shipped provider qualifies — otherwise every `/model` open would fetch
     /// from a server the user never asked for.
     #[must_use]
@@ -368,7 +368,7 @@ impl ProvidersFile {
     }
 
     /// The built-in providers with a user's own `providers.toml` laid over
-    /// them (`docs/user-providers.md`), and what was wrong with it — one row
+    /// them (`docs/providers/user-providers.md`), and what was wrong with it — one row
     /// per problem, worded for the toast that reports it.
     ///
     /// The file **adds**: a block whose id is new is a new provider, beside
@@ -522,7 +522,7 @@ impl ProvidersFile {
             }
             // Any other wire: a bare host is a server, completed from the
             // file's own base — `localhost:1234` is LM Studio's `/v1` there —
-            // and a URL with a path is the base itself (docs/local-models.md).
+            // and a URL with a path is the base itself (docs/providers/local-models.md).
             (_, Some(base)) => super::local::base_from_host(base, &provider.kwargs.api_base),
             (_, None) => provider.kwargs.api_base.clone(),
         };
@@ -666,7 +666,7 @@ fn layer_block(
         return None;
     }
     // Ollama's bases are hosts in its own grammar (`gpu-box:11434`,
-    // `docs/ollama.md`); every other wire needs the URL itself — or, for the
+    // `docs/providers/ollama.md`); every other wire needs the URL itself — or, for the
     // listing, a path relative to the chat base (`../api/v1`).
     if provider.wire_api != WireApi::Ollama {
         let listing = provider
@@ -798,18 +798,18 @@ pub struct Selection {
     pub temperature: Option<f32>,
     /// The model's active thinking mode, when it supports reasoning — rides
     /// into the request payload. `None` sends no reasoning parameter at all.
-    /// See `docs/reasoning.md`.
+    /// See `docs/providers/reasoning.md`.
     pub thinking: Option<ThinkingMode>,
     /// Whether the model accepts image input, when known (from the same
     /// `/v1/models` records the picker lists — `ModelEntry::vision`).
     /// `Some(false)` makes the backend degrade attachments gracefully instead
     /// of letting the provider fail the turn; `None` attaches optimistically.
-    /// See `docs/tools.md`.
+    /// See `docs/tools/tools.md`.
     pub vision: Option<bool>,
     /// The context window the session gauges against, when known — the
     /// same number the footer's `{used}/{window}` reads. It rides the config
     /// because the Ollama wire **sends** it (`options.num_ctx`): the window
-    /// the server holds must be the one the gauge claims (`docs/ollama.md`).
+    /// the server holds must be the one the gauge claims (`docs/providers/ollama.md`).
     /// Every other wire ignores it. `None` = unknown.
     pub context: Option<u64>,
     /// The boundary's resolved [`Provider::api_base_env`] value, replacing the
@@ -819,12 +819,12 @@ pub struct Selection {
     /// A stable per-session cache-affinity key, sent as the request's
     /// `prompt_cache_key` (and, for OpenRouter, `session_id`) so repeated
     /// requests land on the same provider/server and hit its warm prompt
-    /// cache. The boundary mints one per process. See `docs/prompt-caching.md`.
+    /// cache. The boundary mints one per process. See `docs/providers/prompt-caching.md`.
     pub cache_key: Option<String>,
     /// The selected **speed tier**'s wire id (`priority` for codex's fast
     /// mode) — the `/fast` choice, riding the request as `service_tier`.
     /// `None` is standard: no field at all. Only ever set to a tier the
-    /// model's own record listed (`docs/fast-mode.md`).
+    /// model's own record listed (`docs/providers/fast-mode.md`).
     pub service_tier: Option<String>,
 }
 
@@ -875,7 +875,7 @@ impl ModelConfig {
     /// Take the fields the provider's server refuses out of a request body —
     /// the last step of every wire's request, after the kwargs and the
     /// thinking mode have been merged in, so whatever put a field there it
-    /// does not leave (`docs/user-providers.md`). The model and the stream
+    /// does not leave (`docs/providers/user-providers.md`). The model and the stream
     /// flag are never taken out.
     pub fn drop_refused(&self, fields: &mut serde_json::Map<String, serde_json::Value>) {
         for field in &self.drop_params {
@@ -973,7 +973,7 @@ mod tests {
         // the picker lists the catalog Cline's clients read instead —
         // `{base}/models` is `/api/v1/ai/cline/models`, whose OpenRouter-shaped
         // records carry each model's window, image input and reasoning
-        // (docs/cline.md).
+        // (docs/providers/cline.md).
         assert_eq!(cline.models_base(), "https://api.cline.bot/api/v1/ai/cline");
         assert_eq!(cline.key_env("cline"), "CLINE_API_KEY");
         assert_eq!(cline.auth, AuthScheme::ApiKey);
@@ -1054,7 +1054,7 @@ api_base = "https://one.example/v1/"
         let body = venice.extra_body();
         // The nested venice_parameters table forwards verbatim. Its presence
         // is also the Venice-family marker the payload builder keys the
-        // per-mode `disable_thinking` toggle on (docs/reasoning.md) — so the
+        // per-mode `disable_thinking` toggle on (docs/providers/reasoning.md) — so the
         // file must keep the table, but no longer pin `disable_thinking`
         // statically (the Ctrl+T mode owns it now).
         let params = body
@@ -1074,12 +1074,12 @@ api_base = "https://one.example/v1/"
 
     #[test]
     fn the_builtin_file_ships_venice_direct_beside_the_agent_zero_proxy() {
-        // Venice.ai reached two ways over one wire (`docs/venice.md`): through
+        // Venice.ai reached two ways over one wire (`docs/providers/venice.md`): through
         // the Agent Zero proxy (`a0_venice`) and directly (`venice`), with a
         // key from the user's own Venice account. Everything the request
         // builder keys on is shared — the chat-completions wire, the
         // pasted-key scheme, and the `venice_parameters` table whose presence
-        // is the Venice-family marker (`docs/reasoning.md`) — so the two must
+        // is the Venice-family marker (`docs/providers/reasoning.md`) — so the two must
         // agree on all of it; only where the request goes and what unlocks
         // it differ.
         let file = ProvidersFile::builtin();
@@ -1141,7 +1141,7 @@ api_base = "https://one.example/v1/"
         assert!(!keyless.is_usable(), "a Venice key is required");
     }
 
-    // --- auth schemes: a pasted key vs a subscription sign-in (docs/copilot.md) ---
+    // --- auth schemes: a pasted key vs a subscription sign-in (docs/providers/copilot.md) ---
 
     #[test]
     fn a_provider_authenticates_with_a_pasted_key_by_default() {
@@ -1176,7 +1176,7 @@ api_base = "https://api.githubcopilot.com"
     fn a_provider_can_declare_the_chatgpt_subscription_sign_in() {
         // The OpenAI ChatGPT seat is a sign-in like Copilot's, not a key: the
         // stored secret is a refresh token, and every request mints the
-        // short-lived access token from it (`docs/chatgpt.md`).
+        // short-lived access token from it (`docs/providers/chatgpt.md`).
         let text = r#"
 [providers.chatgpt_codex]
 name = "ChatGPT Codex"
@@ -1191,7 +1191,7 @@ api_base = "https://chatgpt.com/backend-api/codex"
         assert!(chatgpt.auth.is_subscription());
         // A provider file written against the old build still spells the
         // scheme `openai_chatgpt`: the alias keeps it a sign-in rather than
-        // letting it fall through to a pasted key (docs/chatgpt.md).
+        // letting it fall through to a pasted key (docs/providers/chatgpt.md).
         let legacy =
             ProvidersFile::parse(&text.replace("chatgpt_codex", "openai_chatgpt")).unwrap();
         assert_eq!(
@@ -1200,7 +1200,7 @@ api_base = "https://chatgpt.com/backend-api/codex"
         );
     }
 
-    // --- the wire format a provider speaks (docs/chatgpt.md) ---
+    // --- the wire format a provider speaks (docs/providers/chatgpt.md) ---
 
     #[test]
     fn a_provider_speaks_chat_completions_by_default() {
@@ -1254,7 +1254,7 @@ api_base = "https://x/v1"
     fn a_provider_can_declare_the_anthropic_console_sign_in() {
         // The third sign-in: the stored secret is an OAuth refresh token, and
         // every request mints the short-lived access token from it
-        // (`docs/claude.md`).
+        // (`docs/providers/claude.md`).
         let text = r#"
 [providers.anthropic_console]
 name = "Anthropic Console"
@@ -1273,7 +1273,7 @@ api_base = "https://api.anthropic.com/v1"
     fn a_provider_can_declare_the_cline_account_sign_in() {
         // The fourth sign-in: the stored secret is a Cline refresh token, and
         // every request mints the short-lived access token from it — spelled
-        // `workos:` when it leaves (`docs/cline.md`). The spelling is pinned
+        // `workos:` when it leaves (`docs/providers/cline.md`). The spelling is pinned
         // because a mismatch degrades *silently* into a pasted-key row.
         let text = r#"
 [providers.cline_account]
@@ -1293,7 +1293,7 @@ api_base = "https://api.cline.bot/api/v1"
     fn a_provider_can_declare_the_google_antigravity_sign_in() {
         // The fifth sign-in: the stored secret is a Google refresh token, and
         // every request mints a short-lived access token from it and names
-        // the account's Cloud Code project (`docs/antigravity.md`). The
+        // the account's Cloud Code project (`docs/providers/antigravity.md`). The
         // spelling is pinned because a mismatch degrades *silently* into a
         // pasted-key row.
         let text = r#"
@@ -1361,7 +1361,7 @@ api_base = "https://cloudcode-pa.googleapis.com"
         // ClinePass is the Cline account sign-in: a subscription, whose
         // scheme is also what lists the plan's `cline-pass/…` models from
         // the list Cline publishes, since the public `/models` does not
-        // carry them (`docs/cline.md`).
+        // carry them (`docs/providers/cline.md`).
         let file = ProvidersFile::builtin();
         let pass = file.get("cline_pass").expect("shipped");
         assert_eq!(pass.name, "ClinePass");
@@ -1491,7 +1491,7 @@ api_base = "https://x/v1"
         assert_eq!(antigravity.wire_api, WireApi::CloudCode);
         assert_eq!(antigravity.name, "Google Antigravity");
         // The daily host: every Antigravity call goes there, and hosts are
-        // never mixed (`docs/antigravity.md`).
+        // never mixed (`docs/providers/antigravity.md`).
         assert_eq!(
             antigravity.kwargs.api_base,
             "https://daily-cloudcode-pa.googleapis.com"
@@ -1576,7 +1576,7 @@ api_base = "https://a/v1"
     #[test]
     fn model_config_carries_the_selections_vision() {
         // The picked model's detected image-input support rides the resolved
-        // config so the backend can gate attachments (docs/tools.md).
+        // config so the backend can gate attachments (docs/tools/tools.md).
         let file = ProvidersFile::builtin();
         let sel = Selection {
             provider_id: "openrouter".to_string(),
@@ -1598,7 +1598,7 @@ api_base = "https://a/v1"
     fn model_config_carries_the_selections_cache_key() {
         // The boundary's per-session affinity key rides the resolved config so
         // the payload builder can pin requests to a warm cache
-        // (docs/prompt-caching.md).
+        // (docs/providers/prompt-caching.md).
         let file = ProvidersFile::builtin();
         let sel = Selection {
             provider_id: "openrouter".to_string(),
@@ -1638,7 +1638,7 @@ api_base = "https://a/v1"
         assert!(ProvidersFile::parse("this is not = = toml").is_err());
     }
 
-    // --- Ollama: the fourth wire format, and a key that is optional (docs/ollama.md) ---
+    // --- Ollama: the fourth wire format, and a key that is optional (docs/providers/ollama.md) ---
 
     #[test]
     fn a_provider_can_declare_the_ollama_wire_format() {
@@ -1730,7 +1730,7 @@ api_base = "http://127.0.0.1:11434"
     fn the_builtin_file_ships_lm_studio_as_a_local_server() {
         // LM Studio's server, reached the way Ollama's is: no key needed, its
         // address in a variable of its own — `/login` → Sign in with a local
-        // model writes it (docs/local-models.md) — and LM Studio's own
+        // model writes it (docs/providers/local-models.md) — and LM Studio's own
         // `LM_API_TOKEN` riding as a bearer when its server is set to require
         // one.
         let file = ProvidersFile::builtin();
@@ -1878,7 +1878,7 @@ api_base = "http://127.0.0.1:11434"
     #[test]
     fn model_config_carries_the_selections_context_window() {
         // The window the session gauges against rides the config, because the
-        // Ollama wire sends it as `options.num_ctx` (docs/ollama.md).
+        // Ollama wire sends it as `options.num_ctx` (docs/providers/ollama.md).
         let file = ProvidersFile::builtin();
         let sel = Selection {
             provider_id: "ollama".to_string(),
@@ -1894,7 +1894,7 @@ api_base = "http://127.0.0.1:11434"
     #[test]
     fn the_selection_carries_its_speed_tier_into_the_config() {
         // The `/fast` choice rides the request the way the thinking mode
-        // does (docs/fast-mode.md): `None` is standard — no field at all.
+        // does (docs/providers/fast-mode.md): `None` is standard — no field at all.
         let file = ProvidersFile::builtin();
         let sel = Selection {
             provider_id: "chatgpt_codex".to_string(),
@@ -1914,7 +1914,7 @@ api_base = "http://127.0.0.1:11434"
         assert_eq!(standard.service_tier, None);
     }
 
-    // --- a user's own providers.toml, laid over the built-ins (docs/user-providers.md) ---
+    // --- a user's own providers.toml, laid over the built-ins (docs/providers/user-providers.md) ---
 
     /// The smallest whole provider a user writes: a name and a chat base.
     const GROQ: &str = r#"
@@ -2242,7 +2242,7 @@ api_base = "https://broken.example/v1"
 
     #[test]
     fn an_ollama_host_needs_no_scheme() {
-        // Ollama's own grammar (`docs/ollama.md`): `gpu-box:11434` is a host.
+        // Ollama's own grammar (`docs/providers/ollama.md`): `gpu-box:11434` is a host.
         let (file, issues) = layer(
             "[providers.gpu]\nname = \"GPU box\"\nwire_api = \"ollama\"\nauth = \"optional_key\"\n[providers.gpu.kwargs]\napi_base = \"gpu-box:11434\"\n",
         );
@@ -2282,7 +2282,7 @@ api_base = "https://api.groq.com/openai/v1"
     fn a_provider_can_ask_for_the_thinking_level_as_reasoning_effort() {
         // OmniRoute's route to Claude models reads the level only from
         // OpenAI's top-level `reasoning_effort`, and ignores the `reasoning`
-        // object every provider is sent by default (docs/user-providers.md):
+        // object every provider is sent by default (docs/providers/user-providers.md):
         // the block says which one its server reads.
         let (file, issues) = layer(
             r#"
@@ -2411,7 +2411,7 @@ api_base = "http://localhost:20128/v1"
         assert!(reason.starts_with("line 1, column "), "{reason}");
     }
 
-    // --- a re-read under a running session (docs/user-providers.md) ---
+    // --- a re-read under a running session (docs/providers/user-providers.md) ---
 
     #[test]
     fn a_reread_keeps_the_provider_in_use_when_its_block_cannot_be_used() {
@@ -2539,7 +2539,7 @@ api_base = "http://localhost:8080/v1"
         assert!(file.get("llamacpp").unwrap().configured_by_definition());
         // A pasted key is still needed for a keyed provider, and the shipped
         // local servers are pointed at through their address variables
-        // (docs/local-models.md).
+        // (docs/providers/local-models.md).
         assert!(!file.get("openrouter").unwrap().configured_by_definition());
         assert!(!file.get("ollama").unwrap().configured_by_definition());
         assert!(!file.get("lmstudio").unwrap().configured_by_definition());
@@ -2558,7 +2558,7 @@ api_base = "http://localhost:8080/v1"
         }
     }
 
-    // --- request fields a strict server refuses (docs/user-providers.md) ---
+    // --- request fields a strict server refuses (docs/providers/user-providers.md) ---
 
     #[test]
     fn a_provider_can_name_the_request_fields_its_server_refuses() {

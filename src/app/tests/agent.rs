@@ -1,4 +1,4 @@
-//! The `Agent` tool's roster, groups, and notices (`docs/agent-tool.md`).
+//! The `Agent` tool's roster, groups, and notices (`docs/agents/agent-tool.md`).
 
 use super::*;
 
@@ -18,7 +18,7 @@ fn the_init_prompt_is_codexs_agents_md_generator() {
 fn set_user_instructions_stores_the_agents_md_section() {
     // The boundary injects the rendered AGENTS.md section (the
     // set_system_prompt pattern); everyone deriving context reads it and the
-    // derivation wraps it into the `<system-reminder>`. See docs/project-doc.md.
+    // derivation wraps it into the `<system-reminder>`. See docs/state/project-doc.md.
     let mut app = App::new();
     assert_eq!(app.user_instructions, None);
     let section =
@@ -33,7 +33,7 @@ fn set_user_instructions_stores_the_agents_md_section() {
 fn set_listings_stores_the_reminders_listing_sections() {
     // The skills and agent-type sections, rendered at the boundary
     // (`subagents::listing_sections`) and wrapped by the derivation behind
-    // the instructions. See docs/skills.md, docs/subagents.md.
+    // the instructions. See docs/tools/skills.md, docs/agents/subagents.md.
     let mut app = App::new();
     assert_eq!(app.listings, None);
     let sections = "The following skills are available for use with the Skill tool:\n\n- x: X";
@@ -61,7 +61,7 @@ fn a_hook_note_that_beats_its_agents_launch_waits_for_it() {
     // An agent's thread runs its SubagentStart hooks as soon as it spawns —
     // before the lead announces the launch — and the two channels race at
     // the loop, so the hooks' note can reach the roster ahead of its agent.
-    // It waits for the agent rather than being dropped (docs/hooks.md *The
+    // It waits for the agent rather than being dropped (docs/tools/hooks.md *The
     // hook-run cell*); anything else for an id the roster does not list is
     // still dropped (a chunk racing a sweep).
     let mut app = App::new();
@@ -257,7 +257,7 @@ fn enter_views_an_agent_and_the_composer_chats_with_it() {
     assert_eq!(app.agent_view.as_deref(), Some("a1"));
     // Typing + Enter chats with the viewed agent. Whether the message joins
     // its queue or starts a continuation is the registry's call, so the key
-    // arm only hands the boundary the text (docs/queue.md) — the composer is
+    // arm only hands the boundary the text (docs/input/queue.md) — the composer is
     // consumed and nothing is claimed on the transcript yet.
     app.input = TextArea::from_text("and humidity?");
     assert_eq!(
@@ -283,7 +283,7 @@ fn enter_views_an_agent_and_the_composer_chats_with_it() {
 
 #[test]
 fn an_agent_session_view_reports_the_viewed_agents_lost_connection() {
-    // Inside a session view the strip is that agent's (docs/offline.md): its
+    // Inside a session view the strip is that agent's (docs/providers/offline.md): its
     // wait shows there, and the main turn's wait does not.
     let mut app = App::new();
     app.begin_stream();
@@ -315,7 +315,7 @@ fn enter_on_main_from_an_agent_view_returns_to_the_main_session() {
     app.start_agent_group(false, &agent_specs(false));
     app.open_agent_view("a1");
     // ↓ inside the view opens the roster selection on the **viewed** agent's
-    // row (entering it was a pick — `docs/agent-tool.md`); ↑ steps up to
+    // row (entering it was a pick — `docs/agents/agent-tool.md`); ↑ steps up to
     // `● main`, whose Enter leaves the view.
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.agent_selection(), Some(1));
@@ -386,7 +386,7 @@ fn the_remembered_row_falls_back_to_main_when_its_agent_is_gone() {
 fn x_interrupts_the_agent_and_a_second_x_clears_the_lingering_row() {
     // `x` on a running agent stops it — and the row **stays**, red, for the
     // stopped linger (30s) so the user sees what they stopped; a second `x`
-    // is the clear that removes it. See `docs/agent-tool.md`.
+    // is the clear that removes it. See `docs/agents/agent-tool.md`.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(true, &agent_specs(true));
@@ -473,7 +473,7 @@ fn a_naturally_finished_agent_lingers_long_enough_to_be_read() {
     // group cell commits — swept in a few seconds it can vanish before the
     // user has read it (and, mid-group, before the group cell exists). A
     // natural finish keeps the same 30s window a user stop earns; only the
-    // reason differs. See `docs/agent-tool.md`.
+    // reason differs. See `docs/agents/agent-tool.md`.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(true, &agent_specs(true));
@@ -563,7 +563,7 @@ fn agent_notice_texts_humanize_the_runtime() {
         notice.context_text()
     );
     // The note names the agent's id beside its task: `agentsend` continues
-    // the conversation it reports on (docs/agent-tools.md).
+    // the conversation it reports on (docs/agents/agent-tools.md).
     assert!(
         notice
             .context_text()
@@ -633,14 +633,14 @@ fn clear_wipes_the_roster_and_the_live_group() {
     assert!(app.agent_view.is_none());
 }
 
-// ===== The agent session view's `/copy` and thinking (docs/agent-view-streaming.md) =====
+// ===== The agent session view's `/copy` and thinking (docs/agents/agent-view-streaming.md) =====
 
 #[test]
 fn last_assistant_text_follows_the_viewed_agent() {
     // `/copy` copies what the screen shows: inside an agent session view the
     // screen is that AGENT's conversation, so the last assistant message is
     // its own — not the lead's, which the user isn't looking at (the
-    // reported bug, docs/agent-view-streaming.md).
+    // reported bug, docs/agents/agent-view-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     app.push_chunk("the lead's answer");
@@ -672,7 +672,7 @@ fn last_assistant_text_follows_the_viewed_agent() {
 #[test]
 fn the_context_gauge_follows_the_viewed_agent() {
     // The footer's gauge describes the conversation ON SCREEN
-    // (docs/agent-context-gauge.md): the main session's reading while the
+    // (docs/agents/agent-context-gauge.md): the main session's reading while the
     // main view is up, the viewed agent's own once its session view opens —
     // each against its own window, each its last frame's `input`.
     let mut app = App::new();
@@ -755,7 +755,7 @@ fn an_agent_with_nothing_to_copy_reports_the_empty_case() {
 
 #[test]
 fn an_agents_thinking_phase_settles_onto_its_own_transcript() {
-    // The main session's shape (docs/thinking-stream.md), on the agent's
+    // The main session's shape (docs/ui/thinking-stream.md), on the agent's
     // transcript: the buffer opens only when the boundary asks (the display
     // gate), the deltas accumulate, and the settle records the cell AHEAD of
     // the reply it preceded.
@@ -794,7 +794,7 @@ fn an_agents_thinking_phase_settles_onto_its_own_transcript() {
 #[test]
 fn withdrawing_an_agents_failed_attempt_reports_what_went() {
     // The session view runs the withdrawal ahead of the fold to learn what
-    // its screen must give back (docs/offline.md *A connection lost
+    // its screen must give back (docs/providers/offline.md *A connection lost
     // mid-reply*); the roster's cache hears of it, and an agent that streamed
     // nothing — or is not on the roster — has nothing to give.
     let mut app = App::new();
@@ -828,7 +828,7 @@ fn an_empty_agent_thinking_phase_records_nothing() {
     assert_eq!(history.len(), 1, "only the prompt: {history:?}");
 }
 
-// ===== chatting with a running agent: its own mid-turn queue (docs/queue.md) =====
+// ===== chatting with a running agent: its own mid-turn queue (docs/input/queue.md) =====
 
 #[test]
 fn a_message_typed_into_a_running_agents_session_waits_on_its_queue() {
@@ -889,7 +889,7 @@ fn a_message_reaches_an_agents_transcript_by_exactly_one_path() {
     // both records it twice, permanently — in history, the rollout, the
     // context replay and every rebuild. That is what routing a
     // subagent-launched shell's completion note through the seam *and*
-    // `agent_chat` used to do (`docs/queue.md`), so the queue path must
+    // `agent_chat` used to do (`docs/input/queue.md`), so the queue path must
     // record nothing until the echo arrives.
     let note = "[background] Background command \"npm test\" completed.";
     let mut app = App::new();
@@ -918,7 +918,7 @@ fn a_foreground_groups_resolution_settles_its_members_live_calls() {
     // event never arrived (a killed loop returns without one; the offline
     // dummy scripts none at all) — must settle the way every other settle
     // does: its running call and the `⎿ Waiting…` sibling behind it resolved
-    // onto the transcript (docs/interrupt.md), its queue cleared. Flipping
+    // onto the transcript (docs/input/interrupt.md), its queue cleared. Flipping
     // the status alone left a *finished* agent still owning live cells, so its
     // session view previewed a `⎿ Running…` that could never resolve and the
     // next chat continuation's batch queued behind it.
@@ -996,7 +996,7 @@ fn a_foreground_groups_resolution_settles_its_members_live_calls() {
     );
 }
 
-// ===== the agent view's follow-up queue: Tab, one level down (docs/queue.md) =====
+// ===== the agent view's follow-up queue: Tab, one level down (docs/input/queue.md) =====
 
 #[test]
 fn tab_in_an_agent_view_queues_a_follow_up_for_that_agent() {
@@ -1046,7 +1046,7 @@ fn each_tab_in_an_agent_view_opens_its_own_follow_up_turn() {
 #[test]
 fn tab_in_an_agent_view_whose_agent_settled_is_a_no_op() {
     // The main session's rule one level down: Tab only queues against a
-    // *running* turn, and an idle Tab keeps the draft (docs/queue.md).
+    // *running* turn, and an idle Tab keeps the draft (docs/input/queue.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
@@ -1062,7 +1062,7 @@ fn tab_in_an_agent_view_whose_agent_settled_is_a_no_op() {
 #[test]
 fn the_agent_view_dispatches_one_follow_up_per_settle() {
     // `take_agent_followup` is what the boundary drains at the agent's settle
-    // — one entry per turn, exactly like `drain_next_batch` (docs/queue.md).
+    // — one entry per turn, exactly like `drain_next_batch` (docs/input/queue.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
@@ -1111,7 +1111,7 @@ fn alt_up_in_an_agent_view_never_reaches_the_main_queue() {
 #[test]
 fn stopping_an_agent_drops_its_follow_ups() {
     // Its loop is cancelled, so no continuation will ever run them — the rule
-    // `interrupt` already applies to the steered rows (docs/queue.md).
+    // `interrupt` already applies to the steered rows (docs/input/queue.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
@@ -1170,7 +1170,7 @@ fn a_nested_tool_header_splits_back_into_its_name_and_path() {
     // `tool_header_text` writes the Ctrl+O agent cell's nested `Name(args)`
     // one-liners; `file_tool_header` is its inverse for the three file tools,
     // so the cell can show a recorded header's path by the session's rule
-    // (docs/tools.md "Path display") without ui re-parsing the grammar.
+    // (docs/tools/tools.md "Path display") without ui re-parsing the grammar.
     for (name, path) in [
         ("Write", "/home/u/repo/a.py"),
         ("Read", "/home/u/x (copy).py"),
@@ -1198,7 +1198,7 @@ fn a_nested_tool_header_splits_back_into_its_name_and_path() {
 #[test]
 fn an_agents_command_clock_is_injected_per_agent_and_cleared_per_frame() {
     // The per-agent twin of `set_agent_thinking`/`clear_agent_thinking`
-    // (docs/agent-view-streaming.md): before a draw the boundary clears
+    // (docs/agents/agent-view-streaming.md): before a draw the boundary clears
     // every agent's command elapsed and re-injects the running commands'
     // from their own clocks, so a command that resolved (its clock is gone)
     // drops its `(Ns)` instead of freezing it, and one agent's clock never
@@ -1229,7 +1229,7 @@ fn an_agents_command_clock_is_injected_per_agent_and_cleared_per_frame() {
 fn an_agent_launch_carries_the_call_it_answers_into_the_group_record() {
     // The launch's spec names the provider's id and the model's verbatim
     // arguments; the group resolving in the announced round carries both,
-    // plus the round's batch, onto its record (docs/prompt-caching.md).
+    // plus the round's batch, onto its record (docs/providers/prompt-caching.md).
     let arguments = r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#;
     let mut app = App::new();
     app.begin_stream();
@@ -1269,7 +1269,7 @@ fn an_agent_launch_carries_the_call_it_answers_into_the_group_record() {
     );
 }
 
-// --- The lead's companions (`docs/agent-tools.md`) ---
+// --- The lead's companions (`docs/agents/agent-tools.md`) ---
 
 /// A background group of the two test agents, launched and resolved — the
 /// state `agentsend`/`agentoutput`/`agentkill` find a roster in.
@@ -1343,7 +1343,7 @@ fn the_leads_stop_settles_the_row_without_claiming_the_user_stopped_it() {
 
 #[test]
 fn a_stopped_agents_prompts_leave_the_screen_and_the_rest_stay() {
-    // A stopped agent will never run what it asked to (`docs/permissions.md`):
+    // A stopped agent will never run what it asked to (`docs/state/permissions.md`):
     // its open prompt closes — the next queued one opening in its place — and
     // its queued ones drop, all released like any abandoned request. Another
     // agent's stay put.
@@ -1480,7 +1480,7 @@ fn retirement_keeps_only_the_newest_swept_agents() {
     assert!(app.retired_agents.is_empty(), "/clear forgets them all");
 }
 
-// --- The user's own messages to an agent (`docs/agent-tools.md`) ---
+// --- The user's own messages to an agent (`docs/agents/agent-tools.md`) ---
 
 #[test]
 fn a_message_the_user_typed_into_an_agent_is_named_in_its_notice() {
@@ -1642,7 +1642,7 @@ fn the_notice_lists_each_user_message_under_the_outcome() {
     );
 }
 
-// --- A settled agent the user starts again (`docs/agent-tools.md`) ---
+// --- A settled agent the user starts again (`docs/agents/agent-tools.md`) ---
 
 /// A lone foreground agent that failed inside the lead's turn, its group
 /// already resolved with the failure — where the lead goes on without it.
@@ -1758,7 +1758,7 @@ fn a_resume_the_lead_still_waits_on_is_carried_by_its_group() {
 fn a_message_landing_after_the_agent_settled_tells_the_lead_it_resumed() {
     // Typed while the agent wrote its last reply: queued, unread when the run
     // settled, and the agent's own thread starts the next run with it
-    // (docs/queue.md). The lead heard the agent finish, so it must hear that
+    // (docs/input/queue.md). The lead heard the agent finish, so it must hear that
     // the user started it again.
     let mut app = launched_background_agents();
     app.queue_agent_chat("a1", "also check Manila");

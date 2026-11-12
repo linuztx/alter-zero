@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/hooks.md *The hook-run cell*, through the REAL backend against a stub
+# docs/tools/hooks.md *The hook-run cell*, through the REAL backend against a stub
 # provider. The lead launches one foreground agent; two SubagentStart hooks
 # run on the agent's own thread before its first round — one briefs it (plain
 # stdout is that event's context), one exits 2, which has nothing to block

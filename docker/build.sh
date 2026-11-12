@@ -1,5 +1,5 @@
 #!/bin/sh
-# docker/build.sh — build the headless Kali image for Alter Zero (docs/docker.md).
+# docker/build.sh — build the headless Kali image for Alter Zero (docs/ops/docker.md).
 #
 #   docker/build.sh                            # build with Docker (Podman if Docker is absent)
 #   docker/build.sh --engine podman            # build with Podman

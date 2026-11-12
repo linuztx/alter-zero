@@ -1,9 +1,9 @@
 //! Shared subprocess spawning for every shell command the app runs — the
 //! model's `bash` tool ([`crate::llm::exec`]), its `run_in_background`
 //! launches ([`crate::background`]), and the user's `!` shell (`main.rs`) —
-//! **detached from the TUI's controlling terminal** (`docs/tty-detach.md` —
-//! the full rationale; summarized in docs/tools.md and
-//! docs/shell-command.md).
+//! **detached from the TUI's controlling terminal** (`docs/tools/tty-detach.md` —
+//! the full rationale; summarized in docs/tools/tools.md and
+//! docs/input/shell-command.md).
 //!
 //! Why `stdin(Stdio::null())` is not enough: a password prompt (`sudo`, `ssh`,
 //! git's credential helper) opens **`/dev/tty`** — the controlling terminal,
@@ -54,7 +54,7 @@
 //! drain.
 //!
 //! The same chain has a **TTY form** for `bash` with `tty`
-//! (`docs/interactive-shell.md`): a command that must *have* a controlling
+//! (`docs/tools/interactive-shell.md`): a command that must *have* a controlling
 //! terminal — a pseudo-terminal of its own, never the user's. [`tty_tiers`]
 //! drops the attached tier (whose `/dev/tty` would be the user's terminal,
 //! this module's very bug), and [`tty_command_for`] asks each remaining tier
@@ -64,7 +64,7 @@
 //!
 //! Which **shell** a command runs under is the caller's: the model's commands
 //! run under [`tool_shell`] — `bash` where it is installed, since the tool is
-//! called bash and models write bash (`docs/bash-tools.md`) — while the `!`
+//! called bash and models write bash (`docs/tools/bash-tools.md`) — while the `!`
 //! shell and the hooks runner keep [`DEFAULT_SHELL`], the `sh -c` their
 //! commands were always written for. Every tier takes the shell as given
 //! ([`command_in`], [`tty_command_for`]); the helper hears it as an optional
@@ -105,7 +105,7 @@ pub fn find_on_path(
         .find(|candidate| installed(candidate))
 }
 
-/// The shell the model's commands run under (`docs/bash-tools.md`): the first
+/// The shell the model's commands run under (`docs/tools/bash-tools.md`): the first
 /// `bash` on `PATH` — the tool is called bash, and models write bash, which
 /// dash (`/bin/sh` on Debian, Ubuntu and Kali) refuses — else
 /// [`DEFAULT_SHELL`]. Looked up once per process. Run non-login and
@@ -146,7 +146,7 @@ pub fn is_executable_file(path: &Path) -> bool {
 /// `setsid` binary (macOS) runs on. A test binary cannot be the helper
 /// itself: its `main` is libtest's, which would run the suite instead of the
 /// command. `None` until the binary is built — `cargo test` builds it,
-/// `cargo test --lib` alone does not (`docs/tty-detach.md` *Testing*).
+/// `cargo test --lib` alone does not (`docs/tools/tty-detach.md` *Testing*).
 #[cfg(test)]
 #[must_use]
 pub(crate) fn test_detach_helper() -> Option<&'static Path> {
@@ -257,14 +257,14 @@ pub fn command_in(tier: &DetachTier<'_>, shell: &Path, command: &str) -> Command
         .stderr(Stdio::piped());
     // The herdr pane is the TUI's own: a nested agent's herdr hook would take
     // it over, after which herdr drops every report the TUI sends
-    // (`docs/herdr.md`) — the terminal path drops it the same way
+    // (`docs/architecture/herdr.md`) — the terminal path drops it the same way
     // (`pty::spawn::FOREIGN_TERMINAL_VARS`).
     cmd.env_remove(crate::herdr::PANE_ID_ENV);
     cmd
 }
 
 /// The sentinel first argument of the **TTY** helper mode — [`DETACH_ARG`]'s
-/// twin for an interactive session (`docs/interactive-shell.md`): after the
+/// twin for an interactive session (`docs/tools/interactive-shell.md`): after the
 /// `setsid`, stdin — the pseudo-terminal the spawner handed the child — is
 /// made the new session's controlling terminal, so a `/dev/tty` prompt
 /// reaches the session instead of failing.
@@ -334,7 +334,7 @@ pub fn spawn_detached_shell(detach_helper: Option<&Path>, command: &str) -> io::
 }
 
 /// [`spawn_detached_shell`] under `shell` — [`tool_shell`] for a model
-/// command (`docs/bash-tools.md`).
+/// command (`docs/tools/bash-tools.md`).
 ///
 /// # Errors
 /// The underlying spawn error when even the last tier can't start.
@@ -351,7 +351,7 @@ pub fn spawn_detached_in(
 /// `pgid == child.id()` invariant, but a stdio (or cwd, or environment) of the
 /// caller's choosing.
 ///
-/// This exists for the **lifecycle hooks** runner (`docs/hooks.md`), which
+/// This exists for the **lifecycle hooks** runner (`docs/tools/hooks.md`), which
 /// needs `stdin` *piped* rather than `/dev/null` — it writes the event payload
 /// there — plus the session's cwd and the `*_PROJECT_DIR` variables. A hook is
 /// a shell command like any other, so it must not be the one child that keeps
@@ -557,7 +557,7 @@ pub fn run_detached_exec_if_requested() {
         // failed setsid would help nobody, and the spawner never makes this
         // process a group leader, so in practice it succeeds.
         let _ = rustix::process::setsid();
-        // The TTY mode (docs/interactive-shell.md): the session gets a
+        // The TTY mode (docs/tools/interactive-shell.md): the session gets a
         // terminal back — the pseudo-terminal the spawner put on stdin — so
         // `/dev/tty` reaches the session's own screen, never the TUI's. An
         // ioctl on fd 0 reads nothing from it. Best-effort like the setsid: a
@@ -654,7 +654,7 @@ mod tests {
         // An attached shell would hand a password prompt the *user's*
         // terminal — the bug the detach chain exists for — so a TTY session
         // that finds no detach route is refused rather than attached
-        // (docs/interactive-shell.md).
+        // (docs/tools/interactive-shell.md).
         assert_eq!(tty_tiers(None), vec![DetachTier::SetsidBinary]);
         let helper = Path::new("/opt/bin/alter-zero");
         assert_eq!(
@@ -737,7 +737,7 @@ mod tests {
     fn a_shell_child_never_inherits_the_herdr_pane() {
         // The pane is the TUI's: a nested agent reporting into it would take
         // it over, and herdr then drops every report alter-zero sends
-        // (`docs/herdr.md`). herdr's own marker and socket stay — the
+        // (`docs/architecture/herdr.md`). herdr's own marker and socket stay — the
         // environment herdr gives its popups — so its CLI and agent skill
         // still work.
         for tier in tiers(Some(Path::new("/opt/bin/alter-zero"))) {
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn bash_syntax_runs_under_the_tool_shell() {
-        // What the tool's name promises (docs/bash-tools.md): `[[ ]]`, brace
+        // What the tool's name promises (docs/tools/bash-tools.md): `[[ ]]`, brace
         // expansion and `source` are bash, and dash — `/bin/sh` on Debian,
         // Ubuntu and Kali — refuses all three.
         if tool_shell() == Path::new(DEFAULT_SHELL) {

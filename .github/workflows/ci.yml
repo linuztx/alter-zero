@@ -1,5 +1,5 @@
 # .github/workflows/ci.yml — the project's gate, on every push to main and
-# every pull request (docs/release.md). Each job is one thing a contributor
+# every pull request (docs/ops/release.md). Each job is one thing a contributor
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
 # --check` + `clippy -D warnings` + `test` + `doc`, all but `fmt` on macOS
 # too), the smoke suite over the real binary in tmux, the release tooling's
@@ -58,7 +58,7 @@ jobs:
     # its terminal through its own binary's helper re-exec; the library's
     # tests start their terminal sessions the same way, through the
     # `alter-zero` binary `cargo test` builds beside them
-    # (docs/tty-detach.md *Testing*) — the tier a Mac runs on, and every
+    # (docs/tools/tty-detach.md *Testing*) — the tier a Mac runs on, and every
     # tool the tests run is macOS's own.
     name: clippy · test · doc (macOS)
     runs-on: macos-latest
@@ -149,7 +149,7 @@ jobs:
           bash scripts/smoke/selftest.sh
 
   clipboard-linux:
-    # The Linux clipboard read against a **real** X server (docs/image-paste.md).
+    # The Linux clipboard read against a **real** X server (docs/input/image-paste.md).
     # `tests/clipboard_linux.rs` is `#[ignore]`d because it needs one; Xvfb is
     # the headless server it was written against (`tests/support/x11_owner.rs`
     # plays the screenshot tool). Without this job the only coverage of the
@@ -177,7 +177,7 @@ jobs:
 
   clipboard-macos:
     # The macOS pasteboard read against the **real** pasteboard
-    # (docs/image-paste.md): the 16-bit floating-point TIFF a ⌃⇧⌘4 screenshot
+    # (docs/input/image-paste.md): the 16-bit floating-point TIFF a ⌃⇧⌘4 screenshot
     # plants, the metadata AppKit's coercion would otherwise copy, and the
     # refusal a text clipboard earns. `tests/clipboard_macos.rs` fails rather
     # than skips when `CI` is set, so a pass here means every paste really ran.
@@ -217,7 +217,7 @@ jobs:
         working-directory: telemetry
 
   skill-scripts:
-    # The scripts a built-in skill seeds beside its SKILL.md (docs/skills.md).
+    # The scripts a built-in skill seeds beside its SKILL.md (docs/tools/skills.md).
     # Offline: the providers' recorded response shapes, trimmed copies of each
     # engine's pages and a fake fetcher, so no request leaves the runner.
     name: built-in skill scripts

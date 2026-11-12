@@ -1,6 +1,6 @@
 //! Where the time goes when a picture is (re-)encoded for a screen — the cost
 //! a Ctrl+O pays under kitty, which must transmit afresh per screen buffer
-//! (`docs/images.md`). `cargo run --release --example image_encode_cost -- shot.png [cols] [rows]`.
+//! (`docs/ui/images.md`). `cargo run --release --example image_encode_cost -- shot.png [cols] [rows]`.
 
 use std::time::Instant;
 

@@ -5,7 +5,7 @@
 smoke_begin
 
 # CLI resume — --continue / --resume {id} / bare --resume, and
-# the exit hint (docs/cli.md). Instance 1 records a turn; quitting prints
+# the exit hint (docs/cli/cli.md). Instance 1 records a turn; quitting prints
 # 'Resume this session with: {bin} --resume {id}' below the restored terminal,
 # the id naming the rollout file (only a session WITH history hints — an empty
 # quit prints nothing). '--continue' relaunches straight into the old

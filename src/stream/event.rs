@@ -12,10 +12,10 @@ use crate::tasks::TaskStore;
 /// wire tool name and the model's verbatim JSON arguments — announced by
 /// [`StreamEvent::RoundCalls`] in the model's order ahead of the round's
 /// cells, so the records those cells resolve into carry the id the next
-/// request replays (`docs/prompt-caching.md`). The arguments are what a call
+/// request replays (`docs/providers/prompt-caching.md`). The arguments are what a call
 /// that never reaches its own [`StreamEvent::ToolStart`] is recorded with: a
 /// `⎿ Waiting…` sibling an Esc resolves still replays exactly as the model
-/// asked for it (`docs/interrupt.md`).
+/// asked for it (`docs/input/interrupt.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundCall {
     pub id: String,
@@ -27,7 +27,7 @@ pub struct RoundCall {
 /// payload of [`StreamEvent::ToolCallDelta`]. Every wire format dribbles a
 /// call out in pieces before the round ends; carrying *which* call a piece
 /// belongs to is what lets the loop preview a `write` while its content is
-/// still arriving (`docs/write-streaming.md`), where the opaque fragment it
+/// still arriving (`docs/ui/write-streaming.md`), where the opaque fragment it
 /// replaced could only be counted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolCallFragment {
@@ -49,7 +49,7 @@ pub struct ToolCallFragment {
 impl ToolCallFragment {
     /// The text the live token tally counts for this piece — its name and
     /// its argument text, exactly what the opaque fragment string carried
-    /// before the piece had a structure (`docs/status-indicator.md`).
+    /// before the piece had a structure (`docs/ui/status-indicator.md`).
     #[must_use]
     pub fn tally_text(&self) -> String {
         format!("{}{}", self.name, self.arguments)
@@ -60,7 +60,7 @@ impl ToolCallFragment {
 /// `args` summary the `● name(args)` header shows — the *same* two strings the
 /// call's own [`StreamEvent::ToolStart`] carries, so a `⎿ Waiting…` cell's header
 /// matches the header it shows once it starts running. Carries no output/status —
-/// those arrive later via `ToolStart`/`ToolEnd`. See `docs/parallel-tools.md`.
+/// those arrive later via `ToolStart`/`ToolEnd`. See `docs/tools/parallel-tools.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallSummary {
     pub name: String,
@@ -70,7 +70,7 @@ pub struct ToolCallSummary {
 /// One subagent announced by a [`StreamEvent::AgentBatch`]: the identity the
 /// roster entry ([`crate::agents::AgentRun`]) is created from. `id` is the
 /// registry id its agent-channel events will carry; `background` mirrors the
-/// batch's flag (every spec in one batch shares it). See `docs/agent-tool.md`.
+/// batch's flag (every spec in one batch shares it). See `docs/agents/agent-tool.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSpec {
     pub id: String,
@@ -81,7 +81,7 @@ pub struct AgentSpec {
     /// The provider's id for the `agent` call this launch answers, and the
     /// model's verbatim arguments for it — carried onto the group's record so
     /// the next request replays the call as the provider saw it
-    /// (`docs/prompt-caching.md`). `None` from a scripted launch.
+    /// (`docs/providers/prompt-caching.md`). `None` from a scripted launch.
     pub call_id: Option<String>,
     pub arguments: Option<String>,
 }
@@ -104,7 +104,7 @@ pub struct AgentCallDone {
 /// counts **everything** the request billed — system prompt, full context,
 /// reasoning — and carries the prompt-cache detail. The loop folds it into
 /// the live tally via [`crate::app::App::apply_usage`]. See
-/// `docs/prompt-caching.md`.
+/// `docs/providers/prompt-caching.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     /// Prompt tokens billed for the round (`prompt_tokens`) — cached reads
@@ -124,7 +124,7 @@ pub struct TokenUsage {
     /// `completion_tokens_details.reasoning_tokens`. The committed
     /// `Thought for …` cell snaps its token estimate to this
     /// ([`crate::app::App::apply_usage`]); 0 when the provider reports no such
-    /// detail, which keeps the estimate. See `docs/thinking-stream.md`.
+    /// detail, which keeps the estimate. See `docs/ui/thinking-stream.md`.
     pub reasoning: u64,
 }
 
@@ -137,7 +137,7 @@ impl TokenUsage {
 }
 
 /// Why a tool call that did not succeed failed — the rollout's `error_kind`
-/// (`docs/rollout-records.md`). Never set on a call that succeeded. The
+/// (`docs/state/rollout-records.md`). Never set on a call that succeeded. The
 /// spellings are codex's where codex has one (`tool_error`, `timed_out`,
 /// `interrupted`, `rejected`); the rest name what only this app has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,12 +154,12 @@ pub enum ToolErrorKind {
     /// The user refused it: No at the permission prompt (Tab's amended no,
     /// Ctrl+E), or a declined question.
     Rejected,
-    /// Auto mode's classifier refused it (`docs/permissions.md`).
+    /// Auto mode's classifier refused it (`docs/state/permissions.md`).
     ClassifierDenied,
     /// A hook refused it: a `PreToolUse` block or a `PermissionRequest` deny
-    /// (`docs/hooks.md`).
+    /// (`docs/tools/hooks.md`).
     HookBlocked,
-    /// It needed approval in a run nobody could answer (`docs/headless.md`).
+    /// It needed approval in a run nobody could answer (`docs/cli/headless.md`).
     ApprovalRequired,
     /// The `/settings` **Max tool calls** ceiling refused it.
     ToolCallLimit,
@@ -206,7 +206,7 @@ impl ToolErrorKind {
 }
 
 /// How a tool call ran — the facts its rollout line keeps beside the output
-/// (`docs/rollout-records.md`): codex's command record, sized to every tool.
+/// (`docs/state/rollout-records.md`): codex's command record, sized to every tool.
 /// Carried by each event that resolves a call, so a resolution path has to
 /// state them, and kept on the recorded [`crate::app::ToolCall::run`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -258,7 +258,7 @@ pub enum StreamEvent {
     /// the id their [`AgentSpec`] carries. Sent before anything else the
     /// round emits. A backend that never sends it (the offline dummy) leaves
     /// the records unstamped, which replays exactly as it always did
-    /// (`docs/prompt-caching.md`).
+    /// (`docs/providers/prompt-caching.md`).
     RoundCalls(Vec<RoundCall>),
     /// The model requested a **parallel batch** of tool calls this round,
     /// announced up front — *before* the first [`StreamEvent::ToolStart`] — so the
@@ -268,7 +268,7 @@ pub enum StreamEvent {
     /// carries). Sequential execution then transitions the calls one at a time via
     /// [`StreamEvent::ToolStart`]/[`StreamEvent::ToolEnd`]. A backend that never
     /// batches (the `!` shell, the dummy's lone calls) simply omits this — a lone
-    /// `ToolStart` still works. See `docs/parallel-tools.md`.
+    /// `ToolStart` still works. See `docs/tools/parallel-tools.md`.
     ToolBatch(Vec<ToolCallSummary>),
     /// A tool call has started executing. The loop shows it live (blue) until the
     /// matching [`StreamEvent::ToolEnd`] arrives. `args` is a short summary for
@@ -280,7 +280,7 @@ pub enum StreamEvent {
     /// otherwise. The main tool cells ignore it (their headers show the
     /// command, Claude-Code style); the agent roster's tree rows prefer it
     /// for their sticky `{Name}: {detail}` activity line
-    /// (`docs/agent-tool.md`).
+    /// (`docs/agents/agent-tool.md`).
     ToolStart {
         name: String,
         args: String,
@@ -291,7 +291,7 @@ pub enum StreamEvent {
         /// turn's assistant `tool_calls` entry instead of the lossy
         /// reconstruction the summary allowed. `None` when the emitter has
         /// none (the `!` shell, a hand-scripted event), which falls the
-        /// replay back to that reconstruction. See `docs/context.md`.
+        /// replay back to that reconstruction. See `docs/architecture/context.md`.
         arguments: Option<String>,
     },
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
@@ -299,20 +299,20 @@ pub enum StreamEvent {
     ///
     /// `truncated` is `true` when the output exceeded the in-memory cap and was
     /// cut — `output` then holds only the retained head, and the cell appends a
-    /// `…` marker (see `docs/shell-command.md`). The `!` shell runner sets it; a
+    /// `…` marker (see `docs/input/shell-command.md`). The `!` shell runner sets it; a
     /// normal backend tool always sends `false`.
     ToolEnd {
         output: String,
         ok: bool,
         truncated: bool,
         /// How the call ran — its exit code, how long it ran, why it failed
-        /// (`docs/rollout-records.md`). On every resolving event, so a new
+        /// (`docs/state/rollout-records.md`). On every resolving event, so a new
         /// way to resolve a call has to say; [`ToolRun::default`] where
         /// nothing measured it (the offline demo).
         run: ToolRun,
     },
     /// The in-flight `AskUserQuestion` call resolved with the user's
-    /// **submitted answers** (`docs/ask.md`) — sent **in place of**
+    /// **submitted answers** (`docs/tools/ask.md`) — sent **in place of**
     /// [`StreamEvent::ToolEnd`], the green twin of
     /// [`StreamEvent::ToolRejected`]: `display` is the committed cell's text
     /// (`User answered Alter Zero's questions:` over the `· Q → A` rows) while
@@ -323,7 +323,7 @@ pub enum StreamEvent {
     ///
     /// `truncated` mirrors [`StreamEvent::ToolEnd`]'s: this event also carries
     /// an **executed** call's resolution when a `PostToolUse` hook amended it
-    /// (`docs/hooks.md`), and such a call's output can have hit the byte cap,
+    /// (`docs/tools/hooks.md`), and such a call's output can have hit the byte cap,
     /// so the expanded cell still needs its `…` marker. It is `false` for the
     /// ask tool, which never truncates.
     ToolAnswered {
@@ -338,9 +338,9 @@ pub enum StreamEvent {
     /// place of** [`StreamEvent::ToolEnd`], since the tool never ran. The
     /// `AskUserQuestion` tool resolves through here too when the user
     /// declines (or picks `Chat about this`) — nothing was answered, and the
-    /// model reads the stop-and-wait `result` (`docs/ask.md`).
+    /// model reads the stop-and-wait `result` (`docs/tools/ask.md`).
     ///
-    /// The two texts are deliberately different (`docs/permissions.md`):
+    /// The two texts are deliberately different (`docs/state/permissions.md`):
     /// `display` is the short red cell output the user reads
     /// (`User rejected write to hello.py`, plus the amended instructions when
     /// Tab supplied them), while `result` is the longer stop-and-wait text the
@@ -352,7 +352,7 @@ pub enum StreamEvent {
     ///
     /// `truncated` mirrors [`StreamEvent::ToolEnd`]'s, for the same reason as
     /// [`StreamEvent::ToolAnswered`]'s: a **failed** call a `PostToolUse` hook
-    /// amended resolves through here (`docs/hooks.md`), and its output can
+    /// amended resolves through here (`docs/tools/hooks.md`), and its output can
     /// have hit the byte cap. `false` for every refusal, where nothing ran.
     ToolRejected {
         display: String,
@@ -364,8 +364,8 @@ pub enum StreamEvent {
     },
     /// A provenance note for the **in-flight** tool call — the auto mode
     /// classifier's `Allowed by auto mode classifier`
-    /// (`docs/permissions.md`), or the scratchpad's `Allowed in the session
-    /// scratchpad` (`docs/scratchpad.md`). Sent right after the call's
+    /// (`docs/state/permissions.md`), or the scratchpad's `Allowed in the session
+    /// scratchpad` (`docs/tools/scratchpad.md`). Sent right after the call's
     /// [`StreamEvent::ToolStart`]; the loop stores it on the running call
     /// ([`crate::app::App::set_tool_note`]) so the resolved cell appends it
     /// as a dim `⎿` row — the transcript's record that no human approved
@@ -380,7 +380,7 @@ pub enum StreamEvent {
     /// `PreToolUse` hook added) that becomes the tool result — the cell instead
     /// renders the fixed `⎿ Running in the background (↓ to manage)` row
     /// ([`crate::app::ToolStatus::Backgrounded`]). The process itself reports
-    /// through the separate background channel. See `docs/background.md`.
+    /// through the separate background channel. See `docs/tools/background.md`.
     ToolBackgrounded {
         id: String,
         output: String,
@@ -393,7 +393,7 @@ pub enum StreamEvent {
     /// order), between the call's [`StreamEvent::ToolStart`] and its
     /// [`StreamEvent::ToolEnd`]. The loop appends it to the front running call
     /// ([`crate::app::App::push_tool_output`]) so the live cell **tails** it —
-    /// Claude-Code's running-command look (see `docs/tool-streaming.md`). The
+    /// Claude-Code's running-command look (see `docs/ui/tool-streaming.md`). The
     /// authoritative full output still arrives in `ToolEnd`, which overwrites
     /// the tailed partial, so a dropped chunk never corrupts the final cell.
     /// The append-only form — the offline dummy's scripted commands stream
@@ -402,7 +402,7 @@ pub enum StreamEvent {
     ToolOutput(String),
     /// A running command's live output as it builds up — a plain `bash`
     /// call's folded lines, a terminal session's rows
-    /// (`docs/interactive-shell.md`): `settled` is text that just became
+    /// (`docs/tools/interactive-shell.md`): `settled` is text that just became
     /// final — appended to the running call's output — and `live` is what is
     /// still on screen and may yet change, which **replaces** the `live` this
     /// call last received. A progress bar is therefore one row that changes
@@ -412,11 +412,11 @@ pub enum StreamEvent {
     ToolScreen { settled: String, live: String },
     /// The running call's header, refined by the executor once it knows more
     /// than the arguments say — a `bash_session` call's session command
-    /// beside its typed keys (`docs/interactive-shell.md`). Replaces the
+    /// beside its typed keys (`docs/tools/interactive-shell.md`). Replaces the
     /// call's `args` summary.
     ToolTitle(String),
     /// One **task tool** call resolved (`taskcreate`/`taskget`/`tasklist`/
-    /// `taskupdate` — `docs/task-tools.md`), carried whole in a single event
+    /// `taskupdate` — `docs/tools/task-tools.md`), carried whole in a single event
     /// **instead of** the `ToolBatch`/`ToolStart`/`ToolEnd` trio: a task call
     /// is instant, needs no permission, and streams no output, and — Claude
     /// Code's rule — it renders **no tool cell** anywhere inline. `name`/`args`
@@ -439,7 +439,7 @@ pub enum StreamEvent {
         tasks: TaskStore,
     },
     /// A lifecycle hook injected **conversation text** mid-turn
-    /// (`docs/hooks.md`): a `Stop`/`SubagentStop` block's continuation
+    /// (`docs/tools/hooks.md`): a `Stop`/`SubagentStop` block's continuation
     /// feedback, or a `UserPromptSubmit`/`SessionStart` hook's additional
     /// context. `text` is verbatim what the model reads as a user-role
     /// message — **empty** when the hooks gave it nothing — and the loop
@@ -451,7 +451,7 @@ pub enum StreamEvent {
     /// heading (`Stop hook`, `UserPromptSubmit hook`).
     ///
     /// `report` is the hooks' **cell** — `● Ran 1 Stop hook` and what they
-    /// said, committed inline and expanded in Ctrl+O (`docs/hooks.md` *The
+    /// said, committed inline and expanded in Ctrl+O (`docs/tools/hooks.md` *The
     /// hook-run cell*) — `None` for a note no hook said anything about (the
     /// loop's own continuation prompts), which stays cell-less inline.
     HookNote {
@@ -463,7 +463,7 @@ pub enum StreamEvent {
     /// been folded into its context, at the round boundary the agent loop
     /// reached (right after the previous round's tool results) — codex's
     /// steering, and the whole point of the mid-turn queue
-    /// (`docs/queue.md`). `text` is verbatim what the model now reads as a
+    /// (`docs/input/queue.md`). `text` is verbatim what the model now reads as a
     /// user-role message.
     ///
     /// The loop's half of the handoff: the inset `❯ …` row waiting above the
@@ -472,13 +472,13 @@ pub enum StreamEvent {
     /// because the model genuinely has it now. Sent on the main reply channel
     /// for the session's own queue and on the **agent** channel for a
     /// subagent's, where it lands on that agent's own transcript: one event,
-    /// both queues (`docs/agent-tool.md`).
+    /// both queues (`docs/agents/agent-tool.md`).
     Steered { text: String },
     /// The running turn took a background **notice** off the registry's
     /// board at a round boundary — a shell or agent that finished (or a
     /// session that stopped to ask for input) — and the model reads it in the
     /// request now going out, right after the previous round's tool results
-    /// (`docs/background.md`). `seq` is the board note's own number
+    /// (`docs/tools/background.md`). `seq` is the board note's own number
     /// ([`crate::background::PendingNotice::seq`]).
     ///
     /// [`StreamEvent::Steered`]'s twin for notices, and for the same reason:
@@ -490,7 +490,7 @@ pub enum StreamEvent {
     /// Main-session only: a subagent hears a shell it launched through its
     /// own queue, as a [`StreamEvent::Steered`] message.
     NoticeDelivered { seq: u64 },
-    /// A `UserPromptSubmit` hook **blocked the prompt** (`docs/hooks.md`):
+    /// A `UserPromptSubmit` hook **blocked the prompt** (`docs/tools/hooks.md`):
     /// the turn is over before the first request. The loop rolls the
     /// just-recorded user message back out of history (the recorder's
     /// shrink-rewrite erases it from the rollout — Claude Code's "erased
@@ -506,7 +506,7 @@ pub enum StreamEvent {
     /// tree rows — while each agent's own stream reports on the dedicated
     /// agent channel. A `background` group resolves immediately (its
     /// [`StreamEvent::AgentGroupDone`] follows at once); a foreground group
-    /// stays live until every agent finishes. See `docs/agent-tool.md`.
+    /// stays live until every agent finishes. See `docs/agents/agent-tool.md`.
     AgentBatch {
         background: bool,
         agents: Vec<AgentSpec>,
@@ -517,7 +517,7 @@ pub enum StreamEvent {
     /// each call's model-facing tool-result text; the loop drains the agent
     /// channel first (the terminal roster events were enqueued before this
     /// was sent), then records the [`crate::app::AgentGroup`] history item
-    /// and commits the group cell. See `docs/agent-tool.md`.
+    /// and commits the group cell. See `docs/agents/agent-tool.md`.
     AgentGroupDone {
         background: bool,
         agents: Vec<AgentCallDone>,
@@ -540,9 +540,9 @@ pub enum StreamEvent {
     /// each under the slot of the call it belongs to. Counted into the live
     /// token tally (like [`StreamEvent::ThinkingChunk`]) so the status keeps
     /// ticking while the model generates the call
-    /// (`docs/status-indicator.md`), and — for a `write` — previewed: the
+    /// (`docs/ui/status-indicator.md`), and — for a `write` — previewed: the
     /// loop decodes the pieces as they arrive and the strip shows the file
-    /// being written (`docs/write-streaming.md`). Emitted by a real backend
+    /// being written (`docs/ui/write-streaming.md`). Emitted by a real backend
     /// during a tool-calling round, ahead of the round's
     /// [`StreamEvent::RoundCalls`] and the [`StreamEvent::ToolStart`] that
     /// begins executing the call.
@@ -558,7 +558,7 @@ pub enum StreamEvent {
     /// [attempt output](Self::is_attempt_output) since the last event of any
     /// other kind — is withdrawn by every consumer before the next attempt's
     /// first byte arrives, so a request re-sent after content streamed never
-    /// duplicates it (`docs/offline.md` *A connection lost mid-reply*). After
+    /// duplicates it (`docs/providers/offline.md` *A connection lost mid-reply*). After
     /// a failure that streamed nothing there is nothing to withdraw.
     Retrying { attempt: u32, max: u32 },
     /// No connection could be made to the provider — the machine is offline,
@@ -570,17 +570,17 @@ pub enum StreamEvent {
     /// The loop shows the wait live in the status line — the amber `Waiting
     /// for internet…` verb and the ripple row naming the host — and the next
     /// streamed content clears it; nothing commits. Only a real backend sends
-    /// it (`llm::retry`). See `docs/offline.md`.
+    /// it (`llm::retry`). See `docs/providers/offline.md`.
     Offline { host: String, attempts: u32 },
     /// The provider's real token usage for one completed request round (the
     /// final usage frame of the stream — sent once per round by a real
     /// backend, so an agentic turn reports one per tool round). The loop
     /// snaps the live tally to it ([`crate::app::App::apply_usage`]), turning
     /// the app-side estimate into the provider's own accounting, prompt-cache
-    /// detail included. The dummy never sends it. See `docs/prompt-caching.md`.
+    /// detail included. The dummy never sends it. See `docs/providers/prompt-caching.md`.
     Usage(TokenUsage),
     /// A `write`/`edit`/`bash` call is **waiting on the user's approval**
-    /// (`docs/permissions.md`). Sent by the backend thread just before it
+    /// (`docs/state/permissions.md`). Sent by the backend thread just before it
     /// blocks on the [`crate::permission::PermissionGate`]; the loop raises
     /// the inline prompt ([`crate::app::App::open_permission`]) and posts the
     /// answer back on the gate under this request's `id`. Nothing is running
@@ -588,7 +588,7 @@ pub enum StreamEvent {
     /// yes. A backend with no gate attached never sends it.
     Permission(PermissionRequest),
     /// An `AskUserQuestion` call is **waiting on the user's answers**
-    /// (`docs/ask.md`). Sent by the backend thread just before it blocks on
+    /// (`docs/tools/ask.md`). Sent by the backend thread just before it blocks on
     /// the [`crate::ask::AskGate`]; the loop raises the inline question modal
     /// ([`crate::app::App::open_ask`]) and posts the [`crate::ask::AskDecision`]
     /// back on the gate under this request's `id`. Unlike a permission
@@ -610,7 +610,7 @@ impl StreamEvent {
     /// retry) or a round boundary between two (a tool resolving, a message
     /// delivered). Where an attempt began is the first of these since the last
     /// of the others (`App::track_attempt`, `AgentRun::apply`), which is what a
-    /// retry withdraws back to (`docs/offline.md` *A connection lost
+    /// retry withdraws back to (`docs/providers/offline.md` *A connection lost
     /// mid-reply*).
     ///
     /// Exhaustive on purpose: a new event has to say which side it is on.

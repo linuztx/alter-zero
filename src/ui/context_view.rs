@@ -1,5 +1,5 @@
 //! The Ctrl+D context-debug overlay: the raw LLM context window a real
-//! backend sends each turn. See `docs/context.md`.
+//! backend sends each turn. See `docs/architecture/context.md`.
 
 use std::collections::HashMap;
 
@@ -289,7 +289,7 @@ fn token_estimate(tokens: usize) -> String {
 /// hung on the `⎿` gutter, any native tool calls as `→ name(arguments)` rows
 /// and attachment paths dim beneath. The bottom rule's summary counts the
 /// messages and their estimate. A dim placeholder when there is nothing yet.
-/// See `docs/context.md`.
+/// See `docs/architecture/context.md`.
 #[must_use]
 pub fn context_body(app: &App, width: u16) -> DebugBody {
     let calibration = app.context_calibration();
@@ -312,12 +312,12 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
     // subagent is actually sent — its type's definition, else the main
     // prompt, plus the subagent note (`App::agent_system_prompt`, from
     // `ReplySource::agent_system_prompt`) — with no AGENTS.md section
-    // (subagents get none). See `docs/agent-tool.md`.
+    // (subagents get none). See `docs/agents/agent-tool.md`.
     // A viewed subagent's window has no AGENTS.md section (subagents get
     // none — its instructions ride the system prompt shown above), but it
     // does lead with a `<system-reminder>` of its own: the skills roster its
     // fresh context was briefed with, ahead of the task, which is the order
-    // the agent read them in (`docs/subagents.md`) — taken whole, as the
+    // the agent read them in (`docs/agents/subagents.md`) — taken whole, as the
     // launch wrapped it, where the main window composes its block from the
     // two sections `App` holds (`context::context_messages_full`). No agent
     // types in it — subagents cannot launch agents.
@@ -426,7 +426,7 @@ fn build_context_body(app: &App, width: u16, count: &mut dyn FnMut(&str) -> usiz
 /// boundaries (an item lands, a rewind, a turn start's fragment refresh),
 /// never per streamed chunk. The headers' token estimates come through a
 /// [`CountMemo`] kept across rebuilds, so a rebuild tokenizes only the
-/// entries that are new. See `docs/context.md`.
+/// entries that are new. See `docs/architecture/context.md`.
 ///
 /// [`TranscriptCache`]: super::TranscriptCache
 #[derive(Default)]
@@ -459,7 +459,7 @@ pub struct ContextCache {
 struct ContextSig {
     generation: u64,
     /// The active theme — the role chips' colours depend on it
-    /// (`docs/theme.md`).
+    /// (`docs/ui/theme.md`).
     theme: crate::app::Theme,
     history_len: usize,
     width: u16,
@@ -470,7 +470,7 @@ struct ContextSig {
     listings_len: Option<usize>,
     agent_reminder_len: Option<usize>,
     /// The ratio the estimates are corrected by — a new usage report's
-    /// lesson recounts the window (`docs/token-estimate.md`).
+    /// lesson recounts the window (`docs/architecture/token-estimate.md`).
     calibration: u64,
 }
 
@@ -529,7 +529,7 @@ impl ContextCache {
             crate::app::count_tokens(text)
         };
         // In the provider's tokens, outside the memo of the estimate's own
-        // counts (docs/token-estimate.md).
+        // counts (docs/architecture/token-estimate.md).
         let calibration = app.context_calibration();
         let memo = &mut self.memo;
         self.body = build_context_body(app, width, &mut |text| {
@@ -612,7 +612,7 @@ fn view_title(app: &App, title: &str) -> String {
 /// the scroll offset, and which way the Tab hint points. Sharing the chrome
 /// is the point — two windows onto "what is this turn actually sending",
 /// one key apart. Pure — `term.rs` paints this onto the overlay. See
-/// `docs/context.md` and `docs/permissions.md`.
+/// `docs/architecture/context.md` and `docs/state/permissions.md`.
 ///
 /// [`classifier_body`]: super::classifier_body
 pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, body: &DebugBody) {

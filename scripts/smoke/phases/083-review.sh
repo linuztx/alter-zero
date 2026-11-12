@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The startup review (docs/config-review.md). A temp project (no .git — the
+# The startup review (docs/state/config-review.md). A temp project (no .git — the
 # root falls back to the cwd) carries .alter-zero/hooks.json and .mcp.json
 # (the Phase 80 scripted stdio fixture plus an http server that never
 # answers), and the fresh config home a hooks.json of the user's own. Ctrl+C
@@ -313,7 +313,7 @@ expect_file_lacks "$RV_CFG4/trust.json" -F "$rv_fp" "the carried-over /trust rec
 expect_file_has "$RV_CFG4/trust.json" -F "/other/.mcp.json" "another project's /trust record was dropped"
 rm -rf "$RV_CFG2" "$RV_CFG3" "$RV_CFG4" "$RV_ONE" "$RV_TWO" "$RV_OLD"
 
-# --- The home directory is never a project (docs/project-config.md):
+# --- The home directory is never a project (docs/state/project-config.md):
 # launched in ~, the user's own hooks are reviewed as the user's, once.
 RV_HOME="$(mktemp -d)"
 mkdir -p "$RV_HOME/.alter-zero"

@@ -5,7 +5,7 @@
 smoke_begin
 
 # the PROTOCOL REVISION IS THE SERVER'S OWN, re-derived at
-# every launch (docs/mcp.md). The reported bug: a DUAL-ERA server — one that
+# every launch (docs/tools/mcp.md). The reported bug: a DUAL-ERA server — one that
 # serves the modern 2026-07-28 `server/discover` *and* answers the legacy
 # `initialize` handshake, which is what every real dual-era server does —
 # read `2025-11-25` on the /mcp detail page forever, because a remembered

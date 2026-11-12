@@ -1,5 +1,5 @@
 //! The `AskUserQuestion` tool's pure vocabulary and the gate its call blocks
-//! on. See `docs/ask.md`.
+//! on. See `docs/tools/ask.md`.
 //!
 //! Claude Code's mid-turn questions: the model asks 1–4 multiple-choice
 //! questions, the TUI raises an inline modal (the permission prompt's
@@ -23,7 +23,7 @@ use serde::Deserialize;
 const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// How long a question waits on an **idle** user before it resolves
-/// unanswered and the agent carries on without them (`docs/ask.md`). The
+/// unanswered and the agent carries on without them (`docs/tools/ask.md`). The
 /// clock restarts on every key press, so a user who is reading, choosing or
 /// typing never runs it out: ten minutes covers a glance back from another
 /// window or a short break, and past it the user is away — every further
@@ -65,7 +65,7 @@ pub struct AskQuestion {
 
 impl AskQuestion {
     /// Whether any option carries a preview — the question then renders the
-    /// side-by-side panel and offers the `n` notes field (`docs/ask.md`).
+    /// side-by-side panel and offers the `n` notes field (`docs/tools/ask.md`).
     #[must_use]
     pub fn has_previews(&self) -> bool {
         self.options.iter().any(|o| o.preview.is_some())
@@ -163,7 +163,7 @@ pub enum AskDecision {
 }
 
 /// The committed cell's headline for a submission — the first output line,
-/// which the renderer promotes to the `●` header (`docs/ask.md`). It names
+/// which the renderer promotes to the `●` header (`docs/tools/ask.md`). It names
 /// **this** agent ([`crate::APP_NAME`], pinned by the test below): the
 /// reference tool's wording was ported with its own product name in it, so
 /// the cell used to credit a different agent for the questions the user had
@@ -357,7 +357,7 @@ pub enum AskClock {
     Expired(Duration),
 }
 
-/// The idle clock over waiting questions (`docs/ask.md`) — pure, the instants
+/// The idle clock over waiting questions (`docs/tools/ask.md`) — pure, the instants
 /// injected by the boundary that owns it (the draw tick reads it, the key and
 /// paste paths [`touch`](Self::touch) it), so every rule is unit-tested with
 /// no thread and no terminal.
@@ -443,7 +443,7 @@ struct GateInner {
 /// woken by the event loop's decision — the
 /// [`crate::permission::PermissionGate`] sibling, minus the standing rules (an
 /// answer never covers a later question). Cloneable; every clone shares one
-/// decision board. See `docs/ask.md`.
+/// decision board. See `docs/tools/ask.md`.
 #[derive(Debug, Clone, Default)]
 pub struct AskGate {
     inner: Arc<Mutex<GateInner>>,
@@ -712,7 +712,7 @@ mod tests {
         assert!(result.contains("wait"), "got {result}");
     }
 
-    // --- the timeout (docs/ask.md) ---
+    // --- the timeout (docs/tools/ask.md) ---
 
     #[test]
     fn the_default_wait_is_ten_minutes() {
@@ -779,7 +779,7 @@ mod tests {
         assert!(value["answers"].get("Pick a snack?").is_none());
     }
 
-    // --- the idle clock (docs/ask.md) ---
+    // --- the idle clock (docs/tools/ask.md) ---
 
     const TEN_MINUTES: Duration = Duration::from_secs(600);
 

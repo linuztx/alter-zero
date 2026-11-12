@@ -1,5 +1,5 @@
 //! Clickable links: bare-URL detection, the URL interner, the per-cell link
-//! carrier, and the OSC 8 escape framing (see `docs/links.md`).
+//! carrier, and the OSC 8 escape framing (see `docs/ui/links.md`).
 //!
 //! A URL wider than its row hard-breaks across display rows, and the
 //! terminal's own URL detection works on visible row text — so clicking a
@@ -58,7 +58,7 @@ pub fn find_urls(text: &str) -> Vec<Range<usize>> {
 /// around a URL owns it, and a text that *is* the URL has no prose to give it
 /// back to. The `/mcp` sign-in page shows exactly that text, its authorize
 /// URL, where a trimmed target would open something other than what `c`
-/// copies and the browser was handed (`docs/links.md`).
+/// copies and the browser was handed (`docs/ui/links.md`).
 #[must_use]
 pub fn is_whole_url(text: &str) -> bool {
     matches!(next_scheme(text, 0), Some((0, body)) if body < text.len())
@@ -116,7 +116,7 @@ fn url_end(text: &str, body: usize, quote: Option<char>) -> usize {
 /// still-growing streamed line whose next characters could restyle text
 /// already present, so the streaming committer must withhold it whole (the
 /// [`crate::markdown::has_open_inline`] situation, for autolinks —
-/// `docs/links.md`). Two shapes are unsettled:
+/// `docs/ui/links.md`). Two shapes are unsettled:
 ///
 /// - a detected scheme whose **body run reaches the end of the line** — more
 ///   URL characters would grow the link (`http://e` → `http://ex`), re-join
@@ -317,7 +317,7 @@ pub fn linked(style: Style, url: &str) -> Style {
 /// image flag** decodes; every other colour kind (and `Rgb(0, 0, 0)`, the
 /// reserved id) is an ordinary colour, not ours — as is anything with
 /// [`IMAGE_CARRIER_FLAG`] set, which is an image block's marker
-/// (`docs/images.md`).
+/// (`docs/ui/images.md`).
 ///
 /// [`IMAGE_CARRIER_FLAG`]: crate::images::geometry::IMAGE_CARRIER_FLAG
 #[must_use]
@@ -373,7 +373,7 @@ pub fn osc8_open(id: u32, url: &str) -> String {
 // --- `file://` targets ---
 
 /// The `file://` URI of `path` — the target a `● Read/Write/Edit({path})`
-/// header's path carries (`docs/links.md` *The file tool header*), so a
+/// header's path carries (`docs/ui/links.md` *The file tool header*), so a
 /// click opens the file however the row showed it. A relative `path`
 /// resolves against `cwd` first (the session's — `app::PathDisplay`); `None`
 /// when it cannot be placed: a relative path with no absolute `cwd`, or an
@@ -472,7 +472,7 @@ mod tests {
     fn a_text_that_is_one_url_is_whole_whatever_it_ends_on() {
         // Prose detection gives a closing `.`/`!`/`)` back to the sentence
         // around a URL; a text that IS the URL has no sentence, so what it
-        // ends on stays part of it (`docs/links.md`).
+        // ends on stays part of it (`docs/ui/links.md`).
         for text in [
             "https://as.test/authorize?client_id=c1&state=xyz",
             "https://as.test/authorize?resource=https%3A%2F%2Fmcp.test.",
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(carrier_id(Color::Cyan), None);
         assert_eq!(carrier_id(Color::Rgb(0, 0, 3)), Some(3));
         assert_eq!(carrier_id(Color::Rgb(1, 2, 3)), Some(0x01_02_03));
-        // The top bit belongs to the inline-image blocks (`docs/images.md`),
+        // The top bit belongs to the inline-image blocks (`docs/ui/images.md`),
         // so a picture's marker must never decode as a URL here.
         assert_eq!(carrier_id(Color::Rgb(0x80, 0x01, 0x00)), None);
         assert_eq!(carrier_id(Color::Rgb(0xFF, 0xFF, 0xFF)), None);
@@ -756,7 +756,7 @@ mod tests {
         assert!(hyperlinks_disabled(Some(" OFF ")));
     }
 
-    // --- `file://` targets for the file tool headers (docs/links.md) ---
+    // --- `file://` targets for the file tool headers (docs/ui/links.md) ---
 
     #[test]
     fn an_absolute_path_becomes_a_file_url() {

@@ -1,4 +1,4 @@
-//! Live tests for stored secrets (`docs/secrets.md`): a real model, the real
+//! Live tests for stored secrets (`docs/state/secrets.md`): a real model, the real
 //! executor, and the `<system-reminder>` a session leads with — the only place
 //! the model learns a placeholder exists. What they prove is the part no unit
 //! test can: that a model told about `<secret:NAME>` actually **uses** it in

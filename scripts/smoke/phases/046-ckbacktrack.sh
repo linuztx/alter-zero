@@ -5,7 +5,7 @@
 smoke_begin
 
 # Esc-Esc BACKTRACK resets the CODE, not just the transcript
-# (docs/checkpoint.md). Each turn snapshots the working directory into an
+# (docs/state/checkpoint.md). Each turn snapshots the working directory into an
 # isolated git store (never the user's real .git); rewinding to an earlier user
 # message restores the files to that point. Deterministic with the dummy
 # backend: a pristine file, a text turn (no file change), then a `!` shell turn

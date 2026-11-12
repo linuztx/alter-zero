@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/login` SIGN-IN FORK (docs/copilot.md). `/login` no
+# the `/login` SIGN-IN FORK (docs/providers/copilot.md). `/login` no
 # longer opens on the provider list — it asks how you sign in first, because
 # GitHub Copilot is a subscription rather than a key you paste. Walk the whole
 # tree in one session: the method root, down into the subscription list and
@@ -70,7 +70,7 @@ login_keys="$(tmux capture-pane -t "$S103" -p)"
 echo "==== Phase 103: the API-key provider list ===="
 printf '%s\n' "$login_keys"
 # Venice is here twice on purpose — through the Agent Zero proxy and directly
-# (docs/venice.md) — and both rows must be offered a key field.
+# (docs/providers/venice.md) — and both rows must be offered a key field.
 for want in "Agent Zero API" "Venice" "OpenRouter" "Keys are saved to" "esc back"; do
 	expect_has "$login_keys" -F "$want" "the API-key list did not show \"$want\""
 done
@@ -84,7 +84,7 @@ expect_lacks "$login_keys" -F "Sign in with an API key" "the provider list still
 
 # Enter on the highlighted provider opens the key step — which introduces the
 # provider it is asking a secret for and links the page that secret is made
-# on, read from `providers.toml` (docs/llm.md). A page that asks for a key and
+# on, read from `providers.toml` (docs/providers/llm.md). A page that asks for a key and
 # says nothing about where to get one is the thing this replaces.
 tmux send-keys -t "$S103" Enter
 sleep 0.4

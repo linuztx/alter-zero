@@ -1,7 +1,7 @@
 //! OpenAI's ChatGPT seat as a provider: the browser PKCE sign-in, its
 //! device-code twin for a headless machine, the token layers every request
 //! needs, and the request identity the ChatGPT backend insists on. See
-//! `docs/chatgpt.md`.
+//! `docs/providers/chatgpt.md`.
 //!
 //! Two token layers, the same split [`super::copilot`] keeps for GitHub:
 //!
@@ -444,7 +444,7 @@ pub fn auth_advice(status: u16, body: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// The device-code flow's shapes (pure) — docs/chatgpt.md
+// The device-code flow's shapes (pure) — docs/providers/chatgpt.md
 // ---------------------------------------------------------------------------
 
 /// Where the device-code flow's four calls go, off one issuer: Codex's own
@@ -1216,7 +1216,7 @@ pub const PROVIDER_ID: &str = "chatgpt_codex";
 /// which read as a second OpenAI API-key provider. A saved selection —
 /// `config.json`'s, a rollout's `model` record — may still say it, and
 /// [`canonical_provider_id`] reads it as [`PROVIDER_ID`] so nothing needs
-/// choosing again (`docs/chatgpt.md`).
+/// choosing again (`docs/providers/chatgpt.md`).
 pub const LEGACY_PROVIDER_ID: &str = "openai_chatgpt";
 
 /// The environment variable the refresh token lives under — the same name
@@ -1255,7 +1255,7 @@ pub fn legacy_key_env(key_env: &str) -> Option<&'static str> {
 /// and `conversation_id`. Verified live — the body's `prompt_cache_key`
 /// alone earned no cache reads on an identical 6.7k-token prefix, the same
 /// request with these read 6.4k of it back, and `OpenAI-Beta` on its own
-/// changed nothing (`docs/chatgpt.md`, `docs/prompt-caching.md`). Pure: no
+/// changed nothing (`docs/providers/chatgpt.md`, `docs/providers/prompt-caching.md`). Pure: no
 /// key means no headers, since an empty session id is a *different*
 /// (invalid) routing hint rather than none.
 #[must_use]
@@ -1271,7 +1271,7 @@ pub fn session_headers(cache_key: Option<&str>) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// Codex's per-request routing hint header (`docs/fast-mode.md`).
+/// Codex's per-request routing hint header (`docs/providers/fast-mode.md`).
 pub const ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
 
 /// The routing hint's value: `model={model}` on every request, and
@@ -1583,7 +1583,7 @@ mod tests {
     #[test]
     fn the_cache_lifetime_prefers_the_grant_duration_to_the_absolute_expiry() {
         // The token response's `expires_in` is a duration, immune to the
-        // clock — the mitigation `docs/copilot.md` describes, available here
+        // clock — the mitigation `docs/providers/copilot.md` describes, available here
         // after all. A clock hours ahead makes `exp` look already past; the
         // duration is what keeps that from re-minting on every request.
         assert_eq!(
@@ -1942,7 +1942,7 @@ mod tests {
         assert!(auth_advice(500, "").is_none());
     }
 
-    // --- the device-code flow (docs/chatgpt.md) ---
+    // --- the device-code flow (docs/providers/chatgpt.md) ---
 
     #[test]
     fn the_device_endpoints_hang_off_the_issuer() {
@@ -2084,7 +2084,7 @@ mod tests {
     fn the_legacy_provider_id_reads_as_the_renamed_one_and_nothing_else_moves() {
         // `openai_chatgpt` was the id before the provider was named for what
         // it is; a saved selection still saying it lands on the same
-        // provider (docs/chatgpt.md). Every other id — the new one included
+        // provider (docs/providers/chatgpt.md). Every other id — the new one included
         // — is itself.
         assert_eq!(canonical_provider_id(LEGACY_PROVIDER_ID), PROVIDER_ID);
         assert_eq!(canonical_provider_id("chatgpt_codex"), "chatgpt_codex");

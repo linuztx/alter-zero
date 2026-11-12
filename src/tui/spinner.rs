@@ -1,10 +1,10 @@
 //! The `/spinner` picker at the boundary: applying a selection
-//! (`docs/spinner.md`).
+//! (`docs/ui/spinner.md`).
 //!
 //! The pure side ([`alter_zero::app::App::spinner`]) already holds the new
 //! style when the picker's Enter lands here; what has to *happen* — the
 //! `spinner.json` write (keyed by this working directory,
-//! `docs/per-directory-state.md`) and the confirming toast — lives at the
+//! `docs/state/per-directory-state.md`) and the confirming toast — lives at the
 //! boundary, the `tui::mascot::Session::select_mascot` pattern.
 
 use alter_zero::app::{Spinner, ToastKind};
@@ -18,7 +18,7 @@ impl Session<'_> {
     ///
     /// Unlike a `/mascot` switch this needs **no purge rebuild**: the status
     /// line is live-region-only — its per-frame spinner and shimmer colours
-    /// never reach scrollback (`docs/status-indicator.md`) — so nothing
+    /// never reach scrollback (`docs/ui/status-indicator.md`) — so nothing
     /// committed has to be redrawn. The next frame's status line, a running
     /// turn's or the next turn's, already wears the new style; `after_key`
     /// schedules that frame.

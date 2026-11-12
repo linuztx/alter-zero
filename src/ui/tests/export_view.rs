@@ -1,5 +1,5 @@
 //! The `/export` page and the plain-text export it produces
-//! (`docs/export.md`).
+//! (`docs/ui/export.md`).
 
 use super::*;
 use crate::app::ExportTarget;
@@ -235,7 +235,7 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 #[test]
 fn the_page_flows_like_its_family() {
     // A short terminal bottom-anchors the page and flows the skipped top
-    // into scrollback (docs/view-flow.md) — the page must be flow-eligible
+    // into scrollback (docs/ui/view-flow.md) — the page must be flow-eligible
     // like /donate, or its title would silently clip.
     let app = open_app();
     let page = export_view_lines(&app, 80).len();
@@ -439,7 +439,7 @@ fn export_text_wraps_at_the_width_it_is_asked_for() {
 fn export_text_inside_an_agent_view_is_that_agents_transcript() {
     // The export is of the conversation on screen: inside a subagent's
     // session view that is the agent's own transcript, not the lead's (the
-    // `/copy` rule, `docs/agent-view-streaming.md`).
+    // `/copy` rule, `docs/agents/agent-view-streaming.md`).
     let mut app = with_session();
     app.record_user_message("lead question");
     app.begin_stream();

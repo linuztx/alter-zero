@@ -5,7 +5,7 @@
 smoke_begin
 
 # the READ-ONLY OVERLAYS stay reachable from a permission prompt
-# (docs/permissions.md). The prompt is modal — it owns every key so the blocked
+# (docs/state/permissions.md). The prompt is modal — it owns every key so the blocked
 # tool thread can't be answered by accident — but Ctrl+O (the transcript) and
 # Ctrl+D (the raw context) are exactly how you decide what to answer, so they
 # are the two keys it lets through. Both must open over the open prompt, and
@@ -15,7 +15,7 @@ smoke_begin
 # would strand the prompt above a blank band or double the flowed rows. Driven
 # at three heights — a region floating with rows to spare below it, one seated
 # flush at the screen bottom, and one flush whose page FLOWS its top into real
-# scrollback (docs/view-flow.md); each asserts the seat it is named for, so a
+# scrollback (docs/ui/view-flow.md); each asserts the seat it is named for, so a
 # case can never quietly degenerate into a copy of another.
 # The screen AND the scrollback are compared byte for byte before and after —
 # and where the region is meant to sit flush at the screen bottom the runner
@@ -23,7 +23,7 @@ smoke_begin
 # and the comparison would then prove nothing. Both exits are driven: the
 # transcript is left by **Esc** — the key that would otherwise arm the
 # edit-previous backtrack, so the trip exercises the guard keeping a parked
-# tool thread's history un-rewindable (docs/backtrack.md) — and the context
+# tool thread's history un-rewindable (docs/input/backtrack.md) — and the context
 # view by its own Ctrl+D. Phase 62 makes the same check in the other
 # direction, with the overlay already up when the request lands.
 po_round_trip() { # session, rows, cue, label, seat(flush | floating)
@@ -131,7 +131,7 @@ po_round_trip "${S}_permoverlay" 44 "permission demo please" "region floating" f
 # one row of chat one-way into scrollback on the way there.
 po_round_trip "${S}_permoverlayfit" 28 "permission demo please" "page fits, flush" flush
 # 18 rows: the page is taller than the terminal, so its top FLOWS into real
-# scrollback (docs/view-flow.md) — the geometry the close's purge rebuild
+# scrollback (docs/ui/view-flow.md) — the geometry the close's purge rebuild
 # exists for, and the only one that exercises the flow signature across the
 # overlay round trip.
 po_round_trip "${S}_permoverlaytall" 18 "permission demo please" "page flows" flush

@@ -4,14 +4,14 @@
 //! indicator's spinner/shimmer, the band and footer metrics — retheme or
 //! re-size here, never inline at a call site. That rule is a project convention
 //! (CLAUDE.md); the consts each feature owns are described in its own doc, e.g.
-//! `docs/status-indicator.md`, `docs/footer.md`, `docs/toast.md`,
-//! `docs/shortcuts.md`.
+//! `docs/ui/status-indicator.md`, `docs/ui/footer.md`, `docs/ui/toast.md`,
+//! `docs/ui/shortcuts.md`.
 //!
 //! The **colours** are accessor functions rather than consts: each names a
 //! *role* (`tool_ok_color()` — a finished tool's bullet; `menu_selected_color()`
 //! — what every picker selects with) and reads the active theme's
 //! [`Palette`](super::palette::Palette), so a `/theme` switch recolours every
-//! call site with no call site knowing (`docs/theme.md`). A colour word in a
+//! call site with no call site knowing (`docs/ui/theme.md`). A colour word in a
 //! role's doc comment — "cyan", "green", "dim grey" — describes the role as
 //! the palettes paint it (the original One Dark chrome's words, kept because
 //! every other theme paints the same role with the same *kind* of colour);
@@ -50,11 +50,11 @@ pub(super) const BULLET_WIDTH: u16 = 2;
 
 /// The column every text field keeps past its text for the caret — the cell
 /// the cursor sits in at the end of a row the wrap left exactly full
-/// (`layout::text_field_width`, `docs/textarea.md`).
+/// (`layout::text_field_width`, `docs/input/textarea.md`).
 pub(super) const CURSOR_COLUMN: u16 = 1;
 
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
-// `docs/markdown.md`). Code sits under the bullet (no gutter, no language
+// `docs/ui/markdown.md`). Code sits under the bullet (no gutter, no language
 // label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
 // for code losing its indentation — and **syntax-highlighted** by the `highlight`
 // module (syntect + two_face grammars, Catppuccin Mocha theme — codex parity;
@@ -71,10 +71,10 @@ pub(super) const CODE_TAB_WIDTH: usize = 4;
 
 /// A markdown thematic break (`---` / `***` / `___`) renders as this em-dash rule,
 /// a direct port of codex's `Event::Rule` (`Line::from("———")` — three U+2014 EM
-/// DASH, unstyled/default foreground). See `docs/markdown.md`.
+/// DASH, unstyled/default foreground). See `docs/ui/markdown.md`.
 pub(super) const THEMATIC_BREAK: &str = "———";
 
-// --- Markdown table styling (docs/markdown.md, docs/table-streaming.md). A GFM
+// --- Markdown table styling (docs/ui/markdown.md, docs/ui/table-streaming.md). A GFM
 // pipe table renders as a box-drawing grid: dim borders, bold header cells.
 // Column widths are locked from the header + first data row (fit to the width),
 // so once the first row streams the block is prefix-stable and its rows commit
@@ -91,7 +91,7 @@ pub(super) fn table_border_color() -> Color {
 /// it across multiple rows rather than losing text to a `…`.
 pub(super) const TABLE_MIN_COL: usize = 3;
 
-/// Records fallback (`docs/table-streaming.md`, Claude Code's key/value transpose):
+/// Records fallback (`docs/ui/table-streaming.md`, Claude Code's key/value transpose):
 /// a column at least this wide is considered scannable, so it never triggers the
 /// fallback even if its content wraps (it's a legitimately wide narrative column).
 pub(super) const TABLE_SCANNABLE_COL: usize = 12;
@@ -112,7 +112,7 @@ pub(super) const TABLE_RECORD_STACK_INDENT: usize = 2;
 /// short key/value fields (a wide records table's full-width rule looked heavy).
 pub(super) const TABLE_RECORD_SEPARATOR_WIDTH: usize = 40;
 
-// --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
+// --- Inline markdown styling (docs/ui/markdown.md). A prose line's `**bold**`,
 // `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
 // emphasis is modifier-only (bold/italic/crossed-out), code and links carry a
 // colour. Parsing lives in `markdown::parse_inline`; `ui` owns the styling. ---
@@ -126,7 +126,7 @@ pub(super) fn link_url_color() -> Color {
     palette().link
 }
 
-// --- List and blockquote styling (docs/markdown.md), codex's look: every
+// --- List and blockquote styling (docs/ui/markdown.md), codex's look: every
 // bullet renders `•` whatever its source marker, a task item a ballot box,
 // an ordered item `N.` in an accent colour, renumbered from the list's start;
 // each nesting level sits `LIST_NEST_WIDTH` columns deeper and continuation
@@ -161,7 +161,7 @@ pub(super) fn quote_color() -> Color {
 // (syntect + two_face, Catppuccin Mocha — codex parity), baked into each
 // `highlight::Seg`'s `Style`. `ui` no longer owns a code palette or maps token
 // kinds to colours; it just renders the segments the grammar produced. See
-// `docs/markdown.md`.
+// `docs/ui/markdown.md`.
 
 pub(super) fn user_color() -> Color {
     palette().user_fg
@@ -195,7 +195,7 @@ pub(super) fn border_color() -> Color {
 // --- Tool-call styling. A tool renders as a coloured bullet header
 // `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
 // the tool's lifecycle (a blinking grey while it runs, green ok, red fail —
-// `docs/tool-pulse.md`). The full output is
+// `docs/ui/tool-pulse.md`). The full output is
 // only shown in the Ctrl+O tool-output view, never inline. ---
 
 /// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
@@ -216,7 +216,7 @@ pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
-/// The hook-run cell's words (`docs/hooks.md` *The hook-run cell*): the
+/// The hook-run cell's words (`docs/tools/hooks.md` *The hook-run cell*): the
 /// header's `Ran 1 Stop hook` around the count and the event, and the
 /// expanded cell's file row under a hook's command — a refusal's `Config:`
 /// line. Every row under the header is the report's own words.
@@ -225,7 +225,7 @@ pub(super) const HOOK_CELL_HOOK: &str = " hook";
 pub(super) const HOOK_CELL_HOOKS: &str = " hooks";
 pub(super) const HOOK_CELL_CONFIG: &str = "Config: ";
 
-/// The collapsed MCP cell's vocabulary (`docs/mcp.md`): a running call's
+/// The collapsed MCP cell's vocabulary (`docs/tools/mcp.md`): a running call's
 /// `● Calling {server}… (ctrl+o to expand)` header and the resolved
 /// bullet-less dim `Called {server} (ctrl+o to expand)` line (the settled
 /// thinking line's shape — `reasoning_label_color()`). The full
@@ -234,7 +234,7 @@ pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
 pub(super) const MCP_CALLING_SUFFIX: &str = "…";
 pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
 
-/// The collapsed read/search group's glyphs (`docs/tool-groups.md`): the `…`
+/// The collapsed read/search group's glyphs (`docs/ui/tool-groups.md`): the `…`
 /// that closes an open group's `● Reading 2 files…` line, and the `$ ` its
 /// `⎿` hint row puts in front of a command (a read's hint is its path).
 pub(super) const TOOL_GROUP_ACTIVE_SUFFIX: &str = "…";
@@ -243,15 +243,15 @@ pub(super) const TOOL_GROUP_COMMAND_PROMPT: &str = "$ ";
 /// How long a command in an open read/search group must have run before the
 /// group's `⎿` row wears its clock — `$ grep -rn todo . (12s · 34 lines)` —
 /// the reference's two seconds, so a fast command never flashes one and a
-/// slow one does not look frozen (`docs/tool-groups.md` *The hint row*).
+/// slow one does not look frozen (`docs/ui/tool-groups.md` *The hint row*).
 pub(super) const TOOL_GROUP_CLOCK_DELAY: Duration = Duration::from_secs(2);
 
 /// The window the **running** command tail shows (`running_command_lines`):
 /// four wrapped display **rows** of what the command has printed, ending at
 /// the lowest row still moving (`LiveTail::anchor` — the last row for every
-/// command whose newest output is at its end, `docs/tool-streaming.md`),
+/// command whose newest output is at its end, `docs/ui/tool-streaming.md`),
 /// over the `+N lines (Ns · wait …)` clock row — the unit the user reads
-/// the cell in (`docs/long-lines.md`). It is also the ceiling of the
+/// the cell in (`docs/ui/long-lines.md`). It is also the ceiling of the
 /// **settled** block,
 /// hint included: [`TOOL_FOLD_ROWS`] rows over the `… +N lines` hint, or
 /// `TOOL_FOLD_ROWS + 1` rows shown whole — so a `bash` cell never *grows*
@@ -266,7 +266,7 @@ pub(super) const TOOL_PEEK_ROWS: usize = 4;
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
 
 /// How many **lines** of a command the collapsed header shows before the rest
-/// is cut — Claude Code's `Bash(…)` header keeps two (`docs/tools.md`
+/// is cut — Claude Code's `Bash(…)` header keeps two (`docs/tools/tools.md`
 /// *Long headers*). The Ctrl+O transcript shows every line.
 pub(super) const TOOL_HEADER_MAX_LINES: usize = 2;
 
@@ -278,20 +278,20 @@ pub(super) const TOOL_HEADER_MAX_COLS: usize = 160;
 
 /// How many display **rows** of arguments the collapsed header shows: where
 /// [`TOOL_HEADER_MAX_COLS`] columns would wrap onto a third row, the header
-/// stops at the end of the second, `…)` on its last word (`docs/tools.md`
+/// stops at the end of the second, `…)` on its last word (`docs/tools/tools.md`
 /// *Long headers*). A spilled header's name-only first row is not counted.
 pub(super) const TOOL_HEADER_MAX_ROWS: usize = 2;
 
 /// How many display **rows** of its output a settled exec cell shows *above
 /// the fold* — Claude Code's three — before the rest collapses behind the
-/// `… +N lines (ctrl+o to expand)` hint (`docs/long-lines.md`). An output of
+/// `… +N lines (ctrl+o to expand)` hint (`docs/ui/long-lines.md`). An output of
 /// exactly `TOOL_FOLD_ROWS + 1` rows shows whole: a hint hiding one row would
 /// cost the very row it hides. So the block is at most [`TOOL_PEEK_ROWS`]
 /// rows either way, hint included.
 pub(super) const TOOL_FOLD_ROWS: usize = 3;
 
 /// The size cap on the display-only JSON reshaping of an exec cell's output
-/// (`docs/long-lines.md` *Pretty JSON*): an output longer than this many
+/// (`docs/ui/long-lines.md` *Pretty JSON*): an output longer than this many
 /// bytes is shown as it came — Claude Code's own 10 000-character guard,
 /// which bounds the `Value` tree the reshaping parses per render.
 pub(super) const TOOL_JSON_PRETTY_MAX_BYTES: usize = 10_000;
@@ -308,19 +308,19 @@ pub(super) const TOOL_HEADER_CLOSE: &str = ")";
 /// Past it (an MCP call's `● deepwiki - ask_question (MCP)` is 31 columns —
 /// 40% of an 76-column terminal) the header hangs its continuations at the
 /// bullet's own two columns instead, so the arguments get the width rather
-/// than a ragged column. See `tool_header_lines` and `docs/mcp.md`.
+/// than a ragged column. See `tool_header_lines` and `docs/tools/mcp.md`.
 pub(super) const TOOL_HEADER_ALIGN_SHARE: usize = 3;
 
 /// Dim marker appended at the end of a `!` shell command's **expanded** output
 /// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
-/// to show that more output was dropped. See `docs/shell-command.md`.
+/// to show that more output was dropped. See `docs/input/shell-command.md`.
 pub(super) const TOOL_TRUNCATED_MARKER: &str = "…";
 
 /// Placeholder body for a finished tool that produced no output.
 pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 
 // ---------------------------------------------------------------------------
-// The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
+// The thinking stream (docs/ui/thinking-stream.md). It borrows the tool cell's
 // shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
 // blinking like a running tool's, its label carrying the status line's
 // white shimmer sweep) over the chain-of-thought in the
@@ -382,7 +382,7 @@ pub(super) fn reasoning_label_color() -> Color {
 pub(super) const REASONING_PEEK_LINES: usize = 3;
 
 // ---------------------------------------------------------------------------
-// Background shells (docs/background.md): the backgrounded cell's fixed row,
+// Background shells (docs/tools/background.md): the backgrounded cell's fixed row,
 // the running-command Ctrl+B hint, the ↓ manager band, and the footer count.
 // ---------------------------------------------------------------------------
 
@@ -403,19 +403,19 @@ pub(super) const TOOL_STOP_WAITING_HINT: &str = "(ctrl+b to stop waiting)";
 /// `(ctrl+b to run in background)` hint — Claude-Code-style, so a command that
 /// finishes right away never flashes it (Ctrl+B itself still works the whole
 /// time; only the discoverability hint waits). Gated on the boundary-injected
-/// [`App::background_hint_elapsed`]. See `docs/background.md`.
+/// [`App::background_hint_elapsed`]. See `docs/tools/background.md`.
 pub(super) const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
 
 /// The separator inside a running command's clock clause, between the
 /// command's own elapsed and how long its call waits for it:
 /// `(22s · wait 1m 50s)` — the footer's [`FOOTER_SEPARATOR`], the one
-/// dot the whole chrome joins facts with (`docs/tool-streaming.md`).
+/// dot the whole chrome joins facts with (`docs/ui/tool-streaming.md`).
 pub(super) const TOOL_CLOCK_SEPARATOR: &str = " · ";
 
 /// The label in front of the wait in that clause — `wait 1m 50s`. A limit
 /// needs naming where an elapsed does not: bare, the two numbers would read
 /// as a range. A *wait*, not a timeout: the command is not stopped when it
-/// passes, it goes on as a session (`docs/bash-tools.md`).
+/// passes, it goes on as a session (`docs/tools/bash-tools.md`).
 pub(super) const TOOL_TIMEOUT_LABEL: &str = "wait ";
 
 /// The ↓ manager's list title.
@@ -482,7 +482,7 @@ pub(super) fn bg_dim_color() -> Color {
 }
 
 /// The notice bullet colours: green success, red failure/stop — and the
-/// caution amber for a session waiting for input (`docs/bash-tools.md`),
+/// caution amber for a session waiting for input (`docs/tools/bash-tools.md`),
 /// which has not ended either way.
 pub(super) fn bg_notice_ok_color() -> Color {
     tool_ok_color()
@@ -496,7 +496,7 @@ pub(super) fn bg_notice_waiting_color() -> Color {
     palette().warning
 }
 
-/// A subagent the user's message started again (`docs/agent-tools.md` *A
+/// A subagent the user's message started again (`docs/agents/agent-tools.md` *A
 /// resume is news when it starts*): running, so neither an outcome's green
 /// nor its red — the accent a system notice wears.
 pub(super) fn agent_notice_resumed_color() -> Color {
@@ -511,7 +511,7 @@ pub(super) const TOOL_RUNNING: &str = "Running…";
 /// Placeholder body for a tool queued in a **parallel batch** but not yet
 /// started — the dim `⎿ Waiting…` row shown under a not-yet-running sibling's
 /// `● name(args)` header while another call in the batch executes. See
-/// `docs/parallel-tools.md`.
+/// `docs/tools/parallel-tools.md`.
 pub(super) const TOOL_WAITING: &str = "Waiting…";
 
 /// The **resting** colour of a tool that is still executing: the same grey the
@@ -533,13 +533,13 @@ pub(super) fn tool_running_color() -> Color {
 }
 
 // The running bullet's **cadence**, and the breath the `pulse` spinner style
-// still borrows (`docs/spinner.md`). The bullet itself no longer blends
+// still borrows (`docs/ui/spinner.md`). The bullet itself no longer blends
 // colours — it blinks (`tool::tool_pulse_visible`) — but the `pulse` spinner
 // keeps the raised-cosine dim→bright→dim breath these two ends describe, its
 // ends blended through `wrap::blend_color` (which steps rather than mixes when
-// a theme names a terminal-palette colour, `docs/theme.md`), in step with the
+// a theme names a terminal-palette colour, `docs/ui/theme.md`), in step with the
 // bullet off the same boundary-injected frame clock (`App::set_pulse`). See
-// `docs/tool-pulse.md`.
+// `docs/ui/tool-pulse.md`.
 
 /// The dim end of the `pulse` spinner's breath — where its cycle starts and
 /// ends. Well below the resting grey, so the dip carries the whole animation
@@ -612,7 +612,7 @@ pub(super) fn tool_dim_color() -> Color {
     palette().dim
 }
 
-// ===== The task tools' live checklist (docs/task-tools.md) =====
+// ===== The task tools' live checklist (docs/tools/task-tools.md) =====
 
 /// The checklist's status glyphs — Claude Code's `figures` trio: pending's
 /// empty square, in-progress's filled square, completed's tick.
@@ -638,7 +638,7 @@ pub(super) fn task_completed_color() -> Color {
 pub(super) const TASK_BLOCKED_MARKER: &str = "›";
 
 /// The inset the **idle** task block sits at — the count line and its rows
-/// (`docs/task-tools.md`). Two spaces, the same inset the footer and the
+/// (`docs/tools/task-tools.md`). Two spaces, the same inset the footer and the
 /// queued messages use, so the resting screen reads as one column; in a turn
 /// the rows take [`TOOL_RESULT_PREFIX`]'s `⎿` gutter instead.
 pub(super) const TASK_IDLE_INDENT: &str = "  ";
@@ -648,7 +648,7 @@ pub(super) const TASK_IDLE_INDENT: &str = "  ";
 /// what is actionable — see `ui::tasks`).
 pub(super) const TASK_MAX_ROWS: usize = 10;
 
-// ===== The spinner tip (docs/tips.md) =====
+// ===== The spinner tip (docs/ui/tips.md) =====
 
 /// The label opening the tip row, after the `⎿` gutter
 /// ([`TOOL_RESULT_PREFIX`]) — Claude Code's `Tip: `.
@@ -662,7 +662,7 @@ pub(super) fn tip_color() -> Color {
 }
 
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
-/// look, adapted to the `⎿` gutter; see `docs/tools.md`).
+/// look, adapted to the `⎿` gutter; see `docs/tools/tools.md`).
 pub(super) fn tool_diff_add_color() -> Color {
     tool_ok_color()
 }
@@ -686,7 +686,7 @@ pub(super) fn tool_diff_del_bg() -> Color {
 }
 
 /// Background tint of the **characters that changed** on an added row — the
-/// character-level refinement's own colour (`docs/inline-diff.md`). A clearly
+/// character-level refinement's own colour (`docs/ui/inline-diff.md`). A clearly
 /// brighter green than the row's [`tool_diff_add_bg`], because the two are
 /// read together: the muted row tint says *this line changed*, the bright mark
 /// says *here*. Bright enough to find at a glance — which puts it at a middle
@@ -704,7 +704,7 @@ pub(super) fn tool_diff_del_mark_bg() -> Color {
 }
 
 /// The contrast every changed run's ink keeps against its mark, as a WCAG
-/// ratio (`docs/inline-diff.md`). A syntax colour that already reads keeps
+/// ratio (`docs/ui/inline-diff.md`). A syntax colour that already reads keeps
 /// its colour. One that doesn't is lifted toward [`tool_diff_mark_ink`]
 /// until it does. In Dracula a doc comment's grey sat on the added-text mark
 /// at 1.0:1, the two the same brightness, so the words the edit changed
@@ -724,7 +724,7 @@ pub(super) fn tool_diff_mark_ink() -> Color {
 
 /// How much of a `-`/`+` line pair must be **common** for the character-level
 /// refinement to run at all, as a percentage of the longer line's
-/// non-whitespace display columns (`docs/inline-diff.md`). Below it the two
+/// non-whitespace display columns (`docs/ui/inline-diff.md`). Below it the two
 /// lines are a replacement rather than an edit: there is no "what changed" to
 /// point at, and marking most of the line is noisier than marking none of it,
 /// so the row keeps its flat tint. Whitespace is excluded from the count so a
@@ -741,7 +741,7 @@ pub(super) const INLINE_DIFF_MAX_CELLS: usize = 40_000;
 
 /// The corner row of a `write` still being generated, before its first line
 /// arrives — and, around the count, once lines do: `Writing 17 lines…`
-/// (`docs/write-streaming.md`). The count grows as the lines stream in; the
+/// (`docs/ui/write-streaming.md`). The count grows as the lines stream in; the
 /// committed cell's `Wrote 17 lines to {path}` takes the row's place.
 pub(super) const TOOL_WRITING: &str = "Writing…";
 pub(super) const TOOL_WRITING_PREFIX: &str = "Writing ";
@@ -753,13 +753,13 @@ pub(super) const TOOL_WRITING_SUFFIX: &str = "…";
 /// of this budget left and shows each one whole when the rows left hold it;
 /// the one line that needs more is cut on the last row with
 /// [`FILE_PEEK_CUT_MARKER`], so no line, however long, carries the peek past
-/// this many rows (`docs/long-lines.md` §8). A streaming `write`'s tail is
-/// exactly this many rows (`docs/write-streaming.md`).
+/// this many rows (`docs/ui/long-lines.md` §8). A streaming `write`'s tail is
+/// exactly this many rows (`docs/ui/write-streaming.md`).
 pub(super) const FILE_PEEK_LINES: usize = 10;
 
 /// The dim marker closing the last row the file peek keeps of a line it cuts
 /// at [`FILE_PEEK_LINES`] — in the row's last column, on its tint — so a cut
-/// line never reads as a line that ended (`docs/long-lines.md` §8).
+/// line never reads as a line that ended (`docs/ui/long-lines.md` §8).
 pub(super) const FILE_PEEK_CUT_MARKER: &str = "…";
 
 /// The model tools whose output is a file change — rendered as the numbered,
@@ -771,13 +771,13 @@ pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 /// The model tools whose output is **command output** — a shell run, streamed
 /// and framed with an `Exit code: N` line. They render like the `!` shell cell
 /// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
-/// output live while running (`docs/tool-streaming.md`): `bash`, and the
+/// output live while running (`docs/ui/tool-streaming.md`): `bash`, and the
 /// companions that are the same command's later steps — `bashsend`,
-/// `bashwait`, `bashkill` (`docs/bash-tools.md`) — and the legacy
+/// `bashwait`, `bashkill` (`docs/tools/bash-tools.md`) — and the legacy
 /// `bash_session`. `bashlist`'s list is no command output: a generic tool
 /// keeps the single collapsed peek line. `agentoutput` joins them for the
 /// same reason the companions do: a wait on it streams the agent's calls as
-/// they start, and the cell tails them (`docs/agent-tools.md`).
+/// they start, and the cell tails them (`docs/agents/agent-tools.md`).
 pub(super) const COMMAND_TOOL_NAMES: [&str; 6] = [
     "Bash",
     "BashSend",
@@ -788,7 +788,7 @@ pub(super) const COMMAND_TOOL_NAMES: [&str; 6] = [
 ];
 
 /// The dim closing row of a command cell whose session is still alive
-/// (`docs/interactive-shell.md`) — `{state} · session {id}`, in place of the
+/// (`docs/tools/interactive-shell.md`) — `{state} · session {id}`, in place of the
 /// report's frame line, which is the model's: the program sits at a prompt,
 /// sits at a password prompt, is still busy, or was ended by the call.
 pub(super) const SESSION_WAITING_ROW: &str = "Waiting for input";
@@ -827,14 +827,14 @@ pub(super) const TOOL_VIEW_HINT_KEYS: &str =
 pub(super) const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
 
 /// Second key-hint row when idle Esc would instead **begin** the backtrack
-/// preview (`App::overlay_esc_backtracks` — `docs/backtrack.md`): Esc is not
+/// preview (`App::overlay_esc_backtracks` — `docs/input/backtrack.md`): Esc is not
 /// a quit key in that state, and promising it was ("I pressed Esc to exit
 /// and got edit-previous-message") is the reported surprise this hint fixes.
 /// Same three-space entry separator as [`TOOL_VIEW_HINT_KEYS`].
 pub(super) const TOOL_VIEW_HINT_QUIT_EDIT: &str = " q/ctrl+o to quit   esc to edit prev";
 
 /// Second key-hint row while a backtrack preview highlights a user message —
-/// codex's highlighted-pager footer (`docs/backtrack.md`); it replaces
+/// codex's highlighted-pager footer (`docs/input/backtrack.md`); it replaces
 /// [`TOOL_VIEW_HINT_QUIT`], whose Esc meaning the preview takes over.
 pub(super) const TOOL_VIEW_HINT_BACKTRACK: &str =
     " esc/← to edit prev   → to edit next   enter to edit message   q to cancel";
@@ -846,7 +846,7 @@ pub(super) const TOOL_VIEW_FILL: &str = "~";
 pub(super) const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 
 // --- Ctrl+D context-debug view (the third alternate-screen overlay) — the
-// raw LLM context window (docs/context.md): the transcript pager's chrome
+// raw LLM context window (docs/architecture/context.md): the transcript pager's chrome
 // (slash-tiled title, `~` filler, percentage separator, dim key hints) over
 // a body listing exactly what the model is sent — the system prompt, then
 // every derived context message, each opening on a lit role chip over its
@@ -914,11 +914,11 @@ pub(super) const CONTEXT_BODY_MIN_COLS: usize = 2;
 
 /// The fewest body rows that may give their top one up to a **pinned
 /// header** — the entry the window opens inside, named on its top row while
-/// its own header is scrolled off (`docs/context.md`). Fewer, and the pin
+/// its own header is scrolled off (`docs/architecture/context.md`). Fewer, and the pin
 /// would cost the very text it names.
 pub(super) const CONTEXT_PIN_MIN_ROWS: usize = 3;
 
-// --- The Ctrl+D view's classifier page (`docs/permissions.md`) — Tab's
+// --- The Ctrl+D view's classifier page (`docs/state/permissions.md`) — Tab's
 // other half: the same pager chrome over the bounded task context auto
 // mode's classifier reads before every command and MCP call. ---
 
@@ -959,7 +959,7 @@ pub(super) const CLASSIFIER_VIEW_NOTE_OFF: &str =
 /// about. The overflowing line is cut and closed with `…`; the section's
 /// remaining lines fold into the counted row under it. Shown whole, the
 /// 3.6 KB rubric would push the live block the page exists for sixty rows
-/// down (`docs/permissions.md`).
+/// down (`docs/state/permissions.md`).
 pub(super) const CLASSIFIER_PROMPT_PEEK_COLS: usize = 240;
 
 /// The lead of the dim `… +N lines` row that counts a section's folded
@@ -1034,7 +1034,7 @@ pub(super) fn context_tool_color() -> Color {
 }
 
 // --- /resume session picker (the other alternate-screen overlay) — codex's
-// resume picker, sized down (docs/resume.md): the same slash-tiled title
+// resume picker, sized down (docs/state/resume.md): the same slash-tiled title
 // chrome as the transcript pager, a type-to-search line, dense one-line
 // session rows (`❯ {age:12}{preview}`, the palette's selection-by-colour),
 // and a bottom rule carrying `{selected+1}/{total}` over a dim key-hint row. ---
@@ -1088,10 +1088,10 @@ pub(super) const RESUME_TOOLBAR_GAP: &str = "   ";
 /// toolbar compacts (and then drops).
 pub(super) const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 
-// --- Inline `/model` picker (docs/llm.md). Unlike `/resume`, this one is
+// --- Inline `/model` picker (docs/providers/llm.md). Unlike `/resume`, this one is
 // **inline** — it replaces the composer in the bottom live region with its own
 // `❯` search prompt over a scrolling model list, framed by top/bottom rules
-// like the input box. The picker family's page (docs/view-flow.md *A
+// like the input box. The picker family's page (docs/ui/view-flow.md *A
 // picker's page*): a title over a dim subtitle, the search line, the rows
 // with their `→` under the `❯`, the palette's cyan selection accent, a dim
 // `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
@@ -1115,13 +1115,13 @@ pub(super) const MODEL_TITLE: &str = "Select model";
 
 /// The dim line under the title: what a pick changes. A switch moves this
 /// session's model and the directory's own entry, which a new session here
-/// starts on (`docs/per-directory-state.md`, `docs/session-model.md`).
+/// starts on (`docs/state/per-directory-state.md`, `docs/state/session-model.md`).
 pub(super) const MODEL_SUBTITLE: &str = "Applies to this session and new ones in this directory";
 
 /// The glyph a framed view's top and bottom rules repeat across the width
 /// (`model_rule`). Named so the hidden-cursor seat can tell a rule row from
 /// text: a page with no `❯` seats after its last text row and skips the
-/// rule under it (`layout::menu_marker_seat`, `docs/view-flow.md`).
+/// rule under it (`layout::menu_marker_seat`, `docs/ui/view-flow.md`).
 pub(super) const VIEW_RULE: &str = "─";
 
 /// The search line's prompt glyph (cyan), the `❯` the query types after.
@@ -1179,14 +1179,14 @@ pub(super) const MODEL_NO_MATCH: &str = "No matching models";
 /// The list placeholder when no provider is set up yet ([`ModelLoad::NeedsLogin`])
 /// — shown cyan (an actionable hint, not a red error) pointing at `/login`.
 /// It names no API key: `/login` also signs in to a subscription or connects
-/// a local server, which has none (`docs/local-models.md`).
+/// a local server, which has none (`docs/providers/local-models.md`).
 pub(super) const MODEL_LOGIN_HINT: &str = "No provider set up yet — run /login to add one";
 
 /// The separator between the `(n/total)` counter and its trailing load status.
 pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
 
 /// The counter's dim suffix while other providers are still being fetched (the
-/// list shows what's landed so far and keeps growing). See `docs/llm.md`.
+/// list shows what's landed so far and keeps growing). See `docs/providers/llm.md`.
 pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 
 /// The most display rows a failed provider's *reason* block may take under the
@@ -1196,7 +1196,7 @@ pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 /// otherwise push the model list off the top of the frame.
 pub(super) const MODEL_ERROR_MAX_ROWS: u16 = 3;
 
-// --- The `/login` onboarding flow (docs/llm.md). An inline flow sharing the
+// --- The `/login` onboarding flow (docs/providers/llm.md). An inline flow sharing the
 // model picker's framed look and colours: the root asks how you sign in under
 // a title (no filter — three rows are a question), the lists below it filter
 // under a `❯` line, and the key step collects the key masked. All styling
@@ -1238,7 +1238,7 @@ pub(super) const LOGIN_SUBSCRIPTION_HINT: &str = "↑↓ navigate  enter sign in
 /// The dim hint under the API-key provider list, below the `.env` path row.
 pub(super) const LOGIN_PROVIDER_HINT: &str = "↑↓ navigate  enter select  esc back";
 
-/// The dim hint under the local server list (`docs/local-models.md`).
+/// The dim hint under the local server list (`docs/providers/local-models.md`).
 pub(super) const LOGIN_LOCAL_HINT: &str = "↑↓ navigate  enter connect  esc back";
 
 /// The list placeholder when the local server filter matches nothing.
@@ -1247,7 +1247,7 @@ pub(super) const LOGIN_NO_LOCAL_MATCH: &str = "No matching servers";
 /// The list placeholder when the subscription filter matches nothing.
 pub(super) const LOGIN_NO_SUBSCRIPTION_MATCH: &str = "No matching subscriptions";
 
-// --- The sign-in method choice (docs/chatgpt.md). A subscription offering two
+// --- The sign-in method choice (docs/providers/chatgpt.md). A subscription offering two
 // ways in — ChatGPT Codex's browser flow, or a device code for a headless
 // machine — asks which before opening a page: a cyan title naming the
 // subscription over two rows in the root's own dress, and no filter, since a
@@ -1262,7 +1262,7 @@ pub(super) const LOGIN_SIGNIN_METHOD_TITLE_SUFFIX: &str = " login method:";
 /// the subscription list here, which is what cancelling a choice means.
 pub(super) const LOGIN_SIGNIN_METHOD_HINT: &str = LOGIN_METHOD_HINT;
 
-// --- The device-code page (docs/copilot.md). A subscription sign-in shows the
+// --- The device-code page (docs/providers/copilot.md). A subscription sign-in shows the
 // provider's one-time code in a rounded box over the URL to enter it at, and
 // waits. No browser is launched — the URL is text the user opens themselves. ---
 
@@ -1273,10 +1273,10 @@ pub(super) const DEVICE_TITLE_PREFIX: &str = "Sign in to ";
 pub(super) const DEVICE_VISIT_PREFIX: &str = "Visit ";
 pub(super) const DEVICE_ENTER_LINE: &str = "and enter this one-time code";
 
-/// A **browser** sign-in's twin of the pair above (`docs/chatgpt.md`): there
+/// A **browser** sign-in's twin of the pair above (`docs/providers/chatgpt.md`): there
 /// is no code to follow the link, because the browser redirects back to this
 /// process on its own. The URL takes the row **bare** — it is an OSC 8
-/// hyperlink (`docs/links.md`), and a verb in front of a clickable link is a
+/// hyperlink (`docs/ui/links.md`), and a verb in front of a clickable link is a
 /// word doing nothing but pushing the target off the start of its own row —
 /// so only the row beneath it is needed, saying what happens next instead of
 /// pointing at a box that isn't there.
@@ -1302,7 +1302,7 @@ pub(super) fn device_code_color() -> Color {
 /// on this page the eye should land on is the code in its box; an accented URL
 /// competed with it, and the URL is an instruction rather than a choice. It is
 /// still a clickable hyperlink; the underline is what says so, which is why
-/// linking it does not repaint it (`docs/links.md`).
+/// linking it does not repaint it (`docs/ui/links.md`).
 pub(super) fn device_uri_color() -> Color {
     model_meta_color()
 }
@@ -1326,7 +1326,7 @@ pub(super) const DEVICE_HINT: &str = "c copy code  esc cancel";
 pub(super) const DEVICE_LINK_HINT: &str = "c copy link  esc cancel";
 
 /// Where the device page's **hidden** cursor parks — the frame's first content
-/// row, the title, straight under the top rule (`docs/view-flow.md`).
+/// row, the title, straight under the top rule (`docs/ui/view-flow.md`).
 ///
 /// The caret is invisible here ([`cursor_visible`]), but a terminal with a
 /// cursor-trail animation (kitty and kin) still animates toward wherever it is
@@ -1348,7 +1348,7 @@ pub(super) const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
 /// on.
 pub(super) const LOGIN_KEY_URL_PREFIX: &str = "Create a key at ";
 
-// --- The local server page (docs/local-models.md): `/login` → Use a local
+// --- The local server page (docs/providers/local-models.md): `/login` → Use a local
 // model → a server. The key step's frame around an address field shown as
 // typed, a connection test whose verdict lands under the field, and — for a
 // server that wants one — a masked token field. ---
@@ -1387,7 +1387,7 @@ pub(super) const LOGIN_NO_MATCH: &str = "No matching providers";
 /// selection **centered**, like the `/model` list — `centered_window`).
 pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 
-// --- The inline `/settings` menu (docs/settings.md). The `/model` picker's
+// --- The inline `/settings` menu (docs/state/settings.md). The `/model` picker's
 // framed shape with one extra row — the key hint under the description — and a
 // value column instead of a `[provider]` tag. Every colour is borrowed from the
 // `MODEL_*` set so the three inline pickers read as one family. ---
@@ -1397,7 +1397,7 @@ pub(super) const SETTINGS_TITLE: &str = "Settings";
 
 /// The dim line under the title: what a change does. Every row takes effect
 /// at once and is saved — most per directory, the tips, the update check and
-/// telemetry per user (`docs/per-directory-state.md`) — so the line says
+/// telemetry per user (`docs/state/per-directory-state.md`) — so the line says
 /// what holds for all of them.
 pub(super) const SETTINGS_SUBTITLE: &str =
     "Changes take effect at once and persist across sessions";
@@ -1413,7 +1413,7 @@ pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 5;
 /// rows (`selection_picker_layout.rs`): what is optional yields first — a
 /// description, a preview, the counter, then a header — so the search line,
 /// these rows and the hint stay on screen. One size for the whole family, so
-/// every short page reads the same (`docs/view-flow.md`).
+/// every short page reads the same (`docs/ui/view-flow.md`).
 pub(super) const COMPACT_LIST_ROWS: u16 = 3;
 
 /// Columns between the longest visible label and the value column, so the
@@ -1434,7 +1434,7 @@ pub(super) fn settings_value_off_color() -> Color {
 }
 
 /// The values rendered in the dim "off" colour — `never` being the **Ask
-/// timeout** row's (no clock runs, `docs/ask.md`).
+/// timeout** row's (no clock runs, `docs/tools/ask.md`).
 pub(super) const SETTINGS_OFF_VALUES: &[&str] = &[
     "false",
     "default",
@@ -1449,7 +1449,7 @@ pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change 
 /// The list placeholder when the search matches no setting.
 pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
 
-// --- the inline /skills menu (docs/skills.md). Deliberately the /settings
+// --- the inline /skills menu (docs/tools/skills.md). Deliberately the /settings
 // menu's twin rather than a new shape: it reuses that menu's frame, its
 // value column geometry (SETTINGS_VALUE_GAP) and its two-tone value colours
 // wholesale, so the only consts it needs of its own are the words. ---
@@ -1489,7 +1489,7 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
-// --- the inline /mascot picker (docs/mascot.md). The /theme picker's
+// --- the inline /mascot picker (docs/ui/mascot.md). The /theme picker's
 // layout over the mascot catalog: the family's header, frame and `❯` search
 // line, the rows with the family's `→`, and the live banner preview, drawn by
 // the header's own builder so it can never disagree with the real thing,
@@ -1500,7 +1500,7 @@ pub(super) const SKILLS_SESSION_OFF: &str =
 pub(super) const MASCOT_TITLE: &str = "Select mascot";
 
 /// The dim line under the title: what a mascot is and where the choice is
-/// kept (`docs/per-directory-state.md`).
+/// kept (`docs/state/per-directory-state.md`).
 pub(super) const MASCOT_SUBTITLE: &str = "The startup banner's art — saved for this directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
@@ -1526,7 +1526,7 @@ pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 /// less than the list, the gap and this stacks the preview under the list.
 pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
 
-// --- the inline /spinner picker (docs/spinner.md). The /theme picker's
+// --- the inline /spinner picker (docs/ui/spinner.md). The /theme picker's
 // layout over the spinner-style catalog: the family's header, frame and `❯`
 // search line, the rows with the family's `→` and a name column that leaves
 // room for each row's live spinner, and the live status-line preview laid
@@ -1538,7 +1538,7 @@ pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
 pub(super) const SPINNER_TITLE: &str = "Select spinner";
 
 /// The dim line under the title: what a spinner is and where the choice is
-/// kept (`docs/per-directory-state.md`).
+/// kept (`docs/state/per-directory-state.md`).
 pub(super) const SPINNER_SUBTITLE: &str = "The status line's animation — saved for this directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
@@ -1568,7 +1568,7 @@ pub(super) const SPINNER_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 /// preview under the list.
 pub(super) const SPINNER_PREVIEW_MIN_COLS: usize = THEME_PREVIEW_MIN_COLS;
 
-// --- The inline `/theme` picker (docs/theme.md). codex's theme picker in
+// --- The inline `/theme` picker (docs/ui/theme.md). codex's theme picker in
 // this TUI's dress: the family's header, frame and `❯` search line over one
 // row per colour theme (the family's `→` on the selection, a `(n/total)`
 // counter under the window), each row wearing a swatch of its own accents,
@@ -1584,7 +1584,7 @@ pub(super) const THEME_TITLE: &str = "Select theme";
 
 /// The dim line under the title: what a theme changes and where the choice
 /// is kept — one `theme.json` per user, where `/mascot` and `/spinner` keep
-/// theirs per directory (`docs/theme.md`).
+/// theirs per directory (`docs/ui/theme.md`).
 pub(super) const THEME_SUBTITLE: &str = "The interface's colours — applies in every directory";
 
 /// The key hint pinned under the list and its preview — the picker's whole
@@ -1634,7 +1634,7 @@ pub(super) const THEME_PREVIEW_OLD: &str = "def greet(name):\n    print(\"Hello,
 pub(super) const THEME_PREVIEW_NEW: &str = "def greet(name):\n    print(f\"Hello, {name}\")\n";
 pub(super) const THEME_PREVIEW_REPLY: &str = "Done — `greet.py` greets by name now:\n```python\ngreet(\"Alter Zero\")  # Hello, Alter Zero\n```";
 
-// --- the read-only /donate page (docs/donate.md). The /hooks menu's frame —
+// --- the read-only /donate page (docs/ui/donate.md). The /hooks menu's frame —
 // the family's indent, its `❯` marker, the dim meta ink — over the const
 // donation-address catalog, each address inside the /login device page's
 // rounded box (the `DEVICE_BOX_*` glyphs). Only its own words and the three
@@ -1649,7 +1649,7 @@ pub(super) const DONATE_HEART: &str = "♥ ";
 pub(super) const DONATE_TITLE_PREFIX: &str = "Support ";
 
 /// The dim rows under the title: what the project is, what a donation does.
-/// Wrapped, never cut (`docs/view-flow.md`).
+/// Wrapped, never cut (`docs/ui/view-flow.md`).
 pub(super) const DONATE_BLURB: &str = "Free and open source, developed in the open. \
 If it earns a place in your terminal, a donation keeps the work going — thank you.";
 
@@ -1697,7 +1697,7 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
-// --- the /secrets page (docs/secrets.md). The /donate page's frame — the
+// --- the /secrets page (docs/state/secrets.md). The /donate page's frame — the
 // family's indent, its `❯` marker, the dim meta ink, the banner-gradient
 // title — over the user's secrets, and a three-field form under the same
 // frame. Every value is masked **in the builder**: a flowed row is committed
@@ -1709,7 +1709,7 @@ pub(super) fn donate_caution_color() -> Color {
 pub(super) const SECRETS_TITLE: &str = "Secrets";
 
 /// The dim rows under the list's title: what a secret is for. Wrapped, never
-/// cut (`docs/view-flow.md`).
+/// cut (`docs/ui/view-flow.md`).
 pub(super) const SECRETS_BLURB: &str = "Credentials the agent uses by placeholder. The values \
 stay out of the conversation, the screen and the model's context.";
 
@@ -1777,7 +1777,7 @@ pub(super) fn secrets_delete_question(name: &str) -> String {
     )
 }
 
-// --- the read-only /export page (docs/export.md). The /donate page's frame
+// --- the read-only /export page (docs/ui/export.md). The /donate page's frame
 // — the family's indent, its `❯` marker, the dim meta ink — over the two
 // export targets, the highlighted row's description under the list (the
 // /settings shape).
@@ -1786,7 +1786,7 @@ pub(super) fn secrets_delete_question(name: &str) -> String {
 pub(super) const EXPORT_TITLE: &str = "Export conversation";
 
 /// The dim rows under the title: what the export *is*. Wrapped, never cut
-/// (`docs/view-flow.md`).
+/// (`docs/ui/view-flow.md`).
 pub(super) const EXPORT_BLURB: &str = "The whole transcript as plain text — every message and \
 every tool call's full output, as Ctrl+O shows it.";
 
@@ -1805,7 +1805,7 @@ pub(super) const EXPORT_FILE_DESC_DIR_FALLBACK: &str = "the working directory";
 /// The dim key hint — the page's whole grammar.
 pub(super) const EXPORT_HINT: &str = "↑↓ navigate  enter select  esc close";
 
-// --- the read-only /context page (docs/context-usage.md). The /donate
+// --- the read-only /context page (docs/architecture/context-usage.md). The /donate
 // page's frame — the family's indent, its `❯` marker, the dim meta ink, the
 // pages' title dress — over the context window: a bar standing for the
 // whole window, a legend of what fills it with the highlighted row's detail
@@ -2008,7 +2008,7 @@ pub(super) fn context_fill_color(used: u64, window: u64, threshold: Option<u64>)
     }
 }
 
-// --- the read-only /usage page (docs/usage.md). The /context page's frame
+// --- the read-only /usage page (docs/providers/usage.md). The /context page's frame
 // and meter language over every signed-in subscription: a section each, its
 // head naming the provider and plan, a bar per limit filling as it is spent
 // — green, amber, red at the /context thresholds — and when it resets. ---
@@ -2108,7 +2108,7 @@ pub(super) fn usage_ok_color() -> Color {
     tool_ok_color()
 }
 
-// --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
+// --- the read-only /hooks menu (docs/tools/hooks-menu.md). It reuses the picker
 // family's accents — model_selected_color() for the selection, model_id_color()
 // for unselected labels, model_meta_color() for everything dim,
 // the pages' title dress (`header::page_title_line`) for the titles,
@@ -2142,7 +2142,7 @@ pub(super) const HOOKS_DESC_GAP: usize = 3;
 /// info line with our file and assistant names, its docs link swapped for the
 /// format's own doc.
 pub(super) const HOOKS_INFO: &str = "ℹ Open a hook to trust it, or to stop trusting it. To \
-add or modify hooks, edit hooks.json directly or ask alter-zero. See docs/hooks.md";
+add or modify hooks, edit hooks.json directly or ask alter-zero. See docs/tools/hooks.md";
 
 /// The note when the file holds hooks but the session has them off
 /// (`/settings`, `ALTER_ZERO_HOOKS=0`) — the reference's restricted-by-policy
@@ -2159,7 +2159,7 @@ pub(super) const HOOKS_EMPTY_HINT: &str =
 pub(super) const HOOKS_HINT: &str = "Enter to confirm · Esc to cancel";
 pub(super) const HOOKS_DETAIL_HINT: &str = "Esc to go back";
 
-/// Trust in the `/hooks` menu (`docs/config-review.md`): the amber badge an
+/// Trust in the `/hooks` menu (`docs/state/config-review.md`): the amber badge an
 /// untrusted hook's row wears, the detail page's `Trust:` values, and its
 /// hint — Enter toggles.
 pub(super) const HOOKS_UNTRUSTED_BADGE: &str = "⚠ not trusted";
@@ -2170,7 +2170,7 @@ pub(super) const HOOKS_DISTRUST_HINT: &str = "Enter to stop trusting · Esc to g
 
 /// The single-source tags — one `hooks.json`, one origin (the reference has
 /// user/project/local/plugin layers; ours is user-level only,
-/// `docs/hooks.md`): the `[User]` matcher-row prefix, the hook rows'
+/// `docs/tools/hooks.md`): the `[User]` matcher-row prefix, the hook rows'
 /// `User Settings` description, and the detail page's `Source:` label.
 pub(super) const HOOKS_SOURCE_INLINE: &str = "User";
 pub(super) const HOOKS_SOURCE_HEADER: &str = "User Settings";
@@ -2180,7 +2180,7 @@ pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
 /// so the values line up (`Event:    PreToolUse`).
 pub(super) const HOOKS_FIELD_COL: usize = 10;
 
-/// The startup review (`docs/config-review.md`) — the hooks menu's sibling,
+/// The startup review (`docs/state/config-review.md`) — the hooks menu's sibling,
 /// borrowing the `HOOKS_*` marker and frame and the ask modal's checkboxes;
 /// only its own vocabulary lives here.
 ///
@@ -2227,7 +2227,7 @@ pub(super) const REVIEW_FROM_PREFIX: &str = "from ";
 /// cuts it.
 pub(super) const REVIEW_CAPPED_DETAIL_ROWS: usize = 3;
 
-/// The `/mcp` manager (`docs/mcp.md`) — the hooks menu's twin, so it borrows
+/// The `/mcp` manager (`docs/tools/mcp.md`) — the hooks menu's twin, so it borrows
 /// the whole `HOOKS_*` frame (marker, overflow arrows, window size, hints)
 /// and adds only its own vocabulary.
 ///
@@ -2309,7 +2309,7 @@ pub(super) const HOOKS_MODIFY_NOTE: &str =
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but
-// never display it; the inline view never shows any. See docs/timestamps.md. ---
+// never display it; the inline view never shows any. See docs/ui/timestamps.md. ---
 
 /// Dim grey — the user message's right-aligned timestamp in the Ctrl+O transcript.
 pub(super) fn timestamp_color() -> Color {
@@ -2322,7 +2322,7 @@ pub(super) fn timestamp_color() -> Color {
 // `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed} · {↓|↑} {n} tokens · Thinking for {m})`. The
 // line opens with the session's **spinner style** — by default `gravity`, a
 // ball hopping along a braille track (see [`spinner_spans`] and
-// docs/spinner.md); before there was a catalog it was always the **comet**
+// docs/ui/spinner.md); before there was a catalog it was always the **comet**
 // (a Larson-scanner sweep: a white head dragging a fading grey tail back and
 // forth between dim walls, one frame per `SPINNER_INTERVAL`), which is still
 // what the `SPINNER_*` consts just below describe. The working verb is picked
@@ -2332,7 +2332,7 @@ pub(super) fn timestamp_color() -> Color {
 // `tui/src/shimmer.rs`). The elapsed / thinking / done
 // times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
 // finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
-// `HistoryItem::Summary`). See docs/status-indicator.md. ---
+// `HistoryItem::Summary`). See docs/ui/status-indicator.md. ---
 
 /// White — the comet's head (matches the codex/Claude-Code white status text).
 pub(super) fn status_color() -> Color {
@@ -2388,14 +2388,14 @@ pub(super) fn status_detail_color() -> Color {
 /// line that means *reasoning*: the footer's thinking mode wears it too
 /// ([`footer_qualifier_color`]), so the effort and the thinking it buys read
 /// as one fact. Apart from the dim metrics and the amber retry clause in
-/// every theme (`docs/status-indicator.md`).
+/// every theme (`docs/ui/status-indicator.md`).
 pub(super) fn status_thinking_color() -> Color {
     palette().purple
 }
 
 /// Amber — the `retrying {n}/{max}` clause. A warning hue (One-Dark yellow),
 /// distinct from the dim metrics and the error red: the request hasn't failed,
-/// it's recovering. See `docs/llm.md`.
+/// it's recovering. See `docs/providers/llm.md`.
 pub(super) fn status_retry_color() -> Color {
     palette().warning
 }
@@ -2414,7 +2414,7 @@ pub(super) const STATUS_ARROW_UP: &str = "↑";
 /// codebase's hint convention (`(ctrl+o to expand)`, `esc return`).
 pub(super) const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
 
-// --- Waiting for a lost connection (docs/offline.md): the status line's
+// --- Waiting for a lost connection (docs/providers/offline.md): the status line's
 // verb and clause while no connection can be made to the provider, and the
 // ripple row hanging under it. ---
 
@@ -2467,7 +2467,7 @@ pub(super) fn status_done_color() -> Color {
 
 /// Marks a summary's token total as partly the app's estimate: an
 /// interrupted turn's receipt, whose cut round never reported its usage
-/// (`docs/interrupt.md`). The `/context` page's mark for a count it made
+/// (`docs/input/interrupt.md`). The `/context` page's mark for a count it made
 /// itself, so a bare number on a receipt is always the provider's own.
 pub(super) const SUMMARY_ESTIMATE_MARK: &str = CONTEXT_USAGE_ESTIMATE_MARK;
 
@@ -2489,7 +2489,7 @@ pub(super) const STATUS_GAP_ROWS: u16 = 1;
 /// dress (`/mcp`, `/skills` — [`header_gradient_at`]), so the one word in
 /// motion on the line follows `/theme` the way the headlines do. Codex rests
 /// its verb on grey; the crest's sweep toward [`shimmer_highlight`] is
-/// unchanged over the gradient (`docs/status-indicator.md`).
+/// unchanged over the gradient (`docs/ui/status-indicator.md`).
 pub(super) fn status_verb_color(col: usize, total: usize) -> Color {
     header_gradient_at(col, total)
 }
@@ -2512,7 +2512,7 @@ pub(super) const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
 /// The crest's blend toward the highlight (codex blends `t * 0.9`).
 pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 
-// --- The spinner **styles** (docs/spinner.md). The comet above is one of
+// --- The spinner **styles** (docs/ui/spinner.md). The comet above is one of
 // them; `/spinner` swaps the frames the status line opens with, and the
 // default is `gravity`, a track style drawn from the geometry below. The
 // catalog's *identity* — names, order, descriptions — is `app::Spinner`; its
@@ -2520,7 +2520,7 @@ pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 // maps one to the other. Two rules every style keeps, pinned by
 // `ui::tests::status`: every frame of a style is the same width (so the verb
 // after it never jitters) and every glyph is single-width
-// (docs/table-streaming.md "Wide glyphs"). A one-cell style is drawn as one
+// (docs/ui/table-streaming.md "Wide glyphs"). A one-cell style is drawn as one
 // span — the glyph plus the separator space — in the comet head's white bold
 // unless its own colour rule below says otherwise. The two **track** styles
 // (`gravity`, `wave`) have no frame table at all: they draw themselves on a
@@ -2568,7 +2568,7 @@ pub(super) const SPINNER_DOTS_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "�
 /// How long each `dots` frame shows (the cli-spinners cadence).
 pub(super) const SPINNER_DOTS_INTERVAL: Duration = Duration::from_millis(80);
 
-/// `blocks` — the mascots' own three-quarter block glyphs (docs/mascot.md),
+/// `blocks` — the mascots' own three-quarter block glyphs (docs/ui/mascot.md),
 /// the missing quadrant walking clockwise, coloured along the banner's
 /// gradient as it turns: cyan on the first frame, blue on the last.
 pub(super) const SPINNER_BLOCKS_FRAMES: &[&str] = &["▙", "▛", "▜", "▟"];
@@ -2579,7 +2579,7 @@ pub(super) const SPINNER_BLOCKS_INTERVAL: Duration = Duration::from_millis(150);
 /// `pulse` — one still `●` whose colour breathes [`spinner_pulse_dim`] →
 /// [`spinner_pulse_bright`] → dim once per [`SPINNER_PULSE_PERIOD`]: a
 /// raised-cosine swell at the running tool bullet's cadence (that bullet
-/// itself blinks, docs/tool-pulse.md), taken up to white at the crest so it
+/// itself blinks, docs/ui/tool-pulse.md), taken up to white at the crest so it
 /// reads as a status line's head rather than a resting cell.
 pub(super) const SPINNER_PULSE_FRAMES: &[&str] = &["●"];
 
@@ -2693,7 +2693,7 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 // `→ name  parent/  …  File|Dir` — reusing the palette's `→` marker and its
 // cyan-selected / dim-unselected colours, additionally **bolding the
 // characters the query matched** (worked out for the rows drawn), over the
-// palette's dim `(n/total)` counter. See docs/file-search.md. ---
+// palette's dim `(n/total)` counter. See docs/input/file-search.md. ---
 
 /// The most file rows shown at once — the `/` palette's five, as in the `$`
 /// picker; the rest of the matches (every one the search found) scroll under
@@ -2735,7 +2735,7 @@ pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 // then the skill's own description, `…`-cut at the width — over the
 // palette's dim `(n/total)` counter. It reuses the palette's marker, inset
 // and colours — the selection lights up cyan, the rest dim. See
-// docs/skill-mentions.md. ---
+// docs/input/skill-mentions.md. ---
 
 /// The most skill rows shown at once — the `/` palette's five, a row each,
 /// since a description is `…`-cut rather than wrapped; longer lists scroll
@@ -2756,7 +2756,7 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 // six on a wide one; two with each label's `for`/`to` dropped on a narrow
 // pane, then one — so a wider terminal spends its width on columns rather
 // than leaving the row empty and spending rows below the box. See
-// docs/shortcuts.md. ---
+// docs/ui/shortcuts.md. ---
 
 /// The bindings listed in the band, as `(key, label)` pairs **in reading
 /// order**: the band fills its columns top to bottom (column-major, like
@@ -2768,7 +2768,7 @@ pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
 /// context-sensitive — [`shortcuts_lines`] swaps it for
 /// [`SHORTCUTS_INTERRUPT`] while a turn runs (codex's quit entry does the
 /// same) and for the [`SHORTCUTS_BACKTRACK`] edit hint when idle with a
-/// previous user message to edit (docs/backtrack.md).
+/// previous user message to edit (docs/input/backtrack.md).
 ///
 /// Every label leads with ` for ` or ` to `, which a pane too narrow for two
 /// columns in the full wording drops to keep two (`terse_label`). An entry is
@@ -2837,7 +2837,7 @@ pub(super) fn shortcuts_text_color() -> Color {
     tool_dim_color()
 }
 
-// --- Esc-Esc backtrack (docs/backtrack.md). A primed first Esc takes the
+// --- Esc-Esc backtrack (docs/input/backtrack.md). A primed first Esc takes the
 // footer slot with a hint naming the second (codex's `esc_backtrack_hint`
 // footer); the transcript overlay then highlights the selected user message
 // by *reversing* its rows (codex's `user_message_style().reversed()`). ---
@@ -2859,14 +2859,14 @@ pub(super) const SHORTCUTS_BACKTRACK: (&str, &str) = ("esc esc", " to edit previ
 // `❯ ` bullet, the dark background, wrapped — so a queued follow-up reads like
 // it is already on its way. The queue is a sequence of turn-batches: Enter
 // appends to the current batch, **Tab opens a new one**, and the loop sends one
-// batch per turn-end (a blank row divides the batches). See docs/queue.md. ---
+// batch per turn-end (a blank row divides the batches). See docs/input/queue.md. ---
 
 /// Indent prefixed to every queued row, insetting the queue from the strip's
 /// left edge; the dark user-message block starts after it.
 pub(super) const QUEUED_INDENT: &str = "  ";
 
 // --- The session-context footer: the dim `{model} · {cwd}` row pinned under
-// the input box (codex's footer status line). See docs/footer.md. ---
+// the input box (codex's footer status line). See docs/ui/footer.md. ---
 
 /// Indent prefixed to the footer row (codex's `FOOTER_INDENT_COLS`).
 pub(super) const FOOTER_INDENT: &str = "  ";
@@ -2883,7 +2883,7 @@ pub(super) fn footer_color() -> Color {
 /// The model's name — the accent, codex's cyan model (its status line with
 /// theme colours on): what the session talks to is the row's first fact.
 /// The separators stay [`footer_color`], so the named things stand out from
-/// the punctuation between them (`docs/footer.md`).
+/// the punctuation between them (`docs/ui/footer.md`).
 pub(super) fn footer_model_color() -> Color {
     menu_selected_color()
 }
@@ -2910,7 +2910,7 @@ pub(super) fn footer_gauge_color(used: u64, window: u64, threshold: Option<u64>)
 }
 
 /// The permission mode pinned at the row's right edge, warming with what the
-/// mode lets the agent do unasked (`docs/permissions.md`): `manual` asks
+/// mode lets the agent do unasked (`docs/state/permissions.md`): `manual` asks
 /// before everything and stays dim with the rest of the row, `edit` (file
 /// changes unasked) takes the link blue, `auto` (the classifier approves
 /// commands) the caution amber, and `master` (asks nothing) the error red,
@@ -2928,12 +2928,12 @@ pub(super) fn footer_mode_color(mode: crate::permission::PermissionMode) -> Colo
 /// The least gap kept between the footer's left chain and the permission
 /// mode pinned at the row's right edge — the mode's reservation is its own
 /// columns plus this, so the left content's `…` cut can never run into it
-/// (`docs/permissions.md`).
+/// (`docs/state/permissions.md`).
 pub(super) const FOOTER_MODE_GAP: usize = 2;
 
 /// The **focused** shell indicator's fill: ↓ lights the footer's `{n} shell(s)`
 /// segment on the palette-selection cyan and waits for the Enter that opens the
-/// ↓ manager band (Claude-Code-style — see `docs/background.md`). Only that one
+/// ↓ manager band (Claude-Code-style — see `docs/tools/background.md`). Only that one
 /// segment changes; the model / cwd / context-gauge segments stay dim.
 pub(super) fn footer_focus_bg() -> Color {
     menu_selected_color()
@@ -2949,7 +2949,7 @@ pub(super) fn footer_focus_fg() -> Color {
 // above the box (`Copied last message to clipboard`, `/resume is disabled …`).
 // It occupies the bottom of the strip, directly above the box's top rule, and
 // fades after a few seconds (the expiry timed at the I/O boundary). See
-// docs/toast.md. ---
+// docs/ui/toast.md. ---
 
 /// Indent prefixed to the toast row — the two-space inset shared with the
 /// footer and the queued messages.
@@ -2963,7 +2963,7 @@ pub(super) fn toast_color() -> Color {
 /// How far an error toast's red is mixed toward the info toast's dim — 0 the
 /// full error red, 1 the dim. A third of the way keeps a failure red at a
 /// glance without the four-second line outshouting the error bullet. See
-/// docs/toast.md.
+/// docs/ui/toast.md.
 pub(super) const TOAST_ERROR_DIM_MIX: f32 = 0.35;
 
 /// An error toast's colour (a failure — a `Copy failed`, a refused model
@@ -2977,7 +2977,7 @@ pub(super) fn toast_error_color() -> Color {
 // --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,
 // `chat_composer/history_search.rs::history_search_footer_line`). It takes the
 // session footer's slot while a search is open, and the previewed match in the
-// composer highlights the query occurrences. See docs/history-search.md. ---
+// composer highlights the query occurrences. See docs/input/history-search.md. ---
 
 /// The dim prompt opening the search line.
 pub(super) const SEARCH_PROMPT: &str = "reverse-i-search: ";
@@ -2999,7 +2999,7 @@ pub(super) const SEARCH_HIGHLIGHT: Modifier = Modifier::REVERSED.union(Modifier:
 // --- The `!` shell-mode footer hint. While the composer holds a `!command`
 // the footer slot reads `Shell mode` in red (codex's light-red
 // `shell_mode_footer_line`), displacing the `{model} · {cwd}` line. See
-// docs/shell-command.md. ---
+// docs/input/shell-command.md. ---
 
 /// The shell-mode hint text.
 pub(super) const SHELL_MODE_LABEL: &str = "Shell mode";
@@ -3015,7 +3015,7 @@ pub(super) fn shell_mode_color() -> Color {
 /// absorbed bang rendered back; same two columns as [`PROMPT`]).
 pub(super) const SHELL_BULLET: &str = "! ";
 
-// --- The startup header banner (docs/header.md, docs/mascot.md): the
+// --- The startup header banner (docs/ui/header.md, docs/ui/mascot.md): the
 // gradient mascot beside the title + cwd + hint, committed to scrollback at
 // launch and re-emitted atop every full repaint (resize, `/clear`, a /mascot
 // switch) so it survives the scrollback purge. Pure chrome, like the footer —
@@ -3056,7 +3056,7 @@ pub(super) fn header_gradient_end() -> Color {
 /// The banner gradient at display column `col` of a `total`-column run:
 /// [`header_gradient_start`] at the first column, [`header_gradient_end`] at
 /// the last — the one wash the mascot, every page title and the status verb
-/// wear (`docs/header.md`).
+/// wear (`docs/ui/header.md`).
 pub(super) fn header_gradient_at(col: usize, total: usize) -> Color {
     let t = if total <= 1 {
         0.0
@@ -3088,7 +3088,7 @@ pub(super) fn header_meta_color() -> Color {
 pub(super) const NOTICE_CARD_MAX_WIDTH: usize = 76;
 pub(super) const NOTICE_CARD_MIN_WIDTH: usize = 24;
 pub(super) const TELEMETRY_CARD_TITLE: &str = "Telemetry";
-/// The update card's title (`docs/update.md`).
+/// The update card's title (`docs/ops/update.md`).
 pub(super) const UPDATE_CARD_TITLE: &str = "Update available";
 
 /// Notice prose needs more contrast than the banner's cwd metadata.
@@ -3113,10 +3113,10 @@ pub(super) const INPUT_CHROME_ROWS: u16 = 2;
 pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 
 /// The `/compact` marker cell's text — codex's "Context compacted" info cell,
-/// verbatim. See `docs/compact.md`.
+/// verbatim. See `docs/architecture/compact.md`.
 pub const COMPACTED_NOTICE: &str = "Context compacted";
 
-// --- The `Agent` tool (docs/agent-tool.md) ---
+// --- The `Agent` tool (docs/agents/agent-tool.md) ---
 
 /// The tree connectors of a group cell's per-agent rows: `   ├ {description}`
 /// for every agent but the last, `   └ {description}` for the last, with the
@@ -3150,7 +3150,7 @@ pub(super) const AGENT_BACKGROUNDED: &str =
 /// Claude Code's transcript look).
 pub(super) const AGENT_PROMPT_LABEL: &str = "Prompt:";
 /// What sets the dim agent id off the Ctrl+O agent cell's header —
-/// `● Agent(Fetch Warsaw) · a7k2m9x4q` (`docs/agent-tools.md`).
+/// `● Agent(Fetch Warsaw) · a7k2m9x4q` (`docs/agents/agent-tools.md`).
 pub(super) const AGENT_ID_SEPARATOR: &str = " · ";
 
 pub(super) const AGENT_RESPONSE_LABEL: &str = "Response:";
@@ -3162,7 +3162,7 @@ pub(super) fn agent_section_color() -> Color {
 /// The rule cell painted **after** the agent session view's composer label —
 /// `── {description} ─` instead of `── {description} ` — so the label sits
 /// embedded in the top rule rather than dangling off its right end
-/// (`docs/agent-tool.md`). One border glyph, [`border_color`]-styled at the
+/// (`docs/agents/agent-tool.md`). One border glyph, [`border_color`]-styled at the
 /// render site.
 pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
 
@@ -3171,7 +3171,7 @@ pub(super) const AGENT_VIEW_RULE_TAIL: &str = "─";
 /// width of the terminal, and ratatui skids an over-wide right-aligned title
 /// off its **left** end — so an unclipped label ate the whole frame *and* lost
 /// the head of the very text it was showing. Past this budget the description
-/// is cut with [`TOOL_HEADER_ELLIPSIS`] instead (`docs/agent-tool.md`).
+/// is cut with [`TOOL_HEADER_ELLIPSIS`] instead (`docs/agents/agent-tool.md`).
 pub(super) const AGENT_VIEW_LABEL_DIVISOR: usize = 2;
 
 /// That label's ground: the agent session view's composer label rides its
@@ -3180,7 +3180,7 @@ pub(super) const AGENT_VIEW_LABEL_DIVISOR: usize = 2;
 /// since it answers the same kind of question (*which* thing the keys act
 /// on: here, which conversation the composer feeds). Dim text embedded in a
 /// dim rule was the one row saying the screen was not the main session, and
-/// the eye passed over it (the user-requested fill, `docs/agent-tool.md`).
+/// the eye passed over it (the user-requested fill, `docs/agents/agent-tool.md`).
 /// The label's own padding spaces sit inside the fill, the
 /// [`AGENT_VIEW_RULE_TAIL`] outside it, so the chip reads as a tab set into
 /// the rule rather than a smudge on it.
@@ -3222,11 +3222,11 @@ pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("
 
 /// The same hint on a **settled** row (a user stop, or a finished agent still
 /// lingering): the key is the same, its job isn't — `x` clears the row it
-/// stopped rather than stopping it twice (`docs/agent-tool.md`).
+/// stopped rather than stopping it twice (`docs/agents/agent-tool.md`).
 pub(super) const AGENT_HINT_AGENT_DONE: &[(&str, &str)] =
     &[("Enter", " to view"), ("x", " to clear")];
 
-// --- the inline tool-permission prompt (docs/permissions.md) ---
+// --- the inline tool-permission prompt (docs/state/permissions.md) ---
 
 /// The prompt's outer frame: a full-width rule above and below, in the input
 /// box's border colour so the modal reads as the same surface.
@@ -3306,7 +3306,7 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 ];
 
 /// Rows between the last option/amend row and the bottom of the prompt (gap,
-/// hint, rule — no blank row hugs the rule, `docs/view-flow.md`) — how
+/// hint, rule — no blank row hugs the rule, `docs/ui/view-flow.md`) — how
 /// [`cursor_position`] seats the cursor on the highlighted option (or in the
 /// amend field) from the region's bottom edge without re-deriving the body.
 /// `permission_lines` pads a capped prompt *above* the question to keep that
@@ -3334,14 +3334,14 @@ pub(super) const PERMISSION_MIN_BODY_ROWS: usize = 10;
 
 /// The prompt body's safety ceiling. The body is shown **whole** — a page
 /// taller than the terminal flows into scrollback rather than capping
-/// (`docs/view-flow.md`) — but the page is rebuilt (and its body
+/// (`docs/ui/view-flow.md`) — but the page is rebuilt (and its body
 /// syntax-highlighted) every draw tick while the prompt is open, so a
 /// pathological multi-megabyte write must not turn each frame into an
 /// unbounded build. Past this many body rows the familiar `… +N lines` tail
 /// returns — far beyond anything a human reviews, bounded for the loop.
 pub const PERMISSION_BODY_MAX_ROWS: usize = 2_000;
 
-// --- the inline AskUserQuestion modal (docs/ask.md) ---
+// --- the inline AskUserQuestion modal (docs/tools/ask.md) ---
 
 /// One-space inset on every text row — the permission prompt's, so the two
 /// modals read as the same surface (both share [`PERMISSION_RULE`] frames,
@@ -3459,7 +3459,7 @@ pub(super) fn ask_answer_color() -> Color {
 pub(super) const ASK_REVIEW_ANSWER_MAX_ROWS: usize = 4;
 
 /// The idle clock's countdown, right-aligned in the modal's closing rule
-/// while it runs (`docs/ask.md`): `── Timeout: 9:41 ─`. The rule is the one
+/// while it runs (`docs/tools/ask.md`): `── Timeout: 9:41 ─`. The rule is the one
 /// row a bottom-anchored page always paints, so a ticking label there never
 /// re-signs the flow and never costs the page a row.
 pub(super) const ASK_TIMEOUT_PREFIX: &str = "Timeout: ";

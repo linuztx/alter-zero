@@ -12,7 +12,7 @@
 //! recorded pixel size) and the protocol is encoded there (at the boundary,
 //! from the file). A formula of our own would drift by a row and leave a gap
 //! under every picture. `images::tests` pins the two together against the
-//! real encoder. See `docs/images.md`.
+//! real encoder. See `docs/ui/images.md`.
 //!
 //! [`Resize::Fit`]: ratatui_image::Resize::Fit
 

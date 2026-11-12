@@ -1,6 +1,6 @@
 #!/bin/sh
 # docker/tests/smoke.sh — the built image and docker/run.sh, against a real
-# engine (docs/docker.md). Build first: docker/build.sh [--engine podman]
+# engine (docs/ops/docker.md). Build first: docker/build.sh [--engine podman]
 #
 #   docker/tests/smoke.sh                     # Docker (Podman if Docker is absent)
 #   docker/tests/smoke.sh --engine podman
@@ -84,7 +84,7 @@ printf 'a server inside answers on http://%s\n' "$mapped"
 step "the scanner can open a raw socket"
 # `nmap localhost` as root is a SYN scan. Docker grants NET_RAW by default and
 # Podman does not, so this is the check that keeps the two engines answering
-# the same way (docs/docker.md *Privileges*).
+# the same way (docs/ops/docker.md *Privileges*).
 scan=$("$engine" exec "$name" nmap -sS -Pn -n -p 8080 127.0.0.1 2>&1) ||
 	fail "a SYN scan failed inside the container" "$scan"
 case "$scan" in

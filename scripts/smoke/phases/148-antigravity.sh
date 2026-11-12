@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Google Antigravity (docs/antigravity.md) is a browser sign-in, so the
+# Google Antigravity (docs/providers/antigravity.md) is a browser sign-in, so the
 # browser is played here: the phase reads the `state` off the sign-in page
 # and makes the redirect itself, against the loopback port the page names.
 # Google's token and userinfo hosts are one stub (ALTER_ZERO_GOOGLE_OAUTH_BASE)

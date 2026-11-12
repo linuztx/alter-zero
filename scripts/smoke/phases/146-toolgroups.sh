@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The collapsed read/search group (docs/tool-groups.md). Every other phase
+# The collapsed read/search group (docs/ui/tool-groups.md). Every other phase
 # runs with ALTER_ZERO_VERBOSE=1 exported, so its per-call cells stay; this
 # launch drops it, so the session comes up in the DEFAULT, where a run of
 # reads, searches and listings is one cell. The offline `explore` demo lists
@@ -58,7 +58,7 @@ grown="$(wait_pane 15 "$S146" -F "Searching for 1 pattern, reading 2 files, list
 	fail "the parallel round's search and reads never joined the open group"
 dump "captured pane (the group after the parallel round)" "$grown"
 # …and its values take the row in turn, the first call's first — each held
-# long enough to read (docs/tool-groups.md *The hint row*), where the row
+# long enough to read (docs/ui/tool-groups.md *The hint row*), where the row
 # used to jump straight to the round's last call.
 wait_for 10 "$S146" -F "  ⎿  \$ grep -rn 'card()' ." ||
 	fail "the parallel round's first call (the search) never took the hint row"
@@ -159,7 +159,7 @@ wait_file 5 "$SMOKE_CFG/settings.json" -E '"verbose": *true' ||
 keys "$S146" C-c
 wait_gone 10 "$S146" || fail "the app did not quit on Ctrl+C"
 
-# Verbose output turned OFF while a turn runs (docs/tool-groups.md *Verbose
+# Verbose output turned OFF while a turn runs (docs/ui/tool-groups.md *Verbose
 # output*): the listing already committed as a cell, and the rebuild the row
 # triggers has to hold it as the open group for the reads after it to join.
 S146b="${S}_toolgroups_midturn"

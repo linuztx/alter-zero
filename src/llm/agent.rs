@@ -1,6 +1,6 @@
 //! The agentic tool-calling loop — a **pure, generic driver** (like
 //! [`crate::llm::retry`]'s `run_stream`) so the whole loop is unit-tested with
-//! fakes and no network. See `docs/tools.md`.
+//! fakes and no network. See `docs/tools/tools.md`.
 //!
 //! [`run_agent`] drives a turn that may call tools: it asks the `round` closure
 //! to stream one model response, and if the model requested tool calls it emits
@@ -10,7 +10,7 @@
 //! with plain text (`StreamDone`), fails (`Error`), is cancelled (silent), or
 //! the tool-call cap trips. A round that answers *nothing* — an empty reply, or
 //! one the provider cut off at its output cap — is asked to continue instead of
-//! ending the turn (`docs/unfinished-replies.md`).
+//! ending the turn (`docs/architecture/unfinished-replies.md`).
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -28,20 +28,20 @@ use crate::stream::{CancelToken, RoundCall, StreamEvent, ToolCallSummary};
 /// The most tool **calls** one turn will run before giving up — a backstop
 /// against a model that loops forever. Generous enough for real multi-step
 /// tasks. Counted per call, not per round: a round can request a whole
-/// parallel batch (`docs/parallel-tools.md`), and counting rounds let one
+/// parallel batch (`docs/tools/parallel-tools.md`), and counting rounds let one
 /// round overspend the ceiling several times over.
 ///
 /// This is the **library's** default ([`LlmBackend::with_max_tool_calls`]
 /// overrides it, and `0` means no limit at all). The app ships uncapped: the
 /// `/settings` **Max tool calls** row defaults to `0`, because cutting a long
 /// agentic task off part-way leaves its work half-done, and Esc is already the
-/// stop button. See `docs/settings.md`.
+/// stop button. See `docs/state/settings.md`.
 ///
 /// [`LlmBackend::with_max_tool_calls`]: super::LlmBackend::with_max_tool_calls
 pub const MAX_TOOL_ITERATIONS: usize = 20;
 
 /// The run-wide budget of **model replies** `--max-turns` sets
-/// (`docs/headless.md`): every request the lead agent sends takes one, over
+/// (`docs/cli/headless.md`): every request the lead agent sends takes one, over
 /// the prompt's turn and every follow-up turn the run starts alike — the
 /// clones share it. Subagents' requests and a compaction's are not counted:
 /// their backends never carry it. Checked in the backend's round closure,
@@ -123,7 +123,7 @@ impl RoundBudget {
 /// (`crate::context`). Repeating it per refused call would say the same thing
 /// twice — and a clamped batch refuses several at once, so it would cost
 /// several paragraphs of screen and of context window for one fact. See
-/// `docs/settings.md`.
+/// `docs/state/settings.md`.
 pub const TOOL_LIMIT_OUTPUT: &str = "Not run: this turn had already spent its tool-call limit.";
 
 /// The error that ends a turn which spent its tool-call budget.
@@ -133,7 +133,7 @@ pub const TOOL_LIMIT_OUTPUT: &str = "Not run: this turn had already spent its to
 /// stopped the turn, **why** (a ceiling they set, not a model or provider
 /// failure), and **how** to change it. Naming the row's own label and the
 /// command means they can act on it without going looking. See
-/// `docs/settings.md`.
+/// `docs/state/settings.md`.
 fn limit_error(max_tool_calls: usize) -> String {
     format!(
         "Stopped after {max_tool_calls} tool calls — this turn hit the \
@@ -148,7 +148,7 @@ fn limit_error(max_tool_calls: usize) -> String {
 /// ([`EMPTY_REPLY_NOTE`], [`CUT_OFF_NOTE`]) and the same turn runs another
 /// round; a round that makes progress earns the budget back. Two, so three
 /// attempts in all — the bound Anthropic's own continuation example uses.
-/// See `docs/unfinished-replies.md`.
+/// See `docs/architecture/unfinished-replies.md`.
 pub const MAX_CONTINUATIONS: usize = 2;
 
 /// The transcript heading over the continuation an empty reply gets — what
@@ -176,7 +176,7 @@ pub const CUT_OFF_NOTE: &str = "[system] Your last response was cut off at the o
      limit. Continue directly from where it stopped — no apology, no recap. Keep your \
      reasoning short, and break the remaining work into smaller steps.";
 
-/// Why a round ended without finishing (`docs/unfinished-replies.md`).
+/// Why a round ended without finishing (`docs/architecture/unfinished-replies.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Unfinished {
     /// No reply and no tool call.
@@ -196,7 +196,7 @@ impl Unfinished {
 
     /// `StopFailure`'s error type once the continuations run out: Claude
     /// Code's `max_output_tokens` for a reply that kept hitting the cap, its
-    /// catch-all for one that never came (`docs/hooks.md`).
+    /// catch-all for one that never came (`docs/tools/hooks.md`).
     const fn stop_failure_kind(self) -> &'static str {
         match self {
             Self::Empty => "unknown",
@@ -225,7 +225,7 @@ fn unfinished_error(kind: Unfinished) -> String {
 
 /// Answer a round that ended without finishing — keep what it said, ask for
 /// the rest in a new user message — and report whether the turn goes on
-/// (`docs/unfinished-replies.md`).
+/// (`docs/architecture/unfinished-replies.md`).
 ///
 /// The prompt rides [`StreamEvent::HookNote`], the event a `Stop` hook's
 /// continuation already uses, so the loop flushes the streamed text before
@@ -274,7 +274,7 @@ fn continue_unfinished(
 
 /// Send the cell of a hook event that put nothing into the conversation —
 /// a `Stop` that let the turn end, a `StopFailure` — when its hooks said
-/// something (`docs/hooks.md` *The hook-run cell*): a hook note with no text,
+/// something (`docs/tools/hooks.md` *The hook-run cell*): a hook note with no text,
 /// so the loop records and commits the cell while the model's context stays
 /// exactly what it was.
 fn send_hook_report(tx: &UnboundedSender<StreamEvent>, report: Option<crate::hooks::HookReport>) {
@@ -293,14 +293,14 @@ fn send_hook_report(tx: &UnboundedSender<StreamEvent>, report: Option<crate::hoo
 /// plus the calls to run.
 pub enum RoundOutcome {
     /// The assistant answered with plain text (no tool calls) — the turn is
-    /// done, unless a `Stop` hook blocks (`docs/hooks.md`). `text` is the
+    /// done, unless a `Stop` hook blocks (`docs/tools/hooks.md`). `text` is the
     /// round's full reply: the stop payload's `last_assistant_message`, and —
     /// on a continuation — the assistant message the next round's context
     /// keeps. An **empty** one is no answer: the loop asks the model to
-    /// continue (`docs/unfinished-replies.md`).
+    /// continue (`docs/architecture/unfinished-replies.md`).
     Complete { text: String },
     /// The provider stopped the reply at its output-token cap before the
-    /// model finished it (`docs/unfinished-replies.md`). `text` is what had
+    /// model finished it (`docs/architecture/unfinished-replies.md`). `text` is what had
     /// streamed by then — often nothing, when a long thought spent the whole
     /// budget.
     CutOff { text: String },
@@ -327,17 +327,17 @@ pub enum RoundOutcome {
 ///
 /// The queue behind them is per-conversation: the session's own
 /// [`SteerQueue`](crate::steer::SteerQueue) for the main turn, the agent
-/// registry's for a subagent — the same mechanism, twice (`docs/queue.md`).
+/// registry's for a subagent — the same mechanism, twice (`docs/input/queue.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingInput {
     /// A background shell or agent finished, or a session stopped to ask for
-    /// input (`docs/background.md`) — the note the model reads, `seq` its
+    /// input (`docs/tools/background.md`) — the note the model reads, `seq` its
     /// number on the registry's board. Announced with
     /// [`StreamEvent::NoticeDelivered`] as it is taken, so the loop records
     /// the held notice cell exactly where the model reads it.
     Notice { seq: u64, text: String },
     /// A message the **user** queued while the turn was running
-    /// (`docs/queue.md`). Announced with [`StreamEvent::Steered`] as it is
+    /// (`docs/input/queue.md`). Announced with [`StreamEvent::Steered`] as it is
     /// taken, so the loop can turn its queued row into a real user bubble.
     User(String),
 }
@@ -361,11 +361,11 @@ pub enum PendingInput {
 /// - [`PendingInput::Notice`] — a background shell or agent that finished
 ///   since the last request: a completion, or a kill the model itself just
 ///   ran (`kill`/`pkill` in a bash call, or the user's `x` in the ↓ manager).
-///   Invisible; the loop already recorded it (`docs/background.md`).
+///   Invisible; the loop already recorded it (`docs/tools/background.md`).
 /// - [`PendingInput::User`] — a message the user queued **while this turn was
 ///   running**. Announced with [`StreamEvent::Steered`] as it is taken, so
 ///   the loop turns its queued row into a real user bubble at the moment the
-///   model genuinely has it (`docs/queue.md`).
+///   model genuinely has it (`docs/input/queue.md`).
 ///
 /// Notices lead, the user's own messages close: a completion is a *result*
 /// and belongs with the results it follows, while the newest thing the user
@@ -374,7 +374,7 @@ pub enum PendingInput {
 /// automatic follow-up turn — nor a queued message the boundary is about to
 /// re-dispatch as the next turn.
 ///
-/// `approve` is the permission gate (`docs/permissions.md`), consulted for
+/// `approve` is the permission gate (`docs/state/permissions.md`), consulted for
 /// every ordinary call **before** its `ToolStart` — so nothing has run, and
 /// nothing shows as running, while the user decides. An
 /// [`Approval::Reject`] resolves the call without executing it: the
@@ -382,9 +382,9 @@ pub enum PendingInput {
 /// the cell lands in history and the transcript, while the longer `result`
 /// becomes the tool result the model reads. Its `bool` argument is a
 /// `PreToolUse` hook's `permissionDecision: "ask"` — *put this to the user
-/// even if a standing rule would have allowed it* (`docs/hooks.md`).
+/// even if a standing rule would have allowed it* (`docs/tools/hooks.md`).
 ///
-/// `hooks` is the lifecycle-hook seam (`docs/hooks.md`), consulted twice per
+/// `hooks` is the lifecycle-hook seam (`docs/tools/hooks.md`), consulted twice per
 /// call: `PreToolUse` **before** `approve` (so a hook can refuse, rewrite the
 /// arguments, or pre-approve without the user) and `PostToolUse` on the
 /// outcome (so a hook can feed the model something about what just happened).
@@ -395,14 +395,14 @@ pub enum PendingInput {
 /// the lookup the permission prompt makes — so a `bash_session` call's
 /// header names the program its keys go to from the moment the call is
 /// announced, above its prompt and on a refused cell alike
-/// (`docs/interactive-shell.md`). One that knows no sessions keeps the id.
+/// (`docs/tools/interactive-shell.md`). One that knows no sessions keeps the id.
 ///
 /// A round that ends **unfinished** — an empty reply, or one the provider
 /// cut off at its output cap ([`RoundOutcome::CutOff`]) — does not end the
 /// turn: the loop keeps what it said and asks for the rest in a new user
 /// message, up to [`MAX_CONTINUATIONS`] rounds in a row, and only then ends
-/// the turn on an error saying so (`docs/unfinished-replies.md`).
-#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
+/// the turn on an error saying so (`docs/architecture/unfinished-replies.md`).
+#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agents/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
@@ -418,10 +418,10 @@ pub fn run_agent(
 ) {
     let mut used_calls = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
-    // payloads' loop-guard flag (docs/hooks.md).
+    // payloads' loop-guard flag (docs/tools/hooks.md).
     let mut stop_hook_active = false;
     // The rounds in a row that ended unfinished; any progress zeroes it
-    // (docs/unfinished-replies.md).
+    // (docs/architecture/unfinished-replies.md).
     let mut unfinished_rounds = 0usize;
     loop {
         if cancel.is_cancelled() {
@@ -438,13 +438,13 @@ pub fn run_agent(
             match input {
                 // The held notice cell lands here too, where the model reads
                 // it — not at whichever tool boundary the TUI reached first
-                // (docs/background.md).
+                // (docs/tools/background.md).
                 PendingInput::Notice { seq, text } => {
                     let _ = tx.send(StreamEvent::NoticeDelivered { seq });
                     messages.push(ChatMessage::user(&text));
                 }
                 // The queued row above the user's box becomes a real bubble
-                // the moment the model actually has the text (docs/queue.md).
+                // the moment the model actually has the text (docs/input/queue.md).
                 PendingInput::User(text) => {
                     let _ = tx.send(StreamEvent::Steered { text: text.clone() });
                     messages.push(ChatMessage::user(&text));
@@ -454,7 +454,7 @@ pub fn run_agent(
         match round(messages) {
             // No answer at all: a round that only thought, or said nothing,
             // and ended its turn. Ending the turn with it looked finished
-            // while nothing was (docs/unfinished-replies.md).
+            // while nothing was (docs/architecture/unfinished-replies.md).
             RoundOutcome::Complete { text } if text.trim().is_empty() => {
                 if !continue_unfinished(
                     Unfinished::Empty,
@@ -485,7 +485,7 @@ pub fn run_agent(
             }
             RoundOutcome::Complete { text } => {
                 unfinished_rounds = 0;
-                // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
+                // `Stop` / `SubagentStop` (docs/tools/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
                 // on an abort), an error (its reference fires StopFailure,
@@ -505,7 +505,7 @@ pub fn run_agent(
                 //
                 // Whatever the hooks said rides the note as their cell — the
                 // feedback's, or one of its own when they let the turn end
-                // (docs/hooks.md *The hook-run cell*).
+                // (docs/tools/hooks.md *The hook-run cell*).
                 if !cancel.is_cancelled() {
                     let verdict = hooks.stop(stop_hook_active, &text, cancel);
                     // An Esc while they ran reaped them, so what they said
@@ -545,7 +545,7 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::Failed(err) => {
-                // `StopFailure` (docs/hooks.md): the turn ends on an error.
+                // `StopFailure` (docs/tools/hooks.md): the turn ends on an error.
                 // Fired BEFORE the Error goes out, as Stop is before
                 // StreamDone — the boundary may start the next queued turn
                 // the moment it hears, and that turn's hooks must not
@@ -563,13 +563,13 @@ pub fn run_agent(
                 // The cap bounds TOOL CALLS, not the final answer: once the
                 // budget is spent the model still gets one more request, and a
                 // plain-text reply there completes the turn — only a further
-                // tool request trips the error (docs/tools.md). Checking here,
+                // tool request trips the error (docs/tools/tools.md). Checking here,
                 // before the round's tools run, also keeps a call the budget
                 // can no longer afford from executing just to have its result
                 // discarded.
                 //
                 // **Zero lifts the backstop entirely** — the `/settings`
-                // **Max tool calls** default (docs/settings.md): a long
+                // **Max tool calls** default (docs/state/settings.md): a long
                 // agentic task runs to its own end rather than being cut off
                 // part-way with its work half-done. The user's Esc is the
                 // stop button; the cap is for those who want a hard ceiling.
@@ -584,7 +584,7 @@ pub fn run_agent(
                 }
                 messages.push(assistant);
                 // **The budget is spent per CALL, not per round.** A round can
-                // request a whole parallel batch (docs/parallel-tools.md), so
+                // request a whole parallel batch (docs/tools/parallel-tools.md), so
                 // counting rounds let one round overspend the ceiling several
                 // times over — a `Max tool calls` of 5 running 15 calls, the
                 // reported bug. Take as many of this round's calls as the
@@ -604,7 +604,7 @@ pub fn run_agent(
                 let (allowed, refused) = calls.split_at(allowed_n);
                 used_calls += allowed_n;
                 // The round's `agent` calls take their own path
-                // (`docs/agent-tool.md`): the `run_agents` closure launches
+                // (`docs/agents/agent-tool.md`): the `run_agents` closure launches
                 // them all **concurrently**, emits the AgentBatch /
                 // AgentGroupDone events, waits for foreground completion
                 // (polling this same cancel), and returns each call's tool
@@ -618,7 +618,7 @@ pub fn run_agent(
                 // rather than dropped, so the cell says why nothing ran. A
                 // refused *task* call is answered but — like a refused agent
                 // call — shows no cell: it never had one to begin with
-                // (docs/task-tools.md).
+                // (docs/tools/task-tools.md).
                 let refused_rest: Vec<&ToolCallRequest> = refused
                     .iter()
                     .filter(|call| {
@@ -627,7 +627,7 @@ pub fn run_agent(
                     })
                     .collect();
                 // The round's wire identity, ahead of anything else it emits
-                // (docs/prompt-caching.md): every call that resolves into a
+                // (docs/providers/prompt-caching.md): every call that resolves into a
                 // record — the allowed ones of every kind in the model's
                 // order, then the refused ordinary ones, which still get a
                 // cell — under the provider's own id, so the app stamps the
@@ -648,7 +648,7 @@ pub fn run_agent(
                 if !agent_calls.is_empty() {
                     // `PreToolUse` gates a subagent launch too — Claude Code
                     // fires it for its Task tool, and `Task` aliases to our
-                    // `agent` in the matcher (docs/hooks.md). A block refuses
+                    // `agent` in the matcher (docs/tools/hooks.md). A block refuses
                     // the launch as an ordinary red cell; `updatedInput`
                     // rewrites it. The gate-side verdicts (`pre_approved`,
                     // `force_ask`) have nothing to act on — a launch never
@@ -687,9 +687,9 @@ pub fn run_agent(
                 // yet executing as `⎿ Waiting…`. Each entry's (name, args)
                 // equals the matching ToolStart's; execution below is still
                 // sequential. The refused tail rides the same announcement, so
-                // a clamped batch still shows whole. See `docs/parallel-tools.md`.
+                // a clamped batch still shows whole. See `docs/tools/parallel-tools.md`.
                 // Task calls are left out: they render no cell anywhere — the
-                // live checklist is their display (docs/task-tools.md).
+                // live checklist is their display (docs/tools/task-tools.md).
                 let announced: Vec<&ToolCallRequest> = rest
                     .iter()
                     .copied()
@@ -719,7 +719,7 @@ pub fn run_agent(
                 // OpenAI-compatible vision endpoint accepts; `tool`-role
                 // messages reject image parts. The context replays the same
                 // shape into later turns (`crate::context`). See
-                // `docs/tools.md`.
+                // `docs/tools/tools.md`.
                 let mut attachments: Vec<ChatMessage> = Vec::new();
                 let mut cancelled_mid_tools = false;
                 for call in &rest {
@@ -727,7 +727,7 @@ pub fn run_agent(
                         cancelled_mid_tools = true;
                         break;
                     }
-                    // A task tool call (docs/task-tools.md): permission-free,
+                    // A task tool call (docs/tools/task-tools.md): permission-free,
                     // instant, and cell-less — resolved through the single
                     // TaskCall event instead of the announce/Start/End trio,
                     // the post-call snapshot riding the outcome so the live
@@ -748,7 +748,7 @@ pub fn run_agent(
                         results.push((call.id.clone(), outcome.context_text().to_string()));
                         continue;
                     }
-                    // `PreToolUse` (docs/hooks.md), ahead of the gate for the
+                    // `PreToolUse` (docs/tools/hooks.md), ahead of the gate for the
                     // same reason the gate is ahead of the ToolStart: nothing
                     // has run and nothing shows as running while the user's
                     // own command decides. A hook may refuse the call, rewrite
@@ -772,7 +772,7 @@ pub fn run_agent(
                             arguments: arguments.clone(),
                         });
                     let call = rewritten.as_ref().unwrap_or(call);
-                    // The permission gate (docs/permissions.md), asked BEFORE
+                    // The permission gate (docs/state/permissions.md), asked BEFORE
                     // the ToolStart so nothing has run — and nothing has been
                     // announced as running — while the user (or auto mode's
                     // classifier) decides. A rejection still emits the
@@ -808,14 +808,14 @@ pub fn run_agent(
                         // ToolRejected, not ToolEnd: it carries BOTH texts, so
                         // the recorded call keeps the model-facing `result`
                         // beside the short cell line and later turns replay
-                        // what this round actually sent (docs/permissions.md).
+                        // what this round actually sent (docs/state/permissions.md).
                         let _ = tx.send(StreamEvent::ToolRejected {
                             display,
                             result: result.clone(),
                             // A refusal: nothing ran, so no capped output.
                             truncated: false,
                             // …and no duration: only who refused it
-                            // (docs/rollout-records.md).
+                            // (docs/state/rollout-records.md).
                             run: crate::stream::ToolRun::refused(kind),
                         });
                         results.push((call.id.clone(), result));
@@ -824,7 +824,7 @@ pub fn run_agent(
                     let _ = tx.send(tool_start_event(call, session_command));
                     // A noted approval (the auto mode classifier's allow)
                     // rides its own event so the resolved cell can append the
-                    // provenance row (docs/permissions.md).
+                    // provenance row (docs/state/permissions.md).
                     if let Approval::AllowNoted { note } = approval {
                         let _ = tx.send(StreamEvent::ToolNote(note));
                         // A pre-approving hook folded its own note into the
@@ -844,13 +844,13 @@ pub fn run_agent(
                         let _ = tx.send(StreamEvent::ToolNote(note.clone()));
                     }
                     // Forward the tool's live output to the UI as it is produced,
-                    // so the running cell tails it (docs/tool-streaming.md). The
+                    // so the running cell tails it (docs/ui/tool-streaming.md). The
                     // sink targets the front running call app-side; a tool that
                     // does not stream (read/write/edit) simply never calls it.
                     let mut on_output = |progress: ToolProgress<'_>| {
                         let event = match progress {
                             // Settled text appends, live rows replace the
-                            // last ones (docs/interactive-shell.md).
+                            // last ones (docs/tools/interactive-shell.md).
                             ToolProgress::Screen { settled, live } => StreamEvent::ToolScreen {
                                 settled: settled.to_string(),
                                 live: live.to_string(),
@@ -861,11 +861,11 @@ pub fn run_agent(
                     };
                     // Timed around the executor alone, as codex times the spawn
                     // and the wait: the permission prompt and the hooks are not
-                    // the call's runtime (docs/rollout-records.md).
+                    // the call's runtime (docs/state/rollout-records.md).
                     let started = std::time::Instant::now();
                     let mut outcome = execute(call, &mut on_output);
                     let ran = outcome.run(started.elapsed());
-                    // `PostToolUse` (docs/hooks.md): the call ran, so there is
+                    // `PostToolUse` (docs/tools/hooks.md): the call ran, so there is
                     // nothing left to refuse — only things to say. Whatever a
                     // hook adds goes onto the **model-facing** text via the
                     // outcome's existing two-text split, so the cell keeps
@@ -902,9 +902,9 @@ pub fn run_agent(
                     // A backgrounded call resolves via its own event — the
                     // cell shows the fixed backgrounded row while the launch
                     // text still becomes the tool result the model reads
-                    // (docs/background.md). An outcome whose model-facing
+                    // (docs/tools/background.md). An outcome whose model-facing
                     // `context` differs from the displayed text (the ask
-                    // tool's resolutions, `docs/ask.md`) rides the two-text
+                    // tool's resolutions, `docs/tools/ask.md`) rides the two-text
                     // events instead — `ToolAnswered` green, `ToolRejected`
                     // red — so the recorded call keeps both.
                     match (&outcome.background, &outcome.context) {
@@ -924,7 +924,7 @@ pub fn run_agent(
                                 result: context.clone(),
                                 // The call ran: a hook-amended `bash` whose
                                 // output hit the byte cap still needs its `…`
-                                // marker (docs/hooks.md).
+                                // marker (docs/tools/hooks.md).
                                 truncated: outcome.truncated,
                                 run: ran,
                             });
@@ -968,7 +968,7 @@ pub fn run_agent(
                     let _ = tx.send(tool_start_event(call, session_command));
                     // A plain ToolEnd: the cell text and the tool result are
                     // the same one line, so there is no second text for
-                    // `ToolRejected` to carry (docs/settings.md).
+                    // `ToolRejected` to carry (docs/state/settings.md).
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: TOOL_LIMIT_OUTPUT.to_string(),
                         ok: false,
@@ -988,7 +988,7 @@ pub fn run_agent(
                 // stored list stays well-formed for a continuation, and in the
                 // words its cell shows (`Interrupted by user`), so a stopped
                 // subagent's continuation reads what its session view shows
-                // (docs/interrupt.md).
+                // (docs/input/interrupt.md).
                 for call in &calls {
                     let output = results.iter().find(|(id, _)| id == &call.id).map_or_else(
                         || crate::app::INTERRUPT_TOOL_OUTPUT.to_string(),
@@ -1022,7 +1022,7 @@ pub fn run_agent(
 /// replays both — with whatever else the hook said kept rather than dropped:
 /// its note (a sibling handler's warning, a `systemMessage`) on the cell's
 /// dim row, and its context after the refusal. The cell names the hook's
-/// `hooks.json` from `home`, the sink's [`HookSink::home`] (`docs/hooks.md`
+/// `hooks.json` from `home`, the sink's [`HookSink::home`] (`docs/tools/hooks.md`
 /// *What the user sees*).
 fn refuse_by_hook(
     tx: &UnboundedSender<StreamEvent>,
@@ -1055,7 +1055,7 @@ fn refuse_by_hook(
 /// summary, the model's own `description` when it gave one — and the
 /// **verbatim arguments**, which is what lets the recorded call replay
 /// losslessly next turn instead of being rebuilt from the summary
-/// (`docs/context.md`).
+/// (`docs/architecture/context.md`).
 fn tool_start_event(
     call: &ToolCallRequest,
     session_command: &dyn Fn(&str) -> Option<String>,
@@ -1112,7 +1112,7 @@ mod tests {
     /// `events` with the resolving events' measured durations taken out — a
     /// clock reading no exact comparison can predict. What a call's run says
     /// otherwise (its exit code, its failure kind) is still compared
-    /// (`docs/rollout-records.md`).
+    /// (`docs/state/rollout-records.md`).
     fn unclocked(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
         events
             .into_iter()
@@ -1131,7 +1131,7 @@ mod tests {
 
     /// The round a fake model ends its turn with: a real, if short, answer.
     /// An *empty* `Complete` is a round the loop continues rather than an
-    /// answer (docs/unfinished-replies.md), so a fixture that means "the
+    /// answer (docs/architecture/unfinished-replies.md), so a fixture that means "the
     /// model answered" has to say something.
     fn answered() -> RoundOutcome {
         RoundOutcome::Complete {
@@ -1154,7 +1154,7 @@ mod tests {
         crate::skills::SkillRegistry::new(skills)
     }
 
-    // ===== how a call ran (docs/rollout-records.md) =====
+    // ===== how a call ran (docs/state/rollout-records.md) =====
 
     /// One round of `calls` against `execute` and `approve`, under a
     /// `max_tool_calls` ceiling, then the model's answer: the events it sent.
@@ -1371,7 +1371,7 @@ mod tests {
         );
     }
 
-    // ===== the run's reply budget: --max-turns (docs/headless.md) =====
+    // ===== the run's reply budget: --max-turns (docs/cli/headless.md) =====
 
     #[test]
     fn a_budget_without_a_limit_never_refuses() {
@@ -1678,7 +1678,7 @@ mod tests {
     fn an_empty_reply_is_answered_with_a_continuation_and_the_turn_goes_on() {
         // The reported stall: two tool rounds, then a round that only thought
         // and ended with nothing to show — and the turn ended there, as
-        // though that were the answer (docs/unfinished-replies.md).
+        // though that were the answer (docs/architecture/unfinished-replies.md).
         let (events, messages, ran) = scripted_turn(
             vec![mcp_round(), reply(""), reply("Here is what I found.")],
             &NoHooks,
@@ -1878,7 +1878,7 @@ mod tests {
     }
 
     /// A `HookSink` that answers from fixtures — the pure half of the hook
-    /// wiring, with no process anywhere (`docs/hooks.md`).
+    /// wiring, with no process anywhere (`docs/tools/hooks.md`).
     #[derive(Debug, Default)]
     struct FakeHooks {
         pre: PreToolVerdict,
@@ -2352,7 +2352,7 @@ mod tests {
     fn a_failed_call_fires_post_tool_use_failure_and_its_context_reaches_the_model() {
         // Claude Code's split: a failure is its own event, with the same
         // answers PostToolUse has — so a failed write or a red `bash` is
-        // observable at all (`docs/hooks.md`).
+        // observable at all (`docs/tools/hooks.md`).
         let hooks = FakeHooks {
             failure: PostToolVerdict {
                 context: Some("the build is known to be flaky".to_string()),
@@ -2467,7 +2467,7 @@ mod tests {
 
     #[test]
     fn a_stop_blocks_cell_rides_the_feedback_note() {
-        // docs/hooks.md *The hook-run cell*: the feedback the model reads and
+        // docs/tools/hooks.md *The hook-run cell*: the feedback the model reads and
         // the cell the user sees go out as one note, so they land together.
         let feedback = crate::hooks::HookSaid::Feedback("Stop hook feedback: tests are red".into());
         let hooks = FakeHooks {
@@ -3151,9 +3151,9 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                // The round's wire identity leads (docs/prompt-caching.md),
+                // The round's wire identity leads (docs/providers/prompt-caching.md),
                 // the model's own arguments with it — what a call that never
-                // reaches its ToolStart is recorded with (docs/interrupt.md).
+                // reaches its ToolStart is recorded with (docs/input/interrupt.md).
                 StreamEvent::RoundCalls(vec![RoundCall {
                     id: "c1".to_string(),
                     name: "bash".to_string(),
@@ -3162,7 +3162,7 @@ mod tests {
                 // The batch is announced up front (here a batch of one) so the
                 // UI can show every requested call, the not-yet-run ones as
                 // `⎿ Waiting…`, before they execute in order. See
-                // `docs/parallel-tools.md`.
+                // `docs/tools/parallel-tools.md`.
                 StreamEvent::ToolBatch(vec![ToolCallSummary {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
@@ -3191,7 +3191,7 @@ mod tests {
 
     #[test]
     fn a_split_outcome_resolves_answered_or_rejected_and_the_model_reads_the_context() {
-        // The ask tool's resolutions (docs/ask.md): the executor hands back a
+        // The ask tool's resolutions (docs/tools/ask.md): the executor hands back a
         // display text + a different model-facing context. An ok outcome rides
         // ToolAnswered (green), a failed one ToolRejected (red) — never a
         // plain ToolEnd — and the stored tool result is the CONTEXT text.
@@ -3290,7 +3290,7 @@ mod tests {
     fn a_tool_that_streams_output_emits_toolscreen_between_start_and_end() {
         // The executor's `on_output` sink surfaces as ToolScreen events strictly
         // between the call's ToolStart and ToolEnd, so the running cell tails the
-        // output as it is produced. See `docs/tool-streaming.md`.
+        // output as it is produced. See `docs/ui/tool-streaming.md`.
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -3364,7 +3364,7 @@ mod tests {
     fn a_terminal_backed_tool_streams_screen_and_title_events() {
         // A terminal session's live output and its refined header reach the
         // UI as ToolScreen and ToolTitle, between the call's start and end
-        // (docs/interactive-shell.md).
+        // (docs/tools/interactive-shell.md).
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -3432,7 +3432,7 @@ mod tests {
         // announces the whole batch (all three, in order, as the display
         // `(name, args)`) *before* the first ToolStart, so the UI can show every
         // call — the not-yet-run ones as `⎿ Waiting…` — then runs them in order.
-        // See `docs/parallel-tools.md`.
+        // See `docs/tools/parallel-tools.md`.
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -3671,7 +3671,7 @@ mod tests {
         // answered — and a call that never ran is answered the way the
         // transcript shows it, `Interrupted by user`: a subagent's chat
         // continuation resumes from this list, so its model reads what its
-        // session view shows (docs/interrupt.md).
+        // session view shows (docs/input/interrupt.md).
         let (tx, _rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let calls = vec![
@@ -3749,7 +3749,7 @@ mod tests {
     fn the_limit_error_explains_itself_and_points_at_the_setting() {
         // The user meets this as a bare red notice with nothing else on the
         // row, so it has to carry the whole story: what stopped, why it
-        // stopped, and how to change it (docs/settings.md).
+        // stopped, and how to change it (docs/state/settings.md).
         let msg = limit_error(5);
         assert!(
             msg.contains("5 tool calls"),
@@ -3773,7 +3773,7 @@ mod tests {
         // notice derives into an `[error] …` user entry (`crate::context`) —
         // so repeating it here would say the same thing twice, once per
         // refused sibling. A clamped batch of three would spend three
-        // paragraphs of screen and of context window on it (docs/settings.md).
+        // paragraphs of screen and of context window on it (docs/state/settings.md).
         assert_eq!(
             TOOL_LIMIT_OUTPUT,
             "Not run: this turn had already spent its tool-call limit."
@@ -3791,7 +3791,7 @@ mod tests {
     #[test]
     fn the_cap_counts_tool_calls_not_rounds() {
         // The user's report: "Max tool calls 5" still ran more than five.
-        // A round can request a whole PARALLEL BATCH (docs/parallel-tools.md),
+        // A round can request a whole PARALLEL BATCH (docs/tools/parallel-tools.md),
         // so counting rounds lets one round spend the whole budget several
         // times over. The cap must bound the calls themselves.
         let (tx, mut rx) = unbounded_channel();
@@ -3852,7 +3852,7 @@ mod tests {
 
     #[test]
     fn a_zero_cap_means_no_limit() {
-        // The `/settings` **Max tool calls** knob's default (docs/settings.md):
+        // The `/settings` **Max tool calls** knob's default (docs/state/settings.md):
         // 0 lifts the backstop entirely, so a long agentic task is never cut
         // off mid-way. Run more rounds than any cap we offer, then finish.
         let (tx, mut rx) = unbounded_channel();
@@ -3901,7 +3901,7 @@ mod tests {
 
     #[test]
     fn a_final_answer_after_exactly_max_tool_calls_completes() {
-        // The cap bounds TOOL CALLS, not the final answer (docs/tools.md):
+        // The cap bounds TOOL CALLS, not the final answer (docs/tools/tools.md):
         // once the budget is spent the model still gets one more request, and
         // a plain-text reply there finishes the turn — only a further tool
         // request trips the error.
@@ -3960,7 +3960,7 @@ mod tests {
         // of each round and appends each as a user-role message, after the
         // prior round's tool results (the same form `context_messages`
         // replays into later turns), so the very next request already carries
-        // the outcome. See docs/background.md.
+        // the outcome. See docs/tools/background.md.
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -4133,7 +4133,7 @@ mod tests {
 
     #[test]
     fn a_steered_message_lands_in_the_next_rounds_context() {
-        // The mid-turn queue's whole point (docs/queue.md): a message the user
+        // The mid-turn queue's whole point (docs/input/queue.md): a message the user
         // submitted while the turn was running reaches the model at the next
         // ROUND boundary — right after the round's tool results — instead of
         // waiting for the turn to finish. It is a user-role message like any
@@ -4281,7 +4281,7 @@ mod tests {
 
     #[test]
     fn an_image_read_outcome_attaches_a_user_image_message_after_the_results() {
-        // An image `read` (docs/tools.md): the tool result stays the small
+        // An image `read` (docs/tools/tools.md): the tool result stays the small
         // text while the pixels ride a follow-up USER message — the only
         // multimodal shape every OpenAI-compatible provider accepts
         // (tool-role messages reject image parts). With a sibling call in the
@@ -4410,7 +4410,7 @@ mod tests {
         // `run_in_background` (or a Ctrl+B handoff): the executor returns a
         // background outcome — the loop resolves the cell via ToolBackgrounded
         // (never ToolEnd) while the launch text still becomes the tool-result
-        // message the next round reads (docs/background.md).
+        // message the next round reads (docs/tools/background.md).
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -4467,7 +4467,7 @@ mod tests {
 
     #[test]
     fn a_rejected_call_never_runs_but_still_resolves_red_for_the_user() {
-        // The permission gate (docs/permissions.md): the executor is never
+        // The permission gate (docs/state/permissions.md): the executor is never
         // reached, the cell still commits (Start + a red End carrying the
         // short display text), and the model reads the longer instruction.
         let (tx, mut rx) = unbounded_channel();
@@ -4512,7 +4512,7 @@ mod tests {
         );
         // ToolRejected, not ToolEnd: it carries BOTH the cell text and the
         // model-facing result, so the recorded call keeps what the model read
-        // and later turns replay it (docs/permissions.md).
+        // and later turns replay it (docs/state/permissions.md).
         assert!(
             events.iter().any(|e| matches!(
                 e,
@@ -4546,7 +4546,7 @@ mod tests {
         // The permission prompt names the program the keys go to; the cell
         // it sits under — announced before the prompt opens, and committed
         // red when the user says no, which never reaches the executor —
-        // names it too, from the same lookup (docs/bash-tools.md).
+        // names it too, from the same lookup (docs/tools/bash-tools.md).
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let rounds = RefCell::new(0);
@@ -4603,7 +4603,7 @@ mod tests {
 
     #[test]
     fn a_noted_approval_emits_the_note_after_start_and_still_runs_the_call() {
-        // The auto mode classifier's allow (docs/permissions.md): the call
+        // The auto mode classifier's allow (docs/state/permissions.md): the call
         // runs exactly like a plain Allow, with one extra ToolNote event
         // between its ToolStart and its execution so the resolved cell can
         // append the provenance row.
@@ -4701,7 +4701,7 @@ mod tests {
 
     #[test]
     fn a_task_call_resolves_through_one_taskcall_event_and_no_cells() {
-        // The task tools render no tool cell anywhere (docs/task-tools.md):
+        // The task tools render no tool cell anywhere (docs/tools/task-tools.md):
         // no batch announcement, no Start/End pair — one TaskCall event
         // carrying the display header, the result text, and the post-call
         // snapshot. The result still feeds back as the tool message.
@@ -4798,7 +4798,7 @@ mod tests {
         // Before the batch announcement, the cells, or any result: the
         // round's calls of every kind — visible, task, refused ordinary —
         // under the ids the provider gave them, in the model's order
-        // (docs/prompt-caching.md).
+        // (docs/providers/prompt-caching.md).
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let calls = vec![

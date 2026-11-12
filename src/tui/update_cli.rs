@@ -1,9 +1,9 @@
-//! The `update` subcommand boundary (`docs/update.md`): `alter-zero update`
+//! The `update` subcommand boundary (`docs/ops/update.md`): `alter-zero update`
 //! asks the repository for its newest release and, when it is newer than
 //! this binary, fetches the one-line installer and runs it over this
 //! binary's own directory. Run by [`super::startup::resolve_cli`] in cooked
 //! mode — before the tokio runtime and the terminal, like every other CLI
-//! resolution (`docs/cli.md`).
+//! resolution (`docs/cli/cli.md`).
 //!
 //! The decisions are the pure `update` module's; this file resolves the
 //! executable's own path, prints, and hands the installer its variables:
@@ -30,7 +30,7 @@ use super::config;
 /// check, the fetch or the install could not be done — or when this binary
 /// is a `cargo` build directory's, which is a checkout to `git pull`, not an
 /// install to overwrite, or a package manager's under `node_modules`, which
-/// that manager updates (`docs/npm.md`). The installer's own output is the
+/// that manager updates (`docs/ops/npm.md`). The installer's own output is the
 /// progress report.
 pub(crate) fn run() -> i32 {
     let bin = env!("CARGO_PKG_NAME");

@@ -1,6 +1,6 @@
 //! Key dispatch over the conversation view: typing, Enter/Esc, Ctrl+C,
-//! the newline keys, and cursor movement (`docs/textarea.md`,
-//! `docs/shift-enter.md`).
+//! the newline keys, and cursor movement (`docs/input/textarea.md`,
+//! `docs/input/shift-enter.md`).
 
 use super::*;
 
@@ -27,7 +27,7 @@ fn enter_with_blank_input_does_nothing() {
 fn enter_while_streaming_does_not_submit() {
     // A turn is in flight: Enter never produces Submit — it steers the
     // message into that turn (codex's submit_user_message) and consumes the
-    // composer. See docs/queue.md.
+    // composer. See docs/input/queue.md.
     let mut app = App::new();
     app.input = TextArea::from_text("hello");
     app.begin_stream();
@@ -71,7 +71,7 @@ fn ctrl_j_inserts_a_newline_too() {
     // Ctrl+J is the *universal* newline key: in raw mode the byte 0x0A parses
     // to Char('j')+CONTROL on every terminal (no keyboard enhancement needed),
     // so it's the reliable fallback when a terminal can't report Shift+Enter
-    // (codex binds Ctrl+J the same way). See docs/shift-enter.md.
+    // (codex binds Ctrl+J the same way). See docs/input/shift-enter.md.
     let mut app = App::new();
     app.input = TextArea::from_text("a");
     let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
@@ -290,7 +290,7 @@ fn a_sent_message_duplicating_a_cleared_draft_is_still_persisted() {
     );
 }
 
-// ===== `?` shortcuts band (codex's footer shortcut overlay — docs/shortcuts.md) =====
+// ===== `?` shortcuts band (codex's footer shortcut overlay — docs/ui/shortcuts.md) =====
 
 #[test]
 fn question_mark_with_an_empty_composer_toggles_the_shortcuts_band() {
@@ -466,7 +466,7 @@ fn set_system_prompt_stores_the_backends_prompt_for_the_debug_view() {
 fn set_agent_system_prompt_stores_the_subagent_prompt_for_the_agent_debug_view() {
     // The boundary injects the prompt a launched subagent actually gets (the
     // main prompt + the subagent note) beside the main one, so the agent
-    // session view's Ctrl+D shows the real thing (docs/agent-tool.md).
+    // session view's Ctrl+D shows the real thing (docs/agents/agent-tool.md).
     let mut app = App::new();
     assert!(app.agent_system_prompt.is_none());
     app.set_agent_system_prompt(Some("be nice\n\nsubagent note".to_string()));
@@ -1263,7 +1263,7 @@ fn history_generation_bumps_on_every_non_append_mutation() {
 
 #[test]
 fn the_newline_keys_keep_their_meaning_under_the_highlight() {
-    // Shift/Alt+Enter and Ctrl+J are the newline keys (docs/shift-enter.md):
+    // Shift/Alt+Enter and Ctrl+J are the newline keys (docs/input/shift-enter.md):
     // a lit indicator must not swallow them — only a *plain* Enter opens
     // the band.
     for newline in [
@@ -1395,12 +1395,12 @@ fn ctrl_t_without_support_raises_an_info_toast() {
     assert!(app.thinking.is_none());
 }
 
-// ===== terminal editing shortcuts (docs/textarea.md) =====
+// ===== terminal editing shortcuts (docs/input/textarea.md) =====
 
 #[test]
 fn ctrl_a_and_ctrl_e_jump_to_the_line_ends() {
     // Ctrl+A is line-start now — the permission-mode cycle moved to
-    // Shift+Tab (docs/permissions.md).
+    // Shift+Tab (docs/state/permissions.md).
     let mut app = App::new();
     type_chars(&mut app, "hello");
     assert_eq!(app.on_key(ctrl('a')), Action::None);
@@ -1417,7 +1417,7 @@ fn shift_tab_cycles_the_permission_mode() {
         app.on_key(backtab()),
         Action::SetPermissionMode(PermissionMode::Edit)
     );
-    // The kitty protocol reports Shift+Tab as Tab+SHIFT (docs/shift-enter.md).
+    // The kitty protocol reports Shift+Tab as Tab+SHIFT (docs/input/shift-enter.md).
     assert_eq!(
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT)),
         Action::SetPermissionMode(PermissionMode::Auto)

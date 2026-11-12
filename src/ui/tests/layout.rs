@@ -134,7 +134,7 @@ fn live_height_grows_one_row_per_wrapped_input_line() {
 fn live_height_grows_when_a_long_line_soft_wraps() {
     // No explicit newline: a line longer than the field width wraps and the
     // box still grows. field width = 10 - 2 (the prompt) - 1 (the caret's
-    // column, docs/textarea.md) = 7, so 16 columns take three rows → 5.
+    // column, docs/input/textarea.md) = 7, so 16 columns take three rows → 5.
     assert_eq!(
         live_height(
             &TextArea::from_text("abcdefghijklmnop"),
@@ -264,7 +264,7 @@ fn modal_rebuild_on_close_still_follows_the_one_way_note() {
 #[test]
 fn region_is_modal_only_while_a_permission_prompt_is_open() {
     // The one inline view whose close needs the purge rebuild — its growth
-    // scrolls chat into real scrollback one-way (docs/permissions.md); every
+    // scrolls chat into real scrollback one-way (docs/state/permissions.md); every
     // other band/picker shrinks back over rows it never scrolled.
     let mut app = App::new();
     assert!(!region_is_modal(&app));
@@ -531,7 +531,7 @@ fn the_model_picker_reserves_the_running_tool_strip_above_it() {
     // The user report: opening `/model` mid-turn hid the spinner status line
     // and the running tool's live cell — the picker took the *whole* region,
     // though it only ever replaces the composer. It now follows the ↓ manager
-    // band's rule (docs/background.md): the strip keeps its rows above the
+    // band's rule (docs/tools/background.md): the strip keeps its rows above the
     // picker's own frame.
     let mut app = App::new();
     app.begin_stream();
@@ -641,7 +641,7 @@ fn a_squeezed_pickers_strip_drops_preview_rows_not_the_status_line() {
     // line — painted below the preview slot — fell off the bottom of its own
     // strip. `render_strip_above` fits the preview into the rows `view_split`
     // actually left, the same order `preview_budget` enforces in the
-    // composer's region (docs/table-streaming.md).
+    // composer's region (docs/ui/table-streaming.md).
     let mut app = forming_table(30);
     app.set_status_times(Duration::from_secs(9), None);
     app.open_model_picker("a");
@@ -755,7 +755,7 @@ fn the_manager_details_page_shows_fields_and_the_output_box() {
 
 #[test]
 fn the_details_page_humanizes_the_runtime_and_wraps_the_command() {
-    // The user-report fixes (docs/background.md): a long-lived shell's
+    // The user-report fixes (docs/tools/background.md): a long-lived shell's
     // Runtime reads `2m 3s` (never a bare `123s`), and a long command WRAPS
     // under the value column instead of truncating away — the height helper
     // counting the wrapped rows at the real width.
@@ -796,7 +796,7 @@ fn the_details_page_humanizes_the_runtime_and_wraps_the_command() {
 #[test]
 fn the_details_page_names_a_subagent_launcher() {
     // A shell a subagent launched shows where it came from — the `From:`
-    // field (docs/agent-tool.md).
+    // field (docs/agents/agent-tool.md).
     let mut app = App::new();
     app.bg_started(
         "b1",
@@ -825,7 +825,7 @@ fn the_details_page_names_a_subagent_launcher() {
 
 #[test]
 fn the_manager_band_reserves_the_running_tool_strip_above_it() {
-    // The user report (docs/background.md): opening the ↓ manager while a
+    // The user report (docs/tools/background.md): opening the ↓ manager while a
     // foreground tool ran swallowed its live cell — the band replaced the
     // whole region, streaming strip included. The reserved height now keeps
     // the strip's rows (the running cell + gap + status + gap) above the
@@ -987,7 +987,7 @@ fn tall_mcp_server_app() -> App {
 #[test]
 fn the_menu_cursor_seat_follows_a_bottom_anchored_body() {
     // An `/mcp` server page taller than the region bottom-anchors
-    // (docs/view-flow.md): the actions — and the `❯` the hidden cursor seats
+    // (docs/ui/view-flow.md): the actions — and the `❯` the hidden cursor seats
     // on — sit near the page's end, inside the painted tail. The seat must
     // subtract the same skipped rows the paint does, instead of falling back
     // to the far corner because the marker's *page* row is past the region.
@@ -1107,7 +1107,7 @@ fn a_menu_whose_marker_scrolled_off_seats_on_the_painted_hint_before_the_corner(
     );
 }
 
-// --- the overlay cursor seat (Ctrl+O / Ctrl+D, docs/tool-view-performance.md) ---
+// --- the overlay cursor seat (Ctrl+O / Ctrl+D, docs/ui/tool-view-performance.md) ---
 
 #[test]
 fn overlay_cursor_seat_sits_just_after_the_last_glyph() {
@@ -1165,7 +1165,7 @@ fn the_transcript_overlay_seats_the_cursor_after_its_quit_hint() {
 fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
     // Ctrl+D is the pager's sibling: same chrome, its own closing hint —
     // which also carries the Tab page-flip hint, Tab being the classifier
-    // page's only discovery affordance (`docs/permissions.md`).
+    // page's only discovery affordance (`docs/state/permissions.md`).
     let app = App::new();
     let area = Rect::new(0, 0, 60, 12);
     let mut buf = Buffer::empty(area);
@@ -1181,7 +1181,7 @@ fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
 }
 
 // --- the preview slot yields: the composer is never squeezed out
-// (docs/table-streaming.md "The preview slot is budgeted") ---
+// (docs/ui/table-streaming.md "The preview slot is budgeted") ---
 
 /// A streaming turn whose frontier previews `rows` tall — a forming table,
 /// the shape the reported bug needs.

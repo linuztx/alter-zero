@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The `/usage` page (docs/usage.md): a read-only, composer-replacing page
+# The `/usage` page (docs/providers/usage.md): a read-only, composer-replacing page
 # that reads every signed-in subscription off its provider — ChatGPT's
 # `/api/codex/usage` (the stub is not the ChatGPT backend, so codex's other
 # path style), Copilot's `copilot_internal/user` with the GitHub token itself,

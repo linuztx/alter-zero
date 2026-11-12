@@ -13,7 +13,7 @@ use crate::ui::wrap::cols;
 fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     // End-to-end: streamed output accumulates on the running call and the
     // live strip tails it — the newest line and the `+N lines (Ns)` footer
-    // both show (docs/tool-streaming.md).
+    // both show (docs/ui/tool-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "ping -c 10 x", None);
@@ -21,7 +21,7 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
         app.push_tool_output(&format!("line {i}\n"));
     }
     // The `(Ns)` is the command's own clock, not the status line's
-    // (`set_command_elapsed`, docs/tool-streaming.md) — inject both, apart.
+    // (`set_command_elapsed`, docs/ui/tool-streaming.md) — inject both, apart.
     app.set_status_times(Duration::from_secs(60), None);
     app.set_command_elapsed(Some(Duration::from_secs(9)));
     let pv = preview_rows(&app, 60);
@@ -46,7 +46,7 @@ fn a_silent_running_command_shows_its_clock_and_timeout_live() {
     // shows how long it has run and how long it may on its Running row —
     // `⎿ Running… (10s · wait 2m)` — with the delayed Ctrl+B hint under
     // it, instead of a bare `⎿ Running…` that said nothing for as long as
-    // the command took (docs/tool-streaming.md).
+    // the command took (docs/ui/tool-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     let command = r#"python3 -c "import time; time.sleep(100)""#;
@@ -103,8 +103,8 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     // number (the turn's elapsed) under a cell that had just begun. The
     // footer counts from the command's own `ToolStart` instead: the clock
     // the boundary already keeps for the delayed Ctrl+B hint
-    // (`set_command_elapsed`, docs/background.md), read unmasked
-    // (docs/tool-streaming.md).
+    // (`set_command_elapsed`, docs/tools/background.md), read unmasked
+    // (docs/ui/tool-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     app.set_status_times(Duration::from_secs(60), None);
@@ -134,7 +134,7 @@ fn the_running_tails_footer_counts_from_the_commands_own_start() {
     // A clock to *display*, not the Ctrl+B hint's gate: a composer-replacing
     // picker blanks `background_hint_elapsed` (it swallows the key) while
     // keeping the strip — this running cell — on screen above itself, so the
-    // footer must keep counting there (docs/llm.md, docs/background.md).
+    // footer must keep counting there (docs/providers/llm.md, docs/tools/background.md).
     app.open_settings();
     assert_eq!(
         app.background_hint_elapsed(),
@@ -328,7 +328,7 @@ fn render_live_previews_a_running_tool_with_a_blinking_bullet() {
     // instead of the assistant text, so the user sees what's executing — and
     // the bullet **blinks** at the injected frame phase, Claude Code's running
     // dot: shown in the one resting grey, then hidden, the header text never
-    // moving (`docs/tool-pulse.md`). This is the only place the blink reaches
+    // moving (`docs/ui/tool-pulse.md`). This is the only place the blink reaches
     // the screen, so it is the wiring this test pins — on the per-call cell
     // **Verbose output** shows, since a read collapses into the read/search
     // group's cell otherwise (whose own blink `ui/tests/tool_group.rs` pins).
@@ -369,7 +369,7 @@ fn preview_shows_the_whole_parallel_batch_running_plus_waiting() {
     // sibling, blank-separated. `preview_rows` counts them all, and
     // `render_live` paints the running cell alongside the `⎿ Waiting…`
     // siblings — so the batch is visible and clear. See
-    // `docs/parallel-tools.md`.
+    // `docs/tools/parallel-tools.md`.
     let mut app = App::new();
     app.begin_stream();
     let batch: Vec<crate::stream::ToolCallSummary> =
@@ -576,7 +576,7 @@ fn the_previewed_match_highlights_the_query_reversed() {
 fn a_long_shell_output_shows_every_row_inline() {
     // Past what a `bash` cell would fold, the `!` shell cell keeps going:
     // every row inline, continuation rows aligned under the corner, and no
-    // `… +N lines (ctrl+o to expand)` row (docs/shell-command.md).
+    // `… +N lines (ctrl+o to expand)` row (docs/input/shell-command.md).
     let output = (1..=6)
         .map(|n| n.to_string())
         .collect::<Vec<_>>()
@@ -603,7 +603,7 @@ fn the_running_shell_preview_is_the_flush_running_peek() {
     app.begin_shell("sleep 5");
     app.set_status_times(Duration::from_secs(5), None);
     // The `!` run IS the command: `run_shell` starts both clocks together,
-    // and the row shows the command's (docs/shell-command.md).
+    // and the row shows the command's (docs/input/shell-command.md).
     app.set_command_elapsed(Some(Duration::from_secs(5)));
     let q = queued_rows(&app, 60);
     // A shell turn hides the status line (has_status false), so the strip is
@@ -673,7 +673,7 @@ fn the_model_picker_keeps_the_running_turn_strip_above_it() {
     // The user report: `/model` opened mid-turn swallowed the status
     // indicator and the running tool's live cell. Like the ↓ manager band, the
     // picker replaces the composer only — the strip stays above it
-    // (docs/llm.md, docs/background.md).
+    // (docs/providers/llm.md, docs/tools/background.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "seq 1 100", None);
@@ -794,7 +794,7 @@ fn the_ctrl_b_hint_waits_a_few_seconds_before_showing() {
     // Ctrl+B hint (it isn't needed) — the hint appears only once the
     // command has been running a few seconds. The boundary injects the
     // running command's own elapsed each frame (`set_command_elapsed`);
-    // the preview gates the hint on it (docs/background.md).
+    // the preview gates the hint on it (docs/tools/background.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "ping google.com -c 50", None);
@@ -848,7 +848,7 @@ fn a_wait_on_a_session_hints_that_ctrl_b_stops_waiting() {
     // Ctrl+B on `bashwait` or `bashsend` ends the wait, not the command:
     // the session already runs in the background, so the hint says what the
     // key does there. `bashkill` does not answer the key at all, so it hints
-    // nothing (docs/background.md).
+    // nothing (docs/tools/background.md).
     let hints = |name: &str| {
         let mut app = App::new();
         app.begin_stream();
@@ -865,7 +865,7 @@ fn a_wait_on_a_session_hints_that_ctrl_b_stops_waiting() {
     assert_eq!(hints("BashWait"), ["(ctrl+b to stop waiting)"]);
     assert_eq!(hints("BashSend"), ["(ctrl+b to stop waiting)"]);
     assert_eq!(hints("BashKill"), Vec::<String>::new());
-    // A waiting `agentoutput` too — the agent runs on (docs/agent-tools.md).
+    // A waiting `agentoutput` too — the agent runs on (docs/agents/agent-tools.md).
     assert_eq!(hints("AgentOutput"), ["(ctrl+b to stop waiting)"]);
     assert_eq!(hints("AgentSend"), Vec::<String>::new());
 }
@@ -875,7 +875,7 @@ fn a_waiting_agentoutput_tails_the_agents_calls_under_its_wait_clock() {
     // The lead watches the agent work from its own transcript: each call the
     // agent starts streams into the waiting cell, which tails them like a
     // running command, under the wait the call asked for
-    // (docs/agent-tools.md).
+    // (docs/agents/agent-tools.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool(
@@ -980,7 +980,7 @@ fn the_manager_band_replaces_the_composer_in_render_live() {
 
 #[test]
 fn the_manager_band_keeps_the_running_tool_strip_above_it() {
-    // The user report (docs/background.md): mid-turn, opening the ↓ manager
+    // The user report (docs/tools/background.md): mid-turn, opening the ↓ manager
     // hid the running tool's live cell and the status line — the band
     // replaced the whole region. It replaces the composer only: the
     // streaming strip stays above it, the running cell tailing its output
@@ -1018,7 +1018,7 @@ fn the_manager_band_keeps_the_running_tool_strip_above_it() {
 }
 
 // --- the composer survives a tall preview under an open band
-// (docs/table-streaming.md *The preview slot is budgeted*) ---
+// (docs/ui/table-streaming.md *The preview slot is budgeted*) ---
 
 /// The reported bug's own shape: a wide GFM table streaming into a narrow
 /// terminal, its grid taller than the region has rows.
@@ -1173,7 +1173,7 @@ fn every_band_and_terminal_size_keeps_the_composer() {
     }
 }
 
-// --- the caret's own column (docs/textarea.md) ---
+// --- the caret's own column (docs/input/textarea.md) ---
 
 #[test]
 fn a_word_that_would_touch_the_box_edge_wraps_instead() {
@@ -1211,7 +1211,7 @@ fn the_caret_never_leaves_the_box_while_typing() {
     }
 }
 
-// --- a `write` streaming into its cell (docs/write-streaming.md) ---
+// --- a `write` streaming into its cell (docs/ui/write-streaming.md) ---
 
 /// One streamed piece of a `write` under slot 0.
 fn write_piece(name: &str, arguments: &str) -> crate::stream::ToolCallFragment {

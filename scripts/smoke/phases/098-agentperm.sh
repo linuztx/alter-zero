@@ -5,7 +5,7 @@
 smoke_begin
 
 # a subagent's PERMISSION PROMPT is about the conversation ON
-# SCREEN (docs/permissions.md, docs/agent-view-streaming.md). In manual mode,
+# SCREEN (docs/state/permissions.md, docs/agents/agent-view-streaming.md). In manual mode,
 # standing inside a lone FOREGROUND subagent's session view, its `bash` request
 # opened over the LEAD's live `● Agent(…)` / `⎿ Working…` cell — the main
 # strip's lone-agent tree, which that screen does not show — hiding the agent's
@@ -33,9 +33,9 @@ if [ -z "$agentperm_row" ]; then
 	fail "the gated subagent demo never put its row on the footer roster"
 fi
 # The lead's own cell IS right in the main view — a lone foreground launch
-# wears the tool-cell look there (docs/agent-tool.md). Matched without its
+# wears the tool-cell look there (docs/agents/agent-tool.md). Matched without its
 # bullet: a running cell's `●` blinks, so a one-shot capture catches it
-# hidden half the time (docs/tool-pulse.md).
+# hidden half the time (docs/ui/tool-pulse.md).
 agentperm_main="$(tmux capture-pane -t "$S98" -p)"
 expect_has "$agentperm_main" -F "Agent(Run ls -la via subagent)" "the main view is missing the lead's live agent cell"
 # ↓ opens the roster on `● main`, a second ↓ steps onto the agent, Enter opens

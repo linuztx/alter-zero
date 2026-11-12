@@ -1,4 +1,4 @@
-//! The `/mcp` manager's state machine (`docs/mcp.md`).
+//! The `/mcp` manager's state machine (`docs/tools/mcp.md`).
 
 use super::*;
 use crate::app::{McpOp, McpPage, McpServerAction, server_actions};

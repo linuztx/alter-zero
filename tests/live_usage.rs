@@ -1,5 +1,5 @@
 //! Live `/usage` verification, one test per subscription sign-in that is
-//! read over the network (`docs/usage.md` — a Console sign-in is answered
+//! read over the network (`docs/providers/usage.md` — a Console sign-in is answered
 //! without a request, so it has nothing to verify live): the provider's
 //! config resolved through `ProvidersFile::model_config` exactly as the
 //! boundary resolves it, then `llm::usage::fetch_usage` against the real

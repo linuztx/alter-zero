@@ -1,6 +1,6 @@
 //! The `/context` page: what fills the context window, by category, and
 //! what the provider said about the requests that carried it. See
-//! `docs/context-usage.md`.
+//! `docs/architecture/context-usage.md`.
 //!
 //! The `/donate` page's sibling — a read-only composer-replacing page with
 //! **no text entry**, the hardware cursor hidden while its seat tracks the
@@ -155,7 +155,7 @@ impl App {
 
     /// The window of the conversation on screen: the viewed subagent's
     /// model's inside its session view, else the session's — the footer
-    /// gauge's denominator (`docs/agent-context-gauge.md`).
+    /// gauge's denominator (`docs/agents/agent-context-gauge.md`).
     #[must_use]
     pub fn context_usage_window(&self) -> Option<u64> {
         match self.viewed_agent() {
@@ -167,7 +167,7 @@ impl App {
     /// The token count at which the conversation on screen compacts itself,
     /// when it does: the main session's, while the `/settings` **Auto
     /// compact** knob is on and its window is known. A subagent never
-    /// compacts (`docs/compact.md`).
+    /// compacts (`docs/architecture/compact.md`).
     #[must_use]
     pub fn context_usage_threshold(&self) -> Option<u64> {
         if self.viewed_agent().is_some() || !self.settings.auto_compact {
@@ -182,7 +182,7 @@ impl App {
     /// freely; a different one moves the page's signature, and the context
     /// gauge re-reads the whole context with the new set's estimate in it —
     /// every request carries the schemas, the first one included
-    /// (`docs/token-estimate.md`).
+    /// (`docs/architecture/token-estimate.md`).
     pub fn set_tool_definitions(&mut self, tools: Arc<[ToolDefinition]>) {
         if !Arc::ptr_eq(&self.tool_definitions, &tools) && *self.tool_definitions != *tools {
             self.tools_estimate = tools
@@ -233,7 +233,7 @@ impl App {
         let memo = RefCell::new(memo);
         // In the provider's tokens, as the footer's gauge reads: what its
         // usage reports taught about its tokens against the estimate
-        // (docs/token-estimate.md) — applied outside the memo, which keeps
+        // (docs/architecture/token-estimate.md) — applied outside the memo, which keeps
         // the estimate's own counts, so a new lesson re-tokenizes nothing.
         let calibration = self.context_calibration();
         let count =

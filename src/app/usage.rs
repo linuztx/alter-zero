@@ -1,5 +1,5 @@
 //! The `/usage` page: every signed-in subscription's usage against its plan,
-//! read off the providers themselves. See `docs/usage.md`.
+//! read off the providers themselves. See `docs/providers/usage.md`.
 //!
 //! The `/context` page's sibling — a read-only composer-replacing page with
 //! no text entry, the hardware cursor hidden and seated on the `❯` — whose
@@ -240,7 +240,7 @@ impl App {
 
     /// Inject, once, how the local clock reads an instant: its offset from
     /// UTC, in seconds, at that instant (Unix seconds) — so a reset across a
-    /// daylight-saving change still reads the right hour (`docs/usage.md`).
+    /// daylight-saving change still reads the right hour (`docs/providers/usage.md`).
     pub fn set_local_offset(&mut self, offset: fn(i64) -> i32) {
         self.local_offset = Some(offset);
     }

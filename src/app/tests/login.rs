@@ -1,4 +1,4 @@
-//! The inline `/login` API-key onboarding (`docs/llm.md`).
+//! The inline `/login` API-key onboarding (`docs/providers/llm.md`).
 
 use super::*;
 use crate::llm::local::Verdict;
@@ -14,7 +14,7 @@ fn slash_login_opens_the_onboarding_when_idle() {
 #[test]
 fn slash_login_opens_the_onboarding_mid_turn() {
     // /login works mid-turn like /model — saving a key never touches the
-    // running turn (docs/toast.md). The *loop* builds the provider choices.
+    // running turn (docs/ui/toast.md). The *loop* builds the provider choices.
     let mut app = App::new();
     app.begin_stream();
     type_chars(&mut app, "/login");
@@ -56,7 +56,7 @@ fn ctrl_c_closes_the_onboarding_not_the_app() {
     assert!(app.key_onboarding.is_none());
 }
 
-// --- the method step: "Sign in with an account" / "Sign in with an API key" (docs/copilot.md) ---
+// --- the method step: "Sign in with an account" / "Sign in with an API key" (docs/providers/copilot.md) ---
 
 #[test]
 fn login_opens_on_the_method_step() {
@@ -158,7 +158,7 @@ fn enter_on_a_subscription_starts_its_device_login() {
     assert_eq!(device.status, DeviceStatus::Starting);
 }
 
-// --- the sign-in method choice: a subscription offering two ways in (docs/chatgpt.md) ---
+// --- the sign-in method choice: a subscription offering two ways in (docs/providers/chatgpt.md) ---
 
 #[test]
 fn enter_on_a_subscription_offering_two_sign_ins_opens_the_method_choice() {
@@ -377,7 +377,7 @@ fn the_device_page_does_not_ride_the_status_animation_chain() {
     // part is an `mm:ss` countdown, and every frame it costs carries a cursor
     // hide and a re-seat — thirty a second is what a terminal with a
     // cursor-trail animation renders as a permanent shimmer over the page. The
-    // boundary gives it its own once-a-second tick instead (`docs/copilot.md`).
+    // boundary gives it its own once-a-second tick instead (`docs/providers/copilot.md`).
     let app = device_app();
     assert!(app.device_login_active(), "the page is up");
     assert!(
@@ -403,7 +403,7 @@ fn the_countdown_is_injected_by_the_boundary_clock() {
     assert_eq!(device.remaining, Some(std::time::Duration::from_secs(851)));
 }
 
-// --- the local half: "Sign in with a local model" (docs/local-models.md) ---
+// --- the local half: "Sign in with a local model" (docs/providers/local-models.md) ---
 
 /// The test the boundary was asked to run for `host`, with `token`.
 fn test_of(host: &str, token: Option<&str>) -> ServerTest {
@@ -724,7 +724,7 @@ fn the_confirmation_counts_what_there_is_to_pick() {
 fn a_save_the_environment_overrides_says_which_variable_to_unset() {
     // The process env is read before `.env`: a variable exported in the
     // shell keeps the session off the address that just passed its test,
-    // which the confirmation must not hide (docs/local-models.md).
+    // which the confirmation must not hide (docs/providers/local-models.md).
     let save = ServerSave {
         provider: "lmstudio".into(),
         name: "LM Studio".into(),

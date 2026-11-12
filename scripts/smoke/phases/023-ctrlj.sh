@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Ctrl+J is the UNIVERSAL newline key (docs/shift-enter.md). Unlike
+# Ctrl+J is the UNIVERSAL newline key (docs/input/shift-enter.md). Unlike
 # Shift+Enter (which needs keyboard enhancement to even be reported), Ctrl+J grows
 # the input box on every terminal — in raw mode the byte 0x0A parses to
 # Char('j')+CONTROL. Type two lines separated by Ctrl+J: the box must grow to show
@@ -34,7 +34,7 @@ echo "==== captured pane (multi-line draft submitted with Enter) ===="
 printf '%s\n' "$ctrlj_sent"
 tmux kill-session -t "$S20" 2>/dev/null
 
-# Phase 23: Ctrl+J grows the box (the universal newline fallback, docs/shift-enter.md).
+# Phase 23: Ctrl+J grows the box (the universal newline fallback, docs/input/shift-enter.md).
 expect_has "$ctrlj_grown" -F "❯ CCC" "first draft line '❯ CCC' not shown in the input box after Ctrl+J"
 expect_has "$ctrlj_grown" -F "  DDD" "Ctrl+J did not insert a newline — indented continuation '  DDD' missing (the box did not grow)"
 # A plain Enter then submits the whole multi-line draft to scrollback.

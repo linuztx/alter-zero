@@ -1,4 +1,4 @@
-//! The MCP OAuth flow (`docs/mcp.md`): RFC 9728 protected-resource
+//! The MCP OAuth flow (`docs/tools/mcp.md`): RFC 9728 protected-resource
 //! discovery → RFC 8414 authorization-server metadata (with the OIDC
 //! fallback) → RFC 7591 dynamic client registration when offered → the
 //! authorization-code + PKCE (S256) grant with an RFC 8707 `resource`
@@ -248,7 +248,7 @@ pub fn save_tokens(
 }
 
 /// Keep — or, with `None`, forget — a pre-registered client's secret for
-/// `server_url` (`mcp add --client-secret`, `docs/mcp.md`): in the store's
+/// `server_url` (`mcp add --client-secret`, `docs/tools/mcp.md`): in the store's
 /// `clients` section, owner-only and never in `mcp.json`, and apart from the
 /// login, so "Clear authentication" leaves the client the user configured.
 ///
@@ -1227,7 +1227,7 @@ fn oauth_error_detail(status: u16, body: &str) -> String {
 
 /// Resolve the authorization server for `server_url`, seeded by the 401's
 /// challenge when one was captured — every document checked before it is
-/// trusted (`docs/mcp.md`):
+/// trusted (`docs/tools/mcp.md`):
 ///
 /// 1. **Protected-resource metadata** (RFC 9728): the challenge's named URL
 ///    first, then the well-known candidates on the server itself; a
@@ -1332,7 +1332,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// call. Hugging Face's, Context7's and Exa's publish the same metadata but
 /// answer calls without a token, and their authorization servers register
 /// apps, so they read `false`. The manager holds an anonymous connect to a
-/// server this says `true` for as needing a sign-in (`docs/mcp.md`). `false`
+/// server this says `true` for as needing a sign-in (`docs/tools/mcp.md`). `false`
 /// too whenever a document couldn't be read: only positive evidence holds a
 /// server that connected.
 #[must_use]

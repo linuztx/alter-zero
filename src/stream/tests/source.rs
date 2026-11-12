@@ -14,7 +14,7 @@ fn agent_system_prompt_defaults_to_the_backends_own_prompt() {
     // A backend without a distinct subagent prompt would send a launched
     // agent its own prompt — the trait default says so honestly (the
     // dummy's None included); `LlmBackend` overrides it with the note-
-    // suffixed one (docs/agent-tool.md).
+    // suffixed one (docs/agents/agent-tool.md).
     struct Fixed;
     impl ReplySource for Fixed {
         fn spawn(

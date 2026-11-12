@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the /mcp MANAGER (docs/mcp.md). Claude Code's MCP surface
+# the /mcp MANAGER (docs/tools/mcp.md). Claude Code's MCP surface
 # driven offline end to end against a SCRIPTED stdio server (a sh script
 # answering the deterministic ids of a MODERN 2026-07-28 server: 1 = the
 # server/discover probe, 2 = tools/list — no initialize anywhere): the
@@ -60,7 +60,7 @@ for expect in "Fixture MCP Server" "Status:" "✔ connected" \
 	expect_has "$mcp_detail" -F "$expect" "the server detail is missing '$expect'"
 done
 # The count belongs to the LIST row; the detail page has a `Tools:` row of
-# its own, so saying it on the Status row too is a duplicate (docs/mcp.md).
+# its own, so saying it on the Status row too is a duplicate (docs/tools/mcp.md).
 expect_lacks "$mcp_detail" -F "· 1 tool" "the detail's Status row repeats the tool count"
 # A stdio server has no auth story — and a modern one that never asked for
 # credentials must not wear a '✘ not authenticated' row (the deepwiki bug).
@@ -94,7 +94,7 @@ printf '%s\n' "$mcp_closed"
 expect_lacks "$mcp_closed" -F "Manage MCP servers" "Esc did not close the /mcp manager"
 expect_has "$mcp_closed" -F "dummy_model_name" "the session footer did not come back after closing /mcp"
 # The connected server's own instructions ride the <system-reminder> the
-# context leads with (docs/mcp.md) — Ctrl+D shows exactly what is sent.
+# context leads with (docs/tools/mcp.md) — Ctrl+D shows exactly what is sent.
 tmux send-keys -t "$S80" C-d
 sleep 0.6
 mcp_context="$(tmux capture-pane -t "$S80" -p -S -200)"

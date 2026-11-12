@@ -1,4 +1,4 @@
-//! Integration proof of the `mcp` CLI subcommand family (`docs/mcp-cli.md`)
+//! Integration proof of the `mcp` CLI subcommand family (`docs/cli/mcp-cli.md`)
 //! against the **real built binary** (the `detached_exec.rs` pattern —
 //! cargo hands the path as `CARGO_BIN_EXE_alter-zero`), with
 //! `ALTER_ZERO_MCP_FILE` pointed into a per-test temp dir. Offline and
@@ -199,7 +199,7 @@ fn failures_exit_1_and_grammar_errors_exit_2() {
         assert!(stderr(&out).contains("No MCP server named \"nope\""));
     }
     // Grammar errors: exit 2 with the clap-shaped trailer — `error:`, the
-    // mcp `Usage:` block, the pointer at --help (docs/cli.md).
+    // mcp `Usage:` block, the pointer at --help (docs/cli/cli.md).
     let out = mcp(&file, &["add", "x", "--url", "https://u", "--", "cmd"]);
     assert_eq!(out.status.code(), Some(2));
     let text = stderr(&out);

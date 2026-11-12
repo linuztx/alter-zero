@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# `!` shell commands (docs/shell-command.md). Typing `!cmd` enters
+# `!` shell commands (docs/input/shell-command.md). Typing `!cmd` enters
 # shell mode: the bang is absorbed into the prompt (the composer reads `! cmd`,
 # not `❯ !cmd`) and the footer flips to "Shell mode". Enter from an idle
 # composer runs the command locally as a codex-style exec cell — the `! cmd`
@@ -43,7 +43,7 @@ echo "==== captured pane (after Esc interrupts !sleep 9) ===="
 printf '%s\n' "$shell_interrupt"
 tmux kill-session -t "$S16" 2>/dev/null
 # How each command ran rides its record in the rollout
-# (docs/rollout-records.md): its exit status, its time, why it failed.
+# (docs/state/rollout-records.md): its exit status, its time, why it failed.
 # The recorder writes at the loop bottom, so poll for the third call's line.
 shell_rollout=""
 for _ in $(seq 1 30); do
@@ -73,7 +73,7 @@ expect_lacks "$shell_running" -F "esc to interrupt" "a running !command showed t
 # commit the redundant `Conversation interrupted` notice (the cell is the record).
 expect_has "$shell_interrupt" -F "Interrupted by user" "Esc did not resolve a long-running !command as '⎿ Interrupted by user'"
 expect_lacks "$shell_interrupt" -F "Conversation interrupted" "a shell interrupt committed the redundant 'Conversation interrupted' notice — req 2: the ⎿ cell is the record"
-# The rollout records how each command ran (docs/rollout-records.md): a
+# The rollout records how each command ran (docs/state/rollout-records.md): a
 # success's exit and time, a failure's exit and kind, and an Esc'd command's
 # kind with the second-plus it ran before the Esc — but no exit status.
 expect_has "$shell_ok_line" -F '"exit_code":0' "a !command's record lacks its exit status"

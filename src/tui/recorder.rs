@@ -1,5 +1,5 @@
 //! Recording the conversation to a rollout file as it happens — codex's
-//! `RolloutRecorder`, sized down to this loop (`docs/resume.md`).
+//! `RolloutRecorder`, sized down to this loop (`docs/state/resume.md`).
 //!
 //! The pure format lives in the library's `session` module; this owns the
 //! impurities and one invariant: **the file mirrors `App::history`**. That
@@ -28,7 +28,7 @@ use super::host::{session_id, utc_stamp};
 use super::resume::sessions_root;
 
 /// Records the conversation to a rollout file as it happens — codex's
-/// `RolloutRecorder`, sized down to this loop (see `docs/resume.md`).
+/// `RolloutRecorder`, sized down to this loop (see `docs/state/resume.md`).
 ///
 /// The pure format lives in [`session`]; this owns the impurities: the root
 /// dir from the environment, the local clock for the dated path, the UTC
@@ -53,7 +53,7 @@ pub(crate) struct SessionRecorder {
     /// An adopted file's last line lost its newline (a torn write): the next
     /// append prefixes one so the first new item isn't glued onto it.
     repair_newline: bool,
-    /// The filesystem checkpoints recorded in this session (`docs/checkpoint.md`)
+    /// The filesystem checkpoints recorded in this session (`docs/state/checkpoint.md`)
     /// — an in-memory mirror of the `checkpoint` lines, kept so a truncation
     /// rewrite can re-emit the survivors and a resume can adopt the file's own.
     /// Appended interleaved with the item lines.
@@ -62,7 +62,7 @@ pub(crate) struct SessionRecorder {
     /// checkpoint twin of `recorded`, so an append only writes the new ones.
     checkpoints_written: usize,
     /// Each model request's usage this conversation recorded
-    /// (`docs/rollout-records.md`), in the order the requests finished —
+    /// (`docs/state/rollout-records.md`), in the order the requests finished —
     /// the `usage` lines' in-memory mirror, held like the checkpoints so a
     /// rewrite can re-place the survivors and a resume can adopt the file's
     /// own. Each knows where it sits ([`RequestUsage::after`]).
@@ -73,7 +73,7 @@ pub(crate) struct SessionRecorder {
     /// model name as of the last [`set_model`](Self::set_model).
     cwd: String,
     model: String,
-    /// The session's own model selection (`docs/session-model.md`) — what
+    /// The session's own model selection (`docs/state/session-model.md`) — what
     /// the file's `model` sidecar line records, so a resume brings the
     /// conversation back on it. `None` on the dummy: nothing to restore to.
     selection: Option<ModelSelection>,
@@ -93,10 +93,10 @@ pub(crate) struct SessionRecorder {
     /// The id the next file is created with — the conversation's own, held
     /// from the moment the conversation begins rather than minted at the
     /// create, so a hook fired before the first item already names the id
-    /// `--resume` will take (`docs/hooks.md`). The startup id for the first
+    /// `--resume` will take (`docs/tools/hooks.md`). The startup id for the first
     /// conversation, a fresh one after each `/clear`.
     next_id: String,
-    /// The hooks' view of the conversation (`docs/hooks.md`): its id and the
+    /// The hooks' view of the conversation (`docs/tools/hooks.md`): its id and the
     /// rollout path, published on every `active` transition, so a payload's
     /// `session_id` is the `--resume` handle and its `transcript_path` names
     /// the file this conversation is actually recorded to — `None` while no
@@ -144,7 +144,7 @@ impl SessionRecorder {
 
     /// The session's model moved, or something was learned about it — a
     /// Ctrl+T cycle, the capability probe's answer, a resume's own restore
-    /// (`docs/session-model.md`). `model` is the backend's name (the meta
+    /// (`docs/state/session-model.md`). `model` is the backend's name (the meta
     /// line of the next file `/clear` starts); `selection` is what the
     /// file's next `model` line records, flushed by the next
     /// [`sync`](Self::sync) when it differs from the newest one on disk.
@@ -177,7 +177,7 @@ impl SessionRecorder {
         target.is_some() && target != self.written.as_ref()
     }
 
-    /// Share the conversation with the hook sink (`docs/hooks.md`): the cell
+    /// Share the conversation with the hook sink (`docs/tools/hooks.md`): the cell
     /// is re-published on every `active` transition — the lazy create, a
     /// `/clear`'s reset, a `/resume`'s adopt.
     pub(crate) fn with_conversation(
@@ -207,7 +207,7 @@ impl SessionRecorder {
     }
 
     /// Record a filesystem checkpoint against the current conversation length
-    /// (`docs/checkpoint.md`): held in memory now, flushed to the file by the
+    /// (`docs/state/checkpoint.md`): held in memory now, flushed to the file by the
     /// next [`sync`](Self::sync) (a turn always grows history, so the flush
     /// rides that append — and a session that never grows history never
     /// materializes a file, keeping codex's deferred create).
@@ -216,7 +216,7 @@ impl SessionRecorder {
     }
 
     /// Record one model request's usage, where it finished
-    /// (`docs/rollout-records.md`): held now, written by the next
+    /// (`docs/state/rollout-records.md`): held now, written by the next
     /// [`sync`](Self::sync) among the items around it. A request always
     /// follows the message that started its turn, so it never creates a file
     /// by itself — and, held like a checkpoint, it would not. With recording
@@ -229,7 +229,7 @@ impl SessionRecorder {
     }
 
     /// The checkpoints known this session — the loop reads these to pick the
-    /// restore target for an Esc-Esc backtrack (`docs/backtrack.md`).
+    /// restore target for an Esc-Esc backtrack (`docs/input/backtrack.md`).
     pub(crate) fn checkpoints(&self) -> &[checkpoint::Checkpoint] {
         &self.checkpoints
     }
@@ -246,7 +246,7 @@ impl SessionRecorder {
     }
 
     /// The active session's id — the `--resume` handle the exit hint prints
-    /// (`docs/cli.md`). `None` until anything was recorded (deferred create),
+    /// (`docs/cli/cli.md`). `None` until anything was recorded (deferred create),
     /// so an empty session advertises nothing.
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.active.as_ref().map(|(_, meta)| meta.id.as_str())
@@ -254,14 +254,14 @@ impl SessionRecorder {
 
     /// The id this conversation is — or, before its first record, will be —
     /// recorded under: what a headless run announces before its prompt has
-    /// created the file (`docs/headless.md`).
+    /// created the file (`docs/cli/headless.md`).
     pub(crate) fn conversation_id(&self) -> &str {
         self.session_id().unwrap_or(&self.next_id)
     }
 
     /// Mirror the file to `history`: append newly finished items (creating
     /// the file + meta line first on the very first one) plus any pending
-    /// checkpoint lines (`docs/checkpoint.md`), rewrite the whole file when
+    /// checkpoint lines (`docs/state/checkpoint.md`), rewrite the whole file when
     /// history shrank (the backtrack rewind), no-op when unchanged. History is
     /// append-or-truncate only, so the watermark compare is sound. A checkpoint
     /// alone never creates a file (deferred create).
@@ -272,7 +272,7 @@ impl SessionRecorder {
         // `block_prompt` removes the submission and records the notice in
         // one mutation, leaving `history.len()` unchanged — which is exactly
         // why `App::history_generation` exists, and why the recorder keys on
-        // it (docs/hooks.md).
+        // it (docs/tools/hooks.md).
         if generation != self.generation {
             self.generation = generation;
             if self.active.is_some() {
@@ -292,8 +292,8 @@ impl SessionRecorder {
         let checkpoints_pending = self.checkpoints.len() > self.checkpoints_written;
         let usage_pending = self.usage.len() > self.usage_written;
         // Nothing new to write — neither items, checkpoints, a request's
-        // usage (docs/rollout-records.md) nor a changed model selection
-        // (docs/session-model.md).
+        // usage (docs/state/rollout-records.md) nor a changed model selection
+        // (docs/state/session-model.md).
         if !items_grew && !checkpoints_pending && !usage_pending && !self.selection_pending() {
             return;
         }
@@ -331,7 +331,7 @@ impl SessionRecorder {
         self.keep_record = false;
         // …and has an id of its own from this moment, so the
         // `SessionStart(clear)` that announces it already names the id its
-        // file will carry (docs/hooks.md).
+        // file will carry (docs/tools/hooks.md).
         self.next_id = session_id();
         self.publish_conversation();
     }
@@ -340,14 +340,14 @@ impl SessionRecorder {
     /// resume-mode open), and a rewrite re-serializes its own meta. `torn`
     /// flags a file whose last line lost its newline — the next append
     /// repairs it first. `checkpoints` are the file's own recorded snapshots
-    /// (`docs/checkpoint.md`), taken over as already-written so later turns
+    /// (`docs/state/checkpoint.md`), taken over as already-written so later turns
     /// extend the same chain and a backtrack after resuming restores against
     /// them. `model` is the file's newest `model` record and `honoured`
-    /// whether the session now runs it (`docs/session-model.md`): a record
+    /// whether the session now runs it (`docs/state/session-model.md`): a record
     /// it could not honour is kept rather than overwritten by the fallback,
     /// until a `/model` pick; a file with no record takes the session's
     /// model at the next `sync`. `usage` is the file's own `usage` lines
-    /// (`session::parse_usage`, `docs/rollout-records.md`), taken over as
+    /// (`session::parse_usage`, `docs/state/rollout-records.md`), taken over as
     /// already written, so a later rewrite keeps each where it sat.
     #[allow(clippy::too_many_arguments)] // everything one adopted file carries
     pub(crate) fn adopt(
@@ -404,7 +404,7 @@ impl SessionRecorder {
             text.push('\n');
         }
         // A changed model selection lands BEFORE the items it produced
-        // (docs/session-model.md); the newest line is the one a resume reads.
+        // (docs/state/session-model.md); the newest line is the one a resume reads.
         if self.selection_pending()
             && let Some(selection) = self.recorded_selection().cloned()
         {
@@ -413,7 +413,7 @@ impl SessionRecorder {
             self.written = Some(selection);
         }
         // The new items, each request's usage among them where it finished
-        // (docs/rollout-records.md). `recorded` already counts `items`.
+        // (docs/state/rollout-records.md). `recorded` already counts `items`.
         text.push_str(&session::history_lines(
             items,
             self.recorded - items.len(),
@@ -421,7 +421,7 @@ impl SessionRecorder {
             &stamp,
         ));
         self.usage_written = self.usage.len();
-        // Flush any checkpoints recorded since the last append (docs/checkpoint.md)
+        // Flush any checkpoints recorded since the last append (docs/state/checkpoint.md)
         // — interleaved with the item lines; parsed back by their own reader.
         for checkpoint in &self.checkpoints[self.checkpoints_written..] {
             text.push_str(&session::checkpoint_line(checkpoint, &stamp));
@@ -455,7 +455,7 @@ impl SessionRecorder {
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
         let mut head = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
-        // The session's model, right after the meta (docs/session-model.md).
+        // The session's model, right after the meta (docs/state/session-model.md).
         if let Some(selection) = self.recorded_selection() {
             head.push_str(&session::model_line(selection, &meta.timestamp));
             head.push('\n');
@@ -467,18 +467,18 @@ impl SessionRecorder {
     /// Rewrite the whole file (meta + every item) — the truncation path: the
     /// Esc-Esc backtrack rewound history, and the file must follow. (This
     /// normalizes the file to what this build parsed — lines a future build
-    /// wrote and this one skipped are dropped; see `docs/resume.md`.)
+    /// wrote and this one skipped are dropped; see `docs/state/resume.md`.)
     fn rewrite(&mut self, history: &[HistoryItem]) {
         self.recorded = history.len();
         self.repair_newline = false;
         // A truncation (backtrack) drops the checkpoints describing the
         // rewound-away future, so the file mirrors the survivors
-        // (docs/checkpoint.md), in lockstep with the in-memory list.
+        // (docs/state/checkpoint.md), in lockstep with the in-memory list.
         checkpoint::retain_surviving(&mut self.checkpoints, history.len());
         self.checkpoints_written = self.checkpoints.len();
         // …and the requests of the turns it cut go with them, as those turns'
         // own lines do, while a subagent's billed request stays; every
-        // survivor is re-placed where it sat (docs/rollout-records.md).
+        // survivor is re-placed where it sat (docs/state/rollout-records.md).
         session::retain_usage(&mut self.usage, history.len());
         self.usage_written = self.usage.len();
         let Some((path, meta)) = self.active.clone() else {
@@ -487,7 +487,7 @@ impl SessionRecorder {
         let stamp = utc_stamp();
         let mut text = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
         // One model line, right after the meta — the selection the file
-        // should name (docs/session-model.md).
+        // should name (docs/state/session-model.md).
         let selection = self.recorded_selection().cloned();
         if let Some(selection) = &selection {
             text.push_str(&session::model_line(selection, &stamp));

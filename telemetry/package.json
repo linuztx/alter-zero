@@ -2,7 +2,7 @@
   "name": "alter-zero-telemetry",
   "version": "1.0.0",
   "private": true,
-  "description": "The Alter Zero usage-telemetry collector: a Cloudflare Worker over D1 (docs/telemetry.md).",
+  "description": "The Alter Zero usage-telemetry collector: a Cloudflare Worker over D1 (docs/ops/telemetry.md).",
   "type": "module",
   "scripts": {
     "test": "node --test",

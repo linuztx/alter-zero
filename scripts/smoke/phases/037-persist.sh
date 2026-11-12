@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the input history PERSISTS across sessions (docs/history-persistence.md).
+# the input history PERSISTS across sessions (docs/input/history-persistence.md).
 # Submit a distinctive message in one process — written to an isolated
 # ALTER_ZERO_HISTORY_FILE — then launch a SECOND process against the same file:
 # ↑ recalls the previous session's message and Ctrl+R finds it. Proves both the
@@ -61,7 +61,7 @@ sleep 0.2
 tmux kill-session -t "$S37B" 2>/dev/null
 rm -f "$HISTFILE"
 
-# Phase 37: the input history persists across sessions (docs/history-persistence.md).
+# Phase 37: the input history persists across sessions (docs/input/history-persistence.md).
 if [ "$persist_written" != "yes" ]; then
 	fail "the submitted message was never written to the history file (append broken)"
 fi

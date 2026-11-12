@@ -1,4 +1,4 @@
-//! The MCP **I/O boundary** (`docs/mcp.md`): the three transports, the
+//! The MCP **I/O boundary** (`docs/tools/mcp.md`): the three transports, the
 //! per-server connect sequence, the OAuth flow, and the session-owned
 //! [`McpManager`] registry. The pure protocol/config/naming vocabulary this
 //! drives is [`crate::mcp`]; this module is what actually spawns processes,

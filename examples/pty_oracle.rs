@@ -1,4 +1,4 @@
-//! Differential check of the session screen (`docs/interactive-shell.md`):
+//! Differential check of the session screen (`docs/tools/interactive-shell.md`):
 //! run a program in a pseudo-terminal of the session's size, type a script
 //! of keys into it, and **record every byte** it wrote — then print the
 //! session emulator's final screen, so `scripts/pty_oracle.sh` can replay the

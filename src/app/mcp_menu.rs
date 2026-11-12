@@ -1,4 +1,4 @@
-//! The `/mcp` manager (`docs/mcp.md`) — the sixth composer-replacing inline
+//! The `/mcp` manager (`docs/tools/mcp.md`) — the sixth composer-replacing inline
 //! picker, and deliberately the hooks-menu twin: no text entry (except the
 //! auth page's `URL >` field), ↑/↓/digits/Enter/Esc, a page walk
 //! servers → server detail → tools → tool detail, plus the OAuth page.
@@ -60,14 +60,14 @@ impl McpServerAction {
 }
 
 /// The actions a server's state affords, in display order — the reference's
-/// menus (`docs/mcp.md`).
+/// menus (`docs/tools/mcp.md`).
 #[must_use]
 pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     use McpServerAction as A;
     // What the auth row affords: a stored grant can be re-run and cleared, a
     // server that never issued one can only be logged into, and a written-in
     // header or a public server affords neither — there is nothing stored to
-    // re-run (`docs/mcp.md`).
+    // re-run (`docs/tools/mcp.md`).
     let auth_actions = |out: &mut Vec<A>| match server.auth {
         Some(McpAuthState::Authenticated | McpAuthState::Expired) => {
             out.push(A::Reauthenticate);
@@ -112,11 +112,11 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
         McpServerStatus::Pending => vec![A::Reconnect, A::Disable],
         // A project server waiting for the startup review has no actions
         // here: the review on screen is where it is answered
-        // (`docs/config-review.md`).
+        // (`docs/state/config-review.md`).
         McpServerStatus::AwaitingReview => Vec::new(),
         // MCP is off for the session (`/settings`): nothing connects, so
         // the one decision left is the server's own switch — whether it
-        // runs once MCP is back on (`docs/mcp.md`).
+        // runs once MCP is back on (`docs/tools/mcp.md`).
         McpServerStatus::Off => vec![A::Disable],
     }
 }

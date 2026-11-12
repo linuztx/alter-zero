@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Phase 45: the startup header banner (docs/header.md). A fresh session shows the
+# Phase 45: the startup header banner (docs/ui/header.md). A fresh session shows the
 # gradient mascot + title + cwd + hint at the top of scrollback. It is chrome
 # (never in `history`), re-emitted on every full repaint — so it survives a
 # resize (a width change purges scrollback and rebuilds from history, which the
@@ -35,7 +35,7 @@ printf '%s\n' "$header_cleared"
 # itself opens with the banner at its top, and the InPlace return repaint must
 # restore the banner on the inline screen — it lives outside `history`, and the
 # pre-fix return rebuilt from history alone, wiping it until the next resize
-# or /clear re-emitted it (docs/header.md).
+# or /clear re-emitted it (docs/ui/header.md).
 tmux send-keys -t "$S_HEADER" C-o
 sleep 0.5
 header_overlay="$(tmux capture-pane -t "$S_HEADER" -p)"

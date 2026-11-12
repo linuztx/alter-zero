@@ -20,7 +20,7 @@
 //! numbers are process-clean) and then the OLD arm in the same process — whose
 //! reading the NEW arm's freed blocks can subsidise — so for a quotable OLD
 //! number run `--dom`, which measures ONLY the whole-list `Value` tree in a
-//! fresh process (`docs/memory.md`).
+//! fresh process (`docs/architecture/memory.md`).
 //!
 //! Linux-only reporting (reads `/proc/self/status`); elsewhere it prints n/a.
 

@@ -5,17 +5,17 @@
 smoke_begin
 
 # The composer-replacing pickers on a terminal too short for their whole page
-# (docs/view-flow.md *A page that sheds rows before it flows*). Bottom-
+# (docs/ui/view-flow.md *A page that sheds rows before it flows*). Bottom-
 # anchoring such a page kept its tail — a description, a preview, the hint —
 # and flowed its search line and its highlighted row into scrollback, so the
 # row Enter would act on was off screen. Each picker now sheds what its
 # choices don't need and keeps its title, the search line, three rows between
 # the ↑/↓ overflow slots, and the hint — /donate and /secrets their
 # highlighted entry, and the AskUserQuestion modal its question
-# (docs/ask.md). Drive each one on a 12-row pane. Counts are matched loosely where a catalog grows with each
+# (docs/tools/ask.md). Drive each one on a 12-row pane. Counts are matched loosely where a catalog grows with each
 # new feature, which must not fail this phase instead of that feature's own.
 S139="${S}_shortpages"
-# Eight secrets for /secrets to window (docs/secrets.md).
+# Eight secrets for /secrets to window (docs/state/secrets.md).
 {
 	printf '{\n  "secrets": [\n'
 	for i in 0 1 2 3 4 5 6 7; do
@@ -53,7 +53,7 @@ sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /settings back to the composer"
 # /mascot: laid beside the list its whole page is fifteen rows, so on 12 the
 # banner preview yields, and its title, three mascots between the slots and
-# the hint stay on screen (docs/mascot.md).
+# the hint stay on screen (docs/ui/mascot.md).
 submit "$S139" "/mascot"
 short_mascot="$(wait_pane 5 "$S139" -F "Enter to choose")"
 echo "==== Phase 139: /mascot on 12 rows ===="
@@ -98,7 +98,7 @@ wait_pane 5 "$S139" -F "dummy_model_name" >/dev/null ||
 	fail "Esc did not close /login back to the composer"
 # /donate: the highlighted address alone, its numbered label straight under
 # the top rule, over the caution and the hint — no overflow rows, which would
-# hug that rule blank at the first address (docs/donate.md).
+# hug that rule blank at the first address (docs/ui/donate.md).
 submit "$S139" "/donate"
 short_donate="$(wait_pane 5 "$S139" -F "enter/c copy address")"
 echo "==== Phase 139: /donate on 12 rows ===="
@@ -120,7 +120,7 @@ tmux send-keys -t "$S139" Escape
 sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /donate back to the composer"
 # /secrets: eight secrets on 12 rows — three between the slots under the
-# title and the blurb, the masks still lined up (docs/secrets.md).
+# title and the blurb, the masks still lined up (docs/state/secrets.md).
 submit "$S139" "/secrets"
 short_secrets="$(wait_pane 5 "$S139" -F "c copy placeholder")"
 echo "==== Phase 139: /secrets on 12 rows ===="
@@ -141,7 +141,7 @@ expect_has "$short_secrets_walk" -E '^  ↓ 2 more below$' "/secrets lost the ro
 tmux send-keys -t "$S139" Escape
 sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /secrets back to the composer"
-# The AskUserQuestion modal (docs/ask.md): the coffee question sheds its
+# The AskUserQuestion modal (docs/tools/ask.md): the coffee question sheds its
 # descriptions and two of its five rows, and keeps its chip strip — the last
 # thing to go — the question, the highlighted option and the hint.
 submit "$S139" "ask me some questions"
@@ -173,7 +173,7 @@ wait_pane 10 "$S139" -S -60 -- -F "User declined to answer questions" >/dev/null
 	fail "Esc did not decline the questions"
 tmux kill-session -t "$S139" 2>/dev/null
 
-# The search-line pickers on 7 rows (docs/view-flow.md *Below the compact
+# The search-line pickers on 7 rows (docs/ui/view-flow.md *Below the compact
 # page*). Bottom-anchoring the compact page flowed its search line — and the
 # caret, clamped onto a list row — into scrollback, and then the highlighted
 # row. The page sheds its ↑/↓ rows, its rules and list rows instead, so the

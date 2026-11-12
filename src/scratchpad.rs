@@ -1,5 +1,5 @@
 //! The session's own temp layout — the agent's **scratchpad** and the
-//! background shells' **tasks** dir (see `docs/scratchpad.md`).
+//! background shells' **tasks** dir (see `docs/tools/scratchpad.md`).
 //!
 //! Everything a session writes outside the user's project lives under one
 //! per-user, per-session root:
@@ -45,7 +45,7 @@ pub fn scratchpad_dir(root: &Path) -> PathBuf {
 }
 
 /// The background shells' interim-output directory — `{root}/tasks`, holding
-/// one `{id}.output` file per launched task (`docs/background.md`).
+/// one `{id}.output` file per launched task (`docs/tools/background.md`).
 #[must_use]
 pub fn tasks_dir(root: &Path) -> PathBuf {
     root.join(TASKS_LEAF)
@@ -57,7 +57,7 @@ const IMAGES_LEAF: &str = "images";
 /// The backend's image-payload cache — `{root}/images`, holding the
 /// downscaled copy of every picture sent to the model, so a turn that
 /// re-sends an earlier attachment reads a small file instead of decoding the
-/// original again (`docs/images.md` "Memory").
+/// original again (`docs/ui/images.md` "Memory").
 #[must_use]
 pub fn images_dir(root: &Path) -> PathBuf {
     root.join(IMAGES_LEAF)
@@ -66,7 +66,7 @@ pub fn images_dir(root: &Path) -> PathBuf {
 /// Is `path` a file **strictly inside** `root`?
 ///
 /// The predicate behind the permission gate's scratchpad exemption
-/// (`docs/scratchpad.md`): a `write`/`edit` under the session's own scratchpad
+/// (`docs/tools/scratchpad.md`): a `write`/`edit` under the session's own scratchpad
 /// needs no approval, so this must never say yes to anything else. It is
 /// deliberately strict and lexical — no filesystem is consulted:
 ///
@@ -78,7 +78,7 @@ pub fn images_dir(root: &Path) -> PathBuf {
 ///   `{root}`, and the root itself is not "inside" itself.
 ///
 /// A symlink *within* the scratchpad could still point outside it; creating
-/// one takes a `bash` call, which asks (see `docs/scratchpad.md`).
+/// one takes a `bash` call, which asks (see `docs/tools/scratchpad.md`).
 #[must_use]
 pub fn contains(root: &Path, path: &Path) -> bool {
     let normalize = |p: &Path| -> Option<PathBuf> {
@@ -105,7 +105,7 @@ pub fn contains(root: &Path, path: &Path) -> bool {
 /// `{tmp}/alter-zero-{uid}/{session}/scratchpad/…` layout [`session_root`] and
 /// [`scratchpad_dir`] build — whichever session wrote it?
 ///
-/// Display only (`docs/tool-groups.md` *Scratchpad edits*): a conversation
+/// Display only (`docs/ui/tool-groups.md` *Scratchpad edits*): a conversation
 /// resumed in a new process has a scratchpad of its own, and the files its
 /// earlier session wrote are still scratchpad files. The permission gate's
 /// exemption asks [`contains`] about this session's own scratchpad alone.
@@ -161,7 +161,7 @@ mod tests {
             PathBuf::from("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/tasks")
         );
         // The downscaled image payloads the backend re-sends each turn
-        // (docs/images.md "Memory") live beside them.
+        // (docs/ui/images.md "Memory") live beside them.
         assert_eq!(
             images_dir(&root),
             PathBuf::from("/tmp/alter-zero-1000/18cea7cc0aee22c0-5d77f/images")

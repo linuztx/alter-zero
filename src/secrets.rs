@@ -1,5 +1,5 @@
 //! Secrets — the user's credentials, used by the agent through placeholders
-//! it can write but never read (`docs/secrets.md`).
+//! it can write but never read (`docs/state/secrets.md`).
 //!
 //! A secret is a **name**, a **value** and an optional line of **context**.
 //! The model is told the names and the context in the `<system-reminder>`
@@ -634,7 +634,7 @@ impl SecretStore {
 
     /// [`redact`](Self::redact) for what the **user** typed — a message, a
     /// `!` command, an answer — before the conversation keeps it
-    /// (`docs/secrets.md` *What the user types*). The one difference: a
+    /// (`docs/state/secrets.md` *What the user types*). The one difference: a
     /// placeholder the user wrote for a stored secret is kept as written,
     /// in whatever case it was typed, even where a value is a piece of it
     /// (`secret` is a common password, and `<secret:DB_PASSWORD>` contains
@@ -1131,7 +1131,7 @@ impl SecretRegistry {
 /// The redacting half of a [`SecretRegistry`]: it takes a value **out** of
 /// text and does nothing else — no expansion, no listing, no value to read.
 /// It is what [`crate::app::App`] holds to redact what the user types
-/// (`docs/secrets.md` *What the user types*), since the pure core never
+/// (`docs/state/secrets.md` *What the user types*), since the pure core never
 /// holds a stored value. It shares the registry's store, so a secret saved
 /// after it was handed out is masked at once; the default, attached to no
 /// registry, redacts nothing. Its `Debug` counts the secrets and names none.

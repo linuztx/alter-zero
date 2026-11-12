@@ -1,5 +1,5 @@
 //! A subscription's usage against its plan — what the `/usage` page shows
-//! (`docs/usage.md`): the pure parse of each provider's own answer into one
+//! (`docs/providers/usage.md`): the pure parse of each provider's own answer into one
 //! provider-neutral [`UsageReport`], and the boundary [`fetch_usage`] that
 //! asks for it.
 //!
@@ -1133,7 +1133,7 @@ const ANTIGRAVITY_SHARED_POOLS: &str =
     "Models of one family share their quota, so their bars move together.";
 
 /// An Antigravity account's usage, from the catalog rows `fetchAvailableModels`
-/// gave (`docs/antigravity.md` */usage*): a bar per `/model` row with a
+/// gave (`docs/providers/antigravity.md` */usage*): a bar per `/model` row with a
 /// quota — the share used, `1 - remainingFraction`, spent at none left —
 /// grouped by family, Gemini first.
 #[must_use]
@@ -1431,7 +1431,7 @@ pub fn fetch_usage(cfg: &ModelConfig, cancel: &CancelToken) -> Result<UsageRepor
         AuthScheme::AnthropicConsole => console_report(),
         // The catalog carries each model's quota: the same seam as the chat
         // request mints the bearer and finds the project, then one
-        // `fetchAvailableModels` (`docs/antigravity.md` */usage*).
+        // `fetchAvailableModels` (`docs/providers/antigravity.md` */usage*).
         AuthScheme::GoogleAntigravity => {
             let refresh = signed_in(cfg.api_key.as_deref())?;
             let access = super::antigravity::authorize(refresh, &cfg.api_base)?;

@@ -1,4 +1,4 @@
-//! Running the user's lifecycle hooks — the boundary half (`docs/hooks.md`).
+//! Running the user's lifecycle hooks — the boundary half (`docs/tools/hooks.md`).
 //!
 //! The pure half ([`crate::hooks`]) decides *which* handlers an event selects,
 //! *what* JSON they are fed, and *how* their answers combine. This module owns
@@ -101,7 +101,7 @@ impl PostToolVerdict {
     }
 }
 
-/// What a `UserPromptSubmit` hook said about the prompt (`docs/hooks.md`).
+/// What a `UserPromptSubmit` hook said about the prompt (`docs/tools/hooks.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptVerdict {
     /// Refuse the prompt: the turn never reaches the model, the submission
@@ -111,13 +111,13 @@ pub struct PromptVerdict {
     /// `additionalContext` entries, in handler order — injected **even on a
     /// block**, both references' rule.
     pub contexts: Vec<String>,
-    /// The hooks' cell (`docs/hooks.md` *The hook-run cell*) — `None` when
+    /// The hooks' cell (`docs/tools/hooks.md` *The hook-run cell*) — `None` when
     /// they said nothing it would show. A block is the red notice's, never a
     /// row here.
     pub report: Option<HookReport>,
 }
 
-/// What the `Stop` / `SubagentStop` hooks decided (`docs/hooks.md`).
+/// What the `Stop` / `SubagentStop` hooks decided (`docs/tools/hooks.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StopVerdict {
     /// Keep going, on this feedback — [`stop_feedback_texts`] words the
@@ -148,7 +148,7 @@ pub enum HookPermissionVerdict {
 }
 
 /// `StopFailure`'s `error` — Claude Code's error types, read off what the
-/// backend reported (`docs/hooks.md`). Also the event's matcher, so a hook
+/// backend reported (`docs/tools/hooks.md`). Also the event's matcher, so a hook
 /// can select `rate_limit` alone. A failure this app classifies no further
 /// is `unknown`, the reference's own catch-all.
 #[must_use]
@@ -177,7 +177,7 @@ const PERMISSION_PROMPT_TITLE: &str = "Permission needed";
 /// Every method defaults to "nothing happened", which is why [`NoHooks`] is a
 /// unit struct and why no existing test needed touching. A new event is a new
 /// defaulted method plus its one call site — if a later change makes that
-/// untrue, the change is wrong (`docs/hooks.md`).
+/// untrue, the change is wrong (`docs/tools/hooks.md`).
 pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// Before a call is put to the permission gate.
     fn pre_tool_use(&self, _call: &ToolCallRequest, _cancel: &CancelToken) -> PreToolVerdict {
@@ -237,7 +237,7 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
 
     /// A subagent was launched; the returned contexts are extra context for
     /// **that** agent's own conversation, and the report the hooks' cell on
-    /// its own transcript (`docs/hooks.md` *The hook-run cell*).
+    /// its own transcript (`docs/tools/hooks.md` *The hook-run cell*).
     ///
     /// Takes the agent's own [`CancelToken`], like every other blocking method
     /// here: an Esc while a subagent is starting must reap its hook rather
@@ -260,7 +260,7 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// A [`block`](StopVerdict::block) makes the agent keep going, its next
     /// user message the feedback as [`stop_feedback_texts`] words it; the
     /// [`report`](StopVerdict::report) is the hooks' cell, whether or not
-    /// they blocked (`docs/hooks.md` *The hook-run cell*).
+    /// they blocked (`docs/tools/hooks.md` *The hook-run cell*).
     /// `stop_hook_active` is true on the second and later firings within one
     /// turn — the loop guard's flag, which the hook itself checks to avoid
     /// looping forever (the engine never refuses a re-block; that is Claude
@@ -332,7 +332,7 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
 
     /// The event name [`turn_start`] stamps on this sink's prompt-time
     /// context — `UserPromptSubmit` everywhere except the compact wrapper,
-    /// whose "prompt" hook is really `PreCompact` (`docs/hooks.md`).
+    /// whose "prompt" hook is really `PreCompact` (`docs/tools/hooks.md`).
     fn prompt_hook_label(&self) -> &'static str {
         "UserPromptSubmit"
     }
@@ -341,7 +341,7 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// hooks refuse names the hook's `hooks.json` from
     /// (`~/.alter-zero/hooks.json`) — the spelling the startup review and
     /// the `/hooks` menu give the same file — while the model keeps the
-    /// absolute path ([`block_texts`], `docs/hooks.md` *What the user
+    /// absolute path ([`block_texts`], `docs/tools/hooks.md` *What the user
     /// sees*). `None`, the default — a sink nobody told — names the file as
     /// recorded.
     fn home(&self) -> Option<&Path> {
@@ -357,7 +357,7 @@ pub struct NoHooks;
 
 impl HookSink for NoHooks {}
 
-/// The compact turn's sink (`docs/hooks.md`): the summarization spawn maps
+/// The compact turn's sink (`docs/tools/hooks.md`): the summarization spawn maps
 /// the turn lifecycle onto the compact events — its "prompt" hook is
 /// `PreCompact` (whose context strings become extra summarization
 /// instructions) and its completion is `PostCompact`. Everything else stays
@@ -409,7 +409,7 @@ impl HookSink for CompactHooks {
 }
 
 /// The conversation the recorder is writing, as the payloads report it
-/// (`docs/hooks.md`): its **id** — the rollout file's, the handle `--resume`
+/// (`docs/tools/hooks.md`): its **id** — the rollout file's, the handle `--resume`
 /// takes, held before the file exists so a fresh conversation has one from
 /// its first event — and its **file** once anything was recorded (deferred
 /// create). Both move together: a `/clear` starts a new id with no file, a
@@ -436,7 +436,7 @@ pub type ConversationCell = Arc<std::sync::RwLock<Conversation>>;
 pub type SessionSources = Arc<std::sync::Mutex<Vec<String>>>;
 
 /// The `SessionStart` hooks the boundary fired in the background as the
-/// session opened, and the context they return (`docs/hooks.md`) — Claude
+/// session opened, and the context they return (`docs/tools/hooks.md`) — Claude
 /// Code's timing: the user can type at once, and the first turn waits for
 /// them so their context still lands. At most one run is held: a later
 /// firing (a `/clear`, a `/resume`) replaces one no turn read, whose
@@ -503,7 +503,7 @@ impl SessionStartRun {
 
 /// The session's `Notification` hooks, run **one at a time, in the order
 /// their prompts were shown**, and ahead of any hook event fired after them
-/// (`docs/hooks.md`). A notifier must never hold its prompt up, so it cannot
+/// (`docs/tools/hooks.md`). A notifier must never hold its prompt up, so it cannot
 /// run on the thread that asked; run anywhere else without an order, a slow
 /// one landed after the `PostToolUse` of the call it announced — or after the
 /// next prompt's — and a hook keeping a status would end on the wrong one.
@@ -696,7 +696,7 @@ impl CommandHooks {
     /// Name a refused call's `hooks.json` from `home` on its cell — the
     /// boundary passes the user's home, as it does to the app's own path
     /// display, so the cell names the file the way the startup review did
-    /// when its hook was trusted (`docs/hooks.md` *What the user sees*).
+    /// when its hook was trusted (`docs/tools/hooks.md` *What the user sees*).
     #[must_use]
     pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
         self.home = home;
@@ -759,7 +759,7 @@ impl CommandHooks {
     ) -> Dispatch {
         let selection = self.file.select(event, query);
         // A notification already shown runs first, so the event's hooks see
-        // the session in the order things happened (`docs/hooks.md`) — unless
+        // the session in the order things happened (`docs/tools/hooks.md`) — unless
         // there is nothing here to run, or this is that lane's own dispatch.
         if event != HookEvent::Notification && !selection.handlers.is_empty() {
             self.handles.notifications.wait_for_earlier(cancel, None);
@@ -997,7 +997,7 @@ impl CommandHooks {
         );
     }
 
-    /// `PreCompact` (`docs/hooks.md`): fired by the compact wrapper on the
+    /// `PreCompact` (`docs/tools/hooks.md`): fired by the compact wrapper on the
     /// summarization spawn's thread. It cannot block — **in either
     /// reference** (Claude Code's own in-app docs claim exit 2 blocks
     /// compaction, but the `blocked` field is never read at any call site;
@@ -1013,7 +1013,7 @@ impl CommandHooks {
         }
     }
 
-    /// `PostCompact` (`docs/hooks.md`): the summary that replaced the
+    /// `PostCompact` (`docs/tools/hooks.md`): the summary that replaced the
     /// conversation, envelope-only — it decides nothing, and the cell is
     /// whatever its hooks still said.
     fn post_compact(
@@ -1149,7 +1149,7 @@ impl PipeCapture {
 /// What a `PostToolUse` / `PostToolUseFailure` hook said, folded for the
 /// loop. The call already ran, so a `block` here is not a refusal — it is
 /// feedback the model must read, appended after the call's own output with
-/// any context (`docs/hooks.md` *What the model reads*).
+/// any context (`docs/tools/hooks.md` *What the model reads*).
 fn post_verdict(event: HookEvent, hooked: HookOutcome) -> PostToolVerdict {
     if hooked.is_quiet() {
         return PostToolVerdict::default();
@@ -1225,7 +1225,7 @@ fn shown_file(file: &Path, home: Option<&Path>) -> String {
 }
 
 /// The dim row a hook's added context leaves on its call — `Context added by
-/// PostToolUse hook`: which event's hook spoke (`docs/hooks.md` *What the
+/// PostToolUse hook`: which event's hook spoke (`docs/tools/hooks.md` *What the
 /// user sees*). The offline demo builds its row with it, so the two cannot
 /// drift.
 #[must_use]
@@ -1292,7 +1292,7 @@ const fn takes_context(event: HookEvent) -> bool {
     )
 }
 
-/// What `event`'s hooks did, as their cell shows it (`docs/hooks.md` *The
+/// What `event`'s hooks did, as their cell shows it (`docs/tools/hooks.md` *The
 /// hook-run cell*) — or `None` when they said nothing it would show, so a
 /// silent run costs no cell, inline or in Ctrl+O. `runs` are the handlers
 /// that ran with their parsed answers, in order; `warnings` the
@@ -1382,7 +1382,7 @@ const BLOCKED_NEXT_STEP: &str = "Do not retry the same call; address the reason 
 /// by PreToolUse hook: {reason}` with the hook named under it — `event` is
 /// the event whose hook refused, `PreToolUse` or `PermissionRequest`. The
 /// cell names the hook's `hooks.json` from `home` (`~/.alter-zero/hooks.json`,
-/// `docs/hooks.md` *What the user sees*); the model reads its absolute path
+/// `docs/tools/hooks.md` *What the user sees*); the model reads its absolute path
 /// and one line on what to do (*What the model reads*).
 #[must_use]
 pub fn block_texts(event: &str, block: &HookBlock, home: Option<&Path>) -> (String, String) {
@@ -1397,7 +1397,7 @@ pub fn block_texts(event: &str, block: &HookBlock, home: Option<&Path>) -> (Stri
     )
 }
 
-/// What the turn's opening hooks decided (`docs/hooks.md`): the notes to
+/// What the turn's opening hooks decided (`docs/tools/hooks.md`): the notes to
 /// record + inject (SessionStart's first, then UserPromptSubmit's), and the
 /// block reason when the prompt was refused. The notes come back even on a
 /// block, both references' rule. The glue in `LlmBackend::spawn` sends each
@@ -1412,7 +1412,7 @@ pub struct TurnStart {
 
 /// One opening event's note: its transcript label, the user-role wire text
 /// the model reads — **empty** when the hooks gave it nothing — and the
-/// hooks' cell (`docs/hooks.md` *The hook-run cell*).
+/// hooks' cell (`docs/tools/hooks.md` *The hook-run cell*).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpeningNote {
     pub label: String,
@@ -1649,7 +1649,7 @@ impl HookSink for CommandHooks {
         // goes to the lane: the gate's wait is already under way, and an
         // answer given while a slow notifier runs is acted on, not held behind
         // it. Under the turn's token all the same, so an Esc reaps a notifier
-        // that hangs, or drops one still queued (`docs/hooks.md`).
+        // that hangs, or drops one still queued (`docs/tools/hooks.md`).
         let lane = self.handles.notifications.clone();
         Some(Box::new(move || {
             lane.push(
@@ -2526,7 +2526,7 @@ mod tests {
     #[test]
     fn a_rewrite_alone_is_named_on_the_cell() {
         // Silently, the cell would show the hook's command as if the model
-        // had asked for it (docs/hooks.md *What the user sees*).
+        // had asked for it (docs/tools/hooks.md *What the user sees*).
         let hooks = hooks_for(&pre_hook(
             r#"printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"pnpm install"}}}'"#,
         ));
@@ -2726,7 +2726,7 @@ mod tests {
 
     #[test]
     fn a_failed_call_fires_post_tool_use_failure_not_post_tool_use() {
-        // Claude Code's split (`docs/hooks.md`): PostToolUse is a success's,
+        // Claude Code's split (`docs/tools/hooks.md`): PostToolUse is a success's,
         // PostToolUseFailure a failure's — matched on the tool name, the
         // error in the payload, and the same answers (context the model
         // reads, a note on the cell).
@@ -2934,7 +2934,7 @@ mod tests {
     fn notifications_run_one_at_a_time_in_the_order_their_prompts_showed() {
         // A slow notifier for the first prompt, a quick one for the second:
         // run side by side the second would land first, so a status hook
-        // would end on the wrong prompt (`docs/hooks.md`).
+        // would end on the wrong prompt (`docs/tools/hooks.md`).
         let log = std::env::temp_dir().join("alter-zero-hook-notify-order.log");
         let _ = std::fs::remove_file(&log);
         let hooks = recording_hooks(
@@ -2989,7 +2989,7 @@ mod tests {
         // The prompt is answered at once and the call runs — the prompt is
         // never held up — but its PostToolUse does not overtake the
         // notification the prompt fired: hook events keep the order they
-        // fired in (`docs/hooks.md`).
+        // fired in (`docs/tools/hooks.md`).
         let log = std::env::temp_dir().join("alter-zero-hook-notify-before-post.log");
         let _ = std::fs::remove_file(&log);
         let hooks = recording_hooks(&log, "sleep 1; ", &["Notification", "PostToolUse"]);
@@ -3546,7 +3546,7 @@ mod tests {
 
     #[test]
     fn a_session_start_fired_as_the_session_opens_runs_in_the_background() {
-        // Claude Code's timing (`docs/hooks.md`): SessionStart runs in the
+        // Claude Code's timing (`docs/tools/hooks.md`): SessionStart runs in the
         // background as the session opens, so the user can type at once —
         // and the first turn waits for it, so its context still lands.
         let hooks = session_start_hooks("sleep 1; echo 'the build id is ZX-4417'");
@@ -3740,7 +3740,7 @@ mod tests {
 
     #[test]
     fn turn_start_hands_on_a_cell_even_when_the_hooks_gave_the_model_nothing() {
-        // docs/hooks.md *The hook-run cell*: a UserPromptSubmit hook that
+        // docs/tools/hooks.md *The hook-run cell*: a UserPromptSubmit hook that
         // broke adds no context, so its note carries no text — the model
         // reads nothing new — but its cell still reaches the screen, labelled
         // like every hook note. Context and a cell ride one note together.

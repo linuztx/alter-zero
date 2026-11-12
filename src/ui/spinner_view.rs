@@ -1,4 +1,4 @@
-//! The inline `/spinner` picker. See `docs/spinner.md`.
+//! The inline `/spinner` picker. See `docs/ui/spinner.md`.
 //!
 //! The `/theme` picker's layout over the spinner-style catalog: the family's
 //! header — the `Select spinner` title over a dim line saying what a spinner
@@ -197,7 +197,7 @@ fn preview_lines(spinner: Spinner, elapsed: Duration, width: u16) -> Vec<Line<'s
 /// The framed page as lines — a top rule, the `Select spinner` title over
 /// its dim subtitle, the `❯` search line, a body, the key hint, and a bottom
 /// rule straight under that, no blank row hugging either rule
-/// (`docs/view-flow.md` *The frame hugs its content*) — the first of three
+/// (`docs/ui/view-flow.md` *The frame hugs its content*) — the first of three
 /// pages that fits `height` rows ([`first_page_that_fits`]). The **whole**
 /// page's body is the list column (each row wearing its own live spinner)
 /// and the captioned **live status-line preview**, beside the list when the
@@ -208,7 +208,7 @@ fn preview_lines(spinner: Spinner, elapsed: Duration, width: u16) -> Vec<Line<'s
 /// yielding, then the same page without the header ([`compact_page`]), and
 /// on a terminal shorter still the slots, the rules and the rows one by
 /// one, so the search line, the highlighted style and the hint stay on
-/// screen (`docs/view-flow.md` *A page that sheds rows before it flows*).
+/// screen (`docs/ui/view-flow.md` *A page that sheds rows before it flows*).
 /// What [`render_spinner_picker`] paints and [`spinner_menu_rows`] counts,
 /// so the reserved height and the painted rows can never disagree. `height`
 /// is the terminal's, or the region already reserved for the page, which
@@ -301,8 +301,8 @@ pub fn spinner_picker_height(app: &App, width: u16, term_height: u16) -> Option<
 /// or, in an area too short for that, the compact page, which sheds its own
 /// rows down to the search line in an area shorter still. The page is built
 /// for the area's height, so it always fits and nothing flows
-/// (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/spinner.md`.
+/// (`docs/ui/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/ui/spinner.md`.
 pub fn render_spinner_picker(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

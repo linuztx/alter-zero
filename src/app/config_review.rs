@@ -1,5 +1,5 @@
 //! The startup review: the dialog that asks about hooks and project MCP
-//! servers before they run (`docs/config-review.md`).
+//! servers before they run (`docs/state/config-review.md`).
 //!
 //! A composer-replacing inline page in the `/hooks` family — no text entry,
 //! the cursor hidden on its `❯`, every key owned while open — over pages the

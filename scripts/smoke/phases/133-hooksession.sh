@@ -4,12 +4,12 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The session events (docs/hooks.md) need a real backend, so the app runs
+# The session events (docs/tools/hooks.md) need a real backend, so the app runs
 # against a stub provider that refuses every request with a 400 — the turn
 # fails, never retried. Every hooked event appends its payload (one JSON line)
 # to a log. What it proves, in Claude Code's terms:
 #   - SessionStart is held while the startup review asks about the hooks
-#     (docs/config-review.md), then fires as the session opens, before any
+#     (docs/state/config-review.md), then fires as the session opens, before any
 #     prompt, in the background: a handler that sleeps does not hold up the
 #     first frame,
 #     and a turn sent while it runs waits for it — its UserPromptSubmit
@@ -106,7 +106,7 @@ hs_at_least() { [ "$(hs_events | grep -c "^$1")" -ge "$2" ]; }
 S133="${S}_hooksession"
 hs_launch_started="$(date +%s%N)"
 # The first frame is the startup review asking about these hooks
-# (docs/config-review.md).
+# (docs/state/config-review.md).
 launch -w "Esc to continue without trusting" "$S133" 100 30 "$HS_REAL"
 hs_first_frame_ms=$((($(date +%s%N) - hs_launch_started) / 1000000))
 note "first frame after ${hs_first_frame_ms} ms (SessionStart sleeps 2 s)"

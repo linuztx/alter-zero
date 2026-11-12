@@ -1,7 +1,7 @@
 //! The **Google Antigravity sign-in**: Google's OAuth PKCE flow on
 //! Antigravity's own desktop client, the refresh-token store it fills, the
 //! short-lived access token every request is minted with, and the account's
-//! Cloud Code project every request names. See `docs/antigravity.md`.
+//! Cloud Code project every request names. See `docs/providers/antigravity.md`.
 //!
 //! The fifth sign-in keeps the other four's two-layer split exactly: a
 //! long-lived token in the `.env` key store, exchanged (and cached in memory,
@@ -17,9 +17,9 @@
 //! Google publishes no API for third-party clients to reach Antigravity's
 //! quota. The client id below is Antigravity's own public desktop client, and
 //! the `User-Agent` is the agy CLI's, because the backend gates its catalog
-//! on it — the posture `docs/chatgpt.md` takes with Codex's. No client
+//! on it — the posture `docs/providers/chatgpt.md` takes with Codex's. No client
 //! identity prompt is sent: the backend does not require one
-//! (`docs/antigravity.md` *Read this first*).
+//! (`docs/providers/antigravity.md` *Read this first*).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -374,7 +374,7 @@ pub struct CatalogRow {
 }
 
 /// The catalog envelope: the `models` map, each record left unparsed until
-/// it is read (`docs/memory.md` — a record carries experiments and prompts
+/// it is read (`docs/architecture/memory.md` — a record carries experiments and prompts
 /// this client never reads), and the backend's own curated list.
 #[derive(Deserialize)]
 struct CatalogBody<'a> {
@@ -754,7 +754,7 @@ fn reset_after(message: &str) -> Option<String> {
 }
 
 /// Explain a sign-in, refresh, or request failure in terms the user can act
-/// on (`docs/antigravity.md` *When it doesn't work*).
+/// on (`docs/providers/antigravity.md` *When it doesn't work*).
 #[must_use]
 pub fn auth_advice(status: u16, body: &str) -> Option<String> {
     if let Some(url) = validation_url(body) {

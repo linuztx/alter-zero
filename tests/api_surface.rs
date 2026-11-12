@@ -1,7 +1,7 @@
 //! The public API surface of [`alter_zero::app`] and [`alter_zero::ui`].
 //!
 //! Both were single files once; they are now module trees whose `mod.rs`
-//! re-exports each area by name (see `docs/module-layout.md`). An explicit
+//! re-exports each area by name (see `docs/architecture/module-layout.md`). An explicit
 //! re-export list is auditable, but it can also *forget* a symbol — and because
 //! `main.rs` only uses part of the surface, a dropped export compiles fine until
 //! something reaches for it.
@@ -173,7 +173,7 @@ use alter_zero::app::{
 
 // --- `stream` — the backend seam and the offline dummy ---
 // `stream.rs` was a single file too, and it split the same way (see
-// `docs/module-layout.md`): the protocol, the trait, the cancel flag and the
+// `docs/architecture/module-layout.md`): the protocol, the trait, the cancel flag and the
 // dummy demo are separate modules behind a by-name facade. Every symbol it
 // exported before that split is named here.
 #[rustfmt::skip]
@@ -206,7 +206,7 @@ use alter_zero::stream::{
     turn_events,
 };
 
-// --- `skills` — the `Skill` tool's pure model (docs/skills.md) ---
+// --- `skills` — the `Skill` tool's pure model (docs/tools/skills.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::skills::{
@@ -245,7 +245,7 @@ use alter_zero::skills::{
     validate_skill_name,
 };
 
-// --- `subagents` — the agent definitions' pure model (docs/subagents.md) ---
+// --- `subagents` — the agent definitions' pure model (docs/agents/subagents.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::subagents::{
@@ -273,7 +273,7 @@ use alter_zero::subagents::{
     withheld_tool_message,
 };
 
-// --- `secrets` — credentials the agent uses by placeholder (docs/secrets.md) ---
+// --- `secrets` — credentials the agent uses by placeholder (docs/state/secrets.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::secrets::{
@@ -309,7 +309,7 @@ use alter_zero::secrets::{
     validate_value,
 };
 
-// --- `reminder` — the `<system-reminder>` the context leads with (docs/context.md) ---
+// --- `reminder` — the `<system-reminder>` the context leads with (docs/architecture/context.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::reminder::{
@@ -320,7 +320,7 @@ use alter_zero::reminder::{
     reminder_message,
 };
 
-// --- `project_doc` — the AGENTS.md instructions section (docs/project-doc.md) ---
+// --- `project_doc` — the AGENTS.md instructions section (docs/state/project-doc.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::project_doc::{
@@ -354,7 +354,7 @@ use alter_zero::frontmatter::{
     unreported,
 };
 
-// --- `tasks` — the task tools' pure model (docs/task-tools.md) ---
+// --- `tasks` — the task tools' pure model (docs/tools/task-tools.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::tasks::{

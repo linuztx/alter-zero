@@ -5,7 +5,7 @@
 smoke_begin
 
 # the built-in SKILL is seeded as a real, editable directory
-# (docs/skills.md). `skill-creator` is a `skills/<name>/SKILL.md` under the user
+# (docs/tools/skills.md). `skill-creator` is a `skills/<name>/SKILL.md` under the user
 # config home, not a string in the binary, so the same three things are
 # filesystem behaviour no unit test can see: the first launch has to WRITE it
 # — the whole directory, its `reference.md` included, since the body sends the

@@ -1,4 +1,4 @@
-//! The task tools' live checklist (`docs/task-tools.md`) — the calls
+//! The task tools' live checklist (`docs/tools/task-tools.md`) — the calls
 //! themselves commit no cells, so this strip block is their whole display.
 //! It has two dresses, and which one shows is simply whether a turn is
 //! running:

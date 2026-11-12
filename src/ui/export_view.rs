@@ -1,5 +1,5 @@
 //! The read-only `/export` page, and the plain-text export it produces.
-//! See `docs/export.md`.
+//! See `docs/ui/export.md`.
 //!
 //! The `/donate` page's frame — the family's rules and two-column inset,
 //! the `❯` marker on the highlighted row, the dim hint — over the two
@@ -85,10 +85,10 @@ fn description(app: &App, target: ExportTarget) -> String {
 /// the two target rows, the highlighted row's description, the key hint,
 /// and a bottom rule — built as **blocks** joined by exactly one blank row
 /// (the `/login` page rule), so no two blank rows ever stack and none hugs
-/// either rule (`docs/view-flow.md` *The frame hugs its content*). What
+/// either rule (`docs/ui/view-flow.md` *The frame hugs its content*). What
 /// [`render_export_picker`] paints (bottom-anchored) and `export_menu_rows`
 /// counts, so the reserved height and the painted rows can never disagree
-/// (`docs/view-flow.md`). Empty when the page is closed.
+/// (`docs/ui/view-flow.md`). Empty when the page is closed.
 #[must_use]
 pub fn export_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(picker) = app.export_picker.as_ref() else {
@@ -154,8 +154,8 @@ pub fn export_picker_height(app: &App, width: u16, term_height: u16) -> Option<u
 /// the composer: the title, the blurb, the two rows, the description, the
 /// hint, between the family's rules — bottom-anchored, so a squeezed area
 /// keeps the rows, the hint and the closing rule on screen while the
-/// skipped top flows into scrollback (`docs/view-flow.md`). Pure —
-/// `render_live` paints this. See `docs/export.md`.
+/// skipped top flows into scrollback (`docs/ui/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/ui/export.md`.
 pub fn render_export_picker(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, export_view_lines(app, area.width));
 }

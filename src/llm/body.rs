@@ -1,11 +1,11 @@
 //! How a request leaves the process: **streamed**, never held whole.
 //!
 //! A request that carries a pasted picture is megabytes of base64, and the
-//! conversation is re-sent every turn (`docs/context.md`). Serializing it
+//! conversation is re-sent every turn (`docs/architecture/context.md`). Serializing it
 //! into a buffer — `reqwest`'s own `.json()`, a `Vec` grown by doubling —
 //! made a picture-sized block per round that glibc's thread arenas kept:
 //! the process stepped up by a body's worth whenever a turn landed on a new
-//! arena, which read as "RAM grows every message" (`docs/memory.md`,
+//! arena, which read as "RAM grows every message" (`docs/architecture/memory.md`,
 //! *Every turn re-sent the picture*). Even a buffer sized exactly once
 //! measured a body's worth left per arena every few turns.
 //!
@@ -82,7 +82,7 @@ const BODY_PIPE_DEPTH: usize = 4;
 /// [`BodyReader`] the transport pumps takes them out the other end. The
 /// whole body exists nowhere, so a request carrying a picture costs the
 /// process kilobytes rather than the picture again per round
-/// (`docs/memory.md`). The byte count comes from a counting pass first
+/// (`docs/architecture/memory.md`). The byte count comes from a counting pass first
 /// ([`serialized_len`]), so the request is `Content-Length`-framed like the
 /// buffered form was.
 ///

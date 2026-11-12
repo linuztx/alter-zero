@@ -1,4 +1,4 @@
-//! The mid-turn message queue, in two halves (`docs/queue.md`):
+//! The mid-turn message queue, in two halves (`docs/input/queue.md`):
 //!
 //! - **Steering** — Enter while a model turn runs hands the draft to *that
 //!   turn* ([`App::steer_draft`]). It waits in [`App::steered`] only until the
@@ -15,7 +15,7 @@ use super::*;
 /// action-tagged queued message (`QueuedInputAction`). The queue is a
 /// `VecDeque<QueuedTurn>` drained FIFO, one entry per turn-end; the variant is
 /// the dispatch discriminator, so a text batch goes to the model while a `!`
-/// command runs locally. See `docs/queue.md`.
+/// command runs locally. See `docs/input/queue.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueuedTurn {
     /// One or more Enter-batched text messages — sent to the backend as a
@@ -24,7 +24,7 @@ pub enum QueuedTurn {
     /// images attached to the queued drafts ride along as their
     /// `(placeholder, path)` pairs, in attach order: the paths travel the typed
     /// image channel when the batch dispatches, and an Alt+Up pull-back
-    /// re-attaches them to the composer. See `docs/image-paste.md`.
+    /// re-attaches them to the composer. See `docs/input/image-paste.md`.
     Messages {
         /// The batch's messages, oldest first.
         texts: Vec<String>,
@@ -44,7 +44,7 @@ impl App {
     /// Can a message submitted right now be folded into the turn already
     /// running? A model turn can: its agent loop takes the queue at every
     /// round boundary, so the message reaches the model *within* the turn
-    /// (`docs/queue.md`).
+    /// (`docs/input/queue.md`).
     ///
     /// Two turns can't, and both queue their drafts as follow-up turns exactly
     /// as they always did:
@@ -52,7 +52,7 @@ impl App {
     /// - a **`!` shell turn** — nothing is reading a conversation there;
     /// - a **`/compact` turn** — its request is the fixed handoff prompt over
     ///   the context being summarized, not a conversation, and a user message
-    ///   folded into it would corrupt the summary (`docs/compact.md`).
+    ///   folded into it would corrupt the summary (`docs/architecture/compact.md`).
     #[must_use]
     pub fn turn_steerable(&self) -> bool {
         self.is_streaming()
@@ -70,7 +70,7 @@ impl App {
     /// follow-up queue instead: a **shell-mode** `!` command (always local,
     /// always its own turn) or a draft carrying **Ctrl+V attachments** (a
     /// boundary injection is a text `ChatMessage`; the images need the typed
-    /// channel a real turn start opens — `docs/image-paste.md`). Both cases
+    /// channel a real turn start opens — `docs/input/image-paste.md`). Both cases
     /// fall through to [`queue_draft`](App::queue_draft), so the caller only
     /// has to ask once.
     ///
@@ -105,7 +105,7 @@ impl App {
         }
         self.record_user_message(text);
         // The uploaded text counts into this turn's `↑` tally, exactly as a
-        // turn-start message does (`docs/status-indicator.md`).
+        // turn-start message does (`docs/ui/status-indicator.md`).
         self.count_user_input(text);
         // This turn has read something now, so the Esc-interrupt undo must
         // stop treating the new history tail as an untouched submission.
@@ -148,7 +148,7 @@ impl App {
         match self.drain_last_batch() {
             // A text batch returns newline-joined (oldest first), its image
             // attachments re-attached so the placeholders in the restored
-            // draft are backed again (docs/image-paste.md).
+            // draft are backed again (docs/input/image-paste.md).
             Some(QueuedTurn::Messages { texts, images }) => {
                 self.recall_input(&texts.join("\n"));
                 self.images = images;
@@ -166,7 +166,7 @@ impl App {
     /// batch is its own turn, so popping one per turn-end iterates the
     /// Tab-separated follow-ups in order; a batch's own messages (consecutive
     /// Enters) join with newlines into that single turn (`start_turn`). See
-    /// `docs/queue.md`.
+    /// `docs/input/queue.md`.
     #[must_use]
     pub fn drain_next_batch(&mut self) -> Option<QueuedTurn> {
         self.queued.pop_front()
@@ -198,7 +198,7 @@ impl App {
         }
         // The draft's image attachments ride with the batch — staged before
         // take_input clears the composer, exactly like the idle submit path
-        // (docs/image-paste.md).
+        // (docs/input/image-paste.md).
         let images = std::mem::take(&mut self.images);
         let text = self.take_input();
         self.file_search = None; // the composer is consumed into the queue
@@ -225,7 +225,7 @@ impl App {
     /// batch (codex's `submit_queued_shell_prompt` on a queued `RunShell`
     /// action: the next Enter-text starts a fresh batch since the back is a
     /// `Shell`). Exits the mode and records the full `!command` for ↑ recall,
-    /// mirroring the idle [`Action::RunShell`] path. See `docs/shell-command.md`.
+    /// mirroring the idle [`Action::RunShell`] path. See `docs/input/shell-command.md`.
     fn queue_shell(&mut self) {
         let raw = self.take_input();
         self.shell_mode = false;

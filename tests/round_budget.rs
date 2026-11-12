@@ -1,4 +1,4 @@
-//! The `--max-turns` budget on a real backend (`docs/headless.md`): an
+//! The `--max-turns` budget on a real backend (`docs/cli/headless.md`): an
 //! [`LlmBackend`] carrying a [`RoundBudget`] against a stand-in provider on
 //! the loopback, counting the requests that actually go out. The budget is
 //! checked before a request is sent, so a reply past the limit never reaches

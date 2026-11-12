@@ -1,5 +1,5 @@
 //! A terminal's output as **lines of text** — the view an interactive
-//! session hands the model (`docs/interactive-shell.md`).
+//! session hands the model (`docs/tools/interactive-shell.md`).
 //!
 //! A pseudo-terminal's byte stream is written for a screen: a progress bar
 //! redraws one line with `\r`, a REPL repaints its prompt with column moves

@@ -33,7 +33,7 @@ expect_has "$pane" -F "$EXPECT_REPLY" "streamed reply '$EXPECT_REPLY' not found"
 # While the reply streams, the live status line shows a running token count (the
 # pane was captured mid-stream above, so text — and so tokens — is flowing).
 expect_has "$pane" -F "tokens" "the live status line (token count) was not shown while streaming"
-# The session-context footer ("{model} · {cwd}", docs/footer.md) sits under the
+# The session-context footer ("{model} · {cwd}", docs/ui/footer.md) sits under the
 # box from startup — including mid-stream, when this pane was captured. The cwd
 # half varies by environment, so assert on the model name + separator.
 expect_has "$pane" -E "dummy_model_name · .*manual$" "the session footer ('dummy_model_name · … manual' — the mode flush at the right edge) is not shown under the input box"
@@ -65,7 +65,7 @@ status_gap=$(printf '%s\n' "$pane" | awk '
 if [ "${status_gap:-missing}" != "ok" ]; then
 	fail "no blank gap row between the live status line and the input box (${status_gap:-status line missing})"
 fi
-# Phase 8: Esc mid-stream interrupts the turn, codex-style (docs/interrupt.md).
+# Phase 8: Esc mid-stream interrupts the turn, codex-style (docs/input/interrupt.md).
 # The hint rides the live status line — Phase 1's pane was captured mid-stream.
 expect_has "$pane" -F "esc to interrupt" "the live status line does not show the 'esc to interrupt' hint while streaming"
 # ---- drive: Phase 2 ----
@@ -88,7 +88,7 @@ expect_has "$grown" -F "  BBB" "input box did not grow — indented continuation
 # lone Read); wait until the Read has FINISHED — its committed inline peek shows
 # `fn main(`, and only then is its full output in history — before opening the
 # view, which must show each tool's FULL output (the Read tool's later lines are
-# hidden in the collapsed inline view but shown here). See docs/parallel-tools.md.
+# hidden in the collapsed inline view but shown here). See docs/tools/parallel-tools.md.
 full="$(wait_pane 12 "$S" -S -80 -- -F "fn main(")"
 tmux send-keys -t "$S" C-o
 sleep 0.4
@@ -125,7 +125,7 @@ echo "==== captured pane (returned to conversation) ===="
 printf '%s\n' "$returned"
 # The return must NOT duplicate the header banner: the screen + scrollback
 # keep the one committed at launch (the return flushes the overlay-queued
-# commits beneath it and never rebuilds — docs/header.md; Phase 81 pins the
+# commits beneath it and never rebuilds — docs/ui/header.md; Phase 81 pins the
 # stronger property, that nothing an overlay-covered turn produced is lost).
 returned_full="$(tmux capture-pane -t "$S" -p -S -80)"
 returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "Alter Zero")
@@ -134,7 +134,7 @@ returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "Alter Zero")
 # appears in the conversation), so it's a clean marker for "open / closed".
 expect_has "$overlay" -F "T R A N S C R I P T" "Ctrl+O did not open the tool-output view"
 # Idle with a previous user message, Esc begins the backtrack preview — the
-# closing hint must say so instead of promising a quit (docs/backtrack.md).
+# closing hint must say so instead of promising a quit (docs/input/backtrack.md).
 expect_has "$overlay" -F "esc to edit prev" "the overlay's closing hint does not tell the truth about Esc (expected 'esc to edit prev' while idle with a previous user message)"
 expect_has "$overlay" -F "$USER_MSG" "tool-output view did not include the user/AI conversation"
 expect_has "$overlay_deep" -F 'if __name__ == "__main__":' "tool-output view did not show the full (expanded) Read output"
@@ -170,8 +170,8 @@ printf '%s\n' "$palette_open"
 # first row lands on the last, ↓ from the last on the first — every menu's
 # grammar now), so a single ↑ from the top row is the count-independent "go
 # to /quit, the registry's last" — no pinned command count for a later
-# feature's new command to break (docs/settings.md's /settings, then
-# docs/hooks-menu.md's /hooks, then docs/skills.md's /skills each broke the
+# feature's new command to break (docs/state/settings.md's /settings, then
+# docs/tools/hooks-menu.md's /hooks, then docs/tools/skills.md's /skills each broke the
 # old counted walk; the over-press-↓-and-clamp idiom that replaced it died
 # with the clamp — 40 ↓ now land at 40 % n). The five-command window follows
 # the selection, so the top rows leave and /quit scrolls in — on the bottom
@@ -224,7 +224,7 @@ printf '%s\n' "$clear_ran"
 
 # Quit with Ctrl+C (empty composer) — the way out whatever the history holds:
 # with user messages in it, idle Esc arms the Esc-Esc backtrack instead of
-# quitting (docs/backtrack.md).
+# quitting (docs/input/backtrack.md).
 tmux send-keys -t "$S" C-c
 sleep 0.2
 
@@ -235,7 +235,7 @@ sleep 0.2
 # entries, /quit is its last) rather than by ordinal — and the CAP itself is
 # asserted by COUNTING the rows, not by naming whichever command happens to
 # sit last in the window: this line once pinned "/login, the 8th command", and
-# `/fast` (docs/fast-mode.md) landing before it broke a check about the cap
+# `/fast` (docs/providers/fast-mode.md) landing before it broke a check about the cap
 # for a reason that had nothing to do with the cap. A palette row opens on
 # the `→ ` marker or its two-space inset, then its slash, its name and two or
 # more spaces before its description ($PALETTE_ENTRY) — a shape nothing else

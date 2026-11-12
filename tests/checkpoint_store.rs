@@ -1,5 +1,5 @@
 //! Integration proof of the checkpoint store (`alter_zero::checkpoint`,
-//! docs/checkpoint.md) against **real git** in temp directories — the boundary
+//! docs/state/checkpoint.md) against **real git** in temp directories — the boundary
 //! the pure `checkpoint` unit tests can't cover.
 //!
 //! The user-visible behavior this locks in: after the agent edits, creates, and
@@ -144,7 +144,7 @@ fn a_disabled_store_is_inert() {
     assert_eq!(store.restore("deadbeef").ok(), Some(false));
 }
 
-// ===== the pre-flight cost probe (docs/checkpoint.md) =====
+// ===== the pre-flight cost probe (docs/state/checkpoint.md) =====
 //
 // The session-start snapshot runs before the first frame paints, and `git add
 // -A` is O(bytes): a 235 MB working directory measured 9.7 s to first frame.
@@ -303,7 +303,7 @@ fn a_disabled_stores_probe_is_inert() {
     assert_eq!(cost.refusal(), None);
 }
 
-// ===== the store never snapshots itself (docs/checkpoint.md) =====
+// ===== the store never snapshots itself (docs/state/checkpoint.md) =====
 
 /// The paths the store has staged, read back through the same isolated
 /// `GIT_DIR`/work-tree wiring the store itself uses.

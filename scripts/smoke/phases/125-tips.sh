@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the spinner tip (docs/tips.md). A turn's first seconds show the status line
+# the spinner tip (docs/ui/tips.md). A turn's first seconds show the status line
 # alone; once it has run three, a dim `⎿  Tip: …` row hangs directly under it
 # with the status slot's gap below, and it goes with the turn — never a row
 # of scrollback. Each turn opens on the next tip in the catalog, and the
@@ -17,7 +17,7 @@ smoke_begin
 # own string that UNSETS it and let tips.json decide. A long pre-stream pause
 # (6 s) holds each turn still past the delay, so the tip reads off a quiet
 # strip — and an Esc then undoes the turn (nothing streamed yet,
-# docs/interrupt.md) instead of leaving a reply to wait out. One turn runs to
+# docs/input/interrupt.md) instead of leaving a reply to wait out. One turn runs to
 # its summary, for the commit path.
 S125="${S}_tips"
 TIPS_BASE="env -u ALTER_ZERO_TIPS ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=6000"

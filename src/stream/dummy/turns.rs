@@ -23,7 +23,7 @@ use super::script::{
 ///
 /// It is **two lines** on purpose: the thinking stream previews the last rows
 /// of the thought live and then collapses them into one `Thought for … · …
-/// tokens` cell (`docs/thinking-stream.md`), so a first run should meet a
+/// tokens` cell (`docs/ui/thinking-stream.md`), so a first run should meet a
 /// thought that actually moves rather than a single static line. With the
 /// display off (`ALTER_ZERO_SHOW_THINKING=0`) it is counted and dropped, as it
 /// always was.
@@ -34,9 +34,9 @@ const DUMMY_THINKING: &str = "Let me read the file first.\nThen edit it and run 
 /// model emits while producing a `tool_calls` request: the name, then the
 /// arguments. These calls preview nothing, so they only feed the token tally
 /// and the status ticks while the model *generates* them (like
-/// [`DUMMY_THINKING`] does for reasoning, `docs/status-indicator.md`). The
+/// [`DUMMY_THINKING`] does for reasoning, `docs/ui/status-indicator.md`). The
 /// file-change demo's `write` is generated from its real arguments instead,
-/// so the file streams into its cell (`files_turn`, `docs/write-streaming.md`).
+/// so the file streams into its cell (`files_turn`, `docs/ui/write-streaming.md`).
 const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"about.py\"}"];
 const DUMMY_ABOUT_EDIT_CALL: &[&str] = &["edit", "{\"path\":", "\"about.py\",", "\"old_string\":"];
 const DUMMY_ABOUT_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"python3 about.py\"}"];
@@ -58,7 +58,7 @@ fn pieces(call: &[&str]) -> Vec<String> {
 
 /// One piece of a scripted call being "generated" — slot `index` of its
 /// round, `name` on the piece that names the call, `arguments` on the rest
-/// (`docs/write-streaming.md`).
+/// (`docs/ui/write-streaming.md`).
 fn generating(index: usize, name: &str, arguments: &str) -> StreamEvent {
     StreamEvent::ToolCallDelta(ToolCallFragment {
         index,
@@ -81,7 +81,7 @@ fn generating(index: usize, name: &str, arguments: &str) -> StreamEvent {
 /// The file runs a few lines past the cell's ten-row peek on purpose: with
 /// **Verbose output** on the committed `Read` carries the `… +N lines (ctrl+o
 /// to expand)` tail, and off it folds into the `Read 1 file (ctrl+o to
-/// expand)` line (`docs/tool-groups.md`), so either way the turn that answers
+/// expand)` line (`docs/ui/tool-groups.md`), so either way the turn that answers
 /// *anything* is also the one that teaches the key — and the transcript has
 /// something to expand that the inline cell doesn't show (`scripts/smoke.sh`
 /// pages to `__main__` to prove it).
@@ -118,7 +118,7 @@ const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that liv
 /// output **body** it resolves with, the exit code when it is a command, and
 /// whether that body **streams** as live `ToolOutput` deltas first — a `bash`
 /// command tails its output as it is produced, while a file tool returns all at
-/// once, exactly as the real executor does (`docs/tool-streaming.md`).
+/// once, exactly as the real executor does (`docs/ui/tool-streaming.md`).
 ///
 /// The body is what the tool *printed*: a command's `Exit code: N` frame is
 /// added by [`ScriptedCall::result`], the same place the real executor adds it
@@ -127,7 +127,7 @@ const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that liv
 /// frame). A file tool's body is `llm::tools`' own numbered `Read`/`Wrote`/
 /// `Updated` output, so its cell renders as the real numbered,
 /// syntax-highlighted file change rather than a plain text peek
-/// (`docs/tools.md`).
+/// (`docs/tools/tools.md`).
 pub(super) struct ScriptedCall {
     name: &'static str,
     args: String,
@@ -135,7 +135,7 @@ pub(super) struct ScriptedCall {
     /// the call so the demo replays losslessly like the real one.
     arguments: String,
     /// The short **model-facing** result, when it differs from the displayed
-    /// `output` — the `write`/`edit` acks (`docs/tools.md`). `None` for a
+    /// `output` — the `write`/`edit` acks (`docs/tools/tools.md`). `None` for a
     /// tool whose display *is* what the model reads.
     ack: Option<String>,
     output: String,
@@ -170,7 +170,7 @@ impl ScriptedCall {
         }
     }
 
-    /// One step of an interactive session (`docs/bash-tools.md`): a `bash`
+    /// One step of an interactive session (`docs/tools/bash-tools.md`): a `bash`
     /// launch or a companion call, named by its display `name` — which
     /// lowercases to the wire name, the task tools' convention — with its
     /// verbatim `arguments` and the session report it resolves with, already
@@ -200,7 +200,7 @@ impl ScriptedCall {
             args: path.to_string(),
             arguments: serde_json::json!({ "path": path, "content": content }).to_string(),
             // The live executor's two-text split: the numbered body is the
-            // cell, one line is what the model reads (`docs/tools.md`).
+            // cell, one line is what the model reads (`docs/tools/tools.md`).
             ack: Some(crate::llm::tools::write_ack(path, /*created=*/ true)),
             output: crate::llm::tools::write_report(path, content),
             exit: None,
@@ -255,7 +255,7 @@ impl ScriptedCall {
 
     /// This call's `ToolStart`, carrying the verbatim arguments a live
     /// backend sends — so the offline demo's Ctrl+D shows the same replayed
-    /// shape the real one does (`docs/context.md`).
+    /// shape the real one does (`docs/architecture/context.md`).
     pub(super) fn start(&self) -> StreamEvent {
         StreamEvent::ToolStart {
             name: self.name.to_string(),
@@ -291,7 +291,7 @@ impl ScriptedCall {
 /// card, wire in the credit it was carrying but never printing, run it and see
 /// the credit come back. Announced up front, so while the `Read` runs the
 /// `Edit` and the `Bash` show `⎿ Waiting…` (the visible batch, offline; see
-/// `docs/parallel-tools.md`).
+/// `docs/tools/parallel-tools.md`).
 ///
 /// Each call earns its place by what it *shows*: the numbered read, the diff's
 /// green and red rows, and a command whose output proves the edit landed. Three
@@ -312,7 +312,7 @@ fn default_batch() -> Vec<ScriptedCall> {
 /// opt-in via a prompt mentioning "parallel" so the default turn keeps its
 /// compact footprint and every unrelated smoke phase keeps its sizing. All
 /// three are announced up front, so while the first runs the other two show
-/// `⎿ Waiting…`; two resolve green, one red. See `docs/parallel-tools.md`.
+/// `⎿ Waiting…`; two resolve green, one red. See `docs/tools/parallel-tools.md`.
 fn parallel_batch() -> Vec<ScriptedCall> {
     vec![
         ScriptedCall::command("ping -c 20 google.com", DUMMY_PING_GOOGLE, 0),
@@ -340,7 +340,7 @@ const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host";
 /// `ping`'s "unknown host" exit status — what a real shell reports.
 const DUMMY_PING_EXIT: u8 = 68;
 
-/// The **file-change** demo's script (`docs/tools.md`): a fizzbuzz with the
+/// The **file-change** demo's script (`docs/tools/tools.md`): a fizzbuzz with the
 /// classic bug — `i % 3` tested before `i % 15`, so 15 prints `Fizz` — written,
 /// then fixed, then run. It is the only offline demo of the `Write`/`Edit`
 /// cells, and the whole point is their *rendering*: `Wrote` shows the new
@@ -393,7 +393,7 @@ fn files_batch() -> Vec<ScriptedCall> {
     ]
 }
 
-/// The dummy's **subagent demo** (`docs/agent-tool.md`): a two-agent group is
+/// The dummy's **subagent demo** (`docs/agents/agent-tool.md`): a two-agent group is
 /// announced, "runs" for [`AGENT_DELAY`] (the live tree cell shows, each row
 /// `⎿ Initializing…`), then resolves with canned final responses. A prompt
 /// also mentioning "background" launches the group in background mode instead
@@ -429,7 +429,7 @@ pub(in crate::stream) const COMPACT_PROMPT_MARKER: &str =
     "You are performing a CONTEXT CHECKPOINT COMPACTION";
 
 /// The dummy's canned `/compact` summary — streamed word-by-word like every
-/// reply, captured (never rendered) by the compact turn (docs/compact.md).
+/// reply, captured (never rendered) by the compact turn (docs/architecture/compact.md).
 const DUMMY_COMPACT_SUMMARY: &str = "Progress so far: this is a canned handoff summary from the dummy backend. \
      Key decisions: none - no real model is attached. Next steps: keep \
      chatting; the compacted context now rides this summary.";
@@ -438,7 +438,7 @@ const DUMMY_COMPACT_SUMMARY: &str = "Progress so far: this is a canned handoff s
 /// Ctrl+V images, since the dummy can't actually see them. Visible proof the
 /// typed image channel (codex's `UserInput::LocalImage`) carried the paths to
 /// the backend; a real vision model would read the files instead. Empty when
-/// no images rode along. See `docs/image-paste.md`.
+/// no images rode along. See `docs/input/image-paste.md`.
 fn opening(cue: &Cue) -> Vec<StreamEvent> {
     image_ack(cue.images())
         .map(|ack| chunks(&ack).into_iter().map(StreamEvent::Chunk).collect())
@@ -450,7 +450,7 @@ fn opening(cue: &Cue) -> Vec<StreamEvent> {
 /// Same two-part shape as the rotating [`dummy_response`] replies — the text
 /// before the turn's work, a blank line, the text after — and each closes on
 /// the `/login` → `/model` hand-off, since any of them can be a session's
-/// first turn. See `docs/dummy-backend.md`.
+/// first turn. See `docs/architecture/dummy-backend.md`.
 const PARALLEL_REPLY: &str = concat!(
     "Three at once, coming up. A real model asks for its parallel calls in one \
      round; these are scripted, but the choreography is identical.\n\n",
@@ -506,7 +506,7 @@ const HOOKS_CONTINUATION: &str = concat!(
 /// What the demo's Stop hook says when it blocks — its stderr.
 const HOOKS_STOP_REASON: &str = "Before you finish, explain what a Stop hook does.";
 
-/// The **lifecycle-hooks** demo (`docs/hooks.md`): a `PreToolUse` hook
+/// The **lifecycle-hooks** demo (`docs/tools/hooks.md`): a `PreToolUse` hook
 /// blocking a destructive command, then a `PostToolUse` hook annotating one
 /// that ran.
 ///
@@ -580,7 +580,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     });
 
     events.extend(say(&second));
-    // A Stop hook that blocks as the turn would finish (docs/hooks.md *The
+    // A Stop hook that blocks as the turn would finish (docs/tools/hooks.md *The
     // hook-run cell*): its run read the way the live runner reads one, the
     // feedback worded by the very function the live loop calls
     // (`llm::hooks::stop_feedback_texts`) and the cell built by the live
@@ -611,7 +611,7 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The **prompt-block** demo (`docs/hooks.md`): a `UserPromptSubmit` hook
+/// The **prompt-block** demo (`docs/tools/hooks.md`): a `UserPromptSubmit` hook
 /// refusing the submission. The single scripted event is the whole
 /// contract — sent instead of `StreamDone`, nothing follows it — and the
 /// loop's arm does the rest: the echoed `❯` message rolls back out of
@@ -674,7 +674,7 @@ const TASKS_FINISHED_SEGMENTS: [&str; 2] = [
 /// Run one task tool call against the demo's live [`crate::tasks::TaskStore`]
 /// and emit it exactly as the real agent loop would: the display name, the
 /// header summary, the **real executor's result text**, and the post-call
-/// snapshot (`docs/task-tools.md`, the dummy-backend rule — offline cells are
+/// snapshot (`docs/tools/task-tools.md`, the dummy-backend rule — offline cells are
 /// byte-for-byte what the live path produces).
 fn task_call(store: &mut crate::tasks::TaskStore, wire: &str, args: &str) -> StreamEvent {
     let (output, ok) = match store.run_tool(wire, args) {
@@ -693,7 +693,7 @@ fn task_call(store: &mut crate::tasks::TaskStore, wire: &str, args: &str) -> Str
     }
 }
 
-/// The **task-tools** demo (`docs/task-tools.md`): create three tasks, wire
+/// The **task-tools** demo (`docs/tools/task-tools.md`): create three tasks, wire
 /// the dependency chain, then work the first one to completion — the live
 /// checklist under the status line, the `› blocked by #n` suffixes, the
 /// spinner wearing the active task's label, and the green tick all show,
@@ -733,7 +733,7 @@ pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
         events.extend(say(segment));
         for (wire, args) in *calls {
             // The model "generating" the call ticks the tally, like every
-            // other scripted round (docs/status-indicator.md).
+            // other scripted round (docs/ui/status-indicator.md).
             events.push(generating(0, wire, "(…)"));
             events.push(task_call(&mut store, wire, args));
         }
@@ -748,7 +748,7 @@ pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
 /// the [`tasks_turn`] demo deliberately never reaches — the checklist takes
 /// its bow inside this turn, shows nothing at rest, and is swept for good at
 /// the next turn's start — so both the offline suite and `smoke.sh` can drive
-/// the stale-list rule (`docs/task-tools.md`).
+/// the stale-list rule (`docs/tools/task-tools.md`).
 pub(in crate::stream) fn tasks_finished_turn(cue: &Cue) -> Vec<StreamEvent> {
     use crate::tasks::{TASK_CREATE_TOOL, TASK_UPDATE_TOOL, TaskStore};
     let mut store = TaskStore::new();
@@ -779,7 +779,7 @@ pub(in crate::stream) fn tasks_finished_turn(cue: &Cue) -> Vec<StreamEvent> {
 /// `/compact`'s summarization request plays a **text-only** canned summary —
 /// no thinking phase, no tool batch (codex sends the summarize request with no
 /// tools) — so the offline dummy path (and `smoke.sh`) can drive the whole
-/// compact flow with no provider (docs/compact.md). It is the one scripted
+/// compact flow with no provider (docs/architecture/compact.md). It is the one scripted
 /// turn with no image acknowledgement: the loop builds this request itself and
 /// never attaches images to it.
 pub(in crate::stream) fn compact_turn(_cue: &Cue) -> Vec<StreamEvent> {
@@ -791,7 +791,7 @@ pub(in crate::stream) fn compact_turn(_cue: &Cue) -> Vec<StreamEvent> {
 /// The markdown-table demo as a **text-only** turn: no thinking pause and no
 /// tool batch — a tool call would split the reply around it, flushing the
 /// block early — so the whole table streams through the strip preview and its
-/// block commits at the close (docs/table-streaming.md).
+/// block commits at the close (docs/ui/table-streaming.md).
 pub(in crate::stream) fn table_turn(cue: &Cue) -> Vec<StreamEvent> {
     let mut events = opening(cue);
     events.extend(say(&dummy_response(cue.text())));
@@ -799,7 +799,7 @@ pub(in crate::stream) fn table_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The slow-stream stress demo (`docs/slow-stream.md`): the whole
+/// The slow-stream stress demo (`docs/ui/slow-stream.md`): the whole
 /// [`MARKDOWN_TOUR`] as **one** text-only message — no thinking phase and no
 /// tool calls, which would split the reply around them — streamed in
 /// [`tokens`]' token-sized pieces rather than words, so the boundaries land
@@ -813,7 +813,7 @@ pub(in crate::stream) fn markdown_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The subagent demo (docs/agent-tool.md): the first half of the text, then
+/// The subagent demo (docs/agents/agent-tool.md): the first half of the text, then
 /// the scripted two-agent group — announced, "running" for [`AGENT_DELAY`],
 /// resolved — then the closing text. A prompt also mentioning "background"
 /// launches it in background mode, so the calls resolve at once with launch
@@ -870,14 +870,14 @@ pub(in crate::stream) fn parallel_turn(cue: &Cue) -> Vec<StreamEvent> {
     )
 }
 
-/// The **file-change** demo (`docs/tools.md`): write a buggy fizzbuzz, `edit`
+/// The **file-change** demo (`docs/tools/tools.md`): write a buggy fizzbuzz, `edit`
 /// the bug out, then run it — so the numbered `Wrote` body and the tinted
 /// `Updated` hunk both show, which no other offline demo covers.
 pub(in crate::stream) fn files_turn(cue: &Cue) -> Vec<StreamEvent> {
     let batch = files_batch();
     // The `write` is generated the way a live model generates one — its real
     // JSON arguments in token-sized pieces — so the file streams into its
-    // cell offline too (docs/write-streaming.md); the other two calls are
+    // cell offline too (docs/ui/write-streaming.md); the other two calls are
     // short enough that their scripted pieces say the same thing.
     let mut write = vec![batch[0].name.to_ascii_lowercase()];
     write.extend(tokens(&batch[0].arguments));
@@ -893,7 +893,7 @@ pub(in crate::stream) fn files_turn(cue: &Cue) -> Vec<StreamEvent> {
 /// claims: stream the opening text, *think* for a moment, run the compact
 /// `Read`+`Bash` batch, then stream the closing text and finish. This is the
 /// turn a first run meets, so its reply is the guided tour that ends on the
-/// `/login` → `/model` hand-off (`docs/dummy-backend.md`).
+/// `/login` → `/model` hand-off (`docs/architecture/dummy-backend.md`).
 pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
     tool_turn(
         cue,
@@ -919,7 +919,7 @@ pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
 ///
 /// Every `ToolStart` still lands immediately before its `ToolEnd`, so
 /// execution stays sequential — one running call at a time, exactly what the
-/// UI's "at most one running tool" invariant expects (`docs/parallel-tools.md`).
+/// UI's "at most one running tool" invariant expects (`docs/tools/parallel-tools.md`).
 fn tool_turn(
     cue: &Cue,
     reply: &str,
@@ -938,7 +938,7 @@ fn tool_turn(
     events.push(StreamEvent::ThinkingEnd);
     // Each call's group opens on its name, the pieces after it are its
     // arguments, and the group's place in the round is its slot — the shape
-    // a live round's pieces take (docs/write-streaming.md).
+    // a live round's pieces take (docs/ui/write-streaming.md).
     for (slot, call) in deltas.iter().enumerate() {
         if let Some((name, pieces)) = call.split_first() {
             events.push(generating(slot, name, ""));
@@ -956,7 +956,7 @@ fn tool_turn(
         // tails it — the raw lines the command printed, never the `Exit code:`
         // frame, which the executor only adds when it resolves. The
         // authoritative ToolEnd then commits the finished cell
-        // (docs/tool-streaming.md).
+        // (docs/ui/tool-streaming.md).
         if call.streams {
             events.extend(tool_output_events(&call.output));
         }
@@ -967,7 +967,7 @@ fn tool_turn(
     events
 }
 
-/// The **interactive-shell** demo's narration (`docs/bash-tools.md`): the
+/// The **interactive-shell** demo's narration (`docs/tools/bash-tools.md`): the
 /// terminal every command runs in, and what else the same tools drive.
 const INTERACTIVE_REPLY: &str = concat!(
     "That installer only runs in a real terminal — which every command gets — \
@@ -999,7 +999,7 @@ fn install_bar(pct: usize) -> String {
     )
 }
 
-/// The **interactive-shell** demo (`docs/bash-tools.md`): a setup wizard
+/// The **interactive-shell** demo (`docs/tools/bash-tools.md`): a setup wizard
 /// launched with `bash`, stopping at its first prompt; an answer typed in
 /// with `bashsend`, met by the next question; and the last answer, which
 /// ends the program. One call a round — the model reads each question before
@@ -1066,7 +1066,7 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
         if index == steps.len() - 1 {
             // The answer starts the install: its bar redraws in place in the
             // running cell — the live rows replaced frame by frame, as a
-            // session's wait streams them (docs/interactive-shell.md).
+            // session's wait streams them (docs/tools/interactive-shell.md).
             for pct in [10, 40, 70, 100] {
                 events.push(StreamEvent::ToolScreen {
                     settled: String::new(),
@@ -1081,7 +1081,7 @@ pub(in crate::stream) fn interactive_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The **parallel-download** demo's narration (`docs/tool-streaming.md` *The
+/// The **parallel-download** demo's narration (`docs/ui/tool-streaming.md` *The
 /// window follows what is still moving*): what pacman's multibar does to a
 /// cell whose window is the output's end, and where the finished bars went.
 const DOWNLOAD_REPLY: &str = concat!(
@@ -1156,10 +1156,10 @@ fn download_screen(frame: usize) -> String {
     .join("\n")
 }
 
-/// The **parallel-download** demo (`docs/tool-streaming.md` *The window
+/// The **parallel-download** demo (`docs/ui/tool-streaming.md` *The window
 /// follows what is still moving*): one `bash` call refreshing pacman's
 /// databases, its screen redrawn in place frame by frame as a session's wait
-/// streams it (`docs/interactive-shell.md`) — the two small databases finish
+/// streams it (`docs/tools/interactive-shell.md`) — the two small databases finish
 /// in the first second and sit *below* the two still downloading, the shape
 /// that made a window pinned to the output's end show only finished bars —
 /// resolving with the real report formatter's frame over the final screen,
@@ -1198,7 +1198,7 @@ pub(in crate::stream) fn download_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The **skills** demo's narration (`docs/skills.md`): what a skill is, and
+/// The **skills** demo's narration (`docs/tools/skills.md`): what a skill is, and
 /// what the one-line cell hides.
 const SKILLS_REPLY: &str = concat!(
     "Skills are folders of authored markdown I can pull in on demand — a \
@@ -1215,7 +1215,7 @@ const SKILLS_REPLY: &str = concat!(
     handoff!()
 );
 
-/// The **skills** demo (`docs/skills.md`): the model loading a `dataviz`
+/// The **skills** demo (`docs/tools/skills.md`): the model loading a `dataviz`
 /// skill, resolving to the same one-line cell over the same rendered body the
 /// live tool produces.
 ///
@@ -1243,7 +1243,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
         detail: None,
         arguments: Some(serde_json::json!({ "skill": SKILL_NAME }).to_string()),
     });
-    // The two-text split (docs/skills.md): the cell gets one line, the model
+    // The two-text split (docs/tools/skills.md): the cell gets one line, the model
     // gets the body. `ToolAnswered` is what the live loop sends for it, so the
     // recorded call keeps both and Ctrl+D shows what was really sent.
     events.push(StreamEvent::ToolAnswered {
@@ -1257,7 +1257,7 @@ pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The file the **scratchpad** demo drafts (`docs/tool-groups.md`
+/// The file the **scratchpad** demo drafts (`docs/ui/tool-groups.md`
 /// *Scratchpad edits*).
 const DUMMY_GUESS_NAME: &str = "guess_the_number.py";
 
@@ -1286,7 +1286,7 @@ const DUMMY_GUESS_V1: &str = "#!/usr/bin/env python3\n\
     if __name__ == \"__main__\":\n    \
     play()\n";
 
-/// The **scratchpad** demo's narration (`docs/tool-groups.md` *Scratchpad
+/// The **scratchpad** demo's narration (`docs/ui/tool-groups.md` *Scratchpad
 /// edits*).
 const SCRATCHPAD_REPLY: &str = concat!(
     "I'll draft the game in my scratchpad first, so nothing lands in your \
@@ -1300,7 +1300,7 @@ const SCRATCHPAD_REPLY: &str = concat!(
 
 /// One scripted round of a single call whose arguments stream in token-sized
 /// pieces, the way a live model generates a `write` — so it streams into its
-/// cell, or into the collapsed group's line (`docs/write-streaming.md`).
+/// cell, or into the collapsed group's line (`docs/ui/write-streaming.md`).
 fn streamed_round(call: &ScriptedCall) -> Vec<StreamEvent> {
     let mut events = vec![generating(0, &call.name.to_ascii_lowercase(), "")];
     events.extend(
@@ -1314,7 +1314,7 @@ fn streamed_round(call: &ScriptedCall) -> Vec<StreamEvent> {
     events
 }
 
-/// The **scratchpad** demo (`docs/tool-groups.md` *Scratchpad edits*): the
+/// The **scratchpad** demo (`docs/ui/tool-groups.md` *Scratchpad edits*): the
 /// model drafts a game in its session scratchpad — a `write` generated the
 /// way a live model generates one, so the collapsed group's `Making 1
 /// scratchpad edit +N…` line counts the lines as they arrive, then a one-line
@@ -1338,7 +1338,7 @@ pub(in crate::stream) fn scratchpad_turn(cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
-/// The **explore** demo's narration (`docs/tool-groups.md`): what the reads
+/// The **explore** demo's narration (`docs/ui/tool-groups.md`): what the reads
 /// folded into, and the one call that kept a cell.
 const EXPLORE_REPLY: &str = concat!(
     "I'll get my bearings before touching anything: list the folder, search \
@@ -1353,13 +1353,13 @@ const EXPLORE_REPLY: &str = concat!(
 /// The thought the explore demo has between its first two rounds — the strip
 /// keeps showing the open group's cell while it streams, its bullet blinking
 /// through it, and only the status line says the model is thinking
-/// (`docs/tool-groups.md` *Thoughts*).
+/// (`docs/ui/tool-groups.md` *Thoughts*).
 const EXPLORE_THINKING: &str =
     "One script and a README. Find where the card is built,\nthen read both.";
 
 /// The thought after the explore demo's parallel round — a live model's pause
 /// before its next call, in which the group's `⎿` row steps through each of
-/// the round's values in turn (`docs/tool-groups.md` *The hint row*). Like
+/// the round's values in turn (`docs/ui/tool-groups.md` *The hint row*). Like
 /// the first thought, it shows only in Ctrl+O: the group held both, and its
 /// line is all the conversation shows of them.
 const EXPLORE_SECOND_THINKING: &str =
@@ -1415,7 +1415,7 @@ fn round(calls: &[ScriptedCall]) -> Vec<StreamEvent> {
     events
 }
 
-/// The **explore** demo (`docs/tool-groups.md`): the model finding its way
+/// The **explore** demo (`docs/ui/tool-groups.md`): the model finding its way
 /// around before it changes anything — a listing; a thought; a parallel
 /// round of a search and two reads, whose values the group's `⎿` row shows
 /// one after another; another thought; then a command that runs something.

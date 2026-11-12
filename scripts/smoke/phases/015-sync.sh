@@ -5,7 +5,7 @@
 smoke_begin
 
 # scrollback commits are FLICKER-FREE — every live-region clear
-# rides inside a synchronized-update frame (docs/flicker.md). Record the raw
+# rides inside a synchronized-update frame (docs/ui/flicker.md). Record the raw
 # byte stream of a whole streaming turn via pipe-pane: each ESC[J region clear
 # (a commit blanking the live region before its repaint) must sit between
 # ESC[?2026h and ESC[?2026l, so a terminal honouring mode 2026 can never
@@ -36,12 +36,12 @@ sync_clears=$(sed -e $'s/\x1b\[?2026h/\\\n@SYNC@\\\n/g' \
 rm -f "$RAW15"
 echo "==== Phase 15: live-region clears in the raw output stream — $sync_clears ===="
 
-# Phase 15: flicker-free commits (docs/flicker.md). The recording must hold
+# Phase 15: flicker-free commits (docs/ui/flicker.md). The recording must hold
 # synchronized frames (so the meter saw the turn at all), and every
 # live-region clear must sit inside one — a clear outside means a terminal
 # could present the boxless state (the streaming blink). A commit no longer
 # clears the region at all — it is repainted in place, so `total=0` is the
-# design (docs/slow-stream.md; Phase 121 pins that count) and the liveness
+# design (docs/ui/slow-stream.md; Phase 121 pins that count) and the liveness
 # check is on the frames.
 case "$sync_clears" in
 frames=0*)

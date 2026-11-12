@@ -1,4 +1,4 @@
-//! The read-only `/donate` page (`docs/donate.md`).
+//! The read-only `/donate` page (`docs/ui/donate.md`).
 
 use super::*;
 use crate::app::DONATION_ADDRESSES;
@@ -458,7 +458,7 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 #[test]
 fn the_page_flows_like_its_family() {
     // A short terminal bottom-anchors the page and flows the skipped top
-    // into scrollback (docs/view-flow.md) — the page must be flow-eligible
+    // into scrollback (docs/ui/view-flow.md) — the page must be flow-eligible
     // like /hooks, or its title would silently clip.
     // Even the smallest page is taller than a 10-row terminal.
     let app = open_app();
@@ -546,7 +546,7 @@ fn short_of(texts: &[String]) -> u16 {
 fn every_short_donate_page_hugs_its_frame() {
     // Whichever page a height builds — the whole one, an accordion, the
     // highlighted address alone — no blank row meets either rule
-    // (`docs/view-flow.md` *The frame hugs its content*).
+    // (`docs/ui/view-flow.md` *The frame hugs its content*).
     for width in [40_u16, 60, 90] {
         for selected in 0..DONATION_ADDRESSES.len() {
             let app = open_at(selected);
@@ -710,7 +710,7 @@ fn shorter_than_the_accordion_only_the_highlighted_address_stays() {
     // address the highlight is on, its numbered label saying where it
     // stands, and the caution and the hint stay. No overflow slots: straight
     // under the top rule they would hug it blank at the first address
-    // (`docs/view-flow.md` *The frame hugs its content*).
+    // (`docs/ui/view-flow.md` *The frame hugs its content*).
     let app = open_at(1);
     let levels = levels(&app, 80);
     assert_eq!(levels.len(), 4, "{levels:#?}");

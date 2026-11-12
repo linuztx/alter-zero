@@ -1,4 +1,4 @@
-//! The tool-permission gate as the loop sees it (`docs/permissions.md`).
+//! The tool-permission gate as the loop sees it (`docs/state/permissions.md`).
 //!
 //! A `write`/`edit`/`bash` call raises the inline prompt and its own thread
 //! **blocks** on [`PermissionGate`] until the user answers. Three things had to
@@ -22,7 +22,7 @@
 //! And the gate learns when a prompt reaches the **screen**
 //! ([`PermissionStore::mark_shown`]): a request can queue behind another and
 //! be settled there unseen, so the moment someone is actually asked — what a
-//! `Notification` hook announces (`docs/hooks.md`) — is the loop's to say.
+//! `Notification` hook announces (`docs/tools/hooks.md`) — is the loop's to say.
 //!
 //! A session starts in **auto** unless this project saved another mode or
 //! `ALTER_ZERO_PERMISSION_MODE` seeds one for the run
@@ -163,7 +163,7 @@ impl PermissionStore {
 
     /// Tell the gate the open prompt is on screen — once per prompt, as it
     /// opens — which runs what its thread left waiting for that, the
-    /// `Notification` hook (`docs/hooks.md`). The prompt open at the loop
+    /// `Notification` hook (`docs/tools/hooks.md`). The prompt open at the loop
     /// bottom is the one the next frame paints; one opened and settled within
     /// an iteration never reached the screen, and one settled while it queued
     /// never opens at all.
@@ -199,7 +199,7 @@ impl Session<'_> {
     /// The user answered the inline prompt: post the decision on the gate, waking
     /// the tool thread parked on it. The prompt is already closed and the composer
     /// draft restored (the pure core did that); a queued second request has
-    /// already opened. See `docs/permissions.md`.
+    /// already opened. See `docs/state/permissions.md`.
     pub(crate) fn resolve_permission(
         &mut self,
         request: &PermissionRequest,
@@ -218,7 +218,7 @@ impl Session<'_> {
                     ui::permission_remember_label(request)
                 ),
                 // Held in memory for as long as the session runs, never saved
-                // (docs/interactive-shell.md).
+                // (docs/tools/interactive-shell.md).
                 PermissionKind::Session => "Won't ask again for input to this session".to_string(),
                 PermissionKind::Write | PermissionKind::Edit => {
                     self.app.set_permission_mode(Some(PermissionMode::Edit));
@@ -241,7 +241,7 @@ impl Session<'_> {
     /// advanced — mirror it onto the gate's rules (the approve seam reads them, so
     /// the very next write/edit obeys the new posture), sweep the queued requests
     /// the looser mode now covers (parallel agents' file changes waiting behind a
-    /// prompt), and persist this project's entry. See `docs/permissions.md`.
+    /// prompt), and persist this project's entry. See `docs/state/permissions.md`.
     pub(crate) fn set_permission_mode(&mut self, mode: PermissionMode) {
         self.permissions.set_mode(mode);
         self.permissions.approve_covered(&mut self.app);

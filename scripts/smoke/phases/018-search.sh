@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Ctrl+R reverse history search (docs/history-search.md). Build
+# Ctrl+R reverse history search (docs/input/history-search.md). Build
 # two history entries — one submitted turn plus one Ctrl+C-cleared draft (the
 # clear records it, no second slow turn needed) — then: Ctrl+R opens the
 # reverse-i-search line in the footer slot; typing a query previews the newest

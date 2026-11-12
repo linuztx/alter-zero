@@ -1,4 +1,4 @@
-//! The collapsed read/search group's two looks (`docs/tool-groups.md`) —
+//! The collapsed read/search group's two looks (`docs/ui/tool-groups.md`) —
 //! Claude Code's non-verbose tool view.
 //!
 //! **Live**, in the strip while the group is open — its bullet blinking for
@@ -157,7 +157,7 @@ fn fit(mut spans: Vec<Span<'static>>, hint: Style, room: usize) -> Vec<Span<'sta
 /// `items` (a [`crate::app::group_run`]), and nothing else. The thoughts the
 /// turn settled while the group was open are part of the run but show only
 /// in the Ctrl+O transcript, the line's `(ctrl+o to expand)` saying where
-/// (`docs/tool-groups.md` *Thoughts*).
+/// (`docs/ui/tool-groups.md` *Thoughts*).
 #[must_use]
 pub fn tool_group_lines(
     items: &[HistoryItem],
@@ -180,7 +180,7 @@ pub fn tool_group_lines(
 /// What the group's `⎿` row says a value is about.
 enum HintText {
     /// A file — read, or edited in the scratchpad — as the session shows
-    /// paths (`docs/tools.md` *Path display*).
+    /// paths (`docs/tools/tools.md` *Path display*).
     Path(String),
     /// A command as it was typed: every line that has any text, its spacing
     /// kept.
@@ -283,7 +283,7 @@ pub(super) fn live_group_lines(
     if with_queue {
         // A queued scratchpad write counts the content it carries: the draft
         // it streamed, which the batch handed its cell
-        // (docs/write-streaming.md), else its announced arguments. The k-th
+        // (docs/ui/write-streaming.md), else its announced arguments. The k-th
         // previewed call pairs with the k-th adopted draft, and the group's
         // calls lead the queue.
         let mut adopted = app.tool_drafts().queued();

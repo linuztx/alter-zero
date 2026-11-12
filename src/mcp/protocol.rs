@@ -1,4 +1,4 @@
-//! The MCP JSON-RPC protocol shapes (`docs/mcp.md`): request/notification
+//! The MCP JSON-RPC protocol shapes (`docs/tools/mcp.md`): request/notification
 //! builders, the response parse, the `initialize` handshake, the `tools/list`
 //! page, the `tools/call` result mapping — all pure over `serde_json::Value`,
 //! so every transport speaks through the same tested vocabulary.
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 /// the spec's own recipe and runs at **every** connect: probe modern first,
 /// fall back to the legacy handshake when the server answers with anything
 /// but a modern error. This is what the probe *proposes*; what a connect
-/// settles on is whatever the server names back (`docs/mcp.md`).
+/// settles on is whatever the server names back (`docs/tools/mcp.md`).
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// The newest handshake-based ("legacy") revision — what the `initialize`
@@ -442,7 +442,7 @@ pub struct ServerIdentity {
     /// and carried by the `<system-reminder>` (`mcp::instructions_section`).
     pub instructions: Option<String>,
     /// `capabilities.tools.listChanged`: the server says when its tools
-    /// change — what the client opens a change stream for (`docs/mcp.md`).
+    /// change — what the client opens a change stream for (`docs/tools/mcp.md`).
     pub tools_list_changed: bool,
 }
 

@@ -1,4 +1,4 @@
-//! The Ctrl+D view's classifier page (`docs/permissions.md`).
+//! The Ctrl+D view's classifier page (`docs/state/permissions.md`).
 
 use super::*;
 use crate::llm::classifier::{ACTION_TO_REVIEW_HEADER, CLASSIFIER_SYSTEM_PROMPT};

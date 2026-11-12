@@ -1,4 +1,4 @@
-//! The `/resume` picker (`docs/resume.md`).
+//! The `/resume` picker (`docs/state/resume.md`).
 
 use super::*;
 use crate::ui::theme::{RESUME_AGE_WIDTH, menu_dim_color, menu_selected_color, resume_selected_bg};
@@ -229,7 +229,7 @@ fn resume_picker_keeps_the_selection_centered_like_the_model_list() {
     }
 }
 
-// ===== /resume session picker (docs/resume.md) =====
+// ===== /resume session picker (docs/state/resume.md) =====
 
 /// An app with the picker open over one session per preview, all aged
 /// `5m ago` (updated) / `2h ago` (created), recorded in the picker's own

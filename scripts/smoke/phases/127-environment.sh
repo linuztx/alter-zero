@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The environment block (docs/environment.md): the real backend's system
+# The environment block (docs/architecture/environment.md): the real backend's system
 # prompt carries `## Environment` — date, os, user, cwd — read at the
 # boundary (`tui::host`) and folded in once at startup. The dummy sends no
 # system prompt at all, so a local stub stands in for an OpenAI-compatible

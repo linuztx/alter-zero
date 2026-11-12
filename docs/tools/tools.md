@@ -1,0 +1,810 @@
+# LLM tool calling — `bash` and its companions / `read` / `write` / `edit`
+
+The real backend can now **call tools**: the model asks to run a shell command,
+read a file, write a file, or edit one; the backend executes it locally, streams
+the call into the TUI exactly like the dummy's scripted tools, feeds the result
+back to the model, and loops until the model answers with plain text. This turns
+the app from a chat client into a small coding agent — the capability
+`docs/providers/llm.md`'s "Known limitations" listed as future work ("No streaming
+tool-call support from the model yet").
+
+This document covers the wire format, the agentic loop, the executor, and the
+rendering. It complements `docs/providers/llm.md` (the backend seam) and
+`docs/input/shell-command.md` (the `!` local shell, which is unrelated — that is the
+*user* running a command, this is the *model*).
+
+## Why Chat Completions function-calling (not codex's Responses/apply_patch)
+
+openai/codex uses the **Responses API** and a freeform `apply_patch` **grammar**
+tool. Neither fits here: alter-zero talks the **Chat Completions** API
+(`/chat/completions`) for broad OpenAI-compatible/OpenRouter coverage, and a
+Lark-grammar custom tool only works on the handful of models that support it.
+
+So we use **standard Chat Completions function-calling** — the shape every
+OpenAI-compatible provider implements — with four **JSON-schema function tools**
+modelled on Claude Code's toolset (the names the user asked for). Codex still
+informs the design: its tool *descriptions*, its execution *semantics* (10 s
+default shell timeout, byte-capped middle/head-truncated output, `Exit code:` +
+output framing), and its TUI *diff cells* (`• Edited path (+N −M)`, green adds /
+red deletes) are ported.
+
+## The core tools
+
+All eight are declared to the model as
+`{"type":"function","function":{"name","description","parameters":<schema>}}`
+entries in the request's `tools` array, with `tool_choice:"auto"`. The pure
+definitions + JSON schemas live in [`llm::tools`](../../src/llm/tools.rs)
+(`tool_specs()`), unit-tested for shape.
+
+| tool | params | executes |
+| --- | --- | --- |
+| `bash` | `command` (req), `wait` (opt, **seconds** — default 120, cap 600; `0` starts it in the background), `description` (opt) | `bash -c command` (`sh` where no `bash` is installed) in a **pseudo-terminal of its own**; returns when it exits (`Exit code: N` over its output, as data — `docs/tools/bash-tools.md`), stops to wait for input, or `wait` passes — a still-running command is **not stopped**: it reports its session id and runs on. Where no terminal can be had it runs on a pipe with no controlling terminal (`crate::subprocess`). The old `timeout`/`timeout_ms` (ms), `run_in_background` and `tty` still parse |
+| `bashsend` | `session_id` (req), `input` (req — text, a newline presses Enter, `<Enter>`/`<C-c>`/`<Up>`… keys) | type into a running command and return its answer, within a fixed 10 s (`docs/tools/bash-tools.md`) |
+| `bashwait` | `session_id` (req), `wait` (opt, seconds — default 120) | wait for new output, the exit or a question; `wait: 0` just checks |
+| `bashkill` | `session_id` (req) | stop a command and everything it started — `SIGINT`, `SIGTERM`, then `SIGKILL` |
+| `bashlist` | — | the running sessions: id, command, runtime, whether each waits for input |
+| `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
+| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; **show** `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd), the `● Write({path})` header by the TUI's own rule ("Path display" below) — while the *model* reads a one-line ack |
+| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; **show** `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s — the model again reads the ack |
+
+`read`/`write`/`edit` are separate JSON tools rather than one `apply_patch`
+grammar: they work on any function-calling model, and `edit`'s exact
+`old_string`→`new_string` contract (Claude Code's) is simpler and safer for
+arbitrary models than fuzzy-context patch matching.
+
+Other tools attach conditionally, each enabled by the boundary handing the
+backend the state it needs: `agent` (`docs/agents/agent-tool.md`),
+`askuserquestion` (`docs/tools/ask.md`), the four task tools
+(`docs/tools/task-tools.md`), and `skill` (`docs/tools/skills.md`) — offered only when at
+least one `SKILL.md` was discovered, since with none it could answer nothing
+but "unknown skill".
+
+## Wire format (Chat Completions)
+
+### Request
+
+`OpenAiClient::build_payload` gains, when the client carries tools:
+
+```json
+"tools": [ {"type":"function","function":{"name":"bash", "...": "..."}}, ... ],
+"tool_choice": "auto"
+```
+
+### The assistant's tool-call turn
+
+Streamed back as `choices[].delta.tool_calls[]`, each delta carrying an `index`
+(the key to accumulate on), an `id` + `function.name` on the first fragment, and
+`function.arguments` string fragments that **concatenate** into the final JSON
+argument object. `finish_reason:"tool_calls"` (or simply: any accumulated tool
+calls) means the model wants to run them. The pure
+[`ToolCallAccumulator`](../../src/llm/openai.rs) folds the indexed deltas into
+`Vec<ToolCallRequest { id, name, arguments }>` — unit-tested against fragmented
+streams.
+
+### Feeding results back
+
+The backend appends two messages to its running request list per round:
+
+1. the **assistant** message it just received, carrying `tool_calls` (and any
+   text), and
+2. one **`role:"tool"`** message per call: `{"role":"tool","tool_call_id":<id>,
+   "content":<output>}`.
+
+`ChatMessage` grew two optional, `skip_serializing_if`-guarded fields
+(`tool_calls`, `tool_call_id`) so ordinary system/user/assistant messages
+serialize byte-for-byte as before.
+
+## The agentic loop (`llm::agent::run_agent`)
+
+The heart of the feature is a **pure, generic driver** — like `llm::retry`'s
+`run_stream` — so the whole loop is unit-tested with fakes and no network:
+
+```
+run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
+  loop:
+    if cancel: return                       # silent — the UI owns the interrupt notice
+    for note in pending_notices():          # background completions since the last
+      messages.push(user(note))             # round — a killed shell is known to the
+                                            # model within the turn (docs/tools/background.md)
+    match round(&messages):                 # one streaming request (with its own retry)
+      Complete(blank) | CutOff(text):       # no answer, or one cut off at the output
+        if unfinished == MAX_CONTINUATIONS: # cap: keep what it said, ask for the rest
+          tx.send(Error(gave_up)); return   # in a new user message, two times in a
+        unfinished += 1                     # row at most (docs/architecture/unfinished-replies.md)
+        messages.push(assistant(text)) if text
+        messages.push(user(continue_note)); continue
+      Complete            => tx.send(StreamDone); return
+      Cancelled           => return
+      Failed(e)           => tx.send(Error(e)); return
+      ToolCalls{assistant, calls}:
+        if iters == max_iterations: tx.send(Error("tool-call limit reached")); return
+        messages.push(assistant)
+        for call in calls:
+          tx.send(ToolStart{ name: display_name(call), args: summary(call) })
+          out = execute(&call, cancel)       # runs the tool locally
+          tx.send(ToolEnd{ out.output, out.ok, out.truncated })
+          messages.push(tool_result(call.id, out.output))
+          if cancel: return
+        iters += 1
+```
+
+- `round` is the real streamer: it builds the payload (with tools), streams one
+  response — emitting `Chunk`/`Thinking*` exactly as today, plus a
+  `ToolCallDelta(fragment)` for each streamed `tool_calls` piece, under the
+  slot of the call it belongs to, so the status token tally ticks while the
+  model *generates* the call (counted like reasoning,
+  `docs/ui/status-indicator.md`) and a `write` previews as its content arrives
+  (`docs/ui/write-streaming.md`) — accumulates tool
+  calls, and applies the **existing per-request retry** (`llm::retry`) internally,
+  returning a `RoundOutcome`. Retry is unchanged and still per-request. What
+  the round reports is read off the stream's stop reason (`round_outcome`):
+  a reply stopped at the output cap comes back `CutOff`, and one stopped by
+  the context window or a content filter `Failed`, naming the cause
+  (`docs/architecture/unfinished-replies.md`).
+- **A round that answers nothing does not end the turn.** An empty reply —
+  no text, no tool call — or a `CutOff` is answered with a continuation
+  prompt in a new user message, recorded as a cell-less note the transcript
+  and every later context carry, and the same turn runs another round. Any
+  progress earns the budget back; the third unfinished round in a row ends
+  the turn on an error saying so (`docs/architecture/unfinished-replies.md`).
+- `execute` is the real executor (below). Both are plain closures in the tests, a
+  real streamer + real executor in production.
+- `max_tool_calls` (`MAX_TOOL_ITERATIONS`, 20 — the `/settings` **Max tool
+  calls** row, `0` for no limit) bounds a runaway tool loop. It counts the
+  **calls**, not the rounds: a round can request a whole parallel batch
+  (`docs/tools/parallel-tools.md`), so counting rounds let one round overspend the
+  ceiling several times over. A round the budget can only partly afford is
+  **clamped** — as many of its calls as fit run, in the model's own order, the
+  rest resolve red with `Not run: this turn had already spent its tool-call
+  limit.` (so every `tool_call` still has a matching `tool` result), and the
+  turn ends with an error naming the ceiling and pointing at `/settings` — an
+  error the model reads too, as an `[error] …` user entry, which is why the
+  per-call results don't repeat the advice.
+- `pending_notices` takes the background registry's completion notice board
+  (`LlmBackend` wires it; empty without a registry) — each note a user-role
+  message appended after the prior round's tool results, exactly where the
+  settled history item replays it for later turns (`docs/tools/background.md`).
+- **Cancellation** is checked between rounds, after each tool, and inside the tool
+  itself — so Esc reaps promptly, same contract as the plain stream.
+
+### Why the TUI barely changes
+
+The event loop **already** interleaves `ToolStart`/`ToolEnd` with `Chunk`s — the
+dummy has scripted exactly this since day one (`stream::turn_events`), and
+`tui::stream::Session::on_stream_event` already flushes the text segment, shows the tool running,
+commits it green/red, and records it into `history`. A real model driving those
+same events needs almost **no new event-loop code** — the one addition is the
+`StreamEvent::ToolBatch` arm that registers a **parallel batch** up front (so its
+not-yet-run calls show `⎿ Waiting…`; see `docs/tools/parallel-tools.md`), after which
+the same per-call `ToolStart`/`ToolEnd` flow runs unchanged. Interrupts, the
+Ctrl+O transcript, resize repaint, and `context_messages` replay (finished tools →
+the native `assistant tool_calls` + `tool` result pair on the next turn, matching
+this in-turn protocol — see `docs/architecture/context.md`) all work unchanged.
+
+## The executor (`llm::exec::RealToolExecutor`)
+
+Boundary code (file + process I/O), verified by hand / smoke, wrapping the pure
+cores in `llm::tools`:
+
+- **`bash`** — `bash -c` in a pseudo-terminal of its own
+  (`background::BackgroundRegistry::launch_tty`, `docs/tools/bash-tools.md`), the
+  call waiting on the session until the command exits, stops to ask, or its
+  `wait` passes; where no terminal can be had, on a pipe via
+  [`crate::subprocess::spawn_detached_shell`] (detached from the terminal —
+  see below), stdin `/dev/null`, stdout+stderr drained on reader threads (a
+  chatty command can't deadlock a full pipe). Either way a finished command's
+  output keeps its first 16 KiB and last 48 KiB (`pty::fold::HeadTail`, the
+  cut naming the session's log), a `wait` that passes hands the command to
+  the background registry instead of killing it, and a cancel stops it. Output framed for
+  the model as codex does: `Exit code: N` + the output; a non-zero exit
+  resolves the cell red, and the display drops the frame line whatever the
+  code — the exit code is the model's to read, never the cell's
+  (`docs/ui/tool-streaming.md`).
+- **`read`** — reads the file; a text file applies `offset`/`limit`, formats
+  numbered lines (`format_read`, pure), byte-caps the result; an image file
+  takes the image branch below.
+- **`write`** — creates parent dirs, writes, and **displays** `describe_change`:
+  a brand-new
+  file is a `Wrote {N} lines to <path>` head over the **numbered contents**
+  (`tools::write_report` — `{n:>W} {text}` rows, the numbers matching `read`'s
+  so the model can cite them to `edit`); overwriting is reported like an edit
+  (`tools::update_report`). The head's path is the compact cwd-relative
+  display form (`tools::display_path` — `src/main.rs` under the cwd, a
+  `../../README.md` climb outside it), while the `● Write({path})` header
+  records the model's own (absolute, per the schema) argument verbatim and
+  *shows* it by the TUI's path display rule ("Path display" below, applied
+  at render time). What the **model** reads is the one-line ack below.
+- **`edit`** — the pure `apply_edit` engine does the exact replacement; the
+  executor writes it back and reports `Updated <path> (+A -D)` over the
+  **numbered diff hunks** (`render_numbered_diff` — only each change run plus
+  `DIFF_CONTEXT_LINES` (3) context lines each side, touching runs merged, distant
+  hunks separated by a `⋮` gap row; `{n:>W} {sign}{text}` rows — context/added
+  lines numbered by the *new* file, removed by the *old*, codex's
+  `diff_render` numbering). Both bodies cap at `DIFF_MAX_LINES` with a
+  `… N more lines` tail — and, again, only on the cell.
+
+### The result the model reads is one line
+
+A `write`/`edit` resolves through the **two-text split** the ask and skill
+tools already use (`ToolOutcome::context` → `StreamEvent::ToolAnswered` →
+`ToolCall::context_output`): the numbered body above is the *cell*, and what
+rides the conversation is
+
+```
+File created successfully at: /tmp/name.txt (file state is current in your context — no need to read it back)
+File overwritten successfully at: /tmp/name.txt (…)
+The file /tmp/note.txt has been updated successfully. (…)
+
+Replaced 3 occurrences.
+```
+
+(`tools::write_ack` / `tools::edit_ack` over the model's own path argument —
+the absolute one it sent, not the cell head's cwd-relative display form. A
+`write` over an existing file says *overwritten* rather than borrowing
+`edit`'s "updated": that the file was already there is a fact only the
+executor knows, and a model that expected to create it should hear so. The
+count paragraph appears only for a `replace_all` that touched more than one
+place — the one fact the diff carried that the arguments do not, since a
+unique match is always exactly one. A write that changed nothing stays
+single-text: `No changes to {path}` is already the whole truth, and there is
+no body to spare the model. A **failure** stays single-text too — the error
+message *is* what the model must read to recover.)
+
+The saving is real because the change is not dropped, only **moved**: every
+call now records the model's verbatim arguments, and the derived context
+replays them on the assistant `tool_calls` entry (`docs/architecture/context.md`). Before,
+a `write` replayed as `write({"path": …})` and the content came back as a
+line-numbered result every turn — roughly 1.3× the content's own tokens, for
+a copy the model had just written. Now the content rides the call once, in
+the shape the model sent it, where a provider's prompt cache can keep it
+(`docs/providers/prompt-caching.md`).
+
+The closing clause is a claim about that replay, so both file tools' schemas
+say the same thing in one sentence — *"Returns a one-line confirmation: the
+content you sent stays in the conversation, so do not read the file back to
+check it"* — because a model that cannot see why the result got shorter will
+otherwise reach for a verifying `read`, which uploads the file a second time
+and undoes the saving.
+
+Every failure is returned as a **non-ok `ToolOutcome`** with a human/model-readable
+message (never a panic) — the model sees the error string as the tool result and
+can recover, exactly like codex's `RespondToModel`.
+
+### No controlling terminal — the sudo-prompt fix (`crate::subprocess`)
+
+This is what a command gets where no terminal of its own can be had — the
+`!` shell, a `bash` call's pipe fallback (`docs/tools/bash-tools.md`) — and what
+every model command got before commands ran in a terminal.
+
+`stdin(Stdio::null())` does **not** make a command non-interactive: a password
+prompt (`sudo`, `ssh`, git's credential helper) opens **`/dev/tty`** — the
+controlling terminal, inherited through the process *session*, not through any
+fd — writes its prompt straight over the live region and then blocks reading
+the same keyboard the event loop owns. Every shell runner (this executor,
+`BackgroundRegistry::launch`, the `!` shell) therefore spawns through
+`subprocess::spawn_detached_shell`, which runs the command in a **fresh
+session with no controlling terminal** — the `/dev/tty` open fails and `sudo`
+errors out in milliseconds (`sudo: a terminal is required to read the
+password`), resolving the cell red with an actionable message instead of
+hanging, exactly like Claude Code. The mechanism (a `setsid`-binary →
+helper-re-exec → attached tier chain shaped by the crate's `forbid(unsafe)`),
+the preserved `pgid == child.id()` kill contract, and the full test matrix
+live in **`docs/tools/tty-detach.md`**.
+
+A `bash` call's terminal is the deliberate opposite, and still never the
+user's terminal: the command gets a **pseudo-terminal of its own** as its
+controlling terminal (the same tier chain, in its TTY form), so the password
+prompt reaches a screen the *model* reads and answers through `bashsend` —
+or, when it was not given the secret, asks the user for
+(`docs/tools/interactive-shell.md`, `docs/tools/bash-tools.md`).
+
+## Image reads (`read` on a png/jpg/jpeg/gif/webp)
+
+The cell additionally **draws** the picture below itself, and
+`/settings` **Auto-resize images** decides whether an oversized one is
+downscaled before it is uploaded — both in `docs/ui/images.md`.
+
+`read` is not text-only: a path with an image extension comes back **visually**,
+Claude-Code style, so the model can look at screenshots, downloaded pictures, or
+plots it just generated.
+
+- **Detection is by extension** (`tools::is_image_path` — png/jpg/jpeg/gif/webp,
+  the four formats every vision-capable OpenAI-compatible endpoint accepts;
+  pure, unit-tested). The executor then **sniffs the actual bytes**
+  (`image::ImageReader::with_guessed_format`, the clipboard module's pattern) so
+  the `data:` URL's MIME matches the content even when the extension lies, and
+  anything that isn't really one of the four fails as a recoverable error the
+  model reads. `offset`/`limit` are ignored for images.
+- **The tool result stays small text** — one concise
+  `Read image ({format}, {W}x{H}, {size})` fact line
+  (`tools::format_read_image`, e.g. `Read image (PNG, 512x512, 17 KB)`): the
+  path stays out, since the `● Read({path})` header shows the argument and the
+  follow-up `[image]` note names it for the model. That line is what the cell
+  shows, what the session rollout records, and what the token tally counts;
+  the pixels never enter `output`.
+- **The pixels ride `ToolOutcome::image`** (a base64 `data:` URL, encoded at
+  the executor boundary) and `run_agent` attaches them as a follow-up
+  **user-role parts message** — the `[image] …` note
+  (`tools::image_attachment_note`) plus an `image_url` part — *after* the
+  round's tool results. Why not inside the `role:"tool"` message? Chat
+  Completions tool content accepts only text parts on OpenAI and most
+  compatibles — an `image_url` part there is a 400. A user message with image
+  parts is the standard vision shape this codebase already sends for Ctrl+V
+  pastes, and injecting user-role messages mid-turn is the established pattern
+  (the background notices). The results stay **contiguous** before the
+  attachment: strict providers require every `tool_call_id` answered directly
+  after the assistant message.
+- **Later turns keep seeing it**: `context_messages` detects an image read from
+  the stored record (`name == "Read"` + the `Read image ` output marker — a
+  text read always starts with a numbered gutter row, `(file …`, or a
+  `could not read …` error, so the marker can't collide) and replays the same
+  note with the path as an `images` attachment. `build_messages` attaches the
+  session's one shared encoding of it each request — the `read` handed its
+  payload to `images::remember_attachment`, so no later turn reads or
+  base64s the file again (`docs/architecture/memory.md`); a since-deleted file degrades
+  to the existing `[image unavailable: …]` text note instead of failing the
+  turn.
+- **Size cap**: `READ_IMAGE_MAX_BYTES` (3.75 MB raw, so the base64 form stays
+  under the strictest mainstream provider's 5 MB per-image limit — Claude
+  Code's own bound). An oversized file fails with a recoverable "downscale or
+  convert it with a bash command first".
+- **Rendering**: the cell shows the fact line as a plain `⎿` output block —
+  `ui::parse_file_cell` requires the numbered gutter and falls back to the
+  legacy rendering, and the terminal can't show pixels anyway (same stance as
+  the `[Image #N]` paste placeholders).
+
+### Vision detection — degrading gracefully on a text-only model
+
+Attaching an image to a model that can't see is not a soft failure: OpenRouter
+**404s the whole request** ("No endpoints found that support image input"), so
+without a gate an image read (or a Ctrl+V paste) on e.g. `openai/gpt-oss-120b`
+kills the turn red. The gate reuses the `/v1/models` capability pattern the
+Ctrl+T thinking cycle established (`docs/providers/reasoning.md`):
+
+- **Detection** (`models::vision_support_of` → `ModelEntry::vision`,
+  per-record like the reasoning sniff): OpenRouter's
+  `architecture.input_modalities` array (`"image"` ∈ it), falling back to the
+  older combined `architecture.modality` string decided by its **input** side
+  (`"text+image->text"` sees; `"text->image"` — a generator — doesn't);
+  Venice's `model_spec.capabilities.supportsVision`; a bare top-level
+  `input_modalities` (the ChatGPT backend's, and a gateway's such as
+  OmniRoute's, whose flat `capabilities` object of booleans is never read as
+  Anthropic's `{"supported": bool}` tree — `docs/providers/claude.md`), else that
+  gateway's flat `capabilities.vision` (`docs/providers/user-providers.md`). A record
+  that says nothing (a bare OpenAI-style list) yields `None` = unknown → attach
+  optimistically, exactly the old behavior.
+- **Flow**: the picked entry's `vision` rides `Action::SelectModel` into the
+  rebuilt backend (`Selection::vision` → `ModelConfig::vision` →
+  `LlmBackend`), persists in `config.json` beside the thinking blob
+  (`Settings::vision` — a legacy file just re-probes), and the startup
+  capability probe (now thinking **and** vision) seeds it for env-selected
+  models.
+- **Effect when `Some(false)`**: the `read` tool declines an image path with
+  a recoverable error *before touching the file* ("the current model does not
+  support image input — … ask the user to switch … with /model"), so the
+  model adapts within the turn; and `build_messages_for` replaces every
+  attachment — a paste or a replayed read image — with an
+  `[image omitted: {path} — …]` text note, so a past image degrades instead
+  of poisoning every later request. A Ctrl+V paste additionally raises a red
+  toast at the boundary (`docs/input/image-paste.md`). Live-verified:
+  `live_non_vision_model_gracefully_declines_an_image_read` /
+  `live_non_vision_model_survives_a_pasted_image` (the model answers "I can't
+  view images" instead of the turn dying) and the two
+  `live_*_models_report_vision_support` listings.
+
+## Enabling / disabling
+
+Tools are **on by default for the real backend** and never for the dummy (the
+dummy's canned tools are unaffected). Toggle with `ALTER_ZERO_TOOLS`
+(`0`/`false`/`no` disables). Enabling them adds **no prose to the system
+prompt** — the schemas carry the whole capability story, so the assembled
+prompt stays persona ([`prompts/alter_zero.md`](../../prompts/alter_zero.md)) →
+runtime **environment context**
+([`prompts/environment.md`](../../prompts/environment.md), `docs/architecture/environment.md`)
+and nothing else. (A `prompts/tools.md` note used to be appended here; it
+re-spent those tokens on every request saying what the schemas already say.)
+Both files are `include_str!`d into `llm::backend` so the wording lives in
+maintainable markdown (swap a persona by pointing the const at a different
+`prompts/*.md`).
+
+The executor runs commands and writes files **in the app's working directory with
+no sandbox** — the same trust model as the `!` shell. A future revision could add
+approval prompts (codex's sandbox/approval flow); v1 trusts the operator, and the
+env toggle is the off-switch.
+
+### Manual live check
+
+`examples/tool_smoke.rs` drives the whole loop against a real provider without
+the TUI — handy for eyeballing the ToolStart/ToolEnd/answer flow:
+
+```bash
+OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
+  openai/gpt-4o-mini "Create hello.py, read it back, then edit its message."
+```
+
+(It reads the proxy CA from `SSL_CERT_FILE`/`ALTER_ZERO_CA_FILE` like the app.)
+
+## Rendering (codex's `diff_render`, in the `⎿` gutter)
+
+A `bash` cell renders in the `!` shell cell's shape — the coloured
+`● Bash(cmd)` header over a **multi-line `⎿` output peek** — but where the
+shell cell shows its whole output inline (`docs/input/shell-command.md`: the user
+ran that command to read it), the `bash` cell's reader is the model, so
+its head is **folded**
+Claude Code's way: its first `TOOL_FOLD_ROWS` (3) wrapped rows, then
+`… +N lines (ctrl+o to expand)` counting the display rows the expansion adds
+(an output of exactly four rows shows whole — a hint hiding one row would cost
+the row it hides; `docs/ui/long-lines.md`). Its `Exit code: N` frame (kept in
+`tool.output` for the model / context replay) is stripped for display, so the
+cell reads like the real command output, and **a line that is a JSON document
+is reshaped for display** with two-space indentation (`ui::exec_display_lines`,
+Claude Code's tool result does the same), so a `curl` of an API reads `{` /
+`"batchcomplete": "",` / `"query": {` instead of a wall of braces — the record
+stays byte-exact. **While it runs the cell streams and tails its output** — the
+header, the last lines, and a `+N lines (22s · wait 1m 50s)` footer naming
+the command's own clock and the wait its call runs under (a bare `(10s · wait
+10m)` row when nothing is hidden, `⎿ Running… (10s · wait 2m)` before any
+output) — see `docs/ui/tool-streaming.md`.
+
+**The whole cell reads like a normal reply — Claude-Code's noticeable look.**
+The entire `(...)` header body — the command text, its framing `(`/`)`, **and** a
+truncation `…` — is **bold + the white assistant colour** (`tool_args_color()`),
+and the **output** under the `⎿` gutter is the same white (`tool_output_color()`),
+so a `bash` command and its output are as legible as a normal message rather than
+the old muted grey. Only the structural bits stay dim ([`tool_dim_color()`]): the
+`⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
+`… +N lines` / `+N lines (Ns · wait …)` hints. The `●` bullet keeps its lifecycle colour
+(blinking grey while it runs — `docs/ui/tool-pulse.md` — vivid green ok · red
+fail). This is uniform across **every** tool
+— `bash`/`read`/`write`/`edit` and any future tool — because the header goes
+through the shared `tool_header_lines` and command/shell output through the
+shared `output_row`. (A `read`/`write`/`edit` numbered cell instead
+syntax-highlights its body — already vivid — see below.)
+
+**Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
+`● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
+terminal edge and lose everything past the last column. Now the `(args)` **wrap**
+across continuation rows, each indented to align **under the opening `(`**
+(the width of `● Bash`, Claude-Code style — the wrapped rows sit directly beneath
+the paren, not one column past it), so the whole command reads clean:
+
+```
+● Bash(curl -s "wttr.in/Warsaw?format=%C+%t+%w+%h" 2>/dev/null
+      || echo "wttr.in unavailable, trying alternative...")
+  ⎿  Partly cloudy +19°C ↓8km/h 83%
+```
+
+The wrap is **Claude Code's, row for row** — Ink's `wrap-ansi` in its `hard`
+mode: words move down whole, but a token that fits on **no** row — a long
+URL — is broken from where it stands, filling the row it is on, unless
+starting it on the next row would cost strictly fewer rows (a tie moves it
+down, so a token that gains nothing from the fill still opens a row of its
+own). The old wrap moved every over-wide token down first and left the row
+before it short, which is the reported difference at 72 columns (ours now
+fills the same rows and stops a row sooner, at the two-row ceiling below):
+
+```
+Before:
+● Bash(curl -s --max-time 15
+      "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exi
+      ntro&explaintext&format=json&titles=World%20Chess%20Championship…)
+
+Claude Code:
+● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
+      query&prop=extracts&exintro&explaintext&format=json&titles=World%2
+      0Chess%20Championship%202026"…)
+
+Now:
+● Bash(curl -s --max-time 15 "https://en.wikipedia.org/w/api.php?action=
+      query&prop=extracts&exintro&explaintext&format=json&titles=World…)
+```
+
+(`ui::wrap`'s `fills_from_here`, inside the `WrapMode::Output` scan — so the
+output rows under the header fill the same way, and the Ctrl+O view with them.)
+
+**The command's own spacing survives the header.** The summary a `bash` call
+records (`tools::summarize_call`) is the command **verbatim** (trimmed), and
+the header wraps it with the same whitespace-preserving word wrap the output
+rows under it use (`ui::wrap_output_hanging`, the hanging-indent form of
+`wrap_output`): a run of spaces inside quotes stays a run — `echo "a    b"`
+never reads as `echo "a b"` — and a **newline takes a row of its own**, the
+closing `)` riding the last one, because a newline is a statement boundary
+and the old one-line flatten showed `cd foo\nls` as the different command
+`cd foo ls` (a heredoc's body merged into its opening line). Tabs expand for
+display like a code block's. The permission prompt that asked about the same
+command already showed it this way, so the cell it becomes agrees with it:
+
+```
+● Bash(cat > hello.py <<'EOF'
+      print("hi")
+      EOF)
+```
+
+Only the header keeps it: the one-row surfaces — the agent roster's
+`{Name}: {args}` activity row and the auto mode classifier's `Name(args)`
+action list — flatten the summary themselves (`tools::flatten_one_line`).
+The `(` rides the **name's** row rather than the first argument word, so an
+argument too wide for what is left beside the name spills to the continuation
+row **whole** — `● Deepwiki - ask_question (MCP)(` over `repoName: "…"` —
+instead of being hard-broken across the two (`(repoName` / `: "…"`, the shape
+a forty-column terminal used to show; `docs/tools/mcp.md`).
+
+**A very long header is cut inline** the way Claude Code cuts it
+(`ui::tool::header_cut`, its `renderToolUseMessage` ported): the command's
+first `TOOL_HEADER_MAX_LINES` (2) lines and at most `TOOL_HEADER_MAX_COLS`
+(160) display columns, trimmed, then `…)` (`TOOL_HEADER_ELLIPSIS`). The marker
+attaches to the last kept word (the cut text is trimmed, so `word …)` — a cut
+after a *missing* word — never shows). On a terminal that holds those 160
+columns in two rows, about ninety columns and wider, that is the whole rule:
+a budget on the **text**, so the same command shows the same characters at
+every such width and a multi-line script shows its first two statements. At
+100 columns:
+
+```
+● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current time: $(date)" && echo
+      "System uptime: $(uptime)" && echo "Memory usage: $(free -h | grep Mem)"…)
+```
+
+**A collapsed header never takes a third row** (`ui::tool::cap_header_rows`,
+`TOOL_HEADER_MAX_ROWS` = 2). The `● Bash(` lead, the continuation indent and
+the wrap's ragged row ends all spend columns, so under about ninety columns
+the 160 wrapped onto a third row — and what that row held was the end of the
+cut, often part of a token, in a cell whose output stops at four rows. The
+header now stops at the end of its second row. The report, at 87 columns:
+
+```
+Before:
+● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3
+      -c "import secrets;print(secrets.token_hex(16))") && python3
+      scripts/parallel_se…)
+
+Now:
+● Bash(cd /home/linuztx/.alter-zero/skills/web-search && PARALLEL_SESSION_ID=$(python3
+      -c "import secrets;print(secrets.token_hex(16))") && python3…)
+```
+
+The ceiling works on the wrapped rows, so the rows it keeps are exactly the
+ones the whole command wrapped to, and the last one ends in `…)` — giving up
+the two columns the marker needs when it was full to the edge, which can cut
+a word (`titles=World%2` → `titles=World…)` above). It counts rows of
+**arguments**: a spilled header's name-only first row
+(`● Deepwiki - ask_question (MCP)(` at forty columns) is not one of the two,
+so the spill still never costs the arguments it was made to fit. Below ninety
+columns the width, not the text budget, decides where the cut falls. That
+costs little: every resize re-wraps the cells from history, so the screen
+always agrees with its own width, and the whole command is one Ctrl+O away
+(and on the permission prompt, whenever one asks about it).
+
+**A commit's heredoc collapses into its message** (`ui::tool::collapse_heredoc`,
+Claude Code's rule, its regex ported): `git commit -m "$(cat <<'EOF'\n{body}\nEOF\n)"`
+is how a message with a body reaches the shell, and the `cat` scaffolding says
+nothing about the command, so the header shows `git commit -m "{body}"` — and
+with the two-line cut, `● Bash(git commit -m "Add the fold…)`. The opener must
+sit on the command's first line, the body runs to the first `EOF` line followed
+by the `)"` closer, and anything after the closer must stay on its line; any
+other shape is shown verbatim. Display only, on the inline cell and in Ctrl+O
+alike — the record, the permission prompt and the context replay keep the
+command byte-exact.
+
+The wrap + alignment is shared by the inline peek (`tool_lines`) and the Ctrl+O
+transcript (`tool_full_lines`), so a resize/reflow re-wraps to the new width
+identically — but only the inline peek (and the live preview) cuts the command
+(`collapsed = true`); the Ctrl+O view passes `false` and shows the
+**whole** command untruncated.
+
+**A running backend tool previews its whole cell.** While the model's tool runs,
+the streaming strip's preview slot shows the *full* live cell — the wrapped
+header **plus** its output. Before any output a `bash` cell shows
+`⎿ Running… (10s · wait 2m)` — the command's own clock beside the wait its
+call runs under; once output streams it **tails** — the last `TOOL_PEEK_ROWS`
+rows and a `+N lines (22s · wait 1m 50s)` footer, or the bare clock row
+when nothing is hidden (`ui::running_command_lines`; see
+`docs/ui/tool-streaming.md`) — so the running state is visible and a long command
+still isn't clipped mid-run. The preview slot is sized by `ui::preview_rows`
+(0 idle · 1 for a streaming reply / `!` shell run · N for a running backend
+tool's cell); the status line (spinner + token tally + `esc to interrupt`) stays
+below it. On `ToolEnd` the strip's cell is replaced by the committed scrollback
+cell (header + the head peek) in place.
+
+A `read`/`write`/`edit` cell whose output is the numbered format above renders as
+the **codex/Claude-Code file cell** (`ui::file_cell_lines`) — the `⎿` corner is
+two spaces wide (`  ⎿  …`, corner content at column 5) and the numbered body
+sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
+
+```
+● Read(index.html)
+  ⎿  Read 254 lines
+        1 <!DOCTYPE html>
+        2 <html lang="en">
+        …
+     … +244 lines (ctrl+o to expand)
+
+● Write(index.html)
+  ⎿  Wrote 254 lines to index.html
+        1 <!DOCTYPE html>
+        2 <html lang="en">
+        …
+     … +244 lines (ctrl+o to expand)
+
+● Edit(index.html)
+  ⎿  Updated index.html (+2 -2)
+        5     <meta name="viewport" …>
+        6 -   <title>Portfolio</title>
+        6 +   <title>Bruce Rivero</title>
+        7     <link rel="stylesheet" …>
+          ⋮
+       16 -   <span>Portfolio</span>
+       16 +   <span>Bruce Rivero</span>
+```
+
+- The **white** summary head (`tool_output_color()`, so it's as noticeable as the
+  output — not dim) sits on the `⎿` corner row: `Read {N} lines`,
+  `Wrote {N} lines to {path}`, or `Updated {path} (+A -D)` with the `(+A -D)`
+  counts coloured green/red (codex's header counts — `file_summary_spans`). A
+  `read` cell has no head in its output, so `ui::parse_file_cell` synthesizes
+  the `Read {N} lines` line; the pre-rename `Created {path} ({N} lines)` head
+  old rollouts still carry parses the same unsigned way. A head longer than
+  the terminal **word-wraps** under the corner (`ui::summary_head_lines` over
+  `wrap_inline_hanging` — a path is one word, so an over-long one
+  hard-breaks), the count colouring riding the wrap, instead of clipping at
+  the edge.
+- Body rows re-style the output's own gutter text: the right-aligned **line
+  number** dim, the `+`/`-` **sign** green/red (a `read`/`wrote` body has no
+  sign column), and the content **syntax-highlighted** by the path's extension
+  (`highlight::Highlighter`, the fenced-code palette — the extension comes from
+  the cell's `args`, and the lexer state resets at each `⋮` gap like codex's
+  per-hunk highlighting). Because `format_read` now emits the **same**
+  `{n:>W} {text}` gutter as the write/edit bodies (dynamic-width numbers, a
+  single space — not the old fixed-width `cat -n` tab), all three parse and
+  render identically.
+- **Added rows** sit on a dark-green background tint and **removed rows**
+  (their text dimmed) on a dark-red one — codex's dark-theme
+  `#213A2B`/`#4A221D` tints — both padded to the full width like the
+  user-message block. Context rows carry no tint. The `⋮` gap and `…` note
+  rows stay dim.
+- Where a `-`/`+` pair is an **edit** of a line rather than a replacement of
+  one, the **characters that actually differ** are lifted onto a brighter tint
+  and bolded (`ui::inline_diff`, `docs/ui/inline-diff.md`). So the muted row tint
+  answers *did this line change?* and the mark answers *where?*, without
+  reading the two lines against each other:
+
+  ```
+    ⎿  Updated hello.txt (+1 -1)
+        1 -Bruce River█          ← only the `a`, bright red, bold, undimmed
+        1 +Bruce River█          ← only the `o`, bright green, bold
+  ```
+
+  The rule is that **only what changed is coloured**: `Bruce River` is
+  identical on both sides, so it keeps the plain row tint. Nothing is marked
+  for being merely near an edit — a run of unchanged text between two changes
+  is never bridged, and a `1` that became `10` marks the added `0` alone,
+  leaving the `1` plain because it was not touched. The mark escapes the
+  removed row's `DIM` (dimming the one thing the eye should find defeats
+  marking it) and survives the wrap. Its ink is held to 3:1 against the mark
+  (`INLINE_DIFF_MARK_MIN_CONTRAST`). A comment's grey can match the mark's
+  brightness, at 1.0:1 in Dracula, so a syntax colour that won't read there
+  is lifted toward the theme's text until it does. A pair too dissimilar to be an edit is
+  left flat — a replaced line has no "what changed" to point at, and would
+  come back speckled with the letters the two texts coincidentally share.
+  Derived from the parsed body, so it lights up on rollouts recorded before it
+  existed, and the permission prompt's preview gets it too.
+- Long rows **wrap** (`code_content_rows`), continuations indented under the
+  content column, keeping colour and tint. In Ctrl+O and in the permission
+  prompt's preview a line shows every row it wraps to; the inline peek cuts
+  only the one line that runs past its tenth row (`docs/ui/long-lines.md` §7,
+  §8).
+- The **inline peek** is at most `FILE_PEEK_LINES` (10) rows. It starts body
+  lines from the top while it has rows left, shows each whole when the rows
+  left hold it, and cuts the one that needs more on the tenth row, closing
+  that row with a dim `…` on its tint — then the `… +N lines (ctrl+o to
+  expand)` hint, counting **file lines** here (the ones it never started),
+  the unit the gutter numbers and the expansion shows, or a count-less
+  `… (ctrl+o to expand)` when the cut line was the last; the Ctrl+O
+  transcript shows everything.
+
+### Path display
+
+The `● Read/Write/Edit({path})` **header** shows the path the way Claude Code
+does, by **where it is** relative to the session (`tools::header_path`, the
+corner row's `display_path`'s sibling over the same lexical core, carried by
+the session policy `app::PathDisplay`; the worked example is launched in
+`~/Codes/tests`). The corner head under it is the executor's own record —
+`display_path`'s cwd-relative form, a `../` climb outside the cwd — and is
+never rewritten. The two answer different questions: the header says *which
+file*, the corner row where it is from here:
+
+```
+● Write(hello.py)                      ← /home/linuztx/Codes/tests/hello.py, under the cwd
+  ⎿  Wrote 1 line to hello.py
+● Write(hello/hello.py)                ← …/Codes/tests/hello/hello.py, still under it
+  ⎿  Wrote 1 line to hello/hello.py
+● Write(~/hello.py)                    ← /home/linuztx/hello.py: outside the cwd, under home
+  ⎿  Wrote 1 line to ../../hello.py
+● Edit(/tmp/notes.txt)                 ← outside home: absolute
+  ⎿  Updated ../../../../tmp/notes.txt (+1 -1)
+```
+
+- **Under the cwd → relative** (`hello.py`, `src/app.rs`; the cwd itself is
+  `.`). **Outside it but under home → `~`-relative**, even for a near
+  sibling: `~/Codes/other/x.py` says where the file is, where a `../other/x.py`
+  climb only says how far away. **Anywhere else → absolute**, lexically
+  normalized (`/tmp/./a/../x.py` → `/tmp/x.py`). Containment is
+  component-wise (`/home/user2` is not under `/home/user`; another user's
+  home is not `~`), `.`/`..` collapse, a relative argument resolves against
+  the cwd first, and symlinks are never consulted. The schema asks the model
+  for absolute paths, so this is what every header used to spend most of its
+  row on.
+- **It is a render-time rule, and only a render-time rule.** The header's
+  record — `ToolCall::args`, the verbatim summary — is untouched;
+  `ui::tool_header_lines` shortens the painted row through the session's
+  policy (`ui::tool::shown_args`, the one place that says "a file tool's
+  summary is a path"). So the derived context (Ctrl+D), the rollout, the
+  auto mode classifier's `Name(args)` action log and the permission rules
+  all keep the absolute path — a model reading its own history back sees
+  exactly what it sent — while the inline cell, the live strip's running
+  cell, the Ctrl+O transcript, a subagent session view, the permission
+  prompt's target row (`docs/state/permissions.md`), the live agent tree's
+  `Write: {path}` activity row (`AgentRun::activity_shown` over the
+  recorded `last_call`) and the Ctrl+O agent expansion's nested
+  `Write({path})` headers (`app::file_tool_header`, the inverse of the
+  `tool_header_text` that wrote them; `docs/agents/agent-tool.md`) all show the
+  short form. Because the record is what is shortened *from*, a session
+  **resumed from another directory** reads its headers relative to where
+  it is *now* — a rollout that stored the short form instead would name a
+  different file after the move.
+- **The corner head is the executor's, not the renderer's.** `Wrote {N}
+  lines to {path}` / `Updated {path} (+A -D)` carry the path the executor
+  chose when it wrote the cell (`describe_change` → `tools::display_path`
+  against the process cwd — `hello.py` under it, `../../hello.py` above it)
+  and the file cell paints that text as it is, old rollouts and the legacy
+  `Created {path} ({N} lines)` head included. The two rows can therefore name
+  the same file two ways (`~/hello.py` over `../../hello.py`): the header says
+  where the file is, the head how the executor reached it.
+- **Only a file tool's summary is a path.** `tools::is_file_tool`
+  (`Read`/`Write`/`Edit`, by display name) gates it: a `Bash` command embeds
+  paths the shell will resolve, an `Agent`'s summary is prose, an MCP call's
+  is JSON, and the `!` shell cell has no header — those echo the record
+  verbatim.
+- **And the shown path is a link to the file.** The header's path rides an
+  OSC 8 hyperlink whose target is the file's absolute `file://` URI
+  (`PathDisplay::file_url` → `links::file_url`: a relative argument resolved
+  against the cwd first, `.`/`..` collapsed, percent-encoded) whatever short
+  form the row paints, so a click on `hello.py`, `~/hello.py` or
+  `/tmp/notes.txt` opens that file — stamped before the wrap, so a long path
+  broken across rows opens whole from any fragment. Only the path: the
+  `(`/`)` and the corner head beneath (`Wrote 1 line to hello.py`) carry
+  none. `docs/ui/links.md` *The file tool header*, `smoke.sh` Phase 113.
+- **Injected, never read.** The policy is the process cwd plus `$HOME`,
+  handed to `App::set_path_display` once at bootstrap like the clock, so the
+  pure renderers never touch the environment; `PathDisplay::VERBATIM` — the
+  unit-test default and the fallback for an unreadable cwd — shortens
+  nothing, which is what keeps every other rendering test describing the rows
+  it always did. The `~` half is the footer's own `display_cwd` rule.
+
+All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES`/`INLINE_DIFF_*`
+consts in `ui/theme.rs`. Output that **doesn't** parse as the numbered format — a rollout
+recorded before this format existed, an error body, or a `read` placeholder
+like `(file is empty)` / offset-past-end — falls back to the legacy rendering
+(the `write`/`edit` first-char `+`/`-` colouring, or a `read`'s plain dim
+peek), so old sessions and edge cases keep rendering sensibly.
+
+## Known limitations (v1)
+
+- No sandbox / approval prompts — the executor trusts the operator (env-gated).
+- `edit` requires a unique `old_string` (or `replace_all`); it does not do fuzzy
+  context matching like codex's `apply_patch`.
+- Parallel tool calls in one assistant turn are executed **sequentially** — but
+  the whole batch is now **visible**: it is announced up front (a
+  `StreamEvent::ToolBatch`), so the running call shows live while the not-yet-run
+  ones show `⎿ Waiting…`, each committing as it finishes (`docs/tools/parallel-tools.md`;
+  invariant 4 in `CLAUDE.md`). True concurrent *execution* is still future work.
+- Token counts remain an app-side estimate (the protocol's `usage` is still not
+  surfaced).
+- A `write`'s replayed arguments are **uncapped**, where the numbered result
+  they replaced was cut at `DIFF_MAX_LINES` (400). Writing a 2 000-line file
+  therefore carries all 2 000 lines into every later turn, instead of 400 plus
+  a `… N more lines` tail. That is the wire shape the model itself produced —
+  truncating a tool call's *arguments* would misreport the conversation back
+  to it, and the old cap silently shortened the model's memory of its own
+  file — but for a session of very large writes it is a real cost that
+  auto-compaction (`docs/architecture/compact.md`), not this path, absorbs.

@@ -1,5 +1,5 @@
 //! Live tests for the `<system-reminder>` the derived context leads with
-//! (`docs/context.md`, `docs/project-doc.md`): the AGENTS.md instructions
+//! (`docs/architecture/context.md`, `docs/state/project-doc.md`): the AGENTS.md instructions
 //! section, the skills section and the agent-type section, composed into one
 //! block by `context::context_messages_full`, on the real wire. Every fact the
 //! model is asked for exists nowhere but inside that block, so a right answer
@@ -108,7 +108,7 @@ fn planted_repo() -> (tempfile::TempDir, String) {
 #[test]
 #[ignore = "hits the network; needs A0_VENICE_API_KEY"]
 fn live_the_instructions_section_reaches_the_model() {
-    // The /init loop closed end to end (docs/project-doc.md): an AGENTS.md on
+    // The /init loop closed end to end (docs/state/project-doc.md): an AGENTS.md on
     // disk → the `Contents of {path}` section → the one `<system-reminder>`
     // the context leads with → the real wire — and the model reads a
     // sentinel fact back out of it.

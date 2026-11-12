@@ -1,4 +1,4 @@
-//! The read-only `/context` page. See `docs/context-usage.md`.
+//! The read-only `/context` page. See `docs/architecture/context-usage.md`.
 //!
 //! The `/donate` page's frame — the family's rules and two-column inset,
 //! the `❯` on the highlighted row, the pages' title dress, the dim hint —
@@ -483,7 +483,7 @@ fn detail(gauge: &Gauge<'_>, room: usize, max_rows: usize) -> Vec<Vec<Span<'stat
             ));
             match slice.filter(|slice| !slice.parts.is_empty()) {
                 // A doc's path reads the way every file tool's header shows
-                // one (`docs/tools.md` *Path display*); the count keeps the
+                // one (`docs/tools/tools.md` *Path display*); the count keeps the
                 // path as the section names it.
                 Some(slice) if category == Category::ProjectDocs => {
                     let shown = Slice {
@@ -905,7 +905,7 @@ fn ledger_values(ledger: &UsageLedger, with_cache: bool) -> Vec<Span<'static>> {
 }
 
 /// Join `blocks` into the framed page: a top rule, the blocks with exactly
-/// one blank row between them (so none hugs a rule — `docs/view-flow.md`
+/// one blank row between them (so none hugs a rule — `docs/ui/view-flow.md`
 /// *The frame hugs its content*), and a bottom rule.
 fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width)];
@@ -920,7 +920,7 @@ fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The whole framed page as lines — the first of its pages that fits
-/// `height` rows (`first_page_that_fits`, `docs/view-flow.md` *A page that
+/// `height` rows (`first_page_that_fits`, `docs/ui/view-flow.md` *A page that
 /// sheds rows before it flows*), yielding in this order: the detail's parts
 /// (a detail under the legend first shrinks, then goes), the ledger row, the
 /// cache meter (its share riding the last request's row instead), the bar
@@ -1045,8 +1045,8 @@ pub fn context_usage_height(app: &App, width: u16, term_height: u16) -> Option<u
 
 /// Render the **inline** `/context` page into the live region, in place of
 /// the composer — the page built for the area's own height, bottom-anchored
-/// like every framed page (`docs/view-flow.md`). Pure — `render_live` paints
-/// this. See `docs/context-usage.md`.
+/// like every framed page (`docs/ui/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/architecture/context-usage.md`.
 pub fn render_context_usage(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

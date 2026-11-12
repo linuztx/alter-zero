@@ -1,5 +1,5 @@
 //! Background shell processes — the boundary registry behind
-//! `run_in_background`, Ctrl+B, and the ↓ manager (see `docs/background.md`).
+//! `run_in_background`, Ctrl+B, and the ↓ manager (see `docs/tools/background.md`).
 //!
 //! A [`BackgroundRegistry`] is a cloneable handle shared by the event loop,
 //! the model-tool executor ([`crate::llm::exec`]), and the `!` shell runner
@@ -38,7 +38,7 @@ use crate::stream::CancelToken;
 /// can route the completion note back into that agent's running loop) and
 /// its type label (for display — the manager's `From:` field and the notice
 /// cell's ` · from the {type} agent` suffix). `None` everywhere = the main
-/// conversation, the pre-feature shape. See `docs/background.md`.
+/// conversation, the pre-feature shape. See `docs/tools/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BgOrigin {
     /// The launching subagent's registry id (`a7k2m9x4q`).
@@ -57,7 +57,7 @@ pub enum BgEvent {
         /// The model-supplied `description` argument, if any.
         description: Option<String>,
         /// Whether the model launched it — its completion auto-starts a
-        /// follow-up turn (`docs/background.md`).
+        /// follow-up turn (`docs/tools/background.md`).
         from_model: bool,
         /// The launching subagent, when one did (`None` = the main
         /// conversation).
@@ -65,19 +65,19 @@ pub enum BgEvent {
     },
     /// A running shell's completed lines — folded the way a terminal shows
     /// them, so a `\r` progress bar arrives once, finished, with no escapes
-    /// (`docs/interactive-shell.md`); the line a command left unfinished
+    /// (`docs/tools/interactive-shell.md`); the line a command left unfinished
     /// arrives at its exit.
     Output { id: String, chunk: String },
     /// A **TTY session's** screen as it now stands — the whole of it, not a
     /// delta: the ↓ manager shows what a terminal would
-    /// (`docs/interactive-shell.md`). Sent throttled while output flows, and
+    /// (`docs/tools/interactive-shell.md`). Sent throttled while output flows, and
     /// once more when it goes quiet.
     Screen { id: String, text: String },
     /// The shell exited: its `code` (`None` when a signal killed it),
     /// whether the registry's own [`BackgroundRegistry::kill`] did it, and
     /// whether the model already **observed** the exit — a `bash_session`
     /// call reported it — in which case no completion notice is owed
-    /// (`docs/interactive-shell.md`).
+    /// (`docs/tools/interactive-shell.md`).
     Exited {
         id: String,
         code: Option<i32>,
@@ -87,7 +87,7 @@ pub enum BgEvent {
     /// A TTY session nobody is waiting on stopped to **ask for input** it
     /// printed since the model last looked — quiet for
     /// [`WAITING_NOTICE_QUIET`] at a prompt — and runs on
-    /// (`docs/bash-tools.md`). Sent once, and not again until the model has
+    /// (`docs/tools/bash-tools.md`). Sent once, and not again until the model has
     /// looked at the session ([`SessionIo::take_unseen_prompt`]).
     Waiting { id: String },
 }
@@ -116,7 +116,7 @@ pub struct TtyLaunch {
 pub enum TtyLaunchError {
     /// No terminal could be given to the command here — off Unix, or neither
     /// `setsid` nor the helper can make one its controlling terminal. The
-    /// caller runs it on a pipe instead (`docs/bash-tools.md`).
+    /// caller runs it on a pipe instead (`docs/tools/bash-tools.md`).
     NoTerminal(String),
     /// A session could have been started and was not: the model-facing
     /// reason (too many already running, listed).
@@ -135,13 +135,13 @@ struct Registered {
 /// each of its rounds — so a `kill`ed server is known to the model within the
 /// same turn — while notes still on the board at a turn boundary (the model
 /// never saw them) drive the automatic follow-up turn instead. See
-/// `docs/background.md`.
+/// `docs/tools/background.md`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingNotice {
     /// The note's number on the board, in posting order — what the in-flight
     /// agent's delivery echo names ([`StreamEvent::NoticeDelivered`]), so the
     /// loop records the held notice cell exactly where the model reads it
-    /// (`docs/background.md`).
+    /// (`docs/tools/background.md`).
     ///
     /// [`StreamEvent::NoticeDelivered`]: crate::stream::StreamEvent::NoticeDelivered
     pub seq: u64,
@@ -153,23 +153,23 @@ pub struct PendingNotice {
     pub from_model: bool,
     /// The subagent whose completion this is — `None` for anything else.
     /// What an `agentoutput` report retracts by, when it hands the lead the
-    /// same answer first (`docs/agent-tools.md` *One notice per answer*).
+    /// same answer first (`docs/agents/agent-tools.md` *One notice per answer*).
     pub agent: Option<String>,
     /// The session whose exit — or whose prompt — this note reports. What a
     /// companion call that reports the same first takes it back by
-    /// (`docs/bash-tools.md` *One notice per exit*).
+    /// (`docs/tools/bash-tools.md` *One notice per exit*).
     pub shell: Option<String>,
     /// The subagent whose run this note says the user started again —
     /// `None` for anything else. Kept apart from [`agent`](Self::agent):
     /// the note is stale once the lead is handed **that** run's end, while a
-    /// report of the run before it leaves it be (`docs/agent-tools.md` *A
+    /// report of the run before it leaves it be (`docs/agents/agent-tools.md` *A
     /// resume is news when it starts*).
     pub resumed: Option<String>,
     /// For an agent's note — [`agent`](Self::agent) or
     /// [`resumed`](Self::resumed) — the run it is about: the run a
     /// completion ends, or the run a resume starts. A report covers one run,
     /// so it takes back that run's completion and hands the earlier ones
-    /// back to carry (`docs/agent-tools.md` *One notice per answer*).
+    /// back to carry (`docs/agents/agent-tools.md` *One notice per answer*).
     pub run: Option<u64>,
 }
 
@@ -177,7 +177,7 @@ pub struct PendingNotice {
 /// or the call that was waiting reported something else — whose note may not
 /// have reached a model yet. Kept, with the session's output, until that note
 /// is read or a companion call naming the session reports the exit itself
-/// ([`BackgroundRegistry::claim_exit`], `docs/bash-tools.md` *One notice per
+/// ([`BackgroundRegistry::claim_exit`], `docs/tools/bash-tools.md` *One notice per
 /// exit*): the session can end while the model is writing a call to it, and
 /// the call would otherwise answer that nothing by its id exists.
 struct UnreadExit {
@@ -249,7 +249,7 @@ pub fn exit_outcome(code: Option<i32>, killed: bool) -> String {
 
 /// A session that ended, remembered so a companion call still naming it can
 /// say how — and whose it was — when it has no exit of its own to claim
-/// ([`BackgroundRegistry::ended`], `docs/bash-tools.md` *One notice per
+/// ([`BackgroundRegistry::ended`], `docs/tools/bash-tools.md` *One notice per
 /// exit*): its note already read, or another conversation's to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndedSession {
@@ -288,7 +288,7 @@ const TASK_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 /// A Claude-Code-style task id — a `b` prefix + 8 lowercase base36 chars
 /// (`bvyo7tkbe`). Deterministic in `seed` (pure, so the format is testable);
 /// the registry feeds it fresh entropy per launch and re-rolls the rare
-/// collision. See `docs/background.md`.
+/// collision. See `docs/tools/background.md`.
 fn task_id(seed: u64) -> String {
     let mut mixed = splitmix64(seed);
     let mut id = String::with_capacity(9);
@@ -433,7 +433,7 @@ const KEY_READ_POLL: Duration = Duration::from_micros(250);
 
 /// The most TTY sessions that may run at once. One more is refused with the
 /// list of the running ones, rather than letting forgotten REPLs pile up
-/// unseen (`docs/interactive-shell.md`).
+/// unseen (`docs/tools/interactive-shell.md`).
 pub const MAX_TTY_SESSIONS: usize = 16;
 
 /// How often, at most, a TTY session's screen is sent to the ↓ manager while
@@ -465,7 +465,7 @@ struct Inner {
     next_id: u64,
     tasks: HashMap<String, Task>,
     /// The Ctrl+B latch: the loop raises it while a foreground command runs;
-    /// the runner's poll loop consumes it (see `docs/background.md`).
+    /// the runner's poll loop consumes it (see `docs/tools/background.md`).
     background_request: bool,
     /// The completion notice board (see [`PendingNotice`]).
     pending_notices: Vec<PendingNotice>,
@@ -540,10 +540,10 @@ pub struct BackgroundRegistry {
     /// [`detach_helper`]: BackgroundRegistry::detach_helper
     detach: Option<PathBuf>,
     /// Whether a command may be given a terminal of its own — on by default
-    /// (`docs/bash-tools.md`); off, every command runs on a pipe
+    /// (`docs/tools/bash-tools.md`); off, every command runs on a pipe
     /// ([`without_terminals`](BackgroundRegistry::without_terminals)).
     terminals: bool,
-    /// The user's secrets (`docs/secrets.md`), when attached: what a task
+    /// The user's secrets (`docs/state/secrets.md`), when attached: what a task
     /// reports is redacted before it leaves the registry
     /// ([`with_secrets`](BackgroundRegistry::with_secrets)).
     secrets: Option<crate::secrets::SecretRegistry>,
@@ -585,7 +585,7 @@ impl BackgroundRegistry {
         }
     }
 
-    /// Attach the user's secrets (`docs/secrets.md`): a task's command is
+    /// Attach the user's secrets (`docs/state/secrets.md`): a task's command is
     /// kept redacted — the list, the manager and the notices read the
     /// placeholder the model wrote — and its output and screen are redacted
     /// on their way to the event loop.
@@ -597,7 +597,7 @@ impl BackgroundRegistry {
 
     /// Attach the session's subagents: a subagent's shell reports to that
     /// agent's own queue, so a claim by the agent finds its exit there
-    /// ([`claim_exit`](Self::claim_exit), `docs/bash-tools.md` *One notice
+    /// ([`claim_exit`](Self::claim_exit), `docs/tools/bash-tools.md` *One notice
     /// per exit*).
     #[must_use]
     pub fn with_agents(mut self, agents: crate::agents::AgentRegistry) -> Self {
@@ -608,7 +608,7 @@ impl BackgroundRegistry {
     /// The attached secrets — the shell-infrastructure handle every runner
     /// already shares carries them the way it carries the detach helper, so
     /// the executor, the `!` runner and every backend build reach the one
-    /// store (`docs/secrets.md`).
+    /// store (`docs/state/secrets.md`).
     #[must_use]
     pub fn secrets(&self) -> Option<&crate::secrets::SecretRegistry> {
         self.secrets.as_ref()
@@ -624,7 +624,7 @@ impl BackgroundRegistry {
 
     /// A registry that gives no command a terminal: every command runs on a
     /// pipe, as it did before a terminal was the default
-    /// (`docs/bash-tools.md`) — for an embedder that wants that, and the
+    /// (`docs/tools/bash-tools.md`) — for an embedder that wants that, and the
     /// fallback's own tests. [`launch_tty`](Self::launch_tty) then answers
     /// [`TtyLaunchError::NoTerminal`].
     #[must_use]
@@ -672,7 +672,7 @@ impl BackgroundRegistry {
     /// attributed: the `origin` rides the `Started` event into the shared
     /// shell list, so every session view shows where the shell came from and
     /// the boundary can route its completion note back to the launcher
-    /// (`docs/background.md`).
+    /// (`docs/tools/background.md`).
     ///
     /// # Errors
     /// The spawn error text when the shell can't start.
@@ -728,7 +728,7 @@ impl BackgroundRegistry {
 
     /// Start `command` in a **pseudo-terminal of its own** — an interactive
     /// session the model types into with `bash_session`
-    /// (`docs/interactive-shell.md`). The session is registered at once but
+    /// (`docs/tools/interactive-shell.md`). The session is registered at once but
     /// **announced** (`Started`) only when `announce` says so: a `tty` call
     /// waiting in the foreground announces it only if it outlives the call
     /// ([`announce`](Self::announce)), so a command that finishes inside its
@@ -818,7 +818,7 @@ impl BackgroundRegistry {
     /// lost. The caller's own pipe-reader threads keep feeding `chunk_rx` and
     /// exit at EOF on their own. Always main-conversation-owned (only the
     /// main turn's foreground runners poll the Ctrl+B latch — a subagent's
-    /// executor never hands off). See `docs/background.md`.
+    /// executor never hands off). See `docs/tools/background.md`.
     pub fn adopt(
         &self,
         command: &str,
@@ -864,7 +864,7 @@ impl BackgroundRegistry {
         // expands every string of the call); everything that names them from
         // here on — the list, the manager, a prompt's detail, the completion
         // notice and the model's note — reads the placeholder the model wrote
-        // (docs/secrets.md).
+        // (docs/state/secrets.md).
         launch.command = self.redact(launch.command);
         launch.description = launch.description.map(|text| self.redact(text));
         let kill = CancelToken::new();
@@ -886,7 +886,7 @@ impl BackgroundRegistry {
         // An adopted command's output so far is in the session before anyone
         // can look at it: the call that handed it over reports it as what the
         // model has seen, and a look after that is only what is new
-        // (docs/bash-tools.md). The monitor replays it to the file and the
+        // (docs/tools/bash-tools.md). The monitor replays it to the file and the
         // event loop, not to the session a second time.
         if !prior.is_empty() {
             let _ = io.absorb(&prior);
@@ -924,7 +924,7 @@ impl BackgroundRegistry {
             let _ = std::fs::create_dir_all(parent);
         }
         // Owner-only: the log is the output raw, and a command may print a
-        // secret's value into it (docs/secrets.md) — under a temp dir, where
+        // secret's value into it (docs/state/secrets.md) — under a temp dir, where
         // the default mode would let every user read it.
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -935,7 +935,7 @@ impl BackgroundRegistry {
         }
         let file = options.open(&output_path).ok();
         // A report that has to cut the output names the file with all of it
-        // (`pty::fold::HeadTail`, docs/bash-tools.md).
+        // (`pty::fold::HeadTail`, docs/tools/bash-tools.md).
         if file.is_some() {
             io.set_log(output_path.clone());
         }
@@ -1035,7 +1035,7 @@ impl BackgroundRegistry {
     /// The running TTY sessions that outlived their call, as `(id,
     /// command)` — what the session cap counts and lists. A command still
     /// inside its own `bash` call is not one: every command runs in a
-    /// terminal (`docs/bash-tools.md`), and a batch of subagents' ordinary
+    /// terminal (`docs/tools/bash-tools.md`), and a batch of subagents' ordinary
     /// commands must never be refused for the sessions they are not.
     fn running_ttys(&self) -> Vec<(String, String)> {
         let candidates: Vec<(String, String, Arc<SessionIo>)> = {
@@ -1062,7 +1062,7 @@ impl BackgroundRegistry {
         list
     }
 
-    /// Every running task as `bashlist` names it (`docs/bash-tools.md`): id,
+    /// Every running task as `bashlist` names it (`docs/tools/bash-tools.md`): id,
     /// command, how long it has run, and whether it sits at a prompt —
     /// oldest id first.
     #[must_use]
@@ -1101,7 +1101,7 @@ impl BackgroundRegistry {
     /// Ask every process of a running task to stop with `signal` (a name
     /// `kill -s` takes: `INT`, `TERM`) — a TTY session's whole session, a
     /// pipe task's process group — and mark it stopped by request, so its
-    /// exit reads as a stop, not a failure (`docs/bash-tools.md`).
+    /// exit reads as a stop, not a failure (`docs/tools/bash-tools.md`).
     pub fn signal(&self, id: &str, signal: &str) {
         let target = {
             let mut inner = self.inner.lock().expect("registry lock");
@@ -1351,7 +1351,7 @@ impl BackgroundRegistry {
     }
 
     /// Post the note that the user started settled agent `agent` again
-    /// (`docs/agent-tools.md`), tagged [`resumed`](PendingNotice::resumed)
+    /// (`docs/agents/agent-tools.md`), tagged [`resumed`](PendingNotice::resumed)
     /// rather than with its completions and owing **no** automatic follow-up
     /// turn — there is nothing to answer until the run's own completion
     /// notice, which brings one ([`AgentRegistry::post_resume_notice`] is
@@ -1424,7 +1424,7 @@ impl BackgroundRegistry {
     }
 
     /// Session `id`'s note is going to the launching subagent's own queue
-    /// (`docs/agent-tool.md`) — [`AgentRegistry::route_shell_note`] asks,
+    /// (`docs/agents/agent-tool.md`) — [`AgentRegistry::route_shell_note`] asks,
     /// holding that queue's lock: is it still owed? An exit a companion call
     /// already reported is not, nor a prompt the model has looked at since.
     /// An owed exit leaves this board with everything a claim needs, which
@@ -1468,7 +1468,7 @@ impl BackgroundRegistry {
     /// (any waiting note of the session's with it) and hand over what the
     /// report needs. `None` when there is nothing to report: the exit's note
     /// was read, a call already claimed it, or no session had this id
-    /// (`docs/bash-tools.md` *One notice per exit*).
+    /// (`docs/tools/bash-tools.md` *One notice per exit*).
     ///
     /// `caller` is the subagent making the call, `None` for the lead. Only
     /// the note's own reader claims it: the lead a note on its board, a
@@ -1520,7 +1520,7 @@ impl BackgroundRegistry {
 
     /// How session `id` ended, when it is one of the newest that did — what a
     /// companion call with no exit to claim says instead of a bare "no such
-    /// session" (`docs/bash-tools.md` *One notice per exit*). `None` for one
+    /// session" (`docs/tools/bash-tools.md` *One notice per exit*). `None` for one
     /// still running, one long gone, or an id that never was.
     #[must_use]
     pub fn ended(&self, id: &str) -> Option<EndedSession> {
@@ -1591,7 +1591,7 @@ impl BackgroundRegistry {
     /// Take the completion notes of `agent`'s runs before `run` off the
     /// board, untaken, and return what they say, oldest first — a report of
     /// `run` carries them, since each is an answer the lead has not read and
-    /// came before the one it reports (`docs/agent-tools.md` *One notice per
+    /// came before the one it reports (`docs/agents/agent-tools.md` *One notice per
     /// answer*). Their numbers are remembered like
     /// [`retract_agent_notice`](Self::retract_agent_notice)'s, so their
     /// cells are dropped too.
@@ -1614,7 +1614,7 @@ impl BackgroundRegistry {
     /// tell it afterwards that the agent runs and that a notice will come —
     /// remembering its number like [`retract_agent_notice`]'s. Whether one
     /// was still there. The agent registry decides when, under its own lock
-    /// (`docs/agent-tools.md` *A resume is news when it starts*).
+    /// (`docs/agents/agent-tools.md` *A resume is news when it starts*).
     ///
     /// [`retract_agent_notice`]: Self::retract_agent_notice
     pub fn retract_agent_resume_notice(&self, agent: &str) -> bool {
@@ -1723,7 +1723,7 @@ impl MonitorHandle {
                 Ok(Some(status)) => {
                     // A process the command started and left running (`server
                     // & …`) stops with it below: the report tells the model
-                    // how to keep one running (docs/bash-tools.md).
+                    // how to keep one running (docs/tools/bash-tools.md).
                     if crate::subprocess::group_outlives(&child) {
                         self.io.set_stranded();
                     }
@@ -1950,7 +1950,7 @@ impl MonitorHandle {
             return;
         }
         // Folded output arrives as whole lines, so a value inside one never
-        // straddles two sends (docs/secrets.md).
+        // straddles two sends (docs/state/secrets.md).
         let _ = self.registry.events.send(BgEvent::Output {
             id: self.id.clone(),
             chunk: self.registry.redact(chunk),
@@ -1964,7 +1964,7 @@ impl MonitorHandle {
 const PROBE_INTERVAL: Duration = Duration::from_millis(200);
 
 /// What a TTY session's monitor needs to ask the kernel what its program is
-/// blocked in (`docs/interactive-shell.md`).
+/// blocked in (`docs/tools/interactive-shell.md`).
 struct Prober {
     /// The session leader — the root of the process tree walked.
     pid: u32,
@@ -2155,7 +2155,7 @@ fn kill_session_with(pkill: &[&str], sid: u32, terminal: Option<&str>) {
 }
 
 /// Send `signal` to everything in the **session** `sid` — a stop request
-/// reaching a TTY session's jobs too (`docs/bash-tools.md`). `terminal` is a
+/// reaching a TTY session's jobs too (`docs/tools/bash-tools.md`). `terminal` is a
 /// handle on the session's terminal, which the caller holds until this
 /// returns: while it is open, the name it goes by cannot pass to a terminal
 /// another program opens.
@@ -2324,7 +2324,7 @@ mod tests {
     fn task_id_is_a_deterministic_b_plus_eight_base36() {
         // Claude Code's id shape (`bvyo7tkbe`): a `b` prefix + 8 lowercase
         // base36 chars. Pure in the seed — the registry feeds it fresh
-        // entropy per launch (docs/background.md).
+        // entropy per launch (docs/tools/background.md).
         assert_eq!(task_id(42), task_id(42), "pure in the seed");
         assert_ne!(task_id(1), task_id(2), "seeds differentiate");
         for seed in 0..64 {
@@ -2344,7 +2344,7 @@ mod tests {
     fn launched_ids_are_claude_code_style_and_unique() {
         // A launch mints a `bvyo7tkbe`-style id (never a counter like the old
         // `bash_1`), a second launch never repeats it, and the interim file is
-        // named after it (docs/background.md).
+        // named after it (docs/tools/background.md).
         let (reg, _rx) = registry();
         let a = reg.launch("true", None, false).expect("launches");
         let b = reg.launch("true", None, false).expect("launches");
@@ -2433,7 +2433,7 @@ mod tests {
         // expanded — the executor expands every string of the call — and its
         // output prints the value: the ↓ manager, the shell list, the
         // completion notice and the model's completion note all read the
-        // placeholder (docs/secrets.md).
+        // placeholder (docs/state/secrets.md).
         let (reg, mut rx) = registry();
         let reg = reg.with_secrets(test_secrets());
         let task = reg
@@ -2468,7 +2468,7 @@ mod tests {
     #[test]
     fn a_tasks_output_file_is_owner_only() {
         // The log holds a command's output raw — a secret's value included,
-        // when a command prints one (docs/secrets.md) — under a temp dir, so
+        // when a command prints one (docs/state/secrets.md) — under a temp dir, so
         // no other user may read it.
         use std::os::unix::fs::PermissionsExt;
         let (reg, mut rx) = registry();
@@ -2487,7 +2487,7 @@ mod tests {
         // A subagent's `run_in_background` launch attributes itself: the
         // Started event carries the launcher's id + type so the shell list
         // (and the completion routing) know where it came from
-        // (docs/background.md).
+        // (docs/tools/background.md).
         let (reg, mut rx) = registry();
         let origin = BgOrigin {
             agent_id: "a7k2m9x4q".into(),
@@ -2834,7 +2834,7 @@ mod tests {
 
     #[test]
     fn posted_notices_are_taken_once_in_order() {
-        // The completion notice board (docs/background.md): the loop posts a
+        // The completion notice board (docs/tools/background.md): the loop posts a
         // finished shell's model-facing note the moment its Exited event is
         // handled; the in-flight agent (or the turn-boundary dispatch —
         // whoever gets there first) takes them, each exactly once, in
@@ -2879,7 +2879,7 @@ mod tests {
 
     #[test]
     fn an_agents_resume_note_starts_no_follow_up_turn_of_its_own() {
-        // The user started a settled agent again (docs/agent-tools.md): the
+        // The user started a settled agent again (docs/agents/agent-tools.md): the
         // lead must hear it, but there is nothing to answer yet — the run's
         // completion notice is what warrants a turn.
         let (reg, _rx) = registry();
@@ -2903,7 +2903,7 @@ mod tests {
         // A report of the run before the resume takes back that run's
         // completion and leaves the note that the agent runs again, which is
         // about a run the lead has not heard of; only a report of the resumed
-        // run's own end takes that note back (docs/agent-tools.md *A resume
+        // run's own end takes that note back (docs/agents/agent-tools.md *A resume
         // is news when it starts*).
         let (reg, _rx) = registry();
         let completion = reg.post_agent_notice("[background agent] failed".into(), "a1", Some(0));
@@ -2928,7 +2928,7 @@ mod tests {
         // A report covers one run: it takes back that run's completion and
         // hands back the earlier runs' — still unread — for it to carry,
         // oldest first; another agent's notes and the shells' stay
-        // (docs/agent-tools.md *One notice per answer*).
+        // (docs/agents/agent-tools.md *One notice per answer*).
         let (reg, _rx) = registry();
         let first = reg.post_agent_notice("first".into(), "a1", Some(0));
         let second = reg.post_agent_notice("second".into(), "a1", Some(1));
@@ -3065,7 +3065,7 @@ mod tests {
         // curl or pip in the background: a `\r` progress bar reaches the
         // manager and the completion note once, in its final state, and
         // colour escapes never — while the tee file keeps the stream as
-        // written (docs/interactive-shell.md).
+        // written (docs/tools/interactive-shell.md).
         let (reg, mut rx) = registry();
         let task = reg
             .launch_from(
@@ -3130,7 +3130,7 @@ mod tests {
         std::fs::remove_file(&task.output_path).ok();
     }
 
-    // --- TTY sessions (docs/interactive-shell.md) ---
+    // --- TTY sessions (docs/tools/interactive-shell.md) ---
 
     use crate::pty::keys::{encode, parse_input};
     use crate::pty::report::{Status, Waiting};
@@ -3220,7 +3220,7 @@ mod tests {
     #[test]
     fn a_background_session_that_stops_to_ask_is_reported_once() {
         // A session nobody waits on that stops at a question says so
-        // (docs/bash-tools.md); one printing a log line does not.
+        // (docs/tools/bash-tools.md); one printing a log line does not.
         let (reg, mut rx) = registry();
         let asking = reg
             .launch_tty(
@@ -3268,12 +3268,12 @@ mod tests {
     fn a_background_display_that_reads_whole_lines_is_never_told_of() {
         // Nothing reads a key on a display left in line mode: the model is
         // told of no question — while the same screen over a program that
-        // reads key by key is still one to tell of (docs/bash-tools.md). A
+        // reads key by key is still one to tell of (docs/tools/bash-tools.md). A
         // display that holds the terminal key by key but waits on a pipe
         // asks nothing either: its wait, read off its memory, is on no
         // terminal (`pty::probe`). Only Linux lets the probe read that;
         // elsewhere the screen decides alone, and a screen held key by key
-        // is one that asks (docs/interactive-shell.md *Limits*).
+        // is one that asks (docs/tools/interactive-shell.md *Limits*).
         let (reg, mut rx) = registry();
         let display = reg
             .launch_tty(DISPLAY_LOOP, None, None, true)
@@ -3458,7 +3458,7 @@ mod tests {
         // reached the model. The call reports the exit itself — what the
         // command printed since the model's last look, under its exit code —
         // and the note that would have said the same is not owed (one notice
-        // per exit, docs/bash-tools.md).
+        // per exit, docs/tools/bash-tools.md).
         let (reg, id) = exited_unread("echo removed");
         let exit = reg.claim_exit(&id, None).expect("an exit no call reported");
         assert_eq!(exit.code, Some(0));
@@ -3545,7 +3545,7 @@ mod tests {
     fn a_look_takes_back_the_waiting_notes_of_its_own_session() {
         // A call that looked at a session showed the model whatever it was
         // asking: a `… is waiting for input` note still on the board would
-        // only reach it after the answer (docs/bash-tools.md).
+        // only reach it after the answer (docs/tools/bash-tools.md).
         let (reg, _rx) = registry();
         let mine = reg
             .post_waiting_notice("b1", "[background] b1 waits".into(), true)
@@ -3732,7 +3732,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_command_still_inside_its_call_is_not_counted_against_the_cap() {
-        // Every command runs in a terminal (docs/bash-tools.md): a batch of
+        // Every command runs in a terminal (docs/tools/bash-tools.md): a batch of
         // subagents' ordinary commands, each still inside its own call, must
         // never be refused for the sessions they are not.
         let (reg, _rx) = registry();
@@ -3892,7 +3892,7 @@ mod tests {
         // terminal (`pty::probe`), and that is the word that counts; typed
         // into, it redraws and waits again. Linux only: elsewhere there is no
         // probe, and the screen of a progress bar is all there is to go on
-        // (docs/interactive-shell.md *Limits*).
+        // (docs/tools/interactive-shell.md *Limits*).
         let (reg, _rx) = registry();
         let launch = reg
             .launch_tty(

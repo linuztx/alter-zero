@@ -1,4 +1,4 @@
-//! The read-only `/hooks` menu's state and key map (`docs/hooks-menu.md`).
+//! The read-only `/hooks` menu's state and key map (`docs/tools/hooks-menu.md`).
 
 use super::*;
 
@@ -326,7 +326,7 @@ fn navigation_walks_the_matcher_and_hook_rows_too() {
 #[test]
 fn enter_on_a_hooks_detail_page_toggles_its_trust() {
     // `/hooks` is where a hook's trust changes after startup
-    // (`docs/config-review.md`): Enter on a runnable hook's detail page
+    // (`docs/state/config-review.md`): Enter on a runnable hook's detail page
     // trusts it, and again stops trusting it — the overview updated at once,
     // the action telling the loop what to record.
     let source = std::path::Path::new("/home/u/.alter-zero/hooks.json");

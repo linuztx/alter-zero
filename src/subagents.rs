@@ -1,5 +1,5 @@
 //! Subagent **definitions** — the `agents/*.md` files behind the `agent`
-//! tool's `subagent_type` (`docs/subagents.md`).
+//! tool's `subagent_type` (`docs/agents/subagents.md`).
 //!
 //! [`crate::agents`] is the *roster* (a launched agent's live state);
 //! this is where a type comes from: YAML frontmatter naming it, describing
@@ -152,7 +152,7 @@ impl AgentTools {
         };
         // `bashsend`, `bashwait`, `bashkill` and `bashlist` continue what a
         // `bash` call started, so a type that may run commands may finish the
-        // ones it starts (docs/bash-tools.md) — the legacy `bash_session`
+        // ones it starts (docs/tools/bash-tools.md) — the legacy `bash_session`
         // too.
         listed(&name) || (crate::llm::tools::is_bash_family(&name) && listed("bash"))
     }
@@ -160,7 +160,7 @@ impl AgentTools {
     /// Whether this set reaches a tool that expands secret placeholders
     /// (`crate::secrets::expands_placeholders`) — what decides whether a
     /// subagent of the type is briefed on the user's secrets
-    /// (`docs/secrets.md`).
+    /// (`docs/state/secrets.md`).
     #[must_use]
     pub fn reaches_secrets(&self) -> bool {
         let Self::Only(entries) = self else {
@@ -428,7 +428,7 @@ pub fn agent_section(listing: &str) -> String {
 /// One block rather than one per roster because they are one kind of thing
 /// (what this session can reach that the tool schemas don't already name)
 /// and because both are re-rendered per turn: a second fragment would be a
-/// second place the prompt-cache prefix can shift (`docs/subagents.md`).
+/// second place the prompt-cache prefix can shift (`docs/agents/subagents.md`).
 #[must_use]
 pub fn listing_sections(skill_listing: &str, agent_listing: &str) -> String {
     crate::reminder::join_sections(&[
@@ -451,7 +451,7 @@ pub fn listing_sections(skill_listing: &str, agent_listing: &str) -> String {
 /// `note` (`prompts/subagent.md`) always closes it — it is what tells the
 /// agent its final message is the caller's result. `None` only when there is
 /// nothing at all to say, which is the empty-`ALTER_ZERO_SYSTEM_PROMPT`
-/// contract (`docs/context.md`).
+/// contract (`docs/architecture/context.md`).
 #[must_use]
 pub fn system_prompt_for(
     definition: Option<&AgentDefinition>,
@@ -587,7 +587,7 @@ mod tests {
         // A command `bash` started and left running is continued with
         // `bashsend`, `bashwait` and `bashkill`, and found with `bashlist`,
         // so an allowlist granting `Bash` grants them too — a type that may
-        // start a command may finish it (docs/bash-tools.md). Without `Bash`
+        // start a command may finish it (docs/tools/bash-tools.md). Without `Bash`
         // there is no session to continue, so they are not offered alone.
         let tools = AgentTools::parse("Bash, Read");
         for companion in [
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn a_type_reaches_secrets_through_any_tool_that_expands_them() {
         // A subagent is briefed on the user's secrets when its tools can use
-        // a placeholder (docs/secrets.md): the shell family, the file tools,
+        // a placeholder (docs/state/secrets.md): the shell family, the file tools,
         // an MCP tool. A type that can only plan or load skills cannot.
         assert!(AgentTools::All.reaches_secrets());
         for tools in [

@@ -1,4 +1,4 @@
-//! The inline `/theme` picker view (`docs/theme.md`).
+//! The inline `/theme` picker view (`docs/ui/theme.md`).
 
 use super::*;
 use crate::app::Theme;

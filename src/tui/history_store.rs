@@ -1,5 +1,5 @@
 //! Persisting the composer's input history across sessions — codex's
-//! `history.jsonl`, sized down to this loop (`docs/history-persistence.md`).
+//! `history.jsonl`, sized down to this loop (`docs/input/history-persistence.md`).
 //!
 //! The ↑/↓ recall and the Ctrl+R search read `App::input_history`, which this
 //! store seeds at startup ([`InputHistoryStore::load`]) and grows once per
@@ -27,7 +27,7 @@ use super::host::{session_id, unix_secs};
 
 /// Entries kept in memory (and the file's target after compaction). Recall and
 /// Ctrl+R search are O(entries), so this bounds their cost no matter how big
-/// the file grew — a shell-style HISTSIZE. See `docs/history-persistence.md`.
+/// the file grew — a shell-style HISTSIZE. See `docs/input/history-persistence.md`.
 const HISTORY_MAX_ENTRIES: usize = 10_000;
 
 /// Compact the file only once it exceeds this many entries (hard cap), trimming
@@ -41,11 +41,11 @@ const HISTORY_COMPACT_AT: usize = HISTORY_MAX_ENTRIES + HISTORY_MAX_ENTRIES / 4;
 /// wouldn't bound the file's byte size. A giant blob isn't a useful
 /// reverse-search target anyway; it still recalls **this** session (it lives in
 /// `InputHistory::entries`), it just isn't written to disk. codex bounds its
-/// file by `max_bytes` for the same reason. See `docs/history-persistence.md`.
+/// file by `max_bytes` for the same reason. See `docs/input/history-persistence.md`.
 const HISTORY_MAX_ENTRY_BYTES: usize = 100 * 1024;
 
 /// Persists the composer's input history across sessions (codex's
-/// `history.jsonl`, sized down to this loop — see `docs/history-persistence.md`).
+/// `history.jsonl`, sized down to this loop — see `docs/input/history-persistence.md`).
 ///
 /// The pure format lives in [`history`]; this owns the impurities: the path
 /// from the environment, the clock for `ts`, and the file reads/appends/
@@ -86,7 +86,7 @@ impl InputHistoryStore {
         // would error on it and discard the WHOLE history. Lossy decoding turns
         // only the bad bytes into U+FFFD, so `parse_history` skips just that one
         // line (and the compaction below can then repair the file). This mirrors
-        // the shell reader's lossy decode. See `docs/history-persistence.md`.
+        // the shell reader's lossy decode. See `docs/input/history-persistence.md`.
         let Ok(bytes) = std::fs::read(path) else {
             return Vec::new();
         };

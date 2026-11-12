@@ -1,5 +1,5 @@
 //! herdr support — telling the multiplexer pane this session runs in what
-//! the agent is doing (`docs/herdr.md`).
+//! the agent is doing (`docs/architecture/herdr.md`).
 //!
 //! [herdr](https://herdr.dev) is a terminal multiplexer for coding agents:
 //! its sidebar shows every pane's agent as **working**, **blocked** on the
@@ -298,7 +298,7 @@ fn plain_command(name: &str) -> bool {
 
 /// The command herdr runs to bring this session back after a restart:
 /// `{bin} --resume {id}` for a recorded conversation — the exit hint's own
-/// command (`docs/cli.md`) — and `{bin}` alone before the first message or
+/// command (`docs/cli/cli.md`) — and `{bin}` alone before the first message or
 /// after a `/clear`, which comes back as the fresh session it was. `None`
 /// when `bin` is not a name herdr would run. herdr's validator is mirrored
 /// because a refused command takes the state report it rode in with: no
@@ -1108,7 +1108,7 @@ mod tests {
     #[test]
     fn a_file_prompt_names_the_file_as_the_screen_shows_it() {
         // The prompt's own target row: relative under the cwd, `~`-relative
-        // under home — the path display rule (`docs/tools.md`).
+        // under home — the path display rule (`docs/tools/tools.md`).
         let paths = PathDisplay::new("/home/u/repo", Some(PathBuf::from("/home/u")));
         let mut app = App::new();
         app.set_path_display(paths.clone());
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn the_startup_review_is_what_the_session_waits_on() {
         // Nothing it asks about runs until the user answers
-        // (`docs/config-review.md`), so the pane is blocked — naming what it
+        // (`docs/state/config-review.md`), so the pane is blocked — naming what it
         // asks to trust, then what to enable.
         use crate::app::{ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection};
         use crate::trust::HookIdentity;

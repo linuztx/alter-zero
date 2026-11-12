@@ -8,7 +8,7 @@ environment variable, or the `DO_NOT_TRACK` convention.
 
 This document is the complete statement of what leaves your machine. The
 implementation is `src/telemetry.rs` and `src/tui/telemetry.rs`; the design
-notes are in [`docs/telemetry.md`](docs/telemetry.md), and the collector that
+notes are in [`docs/ops/telemetry.md`](docs/ops/telemetry.md), and the collector that
 receives the ping is in [`telemetry/`](telemetry/) — nothing here talks to a
 third-party analytics service.
 
@@ -268,7 +268,7 @@ One other request leaves your machine on its own: **once a day**, after the
 first frame, the app asks whether a newer release is out, so it can say so
 under the banner and point you at `alter-zero update` (or, for an npm
 install, at `npm install -g @linuztx/alter-zero@latest`). It is a separate
-feature with a separate switch, described in [`docs/update.md`](docs/update.md),
+feature with a separate switch, described in [`docs/ops/update.md`](docs/ops/update.md),
 and it belongs in this document because the document promises to be the
 complete list.
 

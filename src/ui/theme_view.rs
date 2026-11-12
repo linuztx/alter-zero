@@ -1,4 +1,4 @@
-//! The inline `/theme` picker. See `docs/theme.md`.
+//! The inline `/theme` picker. See `docs/ui/theme.md`.
 //!
 //! codex's theme picker in this TUI's dress. The family's header — the
 //! `Select theme` title over a dim line saying what a theme changes — and
@@ -244,7 +244,7 @@ fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'stati
 
 /// The framed page as lines: a top rule, the `Select theme` title over its
 /// dim subtitle, the `❯` search line, a body, the key hint, and a bottom rule
-/// straight under that — no blank row hugs either rule (`docs/view-flow.md`
+/// straight under that — no blank row hugs either rule (`docs/ui/view-flow.md`
 /// *The frame hugs its content*). The body is the **whole page's**
 /// ([`whole_body`] — the list beside or over the captioned real-cell
 /// preview) when the page fits `height` rows, else the page is a **compact**
@@ -256,7 +256,7 @@ fn whole_body(rows: &[ThemeRow], selected: usize, width: u16) -> Vec<Line<'stati
 /// page the theme names stay on screen rather than flowing into scrollback
 /// above the preview. What [`render_theme_picker`] paints and
 /// [`theme_menu_rows`] counts, so the reserved height and the painted rows
-/// can never disagree (`docs/view-flow.md`). Empty when the picker is
+/// can never disagree (`docs/ui/view-flow.md`). Empty when the picker is
 /// closed.
 ///
 /// `height` is the rows the page may take: the terminal's, since the view
@@ -348,8 +348,8 @@ pub fn theme_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
 /// narrow one — the key hint, and a bottom rule; or, in an area too short
 /// for that, the compact page of three rows and no preview, which sheds its
 /// own rows down to the search line in an area shorter still. The page is built for the area's
-/// height, so it always fits and nothing flows (`docs/view-flow.md`). Pure —
-/// `render_live` paints this. See `docs/theme.md`.
+/// height, so it always fits and nothing flows (`docs/ui/view-flow.md`). Pure —
+/// `render_live` paints this. See `docs/ui/theme.md`.
 pub fn render_theme_picker(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, theme_view_lines(app, area.width, area.height));
 }

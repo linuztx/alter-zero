@@ -1,4 +1,4 @@
-# The Alter Zero telemetry collector (docs/telemetry.md): a Cloudflare Worker
+# The Alter Zero telemetry collector (docs/ops/telemetry.md): a Cloudflare Worker
 # over a D1 database. Deploy with `npx wrangler deploy` from this directory.
 #
 # The worker's name decides the URL `wrangler deploy` prints —

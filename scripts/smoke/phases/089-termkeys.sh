@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the COMPOSER'S TERMINAL SHORTCUTS (docs/textarea.md). Cursor
+# the COMPOSER'S TERMINAL SHORTCUTS (docs/input/textarea.md). Cursor
 # positions are made visible by typing after each motion: Ctrl+A/E jump the
 # line ends, idle Ctrl+B steps left (nothing backgroundable is running),
 # Alt+B walks a word back, Ctrl+W rubs out a unix word, Ctrl+U kills the

@@ -1,4 +1,4 @@
-//! The inline `/login` onboarding (`docs/llm.md`).
+//! The inline `/login` onboarding (`docs/providers/llm.md`).
 
 use super::*;
 
@@ -271,7 +271,7 @@ fn login_app_key() -> App {
     app
 }
 
-// --- the no-match provider page collapses its empty counter (docs/llm.md) ---
+// --- the no-match provider page collapses its empty counter (docs/providers/llm.md) ---
 
 #[test]
 fn an_unmatched_provider_filter_collapses_to_placeholder_and_hint() {
@@ -403,7 +403,7 @@ fn a_cut_provider_name_ends_with_an_ellipsis() {
     );
 }
 
-// --- the method root and the subscription half (docs/copilot.md) ---
+// --- the method root and the subscription half (docs/providers/copilot.md) ---
 
 #[test]
 fn the_method_root_is_a_titled_question_with_no_filter() {
@@ -552,7 +552,7 @@ fn a_subscription_is_still_findable_by_words_the_row_no_longer_shows() {
     assert!(!entry.contains("Sign in with your"), "{entry:?}");
 }
 
-// --- the device-code page (docs/copilot.md) ---
+// --- the device-code page (docs/providers/copilot.md) ---
 
 #[test]
 fn the_device_page_shows_the_url_and_the_code_in_a_box() {
@@ -697,7 +697,7 @@ fn a_device_page_with_no_code_yet_still_frames_itself() {
     );
 }
 
-// --- clickable sign-in links (docs/links.md) ---
+// --- clickable sign-in links (docs/ui/links.md) ---
 
 /// The lines of a sign-in page for `kind` carrying `uri`.
 fn signin_page(kind: crate::app::SigninKind, uri: &str, width: u16) -> Vec<Line<'static>> {
@@ -779,7 +779,7 @@ fn a_hard_broken_sign_in_url_opens_the_whole_target_from_every_fragment() {
 #[test]
 fn the_device_pages_url_is_clickable_too_and_keeps_its_dim_dress() {
     // Both sign-in pages get the carrier. The device page's URL stays DIM on
-    // purpose (docs/copilot.md: the code in its box is what the eye should
+    // purpose (docs/providers/copilot.md: the code in its box is what the eye should
     // land on), so linking it must not repaint it in the chat link colour —
     // the underline is the affordance that it is clickable.
     let lines = signin_page(
@@ -951,7 +951,7 @@ fn the_device_seat_does_not_move_when_the_code_arrives() {
     );
 }
 
-// --- every list row says whether it is configured (docs/llm.md) ---
+// --- every list row says whether it is configured (docs/providers/llm.md) ---
 
 /// The foreground of the first span of `line` containing `needle`.
 fn span_fg(line: &Line, needle: &str) -> Option<ratatui::style::Color> {
@@ -1047,7 +1047,7 @@ fn the_method_root_rows_carry_no_configured_status() {
     }
 }
 
-// --- the two list steps carry no heading (docs/llm.md) ---
+// --- the two list steps carry no heading (docs/providers/llm.md) ---
 
 /// A built `/login` page as trailing-trimmed row texts.
 fn page_texts(onboarding: &KeyOnboarding, width: u16) -> Vec<String> {
@@ -1085,7 +1085,7 @@ fn the_two_list_steps_open_straight_onto_their_filter() {
     assert!(texts[3].contains("Sign in with an account"), "{texts:?}");
 }
 
-// --- the key step introduces the provider it is asking for (docs/llm.md) ---
+// --- the key step introduces the provider it is asking for (docs/providers/llm.md) ---
 
 /// The flow parked on the key step of a provider that carries a description
 /// and the page its keys are created on.
@@ -1156,7 +1156,7 @@ fn a_narrow_key_page_wraps_the_description_rather_than_cutting_it() {
     );
     // A URL is one long word, so the wrap hard-breaks it; stripping spaces
     // reassembles it wherever it broke — and each fragment still carries the
-    // whole target (docs/links.md).
+    // whole target (docs/ui/links.md).
     assert!(
         joined
             .replace(' ', "")
@@ -1215,7 +1215,7 @@ fn a_provider_is_findable_by_the_words_of_its_description() {
     assert_eq!(onboarding.matches().len(), 1);
 }
 
-// --- the sign-in method choice: browser or device code (docs/chatgpt.md) ---
+// --- the sign-in method choice: browser or device code (docs/providers/chatgpt.md) ---
 
 #[test]
 fn the_sign_in_method_choice_is_a_titled_two_row_question() {
@@ -1464,7 +1464,7 @@ fn the_key_fields_caret_follows_the_bottom_anchor() {
     // The key step keeps no ladder — its field already sits at the foot of
     // the page, where the anchor keeps it — so a terminal shorter than the
     // page paints it from a skipped top, and the caret must sit on the
-    // painted field rather than on its page row (docs/view-flow.md).
+    // painted field rather than on its page row (docs/ui/view-flow.md).
     let app = login_app_described();
     let onboarding = app.key_onboarding.as_ref().expect("open");
     let page = page_texts(onboarding, 70);
@@ -1477,7 +1477,7 @@ fn the_key_fields_caret_follows_the_bottom_anchor() {
     assert_eq!(usize::from(y), field - 2, "two rows skipped: {page:#?}");
 }
 
-// --- the local half: "Sign in with a local model" (docs/local-models.md) ---
+// --- the local half: "Sign in with a local model" (docs/providers/local-models.md) ---
 
 /// The `/login` flow on its local server list.
 fn login_app_local() -> App {

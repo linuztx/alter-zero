@@ -1,6 +1,6 @@
 //! Provider prompt caching — the pure request-side transforms.
 //!
-//! Two OpenAI-compatible caching worlds exist (see `docs/prompt-caching.md`):
+//! Two OpenAI-compatible caching worlds exist (see `docs/providers/prompt-caching.md`):
 //! **implicit** providers (OpenAI, DeepSeek, Grok, Gemini 2.5 — and Venice,
 //! which injects Anthropic's markers itself for the Claude models it serves)
 //! cache repeated prompt prefixes automatically, while **explicit** ones
@@ -13,7 +13,7 @@
 //! the [`crate::llm::ChatMessage`]s with the breakpoints — typed, on the
 //! messages themselves, so the body is still serialized from them by
 //! reference (a pasted picture's base64 is never copied into a tree of the
-//! request; `docs/memory.md`) and an implicit-caching provider's messages
+//! request; `docs/architecture/memory.md`) and an implicit-caching provider's messages
 //! stay byte-identical. Pure and unit-tested; verified live against
 //! OpenRouter's Anthropic routing (a breakpointed second request read its
 //! whole prefix from cache at ~1/10th the input price).

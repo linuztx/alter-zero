@@ -6,15 +6,15 @@
 //! `tui::event_loop::run` and `docs/design.md`). Everything a backend must speak
 //! is here; everything a backend *is* lives behind the trait.
 //!
-//! One module per area, like `app/` and `ui/` (see `docs/module-layout.md`):
+//! One module per area, like `app/` and `ui/` (see `docs/architecture/module-layout.md`):
 //!
 //! - `event`  — [`StreamEvent`] and its payloads: the whole wire format.
 //! - `source` — [`ReplySource`], the trait a backend implements.
 //! - `cancel` — [`CancelToken`], the shared stop flag a backend polls.
 //! - `dummy`  — [`DummyAi`], the canned offline demo backend
-//!   (`docs/dummy-backend.md`).
+//!   (`docs/architecture/dummy-backend.md`).
 //! - `stall`  — [`StallAi`], the wedged-backend test double
-//!   (`docs/interrupt.md`).
+//!   (`docs/input/interrupt.md`).
 //!
 //! The real OpenAI-compatible backend is the separate [`crate::llm`] module; it
 //! implements the same trait and speaks the same events.

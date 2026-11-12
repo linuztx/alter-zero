@@ -1,4 +1,4 @@
-//! The inline `/model` picker and its multi-provider load (`docs/llm.md`).
+//! The inline `/model` picker and its multi-provider load (`docs/providers/llm.md`).
 
 use super::*;
 
@@ -6,7 +6,7 @@ use super::*;
 fn backtab_with_the_model_picker_open_is_inert() {
     // The picker owns every key while open — Shift+Tab must not cycle the
     // permission mode out from under it, nor Ctrl+T the thinking mode
-    // (docs/permissions.md, docs/reasoning.md).
+    // (docs/state/permissions.md, docs/providers/reasoning.md).
     let mut app = model_app(&sample_models());
     app.set_permission_mode(Some(PermissionMode::Manual));
     app.set_thinking(Some((
@@ -55,7 +55,7 @@ fn selecting_a_model_carries_its_reasoning_support() {
 fn selecting_a_model_carries_its_vision_support() {
     // Enter also hands the loop the entry's image-input support, so the
     // rebuilt backend gates attachments without refetching /models
-    // (docs/tools.md).
+    // (docs/tools/tools.md).
     let mut blind = model("openai/gpt-oss-120b", "openrouter", "GPT OSS");
     blind.vision = Some(false);
     let mut app = model_app(&[blind]);
@@ -205,7 +205,7 @@ fn set_models_needs_login_clears_the_list_and_points_at_login() {
     assert_eq!(picker.selected, 0);
 }
 
-// --- Multi-provider parallel `/model` load (docs/llm.md). ---
+// --- Multi-provider parallel `/model` load (docs/providers/llm.md). ---
 
 #[test]
 fn add_models_shows_the_first_provider_and_merges_the_rest() {
@@ -413,7 +413,7 @@ fn esc_on_the_provider_step_clears_the_query_then_steps_back() {
 fn selecting_a_model_carries_its_speed_tiers() {
     // Enter on a picker row hands the loop the entry's listed tiers, so a
     // successful switch can seed /fast without refetching /models
-    // (docs/fast-mode.md).
+    // (docs/providers/fast-mode.md).
     let mut quick = model("gpt-5.5", "chatgpt_codex", "GPT-5.5");
     quick.service_tiers = vec![ServiceTier::new("priority", "Fast", "1.5x speed")];
     let mut app = model_app(&[model("plain", "openrouter", "Plain"), quick]);

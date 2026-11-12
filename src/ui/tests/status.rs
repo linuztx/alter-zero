@@ -1,5 +1,5 @@
 //! The live status line and the committed summary
-//! (`docs/status-indicator.md`).
+//! (`docs/ui/status-indicator.md`).
 
 use super::*;
 use crate::app::{OfflineInfo, Spinner, Theme};
@@ -137,7 +137,7 @@ fn format_elapsed_combines_hours_and_minutes_past_an_hour() {
 #[test]
 fn format_timeout_drops_the_zero_parts_a_limit_has_no_use_for() {
     // The running `bash` cell's `(22s · wait 1m 50s)` clause names the
-    // command's timeout beside its ticking elapsed (docs/tool-streaming.md).
+    // command's timeout beside its ticking elapsed (docs/ui/tool-streaming.md).
     // A limit reads whole: `2m` for the tool's 120 000 ms default, never
     // `2m 0s` — the elapsed keeps its seconds because it moves.
     assert_eq!(format_timeout(120_000), "2m");
@@ -283,7 +283,7 @@ fn summary_lines_append_the_real_token_usage() {
 
 #[test]
 fn summary_lines_mark_an_estimated_share_with_approx() {
-    // An interrupted turn's receipt (docs/interrupt.md): the round the Esc cut
+    // An interrupted turn's receipt (docs/input/interrupt.md): the round the Esc cut
     // never reported its usage, so its share is the app's estimate. The
     // line shows one total, marked the way the /context page marks a count it
     // made itself, so a bare number on a receipt is always the provider's.
@@ -391,7 +391,7 @@ fn the_retry_clause_stands_out_in_its_own_colour() {
 #[test]
 fn status_line_always_ends_with_the_interrupt_hint() {
     // Codex's discoverability hint, the detail's final dim clause in
-    // every phase (docs/interrupt.md).
+    // every phase (docs/input/interrupt.md).
     for status in [
         status(0, TokenArrow::Down, 0, None),
         status(100, TokenArrow::Down, 1, None),
@@ -558,7 +558,7 @@ fn every_verb_swap_happens_with_the_shimmer_band_off_the_word() {
     // of one: the outgoing verb's last frame (a re-arm before the boundary),
     // the swap frame and the incoming verb's next frame all draw every char
     // at rest — at every swap down the table, so the word never changes under
-    // the crest (docs/status-indicator.md).
+    // the crest (docs/ui/status-indicator.md).
     assert_eq!(VERB_ROTATION.as_millis() % SHIMMER_SWEEP.as_millis(), 0);
     let frame = Duration::from_millis(32);
     let mut app = App::new();
@@ -630,7 +630,7 @@ fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
 
 #[test]
 fn the_status_verb_rests_in_the_page_titles_dress_in_every_theme() {
-    // docs/status-indicator.md: between crests — most of the sweep — the
+    // docs/ui/status-indicator.md: between crests — most of the sweep — the
     // verb wears exactly what a `/mcp` or `/skills` title wears: bold, washed
     // in the active theme's banner gradient across its own width, so it
     // follows `/theme` the way the headlines do. A task's activeForm is the
@@ -670,7 +670,7 @@ fn the_status_verb_rests_in_the_page_titles_dress_in_every_theme() {
 fn the_thinking_clause_wears_the_thinking_colour() {
     // While the model thinks, the clause saying so is in colour — the
     // palette's purple, which the footer's thinking mode wears too
-    // (docs/footer.md) — while every other metric stays dim.
+    // (docs/ui/footer.md) — while every other metric stays dim.
     let line = status_line(&status(150, TokenArrow::Down, 1, Some(4)), 200);
     let clause = line
         .spans
@@ -799,12 +799,12 @@ fn render_live_shell_run_shows_running_elapsed_and_hides_the_status_line() {
     // A `!` shell run suppresses the spinner status line entirely and shows
     // its elapsed in the `⎿ Running… (Ns)` preview (req 3): the strip is
     // the preview cell — the running row + the live-only Ctrl+B hint
-    // (docs/background.md) — plus its gap, then the box's top rule — no
-    // status row, no `esc to interrupt` hint. See docs/shell-command.md.
+    // (docs/tools/background.md) — plus its gap, then the box's top rule — no
+    // status row, no `esc to interrupt` hint. See docs/input/shell-command.md.
     let mut app = App::new();
     app.begin_shell("sleep 30");
     app.set_status_times(Duration::from_secs(3), None);
-    // Past the hint delay so the Ctrl+B hint row shows (docs/background.md).
+    // Past the hint delay so the Ctrl+B hint row shows (docs/tools/background.md).
     app.set_command_elapsed(Some(Duration::from_secs(3)));
     let mut buf = buffer(40, 6); // preview (2) + gap + (two rules + one input)
     render_live(buf.area, &mut buf, &app);
@@ -929,7 +929,7 @@ fn status_offline(host: &str, attempts: u32, began: u64, elapsed: u64) -> TurnSt
 
 #[test]
 fn a_waiting_status_line_wears_the_offline_verb_and_how_long_the_host_is_gone() {
-    // docs/offline.md: the verb says what the turn is doing now, and the
+    // docs/providers/offline.md: the verb says what the turn is doing now, and the
     // clause — the retry clause's twin, in its slot — says for how long,
     // read off the turn's own clock.
     let text = plain(&status_line(
@@ -1057,7 +1057,7 @@ fn the_turn_summary_wraps_to_the_width() {
     );
 }
 
-// ===== the spinner styles (docs/spinner.md) =====
+// ===== the spinner styles (docs/ui/spinner.md) =====
 
 /// The frame `styled_status_line` opens with for `spinner` at `ms` — the text
 /// before the verb, trailing separator trimmed.
@@ -1083,7 +1083,7 @@ fn first_span(spinner: Spinner, ms: u64) -> Span<'static> {
 #[test]
 fn the_default_status_line_is_the_gravity_track() {
     // `status_line` / `status_line_with_verb` are the catalog's *default*
-    // style, whatever it is (docs/spinner.md) — byte-for-byte, at every
+    // style, whatever it is (docs/ui/spinner.md) — byte-for-byte, at every
     // phase of the animation.
     let mut s = status(42, TokenArrow::Down, 3, None);
     for ms in [0u64, 80, 400, 715] {
@@ -1112,7 +1112,7 @@ fn the_default_status_line_is_the_gravity_track() {
 #[test]
 fn every_style_animates_in_single_width_fixed_width_frames() {
     // A wide glyph would shear the verb and the metrics after it
-    // (docs/table-streaming.md "Wide glyphs"), and a frame of a different
+    // (docs/ui/table-streaming.md "Wide glyphs"), and a frame of a different
     // width would jitter them — so every frame of every style is the same
     // width as its first, every glyph one column.
     for spinner in Spinner::ALL {
@@ -1189,7 +1189,7 @@ fn a_one_cell_style_puts_the_glyph_and_its_separator_in_one_span() {
 fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
     // Ten frames at 120 ms: · ✢ ✳ ✶ ✻ ✽ ✻ ✶ ✳ ✢ — a spark opening into a
     // heavy star and closing again, its colour walking the header's cyan →
-    // blue gradient with the bloom (docs/header.md), so the theme's accent
+    // blue gradient with the bloom (docs/ui/header.md), so the theme's accent
     // rides the status line.
     let frames: Vec<String> = (0..10)
         .map(|i| styled_frame(Spinner::Sparkle, i * 120))
@@ -1224,7 +1224,7 @@ fn the_sparkle_blooms_into_a_star_and_back_in_the_banner_gradient() {
 #[test]
 fn the_pulse_dot_breathes_dim_to_bright_without_moving() {
     // One glyph, coloured by a raised-cosine breath at the running bullet's
-    // cadence (docs/spinner.md) — dim at the bottom of the breath, white at the
+    // cadence (docs/ui/spinner.md) — dim at the bottom of the breath, white at the
     // top, half a period later — so it swells rather than flicks.
     assert_eq!(styled_frame(Spinner::Pulse, 0), "●");
     assert_eq!(styled_frame(Spinner::Pulse, 500), "●");
@@ -1262,7 +1262,7 @@ fn the_bars_rise_and_fall_brightening_with_height() {
 
 #[test]
 fn the_blocks_turn_through_the_banner_gradient() {
-    // The mascots' own quadrant glyphs (docs/mascot.md) turning clockwise,
+    // The mascots' own quadrant glyphs (docs/ui/mascot.md) turning clockwise,
     // the missing quadrant walking round, in the banner's gradient.
     let frames: Vec<String> = (0..4)
         .map(|i| styled_frame(Spinner::Blocks, i * 150))

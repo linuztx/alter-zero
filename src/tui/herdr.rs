@@ -1,4 +1,4 @@
-//! herdr support at the boundary (`docs/herdr.md`): finding the pane and the
+//! herdr support at the boundary (`docs/architecture/herdr.md`): finding the pane and the
 //! name herdr can resume this binary by, and feeding the library's
 //! [`Tracker`] what the session is doing at every loop bottom, its reports
 //! into the [`Reporter`]'s worker.

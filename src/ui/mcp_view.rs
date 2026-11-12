@@ -1,4 +1,4 @@
-//! The `/mcp` manager's inline view (`docs/mcp.md`) — the hooks menu's twin:
+//! The `/mcp` manager's inline view (`docs/tools/mcp.md`) — the hooks menu's twin:
 //! a content-driven framed body ([`mcp_view_lines`] builds it line by line,
 //! so the height falls out as `lines.len()` and [`mcp_menu_height`] /
 //! [`render_mcp_menu`] can never disagree), the pages walking
@@ -29,7 +29,7 @@ fn dim_line(text: &str, width: u16) -> Line<'static> {
 }
 
 /// The page's headline — the row that says which of the four pages this is
-/// (`docs/mcp.md`), in the pages' title dress
+/// (`docs/tools/mcp.md`), in the pages' title dress
 /// ([`page_title_line`](super::header::page_title_line)).
 fn title_line(text: &str, width: u16) -> Line<'static> {
     super::header::page_title_line(text, width)
@@ -258,7 +258,7 @@ fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<
 }
 
 /// [`field_lines`] for a remote server's address: the same rows, every
-/// fragment a link to the whole URL (`docs/links.md`) — a wrapped address is
+/// fragment a link to the whole URL (`docs/ui/links.md`) — a wrapped address is
 /// exactly where a terminal's own detection opens a truncated target. A value
 /// that is not one whole URL reads as plain [`field_lines`].
 fn url_field_lines(label: &str, url: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
@@ -406,7 +406,7 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
             // A config key is lower-case by convention, which reads as a
             // typo once it opens a sentence; everywhere the name is an
             // *identity* rather than a headline (the list rows, `Tools for
-            // …`, the wire name) it stays verbatim (`docs/mcp.md`).
+            // …`, the wire name) it stays verbatim (`docs/tools/mcp.md`).
             &format!("{} MCP Server", crate::mcp::capitalize_server(&server.name)),
             width,
         ),
@@ -423,7 +423,7 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     ));
     if let Some(auth) = server.auth {
         // Red only for a state the user should act on; everything else is a
-        // settled green ✔ (`docs/mcp.md`).
+        // settled green ✔ (`docs/tools/mcp.md`).
         let glyph_color = if auth.is_problem() {
             tool_fail_color()
         } else {
@@ -695,7 +695,7 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     match &menu.auth.url {
         Some(url) => {
             lines.extend(dim_wrapped(MCP_AUTH_COPY_NOTE, width));
-            // A real hyperlink (`docs/links.md`), the `/login` sign-in pages'
+            // A real hyperlink (`docs/ui/links.md`), the `/login` sign-in pages'
             // way: an authorize URL is wider than any row, so it hard-breaks,
             // and a terminal's own detection reads row text — the first row
             // opened a truncated URL and the rest were no links at all. Every
@@ -783,8 +783,8 @@ pub fn mcp_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// Render the inline `/mcp` manager into the live region, in place of the
 /// composer — bottom-anchored, so a page taller than the area keeps its tail
 /// (the hint, the bottom rule) on screen while the skipped top flows into
-/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/mcp.md`.
+/// scrollback (`docs/ui/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/tools/mcp.md`.
 pub fn render_mcp_menu(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, mcp_view_lines(app, area.width));
 }

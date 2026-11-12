@@ -1,4 +1,4 @@
-//! The inline `/settings` menu's rendering (`docs/settings.md`).
+//! The inline `/settings` menu's rendering (`docs/state/settings.md`).
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -55,7 +55,7 @@ fn render(app: &App, width: u16) -> Buffer {
     buf
 }
 
-// --- the page's shape (docs/settings.md, docs/view-flow.md) ---
+// --- the page's shape (docs/state/settings.md, docs/ui/view-flow.md) ---
 
 #[test]
 fn the_whole_page_is_titled_and_lists_its_rows_under_the_search_prompt() {
@@ -180,7 +180,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     // `/settings` opens mid-turn like `/model` and `/login`, and replaces the
     // composer only: the streaming strip (here a running tool's live cell over
     // the spinner status line) keeps its rows above the menu's frame — the ↓
-    // manager band's rule (docs/background.md, docs/settings.md).
+    // manager band's rule (docs/tools/background.md, docs/state/settings.md).
     let mut app = settings_app();
     app.begin_stream();
     app.start_tool("Bash", "cargo test", None);
@@ -435,7 +435,7 @@ fn a_squeezed_settings_menu_paints_the_page_built_for_its_height() {
     }
 }
 
-// --- the no-match page collapses its empty slots (docs/settings.md) ---
+// --- the no-match page collapses its empty slots (docs/state/settings.md) ---
 
 #[test]
 fn an_unmatched_search_collapses_to_placeholder_and_hint() {
@@ -548,7 +548,7 @@ fn a_cut_value_ends_with_an_ellipsis() {
 
 #[test]
 fn a_never_ask_timeout_is_dimmed_like_any_off_value() {
-    // `never` is the Ask timeout's off state (docs/ask.md): no clock runs.
+    // `never` is the Ask timeout's off state (docs/tools/ask.md): no clock runs.
     let mut app = settings_app();
     app.settings_mut().ask_timeout_secs = 0;
     for c in "timeout".chars() {

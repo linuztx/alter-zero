@@ -1,4 +1,4 @@
-//! `/resume` session files — the pure core (see `docs/resume.md`).
+//! `/resume` session files — the pure core (see `docs/state/resume.md`).
 //!
 //! Every conversation is recorded to a codex-style JSONL "rollout" file:
 //! line 1 is a `session_meta` record, then one line per finished
@@ -100,42 +100,42 @@ enum ItemRecord {
     Tool(ToolRecord),
     Summary(SummaryRecord),
     Background(BackgroundRecord),
-    /// A filesystem checkpoint (`docs/checkpoint.md`) — not a [`HistoryItem`]
+    /// A filesystem checkpoint (`docs/state/checkpoint.md`) — not a [`HistoryItem`]
     /// but recorded in the same file so a resume can reset the code. Parsed by
     /// [`parse_checkpoints`], skipped by [`parse_session`]. Old builds skip the
     /// unknown record type (the forward-compatibility contract).
     Checkpoint(CheckpointRecord),
-    /// A `/compact` marker (`docs/compact.md`) — persists so a `/resume`
+    /// A `/compact` marker (`docs/architecture/compact.md`) — persists so a `/resume`
     /// stays compacted. Old builds skip the unknown record type (and see the
     /// full uncompacted context — the graceful degradation).
     Compaction(CompactionRecord),
-    /// A resolved subagent group (`docs/agent-tool.md`). Old builds skip the
+    /// A resolved subagent group (`docs/agents/agent-tool.md`). Old builds skip the
     /// unknown record type (the forward-compatibility contract).
     AgentGroup(AgentGroupRecord),
-    /// A background agent's completion notice (`docs/agent-tool.md`).
+    /// A background agent's completion notice (`docs/agents/agent-tool.md`).
     AgentNotice(AgentNoticeRecord),
-    /// A settled thinking phase (`docs/thinking-stream.md`) — persists so a
+    /// A settled thinking phase (`docs/ui/thinking-stream.md`) — persists so a
     /// `/resume` brings the `Thought for …` cells and their chain-of-thought
     /// back. Old builds skip the unknown record type (the forward-compatibility
     /// contract).
     Reasoning(ReasoningRecord),
-    /// A resolved task tool call (`docs/task-tools.md`) — persists so a
+    /// A resolved task tool call (`docs/tools/task-tools.md`) — persists so a
     /// `/resume` restores the checklist from the last record's snapshot. Old
     /// builds skip the unknown record type (the forward-compatibility
     /// contract).
     TaskCall(TaskToolRecord),
-    /// Hook-injected conversation text (`docs/hooks.md`) — persists so a
+    /// Hook-injected conversation text (`docs/tools/hooks.md`) — persists so a
     /// `/resume`'s derived context still carries what the model read
     /// mid-turn, and the hooks' cell beside it. Old builds skip the unknown
     /// record type (the forward-compatibility contract), and a build from
     /// before the cell reads the text and ignores the report.
     HookNote(HookNoteRecord),
     /// A hook note with **no text** — the cell of hooks that gave the model
-    /// nothing (`docs/hooks.md` *The hook-run cell*). A record type of its
+    /// nothing (`docs/tools/hooks.md` *The hook-run cell*). A record type of its
     /// own so a build from before the cell skips it, rather than replaying an
     /// empty message as a `hook_note` it understands.
     HookReport(HookNoteRecord),
-    /// The session's own model selection (`docs/session-model.md`) — not a
+    /// The session's own model selection (`docs/state/session-model.md`) — not a
     /// [`HistoryItem`] but recorded in the same file, so a resume brings the
     /// conversation back on the model it ran on. The payload is the
     /// `config.json` entry's own shape. Parsed by [`parse_model`] (the newest
@@ -143,7 +143,7 @@ enum ItemRecord {
     /// record type (the forward-compatibility contract).
     Model(ModelSelection),
     /// One model request's usage as the provider reported it
-    /// (`docs/rollout-records.md`) — codex's `token_usage_record`, written
+    /// (`docs/state/rollout-records.md`) — codex's `token_usage_record`, written
     /// where the request finished. Not a [`HistoryItem`]: read back by
     /// [`parse_usage`], skipped by [`parse_session`], and skipped as an
     /// unknown record type by a build from before it.
@@ -151,7 +151,7 @@ enum ItemRecord {
 }
 
 /// One model request's usage, as the rollout keeps it
-/// (`docs/rollout-records.md`): the provider's own counts for the request —
+/// (`docs/state/rollout-records.md`): the provider's own counts for the request —
 /// [`TokenUsage`]'s, `input` including every cached read and cache write,
 /// `output` the reasoning — and where in the conversation it finished.
 ///
@@ -227,7 +227,7 @@ impl UsageRecord {
 }
 
 /// A [`crate::app::HookNote`] on disk: the transcript heading, the verbatim
-/// wire text and the hooks' cell (`docs/hooks.md`).
+/// wire text and the hooks' cell (`docs/tools/hooks.md`).
 #[derive(Serialize, Deserialize)]
 struct HookNoteRecord {
     label: String,
@@ -340,7 +340,7 @@ impl From<HookReportRecord> for crate::hooks::HookReport {
     }
 }
 
-/// A [`TaskCallRecord`] on disk (`docs/task-tools.md`): the call's texts plus
+/// A [`TaskCallRecord`] on disk (`docs/tools/task-tools.md`): the call's texts plus
 /// the **post-call snapshot** — every task and the id high-water mark — that
 /// a `/resume` rebuilds the live list from.
 ///
@@ -385,7 +385,7 @@ struct TaskEntryRecord {
     blocked_by: Vec<u64>,
 }
 
-/// A [`Reasoning`] on disk (`docs/thinking-stream.md`). `tokens` is whatever
+/// A [`Reasoning`] on disk (`docs/ui/thinking-stream.md`). `tokens` is whatever
 /// the cell settled on — the provider's `reasoning_tokens` when its usage
 /// frame arrived, else the token estimate — and `serde(default)`s to 0
 /// (unknown), which hides the cell's clause.
@@ -401,7 +401,7 @@ struct ReasoningRecord {
     tokens: usize,
 }
 
-/// An [`AgentGroup`] on disk (`docs/agent-tool.md`).
+/// An [`AgentGroup`] on disk (`docs/agents/agent-tool.md`).
 ///
 /// [`AgentGroup`]: crate::app::AgentGroup
 #[derive(Serialize, Deserialize)]
@@ -439,7 +439,7 @@ struct AgentEntryRecord {
     position: Option<usize>,
 }
 
-/// An [`AgentNotice`] on disk (`docs/agent-tool.md`).
+/// An [`AgentNotice`] on disk (`docs/agents/agent-tool.md`).
 ///
 /// [`AgentNotice`]: crate::app::AgentNotice
 #[derive(Serialize, Deserialize)]
@@ -455,7 +455,7 @@ struct AgentNoticeRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     user_messages: Vec<String>,
     /// The user started the agent again rather than it settling
-    /// (`docs/agent-tools.md`) — omitted when false, so a completion's record
+    /// (`docs/agents/agent-tools.md`) — omitted when false, so a completion's record
     /// keeps its shape (the background record's `waiting` rule).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     resumed: bool,
@@ -484,7 +484,7 @@ fn agent_status_from(name: &str) -> AgentStatus {
     }
 }
 
-/// A [`Compaction`] marker on disk (`docs/compact.md`): the model-written
+/// A [`Compaction`] marker on disk (`docs/architecture/compact.md`): the model-written
 /// handoff summary the context derivation bridges from, plus the gauge's
 /// before/after token counts and the auto tag — `serde(default)`ed (and kept
 /// off the wire at their defaults) so files from before the gauge still parse
@@ -526,9 +526,9 @@ struct MessageRecord {
     role: String,
     text: String,
     /// The display stamp the item carried (`hh:mm AM/PM`, possibly empty) —
-    /// round-tripped verbatim; see `docs/timestamps.md`.
+    /// round-tripped verbatim; see `docs/ui/timestamps.md`.
     timestamp: String,
-    /// The Ctrl+V attachment paths a user message carried (`docs/context.md`).
+    /// The Ctrl+V attachment paths a user message carried (`docs/architecture/context.md`).
     /// Omitted when empty, so imageless lines keep the pre-images shape and
     /// files written before the field still parse. Stored as plain strings
     /// (lossy-converted on write): serializing a non-UTF8 `PathBuf` is a
@@ -543,13 +543,13 @@ struct MessageRecord {
 /// so the status collapses to `ok: bool` — plus `backgrounded` for a call
 /// resolved by moving to the background ([`ToolStatus::Backgrounded`]);
 /// omitted when false, so files written before the field keep their shape and
-/// still parse (`docs/background.md`).
+/// still parse (`docs/tools/background.md`).
 #[derive(Serialize, Deserialize)]
 struct ToolRecord {
     name: String,
     args: String,
     ok: bool,
-    /// How the call ran ([`crate::stream::ToolRun`], `docs/rollout-records.md`):
+    /// How the call ran ([`crate::stream::ToolRun`], `docs/state/rollout-records.md`):
     /// the command's exit status when it exited during the call, how long
     /// the call ran, and why a failed one failed. Each omitted when absent,
     /// the `context_output` rule, so a call nothing measured keeps the line
@@ -571,20 +571,20 @@ struct ToolRecord {
     /// The model's **verbatim** JSON arguments ([`crate::app::ToolCall::arguments`])
     /// — what the derived context replays on the assistant `tool_calls`
     /// entry, so a resumed session's `write` still carries the content it
-    /// wrote instead of the path alone (`docs/context.md`). Omitted when
+    /// wrote instead of the path alone (`docs/architecture/context.md`). Omitted when
     /// absent, the `context_output` rule, so files written before the field
     /// keep their shape and still parse — such a record falls back to the
     /// per-tool reconstruction, which is what it always used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     arguments: Option<String>,
     /// The model-facing result of a permission-rejected call, when it differs
-    /// from the displayed `output` (`docs/permissions.md`) — carrying Tab's
+    /// from the displayed `output` (`docs/state/permissions.md`) — carrying Tab's
     /// amended instructions. Omitted when absent, so files written before the
     /// field keep their shape and still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_output: Option<String>,
     /// The auto mode classifier's provenance note (`Allowed by auto mode
-    /// classifier`, `docs/permissions.md`) — the cell's dim trailing row.
+    /// classifier`, `docs/state/permissions.md`) — the cell's dim trailing row.
     /// Omitted when absent, the `context_output` rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_note: Option<String>,
@@ -593,7 +593,7 @@ struct ToolRecord {
     /// The **parallel batch** this call was announced in
     /// ([`crate::app::ToolCall::batch`]) — what makes a resumed session's run
     /// of MCP cells collapse to the same one `Called deepwiki 2 times` line
-    /// it had before the reload (`docs/mcp.md`). Omitted when absent, the
+    /// it had before the reload (`docs/tools/mcp.md`). Omitted when absent, the
     /// `context_output` rule, so a lone call and every older file keep their
     /// shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -603,7 +603,7 @@ struct ToolRecord {
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
-/// (`docs/background.md`). Old builds skip the unknown record type (the
+/// (`docs/tools/background.md`). Old builds skip the unknown record type (the
 /// forward-compatibility contract).
 ///
 /// [`BackgroundNotice`]: crate::app::BackgroundNotice
@@ -615,19 +615,19 @@ struct BackgroundRecord {
     killed: bool,
     output_tail: String,
     /// The launching subagent's type label, when a subagent launched the
-    /// shell (`docs/agent-tool.md`) — omitted when absent so old rollouts
+    /// shell (`docs/agents/agent-tool.md`) — omitted when absent so old rollouts
     /// keep their shape and still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<String>,
     /// The session stopped to ask for input rather than ending
-    /// (`docs/bash-tools.md`) — omitted when false, so a completion's record
+    /// (`docs/tools/bash-tools.md`) — omitted when false, so a completion's record
     /// keeps its shape.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     waiting: bool,
     timestamp: String,
 }
 
-/// A [`Checkpoint`] on disk (`docs/checkpoint.md`): the isolated-store commit
+/// A [`Checkpoint`] on disk (`docs/state/checkpoint.md`): the isolated-store commit
 /// SHA and the history length it captures the code state at.
 #[derive(Serialize, Deserialize)]
 struct CheckpointRecord {
@@ -639,7 +639,7 @@ struct CheckpointRecord {
 /// [`STATUS_VERBS`] past tense or a [`LEGACY_DONE_VERBS`] entry, `Done` for a
 /// verb this build doesn't know — because `TurnSummary::verb` is
 /// `&'static str`. The real usage (`tokens`/`cached`,
-/// `docs/prompt-caching.md`) is persisted — a fact of the turn, unlike the
+/// `docs/providers/prompt-caching.md`) is persisted — a fact of the turn, unlike the
 /// transient `shells` count — and `serde(default)`ed so rollouts recorded
 /// before the fields existed still parse.
 #[derive(Serialize, Deserialize)]
@@ -649,7 +649,7 @@ struct SummaryRecord {
     timestamp: String,
     #[serde(default)]
     tokens: usize,
-    /// An interrupted turn's estimated share (`docs/interrupt.md`) — omitted
+    /// An interrupted turn's estimated share (`docs/input/interrupt.md`) — omitted
     /// when zero, so every finished turn's line is the one it always was.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     estimated: usize,
@@ -696,7 +696,7 @@ fn role_from(name: &str) -> Option<Role> {
 
 /// The summary verbs older builds recorded, when the summary drew its verb
 /// from a list of its own rather than the past tense of the verb the line
-/// wore (`docs/status-indicator.md`) — still mapped back by value, so a
+/// wore (`docs/ui/status-indicator.md`) — still mapped back by value, so a
 /// resumed old conversation's `Finished for 12s` reads exactly as it was
 /// recorded. `Done`, the first, doubles as the fallback for a verb this build
 /// doesn't know at all.
@@ -723,7 +723,7 @@ pub fn meta_line(meta: &SessionMeta, stamp: &str) -> String {
 }
 
 /// Serialize the session's model selection as a rollout line
-/// (`docs/session-model.md`) — written right after the meta line, and again
+/// (`docs/state/session-model.md`) — written right after the meta line, and again
 /// whenever the selection changes, so the file's newest one is the model the
 /// conversation runs on. `stamp` is the write-time line stamp.
 #[must_use]
@@ -732,7 +732,7 @@ pub fn model_line(selection: &ModelSelection, stamp: &str) -> String {
 }
 
 /// The model a rollout's conversation runs on: its **newest** `model` line
-/// (`docs/session-model.md`) — a `/model` pick, a Ctrl+T cycle or the probe's
+/// (`docs/state/session-model.md`) — a `/model` pick, a Ctrl+T cycle or the probe's
 /// answer appends a record rather than rewriting the file, so the walk is
 /// from the end and stops at the first one it parses. Malformed lines and
 /// other record types are skipped, like [`parse_checkpoints`]; `None` when
@@ -903,7 +903,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
     line(stamp, record)
 }
 
-/// Serialize one filesystem checkpoint as a rollout line (`docs/checkpoint.md`).
+/// Serialize one filesystem checkpoint as a rollout line (`docs/state/checkpoint.md`).
 /// Interleaved with the item lines in the same file; extracted by
 /// [`parse_checkpoints`] and ignored by [`parse_session`].
 #[must_use]
@@ -918,7 +918,7 @@ pub fn checkpoint_line(checkpoint: &Checkpoint, stamp: &str) -> String {
 }
 
 /// Serialize one model request's usage as a rollout line
-/// (`docs/rollout-records.md`). `stamp` is the write-time line stamp.
+/// (`docs/state/rollout-records.md`). `stamp` is the write-time line stamp.
 #[must_use]
 pub fn usage_line(record: &RequestUsage, stamp: &str) -> String {
     line(stamp, ItemRecord::Usage(UsageRecord::from(record)))
@@ -927,7 +927,7 @@ pub fn usage_line(record: &RequestUsage, stamp: &str) -> String {
 /// The rollout lines for `items` — history from index `first` on — with each
 /// request's `usage` line placed where the request finished: right before
 /// the first item recorded after it ([`RequestUsage::after`]), or at the end
-/// when nothing was recorded after it yet (`docs/rollout-records.md`). Every
+/// when nothing was recorded after it yet (`docs/state/rollout-records.md`). Every
 /// line ends with a newline. The recorder's one writer for both of its
 /// paths: an append (the items and usage new since its last write) and a
 /// rewrite (everything, from `first` 0), so a rewrite re-places each usage
@@ -958,7 +958,7 @@ pub fn history_lines(
 }
 
 /// The usage a rewrite down to `len` history items keeps
-/// (`docs/rollout-records.md`): every request whose place survives, as it
+/// (`docs/state/rollout-records.md`): every request whose place survives, as it
 /// was. Past the cut, the conversation's own requests go with the turns they
 /// made, as those turns' own lines do, while a subagent's stay — its request
 /// was billed whatever became of the conversation around it, and a retry's
@@ -1018,7 +1018,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
 
 /// The usage of each model request a rollout recorded, in file order, each
 /// placed after the history items that precede it in the file
-/// (`docs/rollout-records.md`) — what a resume hands the recorder, so a later
+/// (`docs/state/rollout-records.md`) — what a resume hands the recorder, so a later
 /// rewrite keeps every `usage` line where it was. Positions count exactly
 /// the items [`parse_session`] yields, by the same conversion: a malformed
 /// line, an unknown record type, a message in a role this build doesn't
@@ -1101,7 +1101,7 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
             secs: summary.secs,
             timestamp: summary.timestamp,
             // Not persisted: a resumed session's shells are gone, so the
-            // suffix must not claim they still run (docs/background.md).
+            // suffix must not claim they still run (docs/tools/background.md).
             shells: 0,
             tokens: summary.tokens,
             estimated: summary.estimated,
@@ -1217,8 +1217,8 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
         // `parse_checkpoints` reads them for the code reset. Skip here so
         // the loaded history matches what the user actually said. The
         // session's model record is the same kind of sidecar
-        // (`parse_model`, docs/session-model.md), and so is a request's usage
-        // (`parse_usage`, docs/rollout-records.md). The meta is the caller's.
+        // (`parse_model`, docs/state/session-model.md), and so is a request's usage
+        // (`parse_usage`, docs/state/rollout-records.md). The meta is the caller's.
         ItemRecord::SessionMeta(_)
         | ItemRecord::Checkpoint(_)
         | ItemRecord::Model(_)
@@ -1228,7 +1228,7 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
 
 /// The picker preview: the first user input in `items` — a [`Role::User`]
 /// message, or a [`Role::Shell`] header shown as `! {command}` (our `!` cells
-/// are user input too; see `docs/resume.md`'s divergences) — with all
+/// are user input too; see `docs/state/resume.md`'s divergences) — with all
 /// whitespace runs flattened to single spaces so a multiline message stays one
 /// row. A whitespace-only message (a pasted blank can reach the record) is
 /// skipped rather than claiming the preview as an empty — and unsearchable —
@@ -1281,7 +1281,7 @@ pub fn relative_age(secs: u64) -> String {
 /// The `{id}` segment of a rollout file name — the inverse of
 /// [`rollout_rel_path`]'s `rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl` shape,
 /// which makes the recorder's session ids *addressable*: `--resume {id}`
-/// finds its file by matching this against the arg (`docs/cli.md`). `None`
+/// finds its file by matching this against the arg (`docs/cli/cli.md`). `None`
 /// for a name that isn't a rollout file or whose stamp doesn't have the
 /// recorded shape (checked position-by-position, so a stray
 /// `rollout-notes.jsonl` can't yield a garbage id); ids may themselves
@@ -1304,7 +1304,7 @@ pub fn rollout_file_id(file_name: &str) -> Option<&str> {
 }
 
 /// The newest-updated session recorded in `cwd` — the `--continue` pick
-/// (`docs/cli.md`): smallest `updated_secs` (ages are seconds-*ago*, frozen
+/// (`docs/cli/cli.md`): smallest `updated_secs` (ages are seconds-*ago*, frozen
 /// at scan time) among the rows whose recorded cwd matches verbatim — the
 /// picker's `Cwd`-filter rule, both sides the recorder's `Path::display`
 /// formatting. `None` when no session was recorded here.
@@ -1359,7 +1359,7 @@ mod tests {
         })
     }
 
-    // ===== the line format (docs/resume.md) =====
+    // ===== the line format (docs/state/resume.md) =====
 
     #[test]
     fn meta_line_is_a_tagged_session_meta_json_line() {
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn user_message_images_round_trip() {
         // The Ctrl+V attachment paths ride the message record so a /resume
-        // restores them for the conversation context (docs/context.md).
+        // restores them for the conversation context (docs/architecture/context.md).
         let item = HistoryItem::Message(Message {
             role: Role::User,
             text: "[Image #1] what is this?".into(),
@@ -1402,7 +1402,7 @@ mod tests {
     #[test]
     fn a_hook_note_round_trips() {
         // Hook-injected conversation text persists so a /resume's derived
-        // context still carries what the model read mid-turn (docs/hooks.md).
+        // context still carries what the model read mid-turn (docs/tools/hooks.md).
         let item = HistoryItem::HookNote(crate::app::HookNote {
             label: "Stop hook".into(),
             text: "Stop hook feedback:\ntests are red".into(),
@@ -1456,7 +1456,7 @@ mod tests {
 
     #[test]
     fn a_hook_notes_cell_rides_beside_the_text_an_older_build_replays() {
-        // docs/hooks.md *The hook-run cell*: the report persists so a
+        // docs/tools/hooks.md *The hook-run cell*: the report persists so a
         // `/resume` draws the same cell — every row's words as shown — and a
         // note that carries text keeps its `hook_note` record, whose text a
         // build from before the cell still replays (it ignores the report).
@@ -1512,7 +1512,7 @@ mod tests {
     #[test]
     fn a_compaction_marker_round_trips() {
         // The /compact marker persists so a /resume stays compacted
-        // (docs/compact.md); the summary — and the gauge's before/after token
+        // (docs/architecture/compact.md); the summary — and the gauge's before/after token
         // counts + the auto tag + the turn's elapsed — are the payload.
         let item = HistoryItem::Compaction(crate::app::Compaction {
             summary: "we did the thing".into(),
@@ -1535,7 +1535,7 @@ mod tests {
     fn a_thinking_phase_round_trips() {
         // A settled thought persists so a /resume brings back both the
         // `Thought for …` cell and the chain-of-thought its Ctrl+O expansion
-        // shows (docs/thinking-stream.md).
+        // shows (docs/ui/thinking-stream.md).
         let item = HistoryItem::Reasoning(crate::app::Reasoning {
             text: "I should read the file first.".into(),
             secs: 65,
@@ -1556,7 +1556,7 @@ mod tests {
     fn a_task_call_line_round_trips_the_call_and_its_snapshot() {
         // The record carries the post-call snapshot — the tasks and the id
         // high-water mark — so `/resume` restores the checklist exactly
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         let mut store = crate::tasks::TaskStore::new();
         store
             .run_create(
@@ -1592,7 +1592,7 @@ mod tests {
         assert_eq!(value["payload"]["tasks"][1]["blocked_by"][0], 1);
         // The raw arguments ride the record too, so a resumed session's
         // derived context replays the call as the model made it
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         assert_eq!(
             value["payload"]["arguments"],
             r#"{"taskId":"1","status":"completed"}"#
@@ -1606,7 +1606,7 @@ mod tests {
         // The provider's call ids, the round's batch and an agent call's
         // verbatim arguments are what let a resumed session's derived
         // context match the prefix the provider cached
-        // (docs/prompt-caching.md): every one survives the rollout.
+        // (docs/providers/prompt-caching.md): every one survives the rollout.
         let tool = HistoryItem::Tool(ToolCall {
             name: "Bash".into(),
             args: "ls".into(),
@@ -1828,7 +1828,7 @@ mod tests {
         text
     }
 
-    // ===== one line per model request (docs/rollout-records.md) =====
+    // ===== one line per model request (docs/state/rollout-records.md) =====
 
     fn request(after: usize, input: u64, output: u64) -> RequestUsage {
         RequestUsage {
@@ -1953,7 +1953,7 @@ mod tests {
         );
     }
 
-    // ===== a rewrite and the usage it keeps (docs/rollout-records.md) =====
+    // ===== a rewrite and the usage it keeps (docs/state/rollout-records.md) =====
 
     fn agent_request(after: usize) -> RequestUsage {
         RequestUsage {
@@ -2101,7 +2101,7 @@ mod tests {
         assert_eq!((record.after, record.agent.as_deref()), (0, None));
     }
 
-    // ===== checkpoints (docs/checkpoint.md) =====
+    // ===== checkpoints (docs/state/checkpoint.md) =====
 
     #[test]
     fn checkpoint_line_is_a_tagged_json_line() {
@@ -2230,7 +2230,7 @@ mod tests {
     fn a_rejected_tool_round_trips_its_model_facing_result() {
         // Without this the amend feedback survives the session but not a
         // `/resume` of it: the reloaded context would replay the one-line cell
-        // and the model would lose the instructions (docs/permissions.md).
+        // and the model would lose the instructions (docs/state/permissions.md).
         let rejected = HistoryItem::Tool(ToolCall {
             name: "Write".into(),
             args: "hello.py".into(),
@@ -2260,7 +2260,7 @@ mod tests {
         // A resumed session must replay the *whole* call: without the
         // arguments a `write` comes back as `{"path": …}` and the content it
         // wrote — which the short ack no longer repeats — is gone from the
-        // conversation for good (`docs/context.md`).
+        // conversation for good (`docs/architecture/context.md`).
         let arguments = r#"{"path":"a.py","content":"print(1)\n"}"#;
         let tool = HistoryItem::Tool(ToolCall {
             name: "Write".into(),
@@ -2305,7 +2305,7 @@ mod tests {
         );
     }
 
-    // ===== how a call ran (docs/rollout-records.md) =====
+    // ===== how a call ran (docs/state/rollout-records.md) =====
 
     /// A failed `bash` call that ran: what a reader of the rollout wants to
     /// count — its exit code, its runtime and why it failed.
@@ -2403,7 +2403,7 @@ mod tests {
     fn a_classifier_allowed_tool_round_trips_its_note() {
         // The `⎿ Allowed by auto mode classifier` row must survive a /resume
         // — it is the transcript's only record that no human approved the
-        // call (docs/permissions.md).
+        // call (docs/state/permissions.md).
         let tool = HistoryItem::Tool(ToolCall {
             name: "Bash".into(),
             args: "ls -la".into(),
@@ -2550,7 +2550,7 @@ mod tests {
         assert_eq!(parse_session("garbage\n"), None);
     }
 
-    // ===== the picker preview (docs/resume.md) =====
+    // ===== the picker preview (docs/state/resume.md) =====
 
     #[test]
     fn preview_is_the_first_user_message_flattened() {
@@ -2619,7 +2619,7 @@ mod tests {
         );
     }
 
-    // ===== the CLI id lookup (docs/cli.md) =====
+    // ===== the CLI id lookup (docs/cli/cli.md) =====
 
     #[test]
     fn rollout_file_id_inverts_rollout_rel_path() {
@@ -2658,7 +2658,7 @@ mod tests {
         assert_eq!(rollout_file_id("rollout-2026-07-31T09-05-0-a.jsonl"), None);
     }
 
-    // ===== the --continue pick (docs/cli.md) =====
+    // ===== the --continue pick (docs/cli/cli.md) =====
 
     fn summary(path: &str, updated: u64, cwd: &str) -> SessionSummary {
         SessionSummary {
@@ -2693,7 +2693,7 @@ mod tests {
         assert_eq!(latest_for_cwd(&[], "/home/user/repo"), None);
     }
 
-    // ===== background shells (docs/background.md) =====
+    // ===== background shells (docs/tools/background.md) =====
 
     #[test]
     fn a_backgrounded_tool_round_trips_its_status() {
@@ -2778,7 +2778,7 @@ mod tests {
     #[test]
     fn a_subagent_launched_notice_round_trips_its_origin() {
         // The launcher label persists so a /resume still shows whose shell
-        // it was (docs/agent-tool.md).
+        // it was (docs/agents/agent-tool.md).
         let notice = HistoryItem::Background(crate::app::BackgroundNotice {
             description: "Count 1-100".into(),
             id: "b12345678".into(),
@@ -2814,7 +2814,7 @@ mod tests {
 
     #[test]
     fn a_waiting_notice_round_trips_and_an_ending_one_keeps_its_shape() {
-        // A session that stopped to ask for input (docs/bash-tools.md) keeps
+        // A session that stopped to ask for input (docs/tools/bash-tools.md) keeps
         // saying so after a `/resume`; a completion's record stays as it was.
         let waiting = HistoryItem::Background(crate::app::BackgroundNotice {
             description: "npm create vite".into(),
@@ -2868,7 +2868,7 @@ mod tests {
     fn summary_usage_round_trips() {
         // The real billed tokens are a fact of the turn (unlike the transient
         // shells count) — a resumed transcript keeps them
-        // (docs/prompt-caching.md).
+        // (docs/providers/prompt-caching.md).
         let summary = HistoryItem::Summary(TurnSummary {
             verb: STATUS_VERBS[1].done,
             secs: 9,
@@ -2885,7 +2885,7 @@ mod tests {
 
     #[test]
     fn an_interrupted_summarys_estimate_round_trips() {
-        // The share no usage frame reported (docs/interrupt.md) is part of
+        // The share no usage frame reported (docs/input/interrupt.md) is part of
         // the record, so a resumed interrupted turn keeps its `≈`.
         let summary = HistoryItem::Summary(TurnSummary {
             verb: STATUS_VERBS[0].done,
@@ -3020,7 +3020,7 @@ mod tests {
     #[test]
     fn a_resume_notice_round_trips_with_how_the_run_before_it_ended() {
         // The note that the user started a settled agent again
-        // (docs/agent-tools.md) keeps its kind and the outcome the lead last
+        // (docs/agents/agent-tools.md) keeps its kind and the outcome the lead last
         // heard, so a resumed session replays the same note.
         let resumed = HistoryItem::AgentNotice(AgentNotice {
             id: "a1".into(),
@@ -3052,7 +3052,7 @@ mod tests {
             parse_session(&format!("{}\n{line}\n", meta_line(&meta(), "s"))).expect("parses");
         assert_eq!(items, [completion]);
     }
-    // ===== the session's own model (docs/session-model.md) =====
+    // ===== the session's own model (docs/state/session-model.md) =====
 
     fn selection() -> ModelSelection {
         ModelSelection::new("openrouter", "vendor/model-1")
@@ -3109,7 +3109,7 @@ mod tests {
         // A rollout recorded before the ChatGPT Codex provider was renamed
         // says `openai_chatgpt`; resuming it lands on the same provider
         // rather than on a `Can't resume on openai_chatgpt` toast
-        // (docs/chatgpt.md).
+        // (docs/providers/chatgpt.md).
         let line = model_line(&selection(), "t").replace("\"openrouter\"", "\"openai_chatgpt\"");
         assert!(line.contains("openai_chatgpt"), "{line}");
         let text = format!("{}{line}\n", file_of(&[message(Role::User, "hi")]));

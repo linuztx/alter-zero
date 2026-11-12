@@ -3,9 +3,9 @@
 //! composer's key map.
 //!
 //! The keys themselves are documented with their features: editing and cursor
-//! motion in `docs/textarea.md`, the newline keys in `docs/shift-enter.md`, Esc
-//! in `docs/interrupt.md` and `docs/backtrack.md`, and the `?` band in
-//! `docs/shortcuts.md`.
+//! motion in `docs/input/textarea.md`, the newline keys in `docs/input/shift-enter.md`, Esc
+//! in `docs/input/interrupt.md` and `docs/input/backtrack.md`, and the `?` band in
+//! `docs/ui/shortcuts.md`.
 
 use super::*;
 
@@ -17,20 +17,20 @@ impl App {
         // A pending `AskUserQuestion` modal owns every key, ahead of even the
         // permission prompt (the two queue behind each other, so at most one
         // is ever open) — the main turn's thread is blocked on the answers.
-        // See `docs/ask.md`.
+        // See `docs/tools/ask.md`.
         if self.view == View::Conversation && self.ask.is_some() {
             return self.on_key_ask(key);
         }
         // A pending tool-permission request is **modal**: it owns every key,
         // ahead of even the Ctrl+R search and the inline pickers, because a
-        // tool thread is blocked on the answer. See `docs/permissions.md`.
+        // tool thread is blocked on the answer. See `docs/state/permissions.md`.
         if self.view == View::Conversation && self.permission.is_some() {
             return self.on_key_permission(key);
         }
         // The startup review owns every key next: it asks about hooks and
         // project MCP servers before they run, so nothing else may be
         // decided around it — only a modal, which a tool thread is blocked
-        // on, comes first. See `docs/config-review.md`.
+        // on, comes first. See `docs/state/config-review.md`.
         if self.view == View::Conversation && self.config_review.is_some() {
             return self.on_key_config_review(key);
         }
@@ -46,70 +46,70 @@ impl App {
         // including the global Ctrl+C/Ctrl+O below, which it redefines (Ctrl+C
         // closes the picker instead of clearing the draft or quitting). It only
         // opens from the conversation view and blocks a turn from starting, so
-        // this is the whole of its key handling. See `docs/llm.md`.
+        // this is the whole of its key handling. See `docs/providers/llm.md`.
         if self.view == View::Conversation && self.model_picker.is_some() {
             return self.on_key_model_picker(key);
         }
         // The inline `/login` onboarding flow owns every key while open too, the
-        // same way the `/model` picker does. See `docs/llm.md`.
+        // same way the `/model` picker does. See `docs/providers/llm.md`.
         if self.view == View::Conversation && self.key_onboarding.is_some() {
             return self.on_key_key_onboarding(key);
         }
-        // …and so does the inline `/settings` menu. See `docs/settings.md`.
+        // …and so does the inline `/settings` menu. See `docs/state/settings.md`.
         if self.view == View::Conversation && self.settings_picker.is_some() {
             return self.on_key_settings(key);
         }
-        // …and the inline `/mascot` picker, its twin. See `docs/mascot.md`.
+        // …and the inline `/mascot` picker, its twin. See `docs/ui/mascot.md`.
         if self.view == View::Conversation && self.mascot_picker.is_some() {
             return self.on_key_mascot_picker(key);
         }
         // …and the inline `/spinner` picker, the `/mascot` picker's twin. See
-        // `docs/spinner.md`.
+        // `docs/ui/spinner.md`.
         if self.view == View::Conversation && self.spinner_picker.is_some() {
             return self.on_key_spinner_picker(key);
         }
         // …and the inline `/theme` picker, the `/spinner` picker's twin. See
-        // `docs/theme.md`.
+        // `docs/ui/theme.md`.
         if self.view == View::Conversation && self.theme_picker.is_some() {
             return self.on_key_theme_picker(key);
         }
         // …and the read-only `/donate` page, the `/hooks` menu's sibling.
-        // See `docs/donate.md`.
+        // See `docs/ui/donate.md`.
         if self.view == View::Conversation && self.donate_picker.is_some() {
             return self.on_key_donate_picker(key);
         }
         // …and the read-only `/export` page, the `/donate` page's sibling.
-        // See `docs/export.md`.
+        // See `docs/ui/export.md`.
         if self.view == View::Conversation && self.export_picker.is_some() {
             return self.on_key_export_picker(key);
         }
         // …and the read-only `/context` page, its sibling too. See
-        // `docs/context-usage.md`.
+        // `docs/architecture/context-usage.md`.
         if self.view == View::Conversation && self.context_usage.is_some() {
             return self.on_key_context_usage(key);
         }
-        // …and the read-only `/usage` page, its sibling. See `docs/usage.md`.
+        // …and the read-only `/usage` page, its sibling. See `docs/providers/usage.md`.
         if self.view == View::Conversation && self.usage_page.is_some() {
             return self.on_key_usage_page(key);
         }
         // …and the `/secrets` page, whose form takes text of its own — never
-        // the composer's. See `docs/secrets.md`.
+        // the composer's. See `docs/state/secrets.md`.
         if self.view == View::Conversation && self.secrets_page.is_some() {
             return self.on_key_secrets_page(key);
         }
-        // …and the inline `/skills` menu. See `docs/skills.md`.
+        // …and the inline `/skills` menu. See `docs/tools/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);
         }
         if self.view == View::Conversation && self.skills_menu.is_some() {
             return self.on_key_skills(key);
         }
-        // …and the read-only `/hooks` menu. See `docs/hooks-menu.md`.
+        // …and the read-only `/hooks` menu. See `docs/tools/hooks-menu.md`.
         if self.view == View::Conversation && self.hooks_menu.is_some() {
             return self.on_key_hooks(key);
         }
         // The ↓ background manager band owns every key while open, the same
-        // way the pickers do. See `docs/background.md`.
+        // way the pickers do. See `docs/tools/background.md`.
         if self.view == View::Conversation && self.background_view.is_some() {
             return self.on_key_background(key);
         }
@@ -117,7 +117,7 @@ impl App {
         // claims a handful of keys first — Enter opens the band, Esc/↑/Ctrl+C
         // dismiss the highlight — and lets every other key through after
         // clearing it. It sits above the Ctrl+C global so a lit indicator
-        // absorbs that press instead of quitting. See `docs/background.md`.
+        // absorbs that press instead of quitting. See `docs/tools/background.md`.
         if self.view == View::Conversation
             && self.background_focus
             && let Some(action) = self.on_key_background_focus(key)
@@ -126,7 +126,7 @@ impl App {
         }
         // The ↓ roster selection (the `❯` on the footer's agent list) claims
         // its navigation keys the same way — ↑/↓/Enter/x/Esc — and lets every
-        // other key through after clearing itself. See `docs/agent-tool.md`.
+        // other key through after clearing itself. See `docs/agents/agent-tool.md`.
         if self.view == View::Conversation
             && self.agent_selection.is_some()
             && let Some(action) = self.on_key_agent_selection(key)
@@ -140,7 +140,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             // The /resume picker closes on Ctrl+C — codex's from-a-session
             // picker "exit" leaves the picker, never the app (only its
-            // startup picker quits). See docs/resume.md.
+            // startup picker quits). See docs/state/resume.md.
             if self.view == View::ResumePicker {
                 self.close_resume_picker();
                 return Action::CloseResumePicker;
@@ -151,10 +151,10 @@ impl App {
                 // its `!` so the recall re-enters the mode. Recorded
                 // *ephemerally*: a cleared, abandoned draft recalls this session
                 // but is not persisted (codex keeps cleared drafts in
-                // local_history only — docs/history-persistence.md). A stored
+                // local_history only — docs/input/history-persistence.md). A stored
                 // secret's value in it is masked like a sent draft's, but the
                 // draft is never sent, so no toast says it was hidden
-                // (docs/secrets.md).
+                // (docs/state/secrets.md).
                 let (mut text, _never_sent) = self.take_draft();
                 if self.shell_mode {
                     self.shell_mode = false;
@@ -194,12 +194,12 @@ impl App {
     /// always has.
     fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
         // Any non-Esc key disarms a primed backtrack — codex resets its
-        // priming on any other keypress, no timeout (docs/backtrack.md). The
+        // priming on any other keypress, no timeout (docs/input/backtrack.md). The
         // key still does its normal job below.
         if self.backtrack.primed && key.code != KeyCode::Esc {
             self.backtrack.primed = false;
         }
-        // The `?` shortcuts band (docs/shortcuts.md): `?` from an *empty*
+        // The `?` shortcuts band (docs/ui/shortcuts.md): `?` from an *empty*
         // composer toggles it (SHIFT allowed — terminals differ in reporting
         // Shift+/; with a draft `?` falls through and types). Any other key
         // closes an open band first and then acts normally (codex's
@@ -223,12 +223,12 @@ impl App {
             }
         }
         let menu_open = self.command_menu.is_some();
-        // The `@` file picker (docs/file-search.md): when its band is open it
+        // The `@` file picker (docs/input/file-search.md): when its band is open it
         // intercepts the same navigation/select keys as the palette (they are
         // mutually exclusive — a bare `/token` has no whitespace, so an `@` in
         // it isn't at a token boundary).
         let file_open = self.file_search.is_some();
-        // The `$` skill picker (docs/skill-mentions.md): the same keys again,
+        // The `$` skill picker (docs/input/skill-mentions.md): the same keys again,
         // gated on the band actually *showing* (picker open and the cursor
         // still in a usable mention — the rows derive from the live token, so
         // a bare cursor move out of it must release ↑/↓ too). Exclusive with
@@ -238,7 +238,7 @@ impl App {
         match key.code {
             // Esc dismisses the palette when it's open (codex's "popup wins"
             // rule — even mid-turn); else it interrupts an in-flight turn
-            // (codex-style, see docs/interrupt.md); else it quits as before.
+            // (codex-style, see docs/input/interrupt.md); else it quits as before.
             KeyCode::Esc if menu_open => {
                 self.command_menu = None;
                 Action::None
@@ -265,13 +265,13 @@ impl App {
             // Esc in an agent session view returns to the main conversation
             // (with an empty composer — a typed draft keeps Esc a no-op, the
             // codex composer rule). Before the interrupt arm: leaving the
-            // view never interrupts the main turn. See docs/agent-tool.md.
+            // view never interrupts the main turn. See docs/agents/agent-tool.md.
             KeyCode::Esc if self.agent_view.is_some() && self.input.is_empty() => {
                 self.close_agent_view();
                 Action::LeaveAgentView
             }
             KeyCode::Esc if self.turn_active() && self.agent_view.is_none() => Action::Interrupt,
-            // Esc-Esc backtrack (docs/backtrack.md): a primed second Esc opens
+            // Esc-Esc backtrack (docs/input/backtrack.md): a primed second Esc opens
             // the transcript overlay previewing the newest user message; the
             // first Esc primes when the composer is empty and a previous user
             // message exists. Only with *nothing* to backtrack to does idle
@@ -290,7 +290,7 @@ impl App {
             // exits. Quit below needs an *empty* composer with no target.
             KeyCode::Esc if !self.input.is_empty() => Action::None,
             KeyCode::Esc => Action::Quit,
-            // Shift+Tab cycles the permission mode (docs/permissions.md) —
+            // Shift+Tab cycles the permission mode (docs/state/permissions.md) —
             // Claude Code's key for it, freeing Ctrl+A for the terminal's
             // line-start. Legacy terminals report it as BackTab (`ESC[Z`), the
             // kitty protocol can report Tab+SHIFT — both bind (the Shift+Enter
@@ -316,7 +316,7 @@ impl App {
             }
             // Tab inside an agent session view queues a follow-up turn for
             // **that agent** — the same intent one level down, over that
-            // agent's own queue (docs/queue.md). It has to be checked before
+            // agent's own queue (docs/input/queue.md). It has to be checked before
             // the main-session arm below, and the main arm has to exclude the
             // view, or Tab reaches `is_streaming()`/`queued` — the *lead's*
             // stream and the *lead's* backlog — and a message typed into a
@@ -361,7 +361,7 @@ impl App {
             // Alt+Enter and Shift+Enter insert a newline at the cursor so the input
             // box grows on demand; a plain Enter submits. Shift+Enter only reaches
             // us when keyboard enhancement is on (pushed by `term::init`); Ctrl+J
-            // below is the universal fallback. See docs/shift-enter.md.
+            // below is the universal fallback. See docs/input/shift-enter.md.
             KeyCode::Enter
                 if key
                     .modifiers
@@ -384,7 +384,7 @@ impl App {
                     // queued into a running loop (shown above the box until
                     // that loop reads it) or a chat continuation when idle —
                     // so the boundary records it once it knows which
-                    // (docs/agent-tool.md, docs/queue.md).
+                    // (docs/agents/agent-tool.md, docs/input/queue.md).
                     let text = self.take_input();
                     self.file_search = None;
                     self.skill_picker = None;
@@ -398,7 +398,7 @@ impl App {
                     // Tab is the other intent — a separate follow-up turn
                     // (see the Tab arm above) — and a `!` command or an
                     // attachment falls back to that queue too (steer_draft
-                    // routes both). See docs/queue.md.
+                    // routes both). See docs/input/queue.md.
                     match self.steer_draft() {
                         Some(text) => Action::Steer(text),
                         None => Action::None,
@@ -406,11 +406,11 @@ impl App {
                 } else if self.is_streaming() {
                     // A `!` shell turn: nothing is reading a conversation, so
                     // the draft queues as a follow-up turn exactly as it
-                    // always did (docs/shell-command.md).
+                    // always did (docs/input/shell-command.md).
                     self.queue_draft(/*new_batch*/ false);
                     Action::None
                 } else if self.shell_mode {
-                    // Shell mode: run the draft locally (docs/shell-command.md).
+                    // Shell mode: run the draft locally (docs/input/shell-command.md).
                     // Record the full `!command` for ↑ recall (codex records the
                     // whole text — recall re-absorbs the bang).
                     let raw = self.take_input();
@@ -423,7 +423,7 @@ impl App {
                     // Stage any Ctrl+V-attached images for the boundary to
                     // deliver alongside the text, *before* take_input clears the
                     // composer (the placeholder text stays; the pairs travel
-                    // the side channel — docs/image-paste.md).
+                    // the side channel — docs/input/image-paste.md).
                     self.submission_images = std::mem::take(&mut self.images);
                     let text = self.take_input();
                     self.file_search = None;
@@ -436,7 +436,7 @@ impl App {
             // delivers it as Char('j')+CONTROL (no keyboard enhancement needed), so
             // it inserts a newline like Alt/Shift+Enter even where the terminal
             // can't report a modified Enter (codex binds Ctrl+J the same way; see
-            // docs/shift-enter.md).
+            // docs/input/shift-enter.md).
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.insert_newline();
                 Action::None
@@ -444,7 +444,7 @@ impl App {
             // Ctrl+V (and Ctrl+Alt+V — the WSL-friendly alias codex also binds)
             // pastes an image from the system clipboard. The decision is pure; the
             // loop performs the clipboard I/O (`crate::clipboard`) and calls
-            // `attach_image` on success. See docs/image-paste.md.
+            // `attach_image` on success. See docs/input/image-paste.md.
             //
             // SUPER is in the mask too, for macOS's Cmd+V. It does **not** make
             // Cmd+V work there — a terminal consumes that chord for its own
@@ -503,7 +503,7 @@ impl App {
                 self.refresh_skill_picker(had_mention);
                 Action::None
             }
-            // Word motion on Ctrl/Alt-modified arrows (docs/textarea.md) —
+            // Word motion on Ctrl/Alt-modified arrows (docs/input/textarea.md) —
             // before the plain arms, which would otherwise swallow them.
             KeyCode::Left
                 if key
@@ -559,7 +559,7 @@ impl App {
             // With no follow-up left to edit, Alt+Up reaches the messages
             // handed to the turn already running — but whether one can still
             // be taken back is the boundary's shared queue to answer, not
-            // ours: it may have been read a moment ago (docs/queue.md).
+            // ours: it may have been read a moment ago (docs/input/queue.md).
             KeyCode::Up
                 if key.modifiers.contains(KeyModifiers::ALT)
                     && self.input.is_empty()
@@ -570,7 +570,7 @@ impl App {
             // ↑/↓ (and their terminal twins Ctrl+P/Ctrl+N): the open band's
             // selection first (codex's "popups win"), then shell-style history
             // recall — only from an empty composer or an unedited recall
-            // (docs/input-history.md) — then cursor movement. Only the real ↓
+            // (docs/input/input-history.md) — then cursor movement. Only the real ↓
             // walks the footer (the shell indicator / agent roster) — Ctrl+N
             // stays an editing key.
             KeyCode::Up => self.nav_up(),
@@ -581,7 +581,7 @@ impl App {
             }
             // Ctrl+B moves the running command (a model `bash` call or a `!`
             // shell turn) to the background — the loop raises the registry
-            // request the runner's poll loop consumes. See `docs/background.md`.
+            // request the runner's poll loop consumes. See `docs/tools/background.md`.
             // With nothing backgroundable running it is the terminal's
             // cursor-left instead (readline's Ctrl+B) — the session meaning
             // wins while it applies, the editing one the rest of the time.
@@ -593,7 +593,7 @@ impl App {
                     Action::None
                 }
             }
-            // The readline cursor keys (docs/textarea.md): Ctrl+A/Ctrl+E jump
+            // The readline cursor keys (docs/input/textarea.md): Ctrl+A/Ctrl+E jump
             // to the logical line's ends (Home/End), Ctrl+F steps right
             // (Ctrl+B above steps left when idle). The permission-mode cycle
             // that used to sit on Ctrl+A moved to Shift+Tab.
@@ -610,7 +610,7 @@ impl App {
                 Action::None
             }
             // Word motion: Alt+B/Alt+F (readline) and Ctrl/Alt+←/→ (the
-            // editor spelling) — by readline words, `docs/textarea.md`.
+            // editor spelling) — by readline words, `docs/input/textarea.md`.
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
                 self.input.move_word_left();
                 Action::None
@@ -619,7 +619,7 @@ impl App {
                 self.input.move_word_right();
                 Action::None
             }
-            // The kill keys (docs/textarea.md): Ctrl+W rubs out the previous
+            // The kill keys (docs/input/textarea.md): Ctrl+W rubs out the previous
             // whitespace-delimited word (the shell's), Alt+Backspace /
             // Ctrl+Backspace and Alt+D / Ctrl+Delete kill by readline words,
             // Ctrl+U/Ctrl+K kill to the logical line's start/end (Ctrl+K at
@@ -654,7 +654,7 @@ impl App {
                     self.backspace_and_refresh()
                 }
             }
-            // Ctrl+T cycles the thinking mode (docs/reasoning.md) — moved off
+            // Ctrl+T cycles the thinking mode (docs/providers/reasoning.md) — moved off
             // Shift+Tab, which cycles the permission mode now. Like /model,
             // cycling never touches a running turn — the mode rides the
             // *next* request.
@@ -669,7 +669,7 @@ impl App {
                 self.input.move_end();
                 Action::None
             }
-            // Ctrl+R opens the reverse history search (docs/history-search.md);
+            // Ctrl+R opens the reverse history search (docs/input/history-search.md);
             // once open, every key routes to on_key_search instead, where
             // Ctrl+R steps to older matches.
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -702,7 +702,7 @@ impl App {
     }
 
     /// ↑ / Ctrl+P: the open band's selection first (codex's "popups win"),
-    /// then shell-style history recall (docs/input-history.md), then the
+    /// then shell-style history recall (docs/input/input-history.md), then the
     /// textarea cursor.
     fn nav_up(&mut self) -> Action {
         if self.command_menu.is_some() {
@@ -729,8 +729,8 @@ impl App {
 
     /// ↓ / Ctrl+N — [`nav_up`](Self::nav_up)'s mirror. `footer_walk` is the
     /// real ↓'s own affordance: from an idle composer it steps onto the
-    /// footer's shell indicator while one runs (`docs/background.md`), else
-    /// opens the agent roster's selection (`docs/agent-tool.md`) — on the
+    /// footer's shell indicator while one runs (`docs/tools/background.md`), else
+    /// opens the agent roster's selection (`docs/agents/agent-tool.md`) — on the
     /// `● main` row, or straight back onto the **last picked** agent when the
     /// user has been in the roster before. Ctrl+N skips the walk: it is an
     /// editing key.
@@ -768,7 +768,7 @@ impl App {
     }
 
     /// Backspace (and its Ctrl+H alias): a large-paste placeholder goes whole
-    /// (docs/paste.md), otherwise one grapheme — then re-derive the bands and
+    /// (docs/input/paste.md), otherwise one grapheme — then re-derive the bands and
     /// the shell mode, exactly what every deleting key owes.
     fn backspace_and_refresh(&mut self) -> Action {
         let had_query = command_query(self.input.text()).is_some();

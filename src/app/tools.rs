@@ -1,6 +1,6 @@
 //! Tool-call bookkeeping: the parallel batch queue, the running call's live
 //! output, and how a call resolves.
-//! See `docs/tools.md` and `docs/parallel-tools.md`.
+//! See `docs/tools/tools.md` and `docs/tools/parallel-tools.md`.
 
 use super::*;
 use crate::stream::RoundCall;
@@ -35,7 +35,7 @@ struct Identity {
 /// cursor per kind — the visible calls pair with the batch announcement in
 /// order, the task calls with their results in order, the agent launches by
 /// the ids their specs carry — so every record the round resolves into is
-/// stamped with the provider's id for *that* call (`docs/prompt-caching.md`).
+/// stamped with the provider's id for *that* call (`docs/providers/prompt-caching.md`).
 #[derive(Debug)]
 pub(crate) struct OpenRound {
     pub(super) batch: u64,
@@ -47,7 +47,7 @@ pub(crate) struct OpenRound {
 impl OpenRound {
     /// The next task call of the round, in the model's order — task calls
     /// resolve through their own events, one per call, in that order
-    /// (`docs/task-tools.md`) — with its position in the round.
+    /// (`docs/tools/task-tools.md`) — with its position in the round.
     pub(super) fn take_task_call(&mut self) -> Option<(usize, &RoundCall)> {
         let index = self.tasks_taken;
         self.tasks_taken += 1;
@@ -59,8 +59,8 @@ impl OpenRound {
     }
 
     /// The round's calls that get a cell — everything but a task call (no
-    /// cell anywhere, `docs/task-tools.md`) and an agent launch (its own
-    /// group cell, `docs/agent-tool.md`) — in the model's order, which is
+    /// cell anywhere, `docs/tools/task-tools.md`) and an agent launch (its own
+    /// group cell, `docs/agents/agent-tool.md`) — in the model's order, which is
     /// the order the batch announcement lists them in, each with its
     /// position in the round.
     fn visible(&self) -> impl Iterator<Item = (usize, &RoundCall)> {
@@ -83,7 +83,7 @@ impl App {
     /// one round and carry the provider's own call ids.
     pub fn open_round(&mut self, calls: Vec<RoundCall>) {
         // The round's calls are all made: nothing more of them streams
-        // (docs/write-streaming.md).
+        // (docs/ui/write-streaming.md).
         self.tool_drafts.seal();
         self.next_batch += 1;
         self.round = Some(OpenRound {
@@ -107,19 +107,19 @@ impl App {
     /// [`start_tool`](App::start_tool). Called by the boundary on a
     /// [`crate::stream::StreamEvent::ToolBatch`]; a backend that never batches
     /// (the `!` shell, the dummy's lone calls) skips it and a lone
-    /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
+    /// [`start_tool`](App::start_tool) still works. See `docs/tools/parallel-tools.md`.
     pub fn start_tool_batch(&mut self, items: &[ToolCallSummary]) {
         // The round came back: a request that was retrying, or waiting for a
         // lost connection, got through — the wires that deliver a call whole
-        // stream no delta ahead of this (`docs/offline.md`).
+        // stream no delta ahead of this (`docs/providers/offline.md`).
         if let Some(status) = self.status.as_mut() {
             status.recovered();
         }
         // One id per announced batch: what tells the renderer a run of MCP
         // cells was **parallel** (one `Called deepwiki 2 times` line) from two
         // sequential single calls that merely landed next to each other in
-        // history (`docs/mcp.md`). The round announced ahead of this batch
-        // (docs/prompt-caching.md) names it and, in the model's order, the
+        // history (`docs/tools/mcp.md`). The round announced ahead of this batch
+        // (docs/providers/prompt-caching.md) names it and, in the model's order, the
         // provider's id of each visible call — the announcement lists exactly
         // those, in that order, so the k-th cell is the k-th visible call. A
         // count that disagrees stamps no ids rather than guessing; a batch no
@@ -148,7 +148,7 @@ impl App {
             }
         };
         // The round's previews are queued cells now: each `Write` cell takes
-        // its own (docs/write-streaming.md).
+        // its own (docs/ui/write-streaming.md).
         self.tool_drafts
             .adopt(items.iter().map(|item| item.name.as_str()));
         self.tool_queue = items
@@ -166,7 +166,7 @@ impl App {
                 // The model's own arguments, from the round: what a call that
                 // never reaches its `ToolStart` is recorded with — a waiting
                 // sibling an Esc resolves still replays exactly as the model
-                // made it (docs/interrupt.md). The call's own `ToolStart`
+                // made it (docs/input/interrupt.md). The call's own `ToolStart`
                 // replaces them (`start_tool`): a `PreToolUse` hook may have
                 // rewritten what runs.
                 arguments: identity.arguments,
@@ -188,7 +188,7 @@ impl App {
     /// backend summary), so only the status changes, plus the `arguments`: the
     /// ones this call actually runs with, replacing whatever its round
     /// announced (a `PreToolUse` hook may have rewritten them,
-    /// `docs/hooks.md`). Otherwise (an empty queue —
+    /// `docs/tools/hooks.md`). Otherwise (an empty queue —
     /// the `!` shell, the dummy's lone calls) a fresh `Running` call is pushed, so
     /// the single-tool path is unchanged.
     ///
@@ -222,7 +222,7 @@ impl App {
         // A call no batch announced is its round's whole announcement — when
         // it is the only call: pushed behind live ones, pairing drafts by
         // order could hand a cell another's file, so nothing previews
-        // (docs/write-streaming.md).
+        // (docs/ui/write-streaming.md).
         if self.tool_queue.is_empty() {
             self.tool_drafts.adopt([name]);
         } else {
@@ -250,7 +250,7 @@ impl App {
     /// Mark the running tool's output as **truncated** (set by the boundary just
     /// before [`end_tool`] when a `!` command's output exceeded the in-memory
     /// cap): the cell will append a dim `…` marker at the end of the expanded
-    /// output. No-op when no tool is running. See `docs/shell-command.md`.
+    /// output. No-op when no tool is running. See `docs/input/shell-command.md`.
     ///
     /// [`end_tool`]: App::end_tool
     pub fn set_tool_truncated(&mut self) {
@@ -263,7 +263,7 @@ impl App {
     /// why it failed — as the event resolving it stated
     /// ([`crate::stream::StreamEvent::ToolEnd`]'s `run` and its siblings'),
     /// set by the boundary just before the resolution so the recorded call
-    /// and its rollout line keep them (`docs/rollout-records.md`). A no-op
+    /// and its rollout line keep them (`docs/state/rollout-records.md`). A no-op
     /// unless the front call is [`ToolStatus::Running`]: a batch sibling
     /// still waiting has not run.
     pub fn set_tool_run(&mut self, run: crate::stream::ToolRun) {
@@ -277,7 +277,7 @@ impl App {
     /// Record how the **running** tool came to run without the user — the
     /// auto mode classifier's `Allowed by auto mode classifier` — so the
     /// resolved cell appends it as a dim `⎿` row (the boundary's handler for
-    /// [`crate::stream::StreamEvent::ToolNote`]; see `docs/permissions.md`),
+    /// [`crate::stream::StreamEvent::ToolNote`]; see `docs/state/permissions.md`),
     /// after any note the call already carries ([`ToolCall::add_note`]). A
     /// no-op unless the front call is [`ToolStatus::Running`] — the note
     /// always follows its call's `ToolStart`.
@@ -292,7 +292,7 @@ impl App {
     /// Append a chunk of live output to the **running** tool at the front of the
     /// queue so its cell tails the output as it streams (the boundary's handler
     /// for [`crate::stream::StreamEvent::ToolOutput`]; see
-    /// `docs/tool-streaming.md`). A no-op unless the front call is
+    /// `docs/ui/tool-streaming.md`). A no-op unless the front call is
     /// [`ToolStatus::Running`] — a `Waiting` batch sibling has not started and an
     /// empty queue has nothing to tail. Does **not** count tokens: the tally is
     /// charged once from the authoritative `ToolEnd` output in
@@ -312,7 +312,7 @@ impl App {
 
     /// Apply a running command's live update to the call
     /// ([`crate::stream::StreamEvent::ToolScreen`],
-    /// `docs/interactive-shell.md`): `settled` is final text appended for
+    /// `docs/tools/interactive-shell.md`): `settled` is final text appended for
     /// good, `live` the rows that replace the `live` appended last time — so
     /// a redrawn progress bar is one row changing in place. Like
     /// [`push_tool_output`](App::push_tool_output) it counts no tokens and is
@@ -320,7 +320,7 @@ impl App {
     /// is stamped with the command's own clock as last injected
     /// ([`set_command_elapsed`](App::set_command_elapsed) — at most a frame
     /// stale), which is what lets the running cell's window follow the rows
-    /// still moving ([`LiveTail::anchor`], `docs/tool-streaming.md`).
+    /// still moving ([`LiveTail::anchor`], `docs/ui/tool-streaming.md`).
     pub fn push_tool_screen(&mut self, settled: &str, live: &str) {
         if let Some(tool) = self.tool_queue.front_mut()
             && tool.status == ToolStatus::Running
@@ -367,7 +367,7 @@ impl App {
     /// The whole live tool queue, front-first: the running/next call followed by
     /// any [`ToolStatus::Waiting`] batch siblings. The renderer walks this to show
     /// every call in a parallel batch (the running one live, the rest as
-    /// `⎿ Waiting…`). Empty when no tool is in flight. See `docs/parallel-tools.md`.
+    /// `⎿ Waiting…`). Empty when no tool is in flight. See `docs/tools/parallel-tools.md`.
     #[must_use]
     pub fn tool_queue(&self) -> &VecDeque<ToolCall> {
         &self.tool_queue
@@ -396,12 +396,12 @@ impl App {
     /// ([`ERROR_TOOL_OUTPUT`]) ends every call the model asked for at once,
     /// and a call that never started is still a call the model made — its
     /// cell stays on screen and its record keeps it in the next request's
-    /// context (`docs/interrupt.md`). Empty when nothing was in flight.
+    /// context (`docs/input/interrupt.md`). Empty when nothing was in flight.
     ///
     /// Each record says why it failed (`kind`), and the running call how
     /// long it had run: the command clock the running cell displays, so to
     /// within a frame. A sibling still waiting never ran, so it has no
-    /// duration (`docs/rollout-records.md`).
+    /// duration (`docs/state/rollout-records.md`).
     pub(super) fn fail_live_queue(
         &mut self,
         output: &str,
@@ -427,13 +427,13 @@ impl App {
     /// stop-and-wait instruction the *model* reads, carrying Tab's amend
     /// feedback — kept beside it as [`ToolCall::context_output`] so the derived
     /// context replays what was really sent. The boundary's handler for
-    /// [`crate::stream::StreamEvent::ToolRejected`]. See `docs/permissions.md`.
+    /// [`crate::stream::StreamEvent::ToolRejected`]. See `docs/state/permissions.md`.
     pub fn reject_tool(&mut self, display: &str, result: &str) -> Option<ToolCall> {
         self.resolve_front_tool(display, Some(result.to_string()), ToolStatus::Failed)
     }
 
     /// Resolve the in-flight call as **answered by the user** — the
-    /// `AskUserQuestion` submission (`docs/ask.md`): green, with the
+    /// `AskUserQuestion` submission (`docs/tools/ask.md`): green, with the
     /// `User answered Alter Zero's questions:` cell text on `display` and the
     /// model-facing answers JSON kept beside it as
     /// [`ToolCall::context_output`], [`reject_tool`](Self::reject_tool)'s
@@ -449,7 +449,7 @@ impl App {
     /// launch text (interim-output path + completion promise) that the cell never shows —
     /// it renders the fixed `⎿ Running in the background (↓ to manage)` row.
     /// The boundary's handler for `StreamEvent::ToolBackgrounded`. See
-    /// `docs/background.md`.
+    /// `docs/tools/background.md`.
     pub fn background_tool(&mut self, output: &str) -> Option<ToolCall> {
         self.resolve_front_tool(output, None, ToolStatus::Backgrounded)
     }
@@ -457,7 +457,7 @@ impl App {
     /// The shared tail of [`end_tool`]/[`reject_tool`]/[`background_tool`]: pop
     /// the front call, stamp + record it with `status`, and fold its output into
     /// the token tally (arrow up — uploaded back; the count is *added to*, never
-    /// reset — see `docs/status-indicator.md`). The tally charges the
+    /// reset — see `docs/ui/status-indicator.md`). The tally charges the
     /// **model-facing** text ([`ToolCall::context_text`]), which is what the
     /// next request actually uploads — for a rejection that is the longer
     /// `context_output`, not the short cell line.
@@ -472,7 +472,7 @@ impl App {
         status: ToolStatus,
     ) -> Option<ToolCall> {
         let mut tool = self.tool_queue.pop_front()?;
-        // A resolved `Write` gives its draft up (docs/write-streaming.md).
+        // A resolved `Write` gives its draft up (docs/ui/write-streaming.md).
         self.tool_drafts.resolve(&tool.name);
         self.tool_live.reset();
         self.tool_revision += 1;
@@ -490,7 +490,7 @@ impl App {
 }
 
 /// Fold a running command's live update into its call's
-/// `output` (`docs/interactive-shell.md`): drop the `live_len` bytes of live
+/// `output` (`docs/tools/interactive-shell.md`): drop the `live_len` bytes of live
 /// rows appended last time, append the `settled` text, then the new `live`
 /// rows — whose length is returned for the next update. Shared by the main
 /// session's [`App::push_tool_screen`] and a subagent's run.
@@ -510,14 +510,14 @@ pub fn apply_tool_screen(output: &mut String, live_len: usize, settled: &str, li
 /// longer — a download that finished while its siblings go on — has nothing
 /// left to show, and gives the window up to the rows that do. Measured from
 /// the newest change rather than the clock, so a stall holds the window where
-/// it is instead of bouncing it (`docs/tool-streaming.md` *The window follows
+/// it is instead of bouncing it (`docs/ui/tool-streaming.md` *The window follows
 /// what is still moving*). Two seconds covers every progress display that
 /// updates at least once a second.
 pub const LIVE_ACTIVE_SPAN: Duration = Duration::from_secs(2);
 
 /// The running call's **live rows**: the tail of its `output` that the next
 /// screen update replaces ([`App::push_tool_screen`],
-/// `docs/interactive-shell.md`), and — per row — the command clock's reading
+/// `docs/tools/interactive-shell.md`), and — per row — the command clock's reading
 /// when its text last changed. The bookkeeping [`apply_tool_screen`] alone
 /// leaves out, kept beside the queue rather than on the call because it is
 /// live-only: a resolved cell has no moving rows.
@@ -528,7 +528,7 @@ pub const LIVE_ACTIVE_SPAN: Duration = Duration::from_secs(2);
 /// *below* the ones still changing, all within the screen's reach and so
 /// all `live`, and a window pinned to the output's end showed exactly the
 /// rows that had stopped while the motion hid behind `+N lines`
-/// ([`anchor`](LiveTail::anchor), `docs/tool-streaming.md`).
+/// ([`anchor`](LiveTail::anchor), `docs/ui/tool-streaming.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveTail {
     /// How many bytes at the end of the output are the live rows.
@@ -627,7 +627,7 @@ pub enum ToolStatus {
     /// `⎿ Waiting…` cell alongside the running call, until its own `ToolStart`
     /// flips it to [`Running`](ToolStatus::Running). Only a batched sibling is
     /// ever `Waiting`; a lone tool (the `!` shell, the dummy's single calls)
-    /// starts `Running`. See `docs/parallel-tools.md`.
+    /// starts `Running`. See `docs/tools/parallel-tools.md`.
     Waiting,
     /// Executing — shown live (blue) in the bottom region while it runs.
     Running,
@@ -640,7 +640,7 @@ pub enum ToolStatus {
     /// the [`App::background`] registry while the cell resolves with a green
     /// bullet and the fixed `⎿ Running in the background (↓ to manage)` row —
     /// the stored `output` is the model-facing text (interim-output
-    /// path), never displayed. See `docs/background.md`.
+    /// path), never displayed. See `docs/tools/background.md`.
     Backgrounded,
 }
 
@@ -661,21 +661,21 @@ pub struct ToolCall {
     /// Wall-clock stamp of when the call finished (set in [`App::end_tool`]).
     /// Recorded but not currently displayed — only user-message stamps show.
     /// Empty while running and when no clock is injected. See
-    /// `docs/timestamps.md`.
+    /// `docs/ui/timestamps.md`.
     pub timestamp: String,
     /// Whether this is a `!` shell command (set by [`App::begin_shell`]). A
     /// shell call renders **headerless** — just its `⎿` output lines, flush
     /// under the [`Role::Shell`] header message recorded with it — instead of
-    /// the `● name(args)` bullet header. See `docs/shell-command.md`.
+    /// the `● name(args)` bullet header. See `docs/input/shell-command.md`.
     pub shell: bool,
     /// Set when a `!` shell command's output **exceeded the in-memory cap** and
     /// was cut: `output` holds only the retained head, and the cell appends a
     /// dim `…` marker at the end of the expanded output (`ui::tool_full_lines`)
     /// to show more was dropped. `false` for output kept in full. See
-    /// `docs/shell-command.md`.
+    /// `docs/input/shell-command.md`.
     pub truncated: bool,
     /// The **model-facing** tool result, when it differs from the displayed
-    /// `output`. Set only by a permission rejection (`docs/permissions.md`):
+    /// `output`. Set only by a permission rejection (`docs/state/permissions.md`):
     /// the cell shows the short `User rejected write to hello.py` (plus the
     /// amended instructions) while the model reads the full stop-and-wait
     /// text. [`crate::context::context_messages`] replays *this* — via
@@ -690,7 +690,7 @@ pub struct ToolCall {
     pub context_output: Option<String>,
     /// How the call came to run **without the user's approval** — the auto
     /// mode classifier's `Allowed by auto mode classifier`
-    /// (`docs/permissions.md`). Set by [`App::set_tool_note`] right after
+    /// (`docs/state/permissions.md`). Set by [`App::set_tool_note`] right after
     /// the call starts; the resolved cell appends it as a dim `⎿` row (the
     /// example transcript's last line), and a `/resume` restores it. `None`
     /// for every call the user approved (or that needed no approval).
@@ -702,7 +702,7 @@ pub struct ToolCall {
     /// made: a `write`'s whole `content`, an `edit`'s two strings, a `bash`
     /// call's `timeout`. The summary alone was lossy — a `write` replayed as
     /// `{"path": …}` — which is why the executor could not collapse its
-    /// result to one line before (`docs/context.md`, `docs/tools.md`).
+    /// result to one line before (`docs/architecture/context.md`, `docs/tools/tools.md`).
     ///
     /// `None` for a `!` shell cell, a call the app synthesized itself, and
     /// every record written before the field existed — the summary
@@ -714,13 +714,13 @@ pub struct ToolCall {
     /// collapse a run of MCP cells that really ran *in parallel* into one
     /// `Called deepwiki 2 times (ctrl+o to expand)` line without also
     /// collapsing two sequential calls that happen to sit next to each other
-    /// in history. Round-trips through the rollout (`docs/mcp.md`).
+    /// in history. Round-trips through the rollout (`docs/tools/mcp.md`).
     pub batch: Option<u64>,
     /// The provider's own id for this call — the `tool_calls[].id` the
     /// model's round carried and the wire echoed back with its result — so
     /// the next request's derived context can send the id the provider
     /// already cached rather than a synthesized `call_N`
-    /// (`docs/prompt-caching.md`). `None` on a record made before the field
+    /// (`docs/providers/prompt-caching.md`). `None` on a record made before the field
     /// existed, a `!` shell run, or a call no round announced.
     pub call_id: Option<String>,
     /// The call's index in its round as the model made it (0-based) —
@@ -728,10 +728,10 @@ pub struct ToolCall {
     /// round in the wire's order when its records landed in another: a
     /// subagent group resolves before the round's ordinary calls run, so
     /// `[bash, agent, read]` records as `[agent, bash, read]`
-    /// (`docs/prompt-caching.md`). `None` wherever `call_id` is.
+    /// (`docs/providers/prompt-caching.md`). `None` wherever `call_id` is.
     pub position: Option<usize>,
     /// How the call ran — its exit code, how long it ran, and why it failed
-    /// (`docs/rollout-records.md`). Stated by the event that resolved it
+    /// (`docs/state/rollout-records.md`). Stated by the event that resolved it
     /// ([`App::set_tool_run`]), or stamped here when the app resolves the
     /// call itself (an Esc, a backend error); recorded on the rollout's
     /// `tool` line. All `None` for a call nothing measured: the offline
@@ -766,7 +766,7 @@ impl ToolCall {
     }
 }
 
-/// How a file tool's path reads on the screen (`docs/tools.md` *Path
+/// How a file tool's path reads on the screen (`docs/tools/tools.md` *Path
 /// display*): a `Read`/`Write`/`Edit` argument under the session's cwd shows
 /// **relative** to it (`hello.py`, `src/app.rs`), one outside the cwd but
 /// under the home directory shows **`~`-relative** (`~/hello.py`), and
@@ -796,7 +796,7 @@ pub struct PathDisplay {
     cwd: Option<PathBuf>,
     /// The absolute home directory, when one is known.
     home: Option<PathBuf>,
-    /// The session's scratchpad, when it has one (`docs/scratchpad.md`).
+    /// The session's scratchpad, when it has one (`docs/tools/scratchpad.md`).
     scratchpad: Option<PathBuf>,
 }
 
@@ -836,7 +836,7 @@ impl PathDisplay {
     /// files an earlier process wrote there
     /// ([`scratchpad::is_session_scratchpad`](crate::scratchpad::is_session_scratchpad)).
     /// What folds a `write`/`edit` into the collapsed group as a scratchpad
-    /// edit (`docs/tool-groups.md`).
+    /// edit (`docs/ui/tool-groups.md`).
     #[must_use]
     pub fn in_scratchpad(&self, path: &str) -> bool {
         let path = std::path::Path::new(path);
@@ -859,7 +859,7 @@ impl PathDisplay {
     }
 
     /// The `file://` target the header's shown path **links** to
-    /// ([`links::file_url`](crate::links::file_url), `docs/links.md`): the
+    /// ([`links::file_url`](crate::links::file_url), `docs/ui/links.md`): the
     /// file's absolute URI whatever short form [`display`](Self::display)
     /// painted, a relative argument resolved against the session's cwd.
     /// `None` when there is nothing to resolve a relative path against — the

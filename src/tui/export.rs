@@ -1,5 +1,5 @@
 //! The `/export` page at the boundary: writing the conversation where the
-//! picked target says (`docs/export.md`).
+//! picked target says (`docs/ui/export.md`).
 //!
 //! The pure side already decided *what* is exported — the transcript on
 //! screen, rendered by [`ui::export_text`] at the terminal's width — and

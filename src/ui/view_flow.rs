@@ -1,5 +1,5 @@
 //! Long inline-view content presented as text — the bottom anchor and the
-//! scrollback flow. See `docs/view-flow.md`.
+//! scrollback flow. See `docs/ui/view-flow.md`.
 //!
 //! The content-driven framed views (`/mcp`, `/hooks`, the startup review, the ↓
 //! background manager) build their whole page as lines; a page taller than
@@ -77,7 +77,7 @@ enum FlowSign {
 /// the rows its **painted tail** gets — the whole terminal for a framed view,
 /// which the region is clamped to and whose body `view_split` pins at the
 /// bottom, and the strip's own slice for the streaming strip
-/// (`docs/strip-flow.md`). Everything above that tail flows.
+/// (`docs/ui/strip-flow.md`). Everything above that tail flows.
 struct FlowPage {
     lines: Vec<Line<'static>>,
     sign: FlowSign,
@@ -102,7 +102,7 @@ pub struct ViewFlow {
     /// What the boundary compares each frame to decide whether the flow it
     /// committed is still the one on screen: the flowed rows' text at this
     /// width and count, or — for a page that ticks — the stable key naming
-    /// it, so the rows freeze instead (`FlowSign`, `docs/view-flow.md`).
+    /// it, so the rows freeze instead (`FlowSign`, `docs/ui/view-flow.md`).
     pub signature: u64,
     /// The flowed rows, in page order, ending where the painted tail begins.
     pub lines: Vec<Line<'static>>,
@@ -115,7 +115,7 @@ pub struct ViewFlow {
 /// that flows, and the boundary's signature check cleans the covered view's
 /// rows up. Every content-driven framed view flows — the two modals and the
 /// windowed pickers included: their pages are line builders like the menus'
-/// (`docs/view-flow.md`). The ask modal's page is static per state (its
+/// (`docs/ui/view-flow.md`). The ask modal's page is static per state (its
 /// chips, options and entry fields change only on a keystroke, which
 /// re-signs the flow — the picker-search rule); the permission prompt's
 /// builder needs `term_height` for its keep-context decision (a ticking
@@ -133,7 +133,7 @@ pub struct ViewFlow {
 /// view cannot acquire a flow without stating which changes to it matter.
 fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     if app.ask().is_some() {
-        // The `AskUserQuestion` modal (`docs/ask.md`): its top-drop clamp
+        // The `AskUserQuestion` modal (`docs/tools/ask.md`): its top-drop clamp
         // used to put the chip strip, the question and the first options in
         // no buffer at all on a short terminal.
         return Some(FlowPage::framed(
@@ -149,7 +149,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if app.config_review.is_some() {
         // The startup review sheds rows before it could flow (its ladder
-        // ends on a nine-row page, `docs/config-review.md`), and changes only
+        // ends on a nine-row page, `docs/state/config-review.md`), and changes only
         // on a keystroke — so it signs its rows, should it ever flow.
         return Some(FlowPage::framed(
             super::config_review_view::config_review_lines(app, width, term_height),
@@ -183,7 +183,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     if app.theme_picker.is_some() {
         // The `/theme` picker's page is still — its preview is built from
         // finished cells, nothing on it ticks — so it signs its rows like
-        // the `/mascot` picker (`docs/theme.md`).
+        // the `/mascot` picker (`docs/ui/theme.md`).
         return Some(FlowPage::framed(
             super::theme_view::theme_view_lines(app, width, term_height),
             term_height,
@@ -197,7 +197,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // page, it signs the **selection and the query** rather than its
         // rows: were its page ever to flow, a frame would never churn a
         // purge rebuild, while a keystroke that moves the highlight or edits
-        // the search would re-flow it (`docs/spinner.md`).
+        // the search would re-flow it (`docs/ui/spinner.md`).
         let mut hasher = DefaultHasher::new();
         picker.selected.hash(&mut hasher);
         picker.query.hash(&mut hasher);
@@ -221,7 +221,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if app.donate_picker.is_some() {
         // The `/donate` page is still — nothing on it ticks — so it signs
-        // its rows like the `/hooks` menu (`docs/donate.md`).
+        // its rows like the `/hooks` menu (`docs/ui/donate.md`).
         return Some(FlowPage::framed(
             super::donate_view::donate_view_lines(app, width, term_height),
             term_height,
@@ -230,7 +230,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     if app.secrets_page.is_some() {
         // The `/secrets` page changes only on a keystroke, so it signs its
         // rows like `/donate` — and its values are masked in those rows
-        // before they can flow (`docs/secrets.md`).
+        // before they can flow (`docs/state/secrets.md`).
         return Some(FlowPage::framed(
             super::secrets_view::secrets_view_lines(app, width, term_height),
             term_height,
@@ -238,7 +238,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     }
     if app.export_picker.is_some() {
         // The `/export` page is still too — its sibling's rule
-        // (`docs/export.md`).
+        // (`docs/ui/export.md`).
         return Some(FlowPage::framed(
             super::export_view::export_view_lines(app, width),
             term_height,
@@ -248,7 +248,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // The `/context` page never ticks — it changes when the
         // conversation does (a round lands, a server connects) — so it signs
         // its rows like its siblings: a re-count that changes them rebuilds
-        // once (`docs/context-usage.md`).
+        // once (`docs/architecture/context-usage.md`).
         return Some(FlowPage::framed(
             super::context_usage_view::context_usage_lines(app, width, term_height),
             term_height,
@@ -257,7 +257,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     if app.usage_page.is_some() {
         // The `/usage` page's rows move with its countdowns and its reads,
         // never per frame, and its ladder always fits — signed on its rows
-        // like its siblings (`docs/usage.md`).
+        // like its siblings (`docs/providers/usage.md`).
         return Some(FlowPage::framed(
             super::usage_view::usage_view_lines(app, width, term_height),
             term_height,
@@ -277,7 +277,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
         // signed on the shell it describes and its flowed top freezes —
         // where before it was skipped into no buffer at all, leaving the
         // conversation running straight into a headless box
-        // (`docs/background.md`). The **list** page changes only when a key
+        // (`docs/tools/background.md`). The **list** page changes only when a key
         // moves the `❯` or a shell exits, so it keeps the ordinary rule.
         let sign = match view {
             BackgroundView::Details { id } if app.background_shell(id).is_some() => {
@@ -300,7 +300,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     // **streaming strip** above it is what can overflow: a running tool
     // cell whose output the region cannot fit, the status line under it.
     // Those rows used to be trimmed into no buffer at all; they flow now,
-    // frozen like the band's (`docs/strip-flow.md`). Last, because every
+    // frozen like the band's (`docs/ui/strip-flow.md`). Last, because every
     // branch above replaces the composer — `view_split` squeezes the strip
     // for them, and there the view's own page is the one that flows.
     let painted = super::layout::strip_paint_rows(app, width, term_height);
@@ -321,7 +321,7 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
     None
 }
 
-/// The flow decision (`docs/view-flow.md`): when the painted framed view's
+/// The flow decision (`docs/ui/view-flow.md`): when the painted framed view's
 /// page is taller than the whole terminal, the rows the bottom anchor skips
 /// ([`view_body_skip`] — the page's top) must be committed above the live
 /// region, so the terminal's own scrolling reads the whole page. `None` while

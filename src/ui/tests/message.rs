@@ -117,7 +117,7 @@ fn inline_conversation_never_shows_the_timestamp() {
 
 #[test]
 fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
-    // Claude Code hides these from the normal view too (docs/hooks.md): the
+    // Claude Code hides these from the normal view too (docs/tools/hooks.md): the
     // inline repaint skips the item entirely, the Ctrl+O transcript shows
     // the label over the wire text.
     let note = HistoryItem::HookNote(crate::app::HookNote {
@@ -151,7 +151,7 @@ fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
 
 #[test]
 fn a_hook_note_with_a_report_is_its_cell_inline_and_expanded_in_the_transcript() {
-    // docs/hooks.md *The hook-run cell*: the note that carries the hooks'
+    // docs/tools/hooks.md *The hook-run cell*: the note that carries the hooks'
     // report is the `● Ran 1 Stop hook` cell between the reply and the
     // continuation it bought, with its spacer like every cell; Ctrl+O shows
     // the hook that ran in place of the old label-over-wire-text note.
@@ -473,7 +473,7 @@ fn compaction_lines_render_the_cyan_marker_cell() {
 #[test]
 fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
     // The gauge info rides the cell: `· {before} → {after} tokens`, plus
-    // `· auto` when the compaction was auto-triggered (docs/compact.md).
+    // `· auto` when the compaction was auto-triggered (docs/architecture/compact.md).
     let compaction = crate::app::Compaction {
         summary: "s".into(),
         timestamp: String::new(),
@@ -507,7 +507,7 @@ fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
 fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag() {
     // `● Context compacted · 2.1k → 507 tokens · 36s · auto` — the
     // summarization turn's elapsed rides the cell (humanized past a minute),
-    // 0 (an old rollout) hiding the clause (docs/compact.md).
+    // 0 (an old rollout) hiding the clause (docs/architecture/compact.md).
     let compaction = crate::app::Compaction {
         summary: "s".into(),
         timestamp: String::new(),
@@ -557,7 +557,7 @@ fn conversation_lines_keep_the_shell_cell_flush() {
     assert_eq!(texts, vec!["! pwd", "  ⎿  /home", ""]);
 }
 
-// --- literal roles echo their text's own spacing (docs/textarea.md) ---
+// --- literal roles echo their text's own spacing (docs/input/textarea.md) ---
 
 #[test]
 fn user_messages_keep_their_spacing() {

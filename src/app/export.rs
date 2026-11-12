@@ -1,5 +1,5 @@
 //! The `/export` page: the conversation as plain text, copied to the
-//! clipboard or saved to a file. See `docs/export.md`.
+//! clipboard or saved to a file. See `docs/ui/export.md`.
 //!
 //! `/copy`'s sibling — the **whole** transcript where `/copy` is the last
 //! reply — and, as a page, the `/donate` page's ([`super::donate`]): a

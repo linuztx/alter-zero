@@ -1,4 +1,4 @@
-//! Update check — **once a day, is there a newer release?** (`docs/update.md`)
+//! Update check — **once a day, is there a newer release?** (`docs/ops/update.md`)
 //!
 //! Pure half: the `update.json` format ([`UpdateFile`]), the version grammar
 //! and ordering ([`Version`], [`is_newer`]), the tag read off GitHub's
@@ -8,7 +8,7 @@
 //! environment predicate ([`enabled_by_env`]), the card's text ([`notice`]),
 //! the two guards `alter-zero update` needs ([`is_cargo_build_dir`], and
 //! [`package_manager`] for an install npm or its kin own — whose own command,
-//! [`update_command`], the card names instead; `docs/npm.md`). No
+//! [`update_command`], the card names instead; `docs/ops/npm.md`). No
 //! clock, no filesystem, no network: the boundary (`tui::update`) reads the
 //! UTC date, does the read-modify-write over the file and spawns the request
 //! — the one impure function here, [`fetch_latest`], is what that worker
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::APP_NAME;
 
 /// The file's name under the config home: `{config_home}/update.json` — its
-/// own file, per user, like `telemetry.json` (`docs/per-directory-state.md`).
+/// own file, per user, like `telemetry.json` (`docs/state/per-directory-state.md`).
 pub const UPDATE_FILE_NAME: &str = "update.json";
 
 /// The app's own on/off switch for a run (`0`/`false`/`no`/`off` = off, the
@@ -44,7 +44,7 @@ pub const INSTALLER_FILE: &str = "install.sh";
 pub const INSTALLER_BRANCH: &str = "main";
 
 /// The npm package that installs the binary — `npm/package.json`'s name
-/// (`docs/npm.md`), which every package manager's update command names.
+/// (`docs/ops/npm.md`), which every package manager's update command names.
 pub const NPM_PACKAGE: &str = "@linuztx/alter-zero";
 
 /// A JavaScript package manager that can install [`NPM_PACKAGE`] — and then
@@ -403,7 +403,7 @@ pub fn notice(current: &str, latest: &str, repo: &str, command: &str) -> String 
 /// Whether an executable sits in a `cargo` build directory —
 /// `target/{profile}/` or `target/{triple}/{profile}/`, for each profile this
 /// crate builds in: `debug`, `release` and `dist`, the one a release ships
-/// (`docs/binary-size.md`) — which is a checkout, not an install:
+/// (`docs/ops/binary-size.md`) — which is a checkout, not an install:
 /// `alter-zero update` refuses to overwrite one with a release binary and
 /// points at `git pull && cargo build`.
 #[must_use]
@@ -761,7 +761,7 @@ mod tests {
             "/home/u/src/alter-zero/target/release/alter-zero",
             "/home/u/src/alter-zero/target/x86_64-unknown-linux-gnu/release/alter-zero",
             "target/debug/alter-zero",
-            // The shipped build's own profile (docs/binary-size.md):
+            // The shipped build's own profile (docs/ops/binary-size.md):
             // `cargo build --profile dist`, and the per-target shape
             // `scripts/release.sh build` leaves.
             "/home/u/src/alter-zero/target/dist/alter-zero",

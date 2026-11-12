@@ -1,5 +1,5 @@
 //! The `/context` page at the boundary: keeping it live
-//! (`docs/context-usage.md`).
+//! (`docs/architecture/context-usage.md`).
 //!
 //! The pure side counts the window and owns the page. What the boundary
 //! adds is the one input `App` does not hold on its own — the tool set the

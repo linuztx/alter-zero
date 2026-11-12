@@ -9,19 +9,19 @@
 //! loop keeps animating and the result arrives as just another event.
 //!
 //! - [`spawn_file_search_worker`] — the `@` picker's walk + rank
-//!   (`docs/file-search.md`), fed by [`dispatch_file_search`].
-//! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
+//!   (`docs/input/file-search.md`), fed by [`dispatch_file_search`].
+//! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/input/image-paste.md`).
 //! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
-//!   picker and the startup capability probe (`docs/llm.md`).
-//! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
-//!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
+//!   picker and the startup capability probe (`docs/providers/llm.md`).
+//! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/providers/copilot.md`,
+//!   `docs/providers/chatgpt.md`, `docs/providers/claude.md`, `docs/providers/cline.md`), chosen by the
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
 //!   milliseconds: it waits on the provider until the user approves, or
 //!   `cancel` trips.
 //! - [`spawn_usage_fetch`] — one subscription's usage, for the `/usage` page
-//!   (`docs/usage.md`).
+//!   (`docs/providers/usage.md`).
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
-//!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
+//!   (`docs/ops/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
 //!
 //! **Invariant 1:** a worker only ever *sends*. None of them reads stdin, so
@@ -42,13 +42,13 @@ use super::Session;
 /// A finished `/model` fetch from one provider: its human label (for a failure
 /// note) and either the provider's models or a one-line error. The picker
 /// fetches every configured provider in parallel and merges these as they land.
-/// Carried on the model-fetch worker's channel. See `docs/llm.md`.
+/// Carried on the model-fetch worker's channel. See `docs/providers/llm.md`.
 pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
 /// What the `/login` workers report back. A sign-in sends two messages, in
-/// order — the code to show, then the flow's verdict (`docs/copilot.md`); a
+/// order — the code to show, then the flow's verdict (`docs/providers/copilot.md`); a
 /// local server's connection test sends one, its verdict
-/// (`docs/local-models.md`).
+/// (`docs/providers/local-models.md`).
 #[derive(Debug)]
 pub(crate) enum DeviceEvent {
     /// The provider issued a code — show it, and start counting it down.
@@ -77,7 +77,7 @@ pub(crate) enum DeviceEvent {
 /// way `/model` will (`llm::models::fetch_models`, over `cfg`), and report
 /// the verdict — unless `cancel` tripped meanwhile (Esc stopped the test, or
 /// the page went away), when nothing is sent. `name` and `label` are what
-/// the verdict's sentences call the server. See `docs/local-models.md`.
+/// the verdict's sentences call the server. See `docs/providers/local-models.md`.
 pub(crate) fn spawn_server_test(
     cfg: ModelConfig,
     name: String,
@@ -102,11 +102,11 @@ pub(crate) fn spawn_server_test(
 /// flow being closed out from under it).
 ///
 /// Which flow runs is the row's **auth scheme** and its `kind`, not a guess:
-/// GitHub's device code (`docs/copilot.md`), OpenAI's browser PKCE or its
-/// device code (`docs/chatgpt.md` — the one scheme offering two, so its
+/// GitHub's device code (`docs/providers/copilot.md`), OpenAI's browser PKCE or its
+/// device code (`docs/providers/chatgpt.md` — the one scheme offering two, so its
 /// `kind` is what the user picked on the method choice), Anthropic's browser
-/// PKCE (`docs/claude.md`), Cline's WorkOS device code (`docs/cline.md`), or
-/// Google's browser PKCE for Antigravity (`docs/antigravity.md`) — the one
+/// PKCE (`docs/providers/claude.md`), Cline's WorkOS device code (`docs/providers/cline.md`), or
+/// Google's browser PKCE for Antigravity (`docs/providers/antigravity.md`) — the one
 /// sign-in that also sets the account up, on `base`, the provider's own host.
 /// All report on the same two messages, because every page is the same page
 /// — something to show, then a wait.
@@ -147,7 +147,7 @@ pub(crate) fn spawn_signin(
 
 /// Run OpenAI's device-code flow: ask for a code, publish it with the page
 /// to enter it at, then poll until the user approves it there — the same
-/// shape as GitHub's, on OpenAI's own endpoints (`docs/chatgpt.md`).
+/// shape as GitHub's, on OpenAI's own endpoints (`docs/providers/chatgpt.md`).
 fn spawn_chatgpt_device_login(
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>,
@@ -189,7 +189,7 @@ fn spawn_chatgpt_device_login(
 /// Run Cline's device-code sign-in: ask WorkOS for a code, publish it with
 /// the page to confirm it at, then poll until the user confirms it there —
 /// and, once they have, register the WorkOS pair with Cline's own API for
-/// the refresh token the key store takes. See `docs/cline.md`.
+/// the refresh token the key store takes. See `docs/providers/cline.md`.
 fn spawn_cline_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let device = match llm::cline::request_device_code() {
@@ -222,7 +222,7 @@ fn spawn_cline_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender
 }
 
 /// Run Anthropic's Console PKCE flow: bind the callback port, publish the URL
-/// to open, then block until the browser comes back. See `docs/claude.md`.
+/// to open, then block until the browser comes back. See `docs/providers/claude.md`.
 fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let signin = match llm::claude::begin_signin() {
@@ -269,7 +269,7 @@ fn spawn_claude_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSende
 /// port (Antigravity's own first, any free one after), publish the URL to
 /// open, block until the browser comes back — then set the account up on
 /// `base`, onboarding it when the backend has never seen it, which is why
-/// this is the one place that may wait on it. See `docs/antigravity.md`.
+/// this is the one place that may wait on it. See `docs/providers/antigravity.md`.
 fn spawn_antigravity_login(
     base: String,
     cancel: CancelToken,
@@ -308,7 +308,7 @@ fn spawn_antigravity_login(
 }
 
 /// Run OpenAI's PKCE loopback flow: bind the callback port, publish the URL
-/// to open, then block until the browser comes back. See `docs/chatgpt.md`.
+/// to open, then block until the browser comes back. See `docs/providers/chatgpt.md`.
 fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let signin = match llm::chatgpt::begin_signin() {
@@ -349,7 +349,7 @@ fn spawn_chatgpt_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSend
 }
 
 /// Run GitHub's device flow on a worker thread, reporting the code and then
-/// the verdict. See `docs/copilot.md`.
+/// the verdict. See `docs/providers/copilot.md`.
 fn spawn_copilot_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSender<DeviceEvent>) {
     std::thread::spawn(move || {
         let device = match llm::copilot::request_device_code() {
@@ -377,7 +377,7 @@ fn spawn_copilot_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSend
         // org's SSO has not authorised, signs in perfectly and fails later. So
         // verify here, while the page that can explain it is still up, rather
         // than reporting "Signed in ✓" and letting `/model` fail cryptically a
-        // minute later (`docs/copilot.md`).
+        // minute later (`docs/providers/copilot.md`).
         let result = llm::copilot::poll_for_token(&device, &cancel).and_then(|token| {
             llm::copilot::authorize(&token)
                 // The seat the exchange named rides back with the token: the
@@ -395,7 +395,7 @@ fn spawn_copilot_login(cancel: CancelToken, tx: tokio::sync::mpsc::UnboundedSend
     });
 }
 
-/// Deliver the day's telemetry ping on a detached thread (`docs/telemetry.md`),
+/// Deliver the day's telemetry ping on a detached thread (`docs/ops/telemetry.md`),
 /// sending `day` and the version the ping carried back on success
 /// (`telemetry::Delivery`) so the loop — never this thread — records them in
 /// `telemetry.json`. A failure sends nothing: there is nothing the user
@@ -420,7 +420,7 @@ pub(crate) fn spawn_telemetry_ping(
 }
 
 /// Ask the repository for its newest release on a detached thread
-/// (`docs/update.md`), sending the version back on success so the loop —
+/// (`docs/ops/update.md`), sending the version back on success so the loop —
 /// never this thread — records it in `update.json` and commits the notice.
 /// A failure sends nothing: the attempt's day was recorded at the spawn, so
 /// a dead network costs one request per day and nothing the user sees. The
@@ -469,7 +469,7 @@ struct Walk {
 /// `truncated` only when an entry it would have listed is left out: it reads
 /// on past the cap until it meets one, so a tree that exactly fills the cap is
 /// complete. Breadth-first, so a cut drops the deepest entries. Dependency-free
-/// (the agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
+/// (the agreed design — no `.gitignore` parsing). See `docs/input/file-search.md`.
 ///
 /// Each path is built **once**, as its folder's path plus its name joined by
 /// `/`: one allocation per entry beside the name `read_dir` hands back, where
@@ -564,7 +564,7 @@ fn own_name(path: &str, start: usize, is_dir: bool) -> &str {
 /// **afresh** and ranks the result ([`rank_files`]), sending a
 /// [`FileSearchResult`] back with every match in it, not just the first
 /// screenful: the picker scrolls through and counts them all, five rows at a
-/// time (`docs/file-search.md`). The walk is per-query (bounded by
+/// time (`docs/input/file-search.md`). The walk is per-query (bounded by
 /// [`FILE_INDEX_CAP`]) rather than cached at startup, so a file the agent just
 /// created — or anything else new on disk — appears in the picker immediately;
 /// codex gets the same freshness by starting a new walk per `@`-token session.
@@ -638,7 +638,7 @@ pub(crate) fn spawn_image_paste(
 /// Fetch one provider's `/models` list on a background thread (the image-paste
 /// pattern), sending the labelled result to the loop. One of these is spawned
 /// per configured provider so they fetch in parallel; a cancelled fetch (the
-/// picker closed) is dropped. See `docs/llm.md`.
+/// picker closed) is dropped. See `docs/providers/llm.md`.
 pub(crate) fn spawn_model_fetch(
     label: String,
     cfg: Option<ModelConfig>,
@@ -661,7 +661,7 @@ pub(crate) fn spawn_model_fetch(
 /// pattern), sending the result — tagged with the page's `round` and the
 /// provider it read — to the loop. One of these runs per signed-in
 /// subscription, so they read in parallel; a cancelled read (the page closed,
-/// a newer round began) sends nothing. See `docs/usage.md`.
+/// a newer round began) sends nothing. See `docs/providers/usage.md`.
 pub(crate) fn spawn_usage_fetch(
     round: u64,
     provider: String,
@@ -688,7 +688,7 @@ impl Session<'_> {
 
     /// A file-search result from the worker: feed it into the open `@` picker
     /// (stale results — the token moved on — are dropped by `set_file_matches`),
-    /// then repaint. See `docs/file-search.md`.
+    /// then repaint. See `docs/input/file-search.md`.
     pub(crate) fn on_file_matches(&mut self, result: FileSearchResult) {
         self.app
             .set_file_matches(&result.query, result.matches, result.truncated);
@@ -698,13 +698,13 @@ impl Session<'_> {
     /// A finished Ctrl+V clipboard read: attach the temp image to the composer, or
     /// surface the red failure notice. Committing is view-gated (invariant 4) —
     /// the result may arrive with an overlay up, where the notice is recorded only
-    /// and the return repaints it from history. See `docs/image-paste.md`.
+    /// and the return repaints it from history. See `docs/input/image-paste.md`.
     pub(crate) fn on_image_paste(&mut self, result: Result<PathBuf, String>) {
         match result {
             Ok(path) => {
                 // Read the header once, here at the boundary, so the pure line
                 // builders can reserve the right rows for the picture under
-                // the bubble it will be sent with (`docs/images.md`). A path
+                // the bubble it will be sent with (`docs/ui/images.md`). A path
                 // whose size never lands simply isn't drawn.
                 if let Some(name) = path.to_str()
                     && let Some(px) = image_dimensions(&path)
@@ -714,7 +714,7 @@ impl Session<'_> {
                 self.app.attach_image(path);
                 // A known non-vision model can't see the paste: warn at once with
                 // a toast — the attachment still rides the request as a text note
-                // the model reads, so it can tell the user too (docs/tools.md).
+                // the model reads, so it can tell the user too (docs/tools/tools.md).
                 if self.models.is_blind() {
                     let model = self.models.active_model().to_string();
                     self.toast(

@@ -1,4 +1,4 @@
-# docker/lib.sh — what docker/build.sh and docker/run.sh share (docs/docker.md).
+# docker/lib.sh — what docker/build.sh and docker/run.sh share (docs/ops/docker.md).
 # Sourced, never run. POSIX sh, like install.sh: no arrays, no `local`, no `[[`.
 #
 # The names live here, once, so the command build.sh prints at the end is the

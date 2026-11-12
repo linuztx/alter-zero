@@ -1,5 +1,5 @@
 //! OpenAI's **Responses** API as a wire format — the one the ChatGPT backend
-//! speaks, and the only one it speaks. See `docs/chatgpt.md`.
+//! speaks, and the only one it speaks. See `docs/providers/chatgpt.md`.
 //!
 //! Everything here is a **translation**, in both directions, between that
 //! format and the Chat Completions currency the rest of the crate already
@@ -44,7 +44,7 @@ pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage
 
 /// The Responses request as it is serialized: the `input` items **borrowed
 /// from the conversation** — a picture's `data:` URL is the session's one
-/// shared encoding, never a copy into a tree (`docs/memory.md`) — beside
+/// shared encoding, never a copy into a tree (`docs/architecture/memory.md`) — beside
 /// every other field in one small map.
 #[derive(serde::Serialize)]
 struct Request<'a> {
@@ -80,7 +80,7 @@ fn request<'a>(cfg: &ModelConfig, tools: &[Value], messages: &'a [ChatMessage]) 
             json!({"effort": effort, "summary": "auto"}),
         );
     }
-    // Codex's fast mode (`docs/fast-mode.md`): the selected speed tier's id,
+    // Codex's fast mode (`docs/providers/fast-mode.md`): the selected speed tier's id,
     // top-level — `priority` — and nothing for standard, which is the
     // backend's own default rather than a value it needs told.
     if let Some(tier) = cfg.service_tier.as_deref() {
@@ -300,7 +300,7 @@ pub enum ResponseEvent {
     Reasoning(String),
     /// A `function_call` item **opened** — the first moment its name is
     /// known, so a call being generated can be named and previewed while its
-    /// arguments stream (`docs/write-streaming.md`). `slot` is the item's
+    /// arguments stream (`docs/ui/write-streaming.md`). `slot` is the item's
     /// `output_index`, which every later frame of the call repeats — `None`
     /// when the frame left it out, for [`ToolStreams`] to key by order.
     ToolOpened { slot: Option<usize>, name: String },
@@ -320,7 +320,7 @@ pub enum ResponseEvent {
         /// Why an **incomplete** response stopped short —
         /// `incomplete_details.reason`, `max_output_tokens` or
         /// `content_filter` — which the bare `incomplete` status does not
-        /// say (`docs/unfinished-replies.md`). `None` for a finished one.
+        /// say (`docs/architecture/unfinished-replies.md`). `None` for a finished one.
         reason: Option<String>,
     },
     /// The server failed the response in-band.
@@ -405,7 +405,7 @@ pub fn parse_event(data: &str) -> ResponseEvent {
 /// so every [`ToolCallFragment`] names its call by one key, and a finished
 /// item streams only what no earlier frame did: its name when the item never
 /// announced its opening, its arguments when none of them streamed as deltas
-/// (`docs/write-streaming.md`). The preview gets the whole call either way,
+/// (`docs/ui/write-streaming.md`). The preview gets the whole call either way,
 /// and the tally counts each part of it exactly once.
 ///
 /// A call's frames are keyed by their `output_index`. The field is the
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn a_provider_drops_the_fields_its_server_refuses_here_too() {
         // `drop_params` is the provider's, whatever its wire
-        // (docs/user-providers.md).
+        // (docs/providers/user-providers.md).
         let mut cfg = ModelConfig::fallback();
         cfg.cache_key = Some("k".to_string());
         cfg.drop_params = vec!["prompt_cache_key".to_string(), "model".to_string()];
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn an_opening_function_call_item_names_its_call() {
         // The name used to arrive only with the finished item, too late to
-        // preview a call being generated (docs/write-streaming.md).
+        // preview a call being generated (docs/ui/write-streaming.md).
         assert_eq!(
             parse_event(
                 r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_a","name":"write","arguments":""}}"#
@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn the_request_borrows_a_pictures_bytes_rather_than_copying_them() {
-        // The whole point of the typed request (`docs/memory.md`): an
+        // The whole point of the typed request (`docs/architecture/memory.md`): an
         // `input_image` part's URL is the session's one shared encoding.
         let url = crate::llm::AttachmentUrl::from("data:image/png;base64,AAAA");
         let messages_in = [ChatMessage::with_parts(
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn the_selected_speed_tier_rides_as_the_top_level_service_tier() {
-        // Codex's fast mode on the wire (docs/fast-mode.md): the tier's id,
+        // Codex's fast mode on the wire (docs/providers/fast-mode.md): the tier's id,
         // top-level, beside `reasoning` — and nothing at all for standard,
         // the backend's own default, rather than a `"default"` it would
         // have to know.

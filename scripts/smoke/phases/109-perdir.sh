@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# PER-DIRECTORY state (docs/per-directory-state.md). /model and
+# PER-DIRECTORY state (docs/state/per-directory-state.md). /model and
 # /settings remember the directory they were used in — one config home, three
 # working directories. (a) A pre-seeded LAST model selection (the shape a
 # pre-directory config.json has, so this doubles as its compat check) is what
@@ -66,7 +66,7 @@ pd_setting() {
 }
 
 # (a) The first directory: the last selection, pinned. The hook is trusted
-# at the startup review once (docs/config-review.md) — its record is keyed by
+# at the startup review once (docs/state/config-review.md) — its record is keyed by
 # the hooks.json, so no later launch here asks again.
 tmux new-session -d -s "$S109" -x 100 -y 30 -c "$PD_A" "$APP_PD"
 trust_hooks "$S109"

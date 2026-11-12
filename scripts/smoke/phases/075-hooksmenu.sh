@@ -4,9 +4,9 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the /hooks MENU (docs/hooks-menu.md). Claude Code's /hooks browser over a
+# the /hooks MENU (docs/tools/hooks-menu.md). Claude Code's /hooks browser over a
 # planted hooks.json, its hooks trusted at the startup review first
-# (docs/config-review.md): the palette lists the command, it opens the inline
+# (docs/state/config-review.md): the palette lists the command, it opens the inline
 # framed events list ('Hooks', '{N} hooks configured', the ℹ banner, the
 # events with counts + summaries in an aligned column, a ↓ overflow marker
 # past the five-row window), Enter drills into matchers → hooks → details

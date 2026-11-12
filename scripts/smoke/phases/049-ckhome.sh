@@ -6,7 +6,7 @@ smoke_begin
 
 CK_SESS="$(mktemp -d "$SMOKE_TMP/cksess.XXXXXX")"
 
-# checkpoints REFUSE a home-directory cwd (docs/checkpoint.md).
+# checkpoints REFUSE a home-directory cwd (docs/state/checkpoint.md).
 # The session-start snapshot `git add -A`s the whole cwd before the first
 # frame ever paints; run with cwd = `~` itself that hashed the user's entire
 # home directory into the store — minutes of blocked, blank, raw-mode

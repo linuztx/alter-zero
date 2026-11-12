@@ -1,5 +1,5 @@
 //! Tool permission requests: the pure vocabulary behind the inline approval
-//! prompt, and the gate the backend thread blocks on. See `docs/permissions.md`.
+//! prompt, and the gate the backend thread blocks on. See `docs/state/permissions.md`.
 //!
 //! Everything here is pure data plus one small piece of cross-thread
 //! coordination ([`PermissionGate`], the `Arc<Mutex<…>> + Condvar` sibling of
@@ -25,7 +25,7 @@ const WAIT_POLL: Duration = Duration::from_millis(50);
 /// prompt switches to `Edit` too), and persisted per project in
 /// `permissions.json`. A session starts in [`Auto`](Self::Auto), the default,
 /// unless the project saved another mode or the run is seeded with one
-/// ([`PermissionsFile::starting_mode`]). See `docs/permissions.md`.
+/// ([`PermissionsFile::starting_mode`]). See `docs/state/permissions.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PermissionMode {
     /// Ask before every `write`/`edit` **and** every `bash` command — Claude
@@ -37,11 +37,11 @@ pub enum PermissionMode {
     Edit,
     /// Claude Code's auto mode, and **the default**: `write`/`edit` run
     /// unasked like [`Edit`], and a `bash` command — or an MCP tool call
-    /// (`docs/mcp.md`) — is reviewed by the **auto mode classifier** — a
+    /// (`docs/tools/mcp.md`) — is reviewed by the **auto mode classifier** — a
     /// silent LLM safety check — instead of the user. An allowed call runs
     /// (its cell noting [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is
     /// rejected with the classifier's reason; a classifier *failure* falls
-    /// back to the ordinary prompt. See `docs/permissions.md`.
+    /// back to the ordinary prompt. See `docs/state/permissions.md`.
     ///
     /// [`Edit`]: Self::Edit
     #[default]
@@ -115,14 +115,14 @@ pub enum PermissionKind {
     /// A `bash` command: no framed body — the command and its description sit
     /// indented under the title.
     Bash,
-    /// An `mcp__server__tool` call (`docs/mcp.md`): the target is the wire
+    /// An `mcp__server__tool` call (`docs/tools/mcp.md`): the target is the wire
     /// name (the rule key), the body its arguments as the one-line
     /// `key: "value"` form the cell header shows, and the detail the server's
     /// own description of the tool — the `Bash` shape, because it answers the
     /// same question (*what exactly is about to run?*).
     Mcp,
     /// Input typed into an interactive session a `tty` command left running
-    /// (`bash_session`, `docs/interactive-shell.md`): the target is the
+    /// (`bash_session`, `docs/tools/interactive-shell.md`): the target is the
     /// session id (what "don't ask again for this session" remembers — never
     /// persisted), the body the input on one line (`print(1)⏎`), the detail
     /// the command the session runs — whose allowlist rule covers its input
@@ -158,14 +158,14 @@ pub struct PermissionRequest {
     ///
     /// The type above names the asker in the title; this identifies it. The
     /// prompt's context cells are "what raised this, on the screen you are
-    /// looking at" (`docs/permissions.md`), and inside an agent session view
+    /// looking at" (`docs/state/permissions.md`), and inside an agent session view
     /// that screen is one conversation among several running at once — so
     /// only an id can tell the viewed agent's own `⎿ Waiting…` batch from
     /// another agent's, or from the main turn's. Two agents can share a type.
     pub agent_id: Option<String>,
 }
 
-/// A call an unattended gate refused (`docs/headless.md` *Permissions*): the
+/// A call an unattended gate refused (`docs/cli/headless.md` *Permissions*): the
 /// request a prompt would have shown, and the call as the model made it —
 /// what a headless run's `permission_denials` report, in Claude Code's terms.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,13 +177,13 @@ pub struct UnattendedRefusal {
     /// The call's id on the wire.
     pub tool_use_id: String,
     /// The model's arguments as it sent them: placeholders, never a secret's
-    /// value (`docs/secrets.md`).
+    /// value (`docs/state/secrets.md`).
     pub tool_input: String,
 }
 
 /// What the user chose, handed back to the blocked tool thread. Esc is *not*
 /// one of these: it abandons the request (the loop releases it as a plain
-/// rejection) and interrupts the turn instead — `docs/permissions.md`.
+/// rejection) and interrupts the turn instead — `docs/state/permissions.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
     /// Option 1 — run this call, ask again next time.
@@ -207,15 +207,15 @@ pub enum Approval {
     /// Proceed like [`Allow`](Self::Allow), and record `note` on the cell —
     /// how the call came to run without the user: the auto mode classifier's
     /// [`CLASSIFIER_ALLOWED_NOTE`], shown as a dim `⎿` row once the call
-    /// resolves (`ToolCall::approval_note`, `docs/permissions.md`).
+    /// resolves (`ToolCall::approval_note`, `docs/state/permissions.md`).
     AllowNoted { note: String },
     /// Don't run it. `display` is the short red cell output the user sees;
     /// `result` is the longer text the *model* reads as the tool result. Two
     /// fields so the cell can stay a one-liner while the instruction is
-    /// complete (`docs/permissions.md`). `kind` says who refused it — the
+    /// complete (`docs/state/permissions.md`). `kind` says who refused it — the
     /// user, auto mode's classifier, a hook, nobody there to ask — which the
     /// rollout's `tool` line records as its `error_kind`
-    /// (`docs/rollout-records.md`).
+    /// (`docs/state/rollout-records.md`).
     Reject {
         display: String,
         result: String,
@@ -231,7 +231,7 @@ pub const fn title(kind: PermissionKind) -> &'static str {
         PermissionKind::Edit => "Edit file",
         PermissionKind::Bash => "Bash command",
         // Claude Code's own title for a server tool: the user is approving a
-        // *use*, and the body names the tool and server (`docs/mcp.md`).
+        // *use*, and the body names the tool and server (`docs/tools/mcp.md`).
         PermissionKind::Mcp => "Tool use",
         PermissionKind::Session => "Session input",
     }
@@ -256,7 +256,7 @@ pub fn question(request: &PermissionRequest) -> String {
             file_name(&request.target)
         ),
         // The body above already names the tool, the server and the arguments,
-        // so the question asks the one thing left (`docs/mcp.md`) — the `bash`
+        // so the question asks the one thing left (`docs/tools/mcp.md`) — the `bash`
         // prompt's wording, for the same reason.
         PermissionKind::Bash | PermissionKind::Mcp => "Do you want to proceed?".to_string(),
         PermissionKind::Session => "Do you want to send this input?".to_string(),
@@ -265,7 +265,7 @@ pub fn question(request: &PermissionRequest) -> String {
 
 /// The `{Server} - {tool} (MCP)` display form for an MCP request's wire-name
 /// `target` — what the rejected cell names, the server capitalized like
-/// every other rendered surface (`docs/mcp.md`).
+/// every other rendered surface (`docs/tools/mcp.md`).
 fn mcp_display(wire: &str) -> String {
     crate::mcp::display_from_wire(wire)
         .map_or_else(|| wire.to_string(), |d| crate::mcp::capitalize_display(&d))
@@ -283,7 +283,7 @@ pub fn mcp_label(wire: &str) -> String {
 
 /// [`mcp_label`] with its server half capitalized — the prompt body's
 /// headline and the "don't ask again" row's spelling (the rule still stores
-/// the exact wire name, `docs/mcp.md`).
+/// the exact wire name, `docs/tools/mcp.md`).
 #[must_use]
 pub fn mcp_display_label(wire: &str) -> String {
     crate::mcp::capitalize_display(&mcp_label(wire))
@@ -307,7 +307,7 @@ pub const OPTION_COUNT: usize = 3;
 /// An MCP row names the tool the way the user knows it (`Deepwiki -
 /// read_wiki_structure`, not the `mcp__…` wire name it stores) **and the
 /// project the rule is remembered for** — `project`, the directory the
-/// footer names, since the allowlist is per project (`docs/mcp.md`). `None`
+/// footer names, since the allowlist is per project (`docs/tools/mcp.md`). `None`
 /// (no session info injected yet) simply leaves that clause off.
 #[must_use]
 pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; OPTION_COUNT] {
@@ -316,7 +316,7 @@ pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; O
             "Yes, and don't ask again for: {}",
             command_scope(&request.target).display()
         ),
-        // An MCP rule remembers the exact wire name (`docs/mcp.md`); the row
+        // An MCP rule remembers the exact wire name (`docs/tools/mcp.md`); the row
         // shows the display label, which is the same tool said out loud.
         PermissionKind::Mcp => {
             let label = mcp_display_label(&request.target);
@@ -326,7 +326,7 @@ pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; O
             }
         }
         // The session is the scope: its id is remembered in memory for as
-        // long as it runs, never as a rule (docs/interactive-shell.md).
+        // long as it runs, never as a rule (docs/tools/interactive-shell.md).
         PermissionKind::Session => "Yes, and don't ask again for this session".to_string(),
         PermissionKind::Write | PermissionKind::Edit => {
             "Yes, allow all edits during this session (shift+tab)".to_string()
@@ -385,7 +385,7 @@ pub fn denial_result(feedback: Option<&str>) -> String {
 }
 
 /// The short output a call refused by an **unattended** gate records — a
-/// headless run's, where nobody can answer a prompt (`docs/headless.md`).
+/// headless run's, where nobody can answer a prompt (`docs/cli/headless.md`).
 pub const UNATTENDED_DISPLAY: &str = "Not run: needs approval (headless run)";
 
 /// The model-facing tool result for a call an unattended gate refused: it
@@ -401,7 +401,7 @@ pub const UNATTENDED_RESULT: &str = "This tool call needs the user's approval, a
 
 /// The short output a call records when an **unattended** gate refused it
 /// because auto mode's safety check failed rather than ruled — an error, not
-/// a denial (`docs/headless.md` *Permissions*).
+/// a denial (`docs/cli/headless.md` *Permissions*).
 pub const CHECK_FAILED_DISPLAY: &str = "Not run: the safety check failed (headless run)";
 
 /// The model-facing tool result for that call: the check failed, nobody else
@@ -447,7 +447,7 @@ pub fn explain_display() -> String {
 }
 
 /// The **auto mode classifier**'s verdict on one `bash` command or MCP tool
-/// call (`docs/permissions.md`, `docs/mcp.md`): whether it may run unasked,
+/// call (`docs/state/permissions.md`, `docs/tools/mcp.md`): whether it may run unasked,
 /// and — for a denial — the reason both the red cell and the model read.
 /// Produced by the real LLM classifier (`crate::llm::classifier`) or the
 /// dummy's offline heuristic ([`auto_verdict`]).
@@ -467,7 +467,7 @@ pub const CLASSIFIER_ALLOWED_NOTE: &str = "Allowed by auto mode classifier";
 
 /// The dim note appended to a cell allowed because it writes inside the
 /// session's own scratchpad — the transcript's record that no human approved
-/// this call ([`CLASSIFIER_ALLOWED_NOTE`]'s sibling, `docs/scratchpad.md`).
+/// this call ([`CLASSIFIER_ALLOWED_NOTE`]'s sibling, `docs/tools/scratchpad.md`).
 pub const SCRATCHPAD_ALLOWED_NOTE: &str = "Allowed in the session scratchpad";
 
 /// The short output recorded on a cell the classifier **denied** — the red
@@ -487,7 +487,7 @@ pub fn classifier_denied_display(reason: Option<&str>) -> String {
 /// work may continue, a safer approach is fine, but the intent behind the
 /// denial must not be bypassed; if the capability is essential, stop and ask
 /// the user. Kind-neutral wording, since the classifier reviews `bash`
-/// commands and MCP tool calls alike (`docs/mcp.md`).
+/// commands and MCP tool calls alike (`docs/tools/mcp.md`).
 #[must_use]
 pub fn classifier_denial_result(reason: Option<&str>) -> String {
     let reason = match reason.map(str::trim).filter(|r| !r.is_empty()) {
@@ -544,7 +544,7 @@ const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
 
 /// The **offline** stand-in for the auto mode classifier — the deterministic
 /// heuristic the dummy backend consults so the feature demos (and smoke-tests)
-/// without a network (`docs/permissions.md`). Allows a command only when
+/// without a network (`docs/state/permissions.md`). Allows a command only when
 /// every pipeline segment reduces to a known read-only prefix
 /// (`HEURISTIC_SAFE_PREFIXES`); anything else — mutations, wrappers,
 /// redirects, substitutions, an empty command — is denied with a short
@@ -579,7 +579,7 @@ pub fn auto_verdict(command: &str) -> ClassifierVerdict {
 }
 
 /// What a `bash` command's "don't ask again" remembers — see
-/// `docs/permissions.md`.
+/// `docs/state/permissions.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandScope {
     /// Every segment reduced to a safe prefix. `keys` are all of them (all must
@@ -950,13 +950,13 @@ impl PermissionRules {
             // master, above): `edit` mode is about file changes, and `auto`'s
             // classifier is the approve seam's per-call consult — never a
             // standing rule — so an uncovered tool still classifies (or, in
-            // the asking modes, asks) every time (`docs/mcp.md`).
+            // the asking modes, asks) every time (`docs/tools/mcp.md`).
             PermissionKind::Mcp => self.exact.contains(&request.target),
             // Input into a session is covered by the rule its command runs
             // under — `python3 *` trusts python3 with any arguments, the REPL
             // included — and by nothing else here: the per-session "don't
             // ask again" lives on the gate, not in the persisted rules
-            // (docs/interactive-shell.md).
+            // (docs/tools/interactive-shell.md).
             PermissionKind::Session => request
                 .detail
                 .as_deref()
@@ -1024,7 +1024,7 @@ const PREFIX_RULE_SUFFIX: &str = " *";
 /// }
 /// ```
 ///
-/// Pure format/parse (the `Settings` pattern, `docs/llm.md`) — the file
+/// Pure format/parse (the `Settings` pattern, `docs/providers/llm.md`) — the file
 /// read/write lives at the boundary (`tui::config`), which loads it at
 /// startup to seed the gate ([`starting_mode`](Self::starting_mode)) and, on
 /// every change, re-reads it and rewrites only what changed in this
@@ -1164,7 +1164,7 @@ impl PermissionsFile {
 struct GateInner {
     rules: PermissionRules,
     /// Whether nobody can answer a prompt — a headless run
-    /// ([`PermissionGate::set_unattended`], `docs/headless.md`).
+    /// ([`PermissionGate::set_unattended`], `docs/cli/headless.md`).
     unattended: bool,
     /// What the unattended gate refused, in order, until taken for the run's
     /// report ([`PermissionGate::take_unattended_refusals`]).
@@ -1208,7 +1208,7 @@ impl std::fmt::Debug for ShownJobs {
 
 /// The permission handshake: the tool thread asks, blocks, and is woken by the
 /// event loop's decision. Cloneable — every clone shares one set of rules and
-/// one decision board. See `docs/permissions.md`.
+/// one decision board. See `docs/state/permissions.md`.
 #[derive(Debug, Clone, Default)]
 pub struct PermissionGate {
     inner: Arc<Mutex<GateInner>>,
@@ -1239,7 +1239,7 @@ impl PermissionGate {
 
     /// Point the gate at this session's scratchpad directory — the boundary
     /// does it once at startup, `None` when the feature is off or the
-    /// directory could not be created (`docs/scratchpad.md`).
+    /// directory could not be created (`docs/tools/scratchpad.md`).
     pub fn set_scratchpad(&self, dir: Option<PathBuf>) {
         self.lock().scratchpad = dir;
     }
@@ -1252,7 +1252,7 @@ impl PermissionGate {
     /// being changed. A `bash` command naming a scratchpad path still asks —
     /// what it goes on to touch is its own business — and so does an MCP call.
     /// The containment test is the strict lexical
-    /// [`crate::scratchpad::contains`]. See `docs/scratchpad.md`.
+    /// [`crate::scratchpad::contains`]. See `docs/tools/scratchpad.md`.
     #[must_use]
     pub fn scratchpad_covers(&self, request: &PermissionRequest) -> bool {
         if !matches!(request.kind, PermissionKind::Write | PermissionKind::Edit) {
@@ -1357,7 +1357,7 @@ impl PermissionGate {
         drop(job);
     }
 
-    /// Make the gate **unattended** — a headless run's (`docs/headless.md`):
+    /// Make the gate **unattended** — a headless run's (`docs/cli/headless.md`):
     /// where a call would put a prompt to the user, nobody is there to
     /// answer, so it is refused instead ([`refuses_unattended`]). One-way: a
     /// run with no screen never grows one.
@@ -1381,7 +1381,7 @@ impl PermissionGate {
     }
 
     /// Note that auto mode's safety check failed on `request` in an
-    /// unattended run (`docs/headless.md` *Permissions*): `true` the first
+    /// unattended run (`docs/cli/headless.md` *Permissions*): `true` the first
     /// time it fails on this call — the model is invited to retry it once —
     /// and `false` every time after, when it is told to stop, so a check
     /// that keeps failing never holds the model in a loop.
@@ -1438,7 +1438,7 @@ mod tests {
         }
     }
 
-    // --- an unattended gate: the headless run (docs/headless.md) ---
+    // --- an unattended gate: the headless run (docs/cli/headless.md) ---
 
     /// A refusal of `target` as the model's call `id` made it.
     fn refusal(kind: PermissionKind, target: &str, id: &str) -> UnattendedRefusal {
@@ -1544,7 +1544,7 @@ mod tests {
         }
     }
 
-    // --- the session scratchpad (docs/scratchpad.md) ---
+    // --- the session scratchpad (docs/tools/scratchpad.md) ---
 
     #[test]
     fn the_scratchpad_note_names_the_scratchpad() {
@@ -1619,7 +1619,7 @@ mod tests {
     #[test]
     fn the_second_option_names_what_it_remembers() {
         // The edit option carries its shortcut — Shift+Tab, the mode toggle —
-        // and choosing it IS the switch to edit mode (docs/permissions.md).
+        // and choosing it IS the switch to edit mode (docs/state/permissions.md).
         let edits = options(&request(PermissionKind::Write, "hello.py"), None);
         assert_eq!(edits[0], "Yes");
         assert_eq!(
@@ -1961,7 +1961,7 @@ mod tests {
 
     #[test]
     fn a_session_starts_in_auto_mode() {
-        // Auto is the default posture (docs/permissions.md): file changes
+        // Auto is the default posture (docs/state/permissions.md): file changes
         // run, and a command the allowlist doesn't cover goes to the
         // classifier — so a fresh gate, and the rules it holds, start there.
         assert_eq!(PermissionMode::default(), PermissionMode::Auto);
@@ -1994,7 +1994,7 @@ mod tests {
     fn auto_mode_covers_file_changes_but_never_a_command() {
         // Auto sits above edit: files run unasked, while a command goes to
         // the CLASSIFIER — which is approve_call's business, not a standing
-        // rule — so `allows` still says no for bash (docs/permissions.md).
+        // rule — so `allows` still says no for bash (docs/state/permissions.md).
         let rules = PermissionRules {
             mode: PermissionMode::Auto,
             ..PermissionRules::default()
@@ -2072,7 +2072,7 @@ mod tests {
     #[test]
     fn the_heuristic_classifier_allows_read_only_commands() {
         // The offline stand-in the dummy backend consults in auto mode
-        // (docs/permissions.md) — read-only inspection passes…
+        // (docs/state/permissions.md) — read-only inspection passes…
         for command in [
             "ls -la",
             "pwd",
@@ -2251,7 +2251,7 @@ mod tests {
     #[test]
     fn a_prompt_runs_what_its_thread_registered_once_it_is_shown() {
         // The loop marks a prompt shown when it opens it on screen — the
-        // moment a `Notification` hook means (docs/hooks.md) — and what the
+        // moment a `Notification` hook means (docs/tools/hooks.md) — and what the
         // asking thread registered runs then, once.
         let gate = PermissionGate::new();
         let id = gate.next_id();
@@ -2446,7 +2446,7 @@ mod tests {
         assert_eq!(entry.command_sets(), (BTreeSet::new(), BTreeSet::new()));
     }
 
-    // --- where a session starts (docs/permissions.md) ---
+    // --- where a session starts (docs/state/permissions.md) ---
 
     #[test]
     fn the_env_seed_reads_any_mode_name_and_degrades_to_manual() {
@@ -2503,7 +2503,7 @@ mod tests {
         let req = request(PermissionKind::Mcp, "mcp__deepwiki__ask_question");
         assert_eq!(title(PermissionKind::Mcp), "Tool use");
         // The body names the tool, the server and the arguments, so the
-        // question asks the one thing left (`docs/mcp.md`).
+        // question asks the one thing left (`docs/tools/mcp.md`).
         assert_eq!(question(&req), "Do you want to proceed?");
         // The rule names the tool the way the user knows it, scoped to the
         // project it is remembered for; the stored key stays the wire name.
@@ -2533,7 +2533,7 @@ mod tests {
         // Edit mode still asks — a remote tool is not a file edit — and auto
         // mode's `allows` still says no: its classifier is the approve seam's
         // per-call consult, never a standing rule, so an uncovered tool
-        // classifies every time exactly like a command (docs/mcp.md).
+        // classifies every time exactly like a command (docs/tools/mcp.md).
         rules.mode = PermissionMode::Edit;
         assert!(!rules.allows(&req));
         rules.mode = PermissionMode::Auto;
@@ -2548,7 +2548,7 @@ mod tests {
         assert!(!rules.allows(&request(PermissionKind::Mcp, "mcp__deepwiki__read_wiki")));
     }
 
-    // --- interactive-session input (docs/interactive-shell.md) ---
+    // --- interactive-session input (docs/tools/interactive-shell.md) ---
 
     /// Input typed into session `id`, which runs `command`.
     fn session_request(id: &str, command: &str) -> PermissionRequest {

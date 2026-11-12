@@ -1,4 +1,4 @@
-//! The `/mcp` manager's boundary half (`docs/mcp.md`): building the
+//! The `/mcp` manager's boundary half (`docs/tools/mcp.md`): building the
 //! [`McpManager`] from the config files at bootstrap, opening the menu over
 //! its snapshot, applying the menu's typed operations, and folding the MCP
 //! event channel's reports back into the app.
@@ -15,7 +15,7 @@ use super::config;
 
 /// Gather everything the manager is built from: the user file parsed here,
 /// the project files taken from the bootstrap-read project layer, scopes
-/// merged approval-aware (`docs/config-review.md`) — an enabled project
+/// merged approval-aware (`docs/state/config-review.md`) — an enabled project
 /// server shadows the user's, one waiting for the review or declined is
 /// listed but held — plus this project's disabled set, the token-store path,
 /// and the timeout knobs. Pure parse/merge over boundary reads. Without a
@@ -107,7 +107,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         })
         .collect();
     // The era cache is retired — a connect re-derives the verdict every
-    // time now, so the file only ever misleads (`docs/mcp.md`).
+    // time now, so the file only ever misleads (`docs/tools/mcp.md`).
     config::remove_retired_mcp_era_cache();
     // Every provider's key variable — what a project's remote server may not
     // have expanded into its URL or headers.
@@ -127,7 +127,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         auth_path: config::mcp_auth_path(),
         cwd: Some(cwd.to_path_buf()),
         // This binary, for the tier that detaches a stdio server where no
-        // `setsid` binary exists (`docs/tty-detach.md`) — the shells' helper.
+        // `setsid` binary exists (`docs/tools/tty-detach.md`) — the shells' helper.
         detach_helper: std::env::current_exe().ok(),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
@@ -146,13 +146,13 @@ impl Session<'_> {
         self.app.open_mcp_menu(snapshot);
     }
 
-    /// The `/settings` **MCP** row (`docs/mcp.md`): connect every enabled
+    /// The `/settings` **MCP** row (`docs/tools/mcp.md`): connect every enabled
     /// server, or stop them all — each keeps its own `/mcp` switch either
     /// way. The offered tools and the servers' instructions follow at once
     /// (`refresh_mcp` rebuilds the next turn's backend when the set moved;
     /// servers that connect later rebuild it as their events land), and
     /// turned on over project servers that wait for the startup review, the
-    /// review asks now — the **Hooks** row's rule (`docs/config-review.md`).
+    /// review asks now — the **Hooks** row's rule (`docs/state/config-review.md`).
     pub(crate) fn apply_mcp_setting(&mut self, on: bool) {
         self.mcp.set_active(on);
         self.models.refresh_mcp();
@@ -171,7 +171,7 @@ impl Session<'_> {
             McpOp::SetDisabled { server, disabled } => {
                 let state = if disabled { "disabled" } else { "enabled" };
                 // A project server's on/off is the review's decision, kept in
-                // trust.json (`docs/config-review.md`); a user server's is the
+                // trust.json (`docs/state/config-review.md`); a user server's is the
                 // user file's per-directory set.
                 if !self.set_project_server(&server, !disabled)
                     && let Err(error) = manager.set_disabled(&server, disabled)
@@ -198,7 +198,7 @@ impl Session<'_> {
             McpOp::CancelAuth => manager.cancel_auth(),
             McpOp::CopyAuthUrl { url } => {
                 // The `/copy` seam: arboard with the OSC 52 fallback
-                // (`docs/copy.md`), so the copy works over SSH too.
+                // (`docs/ui/copy.md`), so the copy works over SSH too.
                 match alter_zero::clipboard::copy_to_clipboard(&url) {
                     Ok(lease) => {
                         if let Some(lease) = lease {
@@ -253,7 +253,7 @@ impl Session<'_> {
     /// Say that an `mcp.json` entry could not be parsed — at startup, and
     /// again when the `/settings` **MCP** row turns MCP on — the hooks-file
     /// rule: a server that vanishes must never do it quietly
-    /// (`docs/mcp.md`). Nothing while MCP is off, when no server is meant to
+    /// (`docs/tools/mcp.md`). Nothing while MCP is off, when no server is meant to
     /// run.
     pub(crate) fn report_mcp_errors(&mut self) {
         if !self.mcp.is_active() {

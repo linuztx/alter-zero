@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/write-streaming.md. A `write` call's content is the longest thing a
+# docs/ui/write-streaming.md. A `write` call's content is the longest thing a
 # model generates in a turn, and it used to reach the screen only once the
 # whole round had finished. The cell goes up the moment the call is named
 # now, and the file streams into it:

@@ -1,5 +1,5 @@
 //! What an interactive-session call tells the model
-//! (`docs/interactive-shell.md`): one **frame line** saying what state the
+//! (`docs/tools/interactive-shell.md`): one **frame line** saying what state the
 //! session is in, over the output since the model's previous look — or, for a
 //! full-screen program, its screen.
 //!
@@ -83,7 +83,7 @@ pub enum View {
     Screen { before: String, snapshot: Snapshot },
     /// A command's whole output **as data** — tabs and trailing spaces as
     /// written, both ends kept past the cap (`pty::fold::HeadTail`,
-    /// `docs/bash-tools.md`): what a command that exits inside its own launch
+    /// `docs/tools/bash-tools.md`): what a command that exits inside its own launch
     /// reports, exactly what a plain call's pipe returned.
     Data { text: String },
 }
@@ -105,7 +105,7 @@ const WAITING_CLAUSE: &str = ", waiting for input";
 /// answer it — only the model, through `bashsend`. The user has no way into
 /// the session, so a password the model was not given is one to ask for in
 /// chat; told only that typed input is hidden, a model sent the user to
-/// "enter it in the terminal prompt" (`docs/bash-tools.md`).
+/// "enter it in the terminal prompt" (`docs/tools/bash-tools.md`).
 const PASSWORD_CLAUSE: &str = ", waiting for a password — only bashsend can type it";
 /// The password clause before it said who can type — still read back, so a
 /// session recorded with it keeps its state row after a `/resume`.
@@ -149,7 +149,7 @@ pub const HTML_ESCAPED_NOTE: &str = "[Read as HTML-escaped: &lt; as <, &gt; as >
 
 /// Appended when a call typed into a session that had already exited — it
 /// ended while the model was writing the call, before any note could say so
-/// (`docs/bash-tools.md` *One notice per exit*): the report is its exit, and
+/// (`docs/tools/bash-tools.md` *One notice per exit*): the report is its exit, and
 /// the keys went nowhere.
 pub const EXITED_BEFORE_INPUT_NOTE: &str = "[Nothing was typed: the session had already \
      exited — its final output is above.]";
@@ -168,7 +168,7 @@ pub const WAIT_ENDED_NOTE: &str = "[The user ended this wait early; the command 
      running. Carry on, and check on it later.]";
 
 /// What the model is told the first time a command outlives the `bash` call
-/// that started it (`docs/bash-tools.md`): where the session goes next — in
+/// that started it (`docs/tools/bash-tools.md`): where the session goes next — in
 /// its text only, since the cell's state row says it for the user.
 #[must_use]
 pub fn continued_note(session: &str) -> String {
@@ -178,7 +178,7 @@ pub fn continued_note(session: &str) -> String {
     )
 }
 
-/// One running session, as `bashlist` names it (`docs/bash-tools.md`).
+/// One running session, as `bashlist` names it (`docs/tools/bash-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub id: String,
@@ -795,7 +795,7 @@ mod tests {
         // through bashsend — the user has no way into the session, so a
         // password it was not given is one to ask the user for in chat.
         // Told only that typed input is hidden, a model sent the user to
-        // "enter it in the terminal prompt" (docs/bash-tools.md).
+        // "enter it in the terminal prompt" (docs/tools/bash-tools.md).
         let out = report(
             "s1",
             Status::Running {

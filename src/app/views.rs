@@ -4,9 +4,9 @@
 //! [`on_key_overlay_toggle`](super::App::on_key_overlay_toggle), which the
 //! dispatch *and* the two inline modals call, so a prompt blocking the turn
 //! still cannot lock the two views that show what it is asking about
-//! (`docs/permissions.md`).
+//! (`docs/state/permissions.md`).
 //!
-//! What each shows is `docs/tool-view-performance.md` and `docs/context.md`; the
+//! What each shows is `docs/ui/tool-view-performance.md` and `docs/architecture/context.md`; the
 //! rule that nothing commits to scrollback while an overlay is up is CLAUDE.md
 //! invariant 4.
 
@@ -21,7 +21,7 @@ impl App {
     /// (like Ctrl+O) return to the chat, Home/End jump to the transcript's edges.
     pub(super) fn on_key_tool_view(&mut self, key: KeyEvent) -> Action {
         match key.code {
-            // Backtrack preview keys (docs/backtrack.md): Esc/← step the
+            // Backtrack preview keys (docs/input/backtrack.md): Esc/← step the
             // highlight to the next-older user message, → back toward the
             // newest, Enter confirms the rewind (truncate + prefill — the
             // view flips back inside, so the ToggleToolView lands on the
@@ -39,7 +39,7 @@ impl App {
                 self.confirm_backtrack();
                 // A dedicated action (not ToggleToolView) so the loop resets
                 // the code to this point's checkpoint before the shared
-                // return-from-overlay repaint (docs/checkpoint.md).
+                // return-from-overlay repaint (docs/state/checkpoint.md).
                 Action::ConfirmBacktrack
             }
             // Esc in a plain Ctrl+O view *begins* the preview in place when
@@ -48,7 +48,7 @@ impl App {
             // the shared [`App::overlay_esc_backtracks`], which also decides
             // the closing hint row's wording (`esc to edit prev` vs
             // `q/esc/ctrl+o to quit`), so the hint and this arm agree by
-            // construction (docs/backtrack.md).
+            // construction (docs/input/backtrack.md).
             KeyCode::Esc if self.overlay_esc_backtracks() => {
                 self.begin_backtrack_preview();
                 Action::None
@@ -104,7 +104,7 @@ impl App {
     /// keys. Both are questions *about* the conversation, so locking the two
     /// views that show it is exactly backwards: reading the transcript, or the
     /// context the model was actually sent, is how you decide (see
-    /// `docs/permissions.md`, `docs/ask.md`). Neither view can act on the
+    /// `docs/state/permissions.md`, `docs/tools/ask.md`). Neither view can act on the
     /// conversation — they only scroll — so the blocked tool thread keeps
     /// waiting, undisturbed, and the modal is still there on the way back.
     ///
@@ -112,7 +112,7 @@ impl App {
     /// underneath them. Neither stacks on the other's view, nor on the
     /// `/resume` picker: the full-screen views share the alternate screen. In
     /// an agent session view they show the *viewed agent's* transcript and
-    /// context (`docs/agent-tool.md`).
+    /// context (`docs/agents/agent-tool.md`).
     pub(super) fn on_key_overlay_toggle(&mut self, key: KeyEvent) -> Option<Action> {
         if !key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
@@ -139,13 +139,13 @@ impl App {
     /// Flip between the conversation and the tool-output view. Entering the view
     /// pins it to the bottom (tail-follow) so it opens on the latest content.
     /// Ctrl+O is "activity" like any other key, so an open `?` shortcuts band
-    /// closes rather than re-showing after the round-trip (docs/shortcuts.md).
+    /// closes rather than re-showing after the round-trip (docs/ui/shortcuts.md).
     pub(super) fn toggle_tool_view(&mut self) {
         self.shortcuts_open = false;
         // Any toggle abandons an in-flight backtrack gesture — Ctrl+O/q close
         // a preview without truncating, and Ctrl+O over a primed composer is
         // "any other key" activity (codex resets its BacktrackState on
-        // overlay close the same way; docs/backtrack.md).
+        // overlay close the same way; docs/input/backtrack.md).
         self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
@@ -162,7 +162,7 @@ impl App {
     /// Keys while the Ctrl+D context-debug view is showing: the transcript
     /// pager's scroll set, with q/Esc (or Ctrl+D itself, handled globally)
     /// closing it. It has no backtrack — the view shows the derived context,
-    /// not the editable conversation. See `docs/context.md`.
+    /// not the editable conversation. See `docs/architecture/context.md`.
     pub(super) fn on_key_context_debug(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -170,7 +170,7 @@ impl App {
                 Action::ToggleContextDebug
             }
             // Tab flips between the view's two pages — the model's context
-            // window and the classifier's task context (`docs/permissions.md`).
+            // window and the classifier's task context (`docs/state/permissions.md`).
             // Reachable over an open permission prompt like the view itself:
             // the modal's key routing only runs in the conversation view, so
             // the prompt's Tab (its amend field) and this one never contend.
@@ -180,7 +180,7 @@ impl App {
                 self.debug_jump = None;
                 Action::None
             }
-            // ←/→ step between the page's entries (`docs/context.md`) — the
+            // ←/→ step between the page's entries (`docs/architecture/context.md`) — the
             // key knows only the direction; the draw, which has the built
             // page, resolves where that is (`resolve_debug_jump`).
             KeyCode::Left => {
@@ -271,7 +271,7 @@ impl App {
     /// spinner, the elapsed counter, the pulsing tool bullet, a background
     /// shell's ticking runtime, the agent roster's counters and linger sweep
     /// — and the `/spinner` picker's live page, whose every row and preview
-    /// turn at this cadence with no turn running (`docs/spinner.md`).
+    /// turn at this cadence with no turn running (`docs/ui/spinner.md`).
     /// Under an alternate-screen overlay none of that is on screen, and the
     /// overlay's own content changes only when an event lands — every event
     /// source schedules its own frame, so nothing goes stale. Re-arming there
@@ -279,7 +279,7 @@ impl App {
     /// drops the user's mouse selection the moment the cells under it are
     /// rewritten: that is what made text in Ctrl+O / Ctrl+D uncopyable until
     /// the turn finished. The chain re-seeds on the first draw after the
-    /// return. See `docs/overlay-repaint.md`.
+    /// return. See `docs/ui/overlay-repaint.md`.
     #[must_use]
     pub fn wants_animation_frames(&self) -> bool {
         !self.view.is_overlay()
@@ -321,7 +321,7 @@ impl App {
     /// Ctrl+D page showing, against the rows its entries start on (`rows`,
     /// ascending) and the page's scroll ceiling (`max`) — the draw's call,
     /// made with the page as built and before its `settle_*_scroll`
-    /// (`docs/context.md`). A context window is a few dozen messages over
+    /// (`docs/architecture/context.md`). A context window is a few dozen messages over
     /// thousands of rows; this opens the previous or next one at the top.
     ///
     /// The window's top row is the scroll offset — `max` while the page
@@ -354,7 +354,7 @@ impl App {
 
     /// Settle the **classifier page's** scroll for a draw, exactly like
     /// [`settle_debug_scroll`](Self::settle_debug_scroll) does the context
-    /// page's (`docs/permissions.md`).
+    /// page's (`docs/state/permissions.md`).
     pub fn settle_classifier_scroll(&mut self, max: usize) {
         if self.classifier_scroll >= max {
             self.classifier_follow = true;

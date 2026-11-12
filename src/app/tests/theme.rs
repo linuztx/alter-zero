@@ -1,5 +1,5 @@
 //! The colour-theme catalog, the `/theme` picker, and its persistence
-//! format (`docs/theme.md`).
+//! format (`docs/ui/theme.md`).
 
 use super::*;
 
@@ -104,7 +104,7 @@ fn the_light_theme_and_the_terminal_theme_say_so() {
     );
 }
 
-// ===== the persistence format (docs/theme.md) =====
+// ===== the persistence format (docs/ui/theme.md) =====
 
 #[test]
 fn the_theme_file_round_trips() {

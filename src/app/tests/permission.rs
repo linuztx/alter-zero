@@ -1,4 +1,4 @@
-//! The inline tool-permission prompt (`docs/permissions.md`): opening stashes
+//! The inline tool-permission prompt (`docs/state/permissions.md`): opening stashes
 //! the composer, the key map, the amend field, and the queue.
 
 use super::*;
@@ -219,7 +219,7 @@ fn shift_tab_with_permissions_disabled_explains_instead() {
 
 #[test]
 fn esc_cancels_the_whole_turn_not_just_the_call() {
-    // Esc is the ordinary interrupt (docs/interrupt.md); the abandoned request
+    // Esc is the ordinary interrupt (docs/input/interrupt.md); the abandoned request
     // is released on the gate by the boundary so its thread never parks.
     let mut app = App::new();
     type_text(&mut app, "draft");
@@ -286,7 +286,7 @@ fn tab_opens_an_empty_amend_field_that_rejects_with_the_typed_feedback() {
 #[test]
 fn the_amend_field_takes_the_terminal_editing_shortcuts() {
     // edit_amend carries the readline set too (shared with the ask modal's
-    // entries — docs/textarea.md): Ctrl+A/E jump the line, Alt+B steps a
+    // entries — docs/input/textarea.md): Ctrl+A/E jump the line, Alt+B steps a
     // word, Ctrl+W/U kill placeholder-atomically.
     let mut app = App::new();
     app.open_permission(write_request("p1"));
@@ -448,7 +448,7 @@ fn a_sweep_that_covers_everything_closes_the_prompt() {
     assert!(app.pending_permissions().is_empty());
 }
 
-// ===== what the model is told, and keeps being told (docs/permissions.md) =====
+// ===== what the model is told, and keeps being told (docs/state/permissions.md) =====
 
 /// Drive the whole rejection round trip the way the loop does — the user's
 /// Tab-amended answer through the real key path, resolved on a real gate, the
@@ -562,7 +562,7 @@ fn the_derived_context_replays_the_amended_instructions_on_later_turns() {
     );
 }
 
-// ===== The read-only overlays stay reachable (docs/permissions.md) =====
+// ===== The read-only overlays stay reachable (docs/state/permissions.md) =====
 
 #[test]
 fn ctrl_o_opens_the_transcript_over_an_open_prompt() {

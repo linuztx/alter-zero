@@ -5,7 +5,7 @@
 //! same role chips over the same verbatim text hung on the same `⎿` gutter
 //! (the sibling page's own builders) — only the entries differ, so this
 //! module is just the body builder and [`super::render_context_view`]
-//! paints either page. See `docs/permissions.md`.
+//! paints either page. See `docs/state/permissions.md`.
 
 use super::context_view::{DebugBody, body_width, dim_rows, push_entry, text_rows};
 use super::theme::*;

@@ -1,6 +1,6 @@
 //! Anthropic's **Messages** API as a wire format — the one both the pasted
 //! `ANTHROPIC_API_KEY` and the Claude Pro/Max sign-in speak. See
-//! `docs/claude.md`.
+//! `docs/providers/claude.md`.
 //!
 //! Everything here is a **translation**, in both directions, between that
 //! format and the Chat Completions currency the rest of the crate already
@@ -71,7 +71,7 @@ pub const THINKING_BUDGET: u64 = 10_000;
 /// `max_tokens` and `stream` are mandatory here rather than conventional, and
 /// `temperature` is deliberately **never sent**: the sampling parameters were
 /// removed from every current Claude model, where they are now a 400 that
-/// blames the request rather than the field. See `docs/claude.md`.
+/// blames the request rather than the field. See `docs/providers/claude.md`.
 #[must_use]
 pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage]) -> Value {
     serde_json::to_value(request(cfg, tools, messages)).unwrap_or(Value::Null)
@@ -80,7 +80,7 @@ pub fn build_payload(cfg: &ModelConfig, tools: &[Value], messages: &[ChatMessage
 /// The Messages request as it is serialized: the hoisted `system` blocks and
 /// the `messages` **borrowed from the conversation** — a picture's base64 is
 /// the session's one shared encoding, a slice of it, never a copy into a tree
-/// (`docs/memory.md`) — beside every other field in one small map.
+/// (`docs/architecture/memory.md`) — beside every other field in one small map.
 #[derive(serde::Serialize)]
 struct Request<'a> {
     #[serde(flatten)]
@@ -171,7 +171,7 @@ pub fn thinking_body(mode: ThinkingMode) -> Value {
         // `display` is opt-in: the newer models default it to `omitted`,
         // which streams thinking blocks whose text is empty — and an empty
         // live `● Thinking…` cell is worse than none at all
-        // (`docs/thinking-stream.md`).
+        // (`docs/ui/thinking-stream.md`).
         ThinkingMode::Effort(_) => json!({"type": "adaptive", "display": "summarized"}),
     }
 }
@@ -669,9 +669,9 @@ impl MessageAccumulator {
                     open.arguments.push_str(&fragment);
                 }
                 // Counted, so the tally ticks while the call is produced
-                // (`docs/status-indicator.md`), and under its block's slot,
+                // (`docs/ui/status-indicator.md`), and under its block's slot,
                 // so a `write` previews as it streams
-                // (`docs/write-streaming.md`).
+                // (`docs/ui/write-streaming.md`).
                 Step::Delta(Delta {
                     tool_calls: vec![ToolCallFragment {
                         index: block_slot(value),
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn a_provider_drops_the_fields_its_server_refuses_here_too() {
         // `drop_params` is the provider's, whatever its wire
-        // (docs/user-providers.md) — a proxy in front of the Messages API
+        // (docs/providers/user-providers.md) — a proxy in front of the Messages API
         // may refuse a field like any chat shim.
         let mut cfg = cfg();
         cfg.extra_body
@@ -906,7 +906,7 @@ mod tests {
         // The Claude Code subscription endpoint mandates an identity line;
         // this app does not sign in to that endpoint and must not claim to
         // be that client. What goes on the wire is the user's own prompt.
-        // See `docs/claude.md`.
+        // See `docs/providers/claude.md`.
         let mut sub = cfg();
         sub.auth = AuthScheme::AnthropicConsole;
         let messages = [text("system", "be helpful"), text("user", "hi")];
@@ -1359,7 +1359,7 @@ mod tests {
         assert_eq!(calls[0].name, "get_weather");
         assert_eq!(calls[0].arguments, r#"{"location": "Paris"}"#);
         // Every piece names its content block, so the loop can tell which
-        // call a piece belongs to (docs/write-streaming.md): the name rides
+        // call a piece belongs to (docs/ui/write-streaming.md): the name rides
         // the block's start, the partial JSON its deltas.
         let pieces: Vec<ToolCallFragment> =
             deltas.iter().flat_map(|d| d.tool_calls.clone()).collect();
@@ -1544,7 +1544,7 @@ mod tests {
 
     #[test]
     fn the_request_borrows_a_pictures_bytes_rather_than_copying_them() {
-        // The whole point of the typed request (`docs/memory.md`): an image
+        // The whole point of the typed request (`docs/architecture/memory.md`): an image
         // block's `data` is a slice of the session's one shared encoding.
         let url = crate::llm::AttachmentUrl::from("data:image/png;base64,AAAA");
         let messages_in = [ChatMessage::with_parts(

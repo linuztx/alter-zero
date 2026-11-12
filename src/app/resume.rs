@@ -1,5 +1,5 @@
 //! The `/resume` session picker: its filter/sort toolbar state, the search
-//! query, and loading a rollout file back into history. See `docs/resume.md`.
+//! query, and loading a rollout file back into history. See `docs/state/resume.md`.
 
 use super::views::TOOL_VIEW_PAGE;
 use super::*;
@@ -42,7 +42,7 @@ pub enum ResumeControl {
 /// The open `/resume` session picker ([`View::ResumePicker`]): the saved
 /// sessions the boundary scanned when it opened, the highlighted row, the
 /// type-to-search query, and the Filter/Sort toolbar — codex's
-/// `resume_picker.rs` picker state, sized down (see `docs/resume.md`). The
+/// `resume_picker.rs` picker state, sized down (see `docs/state/resume.md`). The
 /// filtered rows derive on demand ([`matches`], the palette's
 /// `matching_commands` pattern); `selected` indexes that filtered list.
 ///
@@ -107,7 +107,7 @@ impl App {
     /// sessions dir, newest first) — swaps to [`View::ResumePicker`] on the
     /// alternate screen. `cwd` (the meta-line format) seeds the default `Cwd`
     /// filter. Any `?` band or in-flight backtrack gesture is abandoned, like
-    /// the Ctrl+O toggle. See `docs/resume.md`.
+    /// the Ctrl+O toggle. See `docs/state/resume.md`.
     pub fn open_resume_picker(&mut self, sessions: Vec<SessionSummary>, cwd: String) {
         self.shortcuts_open = false;
         self.backtrack = Backtrack::default();
@@ -133,19 +133,19 @@ impl App {
     /// `items` as the new history, and the picker closed. A turn can't be
     /// *active* here (`/resume` is rejected mid-task) — the wipes are
     /// belt-and-braces. The composer draft, its attachments, and the ↑-recall
-    /// history survive, like `/clear`. See `docs/resume.md`.
+    /// history survive, like `/clear`. See `docs/state/resume.md`.
     ///
     pub fn load_session(&mut self, items: Vec<HistoryItem>) {
         self.clear_conversation();
         self.history = items;
         // The task list comes back with the conversation: the last task
-        // record's snapshot is the state it had (docs/task-tools.md).
+        // record's snapshot is the state it had (docs/tools/task-tools.md).
         self.reset_tasks_from_history();
         // A rollout cut short mid-turn ends with its user message; that tail
         // belongs to the resumed conversation, not to any new turn — fence it
-        // off from the interrupt-undo (docs/interrupt.md).
+        // off from the interrupt-undo (docs/input/interrupt.md).
         self.undo_floor = self.history.len();
-        // The gauge re-seats on the loaded conversation (docs/compact.md).
+        // The gauge re-seats on the loaded conversation (docs/architecture/compact.md).
         self.refresh_context_used();
         self.close_resume_picker();
     }

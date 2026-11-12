@@ -1,4 +1,4 @@
-//! Spinner tips (`docs/tips.md`): the dim `⎿  Tip: …` row that hangs off the
+//! Spinner tips (`docs/ui/tips.md`): the dim `⎿  Tip: …` row that hangs off the
 //! status line once a turn has run a few seconds — Claude Code's spinner tip.
 //!
 //! This is the pure half: the catalog the tips are drawn from, when a turn's
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// How long a turn runs before its tip appears. A quick answer never flashes
 /// one — the tip is for the user who is actually waiting — and three seconds
 /// is the "a few seconds" the Ctrl+B hint already waits
-/// (`TOOL_BACKGROUND_HINT_DELAY`, `docs/background.md`), so the strip's two
+/// (`TOOL_BACKGROUND_HINT_DELAY`, `docs/tools/background.md`), so the strip's two
 /// delayed hints keep one pace.
 pub const TIP_DELAY: Duration = Duration::from_secs(3);
 
@@ -26,7 +26,7 @@ pub const TIP_DELAY: Duration = Duration::from_secs(3);
 /// reply streaming above it (the verb already moves every 30 s).
 pub const TIP_ROTATION: Duration = Duration::from_secs(3 * 60);
 
-/// The catalog, in the order it is walked (`docs/tips.md` *The catalog*).
+/// The catalog, in the order it is walked (`docs/ui/tips.md` *The catalog*).
 ///
 /// One sentence each, no trailing full stop, every one naming a key, a
 /// command or a command-line form the app really has — keys in the `?`
@@ -75,7 +75,7 @@ pub const TIPS: &[&str] = &[
 
 /// The file's name under the config home: `{config_home}/tips.json` — its
 /// own file, per **user**, like `telemetry.json` and `update.json`
-/// (`docs/per-directory-state.md`).
+/// (`docs/state/per-directory-state.md`).
 pub const TIPS_FILE_NAME: &str = "tips.json";
 
 /// Seeds the **Show tips** row for a run (`0`/`false`/`no`/`off` = off, the
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_tip_waits_a_few_seconds_and_stays_three_minutes() {
-        // The two numbers the design names (docs/tips.md): the Ctrl+B hint's
+        // The two numbers the design names (docs/ui/tips.md): the Ctrl+B hint's
         // "a few seconds", and the rotation the user asked for.
         assert_eq!(TIP_DELAY, Duration::from_secs(3));
         assert_eq!(TIP_ROTATION, Duration::from_secs(3 * 60));
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn the_walk_opens_on_the_tip_that_leads_to_the_others() {
         // `?` lists every key — the one tip worth showing a first-run user
-        // before any other (docs/tips.md *The catalog*).
+        // before any other (docs/ui/tips.md *The catalog*).
         assert!(TIPS[0].contains("?"), "{}", TIPS[0]);
     }
 

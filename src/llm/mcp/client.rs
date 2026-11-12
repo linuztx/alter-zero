@@ -1,4 +1,4 @@
-//! The per-server connect sequence (`docs/mcp.md`): build the transport,
+//! The per-server connect sequence (`docs/tools/mcp.md`): build the transport,
 //! detect the server's era — a modern (2026-07-28) `server/discover` probe
 //! first, falling back to the legacy `initialize` handshake when the server
 //! answers with anything but a modern error — then drain `tools/list`; with
@@ -131,7 +131,7 @@ pub fn connect(
 /// [`connect`] with `detach_helper` — this binary, resolved at the boundary
 /// (`std::env::current_exe`) — for the launch tier that re-execs it, which is
 /// what keeps a stdio server off the TUI's terminal where no `setsid` binary
-/// exists (macOS, minimal images; `docs/tty-detach.md`).
+/// exists (macOS, minimal images; `docs/tools/tty-detach.md`).
 pub fn connect_with_helper(
     config: &McpServerConfig,
     bearer: Option<String>,

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `Skill` tool loads an authored SKILL.md (docs/skills.md).
+# the `Skill` tool loads an authored SKILL.md (docs/tools/skills.md).
 # The cell is the WHOLE visible surface — `● Skill(dataviz)` over one green
 # `⎿  Successfully loaded skill` row — while the model reads the skill's entire
 # body. That split is the feature: a 400-line skill would otherwise dump itself
@@ -26,7 +26,7 @@ expect_has "$skills_pane" -F "Successfully loaded skill" "the cell is missing it
 expect_lacks "$skills_pane" -F "Base directory for this skill" "the skill body leaked into the inline conversation"
 expect_lacks "$skills_pane" -F "references/palette.md" "the skill body's text leaked into the inline conversation"
 # Ctrl+D: the derived context must carry the body, because that IS what the
-# model was sent (the ToolOutcome::context split, docs/skills.md).
+# model was sent (the ToolOutcome::context split, docs/tools/skills.md).
 tmux send-keys -t "$S76" C-d
 sleep 0.6
 skills_ctx="$(tmux capture-pane -t "$S76" -p -S -400)"

@@ -1,5 +1,5 @@
 //! The hook-run cell — `● Ran 1 Stop hook` collapsed inline and expanded in
-//! Ctrl+O (`docs/hooks.md` *The hook-run cell*).
+//! Ctrl+O (`docs/tools/hooks.md` *The hook-run cell*).
 
 use super::*;
 use crate::hooks::{HookReport, HookSaid, RanHook};

@@ -1,4 +1,4 @@
-//! The inline `/settings` menu. See `docs/settings.md`.
+//! The inline `/settings` menu. See `docs/state/settings.md`.
 //!
 //! The `/model` picker's framed shape (`model_view`) with a value column in
 //! place of the `[provider]` tag and one extra chrome row — the key hint under
@@ -120,7 +120,7 @@ fn settings_whole_body(
 /// The framed page as lines — a top rule, the `Settings` title over its dim
 /// subtitle, the `❯` search line, a body, the key hint, and a bottom rule,
 /// one blank row between each block and none hugging either rule
-/// (`docs/view-flow.md` *The frame hugs its content*) — the first of four
+/// (`docs/ui/view-flow.md` *The frame hugs its content*) — the first of four
 /// pages that fits `height` rows ([`first_page_that_fits`]):
 ///
 /// 1. the **whole** page: the windowed setting rows, the `(n/total)`
@@ -134,7 +134,7 @@ fn settings_whole_body(
 ///    the hint;
 /// 4. the header-less compact page ([`compact_page`]), and on a terminal
 ///    shorter still its rungs: the overflow slots, the rules and the rows
-///    yield one by one, never the search line (`docs/view-flow.md`).
+///    yield one by one, never the search line (`docs/ui/view-flow.md`).
 ///
 /// What [`render_settings`] paints and
 /// [`settings_rows`] counts, so the reserved height and the painted rows can
@@ -226,8 +226,8 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// key hint, and a bottom rule; or, in an area too short for that, the
 /// compact page, which sheds its own rows down to the search line in an area
 /// shorter still. The page is built for the area's height, so it always fits
-/// and nothing flows (`docs/view-flow.md`). Pure — `render_live` paints
-/// this. See `docs/settings.md`.
+/// and nothing flows (`docs/ui/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/state/settings.md`.
 pub fn render_settings(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

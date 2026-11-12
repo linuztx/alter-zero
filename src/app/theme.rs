@@ -1,7 +1,7 @@
 //! The colour theme: the catalog of palettes the whole TUI can wear — the
 //! chrome's accent and semantic colours together with the code blocks'
 //! syntax theme, one design system per entry — the session's selected one,
-//! and the inline `/theme` picker that switches it. See `docs/theme.md`.
+//! and the inline `/theme` picker that switches it. See `docs/ui/theme.md`.
 //!
 //! The picker is the `/spinner` picker's shape — same inline frame, same
 //! own-every-key search grammar — over one row per theme, and the page
@@ -153,7 +153,7 @@ impl Theme {
 
 /// The `theme.json` blob recording the theme — `{"theme": "mocha"}`. Names
 /// are static lowercase ASCII, so the literal formatting needs no escaping
-/// (the `spinner.json` shape, `docs/spinner.md`).
+/// (the `spinner.json` shape, `docs/ui/spinner.md`).
 #[must_use]
 pub fn theme_file_json(theme: Theme) -> String {
     format!("{{\n  \"theme\": \"{}\"\n}}\n", theme.name())
@@ -197,7 +197,7 @@ pub struct ThemePicker {
 impl App {
     /// The session's colour theme — what every rendered row wears, once the
     /// boundary has activated it (`ui::activate_theme`; the pure state and
-    /// the ambient palette are kept equal at the boundary, `docs/theme.md`).
+    /// the ambient palette are kept equal at the boundary, `docs/ui/theme.md`).
     #[must_use]
     pub const fn theme(&self) -> Theme {
         self.theme

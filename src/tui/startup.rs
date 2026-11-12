@@ -1,4 +1,4 @@
-//! Resolving the process arguments before the TUI exists (`docs/cli.md`).
+//! Resolving the process arguments before the TUI exists (`docs/cli/cli.md`).
 //!
 //! `--continue` and `--resume {id}` name a conversation to reopen, so they are
 //! resolved **here, in cooked mode**: [`resolve_cli`] reads and parses the
@@ -25,7 +25,7 @@ use alter_zero::session::{self, SessionMeta};
 
 use super::resume::{find_session_by_id, list_sessions, sessions_root};
 
-/// What [`resolve_cli`] hands `run` (`docs/cli.md`): the session to open —
+/// What [`resolve_cli`] hands `run` (`docs/cli/cli.md`): the session to open —
 /// or `None` for a fresh one — and the `[PROMPT]` to send into it as its
 /// first turn, if one was given.
 pub(crate) struct Startup {
@@ -33,7 +33,7 @@ pub(crate) struct Startup {
     pub(crate) prompt: Option<String>,
     /// `--permission-mode`: the run's permission seed, in either kind of run.
     pub(crate) permission_mode: Option<alter_zero::permission::PermissionMode>,
-    /// `-p`: run headless, reporting this way (`docs/headless.md`) — the
+    /// `-p`: run headless, reporting this way (`docs/cli/headless.md`) — the
     /// prompt above then already holds what stdin added. `None` is the TUI.
     pub(crate) print: Option<alter_zero::cli::PrintOptions>,
 }
@@ -60,7 +60,7 @@ pub(crate) struct LoadedSession {
 }
 
 /// Parse the process arguments and resolve them to a [`Startup`] directive
-/// (`docs/cli.md`). `Err(code)` means "exit now with this status": usage
+/// (`docs/cli/cli.md`). `Err(code)` means "exit now with this status": usage
 /// errors are 2 (the clap-shaped `error:` trailer on stderr), resolution
 /// failures — nothing to continue, an unknown id, an unreadable file — are
 /// 1, and `--help` / `--version` exit 0 after printing. All printing happens
@@ -83,10 +83,10 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
             println!("{}", cli::help(HelpPage::Main, stdout_style()));
             Err(0)
         }
-        // The mcp subcommand family (docs/mcp-cli.md): does its file work
+        // The mcp subcommand family (docs/cli/mcp-cli.md): does its file work
         // and exits — success rides the same Err(0) channel --help uses.
         Cli::Mcp(cmd) => Err(super::mcp_cli::run(&cmd)),
-        // `alter-zero update` (docs/update.md): the same print-and-exit path.
+        // `alter-zero update` (docs/ops/update.md): the same print-and-exit path.
         Cli::Update => Err(super::update_cli::run()),
         Cli::Version => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
@@ -160,7 +160,7 @@ fn prepare(
     }
     let session = resolve_session(start).map_err(Halt::Failed)?;
     // A headless run reads its prompt now, before anything else starts: an
-    // argument, stdin, or both (docs/headless.md).
+    // argument, stdin, or both (docs/cli/headless.md).
     let prompt = if headless {
         Some(super::headless::read_prompt(prompt.as_deref())?)
     } else {
@@ -171,7 +171,7 @@ fn prepare(
 
 /// The style for a page written to a stream: the app's colour when the
 /// stream is a terminal and the environment allows it, plain text otherwise
-/// — a pipe, a log file, `NO_COLOR`, `TERM=dumb` (`docs/cli.md`).
+/// — a pipe, a log file, `NO_COLOR`, `TERM=dumb` (`docs/cli/cli.md`).
 pub(crate) fn help_style(is_terminal: bool) -> HelpStyle {
     let no_color = std::env::var("NO_COLOR").ok();
     let term = std::env::var("TERM").ok();

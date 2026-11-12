@@ -5,7 +5,7 @@
 smoke_begin
 
 # a FINISHED checklist bows out with its turn and is gone for
-# good (docs/task-tools.md) — the reported stale-list bug: an all-✔ list kept
+# good (docs/tools/task-tools.md) — the reported stale-list bug: an all-✔ list kept
 # riding the next turn's spinner. "finish the todo demo" plays the twin
 # scenario, which walks two tasks to completed.
 S70="${S}_tasksdone"

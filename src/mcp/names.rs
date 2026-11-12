@@ -1,4 +1,4 @@
-//! The MCP naming contract (`docs/mcp.md`): how a server's tool becomes the
+//! The MCP naming contract (`docs/tools/mcp.md`): how a server's tool becomes the
 //! fully-qualified `mcp__{server}__{tool}` wire name the model calls, and how
 //! that maps back — plus the user-facing `{server} - {tool} (MCP)` display
 //! form and the aggregated live-strip label.
@@ -53,7 +53,7 @@ pub fn normalize_name(name: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
-/// Validate a server name for the `mcp add` CLI (`docs/mcp-cli.md`): a valid
+/// Validate a server name for the `mcp add` CLI (`docs/cli/mcp-cli.md`): a valid
 /// name is a non-empty one [`normalize_name`] maps to itself — the
 /// `[A-Za-z0-9_-]` class both references enforce, minus the `__` runs and
 /// edge underscores normalization would rewrite — so the declared name, the
@@ -294,7 +294,7 @@ pub fn display_server(name: &str) -> Option<&str> {
 
 /// The tool part of a display name (`deepwiki - ask_question (MCP)` →
 /// `ask_question`) — the agent activity row's `{Server}: {tool}` detail half
-/// (`docs/agent-tool.md`). `None` when the name isn't the MCP display shape.
+/// (`docs/agents/agent-tool.md`). `None` when the name isn't the MCP display shape.
 #[must_use]
 pub fn display_tool(name: &str) -> Option<&str> {
     if !is_mcp_display_name(name) {
@@ -326,7 +326,7 @@ pub fn wire_from_display(name: &str) -> Option<String> {
 /// entered the record would invert ([`wire_from_display`]) to
 /// `mcp__Deepwiki__…`, a tool the model was never offered. The wire name,
 /// the permission-rule key and the `/mcp` identity rows keep the configured
-/// spelling (`docs/mcp.md`).
+/// spelling (`docs/tools/mcp.md`).
 #[must_use]
 pub fn capitalize_server(server: &str) -> String {
     let mut chars = server.chars();
@@ -352,7 +352,7 @@ pub fn capitalize_display(name: &str) -> String {
 }
 
 /// The aggregated live-strip label for a batch of MCP calls
-/// (`docs/mcp.md`): the **distinct servers in call order**, then the total
+/// (`docs/tools/mcp.md`): the **distinct servers in call order**, then the total
 /// call count when there is more than one call — `Deepwiki`,
 /// `Deepwiki 2 times`, `Deepwiki, Context7 3 times`. Display-only (only the
 /// `Calling …`/`Called …` cells read it), so the servers come back through
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_exactly_what_normalize_keeps() {
-        // The `mcp add` name rule (docs/mcp-cli.md): a valid name is one
+        // The `mcp add` name rule (docs/cli/mcp-cli.md): a valid name is one
         // `normalize_name` maps to itself, so the declared name, the /mcp
         // list and the wire name can never disagree.
         assert_eq!(validate_server_name("deepwiki"), Ok(()));

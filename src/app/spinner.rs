@@ -1,6 +1,6 @@
 //! The status spinner style: the catalog of animations the live status line
 //! can open with, the session's selected one, and the inline `/spinner`
-//! picker that switches it. See `docs/spinner.md`.
+//! picker that switches it. See `docs/ui/spinner.md`.
 //!
 //! The picker is the `/mascot` picker's shape — same inline frame, same
 //! own-every-key search grammar — over one row per style, and the page is
@@ -10,7 +10,7 @@
 //! them through the status line's own renderer, so what the picker shows and
 //! what a turn shows can never disagree. The choice persists to
 //! `{config_home}/spinner.json` at the boundary (`tui::config`) — **per
-//! working directory**, `config.json`'s rule (`docs/per-directory-state.md`);
+//! working directory**, `config.json`'s rule (`docs/state/per-directory-state.md`);
 //! the pure format is the [`SpinnerFile`] instance of the [`LookFile`] the
 //! two looks share.
 //!
@@ -116,7 +116,7 @@ impl Spinner {
 }
 
 /// The `spinner.json` side of the catalog: the key the file records a choice
-/// under, over the name mapping above (`docs/per-directory-state.md`).
+/// under, over the name mapping above (`docs/state/per-directory-state.md`).
 impl Look for Spinner {
     const KEY: &'static str = "spinner";
 

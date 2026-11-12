@@ -1,4 +1,4 @@
-//! The lost-connection row under the status line (`docs/offline.md`): the
+//! The lost-connection row under the status line (`docs/providers/offline.md`): the
 //! ripple, the host, the count, and the strip reserving exactly the rows it
 //! paints.
 

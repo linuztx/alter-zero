@@ -16,7 +16,7 @@
 //! it from the terminal — the scrollback hole. An open **permission prompt**
 //! is not on the list either: its region sits at the bottom like any other,
 //! so a cell resolving beneath it simply scrolls in above the question —
-//! visible at once, Claude-Code style (`docs/permissions.md`).
+//! visible at once, Claude-Code style (`docs/state/permissions.md`).
 //!
 //! Everything that commits mid-turn flushes the in-flight streamed segment
 //! first ([`App::flush_streaming_segment`]), which is what makes a notice slot
@@ -25,7 +25,7 @@
 //!
 //! The alternative to committing is [`Session::toast`]: a one-row,
 //! self-clearing line above the box for confirmations and soft rejections the
-//! user should see but never keep (`docs/toast.md`). It never enters history.
+//! user should see but never keep (`docs/ui/toast.md`). It never enters history.
 //!
 //! [`App::flush_streaming_segment`]: alter_zero::app::App::flush_streaming_segment
 
@@ -40,7 +40,7 @@ use alter_zero::ui;
 use super::Session;
 
 /// How long a transient toast stays above the box before it self-clears. See
-/// `docs/toast.md`.
+/// `docs/ui/toast.md`.
 const TOAST_TTL: Duration = Duration::from_secs(4);
 
 impl Session<'_> {
@@ -52,7 +52,7 @@ impl Session<'_> {
     /// page whose top sits in scrollback directly above the region: a commit
     /// flushed now would land *between* the flowed page and its painted tail,
     /// tearing it, so it waits in history for the flow-exit rebuild
-    /// (`docs/view-flow.md`).
+    /// (`docs/ui/view-flow.md`).
     pub(crate) fn commits_allowed(&self) -> bool {
         self.app.agent_view.is_none() && self.flowed_view.is_none()
     }
@@ -61,11 +61,11 @@ impl Session<'_> {
     /// deadline `TOAST_TTL` out, and ask the frame scheduler for a draw then —
     /// so it shows now (the caller schedules that frame) and self-clears later
     /// even with no turn active. The draw tick clears it when due and re-arms
-    /// while it lingers. See `docs/toast.md`.
+    /// while it lingers. See `docs/ui/toast.md`.
     pub(crate) fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
         // A headless run shows nothing: what an error toast would have said
         // is a warning on stderr instead, and an info toast is the step
-        // log's (`--verbose`, docs/headless.md).
+        // log's (`--verbose`, docs/cli/headless.md).
         if self.headless {
             let error = kind == ToastKind::Error;
             let line = alter_zero::headless::toast_line(&text.into(), error, self.headless_verbose);
@@ -83,13 +83,13 @@ impl Session<'_> {
     ///
     /// A read, a search or a listing joins the **open collapsed group** and
     /// commits nothing — the strip shows the group until something that is
-    /// not part of it arrives (`docs/tool-groups.md`); any other call closes
+    /// not part of it arrives (`docs/ui/tool-groups.md`); any other call closes
     /// the group first, so the group's one line lands above the call's cell.
     /// What the call itself writes comes from [`ui::tool_commit_lines`],
     /// which reads the same history the resize repaint does: usually the
     /// resolved call's collapsed cell, but a call inside a **parallel MCP
     /// batch** holds its line until the run ends and then commits it as one
-    /// aggregated `Called deepwiki 2 times` line (`docs/mcp.md`). Returns
+    /// aggregated `Called deepwiki 2 times` line (`docs/tools/mcp.md`). Returns
     /// whether anything was due.
     ///
     /// The viewport is reseated first, like `StreamDone` does: a `!` shell
@@ -127,7 +127,7 @@ impl Session<'_> {
     /// line — `Read 2 files, listed 1 directory (ctrl+o to expand)` — before
     /// whatever is not part of it reaches scrollback: a reply, a call of
     /// another kind, a steered message, a notice, the turn's end
-    /// (`docs/tool-groups.md`). A no-op with no group open, so every site
+    /// (`docs/ui/tool-groups.md`). A no-op with no group open, so every site
     /// that records something calls it unconditionally.
     pub(crate) fn close_tool_group(&mut self, committing: bool, width: u16) {
         if let Some(range) = self.app.close_tool_group() {
@@ -152,7 +152,7 @@ impl Session<'_> {
     }
 
     /// Record a hook note and commit its cell — the `● Ran 1 Stop hook`
-    /// the report draws (`docs/hooks.md` *The hook-run cell*); a note with no
+    /// the report draws (`docs/tools/hooks.md` *The hook-run cell*); a note with no
     /// report records cell-less, as it always has. The caller has finalised
     /// the streamed text before it (invariant 4). A cell is no part of an
     /// open read/search group, so the group's line commits above it, and the
@@ -189,7 +189,7 @@ impl Session<'_> {
     fn commit_notice(&mut self, role: Role, record: fn(&mut App, &str), text: &str) {
         let width = self.term.screen().width;
         let committing = self.commits_allowed();
-        // A notice is no part of an open read/search group (docs/tool-groups.md).
+        // A notice is no part of an open read/search group (docs/ui/tool-groups.md).
         self.close_tool_group(committing, width);
         if let Some(segment) = self.app.flush_streaming_segment()
             && committing
@@ -208,7 +208,7 @@ impl Session<'_> {
 
     /// Commit a red error notice (a Ctrl+V clipboard failure, a failed
     /// `/resume` load) — [`Session::commit_notice`] as [`Role::Error`]. See
-    /// `docs/image-paste.md`.
+    /// `docs/input/image-paste.md`.
     pub(crate) fn commit_error_notice(&mut self, text: &str) {
         self.commit_notice(Role::Error, App::record_error_message, text);
     }
@@ -231,7 +231,7 @@ impl Session<'_> {
     ///
     /// `notice` is `None` for a `!` shell interrupt, whose `⎿ Interrupted by
     /// user` cell (its one `tools` entry) already says it — committing a second
-    /// `Conversation interrupted` line would be redundant (`docs/interrupt.md`,
+    /// `Conversation interrupted` line would be redundant (`docs/input/interrupt.md`,
     /// req 2). A backend error always passes `Some` (the error text is its
     /// terminal notice).
     ///
@@ -247,7 +247,7 @@ impl Session<'_> {
         // The caller guarantees the conversation view, but a backend error can
         // still land while a framed view's flow covers the screen — the
         // remains are recorded in history either way, and the flow-exit
-        // rebuild regenerates them (`docs/view-flow.md`).
+        // rebuild regenerates them (`docs/ui/view-flow.md`).
         if !self.commits_allowed() {
             return;
         }
@@ -260,7 +260,7 @@ impl Session<'_> {
         }
         // Every call the death resolved — the running one and each `⎿
         // Waiting…` sibling behind it, plus any MCP cells a run was holding —
-        // in the batch's order (`docs/interrupt.md`, `docs/mcp.md`). Read
+        // in the batch's order (`docs/input/interrupt.md`, `docs/tools/mcp.md`). Read
         // back off the history by count: the notice is already recorded
         // behind them, so the history no longer ends at a cell. The viewport
         // was reseated just above.
@@ -275,7 +275,7 @@ impl Session<'_> {
             self.term.insert_before(vec![Line::default()]);
         }
         // The agent group the death resolved (its members marked interrupted) —
-        // the red tree cell, before the notice (docs/agent-tool.md).
+        // the red tree cell, before the notice (docs/agents/agent-tool.md).
         if let Some(group) = agents {
             self.term
                 .insert_before(ui::agent_group_lines(&group, width));
@@ -291,8 +291,8 @@ impl Session<'_> {
     /// Record a turn's receipt — the dim `Worked for 12s · …` summary — and
     /// commit it under a blank spacer: the last thing a turn adds, whether it
     /// finished (`StreamDone`) or was interrupted under its notice
-    /// (`docs/interrupt.md`). The caller settles the turn's held background
-    /// completions first, so they land above it (`docs/background.md`).
+    /// (`docs/input/interrupt.md`). The caller settles the turn's held background
+    /// completions first, so they land above it (`docs/tools/background.md`).
     pub(crate) fn commit_turn_summary(&mut self, summary: TurnSummary) {
         if self.commits_allowed() {
             let width = self.term.screen().width;

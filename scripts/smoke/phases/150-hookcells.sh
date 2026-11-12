@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The hook-run cell (docs/hooks.md *The hook-run cell*) through the real
+# The hook-run cell (docs/tools/hooks.md *The hook-run cell*) through the real
 # path — the runner, the agent loop, the loop's commit — which the offline
 # demo cannot reach. A stub provider answers every request with a numbered
 # line of text, or refuses the prompt that asks it to; a hooks.json makes

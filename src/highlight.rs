@@ -1,5 +1,5 @@
 //! Grammar-accurate syntax highlighting for fenced code blocks
-//! (`docs/markdown.md`), ported from codex's approach (`codex-rs/tui/src/render/
+//! (`docs/ui/markdown.md`), ported from codex's approach (`codex-rs/tui/src/render/
 //! highlight.rs`).
 //!
 //! Codex colours code with [`syntect`] over the [`two_face`] grammar + theme
@@ -35,7 +35,7 @@
 //! carry far more distinction (tag vs attribute vs value) than a fixed
 //! six-colour enum could. `Seg` therefore carries a resolved [`Style`]; `ui`
 //! maps nothing. *Which* theme is a [`CodeTheme`] the caller names — one per
-//! entry of the `/theme` catalog (`docs/theme.md`), each the syntect theme
+//! entry of the `/theme` catalog (`docs/ui/theme.md`), each the syntect theme
 //! that matches that entry's chrome palette, so the code in a reply and the
 //! chrome around it come from one design system. The default is Catppuccin
 //! Mocha, codex's dark default and this crate's since the syntect port.
@@ -68,7 +68,7 @@ pub struct Seg {
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
 /// The syntax theme a code block or file cell is coloured with — one per
-/// entry of the `/theme` catalog (`docs/theme.md`): each is the two-face
+/// entry of the `/theme` catalog (`docs/ui/theme.md`): each is the two-face
 /// bundle's theme of the same family as the chrome palette it rides with,
 /// so a reply's code and the chrome around it agree. [`CodeTheme::ALL`]
 /// lists them in that catalog's order.
@@ -418,7 +418,7 @@ pub fn highlight(lines: &[&str], lang: Option<&str>, code: CodeTheme) -> Vec<Vec
 }
 
 /// A **growing** text highlighted incrementally — what a `write` streaming
-/// into its cell is coloured with (`docs/write-streaming.md`).
+/// into its cell is coloured with (`docs/ui/write-streaming.md`).
 ///
 /// A grammar is a state machine, so line 40 can only be coloured by a
 /// highlighter that has read lines 1 to 39: a docstring opened on line 3
@@ -442,7 +442,7 @@ pub fn highlight(lines: &[&str], lang: Option<&str>, code: CodeTheme) -> Vec<Vec
 /// ~1.9 MB, held for as long as the call is live, and glibc keeps what a
 /// process has once used. Every line is still highlighted once, in order:
 /// the grammar's state has to pass through the middle to colour the newest
-/// line right; only the segments in between are let go (`docs/memory.md`).
+/// line right; only the segments in between are let go (`docs/architecture/memory.md`).
 #[derive(Clone, Default)]
 pub struct LineCache {
     /// What the cached lines were highlighted for: the language and the code
@@ -937,7 +937,7 @@ mod tests {
         );
     }
 
-    // --- the incremental line cache (docs/write-streaming.md) ---
+    // --- the incremental line cache (docs/ui/write-streaming.md) ---
 
     /// What a fresh highlight of `text`'s complete lines gives, and of its
     /// unfinished last line resumed from them — the cache's whole contract.
@@ -979,7 +979,7 @@ mod tests {
     fn a_windowed_line_cache_keeps_only_its_first_and_newest_lines() {
         // What a peek can show is its first and newest lines; every line in
         // between is highlighted once, to carry the grammar along, and let
-        // go (docs/write-streaming.md).
+        // go (docs/ui/write-streaming.md).
         let text: String = (1..=100).map(|i| format!("x_{i} = {i}\n")).collect();
         let mut cache = LineCache::windowed(3);
         cache.update(&text, Some("python"), CodeTheme::default(), 4);

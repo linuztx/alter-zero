@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the AskUserQuestion modal (docs/ask.md). An "ask … questions"
+# the AskUserQuestion modal (docs/tools/ask.md). An "ask … questions"
 # prompt makes the dummy raise the three-question demo and BLOCK on the ask
 # gate — exactly as the real tool thread does. The modal must show the chip
 # strip (the current chip highlighted, answered ones flipping to ☒), the

@@ -1,5 +1,5 @@
 //! The `/settings` menu at the boundary: opening it, and **applying** each
-//! knob the pure core moved (`docs/settings.md`).
+//! knob the pure core moved (`docs/state/settings.md`).
 //!
 //! The pure side ([`alter_zero::app::App::settings`]) only ever holds the
 //! value; everything that has to *happen* when one changes lives here — the
@@ -31,10 +31,10 @@ impl Session<'_> {
         self.app.open_settings();
     }
 
-    /// `/hooks`: open the hooks browser (`docs/hooks-menu.md`). The pure
+    /// `/hooks`: open the hooks browser (`docs/tools/hooks-menu.md`). The pure
     /// command returned the intent; this derives the data — every configured
     /// hook, the user's file and the project's, each with its trust
-    /// (`docs/config-review.md`), the `Source:` path display, and whether
+    /// (`docs/state/config-review.md`), the `Source:` path display, and whether
     /// the session runs hooks at all — and hands all three to `App`, the
     /// `/resume` picker's injection seam.
     pub(crate) fn open_hooks_menu(&mut self) {
@@ -45,7 +45,7 @@ impl Session<'_> {
         let mut source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
             .map(|path| alter_zero::ui::display_cwd(&path, home.as_deref()));
         // A project's file is part of what the browser shows, so the
-        // `Source:` row names it too (`docs/project-config.md`).
+        // `Source:` row names it too (`docs/state/project-config.md`).
         if let Some(file) = self
             .trust
             .project
@@ -62,14 +62,14 @@ impl Session<'_> {
         self.app.open_hooks_menu(overview, source, enabled);
     }
 
-    /// `/skills`: open the inline skills browser (`docs/skills.md`). The same
+    /// `/skills`: open the inline skills browser (`docs/tools/skills.md`). The same
     /// injection seam as `/hooks`: the loop takes the registry's snapshot —
     /// **every** discovered skill plus the currently-off set, since a skill
     /// you turned off is the one you need to see to turn back on — along with
     /// whether the session-wide switch is on and where skills are looked for
     /// (the answer an empty list needs), and hands all four to `App`.
     pub(crate) fn open_skills_menu(&mut self) {
-        // Re-walk first (`docs/skills.md`). This is the surface where "why is
+        // Re-walk first (`docs/tools/skills.md`). This is the surface where "why is
         // my skill not here?" gets asked, so it must not be able to answer
         // with what the session booted with — a menu that lied for one turn
         // is worse than no menu.
@@ -93,7 +93,7 @@ impl Session<'_> {
     }
 
     /// Re-walk the skill roots and adopt what is there now — run at every turn
-    /// start (`docs/skills.md`).
+    /// start (`docs/tools/skills.md`).
     ///
     /// The startup walk alone left a session frozen at the skills it booted
     /// with: adding one meant restarting, and a skill the *agent* had just
@@ -129,7 +129,7 @@ impl Session<'_> {
         self.report_skill_errors(&fresh);
     }
 
-    /// Re-walk the agent-definition roots (`docs/subagents.md`), beside the
+    /// Re-walk the agent-definition roots (`docs/agents/subagents.md`), beside the
     /// `SKILL.md` rescan and for the same reason: a startup-only discovery
     /// froze the session at what it booted with, so a type you added — or one
     /// the agent had just written *for* you — was unlaunchable until a
@@ -152,7 +152,7 @@ impl Session<'_> {
     }
 
     /// Apply the `/skills` menu's toggle: make it true of the running session
-    /// and persist it for this project (`docs/skills.md`).
+    /// and persist it for this project (`docs/tools/skills.md`).
     ///
     /// Four things have to move together, which is why they are spelled out in
     /// one place: the shared registry (what the executor and the listing read),
@@ -191,21 +191,21 @@ impl Session<'_> {
             checkpoints: self.checkpoints.is_capable(),
             // Anything configured, trusted or not: the row is what lets the
             // trusted ones run and the untrusted ones be asked about
-            // (`docs/config-review.md`).
+            // (`docs/state/config-review.md`).
             hooks: !self.trust.configured_hooks().is_empty(),
-            // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
+            // Nothing to toggle when no `SKILL.md` loaded (`docs/tools/skills.md`).
             skills: !self.skill_registry.is_empty(),
-            // …nor when no MCP server is declared anywhere (`docs/mcp.md`).
+            // …nor when no MCP server is declared anywhere (`docs/tools/mcp.md`).
             mcp: self.mcp.has_servers(),
-            // Whether this terminal can draw a picture (`docs/images.md`).
+            // Whether this terminal can draw a picture (`docs/ui/images.md`).
             images: self.term.image_capability().0,
             // Nowhere to keep an install id without a config home — and
             // nothing to turn on when the environment forbade it, which is
             // what stops `DO_NOT_TRACK=1` being cycled around from inside
-            // the app (`docs/telemetry.md`).
+            // the app (`docs/ops/telemetry.md`).
             telemetry: config::telemetry_json_path().is_some()
                 && !config::telemetry_forbidden_by_env(),
-            // The same two conditions for the update check (`docs/update.md`).
+            // The same two conditions for the update check (`docs/ops/update.md`).
             update_check: config::update_json_path().is_some()
                 && !config::update_check_forbidden_by_env(),
         });
@@ -245,7 +245,7 @@ impl Session<'_> {
         // occupies, so the conversation has to be rebuilt from history for
         // the change to be visible at all — the `/mascot` switch's rule, and
         // the same purge a resize runs. The encoded pictures go with it: the
-        // new width is a different placement (`docs/images.md`).
+        // new width is a different placement (`docs/ui/images.md`).
         let mut rebuild = false;
         match key {
             // Offering (or withholding) the tools changes the request's shape,
@@ -253,7 +253,7 @@ impl Session<'_> {
             // skill listing rides that same gate, so it is re-rendered here
             // too: withdrawing the `skill` tool without withdrawing the
             // `<system-reminder>` that names it leaves the model hunting for
-            // a tool it was told it had (`docs/skills.md`).
+            // a tool it was told it had (`docs/tools/skills.md`).
             SettingKey::Tools => {
                 self.models.set_tools(settings.tools);
                 self.sync_listings();
@@ -265,7 +265,7 @@ impl Session<'_> {
             // The tool-round ceiling a turn runs under (0 = none).
             SettingKey::MaxToolCalls => self.models.set_max_tool_calls(settings.max_tool_calls),
             // The store keeps its own enabled flag (it can only ever turn a
-            // *capable* store on or off — docs/checkpoint.md).
+            // *capable* store on or off — docs/state/checkpoint.md).
             SettingKey::Checkpoints => {
                 self.checkpoints.set_enabled(settings.checkpoints_active());
             }
@@ -280,25 +280,25 @@ impl Session<'_> {
             }
             // The hook sink is attached per backend build, so flipping the
             // row rebuilds — the next turn genuinely stops (or starts)
-            // consulting them (docs/hooks.md).
+            // consulting them (docs/tools/hooks.md).
             SettingKey::Hooks => {
                 self.models.set_hooks(settings.hooks_active());
                 // Turned on over hooks that wait for trust: ask now, rather
                 // than leaving them silent until the next launch
-                // (`docs/config-review.md`).
+                // (`docs/state/config-review.md`).
                 if settings.hooks_active() {
                     self.open_hooks_review();
                 }
             }
             // The tool rides the backend build and the listing rides the
             // context, so flipping the row does both — the next turn genuinely
-            // stops (or starts) knowing about skills (`docs/skills.md`).
+            // stops (or starts) knowing about skills (`docs/tools/skills.md`).
             SettingKey::Skills => {
                 self.models.set_skills(settings.skills_active());
                 self.sync_listings();
             }
             // Off stops every server and withdraws their tools; on connects
-            // the ones the user has enabled in `/mcp` (docs/mcp.md).
+            // the ones the user has enabled in `/mcp` (docs/tools/mcp.md).
             SettingKey::Mcp => self.apply_mcp_setting(settings.mcp_active()),
             // The picture geometry: republish the policy, drop the encoded
             // pictures, and rebuild so the committed ones change with it.
@@ -309,7 +309,7 @@ impl Session<'_> {
                 // history generation, and this changes what those rows *are*
                 // without changing history — so a warm cache would keep
                 // serving rows that still reserve a picture the inline view
-                // just dropped (`docs/images.md`).
+                // just dropped (`docs/ui/images.md`).
                 self.app.invalidate_rendered_history();
                 rebuild = true;
             }
@@ -318,22 +318,22 @@ impl Session<'_> {
             SettingKey::AutoResizeImages => self.sync_image_policy(),
             // Every committed read and search changes shape — one collapsed
             // line, or a cell per call — so the conversation is rebuilt from
-            // history at once, the Show images rule (docs/tool-groups.md).
+            // history at once, the Show images rule (docs/ui/tool-groups.md).
             SettingKey::Verbose => rebuild = true,
             // Read where they are used — nothing to rebuild. The ask timeout
             // is read by the draw tick on every reading of the idle clock, so
-            // `never` stops a running wait at once (docs/ask.md).
+            // `never` stops a running wait at once (docs/tools/ask.md).
             SettingKey::HideThinking | SettingKey::AutoCompact | SettingKey::AskTimeout => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning
-            // it on sends today's ping if none has gone (docs/telemetry.md).
+            // it on sends today's ping if none has gone (docs/ops/telemetry.md).
             SettingKey::Telemetry => self.apply_telemetry_setting(),
             // Its twin: update.json, and turning it on runs today's check if
-            // none has (docs/update.md).
+            // none has (docs/ops/update.md).
             SettingKey::UpdateCheck => self.apply_update_setting(),
             // Per user too: tips.json, beside the walk's position. Nothing to
-            // redraw by hand — the next frame reads the row (docs/tips.md).
+            // redraw by hand — the next frame reads the row (docs/ui/tips.md).
             SettingKey::Tips => {
                 config::update_tips_file(config::tips_json_path().as_deref(), |file| {
                     file.enabled = settings.tips;
@@ -344,7 +344,7 @@ impl Session<'_> {
         // itself, moving across only the key the user cycled — so an
         // `ALTER_ZERO_*` override merged in at startup never sticks, and two
         // sessions in two directories never clobber each other
-        // (`docs/settings.md`, `docs/per-directory-state.md`). The Telemetry
+        // (`docs/state/settings.md`, `docs/state/per-directory-state.md`). The Telemetry
         // and Show tips rows were written above, to their own files: a
         // user's choice, not a directory's.
         if !matches!(key, SettingKey::Telemetry | SettingKey::Tips) {

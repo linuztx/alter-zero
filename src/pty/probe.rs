@@ -1,5 +1,5 @@
 //! What are a session's processes blocked in? — the kernel's own answer to
-//! *is the program waiting for input* (`docs/interactive-shell.md`), where
+//! *is the program waiting for input* (`docs/tools/interactive-shell.md`), where
 //! the screen can only offer a shape.
 //!
 //! Linux only. `/proc/PID/task/TID/syscall` names the system call a sleeping
@@ -42,7 +42,7 @@
 //! A tree with a thread waiting on a terminal, or in a wait the probe could
 //! not see into, and no reader is [`Probe::Polling`]: it may be at a prompt,
 //! or waiting on the network — which is why, since every command runs in a
-//! terminal (`docs/bash-tools.md`), its silence ends a launch only after a
+//! terminal (`docs/tools/bash-tools.md`), its silence ends a launch only after a
 //! long quiet, where [`Probe::Idle`]'s never does. A tree waiting elsewhere
 //! asks nothing, but may wait on the network as long as a server idles, so
 //! its silence ends a launch the same way.

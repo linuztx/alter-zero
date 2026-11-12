@@ -1,5 +1,5 @@
 //! Live probe of the bash tools — `bash` and its companions `bashsend`,
-//! `bashwait`, `bashkill` and `bashlist` (docs/bash-tools.md) — against a
+//! `bashwait`, `bashkill` and `bashlist` (docs/tools/bash-tools.md) — against a
 //! real model. NOT run by `cargo test` (it needs the network and an API
 //! key).
 //!
@@ -70,7 +70,7 @@ fn main() {
     std::env::set_current_dir(&workdir).expect("the workdir exists");
     let cwd = std::env::current_dir().expect("a cwd");
     // The probe's commands really run, so the user is the real one: whether
-    // the model reaches for `sudo` depends on it (docs/environment.md).
+    // the model reaches for `sudo` depends on it (docs/architecture/environment.md).
     let user = alter_zero::llm::backend::user_label(
         Some(rustix::process::geteuid().as_raw()),
         std::env::var("USER").ok().as_deref(),

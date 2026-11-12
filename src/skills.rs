@@ -1,4 +1,4 @@
-//! The `Skill` tool's pure model — see `docs/skills.md`.
+//! The `Skill` tool's pure model — see `docs/tools/skills.md`.
 //!
 //! A skill is a directory holding a `SKILL.md`: YAML frontmatter naming and
 //! describing it, over a markdown body the model pulls into the conversation
@@ -96,12 +96,12 @@ pub struct SkillMetadata {
 /// A `SKILL.md` that could not be read, parsed, or validated. Collected
 /// rather than thrown: one bad skill must not cost a session the rest. The
 /// shared [`crate::frontmatter::FileError`] — an agent definition
-/// (`docs/subagents.md`) fails the same way and is reported by the same rule.
+/// (`docs/agents/subagents.md`) fails the same way and is reported by the same rule.
 pub type SkillError = frontmatter::FileError;
 
 /// The errors in `current` whose file `reported` has not already raised — the
 /// per-turn rescan's toast filter, the shared
-/// [`crate::frontmatter::unreported`] (`docs/skills.md`).
+/// [`crate::frontmatter::unreported`] (`docs/tools/skills.md`).
 #[must_use]
 pub fn unreported_errors(reported: &BTreeSet<PathBuf>, current: &[SkillError]) -> Vec<SkillError> {
     frontmatter::unreported(reported, current)
@@ -279,7 +279,7 @@ pub const SKILL_LISTING_HEADER: &str =
 /// the model about a tool it isn't offered.
 ///
 /// The section is the roster alone: the `$`-mention guidance lives in the
-/// Skill tool's own description (`docs/skill-mentions.md`), which rides every
+/// Skill tool's own description (`docs/input/skill-mentions.md`), which rides every
 /// request the tool does — repeating it here would say it twice per turn.
 /// Static across turns, so the reminder stays prompt-cache-stable unless the
 /// listing itself changes.
@@ -293,7 +293,7 @@ pub fn skill_section(listing: &str) -> String {
 }
 
 /// The skills section alone, wrapped as a whole `<system-reminder>` — the
-/// **briefing** a launched subagent opens on (`docs/subagents.md`): a
+/// **briefing** a launched subagent opens on (`docs/agents/subagents.md`): a
 /// subagent starts on a fresh context the lead's reminder never reaches, and
 /// it has no `agent` tool, so it gets this section and nothing else. The
 /// lead's own reminder is composed by `crate::context::context_messages_full`
@@ -311,7 +311,7 @@ pub fn listing_message(listing: &str) -> String {
 ///
 /// Nothing else is rewritten. The reference's `args` parameter — and with it
 /// the `$ARGUMENTS`/`$1`…`$9` substitution pass and the appended `Arguments:`
-/// trailer — is deliberately gone (`docs/skills.md`): a body reaches the
+/// trailer — is deliberately gone (`docs/tools/skills.md`): a body reaches the
 /// model as its author wrote it, so a skill can document `$ARGUMENTS` in its
 /// own prose without having the word rewritten out from under it.
 #[must_use]
@@ -331,7 +331,7 @@ pub fn render_skill_body(dir: &Path, body: &str) -> String {
     format!("{}{SKILL_TRUNCATION_MARKER}", &rendered[..cut])
 }
 
-// ===== `$` skill mentions (docs/skill-mentions.md) =====
+// ===== `$` skill mentions (docs/input/skill-mentions.md) =====
 
 /// The sigil that opens the composer's skill picker and marks a mention in a
 /// submitted message — codex's `$` skill mentions.
@@ -494,7 +494,7 @@ pub struct SkillRegistry {
 /// the user has since turned **off**. The two are deliberately separate —
 /// disabling is a choice about a skill that still exists, so a rescan must
 /// not silently re-enable it and an unavailable-here name must not be
-/// forgotten (`docs/skills.md`).
+/// forgotten (`docs/tools/skills.md`).
 #[derive(Debug, Default)]
 struct RegistryState {
     skills: Vec<SkillMetadata>,
@@ -634,7 +634,7 @@ impl SkillRegistry {
 }
 
 /// The `skills.json` format: which skills the user has turned **off**, per
-/// project (`permissions.json`'s shape exactly — `docs/skills.md`).
+/// project (`permissions.json`'s shape exactly — `docs/tools/skills.md`).
 ///
 /// Per project because skill relevance is project-specific: a `dataviz` skill
 /// earns its listing tokens in an analytics repo and not in a kernel driver.
@@ -878,7 +878,7 @@ mod tests {
         assert!(msg.contains("available for use with the Skill tool"));
         assert!(msg.contains("- commit: Create a git commit"));
         // The reminder is the roster alone: the `$`-mention guidance lives in
-        // the Skill tool's own description (docs/skill-mentions.md), so
+        // the Skill tool's own description (docs/input/skill-mentions.md), so
         // repeating it here would spend listing-budget tokens saying it twice.
         assert!(!msg.contains("`$<name>`"), "got {msg}");
         assert!(!msg.contains("reference a skill"), "got {msg}");
@@ -955,7 +955,7 @@ mod tests {
 
     #[test]
     fn a_body_keeps_its_dollar_placeholders_verbatim() {
-        // The `skill` call carries no arguments any more (docs/skills.md), so
+        // The `skill` call carries no arguments any more (docs/tools/skills.md), so
         // there is nothing to substitute and the render rewrites none of the
         // body's own text: a body that *documents* `$ARGUMENTS` or `$1` now
         // says what it says. Only the skill-dir tokens still expand.
@@ -1025,7 +1025,7 @@ mod tests {
         assert!(clone.find("pdf").is_some(), "the clone sees the swap");
     }
 
-    // ===== enabling / disabling one skill (`/skills`, docs/skills.md) =====
+    // ===== enabling / disabling one skill (`/skills`, docs/tools/skills.md) =====
 
     #[test]
     fn a_disabled_skill_leaves_the_listing_and_the_lookup() {
@@ -1159,7 +1159,7 @@ mod tests {
         assert!(registry.is_enabled("commit"));
     }
 
-    // ===== `$` skill mentions (docs/skill-mentions.md) =====
+    // ===== `$` skill mentions (docs/input/skill-mentions.md) =====
 
     #[test]
     fn mention_token_is_the_dollar_token_under_the_cursor() {

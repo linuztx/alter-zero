@@ -1,5 +1,5 @@
 //! Background shells: their events, and when their notices are allowed to
-//! appear (`docs/background.md`).
+//! appear (`docs/tools/background.md`).
 //!
 //! A `bash` call that outlives its `wait` — or a `wait: 0` launch, or a Ctrl+B
 //! hand-off — leaves a process running past the turn that started it, on its
@@ -30,7 +30,7 @@
 //! automatic follow-up turn instead, so the model can report the result.
 //!
 //! A session that stops to **ask for input** with nobody watching reaches
-//! both audiences the same way (`docs/bash-tools.md`) — the amber `● … is
+//! both audiences the same way (`docs/tools/bash-tools.md`) — the amber `● … is
 //! waiting for input` cell, a note naming the session — while it runs on.
 
 use std::time::Instant;
@@ -64,7 +64,7 @@ impl Session<'_> {
             BgEvent::Output { id, chunk } => self.app.bg_output(&id, &chunk),
             BgEvent::Screen { id, text } => self.app.bg_screen(&id, &text),
             // An exit the model already read — a `bash_session` call reported
-            // it (docs/interactive-shell.md): the shell leaves the list, and
+            // it (docs/tools/interactive-shell.md): the shell leaves the list, and
             // no notice is owed to anyone.
             BgEvent::Exited {
                 id, observed: true, ..
@@ -84,7 +84,7 @@ impl Session<'_> {
                 }
             }
             // A session nobody waits on stopped to ask for input
-            // (docs/bash-tools.md): reported the way an exit is, while the
+            // (docs/tools/bash-tools.md): reported the way an exit is, while the
             // shell keeps running and keeps its row.
             BgEvent::Waiting { id } => {
                 if let Some(waiting) = self.app.bg_waiting(&id) {
@@ -101,7 +101,7 @@ impl Session<'_> {
         // A subagent-launched shell reports to its launcher first: the note
         // queues onto that agent's seam and is heard at its next round
         // boundary — the same seam a user's chat message rides
-        // (docs/queue.md). Queueing is **all** this does:
+        // (docs/input/queue.md). Queueing is **all** this does:
         // `StreamEvent::Steered` records the note on the agent's transcript
         // when the loop actually takes it, and the session view commits it
         // from there. Recording it here as well put it on the transcript
@@ -110,13 +110,13 @@ impl Session<'_> {
         //
         // A launcher that already settled can't hear it: the shared board
         // takes the note instead, so the main turn (or the idle follow-up
-        // turn) relays the outcome (docs/agent-tool.md).
+        // turn) relays the outcome (docs/agents/agent-tool.md).
         //
         // Either way, a companion call may have got there first — a `bashsend`
         // into a session that ended while the model was writing it reports
         // the exit itself, and a look at a session shows the prompt a waiting
         // note would — and then the model has it: no note, no cell
-        // (docs/bash-tools.md *One notice per exit*). The registry answers
+        // (docs/tools/bash-tools.md *One notice per exit*). The registry answers
         // that under its own lock, atomically with the claim.
         let note = completion.context_text();
         let routed = match &completion.origin {
@@ -174,7 +174,7 @@ impl Session<'_> {
     /// (`StreamEvent::NoticeDelivered`): record + commit its held cell **here**,
     /// at the round boundary the model's request went out from, so history,
     /// scrollback and every later turn's context carry it exactly where the
-    /// wire did (`docs/background.md`). A note nobody holds a cell for (one
+    /// wire did (`docs/tools/background.md`). A note nobody holds a cell for (one
     /// whose cell already settled) changes nothing.
     pub(crate) fn settle_delivered_notice(&mut self, seq: u64) {
         if let Some(completion) = self.app.take_delivered_bg_completion(seq) {
@@ -189,7 +189,7 @@ impl Session<'_> {
     /// end (`StreamDone` — above its summary — a backend error, both Esc
     /// outcomes) and at an idle arrival; the next turn's context carries them
     /// from there. A note a report took back off the board before any model
-    /// read it owes no cell (`docs/agent-tools.md` *One notice per answer*).
+    /// read it owes no cell (`docs/agents/agent-tools.md` *One notice per answer*).
     pub(crate) fn settle_bg_completions(&mut self) {
         for held in self.app.take_pending_bg_completions() {
             if !self.retracted(held.seq) {
@@ -199,7 +199,7 @@ impl Session<'_> {
         // Background-agent completions settle at the same turn ends — the
         // green `● Agent "…" finished` / red stopped cell — and update the
         // recorded group entry so the Ctrl+O cell shows the final response
-        // (docs/agent-tool.md).
+        // (docs/agents/agent-tool.md).
         for held in self.app.take_pending_agent_notices() {
             if self.retracted(held.seq) {
                 // An `agentoutput` report took the note back before the lead
@@ -222,7 +222,7 @@ impl Session<'_> {
     /// it).
     fn settle_bg_completion(&mut self, completion: &BgCompletion) {
         // The notice lands after the reads before it, never among them
-        // (docs/tool-groups.md).
+        // (docs/ui/tool-groups.md).
         let committing = self.commits_allowed();
         self.close_tool_group(committing, self.term.screen().width);
         let notice = self.app.record_background_notice(completion);
@@ -243,7 +243,7 @@ impl Session<'_> {
 
     /// Record + commit one background agent's notice cell, updating its
     /// recorded group entry first so the Ctrl+O cell shows the final response
-    /// (docs/agent-tool.md).
+    /// (docs/agents/agent-tool.md).
     fn settle_agent_notice(&mut self, notice: &alter_zero::app::AgentNotice) {
         let committing = self.commits_allowed();
         self.close_tool_group(committing, self.term.screen().width);

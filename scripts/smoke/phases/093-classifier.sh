@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the Ctrl+D view's CLASSIFIER PAGE (docs/permissions.md). Auto
+# the Ctrl+D view's CLASSIFIER PAGE (docs/state/permissions.md). Auto
 # mode's reviewer reads a bounded task context — the recent user requests plus
 # one line per action — and that context is the one input to a verdict the
 # user cannot otherwise see: the request is silent and the cell shows only the

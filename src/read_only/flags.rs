@@ -1,6 +1,6 @@
 //! The flag allowlists behind [`super::is_read_only`] — Claude Code's
 //! `COMMAND_ALLOWLIST`, ported for the programs an agent inspects a project
-//! with (`docs/tool-groups.md`). A program listed here is read-only only with
+//! with (`docs/ui/tool-groups.md`). A program listed here is read-only only with
 //! the flags its table names: an unknown flag, a value-taking flag with no
 //! value, or a value-taking flag inside a bundle (`-rf patterns`) refuses the
 //! command, so a writing flag nobody listed (`sort -o`, `tree -o`,

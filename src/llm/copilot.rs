@@ -1,6 +1,6 @@
 //! GitHub Copilot as a provider: the device-code sign-in, the token exchange
 //! every request needs, and the request identity Copilot's API insists on.
-//! See `docs/copilot.md`.
+//! See `docs/providers/copilot.md`.
 //!
 //! Two token layers, and conflating them is the classic bug:
 //!
@@ -44,7 +44,7 @@ const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const EXCHANGE_PATH: &str = "/copilot_internal/v2/token";
 
 /// Where the seat's allowance and what is left of it are read — the endpoint
-/// VS Code's own Copilot dashboard reads (`docs/usage.md`).
+/// VS Code's own Copilot dashboard reads (`docs/providers/usage.md`).
 const USER_PATH: &str = "/copilot_internal/user";
 
 /// GitHub's REST API, where the exchange and the quota read both live, unless
@@ -1227,7 +1227,7 @@ mod tests {
         assert_eq!(none.lifetime(), Duration::from_secs(300));
     }
 
-    // --- what plan the sign-in actually got (docs/copilot.md) ---
+    // --- what plan the sign-in actually got (docs/providers/copilot.md) ---
 
     #[test]
     fn a_free_seat_names_itself_and_its_remaining_chat_quota() {
@@ -1283,7 +1283,7 @@ mod tests {
         );
     }
 
-    // --- the exchange's failures, as sentences (docs/copilot.md) ---
+    // --- the exchange's failures, as sentences (docs/providers/copilot.md) ---
 
     #[test]
     fn a_rate_limited_403_is_not_read_as_a_missing_subscription() {
@@ -1443,7 +1443,7 @@ mod tests {
         assert!(advice.contains("upstream exploded"), "{advice}");
     }
 
-    // --- a failed chat request, as a sentence (docs/copilot.md) ---
+    // --- a failed chat request, as a sentence (docs/providers/copilot.md) ---
 
     #[test]
     fn model_not_supported_names_the_model_and_the_way_out() {

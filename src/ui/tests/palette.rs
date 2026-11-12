@@ -1,4 +1,4 @@
-//! The per-theme palettes and the ambient active theme (`docs/theme.md`).
+//! The per-theme palettes and the ambient active theme (`docs/ui/theme.md`).
 
 use super::*;
 use crate::app::Theme;
@@ -265,7 +265,7 @@ fn the_gradient_and_the_blends_follow_the_palette() {
 fn an_error_toast_is_its_themes_red_softened_toward_the_dim() {
     // A toast is quiet chrome — its info line wears the dim — so its failure
     // line is the theme's red pulled toward that dim: still a red at a
-    // glance, never as loud as the error bullet (docs/toast.md).
+    // glance, never as loud as the error bullet (docs/ui/toast.md).
     let spread = |color: Color| {
         let (r, g, b) = rgb_of(color);
         r.max(g).max(b) - r.min(g).min(b)
@@ -357,7 +357,7 @@ fn contrast_ratio_is_wcags_luminance_ratio() {
     let collision = ratio(Color::Rgb(0x62, 0x72, 0xA4), Color::Rgb(0x39, 0x81, 0x53));
     assert!(collision < 1.05, "{collision}");
     // A terminal-palette colour has no components to measure (the ANSI
-    // theme, `docs/theme.md`).
+    // theme, `docs/ui/theme.md`).
     assert_eq!(contrast_ratio(Color::Green, white), None);
     assert_eq!(contrast_ratio(white, Color::Reset), None);
 }

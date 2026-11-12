@@ -1,4 +1,4 @@
-//! The per-session LLM conversation context (see `docs/context.md`).
+//! The per-session LLM conversation context (see `docs/architecture/context.md`).
 //!
 //! A real backend must send the *whole* conversation each turn or the model
 //! loses context. This module derives that raw message list from
@@ -23,12 +23,12 @@ use crate::llm::tools::{image_attachment_note, is_image_read_output};
 
 /// Codex's `/compact` summarization prompt (`prompts/compact_prompt.md`,
 /// verbatim): the user message the compact turn sends over the whole current
-/// context. See `docs/compact.md`.
+/// context. See `docs/architecture/compact.md`.
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.md");
 
 /// Codex's summary prefix (`prompts/compact_summary_prefix.md`, verbatim — no
 /// trailing newline): the compacted context's bridge message opens with it,
-/// followed by a newline and the marker's summary. See `docs/compact.md`.
+/// followed by a newline and the marker's summary. See `docs/architecture/compact.md`.
 pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix.md");
 
 /// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
@@ -163,7 +163,7 @@ impl ContextRole {
 
 /// One entry of an assistant message's native `tool_calls` array: the model's
 /// request to run a tool, replayed on later turns in the provider-native Chat
-/// Completions shape (see `docs/context.md`). `id` pairs it to the following
+/// Completions shape (see `docs/architecture/context.md`). `id` pairs it to the following
 /// `tool`-role result; `name` is the wire tool name (`bash`/`read`/`write`/
 /// `edit`); `arguments` is a JSON argument object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +193,7 @@ impl ContextToolCall {
 /// (verbatim user/assistant content, a `$ command` shell transcript, or a
 /// bracketed notice), the temp-file paths of a user message's Ctrl+V image
 /// attachments (a vision backend re-encodes them each turn; see
-/// `docs/image-paste.md`), the native `tool_calls` an assistant entry requested,
+/// `docs/input/image-paste.md`), the native `tool_calls` an assistant entry requested,
 /// and — on a `tool`-role entry — the id of the call it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextMessage {
@@ -249,7 +249,7 @@ impl ContextMessage {
 
 /// Where a user-role text in the derived conversation came from — what the
 /// `/context` page splits the user's share of the window by
-/// (`docs/context-usage.md`). The derivation merges adjacent user-role texts
+/// (`docs/architecture/context-usage.md`). The derivation merges adjacent user-role texts
 /// into one message, so one message can hold several.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextOrigin {
@@ -312,7 +312,7 @@ impl std::ops::DerefMut for Derived {
 /// display name.
 pub(crate) fn wire_tool_name(display: &str) -> String {
     // An MCP cell's display name (`{server} - {tool} (MCP)`) inverts to the
-    // `mcp__server__tool` the model actually called (`docs/mcp.md`).
+    // `mcp__server__tool` the model actually called (`docs/tools/mcp.md`).
     if let Some(wire) = crate::mcp::wire_from_display(display) {
         return wire;
     }
@@ -322,7 +322,7 @@ pub(crate) fn wire_tool_name(display: &str) -> String {
         "Write" => "write".to_string(),
         "Edit" => "edit".to_string(),
         // The one wire name with an underscore, so the lowercase fallback
-        // would miss it (docs/interactive-shell.md).
+        // would miss it (docs/tools/interactive-shell.md).
         crate::llm::tools::BASH_SESSION_TOOL_DISPLAY => {
             crate::llm::tools::BASH_SESSION_TOOL_NAME.to_string()
         }
@@ -332,7 +332,7 @@ pub(crate) fn wire_tool_name(display: &str) -> String {
 
 /// The JSON argument object a finished tool call replays with — the model's
 /// **verbatim** [`ToolCall::arguments`] whenever it recorded them, which is
-/// every live call now (`docs/context.md`). Only a record without them — a
+/// every live call now (`docs/architecture/context.md`). Only a record without them — a
 /// rollout written before the field, the `!` shell, a hand-scripted event —
 /// falls back to rebuilding one from the stored one-line summary
 /// (`llm::tools::summarize_call`: the command for `bash`, the path for the
@@ -344,7 +344,7 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
     // `edit`'s two strings, a `bash` call's `timeout` all replay as sent.
     // This is what lets those tools' results collapse to one line: the
     // conversation carries the change on the *call* now, not in the result
-    // (`docs/tools.md`). Guarded on parsing as an object, since a validating
+    // (`docs/tools/tools.md`). Guarded on parsing as an object, since a validating
     // provider rejects anything else — a damaged record falls through to the
     // per-tool table below, which is also what every pre-field rollout, the
     // `!` shell, and a hand-scripted event take.
@@ -356,7 +356,7 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
     // An MCP call's stored `args` **is** the raw arguments JSON
     // (`llm::tools::summarize_call` keeps it verbatim precisely so this
     // replay is lossless — the pretty `key: value` form is derived at render
-    // time instead; `docs/mcp.md`). Guard on it parsing as an object so an
+    // time instead; `docs/tools/mcp.md`). Guard on it parsing as an object so an
     // odd record still degrades to `{}` rather than an invalid request.
     if crate::mcp::is_mcp_display_name(&tool.name) {
         if serde_json::from_str::<serde_json::Value>(tool.args.trim()).is_ok_and(|v| v.is_object())
@@ -372,7 +372,7 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
     let key = match tool.name.as_str() {
         "Bash" => "command",
         "Read" | "Write" | "Edit" => "path",
-        // A `skill` call's summary *is* the skill name (`docs/skills.md`), so
+        // A `skill` call's summary *is* the skill name (`docs/tools/skills.md`), so
         // it reconstructs exactly — and it must, since `skill` is a required
         // parameter a validating provider rejects the call without. The
         // optional `args` are lossy the same way `bash`'s `timeout` is;
@@ -489,7 +489,7 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
         // The compacted shape always pushes the summary bridge, even over an
         // empty summary ("(no summary available)").
         | HistoryItem::Compaction(_) => true,
-        // A hook cell with no text gave the model nothing (docs/hooks.md
+        // A hook cell with no text gave the model nothing (docs/tools/hooks.md
         // *The hook-run cell*).
         HistoryItem::HookNote(note) => !note.text.is_empty(),
         // One `agent` call per entry — an entryless group derives nothing.
@@ -502,10 +502,10 @@ pub fn derives_conversation(history: &[HistoryItem]) -> bool {
 /// [`context_messages`] behind the session's **`<system-reminder>`**
 /// ([`crate::reminder`]) — one block, composed here from its two inputs in
 /// their fixed order: the project's AGENTS.md instructions section
-/// (`project_doc::instructions_section`, `docs/project-doc.md`), then the
+/// (`project_doc::instructions_section`, `docs/state/project-doc.md`), then the
 /// listing sections naming the skills the `Skill` tool can load and the
 /// types the `Agent` tool can launch (`subagents::listing_sections`,
-/// `docs/skills.md`, `docs/subagents.md`).
+/// `docs/tools/skills.md`, `docs/agents/subagents.md`).
 ///
 /// Composed at derivation rather than stored assembled because the two
 /// inputs change at different moments — the instructions are re-read at every
@@ -541,7 +541,7 @@ pub fn context_messages_full(
 /// viewed subagent's is its briefing exactly as the launch wrapped it
 /// (`skills::listing_message`, `App::agent_system_reminder`), which is why
 /// this seam takes the block whole rather than its sections — wrapping it
-/// again would show a block the agent never read (`docs/subagents.md`).
+/// again would show a block the agent never read (`docs/agents/subagents.md`).
 #[must_use]
 pub fn context_messages_behind(
     leading: Option<&str>,
@@ -562,7 +562,7 @@ fn context_messages_led_by(
 /// [`context_messages`] with every user-role text's origin beside it — the
 /// same messages, and one [`TextSegment`] per user-role text pushed into
 /// them, in order. What the `/context` page counts the conversation from
-/// (`docs/context-usage.md`).
+/// (`docs/architecture/context-usage.md`).
 #[must_use]
 pub fn context_messages_with_origins(
     history: &[HistoryItem],
@@ -589,8 +589,8 @@ fn derive(leading: Option<String>, history: &[HistoryItem], origins: bool) -> De
 /// [`context_messages_full`] with the project's AGENTS.md instructions alone
 /// — the reminder's instructions section and no listings. What the
 /// tools-free `/compact` turn sends: a summarizer never offered the `skill`
-/// or `agent` tool must not read a roster naming them (`docs/compact.md`).
-/// See `docs/project-doc.md`.
+/// or `agent` tool must not read a roster naming them (`docs/architecture/compact.md`).
+/// See `docs/state/project-doc.md`.
 #[must_use]
 pub fn context_messages_with(
     user_instructions: Option<&str>,
@@ -602,7 +602,7 @@ pub fn context_messages_with(
 /// Derive `history` into `out` behind whatever leading fragments it already
 /// holds — the compaction split, then the per-item mapping.
 fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
-    // A `/compact` marker (docs/compact.md): the *last* one wins, and
+    // A `/compact` marker (docs/architecture/compact.md): the *last* one wins, and
     // everything before it derives as codex's compacted shape — the budgeted
     // recent user texts, then the summary bridge — with the items after it
     // deriving normally. Earlier markers sit before the last one, so a prior
@@ -638,7 +638,7 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
 /// `batch` id) replay as the wire carried them, one assistant message holding
 /// every call under the provider's own ids, then every result, so the request
 /// re-sends the prefix the provider cached rather than one call per message
-/// under synthesized ids (`docs/prompt-caching.md`). A record with no batch
+/// under synthesized ids (`docs/providers/prompt-caching.md`). A record with no batch
 /// is a round of its own, exactly as before the ids were recorded.
 fn derive_into(out: &mut Derived, history: &[HistoryItem]) {
     let mut ids = CallIds::default();
@@ -685,7 +685,7 @@ impl CallIds {
 /// `batch` id — plus the completion notices that committed *between* them,
 /// which the model actually read at the next round's top and so replay after
 /// the round. Only a rollout recorded before notices settled where the model
-/// read them (`StreamEvent::NoticeDelivered`, `docs/background.md`) has any:
+/// read them (`StreamEvent::NoticeDelivered`, `docs/tools/background.md`) has any:
 /// its tool resolutions were settle points. `end` is the index past the
 /// round.
 struct Round<'a> {
@@ -753,7 +753,7 @@ fn round_at(history: &[HistoryItem], position: usize) -> Option<Round<'_>> {
 /// message (folded onto the open assistant text segment when there is one,
 /// else a fresh assistant message with empty content), every result in call
 /// order, the image reads' attachment notes after the results — the live loop
-/// appends them after a round's results too (`docs/tools.md`) — and last the
+/// appends them after a round's results too (`docs/tools/tools.md`) — and last the
 /// notices that committed inside the round.
 fn derive_round(out: &mut Derived, round: &Round<'_>, ids: &mut CallIds) {
     let mut entries = Vec::new();
@@ -816,7 +816,7 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
             let id = ids.claim(tool.call_id.as_deref());
             // A legacy `bash_session` call replays as the tool that does the
             // same thing now, so the request names only tools it offers
-            // (`docs/bash-tools.md`).
+            // (`docs/tools/bash-tools.md`).
             let (name, arguments) = if tool.name == crate::llm::tools::BASH_SESSION_TOOL_DISPLAY {
                 let (name, arguments) =
                     crate::llm::tools::legacy_session_call(&reconstruct_arguments(tool));
@@ -829,9 +829,9 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
             // rejection's display is a one-liner while the model read the
             // full stop-and-wait instruction — with Tab's amend feedback
             // appended. Replaying the display would drop what the user
-            // asked for from every later turn (`docs/permissions.md`).
+            // asked for from every later turn (`docs/state/permissions.md`).
             let result = ContextMessage::tool_result(id, tool.context_text());
-            // An image `read` (docs/tools.md): the live agent loop attached
+            // An image `read` (docs/tools/tools.md): the live agent loop attached
             // the pixels as a follow-up user message; replay the same shape
             // so later turns keep seeing them. The stored args are the path
             // — the backend re-encodes it each request (a gone file becomes
@@ -845,7 +845,7 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
                 attachment,
             });
         }
-        // A task tool call (`docs/task-tools.md`): invisible inline, but the
+        // A task tool call (`docs/tools/task-tools.md`): invisible inline, but the
         // model made the call and read the result — replay the same native
         // pair every other tool gets, so later turns keep its memory of the
         // plan — carrying the model's own arguments, the same way an
@@ -864,7 +864,7 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
                 attachment: None,
             });
         }
-        // A resolved subagent group (`docs/agent-tool.md`): the parent made
+        // A resolved subagent group (`docs/agents/agent-tool.md`): the parent made
         // one `agent` call per entry and received one result — the native
         // tool-call pair replays exactly that, each result carrying the
         // **immutable** model-facing `output` (the framed response / launch
@@ -890,7 +890,7 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
 /// `Role::Shell` header needs to see whether its tool cell follows.
 fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
     match &history[position] {
-        // Hook-injected conversation text (docs/hooks.md): the model read
+        // Hook-injected conversation text (docs/tools/hooks.md): the model read
         // it as a user message mid-turn, so every later turn replays it
         // verbatim in place. A note with no text is the hooks' cell alone —
         // it gave the model nothing, so nothing is replayed (an empty entry
@@ -905,7 +905,7 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
             // at *here*, not in the request builder: the derived context
             // is what the model reads, so annotating any lower would
             // leave Ctrl+D showing text the wire never carried
-            // (`docs/image-paste.md`). Per message, before the merge, so
+            // (`docs/input/image-paste.md`). Per message, before the merge, so
             // each draft's `[Image #1]` names its own picture.
             Role::User => push_user_text(
                 out,
@@ -932,7 +932,7 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
                 // Its tool cell (recorded when the command resolves)
                 // carries the command + output — except for a *dangling*
                 // header: the app quit mid-command, so no tool ever
-                // landed (docs/resume.md). Emit the bare command then, or
+                // landed (docs/state/resume.md). Emit the bare command then, or
                 // the run would vanish from the derived context while the
                 // transcript still shows it.
                 let resolved = matches!(
@@ -973,13 +973,13 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
         // carrying the outcome AND the output tail — the model reads the
         // result here (the rendered cell shows only the one-line headline).
         // User-role like the other notices: strict providers reject
-        // mid-conversation system messages. See docs/background.md.
+        // mid-conversation system messages. See docs/tools/background.md.
         HistoryItem::Background(notice) => {
             push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
         }
         // A background agent's completion: the bracketed user-role note
         // carrying the outcome and the final response, exactly like a
-        // background shell's (docs/agent-tool.md).
+        // background shell's (docs/agents/agent-tool.md).
         HistoryItem::AgentNotice(notice) => {
             push_user_text(out, notice.context_text(), vec![], TextOrigin::Notice);
         }
@@ -987,7 +987,7 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
         // Completions has nowhere to put a previous round's raw
         // chain-of-thought, and re-sending it would burn context for
         // nothing. The Ctrl+D view showing no trace of it is the truth
-        // about what the model receives (docs/thinking-stream.md).
+        // about what the model receives (docs/ui/thinking-stream.md).
         HistoryItem::Reasoning(_) => {}
     }
 }
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     /// A permission-rejected call: the short red cell text plus the longer
-    /// model-facing result the live loop actually sent (`docs/permissions.md`).
+    /// model-facing result the live loop actually sent (`docs/state/permissions.md`).
     fn rejected_tool(name: &str, args: &str, display: &str, result: &str) -> HistoryItem {
         HistoryItem::Tool(ToolCall {
             name: name.to_string(),
@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn a_message_steered_mid_turn_replays_between_the_rounds_it_landed_between() {
-        // Steering makes a history shape nothing else does (`docs/queue.md`):
+        // Steering makes a history shape nothing else does (`docs/input/queue.md`):
         // a user entry between one round's tool result and the next round's
         // call. The derivation must keep that order **and** open a fresh
         // assistant message for the call after it — folding that call onto the
@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn a_hook_cell_that_gave_the_model_nothing_changes_nothing_it_reads() {
-        // docs/hooks.md *The hook-run cell*: a hook that broke, or said
+        // docs/tools/hooks.md *The hook-run cell*: a hook that broke, or said
         // something to the user alone, leaves a cell with no text — and the
         // context is exactly what it would be without the cell.
         let cell = HistoryItem::HookNote(crate::app::HookNote {
@@ -1154,7 +1154,7 @@ mod tests {
 
     #[test]
     fn a_hook_note_replays_verbatim_as_a_user_message() {
-        // The model read it as a user message mid-turn (docs/hooks.md), so
+        // The model read it as a user message mid-turn (docs/tools/hooks.md), so
         // every later turn replays exactly that — no prefix, no wrapper: the
         // producer already formatted the wire text.
         let history = vec![
@@ -1214,7 +1214,7 @@ mod tests {
         // The derived context *is* the wire text, so the placeholder names
         // the file the picture was saved at here — not one layer lower in
         // the request builder, where Ctrl+D could not see it
-        // (`docs/image-paste.md`).
+        // (`docs/input/image-paste.md`).
         assert_eq!(ctx[0].text, "[Image #1: /tmp/shot.png] what is this?");
         assert_eq!(ctx[0].images, vec![PathBuf::from("/tmp/shot.png")]);
     }
@@ -1271,7 +1271,7 @@ mod tests {
 
     #[test]
     fn a_task_call_replays_as_the_native_pair_the_model_keeps() {
-        // A task tool call is invisible inline (docs/task-tools.md) but the
+        // A task tool call is invisible inline (docs/tools/task-tools.md) but the
         // model made the call and read the result — the derived context
         // replays the same native pair every other tool gets, carrying the
         // **arguments it actually sent** so its own plan (subjects,
@@ -1329,7 +1329,7 @@ mod tests {
 
     #[test]
     fn a_rejected_tool_replays_the_model_facing_result_not_the_cell_text() {
-        // A permission rejection resolves with TWO texts (`docs/permissions.md`):
+        // A permission rejection resolves with TWO texts (`docs/state/permissions.md`):
         // the short red cell output the user reads, and the longer stop-and-wait
         // instruction the *model* read as the tool result — with Tab's amend
         // feedback appended. The replay must be the latter, or the next turn
@@ -1391,7 +1391,7 @@ mod tests {
 
     /// A finished backend tool stamped with the wire identity its round
     /// announced — the provider's call id and the round's batch
-    /// (`docs/prompt-caching.md`).
+    /// (`docs/providers/prompt-caching.md`).
     fn batched(name: &str, args: &str, output: &str, batch: u64, call_id: &str) -> HistoryItem {
         let HistoryItem::Tool(mut call) = tool(name, args, output, ToolStatus::Ok, false) else {
             unreachable!("tool() builds a tool item");
@@ -1541,7 +1541,7 @@ mod tests {
         // records land agent-first (a group resolves before the round's
         // ordinary calls run), so without the position the replay would
         // send [agent, bash, read] — a different prefix from the one the
-        // provider cached (docs/prompt-caching.md).
+        // provider cached (docs/providers/prompt-caching.md).
         let arguments = r#"{"description":"Fetch","prompt":"p","subagent_type":"explore"}"#;
         let mut bash = batched("Bash", "ls", "files", 1, "call_bash");
         let mut read = batched("Read", "a.rs", "source", 1, "call_read");
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn a_notice_committed_inside_a_batch_replays_after_it() {
         // A completion cell can commit between two cells of one batch (a
-        // tool resolution is a safe boundary, docs/background.md), but the
+        // tool resolution is a safe boundary, docs/tools/background.md), but the
         // model read that note at the next round's top — after every result
         // — so the replay keeps the batch whole and the note behind it.
         let history = vec![
@@ -1711,7 +1711,7 @@ mod tests {
         // the stored record — the note text via the shared
         // `llm::tools::image_attachment_note`, the path as an `images`
         // attachment the backend re-encodes each turn (a gone file becomes an
-        // `[image unavailable]` note there). See docs/tools.md.
+        // `[image unavailable]` note there). See docs/tools/tools.md.
         let history = vec![tool(
             "Read",
             "assets/shot.png",
@@ -1934,7 +1934,7 @@ mod tests {
         // Chat Completions has nowhere to put a previous round's raw
         // chain-of-thought, and re-sending it would burn context for nothing —
         // so the derived context (and the Ctrl+D view) shows no trace of it.
-        // See docs/thinking-stream.md.
+        // See docs/ui/thinking-stream.md.
         let history = vec![
             HistoryItem::Reasoning(crate::app::Reasoning {
                 text: "a long private deliberation".to_string(),
@@ -2032,7 +2032,7 @@ mod tests {
             ),
             // The cell of hooks that gave the model nothing — a hook that
             // broke, a message for the user — derives nothing
-            // (docs/hooks.md *The hook-run cell*).
+            // (docs/tools/hooks.md *The hook-run cell*).
             (
                 "hook cell with no text",
                 vec![HistoryItem::HookNote(crate::app::HookNote {
@@ -2158,7 +2158,7 @@ mod tests {
         // The completion notice reaches the model as a user-role note carrying
         // the outcome and the final output tail — that's how the model can
         // summarise the result in the automatic follow-up turn
-        // (docs/background.md). The rendered cell shows only the headline.
+        // (docs/tools/background.md). The rendered cell shows only the headline.
         let history = vec![HistoryItem::Background(crate::app::BackgroundNotice {
             description: "Ping x.com 200 times".to_string(),
             id: "bash_1".to_string(),
@@ -2210,7 +2210,7 @@ mod tests {
         assert_eq!(ContextRole::Tool.wire_name(), "tool");
     }
 
-    // --- /compact: the marker-aware derivation (docs/compact.md) ---
+    // --- /compact: the marker-aware derivation (docs/architecture/compact.md) ---
 
     fn compaction(summary: &str) -> HistoryItem {
         HistoryItem::Compaction(crate::app::Compaction {
@@ -2429,7 +2429,7 @@ mod tests {
     #[test]
     fn origins_name_where_each_user_text_came_from() {
         // What `/context` splits the user's share of the window by
-        // (docs/context-usage.md). The derivation merges adjacent user-role
+        // (docs/architecture/context-usage.md). The derivation merges adjacent user-role
         // texts into one message — a `!` command, the app's notice and the
         // next typed message land in the same one — so where each came from
         // is noted as it is pushed.
@@ -2503,7 +2503,7 @@ mod tests {
         );
     }
 
-    // --- AGENTS.md user instructions (docs/project-doc.md) ---
+    // --- AGENTS.md user instructions (docs/state/project-doc.md) ---
 
     #[test]
     fn user_instructions_lead_the_derived_context() {
@@ -2579,7 +2579,7 @@ mod tests {
         // `write({"path": …})` — the model watching itself write a file with
         // no content, while the whole content rode the result as a numbered
         // body. The verbatim arguments make the replay lossless, which is
-        // what lets the result collapse to one line (`docs/tools.md`).
+        // what lets the result collapse to one line (`docs/tools/tools.md`).
         let arguments = r#"{"path":"/tmp/a.py","content":"print(1)\n"}"#;
         let history = vec![tool_with_arguments(
             "Write",
@@ -2633,7 +2633,7 @@ mod tests {
     fn a_companion_call_replays_under_its_own_wire_name_with_its_arguments() {
         // `BashSend` lowercases to `bashsend`, the name the model called — the
         // task tools' convention, so the replay needs no table for it
-        // (docs/bash-tools.md).
+        // (docs/tools/bash-tools.md).
         let arguments = r#"{"session_id":"b7x2k9m1q","input":"print(1)<Enter>"}"#;
         let history = vec![tool_with_arguments(
             crate::llm::tools::BASH_SEND_DISPLAY,
@@ -2650,7 +2650,7 @@ mod tests {
     fn a_legacy_session_call_replays_as_the_tool_that_does_it_now() {
         // `bash_session` is executed but no longer offered: a resumed
         // conversation's request must name only tools it offers, or a
-        // validating provider rejects the round (docs/bash-tools.md).
+        // validating provider rejects the round (docs/tools/bash-tools.md).
         let replayed = |arguments: &str| {
             let history = vec![tool_with_arguments(
                 crate::llm::tools::BASH_SESSION_TOOL_DISPLAY,
@@ -2711,7 +2711,7 @@ mod tests {
         // One block, sections in a fixed order — the project instructions,
         // then the skills and agent-type listings: every section is
         // re-rendered per turn, so one that moved would invalidate the prompt
-        // cache behind it (docs/context.md).
+        // cache behind it (docs/architecture/context.md).
         let history = vec![message(Role::User, "hello")];
         let ctx = context_messages_full(
             Some("guide"),
@@ -2908,7 +2908,7 @@ mod tests {
     fn an_mcp_call_replays_with_its_wire_name_and_verbatim_arguments() {
         // The recorded display name inverts to the wire name and the stored
         // args ARE the raw JSON — a validating provider re-reads exactly what
-        // the model sent (docs/mcp.md).
+        // the model sent (docs/tools/mcp.md).
         let history = vec![
             message(Role::User, "ask the wiki"),
             tool(

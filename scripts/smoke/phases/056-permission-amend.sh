@@ -5,7 +5,7 @@
 smoke_begin
 
 # Tab's amend feedback reaches the MODEL and keeps reaching it
-# (docs/permissions.md). Rejecting with typed instructions must (a) record them
+# (docs/state/permissions.md). Rejecting with typed instructions must (a) record them
 # on the red cell — the transcript's only trace of what was asked for — and
 # (b) put the model-facing denial, feedback included, into the derived LLM
 # context, so Ctrl+D shows it and every later turn still carries it. The bug

@@ -1,4 +1,4 @@
-//! The startup banner (`docs/header.md`, `docs/mascot.md`).
+//! The startup banner (`docs/ui/header.md`, `docs/ui/mascot.md`).
 
 use super::*;
 use crate::app::Mascot;
@@ -9,7 +9,7 @@ use crate::ui::wrap::cols;
 fn transcript_opens_with_the_header_banner() {
     // The Ctrl+O overlay shows the same conversation the inline view
     // holds, and that conversation opens with the startup banner
-    // (docs/header.md): the transcript's first rows are the banner plus a
+    // (docs/ui/header.md): the transcript's first rows are the banner plus a
     // blank spacer, then the history walk.
     let app = transcript_fixture();
     let lines = transcript_lines(&app, 80);
@@ -33,7 +33,7 @@ fn transcript_opens_with_the_header_banner() {
 #[test]
 fn startup_notice_is_one_dim_indented_row() {
     // The checkpoint pre-flight's `Snapshotting …` line
-    // (docs/checkpoint.md): scrollback chrome committed above the banner,
+    // (docs/state/checkpoint.md): scrollback chrome committed above the banner,
     // wearing the banner's indent and dim meta colour so the two read as one
     // block; a narrow width truncates rather than wrapping, because the row
     // is a status, not prose.
@@ -162,7 +162,7 @@ fn header_title_is_bold_name_over_dim_version() {
 #[test]
 fn header_cwd_wears_the_footers_path_colour_and_hint_is_cyan() {
     // The path is one colour wherever the app names it — the banner's cwd
-    // row and the footer's cwd segment (docs/header.md, docs/footer.md).
+    // row and the footer's cwd segment (docs/ui/header.md, docs/ui/footer.md).
     let lines = header_lines(&with_session(), 90);
     let cwd = lines[1]
         .spans
@@ -267,7 +267,7 @@ fn header_without_a_session_still_shows_mascot_and_version() {
 #[test]
 fn header_avoids_the_smoke_reserved_strings() {
     // The banner shares the screen with the smoke suite's structural
-    // counters (docs/header.md, smoke Phases 11/16/17): it must never carry
+    // counters (docs/ui/header.md, smoke Phases 11/16/17): it must never carry
     // these markers, nor a full `─` rule / bare `❯` row.
     for width in [16u16, 24, 50, 90] {
         for mascot in Mascot::ALL {
@@ -300,7 +300,7 @@ fn header_avoids_the_smoke_reserved_strings() {
     }
 }
 
-// --- the banner-topped repaint tail (docs/header.md) ---
+// --- the banner-topped repaint tail (docs/ui/header.md) ---
 
 #[test]
 fn banner_tail_restores_the_banner_over_the_rebuilt_tail() {
@@ -324,7 +324,7 @@ fn banner_tail_never_clips() {
     assert_eq!(plain(&out[0]), "LOGO");
 }
 
-// --- the startup header banner (docs/header.md) ---
+// --- the startup header banner (docs/ui/header.md) ---
 
 /// The whole banner as one plain string (rows joined by newlines).
 fn header_text(app: &App, width: u16) -> String {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/release.sh — cut, package, verify and publish a release
-# (docs/release.md). One entry point over the steps under scripts/release/,
+# (docs/ops/release.md). One entry point over the steps under scripts/release/,
 # the smoke suite's runner-over-phases shape: each step is its own file that
 # sources scripts/release/lib.sh, and .github/workflows/release.yml is a
 # thin caller of these same commands, so a release can be rehearsed — and
@@ -13,7 +13,7 @@
 #   scripts/release.sh notes VERSION             # the release notes: CHANGELOG.md's section + the compare link
 #   scripts/release.sh publish VERSION [DIST]    # the GitHub release (gh), or --dry-run to see the commands
 #   scripts/release.sh download VERSION [DIST]   # a published release's assets back into dist/, verified (no gh)
-#   scripts/release.sh npm VERSION [DIST]        # the npm packages (docs/npm.md), or --dry-run to stage and validate them
+#   scripts/release.sh npm VERSION [DIST]        # the npm packages (docs/ops/npm.md), or --dry-run to stage and validate them
 #   scripts/release.sh prepare VERSION           # bump the version everywhere, roll the changelog, ready to tag
 #   scripts/release.sh selftest                  # the tooling's own fixture-driven tests
 set -euo pipefail

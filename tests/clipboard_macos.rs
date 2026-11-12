@@ -12,7 +12,7 @@
 //! screenshot copied to the clipboard (⌃⇧⌘4) is a **16-bit floating-point**
 //! TIFF, `image`'s TIFF decoder refuses that shape, so arboard's own read
 //! answers `ConversionFailure` and the paste used to report "no image on the
-//! clipboard" for a perfectly good screenshot (`docs/image-paste.md`,
+//! clipboard" for a perfectly good screenshot (`docs/input/image-paste.md`,
 //! `src/clipboard/macos.rs`).
 //!
 //! Every picture these tests plant is built here in exactly that shape
@@ -238,7 +238,7 @@ fn a_pasted_pictures_metadata_never_reaches_the_file() {
     // AppKit's `«class PNGf»` coercion copies the pasteboard picture's tags:
     // a TIFF's ImageDescription/Artist/Software land in the PNG's `eXIf`
     // chunk and again in an `iTXt` XMP packet. That file is base64'd into
-    // every later request (`docs/context.md`), so the paste must keep the
+    // every later request (`docs/architecture/context.md`), so the paste must keep the
     // pixels and drop everything else.
     const TAGS: [(u16, &str); 3] = [
         (IMAGE_DESCRIPTION, "SECRET-DESCRIPTION-alice"),

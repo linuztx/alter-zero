@@ -1,8 +1,8 @@
 //! The `/login` flow's boundary half: opening it with the choices the file
 //! and the key store between them decide, running a subscription's device
 //! sign-in — or a local server's connection test — on a worker, and
-//! persisting what it mints or what passed. See `docs/copilot.md`,
-//! `docs/llm.md` and `docs/local-models.md`.
+//! persisting what it mints or what passed. See `docs/providers/copilot.md`,
+//! `docs/providers/llm.md` and `docs/providers/local-models.md`.
 
 use alter_zero::app::{ServerTest, SigninKind, ToastKind};
 use alter_zero::clipboard;
@@ -17,12 +17,12 @@ use super::workers::{DeviceEvent, spawn_server_test, spawn_signin};
 const CODE_COPIED_NOTICE: &str = "Copied the code to clipboard";
 
 impl Session<'_> {
-    /// `/login` (`docs/llm.md`): open the inline onboarding, its three lists
+    /// `/login` (`docs/providers/llm.md`): open the inline onboarding, its three lists
     /// built from the provider file — the subscriptions signed in to, the
     /// providers keyed, and the local servers pointed at — each row's ✓
     /// reflecting real resolution. The hint names the real `.env` path. The
     /// file is re-read first, so a provider added to it since startup is a
-    /// row already (`docs/user-providers.md`).
+    /// row already (`docs/providers/user-providers.md`).
     pub(crate) fn open_key_onboarding(&mut self) {
         self.reload_providers();
         let providers = self.models.provider_choices();
@@ -36,7 +36,7 @@ impl Session<'_> {
     /// Enter on a local server's page: test the connection on a worker — the
     /// server's model listing, fetched the way `/model` will fetch it — before
     /// anything is saved. An address that is no URL at all is answered at
-    /// once, with no request made. See `docs/local-models.md`.
+    /// once, with no request made. See `docs/providers/local-models.md`.
     pub(crate) fn test_local_server(&mut self, provider: &str, test: ServerTest) {
         self.cancel_device_login();
         let Some((name, example, cfg)) = self.models.local_test_config(provider, &test) else {
@@ -123,7 +123,7 @@ impl Session<'_> {
     }
 
     /// `c` on the device page: copy the one-time code, and say so. The
-    /// clipboard I/O is `/copy`'s (`docs/copy.md`); only the confirmation
+    /// clipboard I/O is `/copy`'s (`docs/ui/copy.md`); only the confirmation
     /// differs, because "Copied last message" would be a lie here.
     pub(crate) fn copy_device_code(&mut self, code: &str) {
         match clipboard::copy_to_clipboard(code) {

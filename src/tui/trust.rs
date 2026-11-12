@@ -1,4 +1,4 @@
-//! The startup review's boundary half (`docs/config-review.md`): reading what
+//! The startup review's boundary half (`docs/state/config-review.md`): reading what
 //! it decides on — the user's hooks, the project's hooks and MCP servers —
 //! and `trust.json`; building its pages; applying each answer live; and the
 //! `/hooks` and `/mcp` toggles that change a decision later. Every decision
@@ -53,7 +53,7 @@ impl<T: Clone> ProjectFile<T> {
 }
 
 /// The project's `.alter-zero` layer, read once at bootstrap
-/// (`docs/project-config.md`).
+/// (`docs/state/project-config.md`).
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectLayer {
     /// The project root — the `/trust` era's key for its approvals.
@@ -510,7 +510,7 @@ impl Session<'_> {
     }
 
     /// Open the startup review over whatever waits for a decision, holding
-    /// `SessionStart` until it closes (`docs/config-review.md`). Whether it
+    /// `SessionStart` until it closes (`docs/state/config-review.md`). Whether it
     /// opened — the caller holds a `[PROMPT]` the same way.
     pub(crate) fn open_startup_review(&mut self) -> bool {
         let pages = self.review_pages(true, true);
@@ -536,7 +536,7 @@ impl Session<'_> {
         self.app.open_requested_review(pages);
     }
 
-    /// Apply one page's answer (`docs/config-review.md`), then — once the
+    /// Apply one page's answer (`docs/state/config-review.md`), then — once the
     /// review has closed — let what it held go.
     pub(crate) fn apply_review_answer(&mut self, answer: ReviewAnswer) {
         let result = match answer.kind {

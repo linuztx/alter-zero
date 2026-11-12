@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Differential check of the interactive-shell screen against tmux
-# (docs/interactive-shell.md): run a program under the session's emulator
+# (docs/tools/interactive-shell.md): run a program under the session's emulator
 # with `examples/pty_oracle.rs`, recording every byte it wrote, replay those
 # bytes into a 120x40 tmux pane, and diff the two screens and cursors. A
 # difference is an escape sequence one emulator reads and the other doesn't.

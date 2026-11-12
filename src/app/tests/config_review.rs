@@ -1,4 +1,4 @@
-//! The startup review's state and key map (`docs/config-review.md`).
+//! The startup review's state and key map (`docs/state/config-review.md`).
 
 use super::*;
 

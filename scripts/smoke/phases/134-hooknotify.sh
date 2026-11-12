@@ -6,7 +6,7 @@ smoke_begin
 
 # A real backend — a stub provider whose "model" asks for one `bash` call —
 # raises the permission prompt, and a hooks.json records PreToolUse,
-# Notification and PostToolUse. What it proves (docs/hooks.md):
+# Notification and PostToolUse. What it proves (docs/tools/hooks.md):
 #   - Notification(permission_prompt) fires for the prompt on screen;
 #   - it never holds the prompt up: answered at once, the command runs at
 #     once, while the notifier is still asleep;

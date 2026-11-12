@@ -1,10 +1,10 @@
 //! The hook-run cell — what the hooks at a turn's edges said, `● Ran 1 Stop
-//! hook` collapsed inline and expanded in Ctrl+O (`docs/hooks.md` *The
+//! hook` collapsed inline and expanded in Ctrl+O (`docs/tools/hooks.md` *The
 //! hook-run cell*).
 //!
 //! It wears a tool cell's dress: a bullet coloured by outcome, `⎿` rows under
 //! it — each opening its own corner, its continuations hanging under its text
-//! ([`gutter_row`]) — and the output fold (`docs/long-lines.md`). What it says
+//! ([`gutter_row`]) — and the output fold (`docs/ui/long-lines.md`). What it says
 //! is the [`HookReport`] the runner built; nothing here decides a word of it.
 
 use std::borrow::Cow;

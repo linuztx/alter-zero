@@ -1,4 +1,4 @@
-//! The read-only `/donate` page. See `docs/donate.md`.
+//! The read-only `/donate` page. See `docs/ui/donate.md`.
 //!
 //! The `/hooks` menu's frame — the family's rules and two-column inset, the
 //! `❯` marker on the highlighted row, the dim hint — over the const
@@ -25,7 +25,7 @@ use crate::app::{DONATION_ADDRESSES, DonationAddress};
 
 /// The title row: `♥ Support Alter Zero` — the heart in its own red, the
 /// verb and the name bold and washed left-to-right in the banner's accent →
-/// link gradient (the mascot's own wash, `docs/header.md`). Clamped with a
+/// link gradient (the mascot's own wash, `docs/ui/header.md`). Clamped with a
 /// trailing `…` at a width that can't seat it, like every banner row.
 fn title_line(width: u16) -> Line<'static> {
     let title = format!("{DONATE_TITLE_PREFIX}{HEADER_NAME}");
@@ -202,7 +202,7 @@ fn address_block(index: usize, selected: usize, open: bool, width: u16) -> Vec<L
 
 /// Join `blocks` into the framed page: a top rule, the blocks with exactly
 /// one blank row between them (the `/login` page rule, so no two blank rows
-/// ever stack and none hugs either rule — `docs/view-flow.md` *The frame
+/// ever stack and none hugs either rule — `docs/ui/view-flow.md` *The frame
 /// hugs its content*), and a bottom rule.
 fn donate_page(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width)];
@@ -230,12 +230,12 @@ fn donate_page(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>
 /// 4. the highlighted address **alone** — its label, box and networks —
 ///    its numbered label saying where it stands among the others. The
 ///    compact pages' `↑`/`↓` slots would sit straight under the top rule
-///    here and hug it blank at the first address (`docs/view-flow.md` *The
+///    here and hug it blank at the first address (`docs/ui/view-flow.md` *The
 ///    frame hugs its content*), so this page has none.
 ///
 /// The caution and the hint stay on every page: the one says which networks
 /// a coin may go over and the other how to copy it. Only a terminal shorter
-/// than the last page bottom-anchors it (`docs/view-flow.md` *A page that
+/// than the last page bottom-anchors it (`docs/ui/view-flow.md` *A page that
 /// sheds rows before it flows*). What [`render_donate_picker`] paints and
 /// `donate_menu_rows` counts, so the reserved height and the painted rows can
 /// never disagree. `height` is the terminal's, or the region already reserved
@@ -319,8 +319,8 @@ pub fn donate_picker_height(app: &App, width: u16, term_height: u16) -> Option<u
 /// rounded box, the caution, the hint, between the family's rules —
 /// bottom-anchored, so a squeezed area keeps the boxes, the hint and the
 /// closing rule on screen while the skipped top flows into scrollback
-/// (`docs/view-flow.md`). Pure — `render_live` paints this. See
-/// `docs/donate.md`.
+/// (`docs/ui/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/ui/donate.md`.
 pub fn render_donate_picker(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

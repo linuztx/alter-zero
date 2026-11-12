@@ -1,4 +1,4 @@
-//! The inline `/model` picker (`docs/llm.md`).
+//! The inline `/model` picker (`docs/providers/llm.md`).
 
 use super::*;
 use crate::ui::theme::{
@@ -367,7 +367,7 @@ fn the_needs_login_hint_wraps_keeping_its_actionable_tail() {
 fn the_needs_login_hint_does_not_presume_an_api_key() {
     // `/login` has three ways in — a subscription, a key, a local server —
     // and a hint naming only a key sends someone with a local model looking
-    // for a key they will never have (docs/local-models.md).
+    // for a key they will never have (docs/providers/local-models.md).
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(vec![], 0, "x");
     picker.status = ModelLoad::NeedsLogin;
@@ -442,7 +442,7 @@ fn a_cut_model_name_detail_ends_with_an_ellipsis() {
     assert!(name.trim_end().ends_with('…'), "{name:?}");
 }
 
-// --- a failed provider says WHY, not just that it failed (docs/llm.md) ---
+// --- a failed provider says WHY, not just that it failed (docs/providers/llm.md) ---
 
 #[test]
 fn a_failed_provider_shows_its_reason_beneath_the_list() {
@@ -540,7 +540,7 @@ fn a_clean_load_adds_no_reason_rows_at_all() {
     );
 }
 
-// --- the compact page's shared pieces (docs/view-flow.md) ---
+// --- the compact page's shared pieces (docs/ui/view-flow.md) ---
 
 #[test]
 fn the_first_page_that_fits_wins_and_the_pages_after_it_are_never_built() {
@@ -767,7 +767,7 @@ fn every_compact_page_fits_keeps_its_search_line_and_holds_one_height() {
 fn a_page_with_no_tail_closes_on_its_list() {
     // `/model`'s placeholder pages have nothing under the list, so the page
     // closes on it: a blank `↓` slot there would hug the bottom rule
-    // (`docs/view-flow.md` *The frame hugs its content*). The `↑` slot under
+    // (`docs/ui/view-flow.md` *The frame hugs its content*). The `↑` slot under
     // the search line is the gap the page keeps there anyway.
     let rule = "─".repeat(20);
     assert_eq!(

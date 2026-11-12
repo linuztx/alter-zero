@@ -3,7 +3,7 @@
 //!
 //! It caches the rendered rows of already-complete source lines and re-renders
 //! only the newly-arrived tail, so streaming a reply is O(reply), not O(reply²).
-//! See `docs/markdown.md` and `docs/flicker.md`.
+//! See `docs/ui/markdown.md` and `docs/ui/flicker.md`.
 
 use super::assistant::{AssistantRenderer, empty_assistant_row, row_is_blank};
 use super::theme::*;
@@ -13,7 +13,7 @@ use super::*;
 /// scrollback as it streams — the boundary's replacement for the old
 /// re-render-the-whole-reply `stable_commit`/`final_commit` pair (which cost
 /// O(reply) *per chunk*, so a long code reply was O(reply²) and starved the
-/// status animation — see `docs/markdown.md`).
+/// status animation — see `docs/ui/markdown.md`).
 ///
 /// It drives one `AssistantRenderer`, caching the rendered rows of every
 /// **complete** source line (`frozen`) and advancing over only the newly-arrived
@@ -63,7 +63,7 @@ pub struct StreamRender {
     /// content and the region is content-anchored, so a preview that shrinks
     /// by more than what committed lifts the box — and drops it again a
     /// token later, once the next line lands. A slow model makes that a
-    /// visible bounce (`docs/slow-stream.md`): a fence marker renders no row
+    /// visible bounce (`docs/ui/slow-stream.md`): a fence marker renders no row
     /// where its first two backticks did, a wrapped table header collapses
     /// into a shorter grid or record when its delimiter confirms. So the
     /// preview
@@ -118,7 +118,7 @@ impl StreamRender {
     /// Has any row of this reply reached scrollback since the last
     /// [`reset`](Self::reset)? A reply still on its first line lives only in
     /// the strip's preview; one that has committed rows needs a rebuild to be
-    /// taken back — what a withdrawn reply attempt asks (`docs/offline.md` *A
+    /// taken back — what a withdrawn reply attempt asks (`docs/providers/offline.md` *A
     /// connection lost mid-reply*).
     #[must_use]
     pub const fn has_committed(&self) -> bool {
@@ -164,7 +164,7 @@ impl StreamRender {
     /// **empty** trailing line inside an open table is NOT fed: doing so would
     /// close the table on the clone and pull its rendered block into `commit`'s
     /// stable range mid-stream. The block only becomes real when a non-table
-    /// line completes, or at `finish` (docs/table-streaming.md).
+    /// line completes, or at `finish` (docs/ui/table-streaming.md).
     fn tail_rows(&self, text: &str) -> Vec<Line<'static>> {
         let tail_src = &text[self.consumed..];
         let mut clone = self.renderer.clone();
@@ -249,7 +249,7 @@ impl StreamRender {
         //    rows, and the strip previews the forming block. A trailing
         //    **header candidate** (`is_table_header_candidate` — a leading
         //    `|`) is withheld the same way before the renderer has consumed
-        //    it (docs/table-streaming.md); and
+        //    it (docs/ui/table-streaming.md); and
         //  - a trailing line with an **open inline marker** (`has_open_inline` —
         //    an unclosed `**`/`*`/`~~`/`` ` ``/`[`): its closer could still restyle
         //    an already-wrapped row, so the whole line is withheld until it settles
@@ -266,7 +266,7 @@ impl StreamRender {
             // A URL still forming at the line's end (`…see ht`, `http://e.`):
             // autolink detection flips on retroactively — the next chars
             // restyle the whole word blue+underlined — so its wrapped rows
-            // must not reach scrollback as plain prose (docs/links.md).
+            // must not reach scrollback as plain prose (docs/ui/links.md).
             || crate::links::has_forming_url(tail_src)
         {
             let stable = self.frozen.len();
@@ -421,14 +421,14 @@ impl StreamRender {
     /// rows are buffered on the clone rather than in `frozen`, and none of them
     /// has committed, so they are uncommitted tail like everything else — the
     /// grid still streams row-by-row with its columns re-fitting as wider cells
-    /// arrive (docs/table-streaming.md).
+    /// arrive (docs/ui/table-streaming.md).
     ///
     /// Never fewer rows than the strip held a token ago, less what committed
     /// since (`preview_floor`): a trailing line that rendered no row of its
     /// own (a fence marker), a frontier that just committed clean (a closing
     /// fence), or a table re-laid out shorter is padded with blank rows, so
     /// the strip keeps its rows and the box never hops up between tokens
-    /// (`docs/slow-stream.md`).
+    /// (`docs/ui/slow-stream.md`).
     ///
     /// Capped to the **newest** `max_rows` rows so a tail taller than the strip
     /// (a big table, a very long withheld code line) tail-follows its frontier.
@@ -537,7 +537,7 @@ impl StreamRender {
         // next content will land on. Three shapes used to shrink here and
         // each lifted the box, then dropped it a token later — one frame at
         // a fast stream, a visible bounce at a slow model's pace
-        // (`docs/slow-stream.md`): a closing ``` left nothing to preview, so
+        // (`docs/ui/slow-stream.md`): a closing ``` left nothing to preview, so
         // the strip dropped its slot *and* its gap (two rows); an opener
         // streamed a backtick at a time rendered no row where its `` `` ``
         // prose had (one row); and a table header wrapped as prose collapsed

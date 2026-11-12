@@ -1,6 +1,6 @@
 //! `/compact` and auto-compaction: the summarization turn's buffer, the
 //! [`Compaction`](super::Compaction) marker it appends, and the context gauge
-//! that decides when to run it. See `docs/compact.md`.
+//! that decides when to run it. See `docs/architecture/compact.md`.
 
 use super::types::IMAGE_INPUT_TOKENS;
 use super::*;
@@ -8,19 +8,19 @@ use super::*;
 /// The fixed live-status verb for a `/compact` turn (the [`SHELL_VERB`]
 /// pattern — not cycled): the status line reads `Compacting…`. It doubles as
 /// the never-rendered done verb — a compact turn ends without a summary, the
-/// `● Context compacted` cell being its record. See `docs/compact.md`.
+/// `● Context compacted` cell being its record. See `docs/architecture/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
 
 /// The auto-compact trigger's numerator/denominator: codex's threshold is
 /// **90% of the context window** (`(context_window * 9) / 10`,
 /// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
-/// turn on its own at the next idle boundary. See `docs/compact.md`.
+/// turn on its own at the next idle boundary. See `docs/architecture/compact.md`.
 const AUTO_COMPACT_NUMERATOR: u64 = 9;
 
 const AUTO_COMPACT_DENOMINATOR: u64 = 10;
 
 impl App {
-    /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
+    /// Begin a `/compact` turn (`docs/architecture/compact.md`), reusing the AI turn
     /// machinery like [`begin_shell`](App::begin_shell) so the summarization
     /// request gets the live status strip, `esc to interrupt`, and the
     /// mid-turn queueing for free:
@@ -88,7 +88,7 @@ impl App {
     /// [`take_turn_summary`](App::take_turn_summary) shape) — recorded on the
     /// marker so the cell shows how long the compaction worked. The context
     /// derivation ([`crate::context::context_messages`]) applies the
-    /// compacted shape from the marker on. See `docs/compact.md`.
+    /// compacted shape from the marker on. See `docs/architecture/compact.md`.
     pub fn finish_compact(&mut self, elapsed_secs: u64) -> Option<Compaction> {
         let summary = self.compact_buffer.take()?;
         self.streaming = None;
@@ -112,7 +112,7 @@ impl App {
         // schemas, stays — and the marker records the shrink.
         self.refresh_context_used();
         // The newest frame is the summarizer's request, which described the
-        // conversation the marker just replaced (`docs/context-usage.md`).
+        // conversation the marker just replaced (`docs/architecture/context-usage.md`).
         self.last_usage = None;
         compaction.after = self.context_used;
         if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
@@ -126,7 +126,7 @@ impl App {
     /// Inject the active model's context window in tokens (the boundary's
     /// `/v1/models` `context_length`, the saved settings, or the
     /// `ALTER_ZERO_CONTEXT_WINDOW` override) — `None` (or a meaningless 0)
-    /// hides the footer gauge and disables auto-compact. See `docs/compact.md`.
+    /// hides the footer gauge and disables auto-compact. See `docs/architecture/compact.md`.
     pub fn set_context_window(&mut self, window: Option<u64>) {
         self.context_window = window.filter(|&w| w > 0);
     }
@@ -152,7 +152,7 @@ impl App {
     /// count is remembered, so the re-estimate every usage report asks for
     /// counts only what is new. A usage report's count is set beside it, and
     /// a history the report no longer describes (compaction, `/clear`,
-    /// backtrack, `/resume`) is re-read from it (`docs/token-estimate.md`).
+    /// backtrack, `/resume`) is re-read from it (`docs/architecture/token-estimate.md`).
     ///
     /// **An empty conversation estimates zero.** The system prompt and the
     /// standing instructions do ride the next request, but a *booted* session
@@ -201,7 +201,7 @@ impl App {
     /// calibrated estimate of what joined since, when the history only grew
     /// past it; otherwise — the history moved under the base — the whole
     /// context re-estimated, the base moved by the change, and the result
-    /// taken as the new base (`docs/token-estimate.md`).
+    /// taken as the new base (`docs/architecture/token-estimate.md`).
     pub(super) fn refresh_context_used(&mut self) {
         let now = self.history_signature();
         self.context_synced = Some(now);
@@ -251,7 +251,7 @@ impl App {
     /// against the estimate, for the conversation **on screen** — the viewed
     /// agent's inside its session view, the main session's otherwise. The
     /// `/context` page and the Ctrl+D view count in it
-    /// (`docs/token-estimate.md`).
+    /// (`docs/architecture/token-estimate.md`).
     #[must_use]
     pub fn context_calibration(&self) -> crate::tokens::Calibration {
         match self.viewed_agent() {
@@ -265,10 +265,10 @@ impl App {
     /// known, the gauge is past codex's 90% threshold, no turn is in flight,
     /// the last compact attempt isn't still blocking (one per user turn), and
     /// the conversation derives a non-empty context to summarize. See
-    /// `docs/compact.md` / `docs/settings.md`.
+    /// `docs/architecture/compact.md` / `docs/state/settings.md`.
     #[must_use]
     pub fn should_auto_compact(&self) -> bool {
-        // The `/settings` knob (docs/settings.md): off means the loop never
+        // The `/settings` knob (docs/state/settings.md): off means the loop never
         // starts one on its own — `/compact` by hand still works.
         if !self.settings.auto_compact {
             return false;
@@ -289,7 +289,7 @@ impl App {
 /// Where auto-compaction runs for a `window`-token context window: codex's
 /// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
 /// ([`App::should_auto_compact`]) and the `/context` page's headroom
-/// (`docs/context-usage.md`) both read it, so the page can never show a
+/// (`docs/architecture/context-usage.md`) both read it, so the page can never show a
 /// threshold the loop does not act on.
 #[must_use]
 pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
@@ -302,7 +302,7 @@ pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
 /// session's (`App::estimate_context`, which adds the system prompt
 /// and hands in the fragments-led derivation) and a subagent's
 /// ([`crate::agents::AgentRun`], over its own transcript) — so the two can
-/// never disagree about what a message costs (`docs/agent-context-gauge.md`).
+/// never disagree about what a message costs (`docs/agents/agent-context-gauge.md`).
 #[must_use]
 pub(crate) fn estimate_messages_tokens(messages: &[crate::context::ContextMessage]) -> usize {
     let mut count = count_tokens;
@@ -315,7 +315,7 @@ pub(crate) fn estimate_messages_tokens(messages: &[crate::context::ContextMessag
 /// [`estimate_messages_tokens`]' rule for **one** message, counting with
 /// `count`: its text, a flat `IMAGE_INPUT_TOKENS` per attachment, and each
 /// tool call's name and arguments. The Ctrl+D view labels every entry with
-/// it (`docs/context.md`), handing in a memoized counter so a rebuild
+/// it (`docs/architecture/context.md`), handing in a memoized counter so a rebuild
 /// tokenizes only what is new — and since the gauge sums the very same rule,
 /// the entries add up to what the footer reads.
 pub(crate) fn message_tokens(
@@ -332,7 +332,7 @@ pub(crate) fn message_tokens(
 
 /// A `/compact` marker's payload: the model-written handoff summary the
 /// context derivation bridges into every later request, codex's local
-/// compaction (`docs/compact.md`). Renders as the `● Context compacted` cell
+/// compaction (`docs/architecture/compact.md`). Renders as the `● Context compacted` cell
 /// (the summary body expands in the Ctrl+O transcript only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Compaction {
@@ -350,7 +350,7 @@ pub struct Compaction {
     pub after: u64,
     /// Whether this compaction was **auto-triggered** by the context gauge
     /// crossing the threshold (the cell appends `· auto`), vs the manual
-    /// `/compact` command. See `docs/compact.md`.
+    /// `/compact` command. See `docs/architecture/compact.md`.
     pub auto: bool,
     /// How long the summarization turn ran, in whole seconds — the cell's
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an

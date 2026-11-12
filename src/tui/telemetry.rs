@@ -1,4 +1,4 @@
-//! The anonymous daily usage ping at the boundary (`docs/telemetry.md`): the
+//! The anonymous daily usage ping at the boundary (`docs/ops/telemetry.md`): the
 //! install id's mint, the one-time notice, the send, and the record of the
 //! delivered day and version — everything `telemetry` (the pure half) leaves
 //! to the side that can read a clock, draw entropy, touch the file and spawn
@@ -64,7 +64,7 @@ impl Session<'_> {
     /// (written only on a `2xx`) still retrying at the next launch.
     pub(crate) fn telemetry_day_check(&mut self) {
         // A headless run sends nothing: its notice could never be shown
-        // before the send (docs/headless.md).
+        // before the send (docs/cli/headless.md).
         if self.headless || !self.app.settings().telemetry_active() {
             return;
         }
@@ -76,7 +76,7 @@ impl Session<'_> {
 
     /// The `/settings` **Telemetry** row moved: record the choice in
     /// `telemetry.json` (its own file — a user's preference, not a
-    /// directory's, `docs/per-directory-state.md`) and, if it was just turned
+    /// directory's, `docs/state/per-directory-state.md`) and, if it was just turned
     /// on, take today's step. Turning it off sends nothing more; a result
     /// already in flight still records its day, which the read-modify-write
     /// keeps from resurrecting the `true` the user just cleared.

@@ -5,7 +5,7 @@
 smoke_begin
 
 # /compact runs codex's summarization turn against the dummy and
-# lands the marker (docs/compact.md). An empty conversation is rejected with the
+# lands the marker (docs/architecture/compact.md). An empty conversation is rejected with the
 # 'Nothing to compact' toast; after a real turn, /compact streams the dummy's
 # canned summary into the compact buffer (NEVER rendered — the pane must not
 # show the summary text), commits the '● Context compacted' cell with the

@@ -5,7 +5,7 @@
 smoke_begin
 
 # shell children are DETACHED from the controlling terminal
-# (crate::subprocess, docs/shell-command.md). A command that opens /dev/tty — which
+# (crate::subprocess, docs/input/shell-command.md). A command that opens /dev/tty — which
 # is exactly what sudo's password prompt does — must error at once instead of
 # printing over the TUI and blocking on the keyboard the event loop owns: the
 # runner re-execs the binary's detached-exec helper mode, which setsid()s into

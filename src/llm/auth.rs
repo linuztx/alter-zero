@@ -18,10 +18,10 @@
 //!
 //! And a fifth, for one scheme alone: the Google Antigravity sign-in names
 //! the account's Cloud Code **project**, which that API carries in the
-//! request body rather than in a header (`docs/antigravity.md`).
+//! request body rather than in a header (`docs/providers/antigravity.md`).
 //!
-//! See `docs/copilot.md`, `docs/chatgpt.md`, `docs/claude.md`,
-//! `docs/cline.md` and `docs/antigravity.md`.
+//! See `docs/providers/copilot.md`, `docs/providers/chatgpt.md`, `docs/providers/claude.md`,
+//! `docs/providers/cline.md` and `docs/providers/antigravity.md`.
 
 use super::config::{AuthScheme, ModelConfig, WireApi};
 use super::{Result, antigravity, chatgpt, claude, cline, copilot};
@@ -42,7 +42,7 @@ pub struct RequestAuth {
     /// Merged on top of the provider's static `extra_headers`.
     pub headers: Vec<(String, String)>,
     /// The Cloud Code project the request bills to — the one credential fact
-    /// that rides the request **body** (`docs/antigravity.md`). `None` for
+    /// that rides the request **body** (`docs/providers/antigravity.md`). `None` for
     /// every scheme but the Google Antigravity sign-in.
     pub project: Option<String>,
 }
@@ -87,21 +87,21 @@ pub(crate) const NOT_SIGNED_IN: &str =
 /// - **[`AuthScheme::ApiKey`]** → the stored key and nothing else, with **no
 ///   I/O at all**. Every ordinary provider's path is byte-identical to what
 ///   it was before the subscriptions existed. [`AuthScheme::OptionalKey`] is
-///   the same answer, a stored key or none (`docs/ollama.md`).
+///   the same answer, a stored key or none (`docs/providers/ollama.md`).
 /// - **[`AuthScheme::GithubCopilot`]** → the exchanged Copilot bearer and the
-///   account's own host (`docs/copilot.md`).
+///   account's own host (`docs/providers/copilot.md`).
 /// - **[`AuthScheme::ChatGptCodex`]** → an access token minted from the
 ///   stored refresh token, plus the `chatgpt-account-id` the backend routes
-///   on (`docs/chatgpt.md`).
+///   on (`docs/providers/chatgpt.md`).
 /// - **[`AuthScheme::AnthropicConsole`]** → an access token minted from the
 ///   stored refresh token, plus the `anthropic-beta` an OAuth bearer must
-///   carry on the Messages API (`docs/claude.md`).
+///   carry on the Messages API (`docs/providers/claude.md`).
 /// - **[`AuthScheme::ClineAccount`]** → an access token minted from the
 ///   stored refresh token, spelled `workos:<jwt>` because that is the form
-///   Cline's API takes (`docs/cline.md`).
+///   Cline's API takes (`docs/providers/cline.md`).
 /// - **[`AuthScheme::GoogleAntigravity`]** → an access token minted from the
 ///   stored refresh token, the agy CLI `User-Agent` the backend gates its
-///   catalog on, and the account's Cloud Code project (`docs/antigravity.md`).
+///   catalog on, and the account's Cloud Code project (`docs/providers/antigravity.md`).
 ///
 /// A subscription config with no stored token resolves to an empty
 /// [`RequestAuth`] rather than calling out: the `/model` picker builds configs
@@ -123,7 +123,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
         }
         // A key that is optional rides exactly as a required one does when
         // it is there — and, unlike every other scheme, its absence is not a
-        // request that cannot be made (`docs/ollama.md`).
+        // request that cannot be made (`docs/providers/ollama.md`).
         AuthScheme::ApiKey | AuthScheme::OptionalKey => Ok(RequestAuth::key(cfg.api_key.clone())),
         AuthScheme::AnthropicConsole => {
             let Some(refresh) = stored else {
@@ -162,7 +162,7 @@ pub(crate) fn request_auth(cfg: &ModelConfig) -> Result<RequestAuth> {
             };
             // The account's project is looked up on the configured base —
             // the host the request itself goes to, never another
-            // (`docs/antigravity.md` *What a provider file says*).
+            // (`docs/providers/antigravity.md` *What a provider file says*).
             let access = antigravity::authorize(refresh, &cfg.api_base)?;
             Ok(RequestAuth {
                 bearer: Some(access.bearer),

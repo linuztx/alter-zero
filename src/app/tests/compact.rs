@@ -1,8 +1,8 @@
-//! `/compact`, auto-compaction, and the context gauge (`docs/compact.md`).
+//! `/compact`, auto-compaction, and the context gauge (`docs/architecture/compact.md`).
 
 use super::*;
 
-// --- /compact (docs/compact.md) ---
+// --- /compact (docs/architecture/compact.md) ---
 
 #[test]
 fn the_palette_lists_compact_with_a_concise_description() {
@@ -156,7 +156,7 @@ fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
 fn an_interrupted_compaction_keeps_no_receipt() {
     // A compaction's record is its `● Context compacted` cell, which an Esc
     // never earns — and its fixed `Compacting` verb has no past tense for a
-    // summary to open with (docs/interrupt.md).
+    // summary to open with (docs/input/interrupt.md).
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_compact(false);
@@ -463,7 +463,7 @@ fn a_manual_compaction_is_not_tagged_auto() {
 fn finish_compact_records_the_turns_elapsed_seconds() {
     // The boundary passes the summarization turn's wall-clock (the
     // take_turn_summary shape) so the cell can show `· 36s` — recorded on
-    // the marker and persisted with it (docs/compact.md).
+    // the marker and persisted with it (docs/architecture/compact.md).
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_compact(false);
@@ -491,7 +491,7 @@ fn clear_conversation_resets_the_context_gauge() {
 #[test]
 fn message_tokens_is_the_gauges_rule_one_message_at_a_time() {
     // The Ctrl+D view labels every entry with its own estimate
-    // (`docs/context.md`); summed, they must be exactly what the gauge
+    // (`docs/architecture/context.md`); summed, they must be exactly what the gauge
     // reads, or the view and the footer would disagree about one window.
     let mut app = App::new();
     app.record_user_message_with_images(
@@ -526,7 +526,7 @@ fn message_tokens_is_the_gauges_rule_one_message_at_a_time() {
     );
 }
 
-// --- the gauge's usage-anchored reading (docs/token-estimate.md) ---
+// --- the gauge's usage-anchored reading (docs/architecture/token-estimate.md) ---
 
 /// The estimate of `texts` as user messages, each counted alone — what a
 /// tail of plain messages adds to the gauge.
@@ -652,7 +652,7 @@ fn before_any_report_the_gauge_counts_the_tool_schemas_too() {
 #[test]
 fn an_empty_conversation_reads_zero_whatever_the_tools() {
     // The gauge measures a conversation: with none, it reads what a fresh
-    // session reads (docs/compact.md), tools or not.
+    // session reads (docs/architecture/compact.md), tools or not.
     let mut app = App::new();
     app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
     app.sync_context_used();

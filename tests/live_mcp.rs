@@ -1,4 +1,4 @@
-//! Live MCP tests (`docs/mcp.md`) — the real DeepWiki server, and a real
+//! Live MCP tests (`docs/tools/mcp.md`) — the real DeepWiki server, and a real
 //! model driving a **parallel batch** of its tools through the production
 //! pipeline: `McpManager` connect → `LlmBackend::spawn` → the tool loop →
 //! the `StreamEvent`s the TUI folds into `App` → the very lines the strip,
@@ -36,7 +36,7 @@ const DEEPWIKI_URL: &str = "https://mcp.deepwiki.com/mcp";
 /// A public **dual-era** server — it serves the modern `server/discover`
 /// *and* still answers the legacy `initialize`, which is precisely the shape
 /// that a remembered era verdict used to pin a revision behind
-/// (`docs/mcp.md`). No authentication.
+/// (`docs/tools/mcp.md`). No authentication.
 const DUAL_ERA_URL: &str = "https://docs.mcp.cloudflare.com/mcp";
 
 /// The repository the prompts ask about (the user's own, in the report this
@@ -122,7 +122,7 @@ fn connecting_server(name: &str, url: &str) -> McpManager {
 /// sign-in instead of offering the model tools that fail. Hugging Face,
 /// Context7 and Exa publish the same OAuth metadata but serve calls without
 /// a token, and their providers register apps: they stay connected
-/// (`docs/mcp.md`).
+/// (`docs/tools/mcp.md`).
 #[test]
 #[ignore = "hits the network (googleapis.com, huggingface.co, context7.com, exa.ai)"]
 fn live_google_servers_wait_for_sign_in_while_open_ones_connect() {
@@ -226,7 +226,7 @@ fn plain(line: &ratatui::text::Line<'_>) -> String {
 }
 
 /// The **painted** top row of the live region — the strip's first line, which
-/// for an in-flight MCP batch is its one aggregated cell (`docs/mcp.md`).
+/// for an in-flight MCP batch is its one aggregated cell (`docs/tools/mcp.md`).
 /// Rendered through the real widget, not a helper, so this is what a terminal
 /// would show.
 fn live_strip_top(app: &App, width: u16) -> String {
@@ -254,7 +254,7 @@ fn live_strip_top(app: &App, width: u16) -> String {
 }
 
 /// The revision on the `/mcp` page is whatever the server settled on in
-/// **this** connect (`docs/mcp.md`). Two live servers, two eras, so the pair
+/// **this** connect (`docs/tools/mcp.md`). Two live servers, two eras, so the pair
 /// can tell a working client from the one this replaced: a remembered
 /// `legacy` verdict reported the dual-era server at the legacy revision it
 /// still serves, and every offline fixture in the world agreed with it
@@ -298,7 +298,7 @@ fn live_each_server_reports_the_revision_it_settled_on() {
 #[ignore = "hits the network (mcp.deepwiki.com)"]
 fn live_deepwiki_tool_descriptions_drive_the_permission_prompt() {
     // The prompt's body is the server's own words: no key needed, just the
-    // server (`docs/mcp.md`).
+    // server (`docs/tools/mcp.md`).
     let manager = connected_deepwiki();
     let wire = mcp::tool_wire_name("deepwiki", "read_wiki_structure");
     let description = manager
@@ -350,7 +350,7 @@ fn live_deepwiki_tool_descriptions_drive_the_permission_prompt() {
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
     // The whole point of the aggregation: a real model, a real parallel
-    // batch, and the lines the TUI would actually paint (`docs/mcp.md`).
+    // batch, and the lines the TUI would actually paint (`docs/tools/mcp.md`).
     let manager = connected_deepwiki();
     let backend = backend_with_deepwiki(manager.clone());
     let events = run_turn(
@@ -447,7 +447,7 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_auto_mode_classifies_an_mcp_call_instead_of_prompting() {
-    // The reported gap (docs/mcp.md): in auto mode a server tool used to
+    // The reported gap (docs/tools/mcp.md): in auto mode a server tool used to
     // raise the permission prompt anyway. It must ride the classifier like a
     // command — no `Permission` event, the `ToolNote` provenance row on the
     // allowed call, and a green resolution.

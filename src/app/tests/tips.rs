@@ -1,4 +1,4 @@
-//! The spinner tip's walk (`docs/tips.md`): when a turn draws a tip, which
+//! The spinner tip's walk (`docs/ui/tips.md`): when a turn draws a tip, which
 //! one, and everything that keeps the row — and the cursor — still.
 
 use super::*;
@@ -59,7 +59,7 @@ fn the_tip_appears_at_the_delay_and_moves_the_cursor_on() {
 #[test]
 fn no_tip_hangs_under_a_status_line_waiting_for_the_connection() {
     // The slot under the status line carries the `No connection to …` row
-    // while the host is gone (docs/offline.md); a shortcut tip beside it
+    // while the host is gone (docs/providers/offline.md); a shortcut tip beside it
     // would be noise, so the tip hides and comes back — the same tip, no
     // cursor spent — once the request gets through.
     let mut app = seeded(2);

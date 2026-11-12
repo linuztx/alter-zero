@@ -1,5 +1,5 @@
 //! The offline demo whose **subagent streams its own session**
-//! (`docs/agent-view-streaming.md`).
+//! (`docs/agents/agent-view-streaming.md`).
 //!
 //! Every other scripted turn produces one `Vec<StreamEvent>` for the *reply*
 //! channel ([`super::turns`]). This one also writes to the **agent** channel:
@@ -12,7 +12,7 @@
 //! all: the dummy announced groups but never streamed a member, so nothing
 //! could drive the strip that view paints. That is the gap two reported bugs
 //! lived in, and the round it plays drives both (`scripts/smoke.sh` Phase 95,
-//! `docs/agent-view-streaming.md`):
+//! `docs/agents/agent-view-streaming.md`):
 //!
 //! - **The forming table.** `StreamRender` withholds a table's block whole
 //!   until it closes, so a broken strip renders its closing border and
@@ -53,10 +53,10 @@ const DEMO_THOUGHT: &str = "The user wants a comparison table.\n\
 
 /// The two files the subagent writes **in one parallel batch** — the case the
 /// reported bug lived in: a `write` resolves through the two-text split
-/// (`StreamEvent::ToolAnswered`, `docs/tools.md`), which the session view's
+/// (`StreamEvent::ToolAnswered`, `docs/tools/tools.md`), which the session view's
 /// commit arm did not list, so its cells reached the transcript but never
 /// scrollback until a resize rebuilt the view from history
-/// (`docs/agent-view-streaming.md`).
+/// (`docs/agents/agent-view-streaming.md`).
 const DEMO_FILES: [(&str, &str); 2] = [
     (
         "notes/languages.md",
@@ -69,7 +69,7 @@ const DEMO_FILES: [(&str, &str); 2] = [
 ];
 
 /// The agent's reply — a GFM table, which the incremental renderer withholds
-/// **whole** until its closing row (`docs/table-streaming.md`), plus a line
+/// **whole** until its closing row (`docs/ui/table-streaming.md`), plus a line
 /// after it so the block actually closes on screen.
 const DEMO_REPLY: &str = "\
 | Language | Year | Paradigm | Typing |\n\
@@ -145,7 +145,7 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
 
 /// End a scripted run the way the live forwarder ends one: its end goes out
 /// through [`AgentRegistry::settle`], which names the run — the run a notice
-/// of it is tagged with (`docs/agent-tools.md` *A report covers one run*).
+/// of it is tagged with (`docs/agents/agent-tools.md` *A report covers one run*).
 /// Sent ahead of its settle, an end named no run, and the loop tagged its
 /// notice with whichever run was going when it folded it: after a restart,
 /// the next one. A run a stop came first to settles with no end to send —
@@ -195,7 +195,7 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
         // the not-yet-run one shows `⎿ Waiting…` in the session view's strip,
         // then executed in order. Each resolves with `ToolAnswered` — the
         // file tools' two-text split — which is exactly what the view failed
-        // to commit (`docs/agent-view-streaming.md`).
+        // to commit (`docs/agents/agent-view-streaming.md`).
         let calls: Vec<ScriptedCall> = DEMO_FILES
             .iter()
             .map(|&(path, content)| ScriptedCall::write(path, content))
@@ -213,7 +213,7 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
         }
         // The batch resolved: a **round boundary**, where a real subagent's
         // loop takes what the user typed into its session while it worked and
-        // folds it into the next request (`docs/queue.md`). Announcing it here
+        // folds it into the next request (`docs/input/queue.md`). Announcing it here
         // is what makes the agent view's own mid-turn queue drivable offline —
         // the row above the box becomes a user bubble on this transcript.
         for text in registry.take_pending_inputs(&id) {
@@ -246,7 +246,7 @@ conversation, and this reply is its next turn.";
 /// short continuation round on the agent channel, from a thread of its own,
 /// exactly as [`spawn_agent_session`] plays the first one. The offline half of
 /// `LlmBackend::spawn_agent_chat`'s continuation path, so the agent session
-/// view's chat is drivable with no network (`docs/queue.md`).
+/// view's chat is drivable with no network (`docs/input/queue.md`).
 pub(super) fn spawn_chat_continuation(registry: AgentRegistry, id: String, cancel: CancelToken) {
     thread::spawn(move || {
         nap(CHUNK_DELAY, &cancel);
@@ -284,7 +284,7 @@ fn say(
     !cancel.is_cancelled()
 }
 
-// --- the subagent that ASKS (docs/permissions.md) ---------------------------
+// --- the subagent that ASKS (docs/state/permissions.md) ---------------------------
 //
 // The reported bug, drivable offline: standing inside a subagent's session
 // view in manual mode, its `bash` request opened over the *lead's*
@@ -379,7 +379,7 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
         agent_cancel,
     );
     // The foreground wait loop, one level down: poll until the agent settles,
-    // and an Esc on the *launching* turn kills it (`docs/agent-tool.md`).
+    // and an Esc on the *launching* turn kills it (`docs/agents/agent-tool.md`).
     while !stage.agents.is_done(&id) {
         if stage.cancel.is_cancelled() {
             let _ = stage.agents.kill(&id);
@@ -530,7 +530,7 @@ fn ask_at_gate(
     if gate.allows(&request) {
         return Gated::Allowed;
     }
-    // Nobody to ask — a headless run (docs/headless.md): refused before the
+    // Nobody to ask — a headless run (docs/cli/headless.md): refused before the
     // request goes out on a channel no prompt is shown from.
     if gate.refuses_unattended(|| super::gated::unattended_refusal(&request)) {
         return Gated::Refused(super::gated::unattended());
@@ -558,7 +558,7 @@ fn ask_at_gate(
     }
 }
 
-// --- the lead WORKING its agent (docs/agent-tools.md) ----------------------
+// --- the lead WORKING its agent (docs/agents/agent-tools.md) ----------------------
 //
 // The agent tools, drivable offline: the lead launches a background agent,
 // waits on it with `agentoutput`, sends it a follow-up with `agentsend` —
@@ -578,7 +578,7 @@ const FOLLOW_UP_PROMPT: &str =
 
 /// What its first run says before that call — a progress update, which the
 /// first wait streams and its report lists ahead of the call
-/// (`docs/agent-progress.md`).
+/// (`docs/agents/agent-progress.md`).
 const FOLLOW_UP_INTRO: &str = "I'll read the top of the changelog first.";
 
 /// The one command its first run makes — the call the reports list.
@@ -743,11 +743,11 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
 /// continuation's (the lead's message announced as its loop reads it, then
 /// the answer) — and settle it through the registry, which delivers the
 /// terminal event to a waiting `agentoutput` rather than straight to the
-/// roster (`docs/agent-tools.md`).
+/// roster (`docs/agents/agent-tools.md`).
 ///
 /// Every event goes through a [`RunRecorder`], the live forwarder's own
 /// bookkeeping, so the calls and progress updates the reports list are
-/// recorded exactly as a real run's are (`docs/agent-progress.md`).
+/// recorded exactly as a real run's are (`docs/agents/agent-progress.md`).
 fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken, launch: bool) {
     thread::spawn(move || {
         let mut recorder = RunRecorder::new(registry.clone(), id.clone());

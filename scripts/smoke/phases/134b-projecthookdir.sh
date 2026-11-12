@@ -6,7 +6,7 @@ smoke_begin
 
 # A project's own hooks.json reaches its scripts the documented way —
 # "${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/guard.sh" — and the session is
-# launched in a SUBDIRECTORY of the repository (docs/hooks.md). The variable
+# launched in a SUBDIRECTORY of the repository (docs/tools/hooks.md). The variable
 # used to be the cwd, so the command named a script that does not exist, the
 # hook failed open and the refused command ran. What it proves:
 #   - $ALTER_ZERO_PROJECT_DIR is the project root (the root the project layer
@@ -14,7 +14,7 @@ smoke_begin
 #   - the guard's block holds: `rm -rf build/` never runs;
 #   - what the model reads names the hook and the trusted project's own
 #     hooks.json it is configured in, and so does the refusal's cell — the
-#     file named from the phase's home, `~/projrepo/…` (docs/hooks.md *What
+#     file named from the phase's home, `~/projrepo/…` (docs/tools/hooks.md *What
 #     the user sees*).
 # A stub provider asks for that one `bash` call and records the tool result
 # the model is sent back.
@@ -87,7 +87,7 @@ printf '[providers.stub]\nname = "Stub"\n\n[providers.stub.kwargs]\napi_base = "
 PH_APP="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 $CFG_ENV_NOHIST ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_HOOKS=1 ALTER_ZERO_HOOKS_FILE=$SMOKE_TMP/no-user-hooks.json ALTER_ZERO_PROVIDERS_FILE=$PH_PROVIDERS ALTER_ZERO_PROVIDER=stub ALTER_ZERO_MODEL=stub-model STUB_API_KEY=stand-in ALTER_ZERO_PERMISSION_MODE=master $BIN_ABS"
 
 # The project's hook is trusted at the startup review first
-# (docs/config-review.md), launched in the subdirectory.
+# (docs/state/config-review.md), launched in the subdirectory.
 launch -n -c "$REPO/src" "$S134B" 120 40 "$PH_APP"
 trust_hooks "$S134B"
 submit "$S134B" "clean the build"

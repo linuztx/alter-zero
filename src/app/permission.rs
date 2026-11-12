@@ -1,6 +1,6 @@
 //! The inline tool-permission prompt: the modal state a pending
 //! [`PermissionRequest`] puts the composer into, and its key map.
-//! See `docs/permissions.md`.
+//! See `docs/state/permissions.md`.
 
 use super::*;
 
@@ -77,7 +77,7 @@ impl App {
     /// `!` shell mode are stashed and the field cleared, so Tab's amend
     /// field starts empty and closing can hand the draft straight back. A
     /// request arriving while any modal is open — another permission prompt
-    /// or the ask modal (`docs/ask.md`) — **queues** instead of replacing it.
+    /// or the ask modal (`docs/tools/ask.md`) — **queues** instead of replacing it.
     pub fn open_permission(&mut self, request: PermissionRequest) {
         if self.permission.is_some() || self.ask.is_some() {
             self.pending_permissions.push_back(request);
@@ -340,9 +340,9 @@ impl App {
 
     /// Esc / Ctrl+C on the prompt — **cancel**, not just "no": the call is
     /// abandoned (the loop releases it on the gate) *and* the turn stops, the
-    /// ordinary Esc-interrupt path (`docs/interrupt.md`). A queued ask
+    /// ordinary Esc-interrupt path (`docs/input/interrupt.md`). A queued ask
     /// belongs to the turn being torn down, so it is abandoned with the
-    /// prompts (`docs/ask.md`).
+    /// prompts (`docs/tools/ask.md`).
     fn cancel_permission(&mut self) -> Action {
         self.discard_permissions();
         self.discard_asks();
@@ -364,7 +364,7 @@ impl App {
                 // Read, don't `take_input`: the stashed draft's paste
                 // placeholders are still live and must not be spliced here.
                 // The feedback goes to the model, so a stored secret's value
-                // in it is redacted all the same (docs/secrets.md).
+                // in it is redacted all the same (docs/state/secrets.md).
                 let feedback = self.redact_typed(self.input.text().trim().to_string());
                 self.input.clear();
                 let feedback = (!feedback.is_empty()).then_some(feedback);
@@ -380,22 +380,22 @@ impl App {
     /// The amend field's editing keys — the composer's set minus everything
     /// that only makes sense for a *message* (the palette, the `@` picker, the
     /// ↑/↓ history recall, shell mode): free-text feedback, nothing more. The
-    /// terminal editing shortcuts ride along (`docs/textarea.md`) — Ctrl+P/N
+    /// terminal editing shortcuts ride along (`docs/input/textarea.md`) — Ctrl+P/N
     /// are plain cursor keys here (no history to browse), and Ctrl+B is
     /// always ← (nothing backgroundable is actionable from inside a modal).
-    /// Shared with the ask modal's Other/notes entries (`docs/ask.md`).
+    /// Shared with the ask modal's Other/notes entries (`docs/tools/ask.md`).
     pub(super) fn edit_amend(&mut self, key: KeyEvent) {
         let ctrl_or_alt = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
             // Shift+Enter / Ctrl+J insert a newline, as in the composer
-            // (docs/shift-enter.md).
+            // (docs/input/shift-enter.md).
             KeyCode::Enter => self.input.insert_newline(),
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.insert_newline();
             }
-            // The readline cursor keys (docs/textarea.md).
+            // The readline cursor keys (docs/input/textarea.md).
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.move_home();
             }
@@ -456,7 +456,7 @@ impl App {
                 self.kill_span(span);
             }
             // A Backspace/Delete on a `[Pasted Content N chars]` placeholder
-            // removes it whole, like the composer (`docs/paste.md`) — the ask
+            // removes it whole, like the composer (`docs/input/paste.md`) — the ask
             // modal's entry fields take pastes, and one keystroke must not
             // leave a mangled placeholder backed by a live pair.
             KeyCode::Backspace => {

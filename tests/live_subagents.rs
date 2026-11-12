@@ -1,4 +1,4 @@
-//! Live integration tests for the **subagent definitions** (`docs/subagents.md`)
+//! Live integration tests for the **subagent definitions** (`docs/agents/subagents.md`)
 //! — the `agents/*.md` files behind the `agent` tool's `subagent_type`, on the
 //! real wire.
 //!
@@ -120,7 +120,7 @@ fn fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 #[test]
 #[ignore = "hits the network; needs A0_VENICE_API_KEY"]
 fn live_a_definitions_body_is_the_subagents_system_prompt() {
-    // The body replaces the persona for that type (`docs/subagents.md`). The
+    // The body replaces the persona for that type (`docs/agents/subagents.md`). The
     // sentinel is in the FILE only — never in the launch instruction, never in
     // the child's task — so a reply carrying it can only have come from the
     // definition riding the wire as that agent's system message.
@@ -283,7 +283,7 @@ fn live_an_unknown_agent_type_is_corrected_in_the_same_round() {
 #[test]
 #[ignore = "hits the network; needs A0_VENICE_API_KEY"]
 fn live_the_reminder_tells_the_model_which_types_exist() {
-    // The `<system-reminder>`'s agent section (`docs/subagents.md`): the
+    // The `<system-reminder>`'s agent section (`docs/agents/subagents.md`): the
     // listing is the only place a type's name and description reach the
     // model, so a session carrying it can answer what it could launch.
     let dir = fixture(&[
@@ -333,7 +333,7 @@ fn live_the_reminder_tells_the_model_which_types_exist() {
 
 /// Run one turn and return every tool cell it resolved as `(display name,
 /// output)` — a companion's cell beside its real report — plus the
-/// foreground agents' results (`docs/agent-tools.md`).
+/// foreground agents' results (`docs/agents/agent-tools.md`).
 fn turn_cells(backend: &LlmBackend, prompt: &str) -> (Vec<(String, String)>, Vec<String>) {
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -392,7 +392,7 @@ fn live_the_model_resumes_a_finished_agent_by_id() {
     // A foreground result names the agent's id, `agentsend` on that id
     // resumes the FINISHED agent over its kept conversation, and
     // `agentoutput` with `wait` returns its new answer — the sentinel body
-    // proves the same agent answered again (docs/agent-tools.md).
+    // proves the same agent answered again (docs/agents/agent-tools.md).
     let dir = fixture(&[(
         "sentinel",
         "---\ndescription: Answers with a fixed word.\n---\n\
@@ -441,7 +441,7 @@ fn live_the_model_inspects_stops_and_lists_a_background_agent() {
     // `agentoutput` on a running background agent reports its calls,
     // `agentkill` stops it with its conversation kept, and `agentlist` then
     // names it as stopped — each cell the real executor's report, and the
-    // registry agreeing (docs/agent-tools.md).
+    // registry agreeing (docs/agents/agent-tools.md).
     let dir = fixture(&[(
         "sleeper",
         "---\ndescription: Runs a slow command.\ntools: Bash\n---\n\

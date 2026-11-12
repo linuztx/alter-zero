@@ -1,5 +1,5 @@
 //! The spinner-style catalog, the `/spinner` picker, and its persistence
-//! format (`docs/spinner.md`).
+//! format (`docs/ui/spinner.md`).
 
 use std::collections::BTreeMap;
 
@@ -36,7 +36,7 @@ fn the_catalog_holds_the_nine_styles_in_picker_order() {
 #[test]
 fn gravity_is_the_default_style() {
     // What a session with no `spinner.json` entry opens with — and so what
-    // `ui::status_line` renders (docs/spinner.md). The catalog still *lists*
+    // `ui::status_line` renders (docs/ui/spinner.md). The catalog still *lists*
     // the comet first; the list's order and the default are separate things,
     // and the picker seats its highlight on the active style either way.
     assert_eq!(
@@ -79,8 +79,8 @@ fn from_name_round_trips_case_insensitively() {
     assert_eq!(Spinner::from_name(""), None);
 }
 
-// ===== the persistence format — per working directory (docs/spinner.md,
-// docs/per-directory-state.md) =====
+// ===== the persistence format — per working directory (docs/ui/spinner.md,
+// docs/state/per-directory-state.md) =====
 
 #[test]
 fn the_spinner_file_round_trips_under_its_own_key() {
@@ -108,7 +108,7 @@ fn the_spinner_file_round_trips_under_its_own_key() {
 
 #[test]
 fn a_spinner_choice_is_the_directorys_own_and_the_last_made_anywhere() {
-    // The mascot file's rules over the spinner key (docs/per-directory-state.md):
+    // The mascot file's rules over the spinner key (docs/state/per-directory-state.md):
     // a new directory starts from the last choice and pins it; a choice
     // elsewhere never moves a pinned directory.
     let mut file = SpinnerFile::parse(r#"{"spinner": "wave"}"#);

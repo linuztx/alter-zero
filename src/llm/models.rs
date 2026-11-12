@@ -1,6 +1,6 @@
 //! The `/v1/models` listing: the pure response parse ([`parse_models`], the
 //! [`ModelEntry`] row the `/model` picker shows) and the boundary
-//! [`fetch_models`] that GETs it. See `docs/llm.md`.
+//! [`fetch_models`] that GETs it. See `docs/providers/llm.md`.
 
 use std::io::Read;
 
@@ -25,22 +25,22 @@ pub struct ModelEntry {
     pub display_name: String,
     /// The model's reasoning ("thinking") capability, when the record
     /// advertises one — drives the Ctrl+T mode cycle. `None` for a model
-    /// with no reasoning. See `docs/reasoning.md`.
+    /// with no reasoning. See `docs/providers/reasoning.md`.
     pub reasoning: Option<ReasoningSupport>,
     /// Whether the model accepts **image input** (vision), when the record
     /// says either way — `Some(false)` makes the backend degrade image
     /// attachments gracefully instead of letting the provider fail the turn
     /// (OpenRouter 404s an image part sent to a text-only model). `None` =
     /// the record doesn't say (a bare OpenAI-style list) — the backend then
-    /// attaches optimistically, exactly as before. See `docs/tools.md`.
+    /// attaches optimistically, exactly as before. See `docs/tools/tools.md`.
     pub vision: Option<bool>,
     /// The model's context window in tokens, when the record reports one —
     /// drives the footer's `{used}/{window} ({pct}%)` gauge and the auto-compact
     /// trigger. `None` = unknown (a bare OpenAI-style list; the gauge hides
-    /// and auto-compact stays off). See `docs/compact.md`.
+    /// and auto-compact stays off). See `docs/architecture/compact.md`.
     pub context: Option<u64>,
     /// The **speed tiers** the record lists — codex's fast mode
-    /// (`docs/fast-mode.md`): a `priority` tier means the model can be asked
+    /// (`docs/providers/fast-mode.md`): a `priority` tier means the model can be asked
     /// for priority processing, and `/fast` cycles through whatever is here.
     /// Empty for every list that says nothing about tiers (all but the
     /// ChatGPT backend's today) — no fast mode there, and no unknown to
@@ -70,7 +70,7 @@ struct ModelsResponse<'a> {
     #[serde(default, borrow)]
     data: Option<Vec<&'a serde_json::value::RawValue>>,
     /// The ChatGPT backend names the same array `models` and its records
-    /// `slug` (`docs/chatgpt.md`). One extra field costs nothing and keeps a
+    /// `slug` (`docs/providers/chatgpt.md`). One extra field costs nothing and keeps a
     /// second parse function from existing.
     #[serde(default, borrow)]
     models: Option<Vec<&'a serde_json::value::RawValue>>,
@@ -108,7 +108,7 @@ pub(crate) fn not_a_listing(body: &str) -> LlmError {
 pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
     let decode = |e: serde_json::Error| LlmError::Decode(e.to_string());
     // Most servers wrap the records in an envelope; Together AI answers with
-    // the bare array (`docs/user-providers.md`). Either way the records stay
+    // the bare array (`docs/providers/user-providers.md`). Either way the records stay
     // borrowed slices, read one at a time below.
     let bare: Vec<&serde_json::value::RawValue>;
     let parsed: ModelsResponse;
@@ -171,7 +171,7 @@ fn entry_of(record: &serde_json::Value, provider: &str) -> Option<ModelEntry> {
     })
 }
 
-/// Read one `/models` record's **speed tiers** (`docs/fast-mode.md`) — the
+/// Read one `/models` record's **speed tiers** (`docs/providers/fast-mode.md`) — the
 /// ChatGPT backend's `service_tiers`, each `{id, name, description}` in the
 /// record's order (a tier without a string id is skipped; a nameless one is
 /// named by its id). With no such list, the older `additional_speed_tiers:
@@ -224,7 +224,7 @@ fn service_tiers_of(record: &serde_json::Value) -> Vec<ServiceTier> {
 }
 
 /// Is this a record of **LM Studio's** native listing (`GET /api/v1/models`,
-/// `docs/local-models.md`)? Its shape is its own: a model is named by its
+/// `docs/providers/local-models.md`)? Its shape is its own: a model is named by its
 /// `key`, and every record lists the instances loaded from it — the pair no
 /// other provider's list sends.
 fn is_lmstudio_record(record: &serde_json::Value) -> bool {
@@ -277,7 +277,7 @@ fn copilot_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value
 /// gateway's flat object of booleans (OmniRoute's `thinking: true`) has the
 /// key without the leaf — read as this tree, its `true` was "unsupported"
 /// and its missing `image_input` a model that cannot see. See
-/// `docs/claude.md`.
+/// `docs/providers/claude.md`.
 fn anthropic_capabilities(record: &serde_json::Value) -> Option<&serde_json::Value> {
     let caps = record.get("capabilities").filter(|c| c.is_object())?;
     let is_leaf = |key: &str| {
@@ -299,7 +299,7 @@ fn supported(node: Option<&serde_json::Value>) -> bool {
 ///
 /// The `effort` sub-object **is the Ctrl+T ladder** — a per-model list of
 /// which rungs the model accepts, the third provider to name one natively
-/// (`docs/reasoning.md`). Where it says nothing but `thinking` is supported,
+/// (`docs/providers/reasoning.md`). Where it says nothing but `thinking` is supported,
 /// the model takes the older token-budget form instead, which has no levels:
 /// that is an on/off-only reasoner, and [`ThinkingMode::On`] is what drives
 /// it (`super::anthropic::thinking_body` reads the same distinction from the
@@ -338,7 +338,7 @@ fn anthropic_reasoning(caps: &serde_json::Value) -> Option<ReasoningSupport> {
 
 /// One record's flat `capabilities.{key}` boolean — the shape an
 /// OpenAI-compatible gateway (OmniRoute) sends, every capability a bare
-/// `true`/`false` (`docs/user-providers.md`). `None` when the key is absent or
+/// `true`/`false` (`docs/providers/user-providers.md`). `None` when the key is absent or
 /// not a boolean, so Anthropic's `{supported}` leaves never read as one.
 fn flat_capability(record: &serde_json::Value, key: &str) -> Option<bool> {
     record.get("capabilities")?.get(key)?.as_bool()
@@ -392,7 +392,7 @@ fn flat_reasoning(record: &serde_json::Value) -> Option<ReasoningSupport> {
 /// another server's endpoint list says nothing about what this one serves.
 fn is_callable(record: &serde_json::Value) -> bool {
     // LM Studio lists its embedding models beside the ones that chat — and
-    // ships one with every install (`docs/local-models.md`).
+    // ships one with every install (`docs/providers/local-models.md`).
     if is_lmstudio_record(record) {
         return matches!(
             record.get("type").and_then(serde_json::Value::as_str),
@@ -400,7 +400,7 @@ fn is_callable(record: &serde_json::Value) -> bool {
         );
     }
     // The ChatGPT backend marks a record it does not want offered at all
-    // (`docs/chatgpt.md`). `hide` only means "not a headline model" — it is
+    // (`docs/providers/chatgpt.md`). `hide` only means "not a headline model" — it is
     // still selectable, so only `none` is filtered.
     if record.get("visibility").and_then(serde_json::Value::as_str) == Some("none") {
         return false;
@@ -450,7 +450,7 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
     // LM Studio names its own reasoning switch (`capabilities.reasoning`),
     // which the chat wire's `reasoning` parameter does not drive — a Ctrl+T
     // mode the server would ignore is a footer that lies
-    // (`docs/local-models.md`).
+    // (`docs/providers/local-models.md`).
     if is_lmstudio_record(record) {
         return None;
     }
@@ -705,13 +705,13 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
 /// - **OpenRouter** (and most aggregators): a top-level `context_length`.
 /// - **Self-hosted servers**: vLLM's `max_model_len`, and Mistral's (or LM
 ///   Studio's) `max_context_length` — what a user's own OpenAI-compatible
-///   provider most often names it (`docs/user-providers.md`).
+///   provider most often names it (`docs/providers/user-providers.md`).
 /// - **Venice**: `model_spec.availableContextTokens`.
 /// - **GitHub Copilot**: `capabilities.limits.max_prompt_tokens`, falling back
-///   to `max_context_window_tokens` (`docs/copilot.md`).
+///   to `max_context_window_tokens` (`docs/providers/copilot.md`).
 ///
 /// `None` when the record doesn't say, or reports a non-positive size (a
-/// meaningless window would divide the gauge by zero). See `docs/compact.md`.
+/// meaningless window would divide the gauge by zero). See `docs/architecture/compact.md`.
 fn context_window_of(record: &serde_json::Value) -> Option<u64> {
     // An LM Studio model is served at its load setting, not its maximum, and
     // one not loaded yet will be loaded at a setting the listing does not
@@ -819,7 +819,7 @@ fn catalog_or_error(models: Vec<ModelEntry>, auth: super::AuthScheme) -> Result<
 ///
 /// The ChatGPT backend additionally **requires** a `client_version` query
 /// parameter; without it the listing is refused rather than defaulted
-/// (`docs/chatgpt.md`).
+/// (`docs/providers/chatgpt.md`).
 #[must_use]
 pub fn models_endpoint(cfg: &ModelConfig) -> String {
     models_url(&cfg.api_model_base, cfg.auth, cfg.wire_api)
@@ -841,7 +841,7 @@ fn models_url(base: &str, auth: super::AuthScheme, wire: super::WireApi) -> Stri
     }
     // Ollama's native listing — its `/v1/models` names the models and
     // nothing else, where `/api/tags` (and each `/api/show`) carries the
-    // window and the capabilities (`docs/ollama.md`).
+    // window and the capabilities (`docs/providers/ollama.md`).
     if wire == super::WireApi::Ollama {
         return format!("{base}/api/tags");
     }
@@ -876,7 +876,7 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     }
     // A Cline account sign-in reaches the ClinePass plan, whose models are
     // not on any `/models`: Cline publishes the plan's list for its own
-    // clients instead (`docs/cline.md`). The listing is the credential's
+    // clients instead (`docs/providers/cline.md`). The listing is the credential's
     // backend's to decide, as the ChatGPT one's `client_version` is.
     if cfg.auth == super::AuthScheme::ClineAccount {
         let plan = super::cline::fetch_clinepass_models()?;
@@ -891,7 +891,7 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     // A Google Antigravity sign-in lists what Cloud Code serves *this*
     // account: `fetchAvailableModels` for its project, a POST on the same
     // host the chat goes to, read into rows with level siblings grouped
-    // under one ladder (`docs/antigravity.md` *The catalog*).
+    // under one ladder (`docs/providers/antigravity.md` *The catalog*).
     if cfg.wire_api == super::WireApi::CloudCode {
         return cloud_code_catalog(cfg, cancel);
     }
@@ -903,8 +903,8 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     let client = super::http_client(super::openai::NET_OP_TIMEOUT)?;
     // The same auth seam the chat request uses: a subscription's stored token
     // is exchanged for the bearer the API takes, the account's own host
-    // outranks the configured one (`docs/copilot.md`), and the credential's
-    // own identity headers ride along (`docs/chatgpt.md`).
+    // outranks the configured one (`docs/providers/copilot.md`), and the credential's
+    // own identity headers ride along (`docs/providers/chatgpt.md`).
     let auth = super::auth::request_auth(cfg)?;
     let url = auth.base.as_ref().map_or_else(
         || models_endpoint(cfg),
@@ -942,7 +942,7 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     };
     // A listing of its own that the server does not have stands down for the
     // chat base's `/models`, which every chat-completions server answers
-    // (`docs/local-models.md`): a server answers such a path 404 — or, as
+    // (`docs/providers/local-models.md`): a server answers such a path 404 — or, as
     // LM Studio before 0.4 answers its native `/api/v1/models`, 200 and an
     // error object with no models list in it.
     let chat_listing = (cfg.wire_api == super::WireApi::Chat
@@ -1114,7 +1114,7 @@ fn fetch_cline_catalog(cfg: &ModelConfig) -> Result<Vec<ModelEntry>> {
 /// in hand names the models, and one `POST /api/show` per model fills in
 /// what the listing may not say — the window, the capabilities, and the
 /// Modelfile's own `num_ctx`, which only the show carries and which the
-/// window rule must honour (`docs/ollama.md`). A show that fails keeps the
+/// window rule must honour (`docs/providers/ollama.md`). A show that fails keeps the
 /// tags record as it was rather than dropping the model. Sequential, the
 /// cancel polled between calls: a closed picker stops the walk.
 ///
@@ -1219,7 +1219,7 @@ const MODELS_BODY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 mod tests {
     use super::*;
 
-    // --- Anthropic's `/v1/models` (docs/claude.md) ---
+    // --- Anthropic's `/v1/models` (docs/providers/claude.md) ---
 
     /// One record in the shape Anthropic's listing actually sends.
     fn anthropic_record(extra: &str) -> String {
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn an_anthropic_effort_object_is_the_ctrl_t_ladder_itself() {
-        // The third provider to name the ladder natively (docs/reasoning.md).
+        // The third provider to name the ladder natively (docs/providers/reasoning.md).
         let body = anthropic_record(
             r#""image_input":{"supported":true},
                "thinking":{"supported":true,"types":{"adaptive":{"supported":true}}},
@@ -1418,7 +1418,7 @@ mod tests {
         assert_eq!(models_endpoint(&plain), "https://api.openai.com/v1/models");
     }
 
-    // --- a gateway's flat capabilities (OmniRoute — docs/user-providers.md) ---
+    // --- a gateway's flat capabilities (OmniRoute — docs/providers/user-providers.md) ---
 
     /// One record of a gateway's `/v1/models` in the shape OmniRoute sends
     /// for every model it routes: a flat `capabilities` object of booleans
@@ -1639,7 +1639,7 @@ mod tests {
         assert_eq!(ids, ["codex/gpt-6-astra"]);
     }
 
-    // --- context window (docs/compact.md: the footer gauge + auto-compact) ---
+    // --- context window (docs/architecture/compact.md: the footer gauge + auto-compact) ---
 
     #[test]
     fn context_length_parses_from_an_openrouter_record() {
@@ -1664,7 +1664,7 @@ mod tests {
 
     #[test]
     fn the_window_spellings_self_hosted_servers_use_are_read() {
-        // A user's own OpenAI-compatible provider (docs/user-providers.md)
+        // A user's own OpenAI-compatible provider (docs/providers/user-providers.md)
         // gets its gauge and auto-compaction from whatever the server names:
         // vLLM's `max_model_len`, Mistral's (and LM Studio's)
         // `max_context_length`.
@@ -1711,7 +1711,7 @@ mod tests {
         assert!(parse_models("\"models\"", "p").is_err());
     }
 
-    // --- the ChatGPT backend's own record shape (docs/chatgpt.md) ---
+    // --- the ChatGPT backend's own record shape (docs/providers/chatgpt.md) ---
 
     /// One record of the ChatGPT backend's `/models` listing, in its own
     /// envelope. Nothing about it matches the OpenAI-compatible shape: the
@@ -1796,7 +1796,7 @@ mod tests {
     #[test]
     fn a_chatgpt_records_service_tiers_are_the_fast_mode_catalog() {
         // Codex's fast mode: a record listing a `priority` tier can be asked
-        // for priority processing (docs/fast-mode.md). Every tier rides the
+        // for priority processing (docs/providers/fast-mode.md). Every tier rides the
         // entry in the record's order, description included — the cost
         // statement the /fast toast repeats.
         let models = chatgpt_catalog(
@@ -1931,7 +1931,7 @@ mod tests {
         );
     }
 
-    // --- GitHub Copilot's own record shape (docs/copilot.md) ---
+    // --- GitHub Copilot's own record shape (docs/providers/copilot.md) ---
 
     /// One real `GET https://api.githubcopilot.com/models` record, trimmed to
     /// the keys this parse reads — the shape three independent captures agree
@@ -2403,7 +2403,7 @@ mod tests {
         assert_eq!(models_endpoint(&cfg), "https://x/v1/models");
     }
 
-    // --- ClinePass's catalog (docs/cline.md) ---
+    // --- ClinePass's catalog (docs/providers/cline.md) ---
 
     /// Three records as Cline's `/api/v1/ai/cline/models` sends them (the
     /// fields read, and a few beside them): a reasoner that reads images, a
@@ -2441,7 +2441,7 @@ mod tests {
     #[test]
     fn cline_s_catalog_names_each_model_s_window_images_and_thinking_ladder() {
         // The key row lists this catalog rather than the chat base's
-        // `/models`, which names ids and nothing else (docs/cline.md).
+        // `/models`, which names ids and nothing else (docs/providers/cline.md).
         let models = parse_models(CLINE_CATALOG, "cline").unwrap();
         let glm = models
             .iter()
@@ -2620,7 +2620,7 @@ mod tests {
         assert_eq!(support.default_effort, None);
     }
 
-    // --- LM Studio's native listing (docs/local-models.md) ---
+    // --- LM Studio's native listing (docs/providers/local-models.md) ---
 
     /// LM Studio's `GET /api/v1/models` in the shape its docs show: a
     /// language model loaded at 4096 tokens, and the embedding model every
@@ -2698,7 +2698,7 @@ mod tests {
     fn an_lm_studio_model_offers_no_thinking_mode_of_ours() {
         // LM Studio names its own reasoning switch, which the chat wire's
         // `reasoning` parameter does not drive — so Ctrl+T offers nothing
-        // rather than a mode the server would ignore (docs/local-models.md).
+        // rather than a mode the server would ignore (docs/providers/local-models.md).
         let models = parse_models(LMSTUDIO_MODELS, "lmstudio").unwrap();
         assert_eq!(models[0].reasoning, None);
     }
@@ -2747,7 +2747,7 @@ mod tests {
         // LM Studio answers a path it does not serve with 200 and an error
         // object: a server that said nothing about its models, which read as
         // one with none — a `/login` test that passed and a `/model` with no
-        // rows (docs/local-models.md).
+        // rows (docs/providers/local-models.md).
         let err = parse_models(
             r#"{"error":"Unexpected endpoint or method. (GET /api/v1/models)"}"#,
             "lmstudio",

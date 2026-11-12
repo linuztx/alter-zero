@@ -1,4 +1,4 @@
-//! The startup review's inline page (`docs/config-review.md`) — the hooks
+//! The startup review's inline page (`docs/state/config-review.md`) — the hooks
 //! menu's sibling: a framed body [`config_review_lines`] builds line by line,
 //! so the height falls out as `lines.len()` and [`config_review_height`] /
 //! [`render_config_review`] can never disagree.
@@ -10,7 +10,7 @@
 //! must never flow into scrollback (a flowed page purge-rebuilds the screen
 //! when it closes, which at startup would wipe the terminal's own
 //! scrollback): on a terminal too short for it the page sheds rows instead,
-//! the compact pickers' way (`docs/view-flow.md`) — the explanation first,
+//! the compact pickers' way (`docs/ui/view-flow.md`) — the explanation first,
 //! then every item but the highlighted one folds to a row, then the list
 //! windows around the highlight, then the highlighted item's detail is cut,
 //! then the title goes. The actions and the hint stay on every rung.
@@ -484,7 +484,7 @@ fn build(
                 }
             }
             // The reserved overflow pair, under the title — never against a
-            // rule (`docs/view-flow.md` *The frame hugs its content*).
+            // rule (`docs/ui/view-flow.md` *The frame hugs its content*).
             if shape.title && shown < items.len() {
                 lines.extend(model_compact_list(above, window, below, width));
             } else {
@@ -537,7 +537,7 @@ pub fn config_review_height(app: &App, width: u16, term_height: u16) -> Option<u
 }
 
 /// Render the review into the live region in place of the composer —
-/// bottom-anchored like every framed view (`docs/view-flow.md`), though its
+/// bottom-anchored like every framed view (`docs/ui/view-flow.md`), though its
 /// ladder keeps it from ever needing to be. Pure — `render_live` paints this.
 pub fn render_config_review(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(

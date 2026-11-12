@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# PER-DIRECTORY LOOKS (docs/per-directory-state.md). /mascot and
+# PER-DIRECTORY LOOKS (docs/state/per-directory-state.md). /mascot and
 # /spinner remember the directory they were chosen in — one config home, three
 # working directories, config.json's rule: a choice made in a directory is that
 # directory's own AND the last made anywhere (the file's top level, the shape a

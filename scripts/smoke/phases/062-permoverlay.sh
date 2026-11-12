@@ -5,7 +5,7 @@
 smoke_begin
 
 # a permission request that arrives UNDER the Ctrl+O overlay,
-# answered after the return (docs/permissions.md). The overlay return's reflow
+# answered after the return (docs/state/permissions.md). The overlay return's reflow
 # rebuilds the screen with the prompt already open — a one-way reseat whose
 # plain collapse used to strand the box above a band of blank rows (the
 # "newlines at the bottom after answering, but only when Ctrl+O was opened

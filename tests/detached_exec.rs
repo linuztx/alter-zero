@@ -1,5 +1,5 @@
 //! Integration proof of the terminal detach (`alter_zero::subprocess`,
-//! docs/tools.md) against the **real built binary**: cargo hands integration
+//! docs/tools/tools.md) against the **real built binary**: cargo hands integration
 //! tests the bin's path as `CARGO_BIN_EXE_alter-zero`, whose `main` installs
 //! the helper hook — so the re-exec tier here is the exact production one,
 //! not a stand-in.
@@ -103,7 +103,7 @@ fn the_helper_reexec_tier_detaches_on_its_own() {
 #[cfg(unix)]
 #[test]
 fn the_helper_becomes_the_shell_it_is_named() {
-    // The helper's optional third argument (docs/bash-tools.md): a model
+    // The helper's optional third argument (docs/tools/bash-tools.md): a model
     // command runs under bash, whose syntax dash — `/bin/sh` on Debian,
     // Ubuntu and Kali — refuses. Where the machine has no bash the tool shell
     // is `sh` and there is nothing to prove.
@@ -153,7 +153,7 @@ fn a_password_prompt_fails_fast_instead_of_hanging() {
 #[cfg(unix)]
 #[test]
 fn the_tty_helper_tier_gives_the_session_its_own_controlling_terminal() {
-    // The interactive-session twin of the test above (docs/interactive-shell.md):
+    // The interactive-session twin of the test above (docs/tools/interactive-shell.md):
     // where there is no `setsid` binary, the helper re-exec is the only way a
     // `tty: true` command gets a controlling terminal. Driven alone against
     // the real binary, `/dev/tty` must reach the session's own terminal — a

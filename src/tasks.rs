@@ -1,7 +1,7 @@
 //! The task tools' pure model: the store the model's `taskcreate` /
 //! `taskget` / `tasklist` / `taskupdate` calls operate on, every result
 //! string they return, and the shared registry the executor and the event
-//! loop hold together. See `docs/task-tools.md`.
+//! loop hold together. See `docs/tools/task-tools.md`.
 //!
 //! Claude Code's structured task list, minus the parameters this single-agent
 //! TUI has no use for (`owner`, `metadata`). Everything here is pure and
@@ -32,7 +32,7 @@ pub const TASK_TOOL_NAMES: [&str; 4] = [
 /// Is `name` one of the task tools' wire names? The predicate
 /// `llm::agent::run_agent` routes on (task calls resolve as
 /// [`crate::stream::StreamEvent::TaskCall`] instead of the visible
-/// `ToolStart`/`ToolEnd` pair — `docs/task-tools.md`).
+/// `ToolStart`/`ToolEnd` pair — `docs/tools/task-tools.md`).
 #[must_use]
 pub fn is_task_tool(name: &str) -> bool {
     TASK_TOOL_NAMES.contains(&name)
@@ -102,7 +102,7 @@ pub struct Task {
     pub blocked_by: Vec<u64>,
 }
 
-/// Parsed `taskcreate` arguments (`docs/task-tools.md` — Claude Code's
+/// Parsed `taskcreate` arguments (`docs/tools/task-tools.md` — Claude Code's
 /// schema minus `metadata`).
 ///
 /// The dependency fields are **not** in the offered schema — `taskupdate`
@@ -175,7 +175,7 @@ pub struct TaskCounts {
 /// [`crate::stream::StreamEvent::TaskCall`], sits on `App::tasks` for the
 /// strip's checklist, and is recorded on every task-call history item so
 /// `/resume` and the backtrack restore the exact state
-/// (`docs/task-tools.md`). `next_id` is the high-water mark of ids ever
+/// (`docs/tools/task-tools.md`). `next_id` is the high-water mark of ids ever
 /// assigned: deletion never frees an id, so `#4` after deleting `#1–3`
 /// proves the old tasks are gone rather than renumbered (Claude Code's
 /// rule).
@@ -269,7 +269,7 @@ impl TaskStore {
     /// served its purpose, so it is dropped whole at the next turn boundary —
     /// the checklist stops showing *and stays gone*, and the plan the model
     /// starts next is genuinely new rather than the old ticks with a fresh
-    /// row appended (`docs/task-tools.md`). A plan with any work left is
+    /// row appended (`docs/tools/task-tools.md`). A plan with any work left is
     /// untouched.
     ///
     /// The id **high-water mark survives** ([`high_water`](Self::high_water)),
@@ -302,7 +302,7 @@ impl TaskStore {
     /// task's `activeForm`, falling back to its subject — Claude Code's rule
     /// (`currentTodo.activeForm ?? currentTodo.subject`); `None` when nothing
     /// is in progress (the turn's own verb then stands). See
-    /// `docs/task-tools.md`.
+    /// `docs/tools/task-tools.md`.
     #[must_use]
     pub fn running_form(&self) -> Option<&str> {
         let task = self
@@ -576,7 +576,7 @@ fn parse_args<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, String
 /// The shared task list: the executor mutates it on the tool thread while
 /// the event loop reads/replaces it — the
 /// [`crate::background::BackgroundRegistry`] pattern. Cloneable; every clone
-/// shares one store. See `docs/task-tools.md`.
+/// shares one store. See `docs/tools/task-tools.md`.
 #[derive(Debug, Clone, Default)]
 pub struct TaskRegistry {
     inner: Arc<Mutex<TaskStore>>,
@@ -605,7 +605,7 @@ impl TaskRegistry {
 
     /// Replace the whole store — `/clear` (an empty one), a `/resume` load,
     /// or a backtrack rewind (the snapshot at the cut). See
-    /// `docs/task-tools.md`.
+    /// `docs/tools/task-tools.md`.
     pub fn replace(&self, store: TaskStore) {
         *self.lock() = store;
     }
@@ -958,7 +958,7 @@ mod tests {
         // gpt-4o-mini on its first run. Serde drops unknown fields silently,
         // which is the worst outcome: no error AND no dependency. Both
         // spellings are honoured instead, with update's validation
-        // (docs/task-tools.md).
+        // (docs/tools/task-tools.md).
         let mut store = store_of_three();
         let out = store
             .run_create(

@@ -1,4 +1,4 @@
-//! The spinner tip's row (`docs/tips.md`): its text and dress, the wrap, and
+//! The spinner tip's row (`docs/ui/tips.md`): its text and dress, the wrap, and
 //! the strip geometry it occupies under the status line.
 
 use super::*;
@@ -90,7 +90,7 @@ fn a_tip_too_wide_for_the_terminal_wraps_under_the_gutter() {
 
 #[test]
 fn every_tip_fits_one_row_at_eighty_columns() {
-    // The catalog's discipline (docs/tips.md): a tip that wraps on the most
+    // The catalog's discipline (docs/ui/tips.md): a tip that wraps on the most
     // common terminal width costs the strip a row for nothing.
     for tip in TIPS {
         assert_eq!(tip_lines(tip, 80).len(), 1, "{tip:?} wraps at 80 columns");
@@ -178,7 +178,7 @@ fn the_checklist_takes_the_slot_from_the_tip() {
 #[test]
 fn a_picker_opened_mid_turn_keeps_the_tip_above_itself() {
     // The composer-replacing views keep the whole strip above them
-    // (`docs/llm.md`) — the tip hangs off the status line there too.
+    // (`docs/providers/llm.md`) — the tip hangs off the status line there too.
     let mut app = turn_at(0, TIP_DELAY);
     app.open_settings();
     let width = 80;

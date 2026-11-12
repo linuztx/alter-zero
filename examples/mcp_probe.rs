@@ -1,4 +1,4 @@
-//! Manual check of what an MCP server actually speaks (`docs/mcp.md`) — the
+//! Manual check of what an MCP server actually speaks (`docs/tools/mcp.md`) — the
 //! real connect sequence (era probe → handshake → `tools/list`), printing the
 //! revision the server itself settled on. NOT run by `cargo test` (it needs a
 //! server on the network or on disk).

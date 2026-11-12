@@ -1,4 +1,4 @@
-//! The `/mcp` manager's rendering (`docs/mcp.md`).
+//! The `/mcp` manager's rendering (`docs/tools/mcp.md`).
 
 use super::*;
 use crate::app::{McpPage, server_actions};
@@ -101,7 +101,7 @@ fn an_empty_list_names_the_config_files() {
     assert!(all.contains(".mcp.json"));
 }
 
-// --- MCP off for the session (the `/settings` **MCP** row, docs/mcp.md) ---
+// --- MCP off for the session (the `/settings` **MCP** row, docs/tools/mcp.md) ---
 
 /// `/mcp` opened while the `/settings` **MCP** row is off, over what the
 /// manager reports then: an enabled server `◯ off`, a disabled one still
@@ -388,7 +388,7 @@ fn tool_detail_app() -> App {
 fn every_page_headline_wears_the_title_dress_and_the_server_one_is_capitalised() {
     // The manager is a four-page walk, so the headline is the only row that
     // says where you are — it wears the theme's gradient every page title
-    // does (`docs/mcp.md`, `docs/theme.md`).
+    // does (`docs/tools/mcp.md`, `docs/ui/theme.md`).
     let headline = |app: &App| {
         let line = mcp_view_lines(app, 100)
             .into_iter()
@@ -580,7 +580,7 @@ fn a_parameter_lights_its_name_and_dims_what_it_introduces() {
 #[test]
 fn the_menu_hides_the_cursor_seated_on_the_selection_and_auth_brings_it_back() {
     let app = mcp_app();
-    // The permission prompt's rule (docs/mcp.md): a menu shows no hardware
+    // The permission prompt's rule (docs/tools/mcp.md): a menu shows no hardware
     // cursor — a kitty cursor animation blinks at whatever seat it picks —
     // while the seat itself tracks the highlighted `❯` row.
     assert!(!crate::ui::cursor_visible(&app));
@@ -750,7 +750,7 @@ fn a_tool_page_taller_than_its_area_is_bottom_anchored() {
     // The framed body paints its LAST rows when the area is shorter than the
     // page, so the interactive tail — the `Esc to go back` hint and the bottom
     // rule — is always on screen; the skipped top flows into scrollback
-    // instead (docs/view-flow.md). The old top-aligned paint clipped exactly
+    // instead (docs/ui/view-flow.md). The old top-aligned paint clipped exactly
     // the rows that say the page has ended.
     let mut app = mcp_app();
     {
@@ -789,7 +789,7 @@ fn a_tool_page_taller_than_its_area_is_bottom_anchored() {
     );
 }
 
-// --- the row separators stay dim at every status (docs/mcp.md) ---
+// --- the row separators stay dim at every status (docs/tools/mcp.md) ---
 
 #[test]
 fn a_row_paints_only_its_glyph_in_the_status_colour() {
@@ -939,7 +939,7 @@ fn a_rejected_paste_shows_its_reason_under_the_field() {
     }
 }
 
-// --- Clickable URLs on the sign-in walk (docs/links.md, docs/mcp.md) ---
+// --- Clickable URLs on the sign-in walk (docs/ui/links.md, docs/tools/mcp.md) ---
 
 /// A realistic authorize URL: far wider than any terminal row, as a real one
 /// always is (the PKCE challenge, the state, the percent-encoded redirect and
@@ -1010,7 +1010,7 @@ fn the_auth_pages_url_opens_the_whole_target_from_every_fragment() {
     // and a terminal's own URL detection only ever reads row text: the first
     // row opened a truncated URL and the rows under it were no links at all.
     // Every fragment must carry the WHOLE target — the carrier `term` turns
-    // into one OSC 8 hyperlink (docs/links.md).
+    // into one OSC 8 hyperlink (docs/ui/links.md).
     let app = auth_page(AUTH_URL);
     for width in [40u16, 80, 120] {
         let lines = mcp_view_lines(&app, width);

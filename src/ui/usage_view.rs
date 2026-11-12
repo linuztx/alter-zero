@@ -1,4 +1,4 @@
-//! The read-only `/usage` page. See `docs/usage.md`.
+//! The read-only `/usage` page. See `docs/providers/usage.md`.
 //!
 //! The `/context` page's frame — the family's rules and two-column inset,
 //! the `❯` on the highlighted section, the pages' title dress, the dim hint
@@ -462,7 +462,7 @@ fn note_rows(report: &UsageReport, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The link to the highlighted subscription's own usage page — the URL a
-/// real OSC 8 link (`docs/links.md`), underlined, the rest of the row dim.
+/// real OSC 8 link (`docs/ui/links.md`), underlined, the rest of the row dim.
 fn dashboard_row(url: &str, width: u16) -> Line<'static> {
     let dim = Style::new().fg(model_meta_color());
     let link = crate::links::linked(dim.add_modifier(Modifier::UNDERLINED), url);
@@ -762,7 +762,7 @@ fn tail(page: &UsagePage, link: bool, width: u16) -> Vec<Line<'static>> {
 }
 
 /// Join `blocks` into the framed page: a top rule, the blocks with exactly
-/// one blank row between them (so none hugs a rule — `docs/view-flow.md`
+/// one blank row between them (so none hugs a rule — `docs/ui/view-flow.md`
 /// *The frame hugs its content*), and a bottom rule.
 fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![model_rule(width)];
@@ -777,7 +777,7 @@ fn framed(blocks: Vec<Vec<Line<'static>>>, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The whole framed page as lines — the first of its pages that fits
-/// `height` rows (`first_page_that_fits`, `docs/view-flow.md` *A page that
+/// `height` rows (`first_page_that_fits`, `docs/ui/view-flow.md` *A page that
 /// sheds rows before it flows*), yielding in this order: the link; every
 /// section but the highlighted one, folded to its head row and its fullest
 /// limit (`/donate`'s accordion); the subtitle, the title folding into one
@@ -911,8 +911,8 @@ pub fn usage_page_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 
 /// Render the **inline** `/usage` page into the live region, in place of the
 /// composer — the page built for the area's own height, bottom-anchored like
-/// every framed page (`docs/view-flow.md`). Pure — `render_live` paints this.
-/// See `docs/usage.md`.
+/// every framed page (`docs/ui/view-flow.md`). Pure — `render_live` paints this.
+/// See `docs/providers/usage.md`.
 pub fn render_usage_page(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, usage_view_lines(app, area.width, area.height));
 }

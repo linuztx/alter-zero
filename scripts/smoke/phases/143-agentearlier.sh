@@ -4,12 +4,12 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/agent-tools.md *A report covers one run*, driven through the REAL
+# docs/agents/agent-tools.md *A report covers one run*, driven through the REAL
 # backend against a stub provider. The lead launches a background agent to
 # create the frontend and waits on it with `agentoutput`. While the agent
 # writes its final reply, the user messages it from its session view; the
 # message lands after the run's last drain, so the agent's own thread starts
-# the next run the instant this one ends (docs/queue.md). The wait — seeing
+# the next run the instant this one ends (docs/input/queue.md). The wait — seeing
 # the agent at work again — reports that second run, and the first run's
 # end goes out as an ordinary notice. That report used to take the notice
 # back unread, so the lead never saw the first answer — the answer to the

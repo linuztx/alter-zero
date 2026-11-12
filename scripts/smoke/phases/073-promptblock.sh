@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# a UserPromptSubmit hook BLOCKS the prompt (docs/hooks.md). The
+# a UserPromptSubmit hook BLOCKS the prompt (docs/tools/hooks.md). The
 # dummy's prompt-block scenario scripts the single PromptBlocked event; the
 # loop's arm rolls the submission back out of history AND scrollback (the pop +
 # purge repaint — the recorder's shrink-rewrite erases it from the rollout

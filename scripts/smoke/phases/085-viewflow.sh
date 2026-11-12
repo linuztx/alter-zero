@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the VIEW FLOW (docs/view-flow.md). A framed view's page taller
+# the VIEW FLOW (docs/ui/view-flow.md). A framed view's page taller
 # than the terminal — here a /hooks detail whose command wraps to dozens of box
 # rows — must not clip at the bottom: the paint bottom-anchors (the hint and
 # the closing rule stay on screen) and the skipped top FLOWS into the
@@ -17,7 +17,7 @@ FL_CMD="echo FLOW_TOP_OF_COMMAND $(printf 'lorem-ipsum-filler-%03d ' $(seq 1 220
 printf '{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "%s" } ] } ] } }' "$FL_CMD" >"$FL_CFG/hooks.json"
 APP_FL="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$FL_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 # The startup review asks about the hook first, its screen-tall command cut
-# to fit rather than flowed at the first frame (docs/config-review.md).
+# to fit rather than flowed at the first frame (docs/state/config-review.md).
 launch -n "$S85" 100 24 "$APP_FL"
 trust_hooks "$S85"
 tmux send-keys -t "$S85" -l "/hooks"

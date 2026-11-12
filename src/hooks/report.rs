@@ -1,5 +1,5 @@
 //! What one event's hooks did, as the conversation shows it — the record behind
-//! the `● Ran 1 Stop hook` cell (`docs/hooks.md` *The hook-run cell*).
+//! the `● Ran 1 Stop hook` cell (`docs/tools/hooks.md` *The hook-run cell*).
 //!
 //! Pure data. The runner fills it in from each handler's run and parsed answer
 //! (`crate::llm::hooks::hook_report`), the rollout keeps it, and `ui` draws it

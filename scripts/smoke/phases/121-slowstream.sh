@@ -6,7 +6,7 @@
 smoke_begin
 
 # A model streaming a few tokens a second is the inline pipeline's hardest
-# customer (docs/slow-stream.md): every state the renderer passes through —
+# customer (docs/ui/slow-stream.md): every state the renderer passes through —
 # a half-open `**`, one backtick of a fence, a heading with no text yet, a
 # table header before its delimiter, a wrapped code line held whole — is ON
 # SCREEN for hundreds of milliseconds instead of one animation frame, and a
@@ -132,7 +132,7 @@ while :; do
 	# bottom, where it stays) and nothing pulls it back up — a strip that
 	# dropped its preview slot between two tokens used to lift the box two
 	# rows and drop it again a token later, the bounce a slow model makes
-	# visible on every closing fence (docs/slow-stream.md).
+	# visible on every closing fence (docs/ui/slow-stream.md).
 	footer_now=$(printf '%s\n' "$vis" | grep -nF 'dummy_model_name ·' | tail -1 | cut -d: -f1)
 	if [ "${footer_now:-0}" -gt 0 ] && [ "$footer_now" -lt "$footer_prev" ]; then
 		# A capture can read a frame half-parsed — the screen scrolled, the
@@ -216,7 +216,7 @@ esac
 # The live region is never BLANKED and repainted — a commit overwrites the
 # box's rows in place and clears only the rows the previous region left
 # below it, so a terminal without synchronized output can never present a
-# boxless frame either (docs/slow-stream.md).
+# boxless frame either (docs/ui/slow-stream.md).
 case "$sync_clears" in
 *clears=0\ *) ;;
 *) fail "a commit blanked the live region before repainting it ($sync_clears): a terminal without mode 2026 can present the boxless state — the region must be repainted in place" ;;

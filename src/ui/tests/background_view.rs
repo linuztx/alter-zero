@@ -1,4 +1,4 @@
-//! The ↓ background-shell manager band (`docs/background.md`).
+//! The ↓ background-shell manager band (`docs/tools/background.md`).
 
 use super::*;
 use crate::ui::theme::{tool_fail_color, tool_ok_color};
@@ -32,7 +32,7 @@ fn background_notice_lines_render_the_headline_with_outcome_colours() {
 #[test]
 fn a_waiting_notice_wears_the_caution_amber() {
     // A session that stopped to ask for input has neither succeeded nor
-    // failed: it is waiting on someone (docs/bash-tools.md).
+    // failed: it is waiting on someone (docs/tools/bash-tools.md).
     let notice = crate::app::BackgroundNotice {
         waiting: true,
         ..bg_notice(None, false)

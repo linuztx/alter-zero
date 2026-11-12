@@ -8,7 +8,7 @@ CK_DIR="$(mktemp -d "$SMOKE_TMP/ck.XXXXXX")"
 CK_SESS="$(mktemp -d "$SMOKE_TMP/cksess.XXXXXX")"
 
 # /resume resets the CODE to the saved session's checkpoint
-# (docs/checkpoint.md). Launch 1 records a session whose `!` shell turn leaves
+# (docs/state/checkpoint.md). Launch 1 records a session whose `!` shell turn leaves
 # the file at v1; the process quits. The file is then DIVERGED on disk (as if
 # later work changed it). Launch 2's /resume of that session must restore the
 # file to v1 — the transcript and the code agree again. Same cwd across

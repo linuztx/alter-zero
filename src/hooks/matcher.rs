@@ -1,4 +1,4 @@
-//! Which handlers an event's match query selects (`docs/hooks.md`).
+//! Which handlers an event's match query selects (`docs/tools/hooks.md`).
 //!
 //! Both references share one implementation and so does this: absent / empty /
 //! `*` matches everything; a matcher whose every character is in
@@ -56,7 +56,7 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         "askuserquestion" => Some("AskUserQuestion"),
         "skill" => Some("Skill"),
         // No reference tool to borrow a spelling from: the name the cell
-        // header shows is the one a user writes (docs/bash-tools.md).
+        // header shows is the one a user writes (docs/tools/bash-tools.md).
         crate::llm::tools::BASH_SEND_TOOL => Some(crate::llm::tools::BASH_SEND_DISPLAY),
         crate::llm::tools::BASH_WAIT_TOOL => Some(crate::llm::tools::BASH_WAIT_DISPLAY),
         crate::llm::tools::BASH_KILL_TOOL => Some(crate::llm::tools::BASH_KILL_DISPLAY),
@@ -64,7 +64,7 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         crate::llm::tools::BASH_SESSION_TOOL_NAME => {
             Some(crate::llm::tools::BASH_SESSION_TOOL_DISPLAY)
         }
-        // The agent companions the same way (docs/agent-tools.md).
+        // The agent companions the same way (docs/agents/agent-tools.md).
         crate::llm::tools::AGENT_SEND_TOOL => Some(crate::llm::tools::AGENT_SEND_DISPLAY),
         crate::llm::tools::AGENT_OUTPUT_TOOL => Some(crate::llm::tools::AGENT_OUTPUT_DISPLAY),
         crate::llm::tools::AGENT_KILL_TOOL => Some(crate::llm::tools::AGENT_KILL_DISPLAY),
@@ -77,7 +77,7 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
 /// spellings of "match everything" (absent, empty, `*`), the pattern itself,
 /// **untrimmed**, otherwise. The one definition [`matches`](fn@matches)
 /// selects by, and what a hook's trust identity records
-/// (`docs/config-review.md`): ` Bash` matches no tool where `Bash` fires on
+/// (`docs/state/config-review.md`): ` Bash` matches no tool where `Bash` fires on
 /// every bash call, so the two must never read as one hook.
 #[must_use]
 pub fn constraint(matcher: Option<&str>) -> Option<&str> {

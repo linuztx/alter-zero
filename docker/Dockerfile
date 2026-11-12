@@ -1,4 +1,4 @@
-# docker/Dockerfile — Alter Zero on headless Kali Linux (docs/docker.md).
+# docker/Dockerfile — Alter Zero on headless Kali Linux (docs/ops/docker.md).
 #
 # Build it with docker/build.sh, which resolves the latest release first:
 #
@@ -20,7 +20,7 @@ FROM ${KALI_IMAGE} AS tools
 # No desktop, no Kali metapackage, no compiler, and no recommended packages:
 # each tool here is either small or something the agent cannot work without
 # (git is what /diff and the checkpoints shell out to). Measured sizes, and
-# what was left out and why, are in docs/docker.md.
+# what was left out and why, are in docs/ops/docker.md.
 #
 # The dpkg excludes come first, debian:slim's own technique: translations, man
 # pages (there is no `man` here to read them) and package docs are never

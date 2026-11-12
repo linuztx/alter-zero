@@ -11,7 +11,7 @@
 //!
 //! The rows are **derived, never stored** ([`App::skill_menu_rows`]) from the
 //! snapshot the boundary injects at open, so the value column can't drift
-//! from what the session is actually offering the model. See `docs/skills.md`.
+//! from what the session is actually offering the model. See `docs/tools/skills.md`.
 
 use super::views::TOOL_VIEW_PAGE;
 use super::*;
@@ -37,7 +37,7 @@ pub struct SkillMenuRow {
 ///
 /// Holds the skills themselves rather than reaching for a registry: the pure
 /// core never touches the boundary's shared handles, so the snapshot is
-/// injected whole at open — the `/hooks` menu's seam (`docs/hooks-menu.md`).
+/// injected whole at open — the `/hooks` menu's seam (`docs/tools/hooks-menu.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillsMenu {
     /// Every discovered skill, in precedence order — the **disabled ones
@@ -67,7 +67,7 @@ impl SkillsMenu {
     ///
     /// Counted over `skills`, never as `skills - disabled`: the off-set keeps
     /// names that are not installed here (`skills.json` serves a checkout on
-    /// another machine too, `docs/skills.md`), and those must not count
+    /// another machine too, `docs/tools/skills.md`), and those must not count
     /// against this one.
     #[must_use]
     pub fn enabled_count(&self) -> usize {

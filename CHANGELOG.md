@@ -5,7 +5,7 @@ All notable changes to Alter Zero are recorded here. The format follows
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 A release's notes on GitHub are generated from its section below
-(`scripts/release.sh notes`, see `docs/release.md`), so the entry written
+(`scripts/release.sh notes`, see `docs/ops/release.md`), so the entry written
 here is the entry users read. Changes land under **Unreleased** as they
 merge; `scripts/release.sh prepare X.Y.Z` rolls that section into a dated
 release heading when a version is cut.
@@ -28,7 +28,7 @@ release heading when a version is cut.
   request finished, so the cost of each request and of each tool step can be
   read from the file. The existing fields are unchanged, older builds skip what
   they don't know, and the per-turn `summary` keeps its totals
-  (`docs/rollout-records.md`).
+  (`docs/state/rollout-records.md`).
 
 - **Headless mode: `alter-zero -p "prompt"` runs with no terminal at all.**
   The app used to need a terminal that answered its cursor query before it
@@ -46,7 +46,7 @@ release heading when a version is cut.
   working directory, and `-c`/`--resume` continue a conversation, so a
   nightly job can keep one session going. The config, providers, skills,
   agents, hooks and MCP servers are the same ones the interactive app uses
-  (`docs/headless.md`). stderr stays quiet unless something went wrong —
+  (`docs/cli/headless.md`). stderr stays quiet unless something went wrong —
   a failed run says why, refused calls and stopped background work are
   named — and `--verbose` logs every step there. Piped input is read to its
   end however slow the command writing it, while a socket nobody writes to
@@ -67,7 +67,7 @@ release heading when a version is cut.
   top-level `reasoning_effort`, so a level picked for one of them changed
   nothing. A block in `~/.alter-zero/providers.toml` that sets
   `reasoning_param = "reasoning_effort"` now sends the level as that string
-  instead, with `none` for **off** (`docs/user-providers.md`).
+  instead, with `none` for **off** (`docs/providers/user-providers.md`).
 
 - **MCP can be turned off for a whole session from `/settings`.** A new
   **MCP** row stops every MCP server and offers the model none of their
@@ -78,7 +78,7 @@ release heading when a version is cut.
   list and on the page of each server it holds as `◯ off`, and the startup
   review waits to ask about a project's servers until MCP is turned back
   on. `ALTER_ZERO_MCP=0` now starts a session with the row off for that
-  run, where it used to remove MCP until a restart (`docs/mcp.md`).
+  run, where it used to remove MCP until a restart (`docs/tools/mcp.md`).
 
 - **Hooks that run at a turn's edges now show what they did.** A Stop hook
   that made the agent keep going left no trace in the conversation, and one
@@ -99,7 +99,7 @@ release heading when a version is cut.
   `Rewritten by PreToolUse hook` row, where the cell used to show the hook's
   version as if the agent had asked for it. What the agent reads is
   unchanged, and a hook that runs silently still leaves nothing
-  (`docs/hooks.md`).
+  (`docs/tools/hooks.md`).
 
 ### Changed
 
@@ -112,7 +112,7 @@ release heading when a version is cut.
   texts, since a matcher only ever sees a tool name; they match exactly as
   before. A `RUST_BACKTRACE=1` report still names functions, and
   `cargo build --release` from a checkout is unchanged
-  (`docs/binary-size.md`).
+  (`docs/ops/binary-size.md`).
 
 - **The context gauge follows the conversation between replies, and learns
   how your provider counts.** The footer's `{used}/{window}` only moved when
@@ -129,7 +129,7 @@ release heading when a version is cut.
   drop, making it look like it saved more than it did. Before the first
   report it counts the tool schemas too. The `/context` page and the Ctrl+D
   view count in the same calibrated tokens, so they read like the footer
-  (`docs/token-estimate.md`).
+  (`docs/architecture/token-estimate.md`).
 
 - **Token counts no longer ship OpenAI's vocabulary.** The status line's
   tally and every context estimate counted with OpenAI's `o200k_base`
@@ -162,7 +162,7 @@ release heading when a version is cut.
   middle as ↑/↓ scroll through the rest, the way the `/` palette scrolls,
   over the same dim counter as the palette, `(1/7)`, saying which skill
   is highlighted and how many match what you typed
-  (`docs/skill-mentions.md`).
+  (`docs/input/skill-mentions.md`).
 
 - **The `@` file picker lists every matching file, five at a time, with a
   count.** It showed the best eight matches and nothing past them, so ↑/↓
@@ -174,7 +174,7 @@ release heading when a version is cut.
   entries first, folders before files, then each level down. The search
   still stops after 10,000 entries so a huge directory stays quick; when it
   does, the count ends in `+`, as in `(1/10000+)`, to say the list is
-  partial (`docs/file-search.md`).
+  partial (`docs/input/file-search.md`).
 
 - **The pickers open on a title and show fewer rows at a time.** `/model`,
   `/settings`, `/theme`, `/mascot` and `/spinner` now open on a title
@@ -193,7 +193,7 @@ release heading when a version is cut.
   taller than the preview beside them. The `/skills` hint now reads
   `Space to toggle`; Enter still toggles too. On a terminal too short for
   the whole page, the title stays above a three-row list while there is
-  room for both (`docs/view-flow.md`).
+  room for both (`docs/ui/view-flow.md`).
 
 - **`/login` opens on `Select login method`.** The first page now asks how
   you sign in under a title, with no search line, since three choices are a
@@ -203,7 +203,7 @@ release heading when a version is cut.
   `Use an API key` and `Use a local model`: not every account behind the
   first row is a subscription, since an Anthropic Console sign-in bills per
   token. Messages that send you to one of these rows, such as `/usage` with
-  nothing signed in, name them the new way (`docs/llm.md`).
+  nothing signed in, name them the new way (`docs/providers/llm.md`).
 
 - **The `?` shortcuts list fits itself to the terminal.** It was a fixed
   two-column grid that left the right side of a wide terminal empty and took
@@ -221,7 +221,7 @@ release heading when a version is cut.
   where the footer line it replaces does, and now also lists `@` for file
   paths and `ctrl+b` for moving a running command to the background.
   `ctrl+o` now reads `for transcript`, the view it opens, instead of
-  `for tool output` (`docs/shortcuts.md`).
+  `for tool output` (`docs/ui/shortcuts.md`).
 
 - **The status line and the footer now wear the theme's colours.** The
   status verb (`Working…`, or a task's `Setting up project structure…`)
@@ -236,7 +236,7 @@ release heading when a version is cut.
   lets the agent do without asking: `manual` stays dim, `edit` is blue,
   `auto` amber and `master` red. Every colour comes from the active
   `/theme`, and messages, replies and tool cells are unchanged
-  (`docs/footer.md`, `docs/status-indicator.md`).
+  (`docs/ui/footer.md`, `docs/ui/status-indicator.md`).
 
 - **The Ctrl+D context view is easier to read and to move around in.** Each
   message now opens on a coloured `SYSTEM`, `USER`, `ASSISTANT` or `TOOL`
@@ -266,7 +266,7 @@ release heading when a version is cut.
   but the `@` picker turned it into a folder separator, so `a\b.txt` was
   listed as `b.txt` inside a folder `a` that does not exist, and choosing
   it put a path that named nothing into your message
-  (`docs/file-search.md`).
+  (`docs/input/file-search.md`).
 
 - **Models an OpenAI-compatible gateway discovered stay in `/model`.**
   OmniRoute lists a model it found upstream, such as a Codex model, under
@@ -275,7 +275,7 @@ release heading when a version is cut.
   rule meant for GitHub Copilot's records, which leaves out a model served
   only from `/responses`, so every such model was missing from the picker.
   Only Copilot's own records are filtered by their endpoints now
-  (`docs/copilot.md`).
+  (`docs/providers/copilot.md`).
 
 - **Models behind an OpenAI-compatible gateway can see the pictures you
   send, and Ctrl+T offers their thinking levels.** A gateway such as
@@ -291,13 +291,13 @@ release heading when a version is cut.
   Ctrl+T cycles the levels the gateway lists for the model
   (`effort_tiers`), offering Off only where that list includes `none`. A
   model you picked before this fix keeps what was saved for it until you
-  pick it again in `/model` (`docs/user-providers.md`).
+  pick it again in `/model` (`docs/providers/user-providers.md`).
 
 - **A broken hook is named by the first line of its command.** When a hook
   written as a multi-line inline script failed, timed out or printed
   invalid JSON, the dim row it left under a tool call held the whole
   script. A hook is now named by its command's first line, cut at 80
-  characters, there and on the hook-run cell (`docs/hooks.md`).
+  characters, there and on the hook-run cell (`docs/tools/hooks.md`).
 
 - **On macOS, `bashkill` lets a command clean up before it is killed.**
   Stopping a session sends `SIGINT`, then `SIGTERM`, and kills whatever is
@@ -307,7 +307,7 @@ release heading when a version is cut.
   `SIGKILL` that still reported the session as stopped. Where `pkill` cannot
   find a session, the stop now finds its processes by the session's
   terminal, and the final kill reaches a shell's own jobs there as well
-  (`docs/bash-tools.md`).
+  (`docs/tools/bash-tools.md`).
 
 ## [0.18.0] - 2026-11-03
 
@@ -322,7 +322,7 @@ release heading when a version is cut.
   when it resets. An account Antigravity has never set up is set up during
   the sign-in. This is an unofficial route that uses Antigravity's own
   sign-in client, and Google may restrict accounts that use it outside
-  Antigravity, so weigh that before signing in (`docs/antigravity.md`).
+  Antigravity, so weigh that before signing in (`docs/providers/antigravity.md`).
 - **Sign in to MCP servers that need an OAuth client of your own.** Some
   servers, Google's among them, only accept a login client you create in
   the provider's console, and signing in to them ended in an error. A
@@ -335,7 +335,7 @@ release heading when a version is cut.
   away, Google logins renew themselves instead of lapsing within the hour,
   and `alter-zero mcp get` shows the client but never its secret. This is
   experimental: signing in to Google's servers this way has not been tried
-  end to end yet (`docs/mcp.md`, `docs/mcp-cli.md`).
+  end to end yet (`docs/tools/mcp.md`, `docs/cli/mcp-cli.md`).
 - **An MCP server's new tools are offered as soon as it has them.** A
   server whose tools change while it runs, one you are developing or one
   that turns tool sets on and off, says so, and the client used to keep the
@@ -343,7 +343,7 @@ release heading when a version is cut.
   now reads the list again when the server announces a change, and the
   agent can use the new tools from its next request. Servers on the newest
   MCP version are asked for these announcements, as the version requires
-  (`docs/mcp.md`).
+  (`docs/tools/mcp.md`).
 - **MCP servers' instructions reach the agent.** A server can say how its
   tools are meant to be used: which to call first, what an argument means,
   what to avoid. That text used to be shown on the server's page in `/mcp`
@@ -351,7 +351,7 @@ release heading when a version is cut.
   connected server whose tools it can use, and a subagent gets the
   instructions of the servers it may call. Each server's text is capped,
   can't pose as another server's, and appears in `/context` as **MCP
-  instructions** (`docs/mcp.md`).
+  instructions** (`docs/tools/mcp.md`).
 - **Hooks and a project's MCP servers are reviewed before they run.** A
   hook runs a shell command on its own whenever its event fires, and a
   project's `.mcp.json` or `.alter-zero/mcp.json` starts a program or
@@ -377,14 +377,14 @@ release heading when a version is cut.
   line, URL or token of a server, only fingerprints and names. Two sessions
   answering at the same time keep each other's answers, and a `trust.json`
   that no longer parses is left as it is: your choices then last for the
-  session, and a message says so (`docs/config-review.md`).
+  session, and a message says so (`docs/state/config-review.md`).
 - **`/hooks` trusts a hook, or stops trusting it.** The browser marks a hook
   that is not trusted with `⚠ not trusted` and says how many do not run;
   **Enter** on a hook's page trusts it or stops trusting it, at once.
   Turning **Hooks** on in `/settings` over hooks waiting for trust opens the
   review's hooks page, which **Ctrl+C** closes like any picker. In `/mcp`,
   Enable and Disable on a project's server change the same decision the
-  review recorded (`docs/hooks-menu.md`).
+  review recorded (`docs/tools/hooks-menu.md`).
 - **Reads, searches and listings fold into one line.** An agent finding its
   way around a project used to fill the screen with a cell per call: every
   `ls`, every `grep`, every file it read, each with its output under it.
@@ -407,7 +407,7 @@ release heading when a version is cut.
   own cell, and so does a read of an image, so its picture still draws. The
   new **Verbose output** row in `/settings` brings back a cell per call and
   a line per thought, and `ALTER_ZERO_VERBOSE=1` sets it for one run
-  (`docs/tool-groups.md`).
+  (`docs/ui/tool-groups.md`).
 - **Scratchpad files fold into that line too.** The agent keeps its
   throwaway work, a script to try something or a note, in its session
   scratchpad, and every file it wrote or changed there used to get a full
@@ -420,7 +420,7 @@ release heading when a version is cut.
   instead of losing the file name, and a resumed session folds the files
   its earlier run wrote the same way. An edit that failed or was refused
   keeps its own red cell, and **Verbose output** still brings back a cell
-  per call (`docs/tool-groups.md`).
+  per call (`docs/ui/tool-groups.md`).
 
 ### Changed
 
@@ -434,13 +434,13 @@ release heading when a version is cut.
   a redirect into a file, `$(…)`, an unknown flag, a flag that writes such
   as `find -delete` or `sort -o`, or `git` in a folder that looks like a
   bare repository. Manual and edit modes still ask about every command
-  (`docs/permissions.md`).
+  (`docs/state/permissions.md`).
 - **Hooks run by default.** The `/settings` **Hooks** row used to be off in
   every folder until you turned it on there, so a `~/.alter-zero/hooks.json`
   did nothing in a folder you had not set it up in. It is now on
   everywhere, and each hook runs once you have trusted it in the review
   above. Turning the row off in a folder is remembered for that folder, and
-  `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/settings.md`).
+  `ALTER_ZERO_HOOKS=0` turns hooks off for one run (`docs/state/settings.md`).
 - **What a hook tells the agent is short and says which hook spoke.** When
   a hook refused a tool call, the agent used to read a five-line paragraph
   that never said which hook had refused it. It now reads one line in
@@ -456,7 +456,7 @@ release heading when a version is cut.
   session's instead of arriving as if the lead had said it. A prompt a hook
   refuses shows one line, `Prompt blocked by UserPromptSubmit hook: …`, and
   a hook that refuses without a reason now reads `no reason given` instead
-  of saying "blocked" twice (`docs/hooks.md`).
+  of saying "blocked" twice (`docs/tools/hooks.md`).
 - **A refused tool call shows which hook refused it.** The red cell used to
   read `Blocked by hook: …` and nothing more, so with several hooks, or
   hooks in both your own and a project's `hooks.json`, you had to guess
@@ -467,7 +467,7 @@ release heading when a version is cut.
   `Config: ~/.alter-zero/hooks.json`. A `PermissionRequest` hook's denial
   reads the same way, and the dim rows a hook leaves under a call name its
   event too: `Context added by PostToolUse hook`, `Flagged by PostToolUse
-  hook: …`, `Allowed by PermissionRequest hook` (`docs/hooks.md`).
+  hook: …`, `Allowed by PermissionRequest hook` (`docs/tools/hooks.md`).
 - **The page your browser lands on after signing in looks like Alter
   Zero.** Signing in to an MCP server, ChatGPT, the Anthropic Console or
   Google Antigravity in the browser used to end on a line of black text on
@@ -478,7 +478,7 @@ release heading when a version is cut.
   it, with the server's own reason underneath, and tilts its head at an
   answer meant for an older sign-in. It blinks now and then, and stays
   still if your system asks for reduced motion. The page is built into the
-  app and loads nothing from the internet (`docs/callback-page.md`).
+  app and loads nothing from the internet (`docs/providers/callback-page.md`).
 
 ### Removed
 
@@ -487,7 +487,7 @@ release heading when a version is cut.
   replaces it, covers your own `hooks.json` too, and asks about each hook
   and server separately. A project you trusted with `/trust` keeps that
   approval as long as its files have not changed since; an edited one is
-  asked about (`docs/config-review.md`).
+  asked about (`docs/state/config-review.md`).
 
 ### Fixed
 
@@ -499,7 +499,7 @@ release heading when a version is cut.
   link, the same one `c` copies and your browser is sent to, and it is
   underlined like `/login`'s. A server's address on its `/mcp` page, and a
   web address named in a sign-in or connection error there, open whole too
-  (`docs/links.md`, `docs/mcp.md`).
+  (`docs/ui/links.md`, `docs/tools/mcp.md`).
 - **Google's MCP servers no longer look connected while every call fails.**
   Google Drive, Calendar and Gmail list their tools to anyone and refuse
   every call without a sign-in, so `/mcp` read "✔ connected" and
@@ -509,7 +509,7 @@ release heading when a version is cut.
   Servers of this kind aren't supported yet: their sign-in needs an OAuth
   client you create with the provider, which is experimental. Servers that
   work without signing in, like Hugging Face, Context7 and Exa, stay
-  connected (`docs/mcp.md`).
+  connected (`docs/tools/mcp.md`).
 - **An MCP server with long or look-alike tool names no longer breaks every
   request.** Each MCP tool reaches the model as `mcp__{server}__{tool}`, and
   providers refuse the whole request over one bad tool name: a name over 64
@@ -521,7 +521,7 @@ release heading when a version is cut.
   same whichever order the server lists them in. `/mcp` shows the name the
   model calls. Two servers whose names come out the same can't be told
   apart that way, so the second one doesn't connect and `/mcp` says why
-  (`docs/mcp.md`).
+  (`docs/tools/mcp.md`).
 - **One MCP tool with an unusual input schema no longer fails every
   turn.** A tool's schema rides every request, and a schema with no
   `"type": "object"` at the top, no `properties`, or a `oneOf`/`anyOf` at
@@ -532,7 +532,7 @@ release heading when a version is cut.
   tool no repair can save, one whose input is declared as a string, say, or
   has a parameter name the APIs refuse, is left out instead, and the
   server's page in `/mcp` lists it under *Not offered to the model* with
-  the reason (`docs/mcp.md`).
+  the reason (`docs/tools/mcp.md`).
 - **An MCP tool's images, audio and files no longer fill its result with
   base64.** Only the first image was turned into a picture the model can
   see; a second image, a sound clip or an attached file reached the model
@@ -546,7 +546,7 @@ release heading when a version is cut.
   listing that loops back on itself stops instead of repeating tools.
   Servers that send `"error": null`, echo request numbers as text, or
   report an error without a request number are understood instead of
-  timing out (`docs/mcp.md`).
+  timing out (`docs/tools/mcp.md`).
 - **A remote MCP server that routes on tool arguments can be called.** The
   2026-07-28 MCP revision lets a server mark tool parameters, a region or
   a tenant say, that must also be sent as request headers so a gateway can
@@ -555,7 +555,7 @@ release heading when a version is cut.
   `Mcp-Param-…` headers. A tool whose marking breaks the rules is left out
   and listed in `/mcp` with the reason, and a call the server still
   refuses makes the client fetch the tool list again and retry once
-  (`docs/mcp.md`).
+  (`docs/tools/mcp.md`).
 - **A remote MCP tool gets the whole time its call allows.** Over HTTP,
   every MCP request was cut off after 60 seconds whatever the tool timeout
   said, so a tool taking a minute or two failed with a vague "request
@@ -578,13 +578,13 @@ release heading when a version is cut.
   redirect only while it stays on the server's own address, and an
   old-style SSE server that names a message endpoint on another address,
   or switches from `https` to `http`, is refused. Each message from a
-  server is capped at 16 MB (`docs/mcp.md`).
+  server is capped at 16 MB (`docs/tools/mcp.md`).
 - **A local MCP server can no longer take over the terminal.** A server
   started from your config shared the app's terminal, so one that ran
   `sudo`, asked for an SSH passphrase or a git credential would print its
   prompt over the screen and read the keys you typed. Servers now run in a
   session of their own, the way shell commands and hooks already did, and
-  such a prompt fails at once instead (`docs/tty-detach.md`).
+  such a prompt fails at once instead (`docs/tools/tty-detach.md`).
 - **Local MCP servers are stopped gently and completely.** Pressing Esc on
   a call, or a call timing out, now tells the server to stop working on it.
   A server that stops reading its input can no longer freeze a call, a log
@@ -595,7 +595,7 @@ release heading when a version is cut.
   with it: an `npx` server's real process used to be left running. A
   failed connection's message now includes what the server printed, and a
   server that offers only resources or prompts connects with no tools
-  instead of failing (`docs/mcp.md`).
+  instead of failing (`docs/tools/mcp.md`).
 - **An MCP server that crashes comes back by itself.** A local server that
   died stayed listed as connected and every later call failed until you
   reconnected it in `/mcp`. It is now restarted the moment a call finds it
@@ -621,7 +621,7 @@ release heading when a version is cut.
   own machine) and support the secure PKCE method. A server asking for more
   permission is asked for it alongside what it already had, and the
   permission it named is read correctly: a parsing slip used to lose it
-  (`docs/mcp.md`).
+  (`docs/tools/mcp.md`).
 - **An MCP tool's description keeps its usage notes.** Descriptions were
   cut at 2,048 characters, which lost the end of the longer ones servers
   write to explain their tools; the limit is now 4,096, Claude Code's.
@@ -646,7 +646,7 @@ release heading when a version is cut.
   use sent to a remote server this way; a server asking for them doesn't
   start. An empty config file is no longer an error at every start,
   `"type": "streamable-http"` is understood, and a stdio entry missing its
-  command says so (`docs/mcp.md`).
+  command says so (`docs/tools/mcp.md`).
 - **An MCP login is no longer lost to a renewal race.** A login server may
   hand out a one-time renewal token and revoke the whole login when it sees
   one used twice. Two sessions in different terminals renewing the same
@@ -660,7 +660,7 @@ release heading when a version is cut.
   instead of on every call. The token file is private from the moment it
   is created, a sign-in whose tokens couldn't be saved says so instead of
   appearing to work, and **Clear authentication** says when it couldn't
-  clear (`docs/mcp.md`).
+  clear (`docs/tools/mcp.md`).
 - **Signing in to ChatGPT or the Anthropic Console no longer hangs or takes
   a stray answer.** The two browser sign-ins in `/login` had the problems
   the MCP sign-in had: a browser that opened a spare connection without
@@ -671,7 +671,7 @@ release heading when a version is cut.
   callback: an answer that isn't this sign-in's is turned away while the
   sign-in keeps waiting, declining ends it at once with the reason, and it
   also answers when your system sends `localhost` to the IPv6 address
-  (`docs/chatgpt.md`, `docs/claude.md`).
+  (`docs/providers/chatgpt.md`, `docs/providers/claude.md`).
 - **Signing in to an MCP server no longer hangs or takes a stray answer.**
   Declining on the login page used to leave the sign-in waiting five
   minutes for an answer that would never come; it now ends at once with
@@ -691,26 +691,26 @@ release heading when a version is cut.
   or registers again rather than being refused by a login server that
   checks the port. The client registered with one login server is never
   sent to another, and pressing **Esc** while the sign-in starts no longer
-  opens the browser anyway (`docs/mcp.md`).
+  opens the browser anyway (`docs/tools/mcp.md`).
 - **`$ALTER_ZERO_PROJECT_DIR` is the project root, not the folder you
   started in.** A hook written as
   `"${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/format-and-test.sh"` now
   finds the project's script when the app is started in a subdirectory of
   the repository. It used to point at that subdirectory, so the script was
   not found and the hook silently did nothing. `$CLAUDE_PROJECT_DIR` gets the
-  same value; hooks still run in the folder you started in (`docs/hooks.md`).
+  same value; hooks still run in the folder you started in (`docs/tools/hooks.md`).
 - **A `PermissionRequest` hook that exits `2` denies the call.** Its stderr
   is the reason, as in Claude Code and codex and as the `/hooks` page says;
   the call used to go on to the auto-mode classifier and the permission
-  prompt as if the hook had said nothing (`docs/hooks.md`).
+  prompt as if the hook had said nothing (`docs/tools/hooks.md`).
 - **A hook that refuses a call keeps the rest of what it said.** Context a
   `PreToolUse` hook added was dropped when the same hooks blocked the call,
   and so was its note (a warning from a broken sibling hook, a
   `systemMessage`). The agent now reads the context after the refusal, and
-  the note sits under the red cell (`docs/hooks.md`).
+  the note sits under the red cell (`docs/tools/hooks.md`).
 - **A hook's context stays with a command sent to the background.** The
   agent read it when the command was launched, but the conversation kept
-  only the launch text, so the next turn no longer had it (`docs/hooks.md`).
+  only the launch text, so the next turn no longer had it (`docs/tools/hooks.md`).
 - **A tool call's dim note row keeps every note.** A call allowed by the
   auto-mode classifier that a hook also commented on showed only the hook's
   note, and a hook that ran before a call lost its note to one that ran
@@ -726,7 +726,7 @@ release heading when a version is cut.
   nothing after two tries, the turn ends on a red notice saying so instead
   of looking finished. A reply stopped by the model's context window or by a
   content filter now ends on a notice naming the cause, too. Ctrl+O shows
-  each continuation and what the model was told (`docs/unfinished-replies.md`).
+  each continuation and what the model was told (`docs/architecture/unfinished-replies.md`).
 - **A saved command rule no longer covers a command hidden by quoting.**
   "Don't ask again" on a command saves a rule for its program, such as
   `echo *`, and a later command runs without asking when every part of it
@@ -738,7 +738,7 @@ release heading when a version is cut.
   with a keyword such as `if`, `then`, `do` or `{`, with `.` or `builtin`,
   or with a subshell's `(` now only ever matches a rule for that exact
   command, since a rule saved for `then` used to cover whatever came after
-  it (`docs/permissions.md`).
+  it (`docs/state/permissions.md`).
 - **A picture whose file is gone no longer leaves a blank block.** The agent
   often reads a screenshot it saved under `/tmp`, and a reboot clears `/tmp`.
   Resuming such a session left a screenful of empty rows between the
@@ -747,7 +747,7 @@ release heading when a version is cut.
   still there, and one that is gone takes no rows at all. The check runs
   again whenever the conversation is redrawn, on a resize or a change to the
   image settings, so a picture deleted mid-session stops holding its space
-  too, and one whose file comes back draws again (`docs/images.md`).
+  too, and one whose file comes back draws again (`docs/ui/images.md`).
 - **A file cell's inline peek stays inside its ten rows.** A `read`, `write`
   or `edit` cell shows the first rows of the file and keeps the rest behind
   Ctrl+O, but a long line that began inside those rows was always shown to
@@ -757,7 +757,7 @@ release heading when a version is cut.
   left can hold still shows whole, and the one that needs more is cut on the
   last row and marked with a `…`. When the cut line is the file's last, the
   row under it still points at Ctrl+O. Ctrl+O and the permission prompt
-  still show every line whole (`docs/long-lines.md`).
+  still show every line whole (`docs/ui/long-lines.md`).
 
 ## [0.17.0] - 2026-10-27
 
@@ -772,7 +772,7 @@ release heading when a version is cut.
   request finishes, so the one you interrupted never does. With nothing
   estimated, as when you stop a running command after the model's request
   finished, the number is the provider's own and has no `≈`. A `!` command
-  and an interrupted `/compact` still end without one (`docs/interrupt.md`).
+  and an interrupted `/compact` still end without one (`docs/input/interrupt.md`).
 - **`/usage` shows what is left of your subscriptions.** Until now the first
   you heard of a plan's limit was a refused turn. `/usage` opens a page with a
   section for every subscription you are signed in to, the one in use first:
@@ -792,7 +792,7 @@ release heading when a version is cut.
   refresh fails and shows them at once when you open it again, and fits a
   short terminal by folding the other subscriptions to one line each.
   API-key providers bill per token and are not listed, and with no
-  subscription signed in `/usage` says so in a toast (`docs/usage.md`).
+  subscription signed in `/usage` says so in a toast (`docs/providers/usage.md`).
 
 ### Changed
 
@@ -808,14 +808,14 @@ release heading when a version is cut.
   project left in `manual` starts in `auto` now; switch it back with
   Shift+Tab and it stays. To keep asking everywhere, launch with
   `ALTER_ZERO_PERMISSION_MODE=manual`. It takes any mode name, sets the mode
-  for that launch, and is never saved (`docs/permissions.md`).
+  for that launch, and is never saved (`docs/state/permissions.md`).
 - **A long command's header stops at two rows.** A `Bash(…)` header shows up
   to 160 characters of the command, and in a terminal narrower than about
   ninety columns they spilled onto a third row that held only the end of the
   cut, often part of a word (`scripts/parallel_se…)`). The header now ends on
   its second row with `…)`. Wider terminals show what they did before, and
   Ctrl+O still shows the whole command. Every tool's header follows the same
-  rule, so a long file path or MCP call is cut the same way (`docs/tools.md`
+  rule, so a long file path or MCP call is cut the same way (`docs/tools/tools.md`
   *Long headers*).
 
 ### Fixed
@@ -834,7 +834,7 @@ release heading when a version is cut.
   network first if it is still gone. The reply then streams once, whole.
   Subagents start over the same way, and hand back only the reply that got
   through. A reply that keeps dropping still stops after the attempts the
-  `/settings` **Error retry** row allows (`docs/offline.md`).
+  `/settings` **Error retry** row allows (`docs/providers/offline.md`).
 
 ## [0.16.0] - 2026-10-25
 
@@ -857,7 +857,7 @@ release heading when a version is cut.
   while the turn runs, fits a terminal of any height by narrowing its list
   to the rows around the highlight, and inside a subagent's session view
   shows that agent's own window. Ctrl+D shows the raw context behind the
-  numbers, and Esc closes it (`docs/context-usage.md`).
+  numbers, and Esc closes it (`docs/architecture/context-usage.md`).
 - **`/login` can connect a local model, and tests it before saving.** `/login`
   now offers three ways in: a subscription, an API key, or **Use a local
   model**. The third lists the model servers you run yourself: Ollama, LM
@@ -872,7 +872,7 @@ release heading when a version is cut.
   address, and any token, to `~/.alter-zero/.env` and says how many models it
   found. If your shell exports that variable with another value, the
   exported one takes precedence, so instead of confirming, the page tells you
-  which variable to unset (`docs/local-models.md`).
+  which variable to unset (`docs/providers/local-models.md`).
 - **LM Studio is a built-in provider.** It connects through LM Studio's
   OpenAI-compatible server. Its models are listed from LM Studio's own
   catalogue, so `/model` shows each model's name, the context length it is
@@ -884,13 +884,13 @@ release heading when a version is cut.
   with how to raise it (`lms load <model> --context-length 32768`), and a
   server that starts requiring a token sends you to `/login`. A server set
   to require authentication takes its token from `LM_API_TOKEN`
-  (`docs/local-models.md`).
+  (`docs/providers/local-models.md`).
 - **A running subagent shows what it is saying.** Its row under the
   `● Agent(…)` cell used to name only its calls (`⎿ Bash: …`, `⎿ Write: …`).
   While the agent writes, the row now shows its words, `⎿ Agent: Checking the
   recent events next.`, taken from the newest paragraph of its text. The row
   keeps showing them until the agent starts its next call
-  (`docs/agent-progress.md`).
+  (`docs/agents/agent-progress.md`).
 - **`agentoutput` reports what the agent said along the way.** Text the
   agent wrote before going on to more work is listed as an `Agent: …` entry
   in its place among the calls. The lead now reads what the agent has found
@@ -920,12 +920,12 @@ release heading when a version is cut.
   in seconds with `Nothing is answering at 127.0.0.1:1234 — is LM Studio's
   server running?`. It used to show `Waiting for internet…`, which was
   wrong. A stopped Ollama already behaved this way. A provider that takes a
-  key keeps the wait, even on localhost (`docs/offline.md`).
+  key keeps the wait, even on localhost (`docs/providers/offline.md`).
 - **Keyless providers' requests no longer carry prompt-cache markers.** A
   model named `qwen/…` or `Qwen/…` on a server you run (LM Studio's
   `qwen/qwen3-8b`, a vLLM repo id) was sent OpenRouter's `cache_control`
   breakpoints, which only a hosted service that bills for caching uses
-  (`docs/prompt-caching.md`).
+  (`docs/providers/prompt-caching.md`).
 - **Read, write and edit cells show long lines whole.** A line that wrapped
   past three rows used to stop on its third row with a `…`, so the end of a
   Markdown paragraph, a long string or an HTML line never showed in the
@@ -934,7 +934,7 @@ release heading when a version is cut.
   has room and finishes any line it starts, so a long line near the end of
   those rows makes the cell taller by the rest of that line. A file being
   written shows its newest ten rows as it streams, so the text arriving at
-  the end of a long line is on screen as it comes in (`docs/long-lines.md`).
+  the end of a long line is on screen as it comes in (`docs/ui/long-lines.md`).
 
 ### Fixed
 
@@ -945,28 +945,28 @@ release heading when a version is cut.
   image now still asks the redirector first, and fetches any file its pick
   cannot deliver from `kali.download`, Kali's Cloudflare mirror. That holds
   for the build and for every `apt install` in the container
-  (`docs/docker.md`).
+  (`docs/ops/docker.md`).
 - **`agentoutput` lists a message the agent read where it read it.** A
   `— message received —` mark could appear ahead of a call the agent had
   made before reading the message, when the agent ran ahead of the thread
   keeping its record — a quick call, or a busy machine. Marks are now placed
-  in the order the agent worked (`docs/agent-progress.md`).
+  in the order the agent worked (`docs/agents/agent-progress.md`).
 - **An error a server reports inside its reply now ends the turn with that
   error.** A stream frame that was only a message (`data: "…"`), or an
   `{"error": "…"}` naming its error by a string, was skipped, so the turn
   ended with no reply and no error. LM Studio reports a prompt longer than
-  its loaded context this way (`docs/local-models.md`).
+  its loaded context this way (`docs/providers/local-models.md`).
 - **A model listing with no models list in it is an error, not an empty
   provider.** A server answering `/models` with 200 and an error object
   showed in `/model` as having no models and no reason; it is now marked
-  unavailable with the server's own words (`docs/user-providers.md`).
+  unavailable with the server's own words (`docs/providers/user-providers.md`).
 - **A subagent's answer is no longer lost when your message starts it
   again.** If you messaged a subagent while it wrote its final reply, it
   picked your message up the moment that reply was done — but when the main
   agent was waiting on it with `agentoutput`, the wait went on to report the
   new run's answer and threw the first one away, the answer to the task the
   main agent had given. The report now carries that earlier answer after its
-  own, marked as the one that came first (`docs/agent-tools.md`).
+  own, marked as the one that came first (`docs/agents/agent-tools.md`).
 - **The main agent hears when you bring a subagent back.** Messaging a
   subagent that had failed, finished or been stopped starts it working again,
   but the main agent only learned of it once that run ended — until then it
@@ -982,7 +982,7 @@ release heading when a version is cut.
   main agent waited on it — could also start the next run before the app saw
   the last one end, hiding everything the new run did and keeping its answer
   from the main agent; the app now takes that end in first
-  (`docs/agent-tools.md`).
+  (`docs/agents/agent-tools.md`).
 - **Code generation retains less RAM.** The warm Ctrl+O transcript packs its
   text and styles and expands only visible rows, preserving complete output,
   syntax colours and fast opens. File rewrites use a 2 MB diff table in place
@@ -990,7 +990,7 @@ release heading when a version is cut.
   Request snapshots share immutable tool arguments instead of copying generated
   source, and refreshing the live transcript releases discarded style entries.
   An offline CLI stress probe and memory regression tests cover these paths
-  (`docs/memory.md`).
+  (`docs/architecture/memory.md`).
 
 - **The npm launcher's fallback catches signals before starting the binary.**
   A signal sent as a fast child started could kill the launcher before its
@@ -1027,12 +1027,12 @@ release heading when a version is cut.
   `… +N lines (ctrl+o to expand)` hint, which is the same view the finished
   cell keeps, so nothing jumps when the file is written. Ctrl+O shows the
   whole file as it streams. This works with every provider, in a subagent's
-  session view, and in the offline demo (`docs/write-streaming.md`).
+  session view, and in the offline demo (`docs/ui/write-streaming.md`).
 
 - **Add providers of your own in `~/.alter-zero/providers.toml`.** Any
   OpenAI-compatible API can be added with a few lines, and it shows up in
   `/login` and `/model` beside the built-in providers
-  (`docs/user-providers.md`).
+  (`docs/providers/user-providers.md`).
 
 ### Changed
 
@@ -1045,7 +1045,7 @@ release heading when a version is cut.
   the search line or title now sits right under the top rule and the hint
   right over the bottom one, so each page gives two rows back to the
   conversation above it. The blank rows between a page's sections stay
-  (`docs/view-flow.md`).
+  (`docs/ui/view-flow.md`).
 - **`/theme` shows its preview beside the list, the way codex does.** On a
   terminal 71 columns or wider, the sample conversation now sits to the
   right of the theme list instead of under it, so the whole picker fits in
@@ -1057,7 +1057,7 @@ release heading when a version is cut.
   navigate`. On a terminal too short for the whole picker, the preview is
   left out and the list shows three themes at a time, so the search line,
   the theme names and the hint stay on screen instead of scrolling away
-  above the preview (`docs/theme.md`).
+  above the preview (`docs/ui/theme.md`).
 - **`/mascot` and `/spinner` lay their previews out the way `/theme` does.**
   The banner preview in `/mascot` and the live status line in `/spinner` now
   sit to the right of the list on a standard terminal (56 columns or wider
@@ -1067,7 +1067,7 @@ release heading when a version is cut.
   over its description, and the hint starts with `↑/↓ to navigate`. Laid
   side by side, `/mascot` fits in twelve rows and `/spinner` in fifteen.
   Three spinner descriptions were shortened so every one reads whole beside
-  the list on an 80-column terminal (`docs/mascot.md`, `docs/spinner.md`).
+  the list on an 80-column terminal (`docs/ui/mascot.md`, `docs/ui/spinner.md`).
 - **`/skills` opens on a title and a count, and marks what is on.** The menu
   now starts with a `Skills` heading over a line like `6 skills · 5 enabled`,
   the way `/hooks` and `/mcp` open, and each skill reads `✔ enabled` or
@@ -1079,7 +1079,7 @@ release heading when a version is cut.
   terminal the heading too) while the list shows three skills at a time, so
   the search line, the skill you are on and the hint stay on screen instead
   of scrolling away, and the menu no longer jumps between the two layouts as
-  you move past a long description (`docs/skills.md`).
+  you move past a long description (`docs/tools/skills.md`).
 - **`/settings`, `/mascot`, `/spinner`, `/model` and `/login` keep what you
   are choosing visible on a short terminal.** Each needs fifteen to twenty
   rows; on fewer, the row you had highlighted and the search line used to
@@ -1091,7 +1091,7 @@ release heading when a version is cut.
   the search line, the highlighted row and the hint always stay on screen.
   `/model` keeps the highlighted model's full name under the list. The
   `/settings` values and the `/spinner` glyphs stay lined up in one column
-  as you scroll (`docs/view-flow.md`).
+  as you scroll (`docs/ui/view-flow.md`).
 - **`/donate` and `/secrets` keep the highlighted entry on screen on a short
   terminal.** On `/donate`, the addresses you are not on fold down to their
   one-line labels while the highlighted one keeps its box and its networks,
@@ -1100,14 +1100,14 @@ release heading when a version is cut.
   stay. A long `/secrets` list shows three secrets at a time around the
   highlighted one, with rows naming how many more are above and below, then
   drops its title and, on the smallest terminal, those rows too
-  (`docs/donate.md`, `docs/secrets.md`).
+  (`docs/ui/donate.md`, `docs/state/secrets.md`).
 - **The agent's multiple-choice questions keep the question on screen on a
   short terminal.** The question used to scroll off the top, often with
   the first options. Now the option descriptions are shortened and then
   left out, the options show three at a time around the highlighted one,
   and the row of question tabs goes last, so the question, the option you
   are on and the keys stay visible. A question with code previews drops
-  the notes line and shortens the preview first (`docs/ask.md`).
+  the notes line and shortens the preview first (`docs/tools/ask.md`).
 - **The pickers keep their search line on a very short terminal.** Below
   about nine rows, `/theme`, `/skills`, `/settings`, `/mascot`, `/spinner`,
   `/model` and `/login` used to scroll the search line off the top, and with
@@ -1116,7 +1116,7 @@ release heading when a version is cut.
   at a time instead, so the search line stays at the top with the
   highlighted row and the keys under it, down to the smallest terminal. A
   search that matches nothing keeps what you typed on screen the same way
-  (`docs/view-flow.md`).
+  (`docs/ui/view-flow.md`).
 - **Replies render their markdown the way codex does, with no stray
   markers.** A heading wrapped in emphasis, like `## **Top 10 PHP
   Frameworks**`, now reads `## Top 10 PHP Frameworks`. Bullets show `•`
@@ -1131,13 +1131,13 @@ release heading when a version is cut.
   list closes up, and an item that wraps onto a second row gets a blank line
   before the next, while a quote, heading or table right under an item's
   text stays against it. `---` right after a line of text draws a rule
-  instead of showing the dashes (`docs/markdown.md`).
+  instead of showing the dashes (`docs/ui/markdown.md`).
 - **The live thinking block shows three lines, not five.** While a model
   thinks, the `● Thinking…` block above the input box now keeps only the
   newest three rows of its reasoning, so a long thought takes two fewer rows
   of the screen. Rows are counted as they appear on screen, so a line that
   wraps onto two rows uses two of them. The whole thought is still in Ctrl+O,
-  while it streams and after it settles (`docs/thinking-stream.md`).
+  while it streams and after it settles (`docs/ui/thinking-stream.md`).
 - **A failed command's cell no longer shows its exit code.** A `Bash(…)`
   call that failed used to open its output with an `Error: Exit code 1` row
   (or `Error: killed by signal`), so `false` showed that row over
@@ -1145,7 +1145,7 @@ release heading when a version is cut.
   already did for a command that succeeded, and the red bullet is what says
   it failed. The exit code still goes to the agent with the output, so it
   knows the command failed and with which code, and Ctrl+D still shows it
-  (`docs/tool-streaming.md`).
+  (`docs/ui/tool-streaming.md`).
 
 ### Fixed
 
@@ -1158,7 +1158,7 @@ release heading when a version is cut.
   pasteboard into a PNG whatever flavour the app that copied it chose. Cmd+V
   still does not work and cannot — the chord belongs to the terminal's own
   Paste menu — so the binding is Ctrl+V, and a terminal that does forward
-  Cmd+V now pastes instead of typing a stray `v` (`docs/image-paste.md`).
+  Cmd+V now pastes instead of typing a stray `v` (`docs/input/image-paste.md`).
 - **A pasted picture no longer carries its metadata to the model.** AppKit's
   coercion copies the pasteboard picture's tags along: a TIFF's
   ImageDescription, `Artist` and `Software` land in the PNG's `eXIf` chunk and
@@ -1168,7 +1168,7 @@ release heading when a version is cut.
   keeps only the chunks that draw the picture — its pixels copied byte for
   byte, never decoded — and drops the rest: `eXIf`, `iTXt`, `tEXt`, `zTXt`,
   the ICC profile and any chunk it does not recognise. The tool that reads a
-  file you name still sends it as it is (`docs/image-paste.md`).
+  file you name still sends it as it is (`docs/input/image-paste.md`).
 - **A macOS paste says why it cannot run, instead of failing obscurely.** A
   session that never entered the window server — a daemon, an `ssh` login — has
   no pasteboard to read, and macOS gates a terminal reading it behind
@@ -1176,15 +1176,15 @@ release heading when a version is cut.
   those it is and names the pane to switch on, rather than reporting a
   clipboard that cannot be opened. Either refusal keeps the way around it:
   save the picture and ask Alter Zero to read its path
-  (`docs/image-paste.md`).
+  (`docs/input/image-paste.md`).
 - **A paste that finds no picture says why.** `no image on the clipboard` now
   names the two shapes that look like an image and are not — a *file* copy,
   and a web page's selection — and the way around it: save the picture and ask
-  Alter Zero to read its path (`docs/image-paste.md`).
+  Alter Zero to read its path (`docs/input/image-paste.md`).
 - **`/skills` no longer says skills are off when none are installed.** With
   no skills found, the page told you to turn them on in `/settings`, where
   that row can't be switched on until a skill exists. It now shows only where
-  to add one (`docs/skills.md`).
+  to add one (`docs/tools/skills.md`).
 - **Bold-italic and escaped markers no longer leak `*` into a reply.**
   `***both***` renders bold italic instead of `*both*` in bold, a closing
   `***` closes both the bold and the italic it ends, and `\*literal\*` shows
@@ -1220,7 +1220,7 @@ release heading when a version is cut.
   `JINA_API_KEY` lifts that provider's limit and is sent only to it. The
   scripts need only Python 3, nothing to install, and are installed on first
   launch beside the skill, editable and switched off through `/skills` like
-  the other built-ins (`docs/skills.md`).
+  the other built-ins (`docs/tools/skills.md`).
 - **Cline as a provider.** Two ways in: an API key from
   [app.cline.bot/dashboard/account](https://app.cline.bot/dashboard/account)
   (`/login` → *Use an API key* → *Cline*) for the pay-per-use models, or
@@ -1230,7 +1230,7 @@ release heading when a version is cut.
   a model it adds shows up without an update. Each model's context window,
   image input and thinking levels come from Cline's API, so the footer gauges
   the context, auto-compaction knows when to run and Ctrl+T cycles the levels
-  (`docs/cline.md`).
+  (`docs/providers/cline.md`).
 
 ### Fixed
 
@@ -1242,7 +1242,7 @@ release heading when a version is cut.
   the model had last been shown, and could catch a frame half drawn, after
   the spinner had erased its line but before it drew the next glyph. The
   cell now keeps every line the program is still drawing, and reads the
-  output only in the pause between two frames (`docs/interactive-shell.md`).
+  output only in the pause between two frames (`docs/tools/interactive-shell.md`).
 - **A secret's value you type reaches the agent as its placeholder.** With
   `ROOT_PASSWORD` stored, a message saying "the password is password123"
   used to send the password itself to the model; it now says "the password
@@ -1253,7 +1253,7 @@ release heading when a version is cut.
   message to a subagent, a queued follow-up, an answer to the agent's
   question, the feedback on a refused tool call and a prompt given on the
   command line. A placeholder you type yourself is sent as written
-  (`docs/secrets.md`).
+  (`docs/state/secrets.md`).
 
 ## [0.13.0] - 2026-10-10
 
@@ -1274,13 +1274,13 @@ release heading when a version is cut.
   slows the app down. Nothing the agent starts sees `HERDR_PANE_ID` (its
   commands, your `!` commands, hooks, MCP servers), so another agent run
   inside it can't take over the pane, while herdr's own CLI keeps working
-  there. `ALTER_ZERO_HERDR=0` turns it off (`docs/herdr.md`).
+  there. `ALTER_ZERO_HERDR=0` turns it off (`docs/architecture/herdr.md`).
 - **A built-in `yt-dlp` skill guides media downloads without bundling a downloader.**
   On first launch its editable `SKILL.md` is seeded beside the other built-ins;
   the agent can load it on demand for videos, playlists, captions and audio.
   It checks installed CLI tools and available formats, defaults to one video
   unless a playlist was requested, asks before using browser cookies and
-  verifies output files before reporting success (`docs/skills.md`).
+  verifies output files before reporting success (`docs/tools/skills.md`).
 - **Install with npm.** `npm install -g @linuztx/alter-zero` installs the
   same prebuilt binary as the one-line installer, on Linux (x86_64, arm64)
   and macOS (Intel, Apple silicon). npm downloads only the package built for
@@ -1290,7 +1290,7 @@ release heading when a version is cut.
   stays running beside it. On such an install the update notice names
   `npm install -g @linuztx/alter-zero@latest` (or pnpm's, Bun's or Yarn's
   command), and `alter-zero update` points there instead of replacing files
-  npm manages (`docs/npm.md`).
+  npm manages (`docs/ops/npm.md`).
 - **Hooks gain three of Claude Code's events: `PostToolUseFailure`,
   `StopFailure` and `Notification`.** A tool call that runs and fails now
   fires `PostToolUseFailure`, with the error, and the hook can add context
@@ -1304,7 +1304,7 @@ release heading when a version is cut.
   holds the prompt up, and it never lands out of order: notifications run
   one at a time in the order their prompts showed, and the call's next hook
   waits for its notification. Hook scripts written for Claude Code that use
-  these events now work here unchanged (`docs/hooks.md`).
+  these events now work here unchanged (`docs/tools/hooks.md`).
 
 ### Changed
 
@@ -1315,7 +1315,7 @@ release heading when a version is cut.
   bring the conversation back. `/clear` moves it on, `/resume` adopts the
   resumed conversation's id, and `transcript_path` follows. Payloads also
   carry Claude Code's `scratchpad_dir`, which is how a hook finds the
-  session's scratchpad and task output (`docs/hooks.md`).
+  session's scratchpad and task output (`docs/tools/hooks.md`).
 - **`SessionStart` hooks run as the session opens, in the background.** They
   used to wait for your first message. As in Claude Code, they now start at
   launch, after `/clear` and after `/resume`: you can type at once, and the
@@ -1324,7 +1324,7 @@ release heading when a version is cut.
   dropped. `SessionEnd` now fires when `/resume` switches conversations
   too (reason `resume`), and at quit it fires after the running turn and
   agents have stopped, so none of their hooks run after it
-  (`docs/hooks.md`).
+  (`docs/tools/hooks.md`).
 
 ### Fixed
 
@@ -1332,25 +1332,25 @@ release heading when a version is cut.
   agent.** The process inherited the hook's output pipes, and the app
   waited for them to close, holding up the tool call, the turn or the
   `/clear` for as long as that process lived. Once a hook exits, its output
-  is now read for at most one more second (`docs/hooks.md`).
+  is now read for at most one more second (`docs/tools/hooks.md`).
 - **Stopping a subagent takes its permission prompt off the screen.** A
   prompt the stopped agent was waiting on stayed up with nobody left to act
   on the answer. Its prompts are now withdrawn, and the next one waiting,
-  if any, opens in its place (`docs/permissions.md`).
+  if any, opens in its place (`docs/state/permissions.md`).
 - **`SessionEnd` no longer fires for a conversation that never started.**
   The offline demo runs no hooks and so never fired `SessionStart`, yet it
   fired `SessionEnd` on `/clear` and at quit, so a session-logging hook saw
   an end with no start. A conversation's end now fires only if its start
-  did (`docs/hooks.md`).
+  did (`docs/tools/hooks.md`).
 - **`UserPromptSubmit` no longer skips your prompt after a background
   follow-up.** A follow-up turn started while hooks were off, or on the
   offline demo, left behind the mark that tells the hook to skip a prompt
   the app wrote itself, and the hook then skipped your next real prompt.
-  Your own turns now clear that mark (`docs/hooks.md`).
+  Your own turns now clear that mark (`docs/tools/hooks.md`).
 - **A conversation's first `UserPromptSubmit` names its transcript.** Its
   payload reported `transcript_path` as null, because the conversation's
   file was created only after the hook ran. The file now exists before the
-  turn starts (`docs/hooks.md`).
+  turn starts (`docs/tools/hooks.md`).
 - **Pictures in a herdr pane are drawn as real images.** herdr's panes say
   `xterm-256color` and nothing about graphics, so every picture there fell
   back to coarse half-block characters, though herdr's terminal draws kitty
@@ -1363,7 +1363,7 @@ release heading when a version is cut.
   `ALTER_ZERO_IMAGE_PROTOCOL` is set, and anything typed while Alter Zero
   starts still reaches the prompt. GNU screen and zellij are now recognised
   as multiplexers the way tmux is, so an outer terminal's variables no
-  longer choose the protocol inside them (`docs/images.md`).
+  longer choose the protocol inside them (`docs/ui/images.md`).
 - **A background notice now sits where the model actually read it.** A
   background command that finished while the model was writing its next tool
   call reached the model only after that call's result, but the transcript
@@ -1374,7 +1374,7 @@ release heading when a version is cut.
   agent now announces each notice as it reads it, and the notice is recorded
   at exactly that point. One it never read is recorded at the end of the turn
   and reaches the model in the next one. Background agents' completion
-  notices follow the same rule (`docs/background.md`).
+  notices follow the same rule (`docs/tools/background.md`).
 - **A call into a session that has just ended reports how it ended.** When a
   session ended on its own while the model was writing a `bashsend`,
   `bashwait` or `bashkill` to it, the call answered that the session's final
@@ -1385,7 +1385,7 @@ release heading when a version is cut.
   inside a subagent, whose shells report to its own queue. A call that looks
   at a running session likewise withdraws that session's unread "waiting for
   input" notice, which would otherwise arrive after the answer it asks for
-  (`docs/bash-tools.md`).
+  (`docs/tools/bash-tools.md`).
 - **A session's notices belong to the conversation that reads them.** A
   subagent's call naming a session of the main conversation no longer takes
   back the main conversation's notice about it, so the main conversation
@@ -1393,12 +1393,12 @@ release heading when a version is cut.
   that names a session another conversation reads is told how it ended and
   whose it is, instead of "already reported or never existed". A subagent
   that looks at its own session withdraws the stale "waiting for input"
-  notice in its queue as well (`docs/bash-tools.md`).
+  notice in its queue as well (`docs/tools/bash-tools.md`).
 - **The offline demo hands over queued messages and notices where a real
   model would read them.** It used to deliver them right after the first call
   of a parallel batch, inside a round the model never saw them in. It now
   waits for the whole batch to resolve, as the agent loop does
-  (`docs/queue.md`).
+  (`docs/input/queue.md`).
 - **The words an edit changed are readable on their highlight.** In an
   `Edit` cell, the characters that changed sit on a brighter mark, and in
   most themes a comment's grey was as bright as that mark. When the model
@@ -1410,7 +1410,7 @@ release heading when a version is cut.
   far enough, so a changed comment still looks like a comment. The mark
   colours themselves are unchanged, and so is the rest of the line. This
   applies to the inline cell, the Ctrl+O transcript and the permission
-  prompt's preview alike (`docs/inline-diff.md`).
+  prompt's preview alike (`docs/ui/inline-diff.md`).
 - **The one-line installer runs on macOS under a UTF-8 locale.** `curl … |
   sh` hands the script to `/bin/sh`, which on macOS is bash 3.2 — and in a
   UTF-8 locale that bash reads the byte after a bare `$name` as part of the
@@ -1419,7 +1419,7 @@ release heading when a version is cut.
   anything was downloaded (a C locale, and dash, bash 4 and up and busybox,
   read it as written). The three expansions now end at a brace, and the
   release tooling's selftest fails if a bare `$name` ever touches a
-  non-ASCII byte again (`docs/release.md`).
+  non-ASCII byte again (`docs/ops/release.md`).
 
 ## [0.12.0] - 2026-10-05
 
@@ -1439,7 +1439,7 @@ release heading when a version is cut.
   already handed the main agent is not followed by a notice repeating it,
   and finished agents stay resumable — up to the 16 most recent — after their
   roster rows are gone. The id also shows on the agent's Ctrl+O cell
-  (`docs/agent-tools.md`).
+  (`docs/agents/agent-tools.md`).
 - **The main agent knows when you talked to a subagent yourself.** A
   message you type into an agent's session view now reaches the main agent
   as yours: the notice of the agent's answer — or a waiting agent's result —
@@ -1447,7 +1447,7 @@ release heading when a version is cut.
   agent, and `agentoutput` quotes it where it arrived. Before, the answer came
   back looking like part of the main agent's own conversation, and a chat
   with an agent that had finished in the foreground never reached the main
-  agent at all (`docs/agent-tools.md`).
+  agent at all (`docs/agents/agent-tools.md`).
 
 ### Fixed
 
@@ -1461,7 +1461,7 @@ release heading when a version is cut.
   stay on screen and the finished ones are what folds away, the window never
   hides a row it has room for, and the footer counts every hidden row. A command whose newest output is at its end —
   every ordinary command — shows exactly the tail it always did; the
-  subagent session view follows the same rule (`docs/tool-streaming.md`).
+  subagent session view follows the same rule (`docs/ui/tool-streaming.md`).
 
 ## [0.11.0] - 2026-10-03
 
@@ -1477,7 +1477,7 @@ release heading when a version is cut.
   message that never got through comes back to the composer. A provider that
   answers badly keeps the bounded `/settings` **Error retry**, which at `0`
   turns the wait off too; a local Ollama that is not running still says to
-  start it (`docs/offline.md`).
+  start it (`docs/providers/offline.md`).
 
 - **A question nobody answers no longer stalls the agent.** When the agent
   asks you something and no key is pressed for ten minutes, the question
@@ -1488,7 +1488,7 @@ release heading when a version is cut.
   in its last minute. Answers you gave before stepping
   away still count. Set the wait — 5 minutes to an hour, or never — with the
   new `/settings` **Ask timeout** row, or `ALTER_ZERO_ASK_TIMEOUT_SECS`
-  (`docs/ask.md`).
+  (`docs/tools/ask.md`).
 
 - The Kali container includes Node.js and npm by default and declares TCP
   ports 22, 80, 3000, 5000, 8000 and 9000–9009 alongside 8080/8888. Host
@@ -1501,7 +1501,7 @@ release heading when a version is cut.
   runs the test suite. Both cover x86_64 and aarch64, and each replaces the
   other, so only one is installed at a time. Update them through your AUR
   helper (`yay -Syu`, `paru -Syu`) rather than `alter-zero update`, which
-  reinstalls over the running binary's own directory (`docs/aur.md`).
+  reinstalls over the running binary's own directory (`docs/ops/aur.md`).
 
 ### Changed
 
@@ -1526,7 +1526,7 @@ release heading when a version is cut.
   `skill-creator`, it is installed on first launch, preserves local edits and
   can be disabled through `/skills`; custom skill-directory overrides remain
   untouched. Loading the skill itself makes no network request
-  (`docs/skills.md`).
+  (`docs/tools/skills.md`).
 
 - **The agent knows which user it runs as.** The environment block in its
   system prompt gains a `User` line — `User root`, `User linuztx` — so it
@@ -1534,7 +1534,7 @@ release heading when a version is cut.
   the user id, never by a name: a root account under another name reads
   `toor (root)`, a leftover `$USER=root` cannot make an ordinary user look
   like root, and an account with no name reads `uid 1000`. Subagents carry
-  the same line (`docs/environment.md`).
+  the same line (`docs/architecture/environment.md`).
 
 ### Changed
 
@@ -1553,14 +1553,14 @@ release heading when a version is cut.
   its own copy. Compaction, clearing, or backtracking permits a fresh load
   when the original instructions are gone. Failed loads remain retryable,
   disabled skills remain unavailable, and name aliases, hook-rewritten calls,
-  and secret-masked directory headers are handled (`docs/skills.md`).
+  and secret-masked directory headers are handled (`docs/tools/skills.md`).
 - **Each account gets its own temp directory where `/proc` is missing.**
   The session's scratchpad and background output live under
   `alter-zero-{uid}`, and the uid was read from `/proc/self`, which answered
   0 wherever `/proc` is absent: on a Linux sandbox without it every account
   shared `/tmp/alter-zero-0`, where a second account could not create its
   session. The uid now comes from the kernel's effective uid on every
-  platform (`docs/background.md`).
+  platform (`docs/tools/background.md`).
 
 ## [0.9.0] - 2026-09-29
 
@@ -1580,7 +1580,7 @@ release heading when a version is cut.
   config file; and auto mode's reviewer is told what a placeholder is, so
   using one for its own service is not read as credential theft. The page
   masks every value, `secrets.json` is written owner-only, and a `!` command
-  expands, refuses and redacts the same way (`docs/secrets.md`).
+  expands, refuses and redacts the same way (`docs/state/secrets.md`).
 
 ### Changed
 
@@ -1588,7 +1588,7 @@ release heading when a version is cut.
   `/trust`, `/export`, the ↓ shell manager and the `/login` pages are now
   bold and washed in the active theme's banner gradient, as `/donate` and
   `/secrets` already were, instead of one flat colour — so they change with
-  `/theme` the way the banner does (`docs/theme.md`).
+  `/theme` the way the banner does (`docs/ui/theme.md`).
 
 ### Fixed
 
@@ -1600,7 +1600,7 @@ release heading when a version is cut.
   output, and a percentage in a question alone is not a progress bar.
   This covers the paused first 0% frame and rewritten repository status
   lines without treating every hidden cursor as a running command
-  (`docs/interactive-shell.md`). Those displays also keep a quiet launch
+  (`docs/tools/interactive-shell.md`). Those displays also keep a quiet launch
   or `bashsend` waiting to its exit, next input signal or wait budget.
 - **A submitted line still running in Node's REPL no longer looks like a
   fresh prompt.** The REPL keeps its terminal ready for keys while a
@@ -1616,7 +1616,7 @@ release heading when a version is cut.
   `=`, and unknown options and application modes remain excluded.
   A silent asynchronous stdin listener can still report `Running`; visible
   questions and kernel-observed reads retain their independent signals
-  (`docs/interactive-shell.md`).
+  (`docs/tools/interactive-shell.md`).
 - **A password check no longer looks like another password request.**
   A line break or terminal control printed after `bashsend` submits a
   password could revive the old prompt or the terminal's echo-off signal
@@ -1653,7 +1653,7 @@ release heading when a version is cut.
   build run under `script`, and anything else that waits on a child process
   doing the work. A program waiting on the terminal itself is never counted
   that way, so a shell or a REPL at its prompt is still seen there while a
-  job it started computes (`docs/interactive-shell.md`).
+  job it started computes (`docs/tools/interactive-shell.md`).
 - **A line left open over a program waiting on a child is no longer taken
   for a question.** `Building... ` printed without a newline, then a quiet
   wait on a child process, came back `waiting for input` half a second in.
@@ -1674,7 +1674,7 @@ release heading when a version is cut.
   and the walk carries on across sessions, so every tip comes round before
   any repeats. The row never lands in scrollback and gives way to the task
   checklist. Turn it off with `/settings` → **Show tips** (remembered per
-  user, in `tips.json`) or `ALTER_ZERO_TIPS=0` for a run (`docs/tips.md`).
+  user, in `tips.json`) or `ALTER_ZERO_TIPS=0` for a run (`docs/ui/tips.md`).
 
 ### Changed
 
@@ -1688,11 +1688,11 @@ release heading when a version is cut.
   an unrelated `Done`, `Finished` or `Wrapped up` picked on its own. A
   subagent's session view follows the same rule, and the `/spinner`
   picker's preview line walks the verbs the same way. Resumed conversations
-  keep the summaries they were recorded with (`docs/status-indicator.md`).
+  keep the summaries they were recorded with (`docs/ui/status-indicator.md`).
 - **The background manager's page titles match the other menus.** The ↓
   band's `Background` and `Shell details` titles are now the accent colour
   (cyan by default), bold, like the titles in `/hooks` and `/mcp`
-  (`docs/background.md`).
+  (`docs/tools/background.md`).
 
 ### Fixed
 
@@ -1713,12 +1713,12 @@ release heading when a version is cut.
   kernel what an event loop is waiting on — every Go, Node and Python
   asyncio program idles the same way — so one waiting on the network, even
   with a prompt-shaped `Fetching... ` left on screen, is no longer taken for
-  a question either (`docs/interactive-shell.md`).
+  a question either (`docs/tools/interactive-shell.md`).
 - **The Ctrl+B hint under a `bashwait` says what the key does there.** A
   `bashwait` or `bashsend` cell offered `(ctrl+b to run in background)` for
   a command already running in the background; pressing the key only ends
   the wait, so the hint now reads `(ctrl+b to stop waiting)`. A `bashkill`,
-  which the key does not affect, shows no hint (`docs/background.md`).
+  which the key does not affect, shows no hint (`docs/tools/background.md`).
 
 ## [0.7.0] - 2026-09-26
 
@@ -1799,7 +1799,7 @@ release heading when a version is cut.
   started it, or approved once for the whole session — and auto mode's
   classifier reviews it; waiting on a session, interrupting it or ending it
   never asks. The agent never guesses a password it was not given: it asks
-  you (`docs/bash-tools.md`, `docs/interactive-shell.md`).
+  you (`docs/tools/bash-tools.md`, `docs/tools/interactive-shell.md`).
 
 ### Changed
 
@@ -1821,7 +1821,7 @@ release heading when a version is cut.
   plain command kept only its first 64 KB and said nothing of the rest.
   `bashkill` asks a command to stop (`Ctrl+C`, then `SIGTERM`) before it is
   killed, so a dev server or `docker compose up` shuts down cleanly
-  (`docs/bash-tools.md`).
+  (`docs/tools/bash-tools.md`).
 - **Progress bars in command output read as one line.** A `bash` command's
   output, a background shell's and a `!` command's are now read the
   way a terminal shows them: a `curl`, `tqdm`, `ffmpeg` or `rsync` progress
@@ -1829,7 +1829,7 @@ release heading when a version is cut.
   of every frame it drew run together on one line, and colour escapes are
   gone; tabs and trailing spaces are kept. A running command's cell shows the
   bar moving in place. A background shell's `.output` file still holds the
-  output exactly as written (`docs/interactive-shell.md`).
+  output exactly as written (`docs/tools/interactive-shell.md`).
 - **Error toasts use a softer red.** A failure toast — `Copy failed: …`,
   `Can't switch to …`, a config file that would not parse — was painted in
   the theme's full error red, the ink of the error bullet and a failed tool
@@ -1839,7 +1839,7 @@ release heading when a version is cut.
   (`#F38BA8` becomes `#CA89A4` on the default Catppuccin Mocha). The
   `ansi` theme keeps the terminal's own red, which has nothing to mix. The
   `/skills` picker's session-off note uses the same colour, so it is softer
-  too (`docs/toast.md`).
+  too (`docs/ui/toast.md`).
 
 ### Fixed
 
@@ -1855,20 +1855,20 @@ release heading when a version is cut.
   user`. The same goes for a backend error mid-batch and for a subagent
   stopped mid-batch. This also fixes interrupted cells not reaching the
   screen at all: after Esc on a running tool the pane showed the notice
-  alone until something redrew it (`docs/interrupt.md`,
-  `docs/parallel-tools.md`).
+  alone until something redrew it (`docs/input/interrupt.md`,
+  `docs/tools/parallel-tools.md`).
 - **"Don't ask again" on an MCP tool prompt no longer claims to switch to
   edit mode.** Choosing it stored the tool's rule as it should, but the
   footer then read `edit` and a `Mode: edit — file edits run without asking`
   toast appeared, though file edits still asked. The mode is left alone now,
   and the toast names the rule: `Won't ask again for mcp__… in this project`
-  (`docs/permissions.md`).
+  (`docs/state/permissions.md`).
 - **`/copy` with nothing to copy is no longer shown as an error.** `No
   agent response to copy` was red, while `Nothing to export` and `Nothing to
   compact` — the same "nothing to act on yet" case for `/export` and
   `/compact` — were dim. Nothing has failed, so it is now a plain info toast,
   raised the same way as those two. A clipboard write that really fails is
-  still an error (`docs/toast.md`, `docs/copy.md`).
+  still an error (`docs/ui/toast.md`, `docs/ui/copy.md`).
 - **Signing in to Ollama Cloud no longer configures the local Ollama
   provider too.** Both read their key from `OLLAMA_API_KEY`, and a key
   resolving is one of the things that makes a provider configured, so a key
@@ -1882,7 +1882,7 @@ release heading when a version is cut.
   and the server you run reads `OLLAMA_HOST_API_KEY`, the optional bearer
   for a proxy in front of it. If you had set `OLLAMA_API_KEY` for your own
   server rather than for the cloud, rename it; an unauthorized reply now
-  names both variables (`docs/ollama.md`).
+  names both variables (`docs/providers/ollama.md`).
 
 ## [0.6.0] - 2026-09-22
 
@@ -1898,7 +1898,7 @@ release heading when a version is cut.
   `conversation-YYYY-MM-DD-HHMMSS.txt` in the working directory, never over
   a file already there. Inside a subagent's session view it exports that
   agent's transcript; an empty conversation is a `Nothing to export` toast
-  rather than an empty file (`docs/export.md`, `scripts/smoke.sh` Phase
+  rather than an empty file (`docs/ui/export.md`, `scripts/smoke.sh` Phase
   122).
 - **A slow-stream stress rig for the offline backend.**
   `ALTER_ZERO_CHUNK_DELAY_MS` sets the dummy's pause after every streamed
@@ -1931,7 +1931,7 @@ release heading when a version is cut.
   line, which a model streaming a few tokens a second made a blink about
   once a second. The region is repainted in place now and only the rows the
   previous region left below it are cleared, so no frame ever holds a
-  boxless state, bracketed or not (`docs/slow-stream.md`).
+  boxless state, bracketed or not (`docs/ui/slow-stream.md`).
 - **The input box no longer bounces at a streamed code fence.** A closing
   fence left the streaming strip with nothing to preview, so the strip
   dropped its preview row and gap and the box hopped up two rows until the
@@ -1971,8 +1971,8 @@ release heading when a version is cut.
   ChatGPT token's cached life comes from the grant's own `expires_in`
   duration rather than the bearer's absolute `exp`, so a clock running ahead
   cannot make every request re-mint (and rotate) the token.
-  (`docs/prompt-caching.md`, `docs/chatgpt.md`, `docs/claude.md`,
-  `docs/copilot.md`)
+  (`docs/providers/prompt-caching.md`, `docs/providers/chatgpt.md`, `docs/providers/claude.md`,
+  `docs/providers/copilot.md`)
 - **The cached prefix now survives `/resume`, a backend rebuild and a
   restart.** Every tool round's records keep the provider's own call ids and
   the batch they arrived in, plus each call's place in that batch, so the
@@ -1988,7 +1988,7 @@ release heading when a version is cut.
   rotates the token writes it back only while the store still holds this
   session's own token — never over one a newer sign-in stored meanwhile,
   which used to force the re-login the sign-in had just done at the next
-  launch. (`docs/prompt-caching.md`, `docs/context.md`, `docs/chatgpt.md`)
+  launch. (`docs/providers/prompt-caching.md`, `docs/architecture/context.md`, `docs/providers/chatgpt.md`)
 - **`install.sh` reads the latest release off the redirect with wget too.**
   On a machine with wget and no curl the installer asked GitHub's API for
   the newest tag instead — rate-limited per address, and blind to
@@ -1997,7 +1997,7 @@ release heading when a version is cut.
   then found no such asset where it had been told to look. Both fetchers
   now read the tag off `/releases/latest`'s final `Location`, as
   `docker/build.sh` already did, and the selftest drives the installer
-  under a PATH with no curl on it. (`docs/release.md`)
+  under a PATH with no curl on it. (`docs/ops/release.md`)
 
 ### Changed
 
@@ -2007,13 +2007,13 @@ release heading when a version is cut.
   composer feeds a subagent rather than the main conversation, and the
   easiest one to pass over. It now rides the rule on the active theme's
   accent under the on-accent ink, the ↓-focused footer chip's dress, so it
-  follows `/theme` like everything else (`docs/agent-tool.md`).
+  follows `/theme` like everything else (`docs/agents/agent-tool.md`).
 
 ## [0.5.0] - 2026-09-20
 
 ### Added
 
-- **A headless Kali Linux container** (`docker/README.md`, `docs/docker.md`).
+- **A headless Kali Linux container** (`docker/README.md`, `docs/ops/docker.md`).
   `docker/build.sh` builds a small Kali Rolling image around the latest
   published release — downloaded and SHA-256-verified by `install.sh`, never
   compiled, so a build is about a minute — and `docker/build.sh ~/projects/site`
@@ -2057,7 +2057,7 @@ release heading when a version is cut.
 ### Changed
 
 - **Image paste says why it cannot work where there is no display**
-  (`docs/image-paste.md`). In a container or an SSH session Ctrl+V has no
+  (`docs/input/image-paste.md`). In a container or an SSH session Ctrl+V has no
   desktop clipboard to read, and it used to answer with whatever a probe for
   an X server ran into, sometimes after a pause. It now answers at once:
   `no desktop clipboard in this session (neither DISPLAY nor WAYLAND_DISPLAY
@@ -2066,7 +2066,7 @@ release heading when a version is cut.
   but unreachable keeps its original cause and gains the same advice.
 
 - **The running `Bash` cell shows its own clock and its timeout, whatever
-  its output** (`docs/tool-streaming.md`). The live cell's footer reads
+  its output** (`docs/ui/tool-streaming.md`). The live cell's footer reads
   `+18 lines (22s · timeout 1m 50s)`: how long the command has run beside
   the timeout it runs under — the model's own `timeout`, the tool's 2m
   default when it named none — so a long command says how much of its
@@ -2077,7 +2077,7 @@ release heading when a version is cut.
   it takes. The Ctrl+B hint follows as before; the `!` shell's
   `⎿ Running… (Ns)` row is unchanged, a `!` command having no timeout.
 - **A `!` shell command shows its whole output inline**
-  (`docs/shell-command.md`). The committed cell used to fold after three
+  (`docs/input/shell-command.md`). The committed cell used to fold after three
   rows behind `… +N lines (ctrl+o to expand)`, so reading a `! git status`
   or a `! ls -la` meant opening the transcript. Every line shows in the
   conversation now — blank lines kept, long lines word-wrapped, the
@@ -2087,7 +2087,7 @@ release heading when a version is cut.
   cut is visible where the output is read. The model's `Bash` cell keeps
   Claude Code's fold.
 - **A running tool's bullet blinks instead of breathing**
-  (`docs/tool-pulse.md`). The `●` on a `Bash`, `Read`, `Write` or `Edit`
+  (`docs/ui/tool-pulse.md`). The `●` on a `Bash`, `Read`, `Write` or `Edit`
   cell that is still executing used to ease between two greys once a
   second. It is now Claude Code's running dot: the one resting grey, shown
   for half a second and hidden for the next, the header text holding its
@@ -2103,7 +2103,7 @@ release heading when a version is cut.
 
 ### Added
 
-- **Full-screen Git change review with `/diff`** (`docs/diff.md`). Review
+- **Full-screen Git change review with `/diff`** (`docs/ui/diff.md`). Review
   staged, unstaged, and untracked changes in a searchable file browser beside
   the selected file's patch. A partially staged file appears separately for
   the index and working tree, so later edits do not hide staged work. The
@@ -2121,7 +2121,7 @@ release heading when a version is cut.
 
 ### Added
 
-- **Device code sign-in for ChatGPT Codex** (`docs/chatgpt.md`). A machine
+- **Device code sign-in for ChatGPT Codex** (`docs/providers/chatgpt.md`). A machine
   with no browser — an SSH session, a container — could not sign in to the
   ChatGPT subscription, since its only flow handed the user a link a browser
   had to bring back to a local port. Enter on the `ChatGPT Codex` row in
@@ -2139,7 +2139,7 @@ release heading when a version is cut.
 ### Changed
 
 - **Every speed tier a model lists is a command of its own**
-  (`docs/fast-mode.md`). `/fast` was a static palette row that cycled
+  (`docs/providers/fast-mode.md`). `/fast` was a static palette row that cycled
   standard → every listed tier → standard, and answered `does not support
   fast mode` on a model listing none. The palette now builds one command
   per tier out of the model's own `service_tiers` — `/fast`, `/ultrafast`,
@@ -2158,7 +2158,7 @@ release heading when a version is cut.
   and its token variable `CHATGPT_CODEX_REFRESH_TOKEN`** (they were
   `openai_chatgpt` and `OPENAI_CHATGPT_REFRESH_TOKEN`): it is the ChatGPT
   seat reached the way Codex reaches it, and the old spellings read as a
-  second OpenAI API-key provider (`docs/chatgpt.md`). Nothing needs signing
+  second OpenAI API-key provider (`docs/providers/chatgpt.md`). Nothing needs signing
   in or choosing again — a token stored under the old variable still signs
   in until the next rotation writes it back under the new one, a
   `config.json` selection or a rollout's `model` record naming the old id
@@ -2177,14 +2177,14 @@ release heading when a version is cut.
   the entry encoded before the change. An encoding now remembers the file's
   size and mtime it was made from — the two facts the upload caches already
   key on — and a file that no longer matches is encoded afresh
-  (`docs/images.md`, *A file rewritten in place*; `smoke.sh` Phase 107d).
+  (`docs/ui/images.md`, *A file rewritten in place*; `smoke.sh` Phase 107d).
 
 ## [0.2.0] - 2026-09-16
 
 ### Added
 
 - **Fast mode for ChatGPT models** — codex's `/fast`, ported
-  (`docs/fast-mode.md`). A model whose ChatGPT listing names a speed tier
+  (`docs/providers/fast-mode.md`). A model whose ChatGPT listing names a speed tier
   (every model on a signed-in account today: `Fast — 1.5x speed, increased
   usage`, `2x` on `gpt-6-astra`) can be switched to priority processing with
   `/fast`: the request carries `service_tier: "priority"` beside codex's
@@ -2213,7 +2213,7 @@ release heading when a version is cut.
   recorded model whose provider has no key on this machine is reported with
   a `Can't resume on …` toast rather than silently swapped. The record
   carries the model's speed tier too, so a conversation switched to `/fast`
-  comes back on it (`docs/session-model.md`).
+  comes back on it (`docs/state/session-model.md`).
 
 ## [0.1.2] - 2026-09-15
 

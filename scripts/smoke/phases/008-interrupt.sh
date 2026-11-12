@@ -8,7 +8,7 @@ smoke_begin
 # Mid-stream Esc must stop the generation promptly: the partial reply stays on
 # screen, the red "Conversation interrupted" notice commits, the live status
 # strip clears, and the turn's receipt — the summary a finished turn ends on,
-# "Worked for Ns · ≈N tokens" — commits UNDER the notice (docs/interrupt.md,
+# "Worked for Ns · ≈N tokens" — commits UNDER the notice (docs/input/interrupt.md,
 # "The receipt an interrupted turn keeps"). The dummy reports no usage, so the
 # whole tally is the tokenizer's and the total wears the `≈` mark. The app
 # keeps running — a follow-up message must stream and finish normally, its

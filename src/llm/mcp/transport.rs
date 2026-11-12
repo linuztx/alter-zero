@@ -1,4 +1,4 @@
-//! The three MCP transports (`docs/mcp.md`) behind one blocking
+//! The three MCP transports (`docs/tools/mcp.md`) behind one blocking
 //! `request`/`notify` surface — boundary code, verified against in-process
 //! fixtures (a scripted `sh` stdio server, `std::net::TcpListener` HTTP
 //! servers) so the suite needs no network.
@@ -122,7 +122,7 @@ impl Transport {
     }
 
     /// Re-arm the bearer a remote transport sends — the mid-session token
-    /// refresh seam (`docs/mcp.md`): a rotated access token reaches the next
+    /// refresh seam (`docs/tools/mcp.md`): a rotated access token reaches the next
     /// request without a reconnect. A stdio transport has no auth story.
     pub fn set_bearer(&mut self, bearer: Option<String>) {
         match self {
@@ -201,7 +201,7 @@ impl Transport {
     /// wherever this transport reads the server — and, when the server
     /// promised them (`subscribe`, its `tools.listChanged`), open what it
     /// sends them on: a modern stdio server's `subscriptions/listen`, a
-    /// streamable-HTTP server's long-lived stream (`docs/mcp.md`).
+    /// streamable-HTTP server's long-lived stream (`docs/tools/mcp.md`).
     pub fn watch_changes(&mut self, sink: ChangeSink, subscribe: bool) {
         match self {
             Self::Stdio(t) => t.watch_changes(sink, subscribe),
@@ -250,7 +250,7 @@ fn wait_channel<T>(
 // stdio
 
 /// Who hears a server's change notifications — the manager, which lists
-/// what changed again (`docs/mcp.md`). Called with the notification's
+/// what changed again (`docs/tools/mcp.md`). Called with the notification's
 /// method, on whichever thread read it: it must return at once.
 pub type ChangeSink = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -716,7 +716,7 @@ fn command_exists(
 /// What every tier's `Command` gets before a stdio server's launch: stdin
 /// piped (the shared detach default is `/dev/null`), the config's `env`
 /// over the session's — the herdr pane id already dropped by the tier
-/// (`docs/herdr.md`; a server can be an agent whose herdr hook would take
+/// (`docs/architecture/herdr.md`; a server can be an agent whose herdr hook would take
 /// the TUI's pane over), so only a config that sets it on purpose passes
 /// one — and `cwd`.
 fn stdio_configure(
@@ -1157,7 +1157,7 @@ impl HttpTransport {
 }
 
 /// The most one MCP message — a JSON body, one SSE line — may hold: 16 MiB,
-/// Claude Code's bound. Every network read is bounded (`docs/memory.md`), and
+/// Claude Code's bound. Every network read is bounded (`docs/architecture/memory.md`), and
 /// a server streaming without end must not grow this process without end.
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1187,7 +1187,7 @@ enum ListenRefused {
 }
 
 /// Hold a change stream open for as long as the transport lives, handing
-/// every notification on it to the endpoint's sink (`docs/mcp.md`): a
+/// every notification on it to the endpoint's sink (`docs/tools/mcp.md`): a
 /// modern server's `subscriptions/listen` response stream, an earlier one's
 /// GET stream. Reopened when it ends — a timeout, a server restart — with a
 /// growing pause, and given up when the server offers no stream or every
@@ -1841,7 +1841,7 @@ mod tests {
     #[test]
     fn a_stdio_server_never_inherits_the_herdr_pane() {
         // A server can be an agent of its own (`codex mcp-server`), whose
-        // herdr hook would take the TUI's pane over (`docs/herdr.md`).
+        // herdr hook would take the TUI's pane over (`docs/architecture/herdr.md`).
         let pane = std::ffi::OsStr::new(crate::herdr::PANE_ID_ENV);
         let command = configured(&BTreeMap::new());
         assert!(
@@ -2098,7 +2098,7 @@ sleep 5"#,
     }
 
     /// A stdio server is a process of its own session, with no controlling
-    /// terminal — the bug class `docs/tty-detach.md` fixed for shells: a
+    /// terminal — the bug class `docs/tools/tty-detach.md` fixed for shells: a
     /// server running `sudo` or an SSH prompt opened `/dev/tty` and read the
     /// keystrokes meant for the TUI.
     #[cfg(target_os = "linux")]

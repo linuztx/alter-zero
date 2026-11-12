@@ -5,7 +5,7 @@
 smoke_begin
 
 # a RESIZE while a permission prompt is open, then the answer
-# (docs/permissions.md). The resize purge-rebuilds the screen, reseating the
+# (docs/state/permissions.md). The resize purge-rebuilds the screen, reseating the
 # prompt below the rebuilt tail — a one-way move the plain collapse cannot
 # undo, so it used to strand the box above a band of blank rows (the
 # "newlines under the composer after a resized prompt" bug). The reflow notes

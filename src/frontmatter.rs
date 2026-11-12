@@ -1,6 +1,6 @@
 //! The `---`-delimited YAML frontmatter parse two features share: a
-//! `SKILL.md` (`docs/skills.md`) and an agent definition
-//! (`docs/subagents.md`) are both a small scalar block over a markdown body,
+//! `SKILL.md` (`docs/tools/skills.md`) and an agent definition
+//! (`docs/agents/subagents.md`) are both a small scalar block over a markdown body,
 //! and both must load a file authored for another tool without refusing it
 //! over a key we don't model.
 //!

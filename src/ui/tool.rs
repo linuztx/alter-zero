@@ -1,6 +1,6 @@
 //! Tool cells: the `● name(args)` header, the `⎿` output block, the numbered
 //! file-change rendering, and a running command's live tail.
-//! See `docs/tools.md` and `docs/tool-streaming.md`.
+//! See `docs/tools/tools.md` and `docs/ui/tool-streaming.md`.
 
 use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
@@ -10,11 +10,11 @@ use super::*;
 
 /// The bullet colour for a tool's lifecycle: dim waiting, grey running, green
 /// ok, red fail — and green for a call that resolved by moving to the
-/// background (the launch succeeded; see `docs/background.md`).
+/// background (the launch succeeded; see `docs/tools/background.md`).
 ///
 /// One colour per state, on every frame: a running bullet's animation is the
 /// **blink** ([`bullet_span`]), never a second colour, so this is all the
-/// colour a cell ever wears. See `docs/tool-pulse.md`.
+/// colour a cell ever wears. See `docs/ui/tool-pulse.md`.
 fn tool_status_color(status: ToolStatus) -> Color {
     match status {
         ToolStatus::Waiting => tool_waiting_color(),
@@ -34,7 +34,7 @@ fn tool_status_color(status: ToolStatus) -> Color {
 /// derives entirely from the boundary-supplied `elapsed`
 /// ([`App::set_pulse`](crate::app::App::set_pulse)), and the loop's 32 ms
 /// animation re-arm is what makes it move. Whole milliseconds, so the edge
-/// lands on the same frame however the clock is read. See `docs/tool-pulse.md`.
+/// lands on the same frame however the clock is read. See `docs/ui/tool-pulse.md`.
 pub(super) fn tool_pulse_visible(elapsed: Duration) -> bool {
     let period = TOOL_PULSE_PERIOD.as_millis().max(1);
     (elapsed.as_millis() % period) * 2 < period
@@ -43,7 +43,7 @@ pub(super) fn tool_pulse_visible(elapsed: Duration) -> bool {
 /// The `●` a cell header opens with, in `color` — or, on a frame the blink
 /// hides it, **blanks of the same width** in the same style, so the header
 /// text beside it keeps its column and the row's width never changes
-/// (`docs/tool-pulse.md`). `blink` is the live region's frame clock
+/// (`docs/ui/tool-pulse.md`). `blink` is the live region's frame clock
 /// (`App::pulse`) for a bullet that is animating — a **running** call's, and
 /// only in the strip; `None` renders it at rest, which is what every
 /// scrollback commit and the Ctrl+O transcript do, so a hidden frame can never
@@ -110,7 +110,7 @@ pub(super) fn tool_header_lines(
     // An MCP header wears its server capitalized (`Deepwiki - ask_question
     // (MCP)`) while the record keeps the configured spelling — the context
     // replay inverts `tool.name`, so the capitalization lives only at this
-    // render seam (`docs/mcp.md`). The same string feeds the width math
+    // render seam (`docs/tools/mcp.md`). The same string feeds the width math
     // below: `to_uppercase` can widen a non-ASCII first char, and the
     // painted row and the reserved indent must agree.
     let display = if crate::mcp::is_mcp_display_name(&tool.name) {
@@ -120,7 +120,7 @@ pub(super) fn tool_header_lines(
     };
     let name = || Span::styled(display.clone(), name_style);
     // An MCP call stores its **raw arguments JSON** (what makes the record
-    // replayable — `docs/mcp.md`); the header derives the pretty
+    // replayable — `docs/tools/mcp.md`); the header derives the pretty
     // `key: "value"` form at render time instead.
     let args = if crate::mcp::is_mcp_display_name(&tool.name) {
         crate::mcp::pretty_args(&tool.args)
@@ -132,7 +132,7 @@ pub(super) fn tool_header_lines(
     } else {
         // A file tool's summary **is** its path, and the header shows it the
         // way the session reads paths — relative under the cwd, `~`-relative
-        // under home, absolute elsewhere (`docs/tools.md` *Path display*).
+        // under home, absolute elsewhere (`docs/tools/tools.md` *Path display*).
         // The record keeps the model's absolute argument: this, like the MCP
         // capitalization above, lives only at the render seam.
         shown_args(&tool.name, &tool.args, paths)
@@ -143,7 +143,7 @@ pub(super) fn tool_header_lines(
     let args_style = Style::new()
         .fg(tool_args_color())
         .add_modifier(Modifier::BOLD);
-    // A file tool's path is also a **link to the file** (`docs/links.md`
+    // A file tool's path is also a **link to the file** (`docs/ui/links.md`
     // *The file tool header*): the shown text carries the file's absolute
     // `file://` target in the link carrier, so clicking any fragment of it —
     // however the rows below wrap or cut it — opens the whole file. Only the
@@ -167,7 +167,7 @@ pub(super) fn tool_header_lines(
     // terminal on indent and squeeze the arguments into a ragged column, so a
     // header wider than [`TOOL_HEADER_ALIGN_SHARE`] of the width falls back to
     // the bullet's own two columns and the args get the whole row
-    // (`docs/mcp.md`). The two rows then have **different** budgets — the first
+    // (`docs/tools/mcp.md`). The two rows then have **different** budgets — the first
     // is what is left beside `● {name}(`, the rest what is left beside the
     // indent — which is exactly [`wrap_output_hanging`].
     let aligned = cols(TOOL_BULLET) + cols(&display);
@@ -379,7 +379,7 @@ fn output_row(index: usize, text: String) -> Line<'static> {
 /// Is this a model **command tool** (`bash`) — rendered like the `!` shell cell
 /// (a multi-line `⎿` peek, its `Exit code: N` frame stripped for display) and
 /// **tailed** live while running? Other generic backend tools keep the single
-/// collapsed peek line. See [`COMMAND_TOOL_NAMES`] and `docs/tool-streaming.md`.
+/// collapsed peek line. See [`COMMAND_TOOL_NAMES`] and `docs/ui/tool-streaming.md`.
 pub(super) fn is_command_tool(tool: &ToolCall) -> bool {
     !tool.shell && COMMAND_TOOL_NAMES.contains(&tool.name.as_str())
 }
@@ -387,9 +387,9 @@ pub(super) fn is_command_tool(tool: &ToolCall) -> bool {
 /// The live hint that says what Ctrl+B does to this running call: a `bash`
 /// launch or a `!` command moves to the background, a call waiting on a
 /// session that already runs there — `bashwait`, `bashsend`, the legacy
-/// tool — or on an agent — `agentoutput` (`docs/agent-tools.md`) — stops
+/// tool — or on an agent — `agentoutput` (`docs/agents/agent-tools.md`) — stops
 /// waiting, and `bashkill`, which never answers the key, hints nothing
-/// (`docs/background.md`).
+/// (`docs/tools/background.md`).
 pub(super) fn ctrl_b_hint(tool: &ToolCall) -> Option<&'static str> {
     if tool.shell {
         return Some(TOOL_BACKGROUND_HINT);
@@ -405,7 +405,7 @@ pub(super) fn ctrl_b_hint(tool: &ToolCall) -> Option<&'static str> {
 }
 
 /// A call's `args` summary as the screen shows it: a file tool's path
-/// through the session's [`PathDisplay`] rule (`docs/tools.md` *Path
+/// through the session's [`PathDisplay`] rule (`docs/tools/tools.md` *Path
 /// display*), every other tool's — a `bash` command, an agent's prose, an
 /// MCP call's JSON — verbatim. The one place that says "a file tool's
 /// summary is a path", shared by the cell header, the agent tree's sticky
@@ -435,7 +435,7 @@ pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
 /// boundary-supplied `elapsed`, [`format_elapsed`]-humanized like the status
 /// line's timer (`1m 5s`, never a bare `65s`). Only shown live in
 /// [`render_live`]; the committed cell renders its output, not `Running…`.
-/// See `docs/shell-command.md`.
+/// See `docs/input/shell-command.md`.
 pub(super) fn shell_running_line(elapsed: Duration) -> Line<'static> {
     result_row(
         0,
@@ -473,13 +473,13 @@ fn split_display_lines(text: &str) -> Vec<String> {
 /// `output` as the cell **displays** it: the `Exit code: N` frame line is
 /// dropped whatever its code — `0`, a failure, `killed by signal` — so the
 /// cell reads like the real command output (the mock,
-/// `docs/tool-streaming.md`). The exit code is the model's: the raw frame
+/// `docs/ui/tool-streaming.md`). The exit code is the model's: the raw frame
 /// stays in `tool.output` for the context replay (`context::context_messages`,
 /// what Ctrl+D shows), and the bullet is what says a call failed. Only fires
 /// when the frame is present, so non-`bash` tools and old rollouts are
 /// untouched.
 fn command_display_output(output: &str) -> &str {
-    // A session still alive (`docs/interactive-shell.md`): its frame line is
+    // A session still alive (`docs/tools/interactive-shell.md`): its frame line is
     // the model's; the cell shows the body, and says where the session stands
     // on its own dim row ([`session_state_row`]).
     if let Some((_, body)) = session_frame(output) {
@@ -504,7 +504,7 @@ fn session_frame(output: &str) -> Option<(crate::pty::report::Frame<'_>, &str)> 
 /// The dim `⎿ Waiting for input · session {id}` corner closing a resolved
 /// command cell whose session is still alive — `Waiting for a password` at a
 /// prompt that hides what it reads, or `Stopped · session {id}` for one the
-/// call ended (`docs/interactive-shell.md`). A fresh corner, like
+/// call ended (`docs/tools/interactive-shell.md`). A fresh corner, like
 /// the classifier's provenance row: it is about the call, not output.
 fn session_state_row(tool: &ToolCall) -> Option<Line<'static>> {
     use crate::pty::report::{Frame, Waiting};
@@ -536,7 +536,7 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 }
 
 /// The lines a **settled** exec cell shows of its output — the `bash` tool
-/// and the `!` shell command, one cell shape (`docs/shell-command.md`) — on
+/// and the `!` shell command, one cell shape (`docs/input/shell-command.md`) — on
 /// the inline peek and in the Ctrl+O expansion alike, so the peek's `+N
 /// lines` hint counts exactly the rows the expansion adds. Display only, the
 /// record byte-exact: the `Exit code: N` frame dropped
@@ -545,7 +545,7 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 /// ([`prettify_json_lines`] — Claude Code's tool result does the same, which
 /// is why its `curl` of an API reads `{` / `"batchcomplete": "",` where a
 /// compact line read as a wall of braces), tabs expanded, and trailing blank
-/// lines dropped (`docs/long-lines.md`) — a formatter's closing newlines are
+/// lines dropped (`docs/ui/long-lines.md`) — a formatter's closing newlines are
 /// nothing to show and nothing to hide. A generic backend cell whose output
 /// is not the numbered file format shares it (the same result surface in
 /// Claude Code). The running tail ([`running_command_lines`]) deliberately
@@ -598,7 +598,7 @@ fn prettify_json_lines(text: &str) -> std::borrow::Cow<'_, str> {
 /// parse), a number the serializer would spell differently, an escape it
 /// would resolve, all stay verbatim. Prose, scalars and partial JSON are
 /// `None`. The parse is bounded by the caller's size cap and transient — a
-/// render's `Value`, dropped with the rows (`docs/memory.md`'s rule is about
+/// render's `Value`, dropped with the rows (`docs/architecture/memory.md`'s rule is about
 /// trees built to read a few fields of a body that is kept).
 fn pretty_json_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
@@ -619,7 +619,7 @@ fn pretty_json_line(line: &str) -> Option<String> {
 /// ([`format_elapsed`]-humanized, ticking) beside how long its call waits for
 /// it (`wait_ms`, [`format_timeout`]-humanized as a whole limit) — a wait, not
 /// a deadline: the command goes on as a session when it passes
-/// (`docs/bash-tools.md`, `docs/tool-streaming.md` *The clock row is always
+/// (`docs/tools/bash-tools.md`, `docs/ui/tool-streaming.md` *The clock row is always
 /// there*).
 fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
     format!(
@@ -636,7 +636,7 @@ fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
 /// [`LiveTail::anchor`]): the output's last row for every command whose
 /// newest output is at its end, and the bar still redrawing for a program
 /// that leaves finished rows below it, pacman's parallel downloads
-/// (`docs/tool-streaming.md` *The window follows what is still moving*) —
+/// (`docs/ui/tool-streaming.md` *The window follows what is still moving*) —
 /// then the **clock row** — `+{hidden} lines ({elapsed} · wait
 /// {limit})` when any display rows are fully hidden, above or below the
 /// window, the bare `({elapsed} · wait {limit})` when none are, and for a
@@ -648,7 +648,7 @@ fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
 /// ([`bash_wait_ms`](crate::llm::tools::bash_wait_ms) — the executor's
 /// default-and-clamp rule, so the cell names exactly what the call waits).
 /// This is Claude-Code's running-command look (the mock;
-/// `docs/tool-streaming.md`) with the wait beside the clock — the asymmetric twin of the finished
+/// `docs/ui/tool-streaming.md`) with the wait beside the clock — the asymmetric twin of the finished
 /// head peek in [`tool_lines`]. The `elapsed` is boundary-supplied (like the
 /// shell running row and the status timer), so this is drawn from
 /// [`preview_tool_lines`] where `App` is in hand.
@@ -664,7 +664,7 @@ fn command_clock_clause(elapsed: Duration, wait_ms: u64) -> String {
 /// Two clocks ride in: `elapsed` is how long the command has run (the clock
 /// row's first number), `pulse` is the frame phase its bullet blinks at.
 /// Live-only by construction — only the strip calls this — so the blink is
-/// unconditional here (`docs/tool-pulse.md`).
+/// unconditional here (`docs/ui/tool-pulse.md`).
 pub(super) fn running_command_lines(
     tool: &ToolCall,
     live: &LiveTail,
@@ -675,12 +675,12 @@ pub(super) fn running_command_lines(
 ) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
     // The wait the call runs under — a session call's own, not `bash`'s
-    // (`docs/bash-tools.md`). A companion's display name lowercases to its
+    // (`docs/tools/bash-tools.md`). A companion's display name lowercases to its
     // wire name; the legacy tool's has an underscore to put back.
     let arguments = tool.arguments.as_deref();
     let wait_ms = match tool.name.as_str() {
         "Bash" => crate::llm::tools::bash_wait_ms(arguments),
-        // A wait on an agent, not a session (docs/agent-tools.md).
+        // A wait on an agent, not a session (docs/agents/agent-tools.md).
         crate::llm::tools::AGENT_OUTPUT_DISPLAY => {
             crate::llm::tools::agent_output_wait_ms(arguments)
         }
@@ -705,12 +705,12 @@ pub(super) fn running_command_lines(
     // one. A program redrawing rows above finished ones (pacman's parallel
     // downloads, every bar within the terminal's reach and so live) used to
     // fill the window with the rows that had stopped while the motion sat
-    // in the hidden count (docs/tool-streaming.md).
+    // in the hidden count (docs/ui/tool-streaming.md).
     let anchor = live.anchor(display.len());
     // Display **rows**, counted without being built (`WrapMode::rows`, so
     // the whole retained buffer is cheap to measure every animation frame):
     // counting source lines called a 2 KB line that scrolled past "1 line"
-    // (`docs/long-lines.md`).
+    // (`docs/ui/long-lines.md`).
     let rows_of = |line: &String| WrapMode::Output.rows(line, wrap_width);
     let above: usize = display[..anchor].iter().map(rows_of).sum();
     let total: usize = above + display[anchor..].iter().map(rows_of).sum::<usize>();
@@ -762,7 +762,7 @@ pub(super) fn running_command_lines(
     lines
 }
 
-/// The auto mode classifier's provenance row (`docs/permissions.md`): a
+/// The auto mode classifier's provenance row (`docs/state/permissions.md`): a
 /// fresh dim `⎿ Allowed by auto mode classifier` corner appended under a
 /// **resolved** cell that carries the note — the reference transcript's last
 /// line. A waiting/running cell keeps its live look (the note is recorded
@@ -779,7 +779,7 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// Build the styled lines for one tool call as shown **inline**.
 ///
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
-/// sits flush above (docs/shell-command.md) — and shows its **whole** output
+/// sits flush above (docs/input/shell-command.md) — and shows its **whole** output
 /// as a `⎿` block (each line aligned under the corner, word-wrapped), never
 /// folded: the user ran it to read the output, so nothing waits behind a
 /// hint, and the dim `…` marker closes a cell the in-memory cap cut. A
@@ -791,7 +791,7 @@ fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
 /// A **running** bullet renders at rest (the flat grey) — this is the renderer
 /// that feeds scrollback commits and the frozen transcript, where a colour
 /// lasts forever, so it must never capture a frame of the pulse.
-/// `live_tool_lines` is the animated one. See `docs/tool-pulse.md`.
+/// `live_tool_lines` is the animated one. See `docs/ui/tool-pulse.md`.
 #[must_use]
 pub fn tool_lines(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<'static>> {
     tool_cell_lines(tool, width, None, paths)
@@ -801,7 +801,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
 /// blinks at the frame `pulse` ([`bullet_span`]). Only the live strip
 /// calls this — its rows are redrawn every animation frame and never committed,
 /// so a hidden frame can't be frozen into scrollback. See
-/// `docs/tool-pulse.md`.
+/// `docs/ui/tool-pulse.md`.
 #[must_use]
 pub(super) fn live_tool_lines(
     tool: &ToolCall,
@@ -816,7 +816,7 @@ pub(super) fn live_tool_lines(
 /// only on a live frame.
 ///
 /// The **quiet resolved MCP cell** skips the classifier's provenance note: its
-/// whole inline presence is the one dim `Called {server}` line (`docs/mcp.md`
+/// whole inline presence is the one dim `Called {server}` line (`docs/tools/mcp.md`
 /// — a parallel run's aggregated line never carried the note either, and in
 /// auto mode every server call resolves noted, so the row doubled each cell
 /// into pure noise). The record survives where the full story lives — the
@@ -839,7 +839,7 @@ fn tool_cell_lines(
     lines
 }
 
-/// A resolved `AskUserQuestion` cell (`docs/ask.md`): the output's first line
+/// A resolved `AskUserQuestion` cell (`docs/tools/ask.md`): the output's first line
 /// **is** the headline (`User answered Alter Zero's questions:` /
 /// `User declined…` / `User wants to chat…` / `User did not answer within
 /// 10m`), promoted to the `●` header — green or red by outcome — with the
@@ -900,7 +900,7 @@ fn ask_cell_lines(
     Some(lines)
 }
 
-/// The **collapsed** MCP cell (`docs/mcp.md`) — inline it is deliberately
+/// The **collapsed** MCP cell (`docs/tools/mcp.md`) — inline it is deliberately
 /// quiet, the full `{server} - {tool} (MCP)({args})` story living in Ctrl+O:
 ///
 /// - **Running**: `● Calling {server}… (ctrl+o to expand)` — the bullet
@@ -945,7 +945,7 @@ fn mcp_cell_lines(
 /// The bullet-less dim `Called deepwiki 2 times (ctrl+o to expand)` line a
 /// resolved MCP call — or a whole **parallel run** of them ([`mcp_run`]) —
 /// leaves in scrollback: the settled thinking line's shape, because what is
-/// left is a fact about the turn (`docs/mcp.md`).
+/// left is a fact about the turn (`docs/tools/mcp.md`).
 pub(super) fn mcp_called_line(servers: &[&str]) -> Line<'static> {
     Line::from(Span::styled(
         format!(
@@ -976,7 +976,7 @@ fn mcp_run_member(item: &HistoryItem) -> Option<(u64, &str)> {
 /// `None` unless at least two line up — one call's cell is already the same
 /// `Called {server}` line, and requiring the shared batch id is what keeps two
 /// *sequential* calls that merely landed next to each other in history from
-/// claiming they ran in parallel. See `docs/mcp.md`.
+/// claiming they ran in parallel. See `docs/tools/mcp.md`.
 pub(super) fn mcp_run(items: &[HistoryItem]) -> Option<(usize, Vec<&str>)> {
     let (batch, first) = mcp_run_member(items.first()?)?;
     let mut servers = vec![first];
@@ -1001,7 +1001,7 @@ fn trailing_run_len(history: &[HistoryItem], batch: Option<u64>) -> usize {
 
 /// The trailing `history` cells of a **parallel MCP run that is still in
 /// flight** — the ones [`tool_commit_lines`] is holding because the next call
-/// of their batch is about to start (`docs/mcp.md`).
+/// of their batch is about to start (`docs/tools/mcp.md`).
 ///
 /// They are *recorded* but not yet in scrollback, and until the run ends the
 /// live strip's aggregated `● Calling deepwiki 2 times…` cell speaks for the
@@ -1035,7 +1035,7 @@ pub fn held_run_len(history: &[HistoryItem], queue: &VecDeque<ToolCall>) -> usiz
 /// repaint builds from the same history ([`conversation_lines`]), so
 /// scrollback and a resize can never disagree. Whatever ends the run — its
 /// last call, or a failure/rejection in the middle of it — flushes the held
-/// cells with it. See `docs/mcp.md`.
+/// cells with it. See `docs/tools/mcp.md`.
 #[must_use]
 pub fn tool_commit_lines(
     history: &[HistoryItem],
@@ -1084,7 +1084,7 @@ pub fn tool_commit_lines(
             }
             // An image `read` commits its picture with its cell, so the live
             // commit and the rebuild ([`conversation_lines`]) write the same
-            // rows (`docs/images.md`).
+            // rows (`docs/ui/images.md`).
             lines.extend(super::image::image_block_lines(&items[i], width));
             i += 1;
         }
@@ -1095,13 +1095,13 @@ pub fn tool_commit_lines(
 /// The scrollback lines for the calls a **settle resolved all at once** — the
 /// last `count` tool records of `history`. An Esc or a backend error resolves
 /// the running call and every `⎿ Waiting…` sibling behind it together
-/// (`docs/interrupt.md`), then records its red notice behind them, so the
+/// (`docs/input/interrupt.md`), then records its red notice behind them, so the
 /// history no longer *ends* at a cell and [`tool_commit_lines`] — built for
 /// the one call that just resolved — would find nothing to commit.
 ///
 /// Each record commits exactly as its own resolution would have, through
 /// [`tool_commit_lines`] on the history up to it: the first flushes a
-/// parallel MCP run it was holding (`docs/mcp.md`), and a blank row
+/// parallel MCP run it was holding (`docs/tools/mcp.md`), and a blank row
 /// separates the cells — the rows a rebuild paints from the same history
 /// ([`conversation_lines`]). Nothing is left in the queue to hold for, so
 /// nothing is held back. Empty when `count` is zero.
@@ -1169,7 +1169,7 @@ fn mcp_calling_header(
 }
 
 /// The one aggregated live cell for an in-flight batch whose calls are
-/// **all** MCP (`docs/mcp.md`): `● Calling deepwiki, context7 3 times…
+/// **all** MCP (`docs/tools/mcp.md`): `● Calling deepwiki, context7 3 times…
 /// (ctrl+o to expand)` — the servers in call order, and nothing else. A
 /// parallel batch is one act, so it reads as one line whether it is drawn in
 /// the streaming strip ([`preview_tool_lines`](super::live::preview_tool_lines),
@@ -1228,11 +1228,11 @@ fn tool_cell_body(
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
     // The resolved ask cell replaces the whole header with its outcome
-    // headline (`docs/ask.md`).
+    // headline (`docs/tools/ask.md`).
     if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ true) {
         return lines;
     }
-    // The collapsed MCP cell (`docs/mcp.md`) — its failed state falls
+    // The collapsed MCP cell (`docs/tools/mcp.md`) — its failed state falls
     // through to the loud generic path below.
     if let Some(lines) = mcp_cell_lines(tool, width, pulse) {
         return lines;
@@ -1244,7 +1244,7 @@ fn tool_cell_body(
 
     // A call resolved by moving to the background shows the fixed
     // `⎿ Running in the background (↓ to manage)` row — its stored output is
-    // the model-facing launch text, never displayed (docs/background.md). A
+    // the model-facing launch text, never displayed (docs/tools/background.md). A
     // `!` shell cell stays headerless like its other states.
     if tool.status == ToolStatus::Backgrounded {
         let row = result_row(0, TOOL_BACKGROUNDED.to_string());
@@ -1257,7 +1257,7 @@ fn tool_cell_body(
     }
 
     if tool.shell {
-        // The `!` shell cell never folds (docs/shell-command.md): the user
+        // The `!` shell cell never folds (docs/input/shell-command.md): the user
         // ran the command to read its output, so every display line shows
         // inline — the rows the Ctrl+O view paints, blanks kept — and the
         // dim `…` marker closes a cell the in-memory cap cut, since the
@@ -1296,7 +1296,7 @@ fn tool_cell_body(
         // Wrap verbatim (a diff body is code, never reflowed at spaces) and
         // colour every wrapped row by the SOURCE line's `+`/`-` marker, so a
         // continuation row keeps its tint — the Ctrl+O view colours the same
-        // way (docs/tools.md).
+        // way (docs/tools/tools.md).
         lines.extend(result_peek_block(
             &out_lines,
             peek_width,
@@ -1312,7 +1312,7 @@ fn tool_cell_body(
     // rows behind `… +N lines (ctrl+o to expand)`, like the `!` shell cell
     // (the mock's finished state). The `Exit code: N` frame is stripped and a
     // JSON line reshaped for display (`exec_display_lines`,
-    // docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
+    // docs/ui/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
     // The running *tail* (last lines + elapsed) is a separate live-only render
     // (`running_command_lines`), used by the preview.
     if is_command_tool(tool) {
@@ -1346,7 +1346,7 @@ fn tool_cell_body(
     // (wrapped when long) + the same folded peek the exec cells show — white
     // output content, dim placeholder — the rest behind the `… +N lines`
     // hint, so it word-wraps to the width and hides its remainder behind an
-    // honest row count (`docs/long-lines.md`).
+    // honest row count (`docs/ui/long-lines.md`).
     let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
     let display = exec_display_lines(tool);
     match tool.status {
@@ -1365,7 +1365,7 @@ fn tool_cell_body(
 }
 
 /// How a peek block treats a **blank** source line — a row with nothing on it
-/// but spaces (`docs/long-lines.md`).
+/// but spaces (`docs/ui/long-lines.md`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BlankPolicy {
     /// Every line as it comes. A diff body's spacing is content, and an ask
@@ -1409,7 +1409,7 @@ fn is_blank_row(line: &str) -> bool {
 /// `peek_width` ([`WrapMode::Output`] — word boundaries, spaces preserved,
 /// the Ctrl+O view's wrapper), the first row under the `⎿` corner and every
 /// later one aligned beneath it ([`output_row`]). The `!` shell cell's block
-/// (`docs/shell-command.md`): the same rows [`tool_full_body`] paints for the
+/// (`docs/input/shell-command.md`): the same rows [`tool_full_body`] paints for the
 /// transcript, so the inline cell and Ctrl+O agree row for row.
 fn result_full_block(out_lines: &[String], peek_width: usize) -> Vec<Line<'static>> {
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
@@ -1431,7 +1431,7 @@ fn result_full_block(out_lines: &[String], peek_width: usize) -> Vec<Line<'stati
 /// continuation by the source's `+`/`-` marker). An output of exactly
 /// `TOOL_FOLD_ROWS + 1` rows is shown **whole**: a hint hiding one row would
 /// cost the very row it hides, so the block is at most [`TOOL_PEEK_ROWS`]
-/// rows either way, hint included (`docs/long-lines.md`).
+/// rows either way, hint included (`docs/ui/long-lines.md`).
 ///
 /// `blanks` picks the window the fold is then spent inside
 /// ([`BlankPolicy`]): command output shows its **first block**, so a leading
@@ -1519,7 +1519,7 @@ pub(super) fn tool_full_lines(
     let mut lines = tool_full_body(tool, width, paths);
     lines.extend(session_state_row(tool));
     // The classifier's provenance row closes the expanded cell too
-    // (docs/permissions.md).
+    // (docs/state/permissions.md).
     lines.extend(approval_note_row(tool));
     lines
 }
@@ -1528,19 +1528,19 @@ pub(super) fn tool_full_lines(
 /// [`tool_cell_body`] split).
 fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<'static>> {
     // At rest: the transcript is a pager over a cached, incrementally-built
-    // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
+    // row list (`docs/ui/tool-view-performance.md`) whose refresh short-circuits
     // on a signature that has no clock in it. Animating here would either not
     // move or cost a full-tail re-render every 32 ms, for a bullet nobody is
-    // watching blink. See `docs/tool-pulse.md`.
+    // watching blink. See `docs/ui/tool-pulse.md`.
     let pulse: Option<Duration> = None;
     // The resolved ask cell keeps its headline header in the transcript too,
-    // with the answer rows uncapped (`docs/ask.md`).
+    // with the answer rows uncapped (`docs/tools/ask.md`).
     if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ false) {
         return lines;
     }
     // A backgrounded call shows its fixed row in the transcript too — the
     // live output belongs to the ↓ manager, and the final output arrives as
-    // the completion notice (docs/background.md).
+    // the completion notice (docs/tools/background.md).
     if tool.status == ToolStatus::Backgrounded {
         let row = result_row(0, TOOL_BACKGROUNDED.to_string());
         if tool.shell {

@@ -1,4 +1,4 @@
-//! [`StallAi`] — the backend wedged in a blocking read (`docs/interrupt.md`).
+//! [`StallAi`] — the backend wedged in a blocking read (`docs/input/interrupt.md`).
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ fn stall_ai_ignores_cancel_until_its_stall_elapses() {
     // The stall double models a backend wedged in a blocking read: a cancel
     // does NOT stop it early, so a caller that join()s it pays the whole
     // stall (the interrupt-lag freeze the loop must avoid — it detaches
-    // instead; see docs/interrupt.md). A short stall keeps the test fast.
+    // instead; see docs/input/interrupt.md). A short stall keeps the test fast.
     let stall = Duration::from_millis(200);
     let (tx, mut rx) = unbounded_channel();
     let cancel = CancelToken::new();

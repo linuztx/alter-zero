@@ -1,4 +1,4 @@
-//! Stored secrets, end to end (`docs/secrets.md`): a real [`LlmBackend`] turn
+//! Stored secrets, end to end (`docs/state/secrets.md`): a real [`LlmBackend`] turn
 //! with the real executor against a provider stand-in on the loopback. The
 //! stand-in's model writes placeholders into its tool calls; what is checked
 //! is the whole promise — the tool acted on the **value**, while not one event
@@ -499,7 +499,7 @@ fn a_refused_placeholder_never_asks_for_permission() {
 
 #[test]
 fn a_value_the_user_types_reaches_the_model_as_its_placeholder() {
-    // The other direction (docs/secrets.md *What the user types*): the user
+    // The other direction (docs/state/secrets.md *What the user types*): the user
     // types the value into a message. The composer masks it before anything
     // records it, so the turn the boundary starts on that message — and
     // every request — carries the placeholder alone.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rank the compile units of a `cargo build --timings` run (docs/build-time.md).
+"""Rank the compile units of a `cargo build --timings` run (docs/ops/build-time.md).
 
     cargo build --release --timings
     scripts/build_timings.py                # the newest target/cargo-timings/*.html

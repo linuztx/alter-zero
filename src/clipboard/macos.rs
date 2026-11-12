@@ -118,7 +118,7 @@ fn coerce_png(path: &Path) -> Result<(), String> {
 /// again as `dc:description`, `dc:creator` and `xmp:CreatorTool` (measured —
 /// `tests/clipboard_macos.rs` checks AppKit still does). A photo's camera and
 /// location tags ride the same way, and the picture is then `base64`d into
-/// **every later request** of the conversation (`docs/context.md`).
+/// **every later request** of the conversation (`docs/architecture/context.md`).
 ///
 /// [`super::store_png_without_metadata`] makes that copy chunk by chunk,
 /// keeping only the ones that draw the picture — never decoding it — through

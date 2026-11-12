@@ -75,7 +75,7 @@ impl PasteBurst {
 // redraws): when a real bracketed paste arrives, anything longer than
 // [`LARGE_PASTE_CHAR_THRESHOLD`] is shown in the composer as a compact
 // `[Pasted Content N chars]` placeholder, with the real text remembered and
-// spliced back in on send. See `docs/paste.md`.
+// spliced back in on send. See `docs/input/paste.md`.
 
 /// A paste of more than this many characters is replaced by a placeholder in the
 /// composer instead of inserted verbatim. Matches codex's
@@ -118,7 +118,7 @@ pub fn next_paste_placeholder(char_count: usize, existing: &[(String, String)]) 
 /// deletion (delete `[Image #2]` of three and the next is `[Image #4]`, not a
 /// duplicate `[Image #3]`): unlike codex's element-id model, deletion and the
 /// send-time channel match images **by placeholder string**, so a collision
-/// would be ambiguous. Gaps in the numbers are harmless. See `docs/image-paste.md`.
+/// would be ambiguous. Gaps in the numbers are harmless. See `docs/input/image-paste.md`.
 #[must_use]
 pub fn next_image_placeholder<T>(existing: &[(String, T)]) -> String {
     let mut max = 0usize;
@@ -141,7 +141,7 @@ pub fn next_image_placeholder<T>(existing: &[(String, T)]) -> String {
 /// placeholders can sit in any text order after cursor moves. Recording
 /// ([`distribute_images`]) stores each message's paths in this same
 /// text-occurrence order, so the undo/backtrack re-key can zip occurrences
-/// with a message's recorded paths exactly. See `docs/image-paste.md`.
+/// with a message's recorded paths exactly. See `docs/input/image-paste.md`.
 #[must_use]
 pub fn image_placeholder_occurrences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -236,7 +236,7 @@ pub fn expand_pastes(text: &str, pastes: &[(String, String)]) -> String {
 /// whose placeholder was actually substituted is removed from `pastes`, and
 /// the rest stay. The `AskUserQuestion` entry fields expand on accept while
 /// the stashed composer draft's pairs must survive the modal untouched
-/// (`docs/ask.md`) — a plain `expand_pastes` + `clear()` would drop them, and
+/// (`docs/tools/ask.md`) — a plain `expand_pastes` + `clear()` would drop them, and
 /// a `text.contains(placeholder)` sweep would eat a base placeholder whose
 /// `… #N` extension (of which it is a prefix) was the one that matched.
 #[must_use]
@@ -269,7 +269,7 @@ pub fn expand_pastes_consuming(text: &str, pastes: &mut Vec<(String, String)>) -
 /// removes the whole placeholder (a cursor at its *start* deletes the character
 /// before it instead); with `!backward` (Delete) a cursor at the start or inside
 /// removes it (a cursor at its end deletes the character after). Placeholders are
-/// matched longest-first, like [`expand_pastes`]. See `docs/paste.md`.
+/// matched longest-first, like [`expand_pastes`]. See `docs/input/paste.md`.
 #[must_use]
 pub fn placeholder_to_delete<T>(
     text: &str,
@@ -304,7 +304,7 @@ pub fn placeholder_to_delete<T>(
 /// matched longest-first at each position, like [`expand_pastes`]. The kill
 /// keys use this to widen a deletion span over any placeholder it would
 /// otherwise cut in half (`App::kill_span` — a kill must stay as atomic as
-/// Backspace on a placeholder, `docs/paste.md`).
+/// Backspace on a placeholder, `docs/input/paste.md`).
 #[must_use]
 pub fn placeholder_spans<T>(text: &str, pastes: &[(String, T)]) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
@@ -330,7 +330,7 @@ pub fn placeholder_spans<T>(text: &str, pastes: &[(String, T)]) -> Vec<Range<usi
 /// is, and a path no placeholder claims (one edited away) is still named on a
 /// closing `[attached image: {path}]` line — the backend's `[image
 /// unavailable: …]` note's shape — since it rides the request as a picture
-/// regardless. See `docs/image-paste.md`.
+/// regardless. See `docs/input/image-paste.md`.
 #[must_use]
 pub fn annotate_image_placeholders(text: &str, paths: &[std::path::PathBuf]) -> String {
     let mut out = String::with_capacity(text.len() + paths.len() * 64);
@@ -374,7 +374,7 @@ mod tests {
 
     use super::*;
 
-    // ===== the model-facing image paths (docs/image-paste.md) =====
+    // ===== the model-facing image paths (docs/input/image-paste.md) =====
 
     #[test]
     fn annotate_pairs_each_placeholder_with_its_path_in_text_order() {
@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn expand_consuming_removes_only_the_matched_pairs() {
-        // The ask entry's exit (docs/ask.md): the entry's own pair is consumed
+        // The ask entry's exit (docs/tools/ask.md): the entry's own pair is consumed
         // while the stashed composer draft's pair — whose placeholder does not
         // occur in the entry text — survives for the draft's eventual send.
         let mut pastes = vec![
@@ -720,7 +720,7 @@ mod tests {
         );
     }
 
-    // ===== image placeholders (Ctrl+V image paste, docs/image-paste.md) =====
+    // ===== image placeholders (Ctrl+V image paste, docs/input/image-paste.md) =====
 
     /// `(placeholder, path)` pairs for an image-attachment list (the path is
     /// irrelevant to placeholder numbering / deletion span math).

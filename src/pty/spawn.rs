@@ -1,5 +1,5 @@
 //! Start a command in a **pseudo-terminal of its own**
-//! (`docs/interactive-shell.md`) — the boundary half of an interactive
+//! (`docs/tools/interactive-shell.md`) — the boundary half of an interactive
 //! session: allocate the terminal, hand its slave side to the command as
 //! stdin/stdout/stderr **and** controlling terminal, and give the caller the
 //! master side to read the program's output from and write its input to.
@@ -43,7 +43,7 @@ pub const TERMINAL_ENV: [(&str, &str); 5] = [
 /// the session's size with a stale one, or point it at the TUI's own pane:
 /// a nested agent's herdr integration reporting under `HERDR_PANE_ID` would
 /// make itself the owner of the pane alter-zero reports for, and `herdr …
-/// --current` would type into the TUI (`docs/herdr.md`; `HERDR_ENV` and
+/// --current` would type into the TUI (`docs/architecture/herdr.md`; `HERDR_ENV` and
 /// herdr's socket stay, so herdr's CLI and agent skill still work — the
 /// pipe path drops the pane id too, in `subprocess::command_in`).
 pub const FOREIGN_TERMINAL_VARS: [&str; 15] = [
@@ -239,7 +239,7 @@ impl LineMode {
     /// Is the program reading a whole line with echo off — a password
     /// prompt (sudo, ssh, `read -s`, getpass)? Readable off the terminal
     /// even when the program runs as another user, whose /proc files the
-    /// probe cannot read (`docs/interactive-shell.md`). A key-reading
+    /// probe cannot read (`docs/tools/interactive-shell.md`). A key-reading
     /// program turns echo off too, to draw what it reads itself: not this.
     #[must_use]
     pub fn hides_input(self) -> bool {
@@ -633,7 +633,7 @@ mod tests {
     fn a_line_read_with_echo_off_hides_its_input() {
         // sudo, ssh, `read -s`, getpass: a password prompt, told by the
         // terminal itself — which a program running as another user cannot
-        // hide the way it hides its /proc files (docs/interactive-shell.md).
+        // hide the way it hides its /proc files (docs/tools/interactive-shell.md).
         let mode = |canonical, echo| LineMode {
             canonical,
             echo,
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(value("COLUMNS"), Some(None), "a stale size is removed");
         // The herdr pane is the TUI's, not the session's: a nested agent
         // must not claim it, nor `herdr … --current` type into the TUI
-        // (docs/herdr.md). herdr itself stays reachable.
+        // (docs/architecture/herdr.md). herdr itself stays reachable.
         assert_eq!(value("HERDR_PANE_ID"), Some(None), "the pane is the TUI's");
         assert_eq!(
             value("HERDR_SOCKET_PATH"),

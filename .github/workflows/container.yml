@@ -1,4 +1,4 @@
-# .github/workflows/container.yml — the headless Kali container (docs/docker.md).
+# .github/workflows/container.yml — the headless Kali container (docs/ops/docker.md).
 #
 # Its own workflow rather than a job in ci.yml, because of what triggers it.
 # The image installs the latest **published** release, so nothing in src/ can

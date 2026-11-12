@@ -18,7 +18,7 @@
 //! The suite pairs every entry with a prompt that must select *it*, so an
 //! entry shadowed by an earlier cue fails the tests instead of silently never
 //! playing again — and a new entry with no example fails them too. See
-//! `docs/dummy-backend.md`.
+//! `docs/architecture/dummy-backend.md`.
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -52,7 +52,7 @@ impl Cue {
     }
 
     /// The same cue, in a session whose scratchpad is `dir` — where the
-    /// scratchpad demo writes (`docs/tool-groups.md` *Scratchpad edits*).
+    /// scratchpad demo writes (`docs/ui/tool-groups.md` *Scratchpad edits*).
     #[must_use]
     pub(in crate::stream) fn with_scratchpad(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.scratchpad = dir;
@@ -69,7 +69,7 @@ impl Cue {
         &self.text
     }
 
-    /// How many Ctrl+V images the turn carried (`docs/image-paste.md`).
+    /// How many Ctrl+V images the turn carried (`docs/input/image-paste.md`).
     pub(in crate::stream) fn images(&self) -> usize {
         self.images
     }
@@ -100,7 +100,7 @@ pub(in crate::stream) struct Stage<'a> {
 
 /// What an **asked** scenario streams through — the [`Stage`] twin for the
 /// `AskUserQuestion` demo, blocking on the [`AskGate`] instead
-/// (`docs/ask.md`).
+/// (`docs/tools/ask.md`).
 pub(in crate::stream) struct AskStage<'a> {
     pub(in crate::stream) gate: &'a AskGate,
     pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
@@ -110,7 +110,7 @@ pub(in crate::stream) struct AskStage<'a> {
 /// What an **agent** scenario streams through — the [`Stage`] twin for the
 /// demo that plays a launched subagent's own round, writing to the reply
 /// channel *and* to the subagent channel the registry owns
-/// (`docs/agent-view-streaming.md`).
+/// (`docs/agents/agent-view-streaming.md`).
 pub(in crate::stream) struct AgentStage<'a> {
     pub(in crate::stream) agents: &'a AgentRegistry,
     pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
@@ -118,7 +118,7 @@ pub(in crate::stream) struct AgentStage<'a> {
     /// The shared permission gate, when one is attached — a subagent's own
     /// call asks on it exactly as the main turn's does, and the request
     /// travels the **agent** channel so the boundary stamps whose it is
-    /// (`docs/permissions.md`). `None` runs the demo unasked, which is what
+    /// (`docs/state/permissions.md`). `None` runs the demo unasked, which is what
     /// `ALTER_ZERO_PERMISSIONS=0` means.
     pub(in crate::stream) gate: Option<&'a PermissionGate>,
 }
@@ -132,17 +132,17 @@ pub(in crate::stream) enum Play {
     Script(fn(&Cue) -> Vec<StreamEvent>),
     /// A turn that needs the *user*: it streams on the channel itself and
     /// blocks on the permission gate between calls, exactly as a real
-    /// backend's tool thread does (`docs/permissions.md`). Only ever selected
+    /// backend's tool thread does (`docs/state/permissions.md`). Only ever selected
     /// when a gate is attached.
     Gated(fn(&Stage<'_>)),
     /// A turn that **asks the user questions**: it raises the inline modal
     /// and blocks on the ask gate exactly as the real tool does
-    /// (`docs/ask.md`). Only ever selected when an ask gate is attached.
+    /// (`docs/tools/ask.md`). Only ever selected when an ask gate is attached.
     Asked(fn(&AskStage<'_>)),
     /// A turn that **launches a subagent and streams its session**: it writes
     /// the launch to the reply channel and the agent's own round to the
     /// subagent channel, from that agent's own thread — the only offline demo
-    /// that drives the agent session view (`docs/agent-view-streaming.md`).
+    /// that drives the agent session view (`docs/agents/agent-view-streaming.md`).
     /// Only ever selected when an agent registry is attached.
     Agent(fn(&AgentStage<'_>)),
 }
@@ -169,7 +169,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     // shared permission prompt from inside its session view, which is the
     // one place the view's context cells had no offline coverage — and so
     // the one place the lead's `● Agent(…)` cell leaked onto a screen
-    // showing a different conversation (`docs/agent-view-streaming.md`).
+    // showing a different conversation (`docs/agents/agent-view-streaming.md`).
     // First in the table: every `permission` entry below would shadow it,
     // and so would the `subagent` demo that follows them.
     Scenario {
@@ -179,7 +179,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Agent(agent::agent_permission_turn),
     },
     // The `AskUserQuestion` round trip: three questions through the modal
-    // (docs/ask.md).
+    // (docs/tools/ask.md).
     Scenario {
         #[cfg(test)]
         name: "ask-questions",
@@ -222,7 +222,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.starts_with(turns::COMPACT_PROMPT_MARKER),
         play: Play::Script(turns::compact_turn),
     },
-    // A UserPromptSubmit hook refusing the submission (docs/hooks.md) — the
+    // A UserPromptSubmit hook refusing the submission (docs/tools/hooks.md) — the
     // more specific cue, so it outranks the general hooks demo below.
     Scenario {
         #[cfg(test)]
@@ -230,7 +230,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("hook") && cue.mentions("block my prompt"),
         play: Play::Script(turns::prompt_block_turn),
     },
-    // Lifecycle hooks (docs/hooks.md): a PreToolUse block, then a PostToolUse
+    // Lifecycle hooks (docs/tools/hooks.md): a PreToolUse block, then a PostToolUse
     // note on a call that ran.
     Scenario {
         #[cfg(test)]
@@ -240,7 +240,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
     // The lead working its agent with the companion tools — launch, wait,
     // follow up, wait, list — every call through the real executor
-    // (docs/agent-tools.md). Above the subagent demo: a prompt naming both is
+    // (docs/agents/agent-tools.md). Above the subagent demo: a prompt naming both is
     // a follow-up.
     Scenario {
         #[cfg(test)]
@@ -250,7 +250,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
     // One background subagent that streams its OWN session — the only demo
     // that drives the agent session view's strip
-    // (docs/agent-view-streaming.md). Above the table demo, whose cue it
+    // (docs/agents/agent-view-streaming.md). Above the table demo, whose cue it
     // also matches: the table is what this subagent streams, so a prompt
     // naming both means *this* one.
     Scenario {
@@ -267,7 +267,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Script(turns::table_turn),
     },
     // The slow-stream stress demo: every markdown element in one long
-    // text-only reply, streamed token by token (docs/slow-stream.md). Below
+    // text-only reply, streamed token by token (docs/ui/slow-stream.md). Below
     // the table demo, whose cue a "markdown table" prompt also carries.
     Scenario {
         #[cfg(test)]
@@ -277,7 +277,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("markdown") && !cue.mentions("agents.md"),
         play: Play::Script(turns::markdown_turn),
     },
-    // A two-subagent group, foreground or background (docs/agent-tool.md).
+    // A two-subagent group, foreground or background (docs/agents/agent-tool.md).
     Scenario {
         #[cfg(test)]
         name: "agents",
@@ -294,7 +294,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
     // A `write` and an `edit` in the session's scratchpad, folded into the
     // collapsed group's `Made 2 scratchpad edits` line unless Verbose output
-    // is on (docs/tool-groups.md *Scratchpad edits*). Ahead of the files demo,
+    // is on (docs/ui/tool-groups.md *Scratchpad edits*). Ahead of the files demo,
     // whose "write"/"edit" cue a prompt about the scratchpad may well use.
     Scenario {
         #[cfg(test)]
@@ -315,7 +315,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Script(turns::files_turn),
     },
     // The todo demo taken all the way to done — the end state: the checklist
-    // bows out with the turn and is swept for good (docs/task-tools.md).
+    // bows out with the turn and is swept for good (docs/tools/task-tools.md).
     // Ahead of the broader todo cue, which it also matches.
     Scenario {
         #[cfg(test)]
@@ -324,7 +324,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Script(turns::tasks_finished_turn),
     },
     // The task-tools lifecycle: the live checklist, dependencies, the
-    // spinner override (docs/task-tools.md).
+    // spinner override (docs/tools/task-tools.md).
     Scenario {
         #[cfg(test)]
         name: "tasks",
@@ -332,9 +332,9 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Script(turns::tasks_turn),
     },
     // Loading an authored `SKILL.md` into the conversation — the one-line
-    // cell over the whole body the model reads (docs/skills.md). The
+    // cell over the whole body the model reads (docs/tools/skills.md). The
     // `$dataviz` cue is the composer's `$` picker inserting a mention of the
-    // demo skill (docs/skill-mentions.md): the word "skill" never appears in
+    // demo skill (docs/input/skill-mentions.md): the word "skill" never appears in
     // such a prompt, and the demo answering it is how the offline dummy
     // plays the mention the way a live model would.
     Scenario {
@@ -345,7 +345,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
     // A parallel download redrawn in place — pacman refreshing its databases,
     // the small files finishing first and sitting below the bars still
-    // moving (docs/tool-streaming.md *The window follows what is still
+    // moving (docs/ui/tool-streaming.md *The window follows what is still
     // moving*). Whole words, like every cue.
     Scenario {
         #[cfg(test)]
@@ -355,7 +355,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
     // An interactive program driven through its terminal: a `bash` launch
     // stopping at a prompt, answers typed with `bashsend`
-    // (docs/bash-tools.md). Only the whole word — "tty" hides in "pretty",
+    // (docs/tools/bash-tools.md). Only the whole word — "tty" hides in "pretty",
     // "repl" in "reply".
     Scenario {
         #[cfg(test)]
@@ -366,7 +366,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     // Finding the way around before changing anything: a listing, a search
     // and two reads over three rounds, folded into one collapsed group
     // unless Verbose output is on, then a script run that keeps its own cell
-    // (docs/tool-groups.md).
+    // (docs/ui/tool-groups.md).
     Scenario {
         #[cfg(test)]
         name: "explore",

@@ -1,4 +1,4 @@
-//! MCP (Model Context Protocol) — the **pure** half (`docs/mcp.md`).
+//! MCP (Model Context Protocol) — the **pure** half (`docs/tools/mcp.md`).
 //!
 //! Everything the boundary client ([`crate::llm::mcp`]) and the `/mcp`
 //! manager need *except* the I/O: the config-file format, the

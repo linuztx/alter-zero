@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the STRIP FLOW (docs/strip-flow.md). The streaming strip is
+# the STRIP FLOW (docs/ui/strip-flow.md). The streaming strip is
 # the live region's only elastic content, and the rows it could not afford
 # were thrown away: on a short terminal a running command lost its
 # `+N lines (Ns)` footer and its ctrl+b hint first, then its output rows, then
@@ -52,7 +52,7 @@ for expect in "Bash(ping -c 20 google.com)" "run three pings in parallel"; do
 done
 # Its running row too — matched as a whole cell row (`⎿  Running… (Ns ·
 # wait 2m)`: the live row carries the command's clock and its wait,
-# docs/tool-streaming.md), never as the substring the demo's own narration
+# docs/ui/tool-streaming.md), never as the substring the demo's own narration
 # also contains.
 if ! printf '%s\n' "$sf_full" | grep -qE '^[[:space:]]*⎿[[:space:]]+Running… \([0-9]+s · wait 2m\)[[:space:]]*$'; then
 	fail "the flowed head lost the running call's '⎿ Running… (Ns · wait 2m)' row"

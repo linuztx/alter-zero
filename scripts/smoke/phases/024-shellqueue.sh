@@ -6,7 +6,7 @@ smoke_begin
 
 # a `!` command typed WHILE A TURN STREAMS queues as its own
 # STANDALONE shell entry and runs LOCALLY as a separate turn after it
-# (docs/queue.md, docs/shell-command.md) — codex's action-tagged queued shell
+# (docs/input/queue.md, docs/input/shell-command.md) — codex's action-tagged queued shell
 # command, NOT the old v1 behaviour of sending "!echo …" to the backend as
 # literal text. Submit "hello there", then mid-stream queue "world" (Enter, a
 # text message) and "!echo smoke_queue_ok" (Enter in shell mode, a standalone
@@ -37,7 +37,7 @@ echo "==== captured pane (the queued !command ran locally as its own turn) ===="
 printf '%s\n' "$shellqueue"
 tmux kill-session -t "$S21" 2>/dev/null
 
-# Phase 24: a !command queued mid-turn runs LOCALLY as its own turn (docs/queue.md).
+# Phase 24: a !command queued mid-turn runs LOCALLY as its own turn (docs/input/queue.md).
 # While turn 1 streams, the text "world" (❯, a model turn) and the command
 # "! echo …" (the red shell prompt) both show inset above the box; then the
 # command commits an exec cell (⎿ output), proving it ran locally — NOT a

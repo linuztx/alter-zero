@@ -1,5 +1,5 @@
 //! Write a small test picture, for driving the inline-image paths by hand
-//! (`docs/images.md`): `cargo run --example make_test_image -- out.png [w] [h]`.
+//! (`docs/ui/images.md`): `cargo run --example make_test_image -- out.png [w] [h]`.
 
 fn main() {
     let mut args = std::env::args().skip(1);

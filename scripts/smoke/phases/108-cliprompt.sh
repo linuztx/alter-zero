@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the [PROMPT] CLI shortcut and the --help page (docs/cli.md).
+# the [PROMPT] CLI shortcut and the --help page (docs/cli/cli.md).
 # `alter-zero "hello there"` boots STRAIGHT into that turn — the ❯ bubble, the
 # streamed reply and the Done summary appear with no key pressed — and its
 # quit still prints the resume hint; `--resume {id} "again please"` reloads

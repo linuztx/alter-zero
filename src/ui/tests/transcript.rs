@@ -1,5 +1,5 @@
 //! The Ctrl+O transcript overlay and its cache
-//! (`docs/tool-view-performance.md`, `docs/backtrack.md`).
+//! (`docs/ui/tool-view-performance.md`, `docs/input/backtrack.md`).
 
 use super::*;
 use crate::app::Theme;
@@ -62,7 +62,7 @@ fn transcript_lines_list_the_queued_backlog_after_the_live_tail() {
     // the queue render after the live tail, styled exactly like the inline
     // strip's queued rows (two-space inset, ❯ user / red ! shell, a blank
     // dividing entries), so Ctrl+O never hides a queued message
-    // (docs/queue.md).
+    // (docs/input/queue.md).
     let mut app = App::new();
     app.record_user_message("q");
     app.begin_stream();
@@ -99,7 +99,7 @@ fn transcript_lines_list_the_queued_backlog_after_the_live_tail() {
 #[test]
 fn transcript_lines_when_empty_is_a_placeholder() {
     // Even an empty transcript opens with the header banner (the overlay
-    // mirrors the inline conversation — docs/header.md); the placeholder
+    // mirrors the inline conversation — docs/ui/header.md); the placeholder
     // sits under it, not lost.
     let app = App::new();
     let lines = transcript_lines(&app, 80);
@@ -150,7 +150,7 @@ fn transcript_cache_rebuilds_as_a_running_bash_streams_output() {
     // frozen snapshot: as the tool streams (`App::push_tool_output`), the
     // cache signature has to notice the front call's output growing so the
     // overlay rebuilds — and, since it tail-follows, scrolls the new output
-    // into view (docs/tool-streaming.md). Without the output length in the
+    // into view (docs/ui/tool-streaming.md). Without the output length in the
     // signature the overlay would stay static: a single running call's queue
     // length and status don't change while it streams.
     let mut app = App::new();
@@ -186,7 +186,7 @@ fn transcript_cache_rebuilds_as_a_running_bash_streams_output() {
 fn transcript_cache_rebuilds_on_a_same_length_screen_redraw() {
     // A terminal session's progress bar redraws in place (45% → 46%): the
     // output's length does not move, so the call's revision must — or Ctrl+O
-    // freezes on the first frame (docs/interactive-shell.md).
+    // freezes on the first frame (docs/tools/interactive-shell.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "sudo pacman -Syy", None);
@@ -644,7 +644,7 @@ fn the_tool_view_renders_a_shell_cell_headerless_with_full_output() {
 #[test]
 fn transcript_lines_keep_the_shell_cell_flush() {
     // The Ctrl+O transcript renders the same shell cell as the inline view
-    // (docs/shell-command.md): no blank spacer between the `! pwd` header
+    // (docs/input/shell-command.md): no blank spacer between the `! pwd` header
     // and its `⎿` output either.
     let mut t = tool("pwd", "", ToolStatus::Ok, "/home");
     t.shell = true;
@@ -852,8 +852,8 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
     assert!(texts.iter().any(|t| t.contains("+19°C")));
     // A settled turn shows the agent's own `{verb} for Ns · tokens` receipt —
     // the summary the settle records renders here and in the session view's
-    // rebuild alike (docs/agent-tool.md), its verb the past tense of the one
-    // the view's line wore: 59 s in, the second (docs/status-indicator.md).
+    // rebuild alike (docs/agents/agent-tool.md), its verb the past tense of the one
+    // the view's line wore: 59 s in, the second (docs/ui/status-indicator.md).
     app.set_agent_runtime("a1", Duration::from_secs(59));
     for event in [
         crate::stream::StreamEvent::Usage(crate::stream::TokenUsage {
@@ -903,7 +903,7 @@ fn the_quit_hint_tells_the_truth_about_esc() {
     // Esc closes the overlay ONLY when there is nothing to backtrack to, a
     // turn is running, or an agent view is up; idle with a previous user
     // message it *begins* the edit-previous preview instead
-    // (docs/backtrack.md). The closing hint used to promise
+    // (docs/input/backtrack.md). The closing hint used to promise
     // `q/esc/ctrl+o to quit` in that state too — the reported surprise:
     // "I tried to exit with Esc and got edit-previous-message". The row now
     // tells the truth per state, driven by the same predicate the key
@@ -944,7 +944,7 @@ fn the_quit_hint_tells_the_truth_about_esc() {
         hint_row(&streaming)
     );
     // An open inline modal quits too, even though the session is idle with a
-    // target. Ctrl+O reaches *through* a permission prompt (docs/permissions.md),
+    // target. Ctrl+O reaches *through* a permission prompt (docs/state/permissions.md),
     // and a BACKGROUND agent's request arrives with no turn in flight — so the
     // `turn_active` clause above never covered it, and an Esc that armed the
     // preview would offer to truncate the history a parked tool thread is
@@ -976,7 +976,7 @@ fn the_quit_hint_tells_the_truth_about_esc() {
     );
 }
 
-// --- the mid-turn queue in the transcript view (docs/queue.md) ---
+// --- the mid-turn queue in the transcript view (docs/input/queue.md) ---
 
 #[test]
 fn the_transcript_shows_a_message_waiting_for_the_running_turn() {
@@ -1048,7 +1048,7 @@ fn an_agent_transcript_shows_that_agents_pending_message() {
 #[test]
 fn an_agent_transcript_shows_its_tab_follow_ups_too() {
     // A Tab follow-up is a pending message like any other, so the Ctrl+O view
-    // must not hide it either (`docs/queue.md`) — and it is the only pending
+    // must not hide it either (`docs/input/queue.md`) — and it is the only pending
     // set here, so a gate that asked about the steered rows alone would.
     let mut app = App::new();
     app.begin_stream();
@@ -1068,7 +1068,7 @@ fn the_cache_re_renders_its_frozen_prefix_when_the_theme_changes() {
     // A committed item's rows carry their colours, so the frozen prefix is
     // pinned on the active theme too: a `/theme` switch re-renders every
     // item in the new palette rather than serving the old rows
-    // (`docs/theme.md`).
+    // (`docs/ui/theme.md`).
     use crate::app::Theme;
     use crate::ui::palette::{palette_of, with_theme};
     let app = transcript_fixture();
@@ -1096,7 +1096,7 @@ fn the_cache_re_renders_its_frozen_prefix_when_the_theme_changes() {
 #[test]
 fn ctrl_o_shows_a_streaming_write_whole_and_follows_it() {
     // The transcript shows everything live — a file being written included,
-    // every line of it, refreshed as each piece lands (docs/write-streaming.md).
+    // every line of it, refreshed as each piece lands (docs/ui/write-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     app.push_tool_call_fragment(&crate::stream::ToolCallFragment {

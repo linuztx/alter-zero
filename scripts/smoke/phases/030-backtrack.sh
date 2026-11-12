@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Esc-Esc BACKTRACK (docs/backtrack.md). After two finished
+# Esc-Esc BACKTRACK (docs/input/backtrack.md). After two finished
 # exchanges, the first idle Esc ARMS the gesture (the footer slot shows the
 # "esc again to edit previous message" hint instead of quitting), the second
 # opens the transcript overlay as a preview (backtrack key hints replace the
@@ -37,7 +37,7 @@ sleep 0.6
 backtrack_rewound="$(tmux capture-pane -t "$S30" -p)"
 echo "==== captured pane (Enter — rewound, the first message back in the composer) ===="
 printf '%s\n' "$backtrack_rewound"
-# The rewind PURGES scrollback (docs/backtrack.md — like /resume/resize): the
+# The rewind PURGES scrollback (docs/input/backtrack.md — like /resume/resize): the
 # dropped exchange must not linger even in the terminal's scrollback (the
 # duplication bug where it only cleared on the next resize). Capture WITH
 # scrollback and assert "beta question" is gone entirely — the composer holds

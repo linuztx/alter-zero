@@ -1,8 +1,8 @@
-//! Background shells and the ↓ manager band (`docs/background.md`).
+//! Background shells and the ↓ manager band (`docs/tools/background.md`).
 
 use super::*;
 
-// --- `!` shell commands (docs/shell-command.md — codex's bang shell mode,
+// --- `!` shell commands (docs/input/shell-command.md — codex's bang shell mode,
 // with the absorbed `!` prefix: the bang becomes the prompt, not text) ---
 
 #[test]
@@ -209,7 +209,7 @@ fn completion_notice_context_text_carries_the_tail() {
 
 #[test]
 fn a_session_waiting_for_input_is_noticed_and_stays_listed() {
-    // A background session that stopped to ask something (docs/bash-tools.md)
+    // A background session that stopped to ask something (docs/tools/bash-tools.md)
     // is still running: the notice names its session so the model can answer
     // it, and the shell keeps its row in the manager.
     let mut app = App::new();
@@ -245,7 +245,7 @@ fn a_subagent_launched_shell_is_attributed_end_to_end() {
     // The origin flows launch → shell list → completion → notice: the
     // details page knows whose shell it is, the headline reads
     // `· from the {type} agent`, and the context note says who launched it
-    // (docs/agent-tool.md).
+    // (docs/agents/agent-tool.md).
     let mut app = App::new();
     let origin = crate::background::BgOrigin {
         agent_id: "a7k2m9x4q".into(),
@@ -290,7 +290,7 @@ fn a_subagent_launched_shell_is_attributed_end_to_end() {
 fn completion_context_text_matches_the_recorded_notices() {
     // The Exited arm posts the completion's context note to the registry
     // board the moment it lands, so the in-flight agent can inject it into
-    // its next round (docs/background.md); the settle later records a
+    // its next round (docs/tools/background.md); the settle later records a
     // BackgroundNotice for the same completion. Both must read
     // identically, or the model would see one text mid-turn and a
     // different one in every later turn's derived context.
@@ -364,7 +364,7 @@ fn a_delivered_completion_is_taken_by_its_board_number() {
     // The agent read one of the held notes (`StreamEvent::NoticeDelivered`):
     // exactly that completion settles there, where the model has it, and the
     // rest keep waiting for theirs — or for the turn's end
-    // (docs/background.md).
+    // (docs/tools/background.md).
     let mut app = app_with_shells(&["a", "b"]);
     let first = app.bg_exited("bash_1", Some(0), false).unwrap();
     let second = app.bg_exited("bash_2", Some(1), false).unwrap();
@@ -563,7 +563,7 @@ fn ctrl_b_moves_only_a_running_command_to_the_background() {
 #[test]
 fn ctrl_b_ends_a_session_calls_wait_too() {
     // A `bash_session` call waiting on its session polls the same latch: the
-    // wait ends and the session keeps running (docs/interactive-shell.md).
+    // wait ends and the session keeps running (docs/tools/interactive-shell.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("BashSession", "b7x2k9m1q", None);
@@ -574,7 +574,7 @@ fn ctrl_b_ends_a_session_calls_wait_too() {
 #[test]
 fn ctrl_b_ends_an_agentoutput_wait_too() {
     // A waiting `agentoutput` polls the same latch: the wait ends and the
-    // agent runs on (docs/agent-tools.md). Its siblings return at once, so
+    // agent runs on (docs/agents/agent-tools.md). Its siblings return at once, so
     // there is nothing for the key to end.
     let mut app = App::new();
     app.begin_stream();
@@ -601,7 +601,7 @@ fn ctrl_b_moves_a_running_shell_turn_too() {
 fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
     // The band owns every key while open, so Ctrl+B does nothing there — the
     // delayed `(ctrl+b to run in background)` hint this clock gates must not
-    // advertise it (the permission-prompt rule; docs/background.md). The
+    // advertise it (the permission-prompt rule; docs/tools/background.md). The
     // running cell itself stays visible above the band, hintless.
     let mut app = App::new();
     app.begin_stream();
@@ -627,7 +627,7 @@ fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
     // The `/model`, `/login`, `/settings`, `/hooks` and `/skills` pickers own
     // every key while open too (`on_key`'s dispatch), so the running cell they
     // now keep visible above themselves must not advertise a Ctrl+B they would
-    // swallow — the band's rule (docs/background.md). Every composer-replacing
+    // swallow — the band's rule (docs/tools/background.md). Every composer-replacing
     // picker belongs on this list; the two newest were the ones that grew it.
     let hint_clock_off = |open: fn(&mut App)| {
         let mut app = App::new();
@@ -803,7 +803,7 @@ fn the_command_clock_stays_readable_where_the_hint_gate_is_blanked() {
     // while `command_elapsed` answers what `set_command_elapsed` set — the
     // *display*, the running cell's `+N lines (Ns)` footer — which the band
     // and every picker keep on screen above themselves, still counting
-    // (docs/tool-streaming.md).
+    // (docs/ui/tool-streaming.md).
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Bash", "sleep 100", None);

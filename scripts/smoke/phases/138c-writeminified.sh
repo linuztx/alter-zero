@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# docs/long-lines.md §8. The numbered `read`/`write`/`edit` cells showed every
+# docs/ui/long-lines.md §8. The numbered `read`/`write`/`edit` cells showed every
 # line their peek started to its end, so a `write` of a stylesheet whose
 # fourth line was the whole sheet minified painted that one line across well
 # over a hundred rows, under a `… +6 lines` hint counting the lines after it.

@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the mcp CLI SUBCOMMAND (docs/mcp-cli.md). The install path
+# the mcp CLI SUBCOMMAND (docs/cli/mcp-cli.md). The install path
 # end to end, before any TUI: `mcp add fixture -- sh server.sh` writes the
 # scripted stdio fixture into a temp USER mcp.json (exit 0, the Added line
 # + the File: path), `mcp list` reports it, a duplicate add exits 1 naming
@@ -50,7 +50,7 @@ mcp84_bad_exit=$?
 if [ "$mcp84_bad_exit" -ne 2 ]; then
 	fail "a grammar error exited $mcp84_bad_exit (want 2)"
 fi
-# The clap-shaped trailer (docs/cli.md): `error: {message}`, the mcp `Usage:`
+# The clap-shaped trailer (docs/cli/cli.md): `error: {message}`, the mcp `Usage:`
 # block, `For more information, try '--help'.` — never the whole page.
 for expect in "error: mcp add needs a --url or a command" \
 	"Usage: alter-zero mcp add <name>" \
@@ -58,7 +58,7 @@ for expect in "error: mcp add needs a --url or a command" \
 	expect_has "$mcp84_bad" -F "$expect" "the grammar error is missing '$expect'"
 done
 expect_lacks "$mcp84_bad" -F "alter-zero mcp — manage MCP servers" "a grammar error dumped the whole help page instead of the usage trailer"
-# A pre-registered OAuth client (docs/mcp-cli.md): --client-id and
+# A pre-registered OAuth client (docs/cli/mcp-cli.md): --client-id and
 # --callback-port go into the entry, the secret — read from
 # MCP_CLIENT_SECRET, never the command line — into the owner-only token
 # store and never the file, and `mcp get` says where it is, not what.

@@ -3,7 +3,7 @@
 //! Talks to anything accepting the `/chat/completions` shape (OpenAI, OpenRouter,
 //! Groq, Together, Sambanova, Ollama, …). The endpoint/payload builders and the
 //! SSE frame parse are pure and unit-tested; [`OpenAiClient::stream_chat`] is the
-//! boundary that opens the blocking request and drains it. See `docs/llm.md`.
+//! boundary that opens the blocking request and drains it. See `docs/providers/llm.md`.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -52,8 +52,8 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// [`ThinkingSplitter`], plus the tool-call pieces streamed this frame — each
 /// under the slot of the call it belongs to, so the caller can count the
 /// tokens the model spends *generating* a call the way reasoning is counted
-/// (`docs/status-indicator.md`) and preview a `write` while its content is
-/// still arriving (`docs/write-streaming.md`).
+/// (`docs/ui/status-indicator.md`) and preview a `write` while its content is
+/// still arriving (`docs/ui/write-streaming.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Delta {
     pub response: String,
@@ -67,7 +67,7 @@ pub struct Delta {
 /// usage when its final frame carried one (`stream_options.include_usage` —
 /// the backend forwards it as [`crate::stream::StreamEvent::Usage`]). The
 /// backend inspects `tool_calls` to decide whether to run tools and loop
-/// again (see `docs/tools.md`).
+/// again (see `docs/tools/tools.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamOutcome {
     pub text: super::thinking::ChatStreamResult,
@@ -78,7 +78,7 @@ pub struct StreamOutcome {
 
 /// Why a stream ended, in the crate's own terms — every wire's spelling of
 /// each reason folded into one, so the agent loop asks one question whatever
-/// the provider called it (`docs/unfinished-replies.md`).
+/// the provider called it (`docs/architecture/unfinished-replies.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
     /// The model ended its reply — or the provider named no reason at all.
@@ -148,12 +148,12 @@ impl OpenAiClient {
     }
 
     /// Point this client at a different **model** on the same provider — an
-    /// agent definition's `model:` (`docs/subagents.md`).
+    /// agent definition's `model:` (`docs/agents/subagents.md`).
     ///
     /// The thinking mode, the vision verdict and the speed tier are dropped
     /// with the swap: all three were detected for the model being replaced,
     /// and sending a `reasoning` parameter to a model that doesn't reason —
-    /// or a `service_tier` to one that lists none (`docs/fast-mode.md`) — is
+    /// or a `service_tier` to one that lists none (`docs/providers/fast-mode.md`) — is
     /// how a provider comes to reject the whole request. Everything else —
     /// base, key, headers, provider kwargs, temperature, cache key — is the
     /// provider's and stays.
@@ -189,7 +189,7 @@ impl OpenAiClient {
 
     /// Where this request goes — the path is the wire format's, not the
     /// provider's: Responses and Chat Completions are different endpoints on
-    /// the same base (`docs/chatgpt.md`).
+    /// the same base (`docs/providers/chatgpt.md`).
     fn request_url(&self, override_base: Option<&str>) -> String {
         let base = self.base_url(override_base);
         match self.cfg.wire_api {
@@ -213,17 +213,17 @@ impl OpenAiClient {
     /// The Chat Completions request: model, messages, `stream: true` (with
     /// the standard `stream_options.include_usage` asking for the final
     /// usage frame the app's token tally snaps to), the optional
-    /// temperature, the prompt-caching fields (`docs/prompt-caching.md` —
+    /// temperature, the prompt-caching fields (`docs/providers/prompt-caching.md` —
     /// explicit `cache_control` breakpoints for the models that need them,
     /// and the session's cache-affinity key as `prompt_cache_key` /
     /// OpenRouter's `session_id`), any provider `extra_body` (e.g.
     /// `venice_parameters`) merged in, and — for a reasoning-capable model —
-    /// the active thinking mode (`docs/reasoning.md`).
+    /// the active thinking mode (`docs/providers/reasoning.md`).
     ///
     /// Every field but the messages lives in one small tree; the messages
     /// ride **by reference** and are serialized in place. A `Value` of the
     /// conversation copied a pasted picture's megabytes of base64 once more
-    /// per round, which is what `docs/memory.md` traces the growing process
+    /// per round, which is what `docs/architecture/memory.md` traces the growing process
     /// to. Only an explicit-caching model takes a copy — a shallow one, its
     /// pictures shared — to carry the breakpoints.
     fn chat_request<'a>(&'a self, messages: Cow<'a, [ChatMessage]>) -> ChatRequest<'a> {
@@ -260,7 +260,7 @@ impl OpenAiClient {
             // recognise with `model_not_supported` — an error that blames the
             // *model* — and its own caching is server-side, so the affinity
             // key buys nothing there worth that risk. The request carries the
-            // same value as `X-Request-Id` instead (`docs/copilot.md`).
+            // same value as `X-Request-Id` instead (`docs/providers/copilot.md`).
             .filter(|_| self.cfg.auth != super::AuthScheme::GithubCopilot)
         {
             // The per-session affinity key: the standard OpenAI
@@ -283,7 +283,7 @@ impl OpenAiClient {
         if let Some(t) = self.cfg.temperature {
             fields.insert("temperature".to_string(), json!(t));
         }
-        // The selected speed tier (`docs/fast-mode.md`) — OpenAI's own
+        // The selected speed tier (`docs/providers/fast-mode.md`) — OpenAI's own
         // `service_tier` parameter, which chat completions take exactly as
         // the Responses wire does. Only ever a tier the model's record
         // listed, so no provider here sees a field its shim would refuse.
@@ -307,7 +307,7 @@ impl OpenAiClient {
             // is an unknown field there — one its proxy answers with a
             // `model_not_supported` 400 that blames the model rather than the
             // payload. So it is the shape *instead of*, never alongside
-            // (`docs/copilot.md`).
+            // (`docs/providers/copilot.md`).
             if self.cfg.auth == super::AuthScheme::GithubCopilot {
                 if let Some(effort) = super::reasoning::effort_label(mode) {
                     fields.insert("reasoning_effort".to_string(), json!(effort));
@@ -317,7 +317,7 @@ impl OpenAiClient {
                 // `reasoning` object by default, or OpenAI's own top-level
                 // `reasoning_effort` where the block says so — never both,
                 // one being an unknown field to a server reading the other
-                // (`docs/user-providers.md`).
+                // (`docs/providers/user-providers.md`).
                 match self.cfg.reasoning_param {
                     super::ReasoningParam::Reasoning => {
                         if let Some(body) = super::reasoning::reasoning_body(mode) {
@@ -348,7 +348,7 @@ impl OpenAiClient {
             }
         }
         // Last, so a field the server refuses leaves whatever put it there
-        // (`docs/user-providers.md`).
+        // (`docs/providers/user-providers.md`).
         self.cfg.drop_refused(&mut fields);
         ChatRequest {
             model: Cow::Borrowed(&self.cfg.model),
@@ -366,7 +366,7 @@ impl OpenAiClient {
     /// shared encoding, borrowed — so a body carrying a picture is never held
     /// whole and never copied: not built, not buffered, not freed behind the
     /// send, which is what keeps a turn from allocating anything
-    /// picture-sized at all (`docs/memory.md`). `messages` is taken by
+    /// picture-sized at all (`docs/architecture/memory.md`). `messages` is taken by
     /// value: the round's copy of the conversation, its pictures shared,
     /// moves to that thread.
     ///
@@ -378,7 +378,7 @@ impl OpenAiClient {
 
     /// [`request_stream`](Self::request_stream) with what the credential
     /// adds to the body: the Cloud Code project a Google Antigravity sign-in
-    /// bills to (`docs/antigravity.md`) — the one wire whose request names
+    /// bills to (`docs/providers/antigravity.md`) — the one wire whose request names
     /// the account it is made on. Every other wire ignores it.
     fn request_body(
         &self,
@@ -456,7 +456,7 @@ impl OpenAiClient {
     /// The backend keys its prompt cache on Codex's `session_id` /
     /// `conversation_id` headers, not on the body's `prompt_cache_key`
     /// (verified live: 0 cached tokens on an identical 6.7k-token prefix
-    /// without them, 6.4k with them — `docs/chatgpt.md`). The per-session
+    /// without them, 6.4k with them — `docs/providers/chatgpt.md`). The per-session
     /// cache key rides both, so an agentic session's rounds land on the
     /// warm cache exactly as they do on every other provider.
     fn chatgpt_request_headers(
@@ -470,7 +470,7 @@ impl OpenAiClient {
             req = req.header(name, value);
         }
         // Codex's routing hint: the model on every request, and the speed
-        // tier beside it when one is selected (`docs/fast-mode.md`) — the
+        // tier beside it when one is selected (`docs/providers/fast-mode.md`) — the
         // edge's own note of where a priority request should go.
         req = req.header(
             super::chatgpt::ROUTING_HINT_HEADER,
@@ -502,10 +502,10 @@ impl OpenAiClient {
         // resolved with no I/O; GitHub Copilot's stored value is an OAuth
         // token, exchanged (cached) here for the bearer its API takes and the
         // account's own host — a Business seat is served from a different one
-        // than the file names. See `docs/copilot.md`.
+        // than the file names. See `docs/providers/copilot.md`.
         let auth = super::auth::request_auth(&self.cfg)?;
         let url = self.request_url(auth.base.as_deref());
-        // Where a failed send is checked against the host (`docs/offline.md`):
+        // Where a failed send is checked against the host (`docs/providers/offline.md`):
         // this same client, so the probe goes the way the request went.
         let reach = Reachability::new(client.clone(), &url);
         // Ollama streams NDJSON rather than SSE; the header names which.
@@ -531,7 +531,7 @@ impl OpenAiClient {
         req = self.copilot_request_headers(req, &messages);
         req = self.chatgpt_request_headers(req);
         // The body streams out of a serializer thread as the transport
-        // uploads it — never held whole (`docs/memory.md`).
+        // uploads it — never held whole (`docs/architecture/memory.md`).
         let (body, len) = self.request_body(messages, auth.project.as_deref())?;
         req = req.body(reqwest::blocking::Body::sized(body, len));
 
@@ -543,7 +543,7 @@ impl OpenAiClient {
         // receiver drops; the transport exits at its next channel send — or
         // when its current network operation hits NET_OP_TIMEOUT on a silent
         // socket — detached and bounded, never joined (the loop's
-        // detach-don't-join discipline, docs/interrupt.md).
+        // detach-don't-join discipline, docs/input/interrupt.md).
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || run_transport(req, &tx, &reach));
         let outcome = match self.cfg.wire_api {
@@ -566,11 +566,11 @@ impl OpenAiClient {
     /// as it did — except on the Ollama wire, whose failures are mostly about
     /// the *machine* (the server not running, a model not pulled, a
     /// capability the model lacks) and say so in words a user can act on
-    /// (`docs/ollama.md`) — and a keyless server's, which is a server the
+    /// (`docs/providers/ollama.md`) — and a keyless server's, which is a server the
     /// user runs: a refused connection on this machine is one to start, a
     /// prompt longer than the context LM Studio loaded the model with is one
     /// to raise, and a token the server wants is one `/login` takes
-    /// (`docs/local-models.md`).
+    /// (`docs/providers/local-models.md`).
     fn explain(&self, error: LlmError) -> LlmError {
         if self.cfg.wire_api == super::WireApi::Ollama {
             return match error {
@@ -585,7 +585,7 @@ impl OpenAiClient {
                 // outage to wait out: the refusal becomes the `ollama serve`
                 // advice on the bounded retry, surfaced in seconds. A remote
                 // host (Ollama's cloud, an `OLLAMA_HOST` elsewhere) keeps the
-                // wait (`docs/offline.md`).
+                // wait (`docs/providers/offline.md`).
                 LlmError::Unreachable { host, message } => {
                     let base = self.base_url(None);
                     match super::ollama::connection_advice(&base, &message)
@@ -612,7 +612,7 @@ impl OpenAiClient {
         // the `/login` test's sentence on the bounded retry, as the Ollama
         // wire's advice above, rather than a wait for the internet. A keyed
         // provider on `localhost` is a forwarding proxy, and keeps the wait
-        // (`docs/offline.md`).
+        // (`docs/providers/offline.md`).
         if self.cfg.auth.key_optional()
             && let LlmError::Unreachable { message, .. } = &error
             && let Some(advice) =
@@ -633,14 +633,14 @@ impl OpenAiClient {
             super::AuthScheme::ChatGptCodex => super::chatgpt::auth_advice(*status, body),
             // The Anthropic refusals a user can do something about are
             // several and need different answers — an expired sign-in, a
-            // scope, a spend cap (`docs/claude.md`).
+            // scope, a spend cap (`docs/providers/claude.md`).
             super::AuthScheme::AnthropicConsole => super::claude::auth_advice(*status, body),
             // Cline's API documents its 401/402/403 meanings, and each wants
-            // a different sentence (`docs/cline.md`).
+            // a different sentence (`docs/providers/cline.md`).
             super::AuthScheme::ClineAccount => super::cline::auth_advice(*status, body),
             // Google's refusals name a status and little a user can act on:
             // a spent quota, an account to verify, a model this account
-            // cannot reach (`docs/antigravity.md`).
+            // cannot reach (`docs/providers/antigravity.md`).
             super::AuthScheme::GoogleAntigravity => super::antigravity::auth_advice(*status, body),
             // A pasted Anthropic key meets the same refusals, minus the ones
             // about a sign-in: the advice module tells them apart by status
@@ -650,13 +650,13 @@ impl OpenAiClient {
             }
             // A pasted Cline key meets the sign-in's plan and credit refusals,
             // and a 401 worded for Cline's own client that here means the key
-            // (`docs/cline.md`).
+            // (`docs/providers/cline.md`).
             super::AuthScheme::ApiKey if super::cline::is_api_base(&self.cfg.api_base) => {
                 super::cline::key_advice(*status, body)
             }
             // A server the user runs: a prompt longer than the context LM
             // Studio loaded the model with, and a token the server was set to
-            // require after `/login` saved its address (docs/local-models.md).
+            // require after `/login` saved its address (docs/providers/local-models.md).
             super::AuthScheme::OptionalKey => super::local::refusal_advice(
                 &self.cfg.provider_name,
                 &self.base_url(None),
@@ -708,13 +708,13 @@ impl BodySource for ChatRequest<'static> {
 }
 
 /// How a failed send is told apart from a host that cannot be reached
-/// (`docs/offline.md`): the request's own URL, and the client it went out
+/// (`docs/providers/offline.md`): the request's own URL, and the client it went out
 /// through — the same proxy, trust roots and pool, so what the probe reaches
 /// is what the request would have.
 ///
 /// `reqwest` blames a plain connect failure on the connect (`is_connect`),
 /// and that needs no second opinion. But the chat request streams its body
-/// out of a pipe (`docs/memory.md`), and when its connect fails the body
+/// out of a pipe (`docs/architecture/memory.md`), and when its connect fails the body
 /// pump loses its receiver first: what comes back is a *body* error — `send
 /// failed because receiver is gone` — with no connect error anywhere in its
 /// chain. So a send failure the transport does not blame on the connect is
@@ -777,7 +777,7 @@ fn run_transport(
         Err(e) => {
             // Classified here, where the typed error still is: a connection
             // that could not be made waits for the network, anything else
-            // takes the bounded retry (`docs/offline.md`).
+            // takes the bounded retry (`docs/providers/offline.md`).
             let _ = tx.send(Err(reach.classify(&e)));
             return;
         }
@@ -816,7 +816,7 @@ fn run_transport(
 /// channel is the clean EOF (any buffered final line flushed first, so a
 /// stream ending without a trailing newline still parses). Pure with respect
 /// to the network — unit-tested by feeding the channel directly.
-/// Drain a **Responses** stream (`docs/chatgpt.md`). The same cancel cadence
+/// Drain a **Responses** stream (`docs/providers/chatgpt.md`). The same cancel cadence
 /// and transport contract as [`drain_stream`]; only the frame vocabulary
 /// differs, so the two produce the identical [`StreamOutcome`] currency and
 /// nothing above this module can tell them apart.
@@ -827,7 +827,7 @@ fn run_transport(
 /// that *do* stream, the name as the item opens and the argument deltas
 /// after it, are surfaced under the item's `output_index` for the tally and
 /// the live preview only, and the finished item adds whatever of the call
-/// none of them carried (`responses::ToolStreams`, `docs/write-streaming.md`).
+/// none of them carried (`responses::ToolStreams`, `docs/ui/write-streaming.md`).
 fn drain_responses(
     rx: &Receiver<Result<Vec<u8>>>,
     cancel: &CancelToken,
@@ -908,7 +908,7 @@ fn drain_responses(
                 // which is what the agent loop reads to decide to loop again.
                 // An incomplete one says why it stopped short — the reason,
                 // not the bare `incomplete` status, is what tells a reply cut
-                // off at the output cap apart (docs/unfinished-replies.md).
+                // off at the output cap apart (docs/architecture/unfinished-replies.md).
                 finish_reason = Some(if tool_calls.is_empty() {
                     reason.or(status).unwrap_or_else(|| "stop".to_string())
                 } else {
@@ -1041,7 +1041,7 @@ fn drain_ollama(
 
 /// [`drain_stream`]'s Cloud Code sibling, over the same [`pump_lines`] byte
 /// loop — so Esc is honoured identically on all five wire formats
-/// (`docs/antigravity.md`). The fold is
+/// (`docs/providers/antigravity.md`). The fold is
 /// [`super::cloud_code::StreamAccumulator`]'s; what the round must hand back
 /// on the next request — its calls' thought signatures, a Claude round's
 /// thinking — is kept in the wire's memo as the round finishes.
@@ -1076,7 +1076,7 @@ fn drain_cloud_code(
     })?;
     // A stream that ended without a finish reason was cut short: a
     // transport failure, which the bounded retry answers by voiding the
-    // attempt (`docs/offline.md` *A connection lost mid-reply*).
+    // attempt (`docs/providers/offline.md` *A connection lost mid-reply*).
     let end = acc.finish().map_err(LlmError::Http)?;
     super::cloud_code::remember_round(model, &end);
     Ok(StreamOutcome {
@@ -1225,7 +1225,7 @@ fn drain_stream(
 /// `id`/`name` arriving on the first fragment and its `arguments` in string
 /// pieces — into whole [`ToolCallRequest`]s. Pure and unit-tested (the
 /// fragmentation is provider-specific and easy to get wrong). See
-/// `docs/tools.md`.
+/// `docs/tools/tools.md`.
 #[derive(Debug, Default)]
 pub struct ToolCallAccumulator {
     calls: Vec<PartialToolCall>,
@@ -1252,7 +1252,7 @@ impl ToolCallAccumulator {
     ///
     /// Returns the **slot** the fragment folded into — its entry's position,
     /// stable for the round — which is the identity its streamed piece
-    /// carries ([`ToolCallFragment::index`], `docs/write-streaming.md`). The
+    /// carries ([`ToolCallFragment::index`], `docs/ui/write-streaming.md`). The
     /// wire `index` alone could not be: it repeats across the calls above.
     fn push(
         &mut self,
@@ -1381,8 +1381,8 @@ fn process_payload(
     // text delta — fold them in before the content early-return so a
     // tool-call-only frame (no content) is never skipped. Each name/argument
     // piece is also surfaced, under the slot it folded into, so the caller
-    // can count the model *generating* the call (docs/status-indicator.md)
-    // and preview it (docs/write-streaming.md).
+    // can count the model *generating* the call (docs/ui/status-indicator.md)
+    // and preview it (docs/ui/write-streaming.md).
     let (tool_deltas, reason) = parse_sse_tool_calls(data);
     let mut pieces: Vec<ToolCallFragment> = Vec::new();
     for td in tool_deltas {
@@ -1444,7 +1444,7 @@ struct ErrorBody {
 /// Detect an in-band failure in one SSE `data:` payload: an `{"error": …}`
 /// frame, or a frame that is **only a JSON string** — how LM Studio reports a
 /// prompt longer than the context it loaded the model with, before it ends
-/// the stream (`docs/local-models.md`); skipped, that ended the turn with no
+/// the stream (`docs/providers/local-models.md`); skipped, that ended the turn with no
 /// reply and no error. `None` for ordinary delta frames (including
 /// unparseable ones — those stay skipped, a keep-alive shouldn't kill the
 /// stream).
@@ -1616,7 +1616,7 @@ struct UsagePayload {
 
 /// The `completion_tokens_details` block: the breakdown of what the round
 /// *generated*. Only the reasoning share interests us — it is what the
-/// `Thought for …` cell reports (`docs/thinking-stream.md`).
+/// `Thought for …` cell reports (`docs/ui/thinking-stream.md`).
 #[derive(Debug, Default, Deserialize)]
 struct CompletionTokensDetails {
     #[serde(default)]
@@ -1846,7 +1846,7 @@ mod tests {
     #[test]
     fn the_shipped_venice_provider_sends_the_proxys_request_to_venice_itself() {
         // The direct Venice provider is the Agent Zero proxy's twin
-        // (`docs/venice.md`). Resolved through the shipped file exactly as the
+        // (`docs/providers/venice.md`). Resolved through the shipped file exactly as the
         // boundary resolves it, its request must carry everything the
         // proxy's does — the `venice_parameters` table with
         // `disable_thinking` synced to the mode, the session's
@@ -1898,7 +1898,7 @@ mod tests {
     fn payload_asks_for_the_streamed_usage_frame() {
         // The standard OpenAI `stream_options.include_usage` — both shipped
         // providers honour it, delivering the final usage frame the app snaps
-        // its token tally to (docs/prompt-caching.md).
+        // its token tally to (docs/providers/prompt-caching.md).
         let p =
             OpenAiClient::new(ModelConfig::fallback()).build_payload(&[ChatMessage::user("hi")]);
         assert_eq!(p["stream_options"], json!({"include_usage": true}));
@@ -1906,7 +1906,7 @@ mod tests {
 
     #[test]
     fn a_provider_drops_the_request_fields_its_server_refuses() {
-        // `drop_params` (docs/user-providers.md): a strict server refuses a
+        // `drop_params` (docs/providers/user-providers.md): a strict server refuses a
         // field every request carries, and a kwarg can only replace it — so
         // the named fields come out last, after the kwargs and the thinking
         // mode have had their say. `stream` stays whatever the list says.
@@ -1960,7 +1960,7 @@ mod tests {
         // An anthropic/ model via an OpenRouter-style aggregator only caches
         // marked blocks: the wire messages carry the ephemeral breakpoints
         // (system + frontier — the pure placement is cache.rs's, this test
-        // pins the builder wiring). See docs/prompt-caching.md.
+        // pins the builder wiring). See docs/providers/prompt-caching.md.
         let mut cfg = ModelConfig::fallback();
         cfg.model = "anthropic/claude-haiku-4.5".to_string();
         let p = OpenAiClient::new(cfg)
@@ -1982,7 +1982,7 @@ mod tests {
         // LM Studio names its models `publisher/model` — `qwen/qwen3-8b` is
         // the aggregator spelling the sniff reads as explicit caching. A
         // server the user runs bills no prompt cache for a breakpoint to buy,
-        // so its messages keep the plain form (docs/local-models.md).
+        // so its messages keep the plain form (docs/providers/local-models.md).
         let mut cfg = ModelConfig::fallback();
         cfg.auth = crate::llm::AuthScheme::OptionalKey;
         cfg.api_base = "http://127.0.0.1:1234/v1".to_string();
@@ -2040,7 +2040,7 @@ mod tests {
         assert!(p.get("session_id").is_none());
     }
 
-    // --- GitHub Copilot's payload shape (docs/copilot.md) ---
+    // --- GitHub Copilot's payload shape (docs/providers/copilot.md) ---
 
     #[test]
     fn a_copilot_payload_carries_no_affinity_key() {
@@ -2055,7 +2055,7 @@ mod tests {
         assert!(p.get("session_id").is_none(), "{p}");
     }
 
-    // --- the ChatGPT backend's per-request headers (docs/chatgpt.md) ---
+    // --- the ChatGPT backend's per-request headers (docs/providers/chatgpt.md) ---
 
     /// The headers a request built for `cfg` carries, by name.
     fn built_header(cfg: ModelConfig, name: &str) -> Option<String> {
@@ -2145,7 +2145,7 @@ mod tests {
         // OmniRoute's route to Claude models reads only `reasoning_effort`
         // and ignores the object, so a provider declaring it gets the level
         // there *instead of* the object, never beside it — and Off spelled
-        // `none`, OpenAI's word for it (docs/user-providers.md).
+        // `none`, OpenAI's word for it (docs/providers/user-providers.md).
         use crate::llm::{ReasoningEffort, ReasoningParam, ThinkingMode};
         for (mode, sent) in [
             (ThinkingMode::Effort(ReasoningEffort::XHigh), Some("xhigh")),
@@ -2165,7 +2165,7 @@ mod tests {
         }
     }
 
-    // --- a lost connection, as the transport sees it (docs/offline.md) ---
+    // --- a lost connection, as the transport sees it (docs/providers/offline.md) ---
 
     /// A loopback port nothing listens on: the kernel refuses a connect to it
     /// at once.
@@ -2287,7 +2287,7 @@ mod tests {
 
     #[test]
     fn a_refused_local_ollama_is_advice_but_a_remote_one_is_waited_for() {
-        // `docs/offline.md`: a server on this machine that is not running is
+        // `docs/providers/offline.md`: a server on this machine that is not running is
         // `ollama serve` to start, surfaced on the bounded retry; a host
         // elsewhere that cannot be reached is the network, waited for.
         let unreachable = |host: &str| LlmError::Unreachable {
@@ -2312,7 +2312,7 @@ mod tests {
 
     #[test]
     fn a_refused_local_keyless_server_is_advice_but_a_proxy_or_a_remote_one_is_waited_for() {
-        // docs/offline.md: LM Studio closed is a server to start, said the
+        // docs/providers/offline.md: LM Studio closed is a server to start, said the
         // way the /login test says it, on the bounded retry. The same server
         // on another machine is the network, and a keyed provider on
         // localhost is a forwarding proxy that comes back by itself (smoke
@@ -2347,7 +2347,7 @@ mod tests {
 
     #[test]
     fn a_keyless_servers_refusals_are_explained_but_a_keyed_ones_pass_through() {
-        // docs/local-models.md: LM Studio's prompt longer than the loaded
+        // docs/providers/local-models.md: LM Studio's prompt longer than the loaded
         // context, sent inside the stream, becomes advice to raise it; a
         // pasted-key provider's own words stand.
         let overflow = || LlmError::Api {
@@ -2400,7 +2400,7 @@ mod tests {
     fn a_pasted_cline_key_s_refusal_is_explained_as_the_key() {
         // The live API's 401 for a bad key is worded for Cline's own client
         // ("…the latest version of Cline…") — on a pasted key it means the
-        // key (`docs/cline.md`).
+        // key (`docs/providers/cline.md`).
         let body = r#"{"error":"Unauthorized: Please make sure you're using the latest version of Cline and re-authenticate your Cline account."}"#;
         let failure = || LlmError::Api {
             status: 401,
@@ -2634,7 +2634,7 @@ mod tests {
     fn process_sse_line_surfaces_tool_call_fragments_for_counting() {
         // A tool-call-only frame (no content/reasoning) must still emit a Delta
         // carrying the streamed name/arguments fragment, so the live token tally
-        // ticks while the model *generates* the call (see docs/status-indicator.md).
+        // ticks while the model *generates* the call (see docs/ui/status-indicator.md).
         let (step, deltas) = drive_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}"#,
         );
@@ -2664,7 +2664,7 @@ mod tests {
     #[test]
     fn parallel_calls_stream_their_pieces_under_distinct_slots() {
         // The preview needs to know WHICH call a piece belongs to
-        // (docs/write-streaming.md): each piece names the slot the
+        // (docs/ui/write-streaming.md): each piece names the slot the
         // accumulator folded it into.
         let (_, deltas) = drain_queued(vec![
             Ok(br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"write","arguments":"{\"pa"}}]}}]}
@@ -3190,7 +3190,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
     fn a_responses_call_named_as_it_opens_gets_arguments_that_arrive_only_when_it_finishes() {
         // A server that streams no argument deltas: the finished item is the
         // first frame carrying them, and the preview and the tally still get
-        // them — once (docs/write-streaming.md).
+        // them — once (docs/ui/write-streaming.md).
         let (out, deltas) = drain_responses_queued(vec![Ok(br#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_a","name":"write","arguments":""}}
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_a","name":"write","arguments":"{\"path\":\"a.py\",\"content\":\"x\\n\"}"}}
 data: {"type":"response.completed","response":{"status":"completed"}}
@@ -3212,7 +3212,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
         // A long thought spends the whole output budget and no message item
         // follows: the response ends `incomplete`, and its reason — not the
         // bare status — is what tells the loop the reply was cut off rather
-        // than finished (docs/unfinished-replies.md).
+        // than finished (docs/architecture/unfinished-replies.md).
         let (out, _) = drain_responses_queued(vec![Ok(br#"data: {"type":"response.reasoning_summary_text.delta","delta":"Weighing the options"}
 data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
 "#
@@ -3312,7 +3312,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
         // A reasoning model bills its chain-of-thought under
         // `completion_tokens_details.reasoning_tokens` (verified live against
         // OpenRouter). It is what the committed `Thought for …` cell snaps
-        // its estimate to — see docs/thinking-stream.md.
+        // its estimate to — see docs/ui/thinking-stream.md.
         let (out, _deltas) = drain_queued(vec![
             Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":33,"completion_tokens":74,"total_tokens":107,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":23,"image_tokens":0}}}
 "#
@@ -3444,7 +3444,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
         assert!(deltas.is_empty());
     }
 
-    // --- the speed tier (docs/fast-mode.md) ---
+    // --- the speed tier (docs/providers/fast-mode.md) ---
 
     #[test]
     fn a_chat_payload_carries_the_selected_service_tier() {
@@ -3499,7 +3499,7 @@ data: {"type":"response.completed","response":{"status":"completed"}}
 
 #[cfg(test)]
 mod body_tests {
-    //! The request body on the wire (`docs/memory.md`): serialized from the
+    //! The request body on the wire (`docs/architecture/memory.md`): serialized from the
     //! messages by reference, streamed through a pipe of small chunks, never
     //! held whole.
 

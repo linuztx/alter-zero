@@ -9,7 +9,7 @@
 //! whole reply (`committed ++ preview == assistant_lines(prefix)`, the
 //! one-frontier contract) — but over *generated* fragment soup, so
 //! combinations no hand-written corpus thought of are still machine-checked.
-//! See `docs/markdown.md` and CLAUDE.md invariant 2.
+//! See `docs/ui/markdown.md` and CLAUDE.md invariant 2.
 
 use super::*;
 use crate::ui::live::preview_lines;
@@ -176,7 +176,7 @@ fn hostile_doc(rng: &mut Rng) -> String {
 /// text, both colours, the modifiers — and `underline_color`, which is not
 /// decoration here but the **OSC 8 link carrier** (`ui::inline` stamps the
 /// interned id there and `term::draw_cells` brackets the marked run —
-/// `docs/links.md`). A comparator blind to it would let a batch-vs-streaming
+/// `docs/ui/links.md`). A comparator blind to it would let a batch-vs-streaming
 /// divergence in link interning pass unseen: the words would match while one
 /// render linked them and the other did not.
 type Row = (
@@ -250,13 +250,13 @@ fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
         // between scrollback and that row are on screen NOWHERE (the strip
         // showing one row of a source line `commit` withholds whole) or when
         // the preview repeats a row scrollback already has. Equality is what
-        // pins the shared frontier (docs/markdown.md, *Scrollback and the
+        // pins the shared frontier (docs/ui/markdown.md, *Scrollback and the
         // strip share one frontier*).
         let mut on_screen = committed.clone();
         on_screen.extend(got_preview.iter().cloned());
         // The one tolerance (`matches_up_to_padding`): the strip pads with
         // blank rows rather than shrink between two tokens
-        // (`docs/slow-stream.md`), rows the batch render — trimming a
+        // (`docs/ui/slow-stream.md`), rows the batch render — trimming a
         // reply's trailing blanks — does not hold.
         assert!(
             matches_up_to_padding(&on_screen, &batch_prefix, |r| blank_row(r)),
@@ -265,7 +265,7 @@ fn assert_stream_matches_batch(full: &str, width: u16, ctx: &str) {
         // …and the strip never SHRINKS without a commit: the region is
         // content-anchored, so rows leaving the preview must be rows that
         // moved to scrollback, or the box hops up (the bounce a slow model
-        // makes visible on every fence, `docs/slow-stream.md`).
+        // makes visible on every fence, `docs/ui/slow-stream.md`).
         assert!(
             got_preview.len() + committed_now_rows >= prev_preview_rows,
             "{ctx}: the strip shrank from {prev_preview_rows} to {} rows with only {committed_now_rows} row(s) committing at {prefix:?} (w={width}): the box would hop up",
@@ -312,7 +312,7 @@ fn a_streaming_url_never_commits_a_plain_styled_prefix() {
     // restyling the whole word — so at a narrow width, a wrapped prefix row
     // committed as plain prose would later repaint blue+underlined
     // (immutable-scrollback corruption). The trailing line must be withheld
-    // while a URL could still be forming at its end (docs/links.md).
+    // while a URL could still be forming at its end (docs/ui/links.md).
     let full = "see\nhttp://example.com/path more";
     for width in [3u16, 6, 24] {
         assert_stream_matches_batch(full, width, "streaming url");
@@ -717,7 +717,7 @@ fn a_mid_stream_width_change_reconstructs_the_reply() {
     // A real resize while the reply streams: the cache is width-keyed, so the
     // first call at the new width rebuilds from scratch — `committed` resets
     // and `committed_rows` is empty, which is exactly why the boundary
-    // re-commits the whole partial after a purge rebuild (`docs/flicker.md`).
+    // re-commits the whole partial after a purge rebuild (`docs/ui/flicker.md`).
     // What must hold either way: once the stream continues and finishes at
     // the new width, the rows that reached scrollback are the batch render at
     // that width — no fragment rendered at the old width survives.
@@ -873,7 +873,7 @@ fn the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line() {
     );
 }
 
-// ===== The agent session view's frontier (docs/agent-view-streaming.md) =====
+// ===== The agent session view's frontier (docs/agents/agent-view-streaming.md) =====
 
 /// The agent-view twin of [`assert_stream_matches_batch`]: stream `full` into
 /// an `AgentRun` whose session view is open, committing through the render
@@ -882,7 +882,7 @@ fn the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line() {
 ///
 /// The view keeps its own copy of the main strip's branches, and the copy is
 /// what fell behind — a subagent's forming table lived on screen NOWHERE
-/// (`docs/agent-view-streaming.md`). The contract is the main one's
+/// (`docs/agents/agent-view-streaming.md`). The contract is the main one's
 /// (CLAUDE.md invariant 2), so it earns the same generated fragment soup, run
 /// through the real `preview_lines` dispatch (which routes on
 /// `App::viewed_agent`).
@@ -980,7 +980,7 @@ fn an_agent_views_live_tool_cell_outranks_its_streaming_frontier() {
 
 #[test]
 fn the_markdown_tour_streams_prefix_stable_at_every_width() {
-    // The slow-stream stress demo's document (`docs/slow-stream.md`): every
+    // The slow-stream stress demo's document (`docs/ui/slow-stream.md`): every
     // block kind the renderer knows, in the one long text-only reply
     // `scripts/smoke.sh` Phase 121 streams token by token. The smoke phase
     // proves the *boundary* holds up at a slow pace; this is the same

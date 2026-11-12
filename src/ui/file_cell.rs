@@ -1,6 +1,6 @@
 //! The `read`/`write`/`edit` file cell: codex's `diff_render` look in the `⎿`
 //! gutter — dim line numbers, green/red signs, syntax-highlighted content, and
-//! added/removed rows on background tints. See `docs/tools.md`.
+//! added/removed rows on background tints. See `docs/tools/tools.md`.
 
 use super::assistant::{code_content_head_rows, code_content_rows, code_content_tail_rows};
 use super::inline::wrap_inline_hanging;
@@ -22,7 +22,7 @@ pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Li
 
 /// [`gutter_row`] with the content's whole [`Style`], not just its colour — for
 /// a body that also carries a modifier, like the thinking stream's italic
-/// chain-of-thought (`docs/thinking-stream.md`). The corner/indent stays dim
+/// chain-of-thought (`docs/ui/thinking-stream.md`). The corner/indent stays dim
 /// either way; this is the one place that geometry lives.
 pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Line<'static> {
     gutter_row_spans(index, vec![Span::styled(text, style)])
@@ -30,7 +30,7 @@ pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Lin
 
 /// [`gutter_row_styled`] over content already cut into styled spans — a row
 /// that mixes inks, like the Ctrl+D view's `→ name(arguments)` call rows
-/// (`docs/context.md`).
+/// (`docs/architecture/context.md`).
 pub(super) fn gutter_row_spans(index: usize, content: Vec<Span<'static>>) -> Line<'static> {
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
@@ -255,7 +255,7 @@ fn summary_head_lines(head: &str, width: u16) -> Vec<Line<'static>> {
 /// line-number gutter sits **one column past** the `⎿` corner content
 /// ([`TOOL_RESULT_PREFIX`]), matching Claude-Code's file-change look (the
 /// numbers land just inside the corner). The `⋮` hunk gaps and `…` notes align
-/// here too. See `docs/tools.md`.
+/// here too. See `docs/tools/tools.md`.
 fn file_body_indent() -> usize {
     cols(TOOL_RESULT_PREFIX) + 1
 }
@@ -274,7 +274,7 @@ fn floor_boundary(s: &str, at: usize) -> usize {
 
 /// Style one numbered row's syntax segments for display, splitting them at the
 /// `changed` byte ranges — the character-level refinement
-/// (`docs/inline-diff.md`).
+/// (`docs/ui/inline-diff.md`).
 ///
 /// The row's own `bg` tint sits under everything; the changed runs are lifted
 /// onto the brighter `mark_bg` and bolded, so the muted row tint answers *this
@@ -379,7 +379,7 @@ enum LineRows {
     All,
     /// At most the first `n`: the room the inline peek has left for the line
     /// it starts. A line that needs more is cut on the last of them, closed
-    /// by [`FILE_PEEK_CUT_MARKER`] (`docs/long-lines.md` §8).
+    /// by [`FILE_PEEK_CUT_MARKER`] (`docs/ui/long-lines.md` §8).
     Head(usize),
     /// Only the last `n`: the streaming tail's window, which cuts nothing —
     /// the rows above it have scrolled off its top.
@@ -393,7 +393,7 @@ enum LineRows {
 /// Long content wraps ([`code_content_rows`]); continuations indent under
 /// the content column and keep the tint. `changed` are the row's
 /// character-level refinement ranges ([`row_segments`],
-/// `docs/inline-diff.md`) — empty for an unrefined row, which renders
+/// `docs/ui/inline-diff.md`) — empty for an unrefined row, which renders
 /// exactly as it always did.
 ///
 /// `window` picks the rows ([`LineRows`]): every one; only the first `n`,
@@ -492,7 +492,7 @@ fn numbered_row_lines(
 /// gives up the columns [`FILE_PEEK_CUT_MARKER`] needs from its end,
 /// measured grapheme by grapheme as the wrap measured it, and the dim marker
 /// takes them on the row's own tint — so the cut never reads as the line's
-/// end, and an added line's band runs unbroken to it (`docs/long-lines.md`
+/// end, and an added line's band runs unbroken to it (`docs/ui/long-lines.md`
 /// §8).
 fn close_cut_row(row: &mut Vec<Span<'static>>, width: usize, bg: Option<Color>) {
     let mut room = width.saturating_sub(cols(FILE_PEEK_CUT_MARKER));
@@ -520,7 +520,7 @@ fn close_cut_row(row: &mut Vec<Span<'static>>, width: usize, bg: Option<Color>) 
 /// hint counting the file lines the peek never started, or — when the line
 /// it cut is the last, so no whole line is hidden — the count-less
 /// `… (ctrl+o to expand)`, since the rest of that line is still behind
-/// Ctrl+O (`docs/long-lines.md` §8). `None` when the peek showed everything.
+/// Ctrl+O (`docs/ui/long-lines.md` §8). `None` when the peek showed everything.
 /// Shared by the committed cell and a streaming `write`'s head, which must
 /// agree row for row.
 fn peek_hint_line(hidden: usize, cut: bool) -> Option<Line<'static>> {
@@ -537,7 +537,7 @@ fn peek_hint_line(hidden: usize, cut: bool) -> Option<Line<'static>> {
 }
 
 /// One parsed row as the character-level refinement sees it: a numbered row is its
-/// sign plus its content, everything else breaks the run (`docs/inline-diff.md`).
+/// sign plus its content, everything else breaks the run (`docs/ui/inline-diff.md`).
 fn refine_row(row: &FileRow) -> RefineRow<'_> {
     match row {
         FileRow::Numbered { sign, text, .. } => RefineRow::Line(sign.unwrap_or(' '), text),
@@ -569,7 +569,7 @@ fn refine_input(rows: &[Option<FileRow>]) -> Vec<RefineRow<'_>> {
 /// The shared core of the finished `write`/`edit` cell ([`file_cell_lines`],
 /// which caps at a peek and hints Ctrl+O) and the tool-permission prompt's
 /// preview (`ui::permission_view`, which shows the whole change and caps only
-/// to fit the terminal — `docs/permissions.md`). `signed` follows the body's
+/// to fit the terminal — `docs/state/permissions.md`). `signed` follows the body's
 /// shape: a diff carries a `+`/`-`/space sign column, brand-new content does
 /// not. A row that isn't in the format renders dim and verbatim, so an odd
 /// line never swallows the rest.
@@ -640,11 +640,11 @@ pub(super) fn numbered_body_lines(
 /// notes dim. `peek` caps the body at [`FILE_PEEK_LINES`] display rows: it
 /// starts source rows while the budget has room, shows each one whole when
 /// the rows left hold it, and cuts the one that needs more on the last of
-/// them (`docs/long-lines.md` §8), then appends the [`peek_hint_line`]
+/// them (`docs/ui/long-lines.md` §8), then appends the [`peek_hint_line`]
 /// counting the file lines it never started. Without `peek` — the Ctrl+O
 /// expansion — every line shows whole.
 /// `None` when the output isn't in the format — the caller falls back to the
-/// legacy rendering. See `docs/tools.md`.
+/// legacy rendering. See `docs/tools/tools.md`.
 pub(super) fn file_cell_lines(
     tool: &ToolCall,
     width: u16,
@@ -714,7 +714,7 @@ pub(super) fn file_cell_lines(
 }
 
 /// Which rows of a previewed call's content its cell shows
-/// (`docs/write-streaming.md`).
+/// (`docs/ui/write-streaming.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DraftWindow {
     /// While the content streams: the newest rows, so the line still
@@ -729,7 +729,7 @@ enum DraftWindow {
 }
 
 /// The cell for a **previewed** call — a `write` streaming into its cell
-/// while the model writes it (`docs/write-streaming.md`): the ordinary
+/// while the model writes it (`docs/ui/write-streaming.md`): the ordinary
 /// `● Write({path})` header, a corner row saying where the call stands, and
 /// the content in the committed `Wrote …` cell's numbered, highlighted
 /// gutter.
@@ -739,13 +739,13 @@ enum DraftWindow {
 /// `Waiting…`/`Running…` — or `None` while the call is still being
 /// generated, when the corner counts the lines as they arrive and the bullet
 /// blinks in the running grey. `pulse` is the strip's frame clock (`None`
-/// renders the bullet at rest, `docs/tool-pulse.md`); `whole` is the Ctrl+O
+/// renders the bullet at rest, `docs/ui/tool-pulse.md`); `whole` is the Ctrl+O
 /// transcript, which shows every line and the whole header.
 ///
 /// The window is the committed peek's [`FILE_PEEK_LINES`] **display rows**.
 /// While a generated call's content streams it is the newest rows, the line
 /// still arriving at the bottom and the top row possibly the end of a line
-/// that began above the window — nothing in it cut (`docs/long-lines.md`
+/// that began above the window — nothing in it cut (`docs/ui/long-lines.md`
 /// §7); once the content has arrived or the call is queued it is the
 /// committed peek — lines from the top while the budget has room, each one
 /// whole when the rows left hold it and the one that needs more cut on the
@@ -795,7 +795,7 @@ pub(super) fn draft_cell_lines(
     let code = super::palette::palette().code;
     // The peek walks below take at most FILE_PEEK_LINES source lines from
     // either end — every line is at least one row — so its cache keeps
-    // just those; only the whole view colours every line (docs/memory.md).
+    // just those; only the whole view colours every line (docs/architecture/memory.md).
     let cache = if window == DraftWindow::Whole {
         draft.highlighted_whole(lang, code, CODE_TAB_WIDTH)
     } else {

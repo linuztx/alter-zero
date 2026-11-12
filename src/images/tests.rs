@@ -209,7 +209,7 @@ fn nothing_is_reserved_while_images_are_off() {
     set_policy(ImagePolicy::default());
 }
 
-// ===== a picture whose file is gone (docs/images.md "A picture whose file is gone") =====
+// ===== a picture whose file is gone (docs/ui/images.md "A picture whose file is gone") =====
 
 #[test]
 fn a_picture_the_boundary_found_missing_reserves_no_rows() {
@@ -956,7 +956,7 @@ fn a_whole_decode_is_refused_past_fifty_megapixels() {
     assert_eq!(fitted::WHOLE_DECODE_MAX_PIXELS, 50_000_000);
 }
 
-// ===== the payload cache (`payload`, docs/images.md "Memory") =====
+// ===== the payload cache (`payload`, docs/ui/images.md "Memory") =====
 
 #[test]
 fn payload_cache_key_names_the_file_its_state_and_the_cap() {
@@ -1084,7 +1084,7 @@ fn a_jpeg_payload_is_shrunk_to_the_target_without_a_whole_source_resample() {
     assert!(small.bytes.len() < bytes.len());
 }
 
-// ===== the payload cache's bound (docs/memory.md) =====
+// ===== the payload cache's bound (docs/architecture/memory.md) =====
 
 /// `(sidecar, bytes, age-in-days)` → what the eviction weighs.
 fn sidecars(rows: &[(&str, u64, u64)]) -> Vec<(std::path::PathBuf, u64, std::time::SystemTime)> {
@@ -1155,7 +1155,7 @@ fn an_incoming_copy_larger_than_the_whole_cap_empties_the_cache_and_no_more() {
     );
 }
 
-// ===== the attachment cache (`attachment`, docs/memory.md "Every turn re-sent the picture") =====
+// ===== the attachment cache (`attachment`, docs/architecture/memory.md "Every turn re-sent the picture") =====
 
 /// A picture's `data:` URL as the wire carries it — the reference the cache's
 /// output is checked against.
@@ -1389,7 +1389,7 @@ fn attachment_mime_follows_the_extension_with_png_as_the_default() {
     assert_eq!(attachment_mime(p("no-extension")), "image/png");
 }
 
-// ===== the encoded pictures (`store`, docs/images.md "A file rewritten in place") =====
+// ===== the encoded pictures (`store`, docs/ui/images.md "A file rewritten in place") =====
 
 /// A solid-colour PNG, so every half-block cell the encoder emits carries
 /// exactly that colour and an assertion can name it.

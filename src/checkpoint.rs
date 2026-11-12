@@ -1,6 +1,6 @@
 //! Filesystem checkpoints — snapshot the working directory per turn so that
 //! rewinding the conversation (`/resume`, the Esc-Esc backtrack) can **reset the
-//! code** to that point, not just the transcript. See `docs/checkpoint.md`.
+//! code** to that point, not just the transcript. See `docs/state/checkpoint.md`.
 //!
 //! Two layers, split the repo's usual way (pure core unit-tested, boundary I/O
 //! smoke/integration-tested):
@@ -205,7 +205,7 @@ impl std::fmt::Display for CheckpointRefusal {
 /// both of which probe as zero. Built from the pre-flight probe's
 /// [`SnapshotCost`], so the numbers are the ones `git add -A` is about to
 /// pay; the refusal toast's own pluralisation and byte formatting, so the
-/// pair reads as one family of message (`docs/checkpoint.md`).
+/// pair reads as one family of message (`docs/state/checkpoint.md`).
 #[must_use]
 pub fn snapshot_notice(cost: &SnapshotCost) -> Option<String> {
     (cost.files > 0).then(|| {
@@ -567,7 +567,7 @@ pub fn git_available() -> bool {
 /// **own** config/index, so it never touches the user's real `.git`, staging
 /// area, branches, or global git config. A disabled store (no root, git
 /// missing, or `ALTER_ZERO_CHECKPOINTS=0`) makes every operation an inert
-/// no-op. See `docs/checkpoint.md`.
+/// no-op. See `docs/state/checkpoint.md`.
 pub struct CheckpointStore {
     /// The private object store dir (`GIT_DIR`). Empty when disabled.
     git_dir: PathBuf,
@@ -579,7 +579,7 @@ pub struct CheckpointStore {
     /// cwd project-scoped. Fixed at construction: [`set_enabled`] can only
     /// ever turn a *capable* store on or off, so the `/settings` knob can't
     /// conjure checkpoints where they were never possible
-    /// (`docs/settings.md`).
+    /// (`docs/state/settings.md`).
     ///
     /// [`set_enabled`]: CheckpointStore::set_enabled
     capable: bool,
@@ -604,7 +604,7 @@ impl CheckpointStore {
     pub fn new(root: Option<&Path>, cwd: &Path, capable: bool) -> Self {
         let git_dir = root.map(|r| store_git_dir(r, cwd)).unwrap_or_default();
         // A root under the work tree would otherwise be re-staged by every
-        // snapshot, compounding the store into itself (docs/checkpoint.md).
+        // snapshot, compounding the store into itself (docs/state/checkpoint.md).
         let self_exclude = root.and_then(|r| store_exclude_line(cwd, r));
         let capable = capable && root.is_some();
         Self {
@@ -623,7 +623,7 @@ impl CheckpointStore {
     }
 
     /// Whether this host *could* snapshot — what the `/settings` menu reports
-    /// as the **Checkpoints** row's availability (`docs/settings.md`). Note
+    /// as the **Checkpoints** row's availability (`docs/state/settings.md`). Note
     /// this only covers what `new` was given; the boundary ANDs in the `git`
     /// probe and the cwd check before constructing.
     #[must_use]
@@ -633,7 +633,7 @@ impl CheckpointStore {
 
     /// Turn snapshotting on or off mid-session — the `/settings` **Checkpoints**
     /// knob. A store that was never capable stays off whatever is asked
-    /// (`docs/settings.md`).
+    /// (`docs/state/settings.md`).
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on && self.capable;
     }
@@ -1287,7 +1287,7 @@ mod tests {
 
     #[test]
     fn snapshot_notice_names_what_the_snapshot_will_hash() {
-        // The pre-flight announcement (docs/checkpoint.md): `git add -A` is
+        // The pre-flight announcement (docs/state/checkpoint.md): `git add -A` is
         // O(bytes) and the session-start snapshot runs before the first frame
         // paints, so the coming seconds are named before they are paid.
         let cost = SnapshotCost {

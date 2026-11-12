@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# the `/theme` picker (docs/theme.md). codex's theme picker in the
+# the `/theme` picker (docs/ui/theme.md). codex's theme picker in the
 # family's frame: a title over a dim subtitle, the colour-theme catalog with
 # the family's `→` on the selection under the search line's `❯` (a ten-row
 # window over its `(n/total)` counter), each row wearing a swatch of its own

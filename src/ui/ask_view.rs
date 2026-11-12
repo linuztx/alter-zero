@@ -1,6 +1,6 @@
 //! The inline `AskUserQuestion` modal: the chip strip of question tabs, the
 //! numbered options, the side-by-side preview panel, and the Submit review
-//! page. See `docs/ask.md`.
+//! page. See `docs/tools/ask.md`.
 //!
 //! The permission prompt's sibling ([`super::permission_view`]): one builder
 //! ([`ask_build`]) produces every row **and** the hardware cursor's seat, and
@@ -10,7 +10,7 @@
 //! choice doesn't need first — the descriptions, then the rows outside a
 //! window around the selection, then the chip strip — and only a page
 //! taller than even that paints bottom-anchored and flows its skipped top
-//! into real scrollback like every framed view (`docs/view-flow.md`).
+//! into real scrollback like every framed view (`docs/ui/view-flow.md`).
 
 use crate::app::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 use crate::ask::{AskOption, AskQuestion};
@@ -31,7 +31,7 @@ fn rule(width: u16) -> Line<'static> {
 
 /// The closing rule: plain, or — while the idle clock runs — carrying the
 /// countdown right-aligned as a lit chip with one bare rule cell after it
-/// (`── Timeout: 9:41 ─`, `docs/ask.md`), the agent session view's label
+/// (`── Timeout: 9:41 ─`, `docs/tools/ask.md`), the agent session view's label
 /// dress: the theme's accent under its on-accent ink, the padding inside the
 /// fill. The count rounds **up** to the whole second, so a fresh clock reads
 /// `10:00` and the last second `0:01` rather than `0:00` over a question that
@@ -250,8 +250,8 @@ enum Descriptions {
 }
 
 /// What a page keeps — one rung of the ladder a terminal too short for the
-/// whole page walks down (`docs/view-flow.md` *A page that sheds rows before
-/// it flows*, `docs/ask.md`).
+/// whole page walks down (`docs/ui/view-flow.md` *A page that sheds rows before
+/// it flows*, `docs/tools/ask.md`).
 #[derive(Clone, Copy, Debug)]
 struct Fit {
     /// Whether the chip strip of question tabs shows.
@@ -363,7 +363,7 @@ fn ask_build(app: &App, width: u16, height: u16) -> AskBuild {
 
 /// One page of the modal at `width`, keeping what `fit` keeps: rule → chip
 /// strip → the current page → hints → rule, with no blank row hugging
-/// either rule (`docs/view-flow.md` *The frame hugs its content*).
+/// either rule (`docs/ui/view-flow.md` *The frame hugs its content*).
 fn ask_page(app: &App, prompt: &AskPrompt, width: u16, fit: Fit) -> AskBuild {
     let mut lines = vec![rule(width)];
     if fit.chips {
@@ -418,7 +418,7 @@ fn ask_page(app: &App, prompt: &AskPrompt, width: u16, fit: Fit) -> AskBuild {
 
 /// The hint pairs for the modal's current state. The entry fields name the
 /// newline key (Shift+Enter — Ctrl+J is the universal fallback, as in the
-/// composer, `docs/shift-enter.md`).
+/// composer, `docs/input/shift-enter.md`).
 fn hints(prompt: &AskPrompt) -> Vec<(&'static str, &'static str)> {
     match prompt.input_mode {
         AskInput::Other => vec![
@@ -1090,14 +1090,14 @@ fn build_review_page(
 }
 
 /// Every row of the open ask modal at `width`, top rule to bottom rule — the
-/// first page that fits `height` rows, most complete first (`docs/ask.md`):
+/// first page that fits `height` rows, most complete first (`docs/tools/ask.md`):
 /// a short terminal sheds the options' descriptions, then the rows outside
 /// a window around the selection, then the chip strip, so the question, the
 /// highlighted row and the hint stay on screen. Empty when no modal is open.
 /// The page is never cut here: the paint bottom-anchors it into the region
 /// ([`render_ask`]), and a page taller than the terminal **flows** its
 /// skipped top into the terminal's real scrollback like every framed view
-/// (`view_flow`, `docs/view-flow.md`) — the retired top-drop clamp put the
+/// (`view_flow`, `docs/ui/view-flow.md`) — the retired top-drop clamp put the
 /// chip strip, the question and the first options in no buffer at all.
 #[must_use]
 pub fn ask_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
@@ -1128,7 +1128,7 @@ pub(super) fn ask_cursor(app: &App, width: u16, term_height: u16) -> Option<(u16
     let build = ask_build(app, width, term_height);
     let marker_col = cols(ASK_INDENT) + cols(PERMISSION_MARKER);
     let (row, col) = build.cursor.or(build.marker.map(|row| (row, marker_col)))?;
-    // The paint bottom-anchors the page (`docs/view-flow.md`), so the seat
+    // The paint bottom-anchors the page (`docs/ui/view-flow.md`), so the seat
     // shifts by the same skipped top — and a seat inside the skip (a row
     // that flowed into scrollback) has no on-screen row.
     let dropped = super::view_flow::view_body_skip(build.lines.len(), term_height.max(1));
@@ -1142,7 +1142,7 @@ pub(super) fn ask_cursor(app: &App, width: u16, term_height: u16) -> Option<(u16
 /// Paint the open ask modal over the whole live region — bottom-anchored, so
 /// a page taller than the region keeps its tail (the options, the hints, the
 /// closing rule) on screen while the skipped top flows into scrollback
-/// (`docs/view-flow.md`). Pure — [`render_live`] calls this in place of the
+/// (`docs/ui/view-flow.md`). Pure — [`render_live`] calls this in place of the
 /// composer, and the region is sized from the same builder ([`ask_height`]).
 pub fn render_ask(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(area, buf, ask_lines(app, area.width, area.height));

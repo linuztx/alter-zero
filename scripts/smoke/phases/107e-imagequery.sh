@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# A terminal the environment cannot name is ASKED (docs/images.md,
+# A terminal the environment cannot name is ASKED (docs/ui/images.md,
 # *Detecting the terminal*). herdr's panes say `TERM=xterm-256color` and
 # `TERM_PROGRAM=herdr` — nothing that names a graphics protocol — while its
 # emulator speaks kitty's, so detection by environment alone drew every

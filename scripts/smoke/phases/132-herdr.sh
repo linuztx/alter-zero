@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# herdr support (docs/herdr.md). Run inside a herdr pane — HERDR_ENV=1, a
+# herdr support (docs/architecture/herdr.md). Run inside a herdr pane — HERDR_ENV=1, a
 # pane id, a socket path — the app tells herdr's socket what the agent is
 # doing: one `pane.report_agent` request per change, `idle` at launch,
 # `working` for a turn, `blocked` while a permission prompt waits on the user

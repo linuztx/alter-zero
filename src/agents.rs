@@ -1,4 +1,4 @@
-//! Subagents — the model's `Agent` tool (`docs/agent-tool.md`).
+//! Subagents — the model's `Agent` tool (`docs/agents/agent-tool.md`).
 //!
 //! The **pure state** ([`AgentRun`], [`AgentStatus`]) folds a subagent's own
 //! [`StreamEvent`] stream into a roster entry: its transcript
@@ -30,7 +30,7 @@ pub const GENERAL_PURPOSE: &str = "general-purpose";
 /// pattern). The same 30s window as a stop, for the same reason: the row is
 /// the roster's only evidence the agent ran, and swept in a few seconds it
 /// could vanish before the user had read it — mid-group, even before its
-/// group cell committed. `x` clears it sooner (`docs/agent-tool.md`).
+/// group cell committed. `x` clears it sooner (`docs/agents/agent-tool.md`).
 pub const AGENT_LINGER: Duration = Duration::from_secs(30);
 
 /// How long an agent the user **stopped** (`x` on its roster row) lingers
@@ -40,17 +40,17 @@ pub const AGENT_LINGER: Duration = Duration::from_secs(30);
 /// this intent), and a row that vanished on the keypress would leave no
 /// evidence of what was stopped — so the stopped agent stays put, and the
 /// row's `x` becomes the *clear* that removes it at once
-/// (`docs/agent-tool.md`).
+/// (`docs/agents/agent-tool.md`).
 pub const AGENT_STOPPED_LINGER: Duration = Duration::from_secs(30);
 
 /// How many **settled** agents stay resumable — their conversations in the
 /// registry, their swept roster entries in `App` — so the lead can still send
-/// a finished agent a follow-up (`docs/agent-tools.md` *Retention*). The
+/// a finished agent a follow-up (`docs/agents/agent-tools.md` *Retention*). The
 /// oldest settled one goes first; a running agent never counts.
 pub const AGENT_RETAINED_MAX: usize = 16;
 
 /// The most tool calls an `agentoutput` report lists — the newest; the
-/// earlier ones are counted on one line (`docs/agent-tools.md`).
+/// earlier ones are counted on one line (`docs/agents/agent-tools.md`).
 pub const AGENT_REPORT_CALLS_MAX: usize = 30;
 
 /// The most characters a reported tool call keeps, on its one line.
@@ -58,18 +58,18 @@ pub const AGENT_REPORT_CALL_CHARS: usize = 160;
 
 /// The most characters a progress update keeps — the agent's own account of
 /// what it found and what it is doing, which the lead reads whole up to here
-/// (`docs/agent-progress.md`).
+/// (`docs/agents/agent-progress.md`).
 pub const AGENT_REPORT_UPDATE_CHARS: usize = 2_000;
 
 /// The label the agent's **own words** wear — its activity row's
 /// `Agent: {update}` while it talks, beside a call's `Bash: …`
-/// (`docs/agent-progress.md`).
+/// (`docs/agents/agent-progress.md`).
 pub const AGENT_UPDATE_LABEL: &str = "Agent";
 
 /// The line an `agentoutput` report marks a delivered message with — where,
 /// among the agent's calls, a message reached it: the lead's `agentsend` or a
 /// background shell's completion routed to it. One the user typed into its
-/// session is quoted instead ([`FollowUp::from_user`], `docs/agent-tools.md`).
+/// session is quoted instead ([`FollowUp::from_user`], `docs/agents/agent-tools.md`).
 pub const AGENT_FOLLOW_UP_MARK: &str = "— message received —";
 
 /// Where a delivered message came from, as the lead must know it: a message
@@ -97,7 +97,7 @@ impl FollowUp {
 
 /// Something an agent said on its way — a run of its reply that more work
 /// followed, so not its answer — placed where it said it: an `Agent: …`
-/// entry of the `agentoutput` report (`docs/agent-progress.md`).
+/// entry of the `agentoutput` report (`docs/agents/agent-progress.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressUpdate {
     /// How many of the agent's calls it had made when it said this.
@@ -110,7 +110,7 @@ pub struct ProgressUpdate {
 }
 
 /// The note telling the lead which messages the **user** sent an agent
-/// directly, in its session view (`docs/agent-tools.md`): the completion
+/// directly, in its session view (`docs/agents/agent-tools.md`): the completion
 /// notice and a foreground result both carry it, because a model that reads
 /// an answer to a question it never asked cannot otherwise know who asked.
 /// One `- ` bullet per message, a multi-line one indented beneath its own.
@@ -192,7 +192,7 @@ pub struct AgentRun {
     /// The `agent` call this run answers, as the round announced it: the
     /// provider's id and the model's verbatim arguments, carried onto the
     /// group's record so the next request replays the launch as the
-    /// provider saw it (`docs/prompt-caching.md`). `None` for a scripted
+    /// provider saw it (`docs/providers/prompt-caching.md`). `None` for a scripted
     /// launch.
     pub call_id: Option<String>,
     pub arguments: Option<String>,
@@ -221,9 +221,9 @@ pub struct AgentRun {
     /// half ([`TurnSummary::cache_write`]).
     turn_usage_cache_write: u64,
     /// Its **context size** in tokens — the footer gauge's numerator while
-    /// its session view is on screen (`docs/agent-context-gauge.md`), by the
+    /// its session view is on screen (`docs/agents/agent-context-gauge.md`), by the
     /// main session's exact rule ([`crate::app::App::context_used`],
-    /// `docs/token-estimate.md`): the last usage frame's `input` — the
+    /// `docs/architecture/token-estimate.md`): the last usage frame's `input` — the
     /// provider's own count of the re-sent context — which each frame
     /// **replaces** (the next round's `input` already carries the last one's
     /// whole context, so summing frames is the billed tally,
@@ -240,10 +240,10 @@ pub struct AgentRun {
     /// level down.
     context_meter: crate::tokens::ContextMeter,
     /// Its newest usage frame — what its session view's `/context` page
-    /// reports as the **Last request** (`docs/context-usage.md`).
+    /// reports as the **Last request** (`docs/architecture/context-usage.md`).
     pub last_usage: Option<crate::stream::TokenUsage>,
     /// Every usage frame it has reported, summed — the page's **This agent**
-    /// row (`docs/context-usage.md`).
+    /// row (`docs/architecture/context-usage.md`).
     pub usage: crate::context_usage::UsageLedger,
     /// How long it has been running — boundary-injected each frame
     /// ([`crate::app::App::set_agent_runtime`], the `set_status_times`
@@ -258,7 +258,7 @@ pub struct AgentRun {
     /// [`crate::app::VERB_ROTATION`] of runtime by the per-frame injection
     /// ([`rotate_verb`](Self::rotate_verb)), never by an event's runtime
     /// freeze, so the turn's summary names the verb the view last drew
-    /// (`docs/status-indicator.md`).
+    /// (`docs/ui/status-indicator.md`).
     verb_index: usize,
     /// Its own conversation: the prompt as a user message, its replies, its
     /// finished tool calls — everything the agent session view renders and
@@ -268,7 +268,7 @@ pub struct AgentRun {
     pub streaming: Option<String>,
     /// Messages the user typed into this agent's session **while it was
     /// running** — the main session's [`steered`](crate::app::App::steered)
-    /// queue, one level down (`docs/queue.md`). They show above the box in
+    /// queue, one level down (`docs/input/queue.md`). They show above the box in
     /// the agent's session view until its loop's next round boundary takes
     /// them, when [`StreamEvent::Steered`] turns each into a real user
     /// message on this transcript — the one event a **settled** run still
@@ -279,7 +279,7 @@ pub struct AgentRun {
     pub queued: Vec<String>,
     /// **Follow-up turns** the user queued into this agent's session with
     /// **Tab** — the main session's [`queued`](crate::app::App::queued), one
-    /// level down (`docs/queue.md`). Where [`queued`](Self::queued) rides the
+    /// level down (`docs/input/queue.md`). Where [`queued`](Self::queued) rides the
     /// running loop's next round boundary, each of these waits for that loop
     /// to *settle* and then runs as its own chat continuation, one per
     /// settle, in submission order. They render above the box beneath the
@@ -291,7 +291,7 @@ pub struct AgentRun {
     /// read — a queued one once [`StreamEvent::Steered`] delivers it, the
     /// chat that started a continuation at once. What its settle tells the
     /// lead the answer also answered: the lead never wrote these, and its
-    /// notice is the only place it can learn of them (`docs/agent-tools.md`).
+    /// notice is the only place it can learn of them (`docs/agents/agent-tools.md`).
     /// Cleared by [`reopen`](Self::reopen), so each notice names its own
     /// run's.
     pub user_messages: Vec<String>,
@@ -300,13 +300,13 @@ pub struct AgentRun {
     /// The calls it is still **generating** this round, a `write` previewed
     /// as its content streams, and the previewed ones its announced batch
     /// took over — the main session's [`App::tool_drafts`](crate::app::App::tool_drafts),
-    /// one level down (`docs/write-streaming.md`). Live-only, like the queue.
+    /// one level down (`docs/ui/write-streaming.md`). Live-only, like the queue.
     drafts: crate::app::ToolDrafts,
     /// The running call's live rows and when each last changed — the main
     /// session's [`App::live_tail`](crate::app::App::live_tail), stamped
     /// with this agent's own command clock ([`Self::command_elapsed`]) so its
     /// session view's running cell follows the rows still moving too
-    /// (`docs/tool-streaming.md`).
+    /// (`docs/ui/tool-streaming.md`).
     tool_live: crate::app::LiveTail,
     /// The final response text once it settles (what the caller received).
     pub result: Option<String>,
@@ -326,7 +326,7 @@ pub struct AgentRun {
     /// model-supplied `description`, else its args summary; an MCP call as
     /// `{Server}: {tool}`). Kept until the *next* tool starts, so the tree
     /// row shows what the agent is doing (or just did) rather than dropping
-    /// to a generic `Working…` between calls (`docs/agent-tool.md`). The
+    /// to a generic `Working…` between calls (`docs/agents/agent-tool.md`). The
     /// record as it came: a file tool's path is the model's own, shown by
     /// the session's rule only when the row is painted.
     ///
@@ -338,7 +338,7 @@ pub struct AgentRun {
     /// the agent did: the activity row's `Agent: {update}` outranks
     /// [`last_call`](Self::last_call) until the next call starts, which
     /// clears it. While the text still streams the row reads it off
-    /// [`streaming`](Self::streaming) instead (`docs/agent-progress.md`).
+    /// [`streaming`](Self::streaming) instead (`docs/agents/agent-progress.md`).
     last_update: Option<String>,
     /// Where the newest paragraph of [`streaming`](Self::streaming) starts,
     /// kept as the text arrives so the row never rescans it.
@@ -349,7 +349,7 @@ pub struct AgentRun {
     /// [`begin_reasoning`](Self::begin_reasoning), which the boundary calls
     /// only when the display is on, so with `/settings` **Hide thinking**
     /// set a delta is counted and dropped exactly as it always was
-    /// (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
+    /// (`docs/ui/thinking-stream.md`, `docs/agents/agent-view-streaming.md`).
     reasoning: Option<String>,
     /// Where this round's settled thinking cells landed in
     /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
@@ -361,7 +361,7 @@ pub struct AgentRun {
     /// [`history`](Self::history) — the mark a [`StreamEvent::Retrying`]
     /// withdraws back to, taken at the attempt's first piece of output since
     /// an event of any other kind (`App::track_attempt`'s rule, over this
-    /// transcript; `docs/offline.md` *A connection lost mid-reply*).
+    /// transcript; `docs/providers/offline.md` *A connection lost mid-reply*).
     attempt_floor: Option<usize>,
     /// How long the open thinking phase has run — boundary-injected each
     /// frame from `Session::agent_thinking_clocks`, the
@@ -376,19 +376,19 @@ pub struct AgentRun {
     /// (Ns · wait …)` clock row from the call's own `ToolStart` — never
     /// from the agent's whole [`runtime`](Self::runtime), which its status
     /// line shows
-    /// (`docs/agent-view-streaming.md`). `None` when no command is running.
+    /// (`docs/agents/agent-view-streaming.md`). `None` when no command is running.
     pub command_elapsed: Option<Duration>,
     /// Set while this agent's failed request is being retried
     /// ([`StreamEvent::Retrying`]) — its session view's status line shows the
     /// same `retrying {attempt}/{max}` clause the main turn's does, and the
-    /// next streamed content clears it (`docs/llm.md`).
+    /// next streamed content clears it (`docs/providers/llm.md`).
     pub retry: Option<crate::app::RetryInfo>,
     /// Set while this agent's request **waits for a lost connection**
     /// ([`StreamEvent::Offline`]) — its session view's status line wears the
     /// same `Waiting for internet…` the main turn's does, over the same `No
     /// connection to {host}` row, the wait's start stamped off this run's
     /// [`runtime`](Self::runtime). Cleared the moment the host answers, and
-    /// never `Some` beside [`retry`](Self::retry) (`docs/offline.md`).
+    /// never `Some` beside [`retry`](Self::retry) (`docs/providers/offline.md`).
     pub offline: Option<crate::app::OfflineInfo>,
 }
 
@@ -487,7 +487,7 @@ impl AgentRun {
     /// was missing from the view's list, so a `SubagentStop` continuation
     /// dropped the reply's withheld tail from the screen *and* left the
     /// render holding a prefix of a buffer that no longer existed
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     ///
     /// [`StreamEvent::ThinkingStart`] is deliberately not here: it flushes
     /// too, but only when the display is on — the boundary reads that gate
@@ -510,7 +510,7 @@ impl AgentRun {
     /// text before it? The fold's static segment boundaries, plus the one
     /// only its state can answer — a streamed piece that **opens a previewed
     /// call**, a `write` whose cell goes up under the text before it
-    /// (`docs/write-streaming.md`). What the session view's flush, which
+    /// (`docs/ui/write-streaming.md`). What the session view's flush, which
     /// runs before the fold, asks; `apply` flushes at exactly these points,
     /// which `every_flush_point_is_declared` pins for every event.
     #[must_use]
@@ -520,7 +520,7 @@ impl AgentRun {
     }
 
     /// The calls it is still generating this round, and the previewed ones
-    /// its announced batch took over (`docs/write-streaming.md`).
+    /// its announced batch took over (`docs/ui/write-streaming.md`).
     #[must_use]
     pub const fn drafts(&self) -> &crate::app::ToolDrafts {
         &self.drafts
@@ -535,7 +535,7 @@ impl AgentRun {
     pub fn apply(&mut self, event: &StreamEvent) -> bool {
         if self.status.is_final() {
             // One event reaches a settled run: a message delivered into it
-            // (`docs/queue.md`). A continuation is what delivered it — the
+            // (`docs/input/queue.md`). A continuation is what delivered it — the
             // one its own thread starts for a message queued in the settle
             // window — and folding it is what keeps that continuation
             // visible: without this it runs with the model working, the
@@ -566,12 +566,12 @@ impl AgentRun {
                 self.paragraph.extend(buffer, from);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
                 // Content arrived — the reconnect, or the wait for the
-                // connection, is over (the main turn's rule, `docs/llm.md`,
-                // `docs/offline.md`).
+                // connection, is over (the main turn's rule, `docs/providers/llm.md`,
+                // `docs/providers/offline.md`).
                 self.recovered();
             }
             // A SubagentStop block's continuation feedback on this agent's
-            // own loop (docs/hooks.md): the reply so far becomes its own
+            // own loop (docs/tools/hooks.md): the reply so far becomes its own
             // message — the continuation streams a fresh one — and the note
             // stays on the agent's transcript, exactly like the main turn's,
             // its report the `● Ran 1 SubagentStop hook` cell the session
@@ -592,7 +592,7 @@ impl AgentRun {
                 self.tokens += crate::app::count_tokens(text) as u64;
             }
             // The agent's loop took a message the user queued into its
-            // session (docs/queue.md): it stops waiting above the box and
+            // session (docs/input/queue.md): it stops waiting above the box and
             // becomes a real user message on this transcript, after the run
             // of streamed text ahead of it (invariant 4).
             StreamEvent::Steered { text } => {
@@ -606,20 +606,20 @@ impl AgentRun {
                 self.tokens += crate::app::count_tokens(text) as u64;
             }
             // Never sent on an agent's channel — the prompt-submit hook fires
-            // only at the main session's spawn top (docs/hooks.md); mapped so
+            // only at the main session's spawn top (docs/tools/hooks.md); mapped so
             // the match stays total and honest if that ever changes.
             StreamEvent::PromptBlocked { .. } => {}
             // Never sent on an agent's channel either: only the main turn
             // reads the registry's board, and a shell a subagent launched
             // reports to it through its own queue, as a `Steered` message
-            // (docs/background.md).
+            // (docs/tools/background.md).
             StreamEvent::NoticeDelivered { .. } => {}
             // A reasoning delta: counted so the footer tally ticks while the
             // agent thinks (the status-line pattern) and — **while a phase is
             // open** — accumulated for the live `● Thinking…` block the
             // session view previews. With the display off no phase is ever
             // opened, so it stays counted-and-dropped exactly as before
-            // (`docs/agent-view-streaming.md`).
+            // (`docs/agents/agent-view-streaming.md`).
             StreamEvent::ThinkingChunk(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
                 self.recovered();
@@ -663,7 +663,7 @@ impl AgentRun {
                         arguments: None,
                         approval_note: None,
                         // A subagent's parallel calls are not aggregated: its
-                        // session view keeps a cell per call (`docs/mcp.md`).
+                        // session view keeps a cell per call (`docs/tools/mcp.md`).
                         batch: None,
                         call_id: None,
                         position: None,
@@ -671,7 +671,7 @@ impl AgentRun {
                     });
                 }
                 // Each queued `Write` takes the draft it streamed
-                // (docs/write-streaming.md).
+                // (docs/ui/write-streaming.md).
                 self.drafts
                     .adopt(items.iter().map(|item| item.name.as_str()));
             }
@@ -690,7 +690,7 @@ impl AgentRun {
                 // `start_tool` rule).
                 self.command_elapsed = None;
                 // The call is now the newest thing it did: what it said
-                // before gives the row back (docs/agent-progress.md).
+                // before gives the row back (docs/agents/agent-progress.md).
                 self.last_update = None;
                 self.last_call = Some(AgentCall {
                     name: name.clone(),
@@ -709,7 +709,7 @@ impl AgentRun {
                         // announcement — when it is the only call: pushed
                         // ahead of live ones, pairing by order could hand a
                         // cell another's file, so nothing previews
-                        // (docs/write-streaming.md).
+                        // (docs/ui/write-streaming.md).
                         if self.tool_queue.is_empty() {
                             self.drafts.adopt([name.as_str()]);
                         } else {
@@ -737,7 +737,7 @@ impl AgentRun {
             // The auto mode classifier allowed this agent's command: the note
             // rides the running call so its resolved cell appends the
             // provenance row, exactly like the main turn's
-            // (docs/permissions.md).
+            // (docs/state/permissions.md).
             StreamEvent::ToolNote(note) => {
                 if let Some(front) = self.tool_queue.front_mut()
                     && front.status == ToolStatus::Running
@@ -755,7 +755,7 @@ impl AgentRun {
             }
             // A terminal session's live output and a refined header, folded
             // exactly as the main session folds them
-            // (docs/interactive-shell.md).
+            // (docs/tools/interactive-shell.md).
             StreamEvent::ToolScreen { settled, live } => {
                 if let Some(front) = self.tool_queue.front_mut()
                     && front.status == ToolStatus::Running
@@ -787,7 +787,7 @@ impl AgentRun {
                     front.output = output.clone();
                     front.truncated = *truncated;
                     // How it ran, on every resolution, as the main session
-                    // keeps it (docs/rollout-records.md).
+                    // keeps it (docs/state/rollout-records.md).
                     front.run = *run;
                     self.history.push(HistoryItem::Tool(front));
                 }
@@ -796,7 +796,7 @@ impl AgentRun {
             // prompt: red like any failure, with the model-facing `result`
             // kept beside the cell text so the agent's own derived context
             // (its Ctrl+D view, and a continuation run over its stored
-            // messages) replays what it actually read (docs/permissions.md).
+            // messages) replays what it actually read (docs/state/permissions.md).
             StreamEvent::ToolRejected {
                 display,
                 result,
@@ -819,7 +819,7 @@ impl AgentRun {
             // A subagent's `run_in_background` launch (its executor carries
             // the shared registry, attributed via `BgOrigin`): resolve the
             // front call as backgrounded — the shell itself lives on the
-            // shared list (`docs/background.md`).
+            // shared list (`docs/tools/background.md`).
             StreamEvent::ToolBackgrounded { output, run, .. } => {
                 // The launch acknowledgement is text the model reads, so it
                 // is charged like every other resolution's — the main
@@ -837,12 +837,12 @@ impl AgentRun {
                 // `Thought for …` cells trade their token estimate for
                 // the provider's own `reasoning_tokens`, the main session's
                 // snap over this agent's transcript
-                // (`docs/thinking-stream.md`).
+                // (`docs/ui/thinking-stream.md`).
                 let targets = std::mem::take(&mut self.round_reasoning);
                 crate::app::snap_reasoning_tokens(&mut self.history, &targets, usage.reasoning);
                 self.usage_tokens += usage.total();
                 self.tokens = self.usage_tokens;
-                // Its session view's `/context` page (docs/context-usage.md).
+                // Its session view's `/context` page (docs/architecture/context-usage.md).
                 self.last_usage = Some(*usage);
                 self.usage.record(usage);
                 self.turn_usage_tokens += usage.total();
@@ -851,7 +851,7 @@ impl AgentRun {
                 // The round's `input` is the provider's count of the whole
                 // re-sent context — this agent's context size, and its
                 // meter's base — the main session's `apply_usage` rule
-                // (`docs/agent-context-gauge.md`, `docs/token-estimate.md`).
+                // (`docs/agents/agent-context-gauge.md`, `docs/architecture/token-estimate.md`).
                 let (estimate, images) = self.estimate_context();
                 self.context_meter.measured(usage.input, estimate, images);
                 self.context_used = self.context_meter.reading(estimate);
@@ -859,7 +859,7 @@ impl AgentRun {
             StreamEvent::StreamDone => {
                 // A phase still open when the round ended keeps what streamed
                 // — settled first, so its cell sits ahead of the reply it
-                // preceded (`docs/thinking-stream.md`).
+                // preceded (`docs/ui/thinking-stream.md`).
                 self.settle_thinking();
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
@@ -869,7 +869,7 @@ impl AgentRun {
                 // the reply — or, with no frame this turn (the dummy, a
                 // provider that omits them), stands on the estimate over this
                 // transcript: `App::take_turn_summary`'s rule
-                // (`docs/agent-context-gauge.md`).
+                // (`docs/agents/agent-context-gauge.md`).
                 self.context_used = match self.estimate_context() {
                     (0, _) => 0,
                     (estimate, _) => self.context_meter.reading(estimate),
@@ -878,13 +878,13 @@ impl AgentRun {
                 // (`Done for 59s · 6.1k tokens (2.8k cached)`): the agent
                 // session view commits it and every rebuild/Ctrl+O renders it
                 // from here, while the derived context skips it as chrome
-                // like any summary (docs/agent-tool.md). The runtime was
+                // like any summary (docs/agents/agent-tool.md). The runtime was
                 // frozen at its live value just before this event
                 // (`tui::agent`), so it is the turn's elapsed. A failure
                 // records none, main parity; a stop records none either — the
                 // main turn's interrupt receipt has no twin here, the stopped
                 // agent's red roster row keeping its elapsed and tally in view
-                // instead (docs/interrupt.md).
+                // instead (docs/input/interrupt.md).
                 self.history.push(HistoryItem::Summary(TurnSummary {
                     // The past tense of the verb the view's line last wore.
                     verb: self.status_verb().done,
@@ -912,8 +912,8 @@ impl AgentRun {
             // The ToolRejected shape's green twin: a resolution whose
             // model-facing text differs from its cell. Subagents reach it on
             // every `write`/`edit` — the file tools' one-line ack over the
-            // numbered body (docs/tools.md) — and on a loaded `skill`
-            // (docs/skills.md). (The ask tool sends it too, but subagents are
+            // numbered body (docs/tools/tools.md) — and on a loaded `skill`
+            // (docs/tools/skills.md). (The ask tool sends it too, but subagents are
             // never offered that one.) Keeping both texts is what lets the
             // agent's own Ctrl+D and a continuation run replay what it read.
             StreamEvent::ToolAnswered {
@@ -933,7 +933,7 @@ impl AgentRun {
                 }
             }
             // Subagents are never offered the task tools (the lead agent
-            // plans, subagents execute — docs/task-tools.md), so this is
+            // plans, subagents execute — docs/tools/task-tools.md), so this is
             // unreachable today: recorded as an ordinary resolved tool cell
             // on the agent's own transcript so the mapping stays total and
             // honest if that ever changes. The snapshot is ignored — the
@@ -970,16 +970,16 @@ impl AgentRun {
             }
             // A permission request is the *user's* business, not the roster's:
             // the boundary lifts it out of the agent channel and raises the
-            // shared inline prompt (docs/permissions.md). Nothing about this
+            // shared inline prompt (docs/state/permissions.md). Nothing about this
             // agent's own state changes while it waits. An ask request would
-            // be too (docs/ask.md) — unreachable, since subagents never get
+            // be too (docs/tools/ask.md) — unreachable, since subagents never get
             // the tool.
             // This agent's request failed and is being retried: its session
             // view's status line says so, exactly like the main turn's
-            // (`docs/llm.md`). The failed attempt is void — whatever it
+            // (`docs/providers/llm.md`). The failed attempt is void — whatever it
             // streamed is withdrawn before the next one's first byte, so a
             // reply restarted after its connection dropped is never shown
-            // twice (`docs/offline.md` *A connection lost mid-reply*).
+            // twice (`docs/providers/offline.md` *A connection lost mid-reply*).
             StreamEvent::Retrying { attempt, max } => {
                 let _ = self.withdraw_attempt();
                 // The host answered (badly): any outage is over.
@@ -991,7 +991,7 @@ impl AgentRun {
             }
             // No connection could be made for this agent's request and its
             // loop is waiting for one: the session view says so, exactly
-            // like the main turn's strip (`docs/offline.md`). The first
+            // like the main turn's strip (`docs/providers/offline.md`). The first
             // announcement stamps the wait's start with the runtime the view
             // shows; later ones move the count on and keep it.
             StreamEvent::Offline { host, attempts } => {
@@ -1007,7 +1007,7 @@ impl AgentRun {
                 });
             }
             // The round's calls are all made: nothing more of them streams
-            // (docs/write-streaming.md).
+            // (docs/ui/write-streaming.md).
             StreamEvent::RoundCalls(_) => self.drafts.seal(),
             StreamEvent::Permission(_)
             | StreamEvent::AskUser(_)
@@ -1066,7 +1066,7 @@ impl AgentRun {
         self.resolve_tools(crate::app::INTERRUPT_TOOL_OUTPUT);
         // A stopped agent's loop is cancelled, so nothing will ever take what
         // is still queued for it: drop the rows rather than leave them
-        // promising a delivery that cannot happen (`docs/queue.md`). Only a
+        // promising a delivery that cannot happen (`docs/input/queue.md`). Only a
         // *stop* does this — a natural settle with a message still queued
         // hands it back for a continuation to deliver. The Tab follow-ups go
         // with them: each would have run as a continuation of a run that is
@@ -1074,7 +1074,7 @@ impl AgentRun {
         self.queued.clear();
         self.followups.clear();
         // A call it never finished making is never recorded
-        // (docs/write-streaming.md).
+        // (docs/ui/write-streaming.md).
         self.drafts.clear();
         self.status = AgentStatus::Interrupted;
         true
@@ -1134,7 +1134,7 @@ impl AgentRun {
     /// running: it shows above the box until the agent's next round boundary
     /// takes it ([`StreamEvent::Steered`]). Deliberately **not** recorded on
     /// the transcript yet — claiming the agent has read something it has not
-    /// is what the main session's queue avoids too (`docs/queue.md`).
+    /// is what the main session's queue avoids too (`docs/input/queue.md`).
     pub fn queue_chat(&mut self, text: &str) {
         self.queued.push(text.to_string());
     }
@@ -1142,7 +1142,7 @@ impl AgentRun {
     /// Park a **follow-up turn** (Tab) for this agent: it waits below the
     /// steered rows until the agent's loop settles, when the boundary hands
     /// it over as a chat continuation — the main session's `queue_draft`, one
-    /// level down (`docs/queue.md`). Always its own entry: Tab means "a
+    /// level down (`docs/input/queue.md`). Always its own entry: Tab means "a
     /// separate turn", here as in the main view.
     pub fn queue_followup(&mut self, text: &str) {
         self.followups.push_back(text.to_string());
@@ -1170,7 +1170,7 @@ impl AgentRun {
 
     /// The failed reply attempt is void: take back what it streamed — the
     /// main session's [`App::withdraw_attempt`](crate::app::App::withdraw_attempt)
-    /// over this agent's transcript and strip (`docs/offline.md` *A
+    /// over this agent's transcript and strip (`docs/providers/offline.md` *A
     /// connection lost mid-reply*). The reply text and where its newest
     /// paragraph starts (the activity row reads the buffer at those offsets),
     /// an open thought and its injected clock, the calls being generated, and
@@ -1257,7 +1257,7 @@ impl AgentRun {
     /// next call starts, so the row keeps its context instead of dropping to
     /// `Working…` while the agent reasons over a result). What the agent
     /// **says** is its activity too, `Agent: {update}`, and the newer of the
-    /// two wins (`docs/agent-progress.md`). The record's own text, a file
+    /// two wins (`docs/agents/agent-progress.md`). The record's own text, a file
     /// tool's path as the model sent it.
     ///
     /// [`last_call`]: AgentRun::last_call
@@ -1269,7 +1269,7 @@ impl AgentRun {
     /// [`activity`](Self::activity) with the newest call's `args` summary
     /// shown the way the caller says — `show_args(name, args)` maps it to
     /// its display form (the TUI hands in its session's path rule, so a
-    /// file tool's row reads `Write: ~/x.py`; `docs/tools.md` *Path
+    /// file tool's row reads `Write: ~/x.py`; `docs/tools/tools.md` *Path
     /// display*) — over the same grammar. The labels, a `bash` call's
     /// description and the record itself are untouched.
     #[must_use]
@@ -1295,7 +1295,7 @@ impl AgentRun {
 
     /// What the agent said last, while that is the newest thing it did: the
     /// paragraph it is streaming now, else the one its last finalised run of
-    /// text ended on — until a call starts (`docs/agent-progress.md`).
+    /// text ended on — until a call starts (`docs/agents/agent-progress.md`).
     fn update(&self) -> Option<String> {
         self.streaming
             .as_deref()
@@ -1328,7 +1328,7 @@ impl AgentRun {
     /// [`StreamEvent::ThinkingStart`], and **only when the display is on**
     /// (`/settings` **Hide thinking**), which is the whole gate: with it off
     /// no buffer exists and every delta stays counted-and-dropped
-    /// (`docs/agent-view-streaming.md`).
+    /// (`docs/agents/agent-view-streaming.md`).
     ///
     /// **Flush before you interleave** (CLAUDE.md invariant 4): a model can
     /// reason after it has begun answering, so the run of text before the
@@ -1382,7 +1382,7 @@ impl AgentRun {
     /// `None` — recording nothing — when no phase was open, or when it
     /// produced no text: some providers open and close one without a single
     /// delta, and a `Thought for 0s` cell for that is noise. The main
-    /// session's rule exactly (`docs/thinking-stream.md`).
+    /// session's rule exactly (`docs/ui/thinking-stream.md`).
     pub fn finish_reasoning(&mut self, secs: u64) -> Option<crate::app::Reasoning> {
         self.thinking = None;
         let text = self.reasoning.take()?;
@@ -1412,7 +1412,7 @@ impl AgentRun {
     }
 
     /// Take the front call off the live queue — it resolved — and, with it,
-    /// the draft a previewed one owns (`docs/write-streaming.md`): both are
+    /// the draft a previewed one owns (`docs/ui/write-streaming.md`): both are
     /// front-first in queue order, so the pair stays aligned.
     fn pop_front_call(&mut self) -> Option<ToolCall> {
         let call = self.tool_queue.pop_front()?;
@@ -1424,7 +1424,7 @@ impl AgentRun {
     /// backend error killed the run): the running — or permission-waiting —
     /// front call and each `⎿ Waiting…` sibling behind it, in the batch's
     /// order, each recorded on the agent's transcript. The main session's
-    /// rule (`App::fail_live_queue`, `docs/interrupt.md`): every call the
+    /// rule (`App::fail_live_queue`, `docs/input/interrupt.md`): every call the
     /// agent made keeps its cell in the session view, and its Ctrl+D agrees
     /// with what a chat continuation resumes from.
     fn resolve_tools(&mut self, output: &str) {
@@ -1450,7 +1450,7 @@ pub struct AgentCall {
 }
 
 /// The sticky `{Name}: {detail}` activity row for one starting call — the one
-/// grammar every agent activity wears (`docs/agent-tool.md`): the model's own
+/// grammar every agent activity wears (`docs/agents/agent-tool.md`): the model's own
 /// description when it gave one (`Bash: Fetching current weather…`), else the
 /// call's args summary (`Write: game.py` — never the cell header's
 /// `Write({args})`, whose parens read as clutter on a dim clipped one-liner).
@@ -1479,7 +1479,7 @@ fn activity_line(name: &str, args: &str, detail: Option<&str>) -> String {
 
 /// How much of the newest paragraph the activity row keeps — wider than any
 /// row it is clipped to, and a bound on the work: the row is built several
-/// times a frame while the text streams (`docs/agent-progress.md`).
+/// times a frame while the text streams (`docs/agents/agent-progress.md`).
 const ACTIVITY_UPDATE_MAX_CHARS: usize = 512;
 
 /// Where the newest paragraph of a growing run of reply text starts — its
@@ -1489,7 +1489,7 @@ const ACTIVITY_UPDATE_MAX_CHARS: usize = 512;
 /// arrives ([`extend`](Self::extend)), so a frame never reads the run again —
 /// a table or a code block can be one paragraph thousands of lines long, and
 /// the line being written can end in a page of blank space
-/// (`docs/agent-progress.md`).
+/// (`docs/agents/agent-progress.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ParagraphStart {
     /// Where the line being written starts.
@@ -1579,7 +1579,7 @@ fn one_line_head(text: &str, max: usize) -> String {
 /// and, as the run goes, the record `agentoutput` reports from: each call it
 /// starts, each run of text that more work followed, as a **progress
 /// update**, and the mark of each message the agent read, where the stream
-/// announces it (`docs/agent-progress.md`). Pure bookkeeping over the events
+/// announces it (`docs/agents/agent-progress.md`). Pure bookkeeping over the events
 /// the forwarder relays, so the rule is tested here rather than in a thread
 /// body.
 #[derive(Debug)]
@@ -1614,11 +1614,11 @@ impl RunRecorder {
             // More work follows the text: a tool round, or a message landing
             // mid-run — whatever the agent had said before it is no longer
             // its final answer, so the parent must not be handed the two
-            // concatenated (docs/queue.md). Every round that reaches a
+            // concatenated (docs/input/queue.md). Every round that reaches a
             // boundary emits a tool event first today, which already ends the
             // text — but that is a property of the current paths, not of the
             // rule, and the rule is what belongs here. A stop hook's
-            // continuation (docs/hooks.md) turns the answer so far into
+            // continuation (docs/tools/hooks.md) turns the answer so far into
             // something said on the way, too.
             StreamEvent::ToolBatch(_)
             | StreamEvent::AgentBatch { .. }
@@ -1630,7 +1630,7 @@ impl RunRecorder {
                 self.registry.announce_read(&self.id);
             }
             // The attempt that streamed it is void and its request is being
-            // sent again (docs/offline.md *A connection lost mid-reply*): the
+            // sent again (docs/providers/offline.md *A connection lost mid-reply*): the
             // text is neither the answer nor something said on the way.
             StreamEvent::Retrying { .. } => self.text.clear(),
             _ => {}
@@ -1700,7 +1700,7 @@ pub enum AgentEvent {
     /// registry has recorded the outcome ([`AgentRegistry::settle`]) — at
     /// once, or by the `agentoutput` call that was waiting on the agent.
     /// `observed` when that call already reported the outcome to the lead, so
-    /// no completion notice is owed (`docs/agent-tools.md` *One notice per
+    /// no completion notice is owed (`docs/agents/agent-tools.md` *One notice per
     /// answer*).
     Settled {
         id: String,
@@ -1727,7 +1727,7 @@ pub enum AgentEvent {
 }
 
 /// Where an agent stands, as the lead's companions report it
-/// (`docs/agent-tools.md`).
+/// (`docs/agents/agent-tools.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentState {
     /// Its run (the launch or a continuation) is still going.
@@ -1771,7 +1771,7 @@ pub struct AgentSnapshot {
 
 /// How far a waiting `agentoutput` has streamed an agent's timeline — how
 /// many of its calls, the messages it read and its updates the cell has
-/// shown ([`AgentRegistry::progress`], `docs/agent-progress.md`).
+/// shown ([`AgentRegistry::progress`], `docs/agents/agent-progress.md`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ProgressCursor {
     calls: usize,
@@ -1808,10 +1808,10 @@ pub struct Stop {
     /// Its run had not settled, so this stopped it.
     pub was_live: bool,
     /// An `agentoutput` call was waiting on it and will report the stop
-    /// itself — no completion notice is owed (`docs/agent-tools.md`).
+    /// itself — no completion notice is owed (`docs/agents/agent-tools.md`).
     pub watched: bool,
     /// The run it found — the one a note of the stop is tagged with
-    /// (`docs/agent-tools.md` *A report covers one run*).
+    /// (`docs/agents/agent-tools.md` *A report covers one run*).
     pub run: u64,
 }
 
@@ -1862,7 +1862,7 @@ impl PendingInput {
 
 /// The messages an agent's loop took off its queue at one round boundary,
 /// waiting to be marked where its stream announces them
-/// ([`AgentRegistry::announce_read`], `docs/agent-progress.md`).
+/// ([`AgentRegistry::announce_read`], `docs/agents/agent-progress.md`).
 #[derive(Debug)]
 struct Drained {
     /// The marks still to place — one for the lead's messages, then each
@@ -1875,7 +1875,7 @@ struct Drained {
 
 /// A shell's note routed to the agent that launched it
 /// ([`AgentRegistry::route_shell_note`]) — what its own call into that
-/// session takes back while the note is unread (`docs/bash-tools.md` *One
+/// session takes back while the note is unread (`docs/tools/bash-tools.md` *One
 /// notice per exit*): a look takes back a `… is waiting for input` note it
 /// just answered, and a call into a session that ended reports the exit
 /// instead of being told it was already reported.
@@ -1913,7 +1913,7 @@ struct AgentSlot {
     agent_type: String,
     /// The task label and the launch prompt — what `agentlist` names it by,
     /// and what the roster rebuilds a swept row from when the lead resumes it
-    /// (`docs/agent-tools.md`). Empty for an identity-free registration.
+    /// (`docs/agents/agent-tools.md`). Empty for an identity-free registration.
     description: String,
     prompt: String,
     /// The run (initial or a chat continuation) is still executing.
@@ -1944,7 +1944,7 @@ struct AgentSlot {
     updates: Vec<ProgressUpdate>,
     /// Which run is current: 0 for the launch, one more per continuation
     /// ([`restart`](Self::restart)) — what a settle, a report and a notice
-    /// name, since a report covers one run (`docs/agent-tools.md` *One
+    /// name, since a report covers one run (`docs/agents/agent-tools.md` *One
     /// notice per answer*).
     run: u64,
     /// When its current run started; `None` once settled, the run's length
@@ -1980,7 +1980,7 @@ struct AgentSlot {
     pending_inputs: Vec<PendingInput>,
     /// The auto-mode classifier's task context for **this agent's** run — its
     /// own launch prompt and its own executed calls, never the lead's
-    /// (`docs/permissions.md`). It lives here rather than as a local in the
+    /// (`docs/state/permissions.md`). It lives here rather than as a local in the
     /// agent's thread for one reason: the Ctrl+D classifier page reads it from
     /// the event loop while that agent's session view is open, and a page that
     /// showed the lead's log there would be describing decisions no one on
@@ -2124,7 +2124,7 @@ impl Inner {
     }
 
     /// Let go of the oldest settled agents past [`AGENT_RETAINED_MAX`]
-    /// (`docs/agent-tools.md` *Retention*).
+    /// (`docs/agents/agent-tools.md` *Retention*).
     fn evict_settled(&mut self) {
         let mut settled: Vec<(u64, String)> = self
             .slots
@@ -2143,7 +2143,7 @@ impl Inner {
 }
 
 /// What [`AgentRegistry::post_notice`] did with one of an agent's
-/// unobserved settles (`docs/agent-tools.md` *One notice per answer*).
+/// unobserved settles (`docs/agents/agent-tools.md` *One notice per answer*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticePost {
     /// An `agentoutput` report already handed the lead this answer: nothing
@@ -2194,7 +2194,7 @@ impl AgentRegistry {
     /// Register a fresh subagent of `agent_type`, launched to do
     /// `description` with `prompt`: allocate its id (collision re-roll) and
     /// its cancel token, and keep what it was launched as for the lead's
-    /// companions (`docs/agent-tools.md`). The caller spawns the thread.
+    /// companions (`docs/agents/agent-tools.md`). The caller spawns the thread.
     #[must_use]
     pub fn register_agent(
         &self,
@@ -2246,7 +2246,7 @@ impl AgentRegistry {
 
     /// Record a tool call `id` started, as its `Name(args)` one-liner — the
     /// forwarder's, at each `ToolStart`, so `agentoutput` can summarize what
-    /// the agent has been doing (`docs/agent-tools.md`).
+    /// the agent has been doing (`docs/agents/agent-tools.md`).
     pub fn record_call(&self, id: &str, header: &str) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
@@ -2256,7 +2256,7 @@ impl AgentRegistry {
 
     /// Record a run of text `id` said before doing more — a progress update
     /// — where it said it: after the calls and the messages recorded so far
-    /// (`docs/agent-progress.md`). Trimmed and cut at
+    /// (`docs/agents/agent-progress.md`). Trimmed and cut at
     /// [`AGENT_REPORT_UPDATE_CHARS`]; a blank run is no update. The
     /// forwarder's, through [`RunRecorder`].
     pub fn record_update(&self, id: &str, text: &str) {
@@ -2337,7 +2337,7 @@ impl AgentRegistry {
     /// call will hand the lead what it read; a cancelled one won't). Taking
     /// both at one instant is the point: a settle the wait did not see
     /// cannot be marked observed, and one it did cannot be noticed twice
-    /// (`docs/agent-tools.md` *One notice per answer*).
+    /// (`docs/agents/agent-tools.md` *One notice per answer*).
     pub fn end_wait(&self, id: &str, reporting: bool) -> Option<AgentSnapshot> {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         let slot = inner.slots.get_mut(id)?;
@@ -2395,7 +2395,7 @@ impl AgentRegistry {
     /// shows while that agent's session view is open; `None` for an agent the
     /// registry no longer holds, which the page renders as its empty
     /// placeholder rather than falling back to the lead's log
-    /// (`docs/permissions.md`).
+    /// (`docs/state/permissions.md`).
     #[must_use]
     pub fn classifier_context(&self, id: &str) -> Option<String> {
         // Take the handle first, so the registry lock is released before the
@@ -2425,14 +2425,14 @@ impl AgentRegistry {
     /// A run finished with no end to deliver: [`settle`](Self::settle) with
     /// none. A run that ended on its own sends its end through `settle`,
     /// which names the run; sent ahead of it, the end names none
-    /// (`docs/agent-tools.md` *A report covers one run*).
+    /// (`docs/agents/agent-tools.md` *A report covers one run*).
     pub fn finish(&self, id: &str, outcome: Result<String, String>, messages: Vec<ChatMessage>) {
         self.settle(id, outcome, messages, None);
     }
 
     /// A run finished: store its outcome + final message list so the parent's
     /// wait loop resolves and a chat continuation can resume — and deliver
-    /// its `terminal` event (`docs/agent-tools.md` *One notice per answer*):
+    /// its `terminal` event (`docs/agents/agent-tools.md` *One notice per answer*):
     /// sent here, **under the lock**, so whoever sees the agent done (the
     /// foreground group's wait loop) knows the event is already queued; or,
     /// with an `agentoutput` waiting, held for that wait to release once it
@@ -2518,7 +2518,7 @@ impl AgentRegistry {
     /// or that nothing was running — so the note that the user started the
     /// run, still on `board` unread, would contradict it afterwards: it says
     /// the agent runs and that a notice will come. It is taken back in the
-    /// same locked step (`docs/agent-tools.md` *A resume is news when it
+    /// same locked step (`docs/agents/agent-tools.md` *A resume is news when it
     /// starts*); a run that ended on its own still sends its completion.
     pub fn stop(
         &self,
@@ -2566,14 +2566,14 @@ impl AgentRegistry {
 
     /// Stop every agent **and forget them** — `/clear`: the conversation that
     /// knew their ids is gone, so nothing may list or resume them
-    /// (`docs/agent-tools.md` *Retention*).
+    /// (`docs/agents/agent-tools.md` *Retention*).
     pub fn clear(&self) {
         self.kill_all();
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         inner.slots.clear();
     }
 
-    /// Deliver an `agentsend` (`docs/agent-tools.md`): onto a running
+    /// Deliver an `agentsend` (`docs/agents/agent-tools.md`): onto a running
     /// agent's queue for its next round boundary, or — for a settled one —
     /// as the start of a **continuation** of its stored conversation, the
     /// message queued for that run's first round to announce. The roster is
@@ -2667,7 +2667,7 @@ impl AgentRegistry {
 
     /// [`queue_input`](Self::queue_input) for a message the **user** typed
     /// into the agent's session view — remembered as theirs, so the lead is
-    /// told who wrote it (`docs/agent-tools.md`).
+    /// told who wrote it (`docs/agents/agent-tools.md`).
     #[must_use]
     pub fn queue_user_input(&self, id: &str, text: &str) -> bool {
         self.queue(
@@ -2682,7 +2682,7 @@ impl AgentRegistry {
 
     /// Route the note of shell `shell` — one this agent launched, which
     /// exited or stopped to ask for input — onto the agent's queue
-    /// (`docs/agent-tool.md`), asking the board under this registry's lock
+    /// (`docs/agents/agent-tool.md`), asking the board under this registry's lock
     /// whether it is still owed ([`BackgroundRegistry::take_shell_notice`]):
     /// a companion call can never claim the exit in between, and an owed
     /// exit's claim details travel with the note so the agent's own call can
@@ -2786,10 +2786,10 @@ impl AgentRegistry {
         let taken = std::mem::take(&mut slot.pending_inputs);
         // Read now, at this round boundary — one mark for the lead's
         // messages, one per message the user sent, each quoted
-        // (docs/agent-tools.md). Placed where the stream announces them, not
+        // (docs/agents/agent-tools.md). Placed where the stream announces them, not
         // here: this is the agent's own thread, and the forwarder recording
         // its calls can still be relaying the round before
-        // (docs/agent-progress.md).
+        // (docs/agents/agent-progress.md).
         if !taken.is_empty() {
             let lead = taken.iter().any(|input| !input.from_user).then_some(None);
             let users = taken
@@ -2809,7 +2809,7 @@ impl AgentRegistry {
     /// that drain's marks after the calls relayed before it. The forwarder
     /// records the calls and the updates too, so the three land in the order
     /// the stream carried them, however far behind the loop it runs
-    /// (`docs/agent-progress.md`).
+    /// (`docs/agents/agent-progress.md`).
     pub fn announce_read(&self, id: &str) {
         let mut inner = self.inner.lock().expect("agent registry poisoned");
         if let Some(slot) = inner.slots.get_mut(id) {
@@ -2854,7 +2854,7 @@ impl AgentRegistry {
 
     /// Does `id` still hold a message nobody has delivered?
     ///
-    /// The **settle guard** (`docs/queue.md`): a slot stays `busy` between its
+    /// The **settle guard** (`docs/input/queue.md`): a slot stays `busy` between its
     /// loop's last drain and [`finish`](Self::finish), so a message typed in
     /// that window is accepted by [`queue_input`](Self::queue_input) and then
     /// read by nobody — the loop is over, and the roster's terminal event may
@@ -2886,7 +2886,7 @@ impl AgentRegistry {
     }
 
     /// An `agentoutput` call handed the lead the outcome of `id`'s run `run`
-    /// (`docs/agent-tools.md` *One notice per answer*): the completion
+    /// (`docs/agents/agent-tools.md` *One notice per answer*): the completion
     /// notice saying the same must not reach it too. Not posted yet — the
     /// loop's [`post_notice`](Self::post_notice) is told to skip it; posted
     /// and still on `board` — taken back, the board remembering its number
@@ -2908,7 +2908,7 @@ impl AgentRegistry {
     /// whichever way the completion stood — since read after the answer it
     /// would say the agent runs. Not when the agent has started over since
     /// the report read it: that note is about a run the lead has not heard
-    /// of (`docs/agent-tools.md` *A resume is news when it starts*).
+    /// of (`docs/agents/agent-tools.md` *A resume is news when it starts*).
     ///
     /// [`BackgroundRegistry::take_retracted`]: crate::background::BackgroundRegistry::take_retracted
     #[must_use]
@@ -2966,7 +2966,7 @@ impl AgentRegistry {
     /// — only while that run is going, and under the registry lock, where a
     /// report of the run's end and the lead's stop take the note back too
     /// ([`report_settled`](Self::report_settled), [`stop`](Self::stop)), so
-    /// the three never cross (`docs/agent-tools.md` *A resume is news when it
+    /// the three never cross (`docs/agents/agent-tools.md` *A resume is news when it
     /// starts*). A run already over owes no such note: its completion notice
     /// names the user's messages as well, and the report of a stop the lead
     /// made first marks them. The note's board number, or `None` when nothing
@@ -2986,7 +2986,7 @@ impl AgentRegistry {
     /// Can this agent take a **new turn** right now — settled, not stopped,
     /// and with a stored conversation a continuation can resume from? The
     /// question the Tab follow-up queue's dispatch asks before it hands a
-    /// message over (`docs/queue.md`): the registry is the only honest
+    /// message over (`docs/input/queue.md`): the registry is the only honest
     /// answer, exactly as it is for [`spawn_agent_chat`], and asking it is
     /// what keeps a follow-up its **own** turn instead of a steer folded into
     /// a run that is still going.
@@ -3074,7 +3074,7 @@ fn cut_chars(text: &str, max: usize) -> String {
 /// One progress update as a report lists it: [`AGENT_UPDATE_LABEL`] over its
 /// first line and the rest indented beneath it — the user-messages note's
 /// shape — its blank lines dropped, since a blank line in a report is a
-/// section break (`docs/agent-progress.md`).
+/// section break (`docs/agents/agent-progress.md`).
 fn report_update(text: &str) -> Vec<String> {
     let mut rows = text
         .lines()
@@ -3105,7 +3105,7 @@ enum TimelineEntry<'a> {
 /// messages it had read. The forwarder records the calls and the updates as
 /// it relays the stream, and places a message's mark where the stream
 /// announces it ([`AgentRegistry::announce_read`]), so the counts each is
-/// keyed by follow the stream's own order (`docs/agent-progress.md`). Every
+/// keyed by follow the stream's own order (`docs/agents/agent-progress.md`). Every
 /// entry recorded later keys after every one recorded earlier, so the
 /// entries past a cursor are the timeline's own tail.
 fn timeline<'a>(
@@ -3162,7 +3162,7 @@ impl AgentSnapshot {
 /// call or a message as the report lists it, an update under
 /// [`AGENT_UPDATE_LABEL`] cut like a call. The running cell's tail is a few
 /// rows tall, and a whole update there would push what surrounds it out of
-/// view; the report lists it whole (`docs/agent-progress.md`).
+/// view; the report lists it whole (`docs/agents/agent-progress.md`).
 fn stream_line(entry: &TimelineEntry<'_>) -> String {
     match entry {
         TimelineEntry::Call { header, .. } => report_call(header),
@@ -3183,11 +3183,11 @@ fn follow_up_mark(follow_up: &FollowUp) -> String {
     )
 }
 
-/// `agentoutput`'s report (`docs/agent-tools.md`): the frame line, then what
+/// `agentoutput`'s report (`docs/agents/agent-tools.md`): the frame line, then what
 /// the agent has been doing as a **summary** — one `Name(args)` line per tool
 /// call, the newest [`AGENT_REPORT_CALLS_MAX`] with the earlier ones counted,
 /// never their outputs, and what it said on its way, whole
-/// (`docs/agent-progress.md`) — then, once it has settled, what it answered.
+/// (`docs/agents/agent-progress.md`) — then, once it has settled, what it answered.
 #[must_use]
 pub fn output_report(snapshot: &AgentSnapshot) -> String {
     let mut lines = vec![snapshot.frame()];
@@ -3250,7 +3250,7 @@ pub fn output_report(snapshot: &AgentSnapshot) -> String {
     lines.join("\n")
 }
 
-/// `agentlist`'s report (`docs/agent-tools.md`): every agent, launch order —
+/// `agentlist`'s report (`docs/agents/agent-tools.md`): every agent, launch order —
 /// its id, type, task, where it stands and for how long, and how many tool
 /// calls it has made.
 #[must_use]
@@ -3338,7 +3338,7 @@ mod tests {
 
     #[test]
     fn apply_keeps_how_each_of_a_subagents_calls_ran() {
-        // The main session's rule (docs/rollout-records.md): whichever event
+        // The main session's rule (docs/state/rollout-records.md): whichever event
         // resolves the call, its record keeps the facts it carried.
         use crate::stream::{ToolErrorKind, ToolRun};
         let ran = ToolRun {
@@ -3403,7 +3403,7 @@ mod tests {
     #[test]
     fn apply_keeps_the_classifier_note_on_the_resolved_call() {
         // A subagent's command allowed by the auto mode classifier
-        // (docs/permissions.md): the ToolNote lands on the running front and
+        // (docs/state/permissions.md): the ToolNote lands on the running front and
         // rides into the transcript, so the agent's own cells show the same
         // provenance row as the main turn's.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
@@ -3463,7 +3463,7 @@ mod tests {
 
     #[test]
     fn apply_keeps_a_subagent_stop_hooks_cell_on_the_agents_transcript() {
-        // docs/hooks.md *The hook-run cell*: what an agent's SubagentStop
+        // docs/tools/hooks.md *The hook-run cell*: what an agent's SubagentStop
         // hooks said is its cell, so the fold keeps the report beside the
         // feedback — the session view draws it, inline and in Ctrl+O — after
         // the reply it interrupted.
@@ -3546,7 +3546,7 @@ mod tests {
     fn the_activity_row_shows_a_file_tools_args_the_way_the_caller_says() {
         // The record keeps the call as it came (`activity` — the roster's
         // own text); a renderer hands `activity_shown` how a file tool's
-        // path should read (`docs/tools.md` "Path display") and the row is
+        // path should read (`docs/tools/tools.md` "Path display") and the row is
         // built from the same grammar. Every other row passes through.
         let shorten = |name: &str, args: &str| {
             if name == "Write" {
@@ -3577,7 +3577,7 @@ mod tests {
     #[test]
     fn a_multiline_command_flattens_on_the_activity_row() {
         // The summary keeps a `bash` command's newlines for the cell header
-        // (`docs/tools.md`); the roster's one dim clipped row flattens them.
+        // (`docs/tools/tools.md`); the roster's one dim clipped row flattens them.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
@@ -3594,7 +3594,7 @@ mod tests {
         // model's own description when it gave one (`Bash: Fetching…`), else
         // the call's args summary (`Write: game.py` — never the header's
         // `Write(game.py)`, whose parens read as clutter on a dim one-liner;
-        // `docs/agent-tool.md`).
+        // `docs/agents/agent-tool.md`).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Write".into(),
@@ -3625,7 +3625,7 @@ mod tests {
         // An MCP call's display name (`deepwiki - ask_question (MCP)`) is a
         // mouthful for a clipped dim row: the activity shows the capitalized
         // server over the tool instead — `Deepwiki: ask_question`
-        // (`docs/agent-tool.md`).
+        // (`docs/agents/agent-tool.md`).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "deepwiki - ask_question (MCP)".into(),
@@ -3639,7 +3639,7 @@ mod tests {
     #[test]
     fn an_agent_talking_shows_its_newest_paragraph_on_the_activity_row() {
         // What the agent says is its activity too — `Agent: {update}`, the
-        // newest paragraph on one line (docs/agent-progress.md).
+        // newest paragraph on one line (docs/agents/agent-progress.md).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&chunk("I'll start with the profile.\n\nLet me fetch"));
         assert_eq!(run.activity(), "Agent: Let me fetch");
@@ -3894,7 +3894,7 @@ mod tests {
         // A subagent's request goes to the same shared prompt, so its
         // transcript needs the same two texts: the cell line, and what the
         // agent itself read — its Ctrl+D view and any continuation run derive
-        // from this history (docs/permissions.md).
+        // from this history (docs/state/permissions.md).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&StreamEvent::ToolStart {
             name: "Write".into(),
@@ -3928,7 +3928,7 @@ mod tests {
         // The agent session view ends its turns the way the main one does: a
         // dim `Done for 59s · 6.1k tokens (2.8k cached)` summary lands on the
         // agent's own transcript at StreamDone, carrying the turn's billed
-        // usage (`docs/agent-tool.md`).
+        // usage (`docs/agents/agent-tool.md`).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.runtime = Duration::from_secs(59);
         run.apply(&chunk("It is 19°C."));
@@ -4046,7 +4046,7 @@ mod tests {
 
     #[test]
     fn usage_frames_seat_the_runs_context_size_and_a_later_frame_replaces_it() {
-        // The agent's own context gauge (docs/agent-context-gauge.md): the
+        // The agent's own context gauge (docs/agents/agent-context-gauge.md): the
         // round's `input` is the whole re-sent context — the context size,
         // the main session's `apply_usage` rule. Unlike the billed tally it
         // does NOT accumulate: the next frame's `input` already carries
@@ -4123,7 +4123,7 @@ mod tests {
         assert!(run.tool_queue.is_empty());
     }
 
-    // --- a subagent's `write` streaming into its cell (docs/write-streaming.md) ---
+    // --- a subagent's `write` streaming into its cell (docs/ui/write-streaming.md) ---
 
     /// One streamed piece of a call under slot `index`.
     fn piece(index: usize, name: &str, arguments: &str) -> StreamEvent {
@@ -4258,7 +4258,7 @@ mod tests {
         assert!(run.apply(&StreamEvent::StreamDone));
         assert_eq!(run.result.as_deref(), Some("28°C"));
         // The transcript kept the whole exchange in order — each turn closed
-        // by its own `Done for Ns` summary (`docs/agent-tool.md`).
+        // by its own `Done for Ns` summary (`docs/agents/agent-tool.md`).
         let roles: Vec<&str> = run
             .history
             .iter()
@@ -4314,7 +4314,7 @@ mod tests {
     fn each_agent_gets_its_own_classifier_context() {
         // A subagent's auto-mode verdicts are reviewed against ITS run — the
         // launch prompt and the calls it has made — not the lead's
-        // (`docs/permissions.md`). The registry is where that context has to
+        // (`docs/state/permissions.md`). The registry is where that context has to
         // live, because the Ctrl+D classifier page reads it from outside the
         // agent's thread while the agent's session view is open.
         let registry = test_registry();
@@ -4404,7 +4404,7 @@ mod tests {
 
     #[test]
     fn a_message_queued_into_a_running_agent_waits_on_its_own_transcript() {
-        // The main session's queue, one level down (docs/queue.md): the
+        // The main session's queue, one level down (docs/input/queue.md): the
         // message shows above the box in that agent's session view and is
         // NOT on its transcript yet — the agent has not read it.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
@@ -4471,7 +4471,7 @@ mod tests {
 
     #[test]
     fn a_message_delivered_to_a_settled_agent_reopens_it() {
-        // The settle window's other half (`docs/queue.md`): a message queued
+        // The settle window's other half (`docs/input/queue.md`): a message queued
         // between the loop's last drain and `finish` is delivered by a
         // continuation the run's own thread starts — but by then the roster
         // has folded the terminal event, and `apply` drops everything once a
@@ -4533,7 +4533,7 @@ mod tests {
 
     #[test]
     fn the_registry_reports_an_agent_holding_an_undelivered_message() {
-        // The settle window (`docs/queue.md`): a slot stays `busy` between
+        // The settle window (`docs/input/queue.md`): a slot stays `busy` between
         // its loop's last drain and `finish`, so a message typed in there is
         // accepted by `queue_input` and then read by nobody — the loop is
         // over, and the roster's terminal event may already have been folded.
@@ -4572,7 +4572,7 @@ mod tests {
     fn ready_for_turn_is_true_only_for_a_settled_unstopped_agent() {
         // The Tab follow-up queue asks this before dispatching, so a
         // follow-up becomes its own continuation turn rather than a steer
-        // into a run still going (docs/queue.md).
+        // into a run still going (docs/input/queue.md).
         let registry = test_registry();
         let (id, _cancel) = registry.register(GENERAL_PURPOSE);
         assert!(!registry.ready_for_turn(&id), "still running");
@@ -4623,12 +4623,12 @@ mod tests {
         assert!(registry.is_killed(&id2));
     }
 
-    // ===== The agent's thinking stream (docs/agent-view-streaming.md) =====
+    // ===== The agent's thinking stream (docs/agents/agent-view-streaming.md) =====
 
     #[test]
     fn every_resolution_leaves_the_resolved_cell_last_on_the_transcript() {
         // The session view commits what the fold **recorded**, not what event
-        // arrived (`docs/agent-view-streaming.md`), so every way a call can
+        // arrived (`docs/agents/agent-view-streaming.md`), so every way a call can
         // resolve must leave its cell as the transcript's last item — else
         // the view drops it and only a resize brings it back. That is the
         // reported bug: `write`/`edit` moved onto `ToolAnswered` and the old
@@ -4729,7 +4729,7 @@ mod tests {
             ),
             // The piece that opens a previewed `write` is a segment boundary
             // of its own: the live cell goes up under the text before it
-            // (docs/write-streaming.md).
+            // (docs/ui/write-streaming.md).
             (
                 "ToolCallDelta opening a write",
                 StreamEvent::ToolCallDelta(crate::stream::ToolCallFragment {
@@ -4807,7 +4807,7 @@ mod tests {
     #[test]
     fn a_subagents_terminal_screen_redraws_in_place() {
         // The session view folds a subagent's terminal output exactly as the
-        // main session does (docs/interactive-shell.md): settled text
+        // main session does (docs/tools/interactive-shell.md): settled text
         // appends, live rows replace the last ones, a refined header lands.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&StreamEvent::ToolStart {
@@ -4856,7 +4856,7 @@ mod tests {
     #[test]
     fn a_subagents_window_follows_its_moving_rows() {
         // The session view's running cell anchors on the rows still moving
-        // exactly as the main one does (docs/tool-streaming.md): each live
+        // exactly as the main one does (docs/ui/tool-streaming.md): each live
         // row is stamped with the agent's own command clock, and a new call
         // starts from scratch, clock included.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
@@ -4904,7 +4904,7 @@ mod tests {
     fn every_flush_point_is_declared() {
         // `AgentRun::will_flush_segment` is the boundary's only source of
         // truth for where the session view must finish + reset its
-        // `StreamRender` (`docs/agent-view-streaming.md`). It has to agree
+        // `StreamRender` (`docs/agents/agent-view-streaming.md`). It has to agree
         // with what `apply` actually does to the buffer for **every** event,
         // or the view falls behind the fold again — which is how `HookNote`
         // came to drop a reply's withheld tail and leave the render pointing
@@ -4930,7 +4930,7 @@ mod tests {
     #[test]
     fn a_batch_announcement_is_the_rounds_whole_queue() {
         // `App::start_tool_batch` *replaces* the queue — the announcement is
-        // the round's whole set of calls (`docs/parallel-tools.md`). The
+        // the round's whole set of calls (`docs/tools/parallel-tools.md`). The
         // agent's fold appended instead, so an entry left over from an
         // earlier round would sit at the front and every resolution in the
         // new round would land on the wrong cell.
@@ -4989,7 +4989,7 @@ mod tests {
 
     #[test]
     fn stopping_an_agent_mid_batch_resolves_every_call_in_it() {
-        // The main session's rule, one level down (docs/interrupt.md): the
+        // The main session's rule, one level down (docs/input/interrupt.md): the
         // running call AND every `⎿ Waiting…` sibling behind it resolve as
         // `Interrupted by user` on the agent's own transcript, so its session
         // view and its Ctrl+D keep a cell per call the agent made.
@@ -5114,7 +5114,7 @@ mod tests {
     fn a_backend_error_leaves_the_call_it_killed_last() {
         // The failure resolves the running call red — and the session view
         // commits that cell before the red notice, which is the one thing a
-        // failure does *not* record (`docs/agent-view-streaming.md`).
+        // failure does *not* record (`docs/agents/agent-view-streaming.md`).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&StreamEvent::ToolStart {
             name: "Bash".to_string(),
@@ -5137,7 +5137,7 @@ mod tests {
 
     #[test]
     fn a_retrying_agent_says_so_and_the_next_content_clears_it() {
-        // Main parity (`docs/llm.md`): a subagent reconnecting shows
+        // Main parity (`docs/providers/llm.md`): a subagent reconnecting shows
         // `retrying {n}/{max}` in its session view's status line instead of a
         // bare spinner, and the first streamed content takes it back down.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
@@ -5152,7 +5152,7 @@ mod tests {
 
     #[test]
     fn a_retry_withdraws_what_the_agents_failed_attempt_streamed() {
-        // Main parity (docs/offline.md *A connection lost mid-reply*): the
+        // Main parity (docs/providers/offline.md *A connection lost mid-reply*): the
         // agent's connection died under its reply, and the restart takes the
         // partial back off its transcript and strip — the text a thinking
         // phase finalised and the thought it settled included — so the reply
@@ -5219,7 +5219,7 @@ mod tests {
 
     #[test]
     fn an_agent_waiting_for_the_connection_says_so_until_content_arrives() {
-        // Main parity (`docs/offline.md`): the wait begins at the runtime the
+        // Main parity (`docs/providers/offline.md`): the wait begins at the runtime the
         // first announcement lands on, later announcements move the count
         // on and keep that start, a retry announcement or any content ends
         // it, and it never shows beside the bounded retry clause.
@@ -5265,7 +5265,7 @@ mod tests {
     fn a_thinking_delta_is_only_buffered_while_a_phase_is_open() {
         // The display gate lives at the boundary: with it off nothing calls
         // `begin_reasoning`, so a delta is counted and dropped, exactly as
-        // before (docs/thinking-stream.md).
+        // before (docs/ui/thinking-stream.md).
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.apply(&StreamEvent::ThinkingChunk("unseen".into()));
         assert!(run.reasoning().is_none());
@@ -5293,7 +5293,7 @@ mod tests {
 
     #[test]
     fn the_rounds_usage_frame_snaps_the_thought_to_the_providers_count() {
-        // The main session's snap (docs/thinking-stream.md): the token
+        // The main session's snap (docs/ui/thinking-stream.md): the token
         // estimate gives way to `completion_tokens_details.reasoning_tokens`.
         let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
         run.begin_reasoning();
@@ -5361,7 +5361,7 @@ mod tests {
         );
     }
 
-    // --- The lead's companions (`docs/agent-tools.md`) ---
+    // --- The lead's companions (`docs/agents/agent-tools.md`) ---
 
     /// A registry and the receiving end of its channel, for the tests that
     /// read what it tells the loop.
@@ -5432,7 +5432,7 @@ mod tests {
     fn settling_with_nobody_waiting_sends_the_terminal_event_at_once() {
         // The foreground group's wait loop sees `is_done` under the same lock
         // the event is sent under, so its resolution always finds the event
-        // already queued (docs/agent-tools.md *One notice per answer*).
+        // already queued (docs/agents/agent-tools.md *One notice per answer*).
         let (registry, mut rx) = watched_registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
         registry.settle(
@@ -5551,7 +5551,7 @@ mod tests {
 
     #[test]
     fn a_stop_names_the_run_it_found() {
-        // A note of a run's end is tagged with that run (docs/agent-tools.md
+        // A note of a run's end is tagged with that run (docs/agents/agent-tools.md
         // *A report covers one run*), and the user's stop posts one: it names
         // the run it stopped, rather than the note taking whichever run is
         // going when it is posted.
@@ -5827,7 +5827,7 @@ mod tests {
     #[test]
     fn a_message_the_user_typed_is_told_apart_from_the_leads() {
         // The lead must learn which messages the *user* sent its agent — a
-        // session-view chat it never wrote (docs/agent-tools.md). The report
+        // session-view chat it never wrote (docs/agents/agent-tools.md). The report
         // quotes the user's message where it arrived; the lead's own
         // `agentsend` (and a routed shell note) stays the bare mark.
         let registry = test_registry();
@@ -5906,7 +5906,7 @@ mod tests {
         // A stopped loop reads nothing more, and the roster drops the rows
         // that promised a delivery — so the registry drops the messages too,
         // or a later continuation delivers them unannounced, the user's
-        // passing as the lead's (docs/queue.md).
+        // passing as the lead's (docs/input/queue.md).
         let registry = test_registry();
         let (by_user, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
         assert!(registry.queue_user_input(&by_user, "too late"));
@@ -5993,7 +5993,7 @@ mod tests {
         // One level down, the reported race: a subagent's shell ended while
         // the subagent was writing a call to it, and the note went to the
         // subagent's own queue, unread. Its call reports the exit itself and
-        // takes the note back (docs/bash-tools.md *One notice per exit*).
+        // takes the note back (docs/tools/bash-tools.md *One notice per exit*).
         let registry = test_registry();
         let (agent, _cancel) = registry.register(GENERAL_PURPOSE);
         let (board, shell) = exited_shell(&registry, &agent);
@@ -6070,7 +6070,7 @@ mod tests {
     #[test]
     fn a_report_before_the_notice_is_posted_cancels_it() {
         // `agentoutput` read the answer before the loop got to its notice:
-        // the loop must not post it (docs/agent-tools.md *One notice per
+        // the loop must not post it (docs/agents/agent-tools.md *One notice per
         // answer*).
         let (registry, id, board) = settled_with_notice();
         assert!(registry.report_settled(&id, 0, Some(&board)).is_empty());
@@ -6207,7 +6207,7 @@ mod tests {
     fn a_resume_note_is_posted_only_while_its_run_is_going() {
         // Under the registry lock, where a report of the run's end and the
         // lead's stop take it back, so neither can cross it
-        // (docs/agent-tools.md *A resume is news when it starts*): a run
+        // (docs/agents/agent-tools.md *A resume is news when it starts*): a run
         // already over is told by its completion notice, which quotes the
         // user's messages too, and one the lead stopped by the stop's report.
         let (registry, id, board) = settled_with_notice();
@@ -6235,7 +6235,7 @@ mod tests {
         // The look lands before the loop has posted the run's completion: the
         // report cancels that notice, and the note that the run is going must
         // go with it — read after the answer, it would say the agent runs and
-        // that a notice will come (docs/agent-tools.md *A resume is news when
+        // that a notice will come (docs/agents/agent-tools.md *A resume is news when
         // it starts*).
         let (registry, id, board, resume) = resumed_with_note();
         registry.settle(
@@ -6292,7 +6292,7 @@ mod tests {
     fn the_leads_stop_takes_back_only_the_note_that_the_run_is_going() {
         // `agentkill`'s report is the run's end, and no notice follows a stop
         // the lead made itself: "running again, you will be notified" would
-        // reach it after the fact (docs/agent-tools.md). The run before ended
+        // reach it after the fact (docs/agents/agent-tools.md). The run before ended
         // in a completion the lead has not read, which says what the stop's
         // report does not.
         let (registry, id, board) = settled_with_notice();
@@ -6337,7 +6337,7 @@ mod tests {
     #[test]
     fn each_continuation_is_a_new_run_and_its_settle_names_it() {
         // A report covers one run, so what it accounts for is counted by run:
-        // the launch is run 0, each continuation the next (docs/agent-tools.md
+        // the launch is run 0, each continuation the next (docs/agents/agent-tools.md
         // *One notice per answer*).
         let (registry, mut rx) = watched_registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
@@ -6553,7 +6553,7 @@ mod tests {
         // The forwarder's bookkeeping (llm::backend::spawn_subagent_run): each
         // call it starts goes on the record, and each run of text more work
         // followed is a progress update — the very points that used to throw
-        // the text away (docs/agent-progress.md).
+        // the text away (docs/agents/agent-progress.md).
         let registry = test_registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
         let start = |args: &str| StreamEvent::ToolStart {
@@ -6618,7 +6618,7 @@ mod tests {
 
     #[test]
     fn a_restarted_reply_hands_the_lead_only_the_attempt_that_got_through() {
-        // docs/offline.md *A connection lost mid-reply*: the forwarder had
+        // docs/providers/offline.md *A connection lost mid-reply*: the forwarder had
         // been collecting the failed attempt's text as the agent's answer.
         // The retry voids it — neither glued to the reply that replaces it
         // nor kept as something the agent said on the way.
@@ -6652,7 +6652,7 @@ mod tests {
         // drained the message queued for the next round. The mark goes where
         // the stream announces the message, after the call and after what
         // the agent said before it — not wherever the forwarder happened to
-        // be when the loop drained (docs/agent-progress.md).
+        // be when the loop drained (docs/agents/agent-progress.md).
         let registry = test_registry();
         let (id, _cancel) = registry.register_agent(GENERAL_PURPOSE, "d", "p");
         let mut recorder = RunRecorder::new(registry.clone(), id.clone());
@@ -6740,7 +6740,7 @@ mod tests {
 
     #[test]
     fn a_report_lists_each_update_where_the_agent_said_it() {
-        // The request's picture (docs/agent-progress.md): what the agent said
+        // The request's picture (docs/agents/agent-progress.md): what the agent said
         // on its way, among its calls and the messages it read — an update
         // after the messages it had read, a multi-line one indented beneath
         // its first line, its blank lines dropped.

@@ -1,5 +1,5 @@
 //! Piped output, **folded** the way a terminal would show it
-//! (`docs/interactive-shell.md`).
+//! (`docs/tools/interactive-shell.md`).
 //!
 //! A plain `bash` command's output reaches us through a pipe, not a
 //! terminal, but plenty of programs draw on it as if it were one: curl's
@@ -125,7 +125,7 @@ pub const HEAD_BYTES: usize = crate::llm::tools::TOOL_OUTPUT_MAX_BYTES / 4;
 pub const TAIL_BYTES: usize = crate::llm::tools::TOOL_OUTPUT_MAX_BYTES - HEAD_BYTES;
 
 /// A command's output kept for the model with **both ends**
-/// (`docs/bash-tools.md`): its first lines up to a head cap, then a window
+/// (`docs/tools/bash-tools.md`): its first lines up to a head cap, then a window
 /// over its last lines up to a tail cap — whole lines, a character never
 /// split — and a count of the lines that fell between, which
 /// [`render`](Self::render) marks on a line of its own. A line longer than
@@ -440,7 +440,7 @@ mod tests {
     fn long_output_keeps_both_ends_and_marks_the_cut() {
         // A build's first error and its summary line are at opposite ends:
         // keeping one end — the head a plain call kept, the tail a terminal
-        // session kept — lost the other (docs/bash-tools.md).
+        // session kept — lost the other (docs/tools/bash-tools.md).
         let mut kept = HeadTail::with_caps(6, 6);
         for n in 1..=10 {
             kept.push(&format!("{n}\n"));

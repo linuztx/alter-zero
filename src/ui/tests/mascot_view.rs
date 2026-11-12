@@ -1,4 +1,4 @@
-//! The inline `/mascot` picker view (`docs/mascot.md`).
+//! The inline `/mascot` picker view (`docs/ui/mascot.md`).
 
 use super::*;
 use crate::app::{Mascot, Theme};
@@ -587,7 +587,7 @@ fn height_is_the_line_count_clamped_to_the_terminal() {
 fn the_picker_never_flows_its_page() {
     // A terminal shorter than the compact page gets a smaller rung, down to
     // the search line alone, so nothing flows into scrollback — least of all
-    // the search line (docs/view-flow.md).
+    // the search line (docs/ui/view-flow.md).
     let app = open_app();
     for width in [WIDE, NARROW] {
         for height in (1..=20).chain([TALL]) {

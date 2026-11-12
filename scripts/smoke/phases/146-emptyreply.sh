@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# The reported stall (docs/unfinished-replies.md): a round that only thought —
+# The reported stall (docs/architecture/unfinished-replies.md): a round that only thought —
 # no reply, no tool call — ended the turn on its summary, and the user had to
 # type `continue`. A stub chat-completions server plays the model through the
 # real backend:

@@ -1,4 +1,4 @@
-//! The terminal's **character sets** (`docs/interactive-shell.md`) — the one
+//! The terminal's **character sets** (`docs/tools/interactive-shell.md`) — the one
 //! part of them programs still use: **DEC Special Graphics**, the set a box
 //! is drawn in when a program is not told its terminal is UTF-8.
 //!

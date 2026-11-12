@@ -7,7 +7,7 @@
 //! shapes) and the `clipboard_owner` example (which serves a synthetic
 //! screenshot for driving the paste by hand) via `#[path]`. It is what lets
 //! the read be exercised under a virtual X server with no clipboard tool
-//! installed. See `docs/image-paste.md`, *Measuring*.
+//! installed. See `docs/input/image-paste.md`, *Measuring*.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

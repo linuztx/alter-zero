@@ -1,4 +1,4 @@
-//! The startup review's page (`docs/config-review.md`).
+//! The startup review's page (`docs/state/config-review.md`).
 
 use super::*;
 use crate::app::{ItemChange, ReviewItem, ReviewKey, ReviewKind, ReviewPage, ReviewSection};

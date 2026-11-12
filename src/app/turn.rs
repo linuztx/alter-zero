@@ -1,6 +1,6 @@
 //! The turn lifecycle: begin/stream/interrupt/finish, the status-line tally,
 //! and the committed `Done for Ns` summary.
-//! See `docs/status-indicator.md` and `docs/interrupt.md`.
+//! See `docs/ui/status-indicator.md` and `docs/input/interrupt.md`.
 
 use super::*;
 
@@ -8,7 +8,7 @@ use super::*;
 /// shimmers while a turn runs (`Working…`) and its past tense, which the
 /// committed summary opens with (`Worked for 12s`). One entry is one verb, so
 /// a summary can never name a different verb than the line wore. See
-/// `docs/status-indicator.md`.
+/// `docs/ui/status-indicator.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusVerb {
     /// The live form, drawn with a trailing `…` (`Working`).
@@ -49,7 +49,7 @@ impl StatusVerb {
 /// going without pulling the eye off the reply streaming above it. It is a
 /// whole number of the verb's shimmer sweeps (two seconds each), so a swap
 /// always lands at the start of a sweep, while the band is still off the
-/// text. See `docs/status-indicator.md`.
+/// text. See `docs/ui/status-indicator.md`.
 pub const VERB_ROTATION: Duration = Duration::from_secs(30);
 
 /// The whimsical status verbs, walked in order: a turn's line opens on the
@@ -75,20 +75,20 @@ pub const STATUS_VERBS: &[StatusVerb] = &[
 /// [`STATUS_VERBS`]): the status line reads `Running…`. It doubles as the
 /// status's (never rendered) done verb — a shell turn ends **without** a
 /// summary, [`App::end_turn`] returning `None` for it. See
-/// `docs/shell-command.md`.
+/// `docs/input/shell-command.md`.
 pub const SHELL_VERB: &str = "Running";
 
 /// The notice committed when the user interrupts a turn (Esc mid-generation) —
 /// codex's wording, minus its `/feedback` plug. Recorded as a [`Role::Error`]
 /// message: like a backend failure, the notice is the turn's terminal state,
 /// with the turn's receipt (`Worked for 8s · ≈24.3k tokens`) committed under
-/// it. See `docs/interrupt.md`.
+/// it. See `docs/input/interrupt.md`.
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
 
 /// The toast raised when a retry withdraws a reply the user had begun to see —
 /// its connection was lost under it, and the request is being sent again
-/// ([`App::withdraw_attempt`], `docs/offline.md` *A connection lost
+/// ([`App::withdraw_attempt`], `docs/providers/offline.md` *A connection lost
 /// mid-reply*). It says why the text went; the status line's amber
 /// `retrying {n}/{max}` says what is happening. A toast, never a committed
 /// line: once the reply streams again it is nothing worth keeping.
@@ -103,7 +103,7 @@ pub const CONNECTION_LOST_NOTICE: &str = "Connection lost mid-reply — starting
 /// line, its `Thinking for …` clause, the committed `… for …` summary, and
 /// every other runtime display — tool footers, the shell manager's Runtime
 /// field, an agent's counters and completion notice — so they all read the
-/// same (`docs/status-indicator.md`). Lives in the pure core (beside the
+/// same (`docs/ui/status-indicator.md`). Lives in the pure core (beside the
 /// state whose display strings use it); `ui` re-exports it.
 #[must_use]
 pub fn format_elapsed(secs: u64) -> String {
@@ -118,7 +118,7 @@ pub fn format_elapsed(secs: u64) -> String {
 }
 
 /// Humanize a **timeout** — a limit, not a measurement — for the running
-/// `bash` cell's `(22s · wait 1m 50s)` clock row (`docs/tool-streaming.md`):
+/// `bash` cell's `(22s · wait 1m 50s)` clock row (`docs/ui/tool-streaming.md`):
 /// [`format_elapsed`]'s units with every zero part dropped, since a limit
 /// reads whole (`2m` for the tool's 120 000 ms default, never `2m 0s`, where
 /// the elapsed beside it keeps its seconds because it moves): `10m`,
@@ -169,7 +169,7 @@ impl App {
         Some(text)
     }
 
-    /// Record a hook-injected conversation entry (`docs/hooks.md`): the
+    /// Record a hook-injected conversation entry (`docs/tools/hooks.md`): the
     /// [`HistoryItem::HookNote`] whose `report` is the hooks' cell and whose
     /// `text` the derived context replays verbatim. The caller flushes the
     /// streaming segment first (the loop's ToolBatch dance), so the note
@@ -197,28 +197,28 @@ impl App {
     /// tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
-        // A fresh turn has been handed nothing yet (docs/queue.md).
+        // A fresh turn has been handed nothing yet (docs/input/queue.md).
         self.steered_this_turn = false;
         // A round announced in the previous turn stamps nothing in this one.
         self.round = None;
         // A new real turn re-arms the auto-compact trigger (one attempt per
-        // user turn — docs/compact.md).
+        // user turn — docs/architecture/compact.md).
         self.auto_compact_blocked = false;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
-        // The usage accumulators are per-turn (docs/prompt-caching.md).
+        // The usage accumulators are per-turn (docs/providers/prompt-caching.md).
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
         self.turn_usage_cache_write = 0;
         // No phase of a previous turn survives into this one — an abandoned
         // buffer would otherwise preview under the new turn's status
-        // (docs/thinking-stream.md) — and no call it was still generating
-        // (docs/write-streaming.md).
+        // (docs/ui/thinking-stream.md) — and no call it was still generating
+        // (docs/ui/write-streaming.md).
         self.drop_reasoning();
         self.tool_drafts.clear();
         // The walk picks up one past the last verb a line wore, and
-        // `set_status_times` moves it on from here (docs/status-indicator.md).
+        // `set_status_times` moves it on from here (docs/ui/status-indicator.md).
         let start = self.verb_cursor;
         let verb = StatusVerb::at(start);
         self.verb_cursor = start.wrapping_add(1);
@@ -239,7 +239,7 @@ impl App {
 
     /// Begin a `!` shell command as a turn, reusing the AI turn machinery so the
     /// command gets the live status strip, the spinner/timer, `esc to
-    /// interrupt`, and the resize repaint for free (see `docs/shell-command.md`):
+    /// interrupt`, and the resize repaint for free (see `docs/input/shell-command.md`):
     ///
     /// - the command itself is recorded **up front** as a [`Role::Shell`]
     ///   header message (`! pwd` on the dark user-style line) — the top of the
@@ -295,7 +295,7 @@ impl App {
     /// tally, arrow pointing down — output streaming). No-op if not streaming.
     /// A `/compact` turn diverts the chunk into the summary buffer instead —
     /// the visible reply stays empty (the summary is never rendered) while the
-    /// tally still ticks. See `docs/compact.md`.
+    /// tally still ticks. See `docs/architecture/compact.md`.
     pub fn push_chunk(&mut self, chunk: &str) {
         if let Some(buf) = self.compact_buffer.as_mut() {
             buf.push_str(chunk);
@@ -323,7 +323,7 @@ impl App {
     /// ended right after a tool call) or nothing was streaming.
     pub fn finish_stream(&mut self) -> Option<String> {
         // A call the round never finished making is never recorded
-        // (docs/write-streaming.md).
+        // (docs/ui/write-streaming.md).
         self.tool_drafts.clear();
         let text = self.streaming.take()?;
         // A turn can end right after a tool call with no trailing text; don't
@@ -358,21 +358,21 @@ impl App {
     /// turn end **between** clearing the status and recording the summary —
     /// landing that notice above the `Done for Ns` summary in both history
     /// and scrollback (invariant 3), the same placement a mid-turn tool
-    /// boundary gives it (`docs/background.md`). Returns `None` (still
+    /// boundary gives it (`docs/tools/background.md`). Returns `None` (still
     /// clearing the status) for an idle composer or a `!` shell turn, whose
-    /// committed cell is its own record (`docs/shell-command.md`).
+    /// committed cell is its own record (`docs/input/shell-command.md`).
     pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
         let status = self.status.take()?;
         // The gauge folds in what joined after the turn's last usage frame —
         // the reply above all — or, when none arrived (the dummy, a provider
         // that omits them), stands on the estimate, so it and the
-        // auto-compact trigger work either way (docs/token-estimate.md).
+        // auto-compact trigger work either way (docs/architecture/token-estimate.md).
         self.refresh_context_used();
         if status.shell {
             return None;
         }
         // A finished turn's tokens are its frames' alone: the receipt is
-        // never a guess (docs/prompt-caching.md).
+        // never a guess (docs/providers/prompt-caching.md).
         Some(self.turn_summary(&status, elapsed_secs, 0))
     }
 
@@ -382,7 +382,7 @@ impl App {
     /// [`interrupt_turn`](App::interrupt_turn) for a kept interrupt, so the
     /// two differ only in the `estimated` share each hands it: nothing for a
     /// finished turn, the estimate of the round the Esc cut short
-    /// for an interrupted one (`docs/interrupt.md`).
+    /// for an interrupted one (`docs/input/interrupt.md`).
     fn turn_summary(
         &self,
         status: &TurnStatus,
@@ -394,12 +394,12 @@ impl App {
             secs: elapsed_secs,
             timestamp: self.now_stamp(),
             // Snapshot the running background shells for the `· {n} shells
-            // still running` suffix (docs/background.md). A shell that just
+            // still running` suffix (docs/tools/background.md). A shell that just
             // finished has already left `self.background` (at `bg_exited`),
             // so settling its notice next doesn't change this count.
             shells: self.background.len(),
             // The turn's real billed usage (`apply_usage`) — 0 (hidden) when
-            // the backend reported none. See docs/prompt-caching.md.
+            // the backend reported none. See docs/providers/prompt-caching.md.
             tokens: self.turn_usage_tokens,
             estimated,
             cached: self.turn_usage_cached,
@@ -431,7 +431,7 @@ impl App {
         self.tool_drafts.clear();
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
-        // lands only at StreamDone, so the old context stands (docs/compact.md).
+        // lands only at StreamDone, so the old context stands (docs/architecture/compact.md).
         // A failed compaction also blocks the auto re-trigger until the next
         // real turn (it would fail the same way in a tight loop).
         if self.compact_buffer.take().is_some() {
@@ -444,7 +444,7 @@ impl App {
             Some(streamed)
         };
         // The running call and every `⎿ Waiting…` sibling behind it: none of
-        // them will ever get its ToolEnd now (docs/interrupt.md).
+        // them will ever get its ToolEnd now (docs/input/interrupt.md).
         let tools = self.fail_live_queue(
             ERROR_TOOL_OUTPUT,
             crate::stream::ToolErrorKind::BackendError,
@@ -452,7 +452,7 @@ impl App {
         // A live agent group dies with the turn — resolve it locally (the
         // channel swap drops the backend's own AgentGroupDone); the loop
         // kills its subagents and commits the tree cell. See
-        // `docs/agent-tool.md`.
+        // `docs/agents/agent-tool.md`.
         let agents = self.resolve_live_agent_group();
         self.record_message(Role::Error, error);
         // An error is the turn's terminal state — clear the live status without a
@@ -474,7 +474,7 @@ impl App {
     /// tool resolving, a steered message, the turn's end. A
     /// [`Retrying`](crate::stream::StreamEvent::Retrying) leaves it for
     /// [`withdraw_attempt`](App::withdraw_attempt) to take
-    /// (`docs/offline.md` *A connection lost mid-reply*).
+    /// (`docs/providers/offline.md` *A connection lost mid-reply*).
     ///
     /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
     pub fn track_attempt(&mut self, event: &crate::stream::StreamEvent) {
@@ -488,7 +488,7 @@ impl App {
     /// How much of the history no retry can take back: everything but what
     /// the reply attempt now streaming recorded
     /// ([`withdraw_attempt`](App::withdraw_attempt)'s floor) — what a
-    /// headless run may print as settled (`docs/headless.md`).
+    /// headless run may print as settled (`docs/cli/headless.md`).
     #[must_use]
     pub fn settled_history_len(&self) -> usize {
         self.attempt_floor
@@ -500,7 +500,7 @@ impl App {
     /// ([`crate::stream::StreamEvent::Retrying`]) — so take back everything it
     /// streamed before the next attempt's first byte arrives: re-sent after
     /// content, a request would otherwise **duplicate** it
-    /// (`docs/offline.md` *A connection lost mid-reply*).
+    /// (`docs/providers/offline.md` *A connection lost mid-reply*).
     ///
     /// Withdrawn: the reply text it streamed (the stream itself stays open for
     /// the next attempt), a thinking phase it opened — dropped, never settled
@@ -542,7 +542,7 @@ impl App {
         if records > 0 {
             // A non-append mutation: the Ctrl+O cache's frozen prefix and the
             // rollout's watermark both read the generation
-            // (docs/tool-view-performance.md).
+            // (docs/ui/tool-view-performance.md).
             self.history_generation += 1;
             // A withdrawn thought is no snap target for the round's usage
             // frame — that count belongs to the attempt that gets through.
@@ -555,7 +555,7 @@ impl App {
     /// End the in-progress turn because the user interrupted it (Esc), which
     /// had run `elapsed_secs` by the boundary's clock. Returns the
     /// [`InterruptedTurn`] telling the loop how to settle the screen, or
-    /// `None` if no turn was in flight. Two outcomes (see `docs/interrupt.md`):
+    /// `None` if no turn was in flight. Two outcomes (see `docs/input/interrupt.md`):
     ///
     /// - **No output yet** — nothing streamed (no non-empty partial reply, no
     ///   tool call, running or waiting) and nothing is queued behind this turn:
@@ -572,7 +572,7 @@ impl App {
     ///   live tool call as [`ToolStatus::Failed`] with
     ///   [`INTERRUPT_TOOL_OUTPUT`] — the running one **and** each parallel
     ///   batch sibling still `Waiting` behind it, since a call that never
-    ///   started is still one the model made (`docs/interrupt.md`) — and
+    ///   started is still one the model made (`docs/input/interrupt.md`) — and
     ///   record the [`INTERRUPT_NOTICE`] as a [`Role::Error`] message —
     ///   **except for a `!` shell turn**, whose `⎿ Interrupted by user` cell
     ///   already says it, so no redundant notice is committed. History gains
@@ -592,11 +592,11 @@ impl App {
         // keeps the undo branch below from firing: the history tail may be an
         // unrelated user message (the marker was never appended), and pulling
         // it into the composer would undo a submission this turn never made.
-        // See docs/compact.md.
+        // See docs/architecture/compact.md.
         let compacting = self.compact_buffer.take().is_some();
         if compacting {
             // The user said no — don't restart it at this same turn end
-            // (docs/compact.md's one-attempt-per-turn rule).
+            // (docs/architecture/compact.md's one-attempt-per-turn rule).
             self.auto_compact_blocked = true;
         }
         // Take the partial first (empties the streaming buffer either way).
@@ -604,7 +604,7 @@ impl App {
         // A file that was streaming into its cell is output the user saw —
         // the undo below is for a turn that showed nothing — but the call
         // itself was never finished, so nothing of it is recorded
-        // (docs/write-streaming.md).
+        // (docs/ui/write-streaming.md).
         let previewed = self.tool_drafts.previews().next().is_some();
         self.tool_drafts.clear();
 
@@ -627,7 +627,7 @@ impl App {
         // typed draft. When the just-submitted user message(s) are still the
         // history tail, nothing has been committed since, so the undo is the
         // right call; otherwise this turn already produced output and the Kept
-        // path below records the notice. See `docs/tools.md` / `docs/interrupt.md`.
+        // path below records the notice. See `docs/tools/tools.md` / `docs/input/interrupt.md`.
         let submission_is_intact =
             matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User);
         if !compacting
@@ -638,7 +638,7 @@ impl App {
             && self.agent_group.is_none()
             && self.queued.is_empty()
             // …and nothing handed to this turn that it never read: the
-            // interrupt is what sends those (docs/queue.md), so pulling the
+            // interrupt is what sends those (docs/input/queue.md), so pulling the
             // submission back into the composer while they dispatch as the
             // next turn would read as the undo having done nothing.
             && self.steered.is_empty()
@@ -651,7 +651,7 @@ impl App {
             // An /init turn's recorded message is the canned prompt, but the
             // user typed "/init" — restoring 1.8KB of text the composer never
             // held would flood it (and a follow-up Ctrl+C would record the
-            // prompt into ↑ recall, breaking docs/init.md's no-recall
+            // prompt into ↑ recall, breaking docs/state/init.md's no-recall
             // guarantee). Recall the command instead; refresh_command_menu
             // reopens the palette on it — the exact pre-submit state. (A
             // hand-typed submission of the identical text lands here too;
@@ -675,7 +675,7 @@ impl App {
 
         // The receipt reads the live status before anything below charges the
         // tally: the `Interrupted by user` answers the calls resolve with are
-        // the next request's upload, not this turn's (docs/interrupt.md).
+        // the next request's upload, not this turn's (docs/input/interrupt.md).
         let summary = self.interrupted_turn_summary(elapsed_secs, compacting);
         // Keep what streamed, in stream order: the partial (Assistant) before
         // the calls the interrupt resolves (a ToolStart flushes the buffer, so
@@ -687,14 +687,14 @@ impl App {
         // one and each `⎿ Waiting…` sibling — resolves `Interrupted by user`
         // and is recorded: the cells stay on screen, and the next request
         // replays the whole round, so the model keeps every call it made
-        // (docs/interrupt.md).
+        // (docs/input/interrupt.md).
         let tools = self.fail_live_queue(
             INTERRUPT_TOOL_OUTPUT,
             crate::stream::ToolErrorKind::Interrupted,
         );
         // A live agent group is stopped with the turn: settle its members as
         // interrupted and record the tree cell — the loop kills the
-        // subagent threads via the registry (docs/agent-tool.md).
+        // subagent threads via the registry (docs/agents/agent-tool.md).
         let agents = self.resolve_live_agent_group();
         // A `!` shell turn's `⎿ Interrupted by user` cell is its own record —
         // committing a second `Conversation interrupted` line would be
@@ -724,7 +724,7 @@ impl App {
     /// `None` for a `!` shell or a `/compact` turn, whose cells are their own
     /// records. Built, never recorded: the boundary records it once the
     /// completions held during the turn have settled above it
-    /// (`docs/interrupt.md`).
+    /// (`docs/input/interrupt.md`).
     fn interrupted_turn_summary(&self, elapsed_secs: u64, compacting: bool) -> Option<TurnSummary> {
         let status = self.status.as_ref()?;
         if status.shell || compacting {
@@ -780,7 +780,7 @@ impl App {
 
 impl App {
     /// A `UserPromptSubmit` hook refused the prompt before the first request
-    /// (`docs/hooks.md`): end the turn and roll the submission back —
+    /// (`docs/tools/hooks.md`): end the turn and roll the submission back —
     /// Claude Code's "erased from context". The just-recorded user
     /// message(s) leave history (the recorder's shrink-rewrite erases them
     /// from the rollout too), the text returns to the composer exactly like
@@ -809,7 +809,7 @@ impl App {
         self.history.append(&mut kept);
         if let Some((text, pairs)) = restored {
             // The /init special case, the interrupt-undo's rule: the user
-            // typed "/init", not the canned prompt (docs/init.md).
+            // typed "/init", not the canned prompt (docs/state/init.md).
             let text = if text == INIT_PROMPT.trim_end() {
                 "/init".to_string()
             } else {
@@ -827,7 +827,7 @@ impl App {
         );
         // The pop was a non-append mutation even when the take bumped
         // already — cheap insurance for the transcript cache's frozen
-        // prefix (docs/tool-view-performance.md).
+        // prefix (docs/ui/tool-view-performance.md).
         self.history_generation += 1;
         rolled
     }
@@ -851,14 +851,14 @@ pub struct StreamError {
     /// The live agent group the error resolved (its foreground agents marked
     /// interrupted, the [`AgentGroup`] recorded in history) — the loop
     /// commits its tree cell like the interrupt path. `None` when no group
-    /// was live. See `docs/agent-tool.md`.
+    /// was live. See `docs/agents/agent-tool.md`.
     pub agents: Option<AgentGroup>,
     /// The error message to show the user.
     pub error: String,
 }
 
 /// What [`App::withdraw_attempt`] took back of a failed reply attempt, for the
-/// boundary to settle the screen by (`docs/offline.md` *A connection lost
+/// boundary to settle the screen by (`docs/providers/offline.md` *A connection lost
 /// mid-reply*). The default — nothing at all — is a retry before any content.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[must_use]
@@ -885,7 +885,7 @@ impl Withdrawn {
 /// the event loop to decide how to settle the screen.
 ///
 /// Two outcomes, mirroring codex's "keep what streamed" versus this codebase's
-/// "nothing streamed yet, so undo it" divergence (see `docs/interrupt.md`):
+/// "nothing streamed yet, so undo it" divergence (see `docs/input/interrupt.md`):
 #[derive(Debug, Clone, PartialEq, Eq)]
 // `Kept` is far larger than the empty `Undone`, by design: it carries the
 // whole settled turn. One of these is built per Esc press and consumed
@@ -914,7 +914,7 @@ pub enum InterruptedTurn {
         /// Every tool call that was live — the one mid-run and each parallel
         /// batch sibling still waiting behind it, in the model's order — now
         /// resolved as failed with [`INTERRUPT_TOOL_OUTPUT`]; empty when none
-        /// was (`docs/interrupt.md`).
+        /// was (`docs/input/interrupt.md`).
         tools: Vec<ToolCall>,
         /// The red terminal notice to commit to scrollback — [`INTERRUPT_NOTICE`]
         /// for a normal turn, or **`None`** for a `!` shell turn, whose
@@ -927,7 +927,7 @@ pub enum InterruptedTurn {
         /// marked interrupted, the [`AgentGroup`] recorded in history) — the
         /// loop commits its tree cell before the notice, and kills the
         /// group's subagents via the registry. `None` when no group was live.
-        /// See `docs/agent-tool.md`.
+        /// See `docs/agents/agent-tool.md`.
         agents: Option<AgentGroup>,
         /// The turn's receipt, to commit under the notice: the summary a
         /// finished turn ends on, its tokens the tally the line was showing
@@ -937,7 +937,7 @@ pub enum InterruptedTurn {
         /// they land above the receipt as they do above a finished turn's,
         /// then records it with [`App::record_turn_summary`]. `None` for a
         /// `!` shell or a `/compact` turn, whose cells are their own records
-        /// (`docs/interrupt.md`).
+        /// (`docs/input/interrupt.md`).
         summary: Option<TurnSummary>,
     },
 }

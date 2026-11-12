@@ -1,4 +1,4 @@
-//! Inline-span link marking (`docs/links.md`): bare URLs and markdown links
+//! Inline-span link marking (`docs/ui/links.md`): bare URLs and markdown links
 //! carry their full target through the wrap, so a hard-broken URL's every
 //! fragment still opens whole.
 
@@ -188,7 +188,7 @@ fn wrap_keeps_the_target_on_every_fragment_of_a_hard_broken_url() {
 
 #[test]
 fn a_markdown_targets_decoration_parens_stay_prose() {
-    // The reported bug (`docs/links.md` *The decoration parens*): the ` (`
+    // The reported bug (`docs/ui/links.md` *The decoration parens*): the ` (`
     // and `)` framing the shown target wore the link's own colour and
     // underline, so the eye read the brackets as part of the link — while a
     // click, which only the *marked* run carries, opened the URL without

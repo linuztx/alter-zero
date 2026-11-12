@@ -1,4 +1,4 @@
-//! The inline `/skills` menu. See `docs/skills.md`.
+//! The inline `/skills` menu. See `docs/tools/skills.md`.
 //!
 //! The `/settings` menu's list under the pages' header: the header `/hooks`
 //! and `/mcp` open on — the title in the pages' title dress over a dim count
@@ -256,7 +256,7 @@ fn skills_placeholder_body(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The framed page as lines — one blank row between each block, never two,
-/// and none hugging either rule (`docs/view-flow.md` *The frame hugs its
+/// and none hugging either rule (`docs/ui/view-flow.md` *The frame hugs its
 /// content*) — the first of four pages that fits `height` rows
 /// ([`first_page_that_fits`]):
 ///
@@ -277,7 +277,7 @@ fn skills_placeholder_body(app: &App, width: u16) -> Vec<Line<'static>> {
 /// So on a terminal too short for the whole page the search line, the
 /// highlighted row and the hint stay on screen, where bottom-anchoring it
 /// flowed the search line and the top of the list into scrollback
-/// (`docs/view-flow.md`). What [`render_skills_menu`] paints and
+/// (`docs/ui/view-flow.md`). What [`render_skills_menu`] paints and
 /// [`skills_menu_rows`] counts, so the two can never disagree. Empty when
 /// the menu is closed.
 ///
@@ -365,8 +365,8 @@ pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16
 /// for that, the compact page of three rows, with the header while it fits,
 /// which sheds its own rows down to the search line in an area shorter
 /// still. The page is built for the area's height, so it always fits and
-/// nothing flows (`docs/view-flow.md`). Pure — `render_live` paints this.
-/// See `docs/skills.md`.
+/// nothing flows (`docs/ui/view-flow.md`). Pure — `render_live` paints this.
+/// See `docs/tools/skills.md`.
 pub fn render_skills_menu(area: Rect, buf: &mut Buffer, app: &App) {
     super::view_flow::render_framed_tail(
         area,

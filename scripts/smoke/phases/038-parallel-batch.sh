@@ -6,7 +6,7 @@ smoke_begin
 
 # ---- drive: Phase 38 ----
 # PARALLEL tool-call batch — the not-yet-run calls show `⎿ Waiting…`
-# (docs/parallel-tools.md). A prompt mentioning "parallel" makes the dummy announce
+# (docs/tools/parallel-tools.md). A prompt mentioning "parallel" makes the dummy announce
 # a three-call `Bash(ping …)` batch up front (the user's example): while the first
 # runs, the other two show dim `⎿ Waiting…` cells in the live region above the box,
 # the whole batch visible at once. Drive a fresh, tall session and poll for that
@@ -33,7 +33,7 @@ echo "==== Phase 38: captured pane (parallel batch — a running Bash(ping) cell
 printf '%s\n' "$batch_waiting"
 
 # Phase 38: a parallel tool-call batch shows its not-yet-run calls as ⎿ Waiting…
-# (docs/parallel-tools.md).
+# (docs/tools/parallel-tools.md).
 expect_has "$batch_waiting" -F "Waiting…" "a parallel batch did not show '⎿ Waiting…' for its queued calls"
 # The running call + at least one waiting sibling are visible at once, so two or
 # more `● Bash(ping …)` cells show together (the whole batch is visible before the
@@ -44,7 +44,7 @@ if [ "${batch_cells:-0}" -lt 2 ]; then
 fi
 # ---- drive: Phase 39 ----
 # the running Bash(ping) cell TAILS its live output — the last
-# lines under the `⎿` gutter and a `+N lines (Ns)` footer (docs/tool-streaming.md),
+# lines under the `⎿` gutter and a `+N lines (Ns)` footer (docs/ui/tool-streaming.md),
 # Claude-Code's running-command look. The output streams in *after* the Waiting…
 # capture above.
 #
@@ -61,7 +61,7 @@ fi
 # and the assertion below still reads the real `+N lines (Ns · wait 2m)`
 # row — the elapsed beside the timeout the call runs under, the tool's 2m
 # default here since the demo's scripted call names none
-# (docs/tool-streaming.md).
+# (docs/ui/tool-streaming.md).
 batch_tail=""
 for _ in $(seq 1 200); do # up to ~20s — the tail streams as each ping runs
 	if grep -qaE '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "$RAW39"; then
@@ -80,5 +80,5 @@ tmux kill-session -t "$S_BATCH" 2>/dev/null
 
 # Phase 39: a running Bash(ping) cell TAILS its live output — the last lines plus
 # a `+N lines (Ns · wait 2m)` footer, Claude-Code's running-command look
-# with the call's timeout beside the elapsed (docs/tool-streaming.md).
+# with the call's timeout beside the elapsed (docs/ui/tool-streaming.md).
 expect_has "$batch_tail" -E '\+[0-9]+ lines \([0-9]+s · wait 2m\)' "a running Bash(ping) cell did not tail its streamed output (no '+N lines (Ns · wait 2m)' footer)"

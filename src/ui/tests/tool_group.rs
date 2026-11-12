@@ -1,5 +1,5 @@
 //! The collapsed read/search group's two looks and where they show
-//! (`docs/tool-groups.md`): the live `● Reading 1 file…` cell over its `⎿`
+//! (`docs/ui/tool-groups.md`): the live `● Reading 1 file…` cell over its `⎿`
 //! hint in the strip, the settled bullet-less `Read 1 file (ctrl+o to
 //! expand)` line in scrollback, and a rebuild that agrees with both.
 
@@ -87,7 +87,7 @@ fn the_clauses_count_in_the_plural_and_the_counts_stand_out() {
 fn the_thoughts_a_group_held_leave_only_its_line() {
     // A thought that settled while the group was open shows nowhere inline:
     // the group's line is all the conversation shows of the run, and Ctrl+O
-    // has every thought (docs/tool-groups.md *Thoughts*).
+    // has every thought (docs/ui/tool-groups.md *Thoughts*).
     let items = [
         ok("Read", "a.py"),
         thought(2),
@@ -225,7 +225,7 @@ fn a_rebuild_leaves_out_the_group_still_open() {
 fn the_live_cell_counts_the_held_and_the_running_reads_under_a_blinking_bullet() {
     let mut app = holding_a_read("mathutil.py");
     // The read has had the row for its hold when the listing starts, so the
-    // listing's value is on the row at the next tick (docs/tool-groups.md).
+    // listing's value is on the row at the next tick (docs/ui/tool-groups.md).
     app.advance_group_hint(Duration::ZERO);
     app.start_tool("Bash", "ls -la", None);
     app.advance_group_hint(crate::app::GROUP_HINT_HOLD);
@@ -248,7 +248,7 @@ fn the_live_cell_counts_the_held_and_the_running_reads_under_a_blinking_bullet()
 
 #[test]
 fn a_parallel_batch_shows_its_first_calls_value_first_then_the_next() {
-    // docs/tool-groups.md *The hint row*: a read and a listing in one round,
+    // docs/ui/tool-groups.md *The hint row*: a read and a listing in one round,
     // both resolved before a frame was drawn. The row used to jump straight
     // to the listing; each value now holds it for GROUP_HINT_HOLD in turn.
     let mut app = App::new();
@@ -433,7 +433,7 @@ fn the_strip_shows_the_group_over_the_rest_of_its_batch() {
 fn a_thinking_phase_inside_the_group_leaves_the_strip_to_its_cell() {
     // No `● Thinking…` block while the group is open: the status line says
     // the model is thinking and Ctrl+O shows the thought
-    // (docs/tool-groups.md *Thoughts*).
+    // (docs/ui/tool-groups.md *Thoughts*).
     let mut app = holding_a_read("a.py");
     app.begin_reasoning();
     app.push_thinking("Now the tests.");
@@ -482,7 +482,7 @@ fn the_permission_prompt_keeps_the_open_group_above_the_call_it_asks_about() {
     );
 }
 
-// ===== scratchpad edits (docs/tool-groups.md *Scratchpad edits*) =====
+// ===== scratchpad edits (docs/ui/tool-groups.md *Scratchpad edits*) =====
 
 /// A session's scratchpad by the layout, so the verbatim policy knows it.
 const PAD: &str = "/tmp/alter-zero-0/s1/scratchpad";

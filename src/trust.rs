@@ -1,4 +1,4 @@
-//! What the user has trusted to run (`docs/config-review.md`): the hooks in
+//! What the user has trusted to run (`docs/state/config-review.md`): the hooks in
 //! their own and their projects' `hooks.json`, and each project's MCP
 //! servers.
 //!
@@ -82,7 +82,7 @@ pub fn is_project_root(root: &Path, home: Option<&Path>) -> bool {
 /// one ([`is_project_root`]), else the `cwd`. The root the project layer
 /// reads `.alter-zero/` from, so a project's `hooks.json` reaching its own
 /// scripts as `${ALTER_ZERO_PROJECT_DIR}/.alter-zero/hooks/…` finds them
-/// from any subdirectory (`docs/hooks.md`).
+/// from any subdirectory (`docs/tools/hooks.md`).
 #[must_use]
 pub fn hooks_project_dir(cwd: &Path, found: Option<&Path>, home: Option<&Path>) -> PathBuf {
     match found {
@@ -623,7 +623,7 @@ impl TrustFile {
     }
 
     /// Carry the `/trust` era's approvals over for the project at `root`
-    /// (`docs/config-review.md`). `/trust` approved a project's files whole,
+    /// (`docs/state/config-review.md`). `/trust` approved a project's files whole,
     /// pinned to their bytes; a file it approved at exactly its current
     /// bytes keeps that approval here — its hooks recorded trusted, its
     /// servers enabled unless one was decided on since — and its old record
@@ -698,7 +698,7 @@ pub fn update_store(existing: &str, change: impl FnOnce(&mut TrustFile)) -> Resu
 /// Every project server across `files` (`(absolute path, parse)`, in
 /// precedence order) with where it stands — the first file declaring a name
 /// is the one that counts, the project layer's first-name-wins rule
-/// (`docs/project-config.md`).
+/// (`docs/state/project-config.md`).
 #[must_use]
 pub fn review_servers(store: &TrustFile, files: &[(&str, &McpFile)]) -> Vec<ServerReview> {
     let mut out: Vec<ServerReview> = Vec::new();

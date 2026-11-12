@@ -1,4 +1,4 @@
-//! The `hooks.json` file format and handler selection (`docs/hooks.md`).
+//! The `hooks.json` file format and handler selection (`docs/tools/hooks.md`).
 //!
 //! The shape is event → matcher groups → handlers, verbatim from both
 //! references:
@@ -162,7 +162,7 @@ impl HooksFile {
     }
 
     /// This file read from `path`: every group remembers it, so a verdict can
-    /// name the `hooks.json` its hook is configured in (`docs/hooks.md`).
+    /// name the `hooks.json` its hook is configured in (`docs/tools/hooks.md`).
     #[must_use]
     pub fn with_source(mut self, path: &Path) -> Self {
         for group in self.hooks.values_mut().flatten() {
@@ -172,7 +172,7 @@ impl HooksFile {
     }
 
     /// This layer with `project`'s matcher groups appended per event — the
-    /// project-config union (`docs/project-config.md`): purely additive, one
+    /// project-config union (`docs/state/project-config.md`): purely additive, one
     /// more entry from the loader, no precedence rules to invent. Every
     /// collision is already answered downstream by [`Self::select`]'s rules —
     /// duplicates dedup by command (this layer's copy first, so it wins), any
@@ -275,7 +275,7 @@ impl HookHandler {
     /// The command this handler would run, as it would run it (trimmed), or
     /// `None` for one the runner skips — another handler type, no command, an
     /// `if` condition, a `powershell` shell. What the trust review asks about
-    /// (`docs/config-review.md`): a skipped handler never runs, so trusting
+    /// (`docs/state/config-review.md`): a skipped handler never runs, so trusting
     /// it would mean nothing.
     #[must_use]
     pub fn runnable_command(&self) -> Option<String> {
@@ -537,16 +537,16 @@ mod tests {
             ("Read", "read"),
             // `Skill` is the reference's spelling of the skill loader; a guard
             // that audits which skills a session pulls in is written against
-            // it (`docs/skills.md`).
+            // it (`docs/tools/skills.md`).
             ("Skill", "skill"),
             // No reference spelling here — the cell header's name, the one a
-            // user sees, answers for each companion (docs/bash-tools.md).
+            // user sees, answers for each companion (docs/tools/bash-tools.md).
             ("BashSend", "bashsend"),
             ("BashWait", "bashwait"),
             ("BashKill", "bashkill"),
             ("BashList", "bashlist"),
             ("BashSession", "bash_session"),
-            // The agent companions the same way (docs/agent-tools.md).
+            // The agent companions the same way (docs/agents/agent-tools.md).
             ("AgentSend", "agentsend"),
             ("AgentOutput", "agentoutput"),
             ("AgentKill", "agentkill"),
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn runnable_command_is_the_command_a_handler_would_run() {
-        // What the trust review asks about (`docs/config-review.md`): exactly
+        // What the trust review asks about (`docs/state/config-review.md`): exactly
         // the handlers the runner would run, their command as it would run.
         let file = parse(
             r#"{"hooks":{"Stop":[{"hooks":[

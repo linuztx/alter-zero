@@ -4,7 +4,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
 
-# Headless mode on a real tty (docs/headless.md). Pipes are cargo test's
+# Headless mode on a real tty (docs/cli/headless.md). Pipes are cargo test's
 # (tests/headless.rs); what only a terminal can show is that a headless run
 # never touches one. From a tmux pane, `alter-zero -p --verbose` prints the
 # run's log and its answer and exits 0; the tty's modes are what they were before it
@@ -31,7 +31,7 @@ tmux pipe-pane -t "$S153"
 dump "alter-zero -p --verbose \"$USER_MSG\" on a tty" "$hl_pane"
 tmux kill-session -t "$S153" 2>/dev/null
 
-# The two flags `-p` shares with the TUI (docs/cli.md): `--permission-mode`
+# The two flags `-p` shares with the TUI (docs/cli/cli.md): `--permission-mode`
 # seeds the session's mode — the footer's right edge says so, over the
 # suite's exported `manual` — and `-C` runs it in that directory, the footer
 # naming it. Launched from the work dir's parent so `-C` is what moves it.
@@ -44,7 +44,7 @@ tmux kill-session -t "$S153T" 2>/dev/null
 
 # Without `-p` the interface needs its terminal to answer the cursor query.
 # With stdout sent to /dev/null the query never reaches the pane, so the
-# launch fails (docs/headless.md *Why it was missing*): exit 1, the cause and
+# launch fails (docs/cli/headless.md *Why it was missing*): exit 1, the cause and
 # `-p` on stderr, never the Debug form of the error, and the pane's modes as
 # they were — init unwinds raw mode before it returns.
 S153N="${S}_headlessnotty"

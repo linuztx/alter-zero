@@ -7,7 +7,7 @@
 # Rewrites, in place: Cargo.toml's [package] version, Cargo.lock's entry for
 # the crate (exactly what `cargo update --workspace` would write), the
 # README's version badge (URL label and alt text), npm/package.json's version
-# and its platform packages' pins (docs/npm.md), and CHANGELOG.md — the
+# and its platform packages' pins (docs/ops/npm.md), and CHANGELOG.md — the
 # `## [Unreleased]` heading stays, empty, over a new `## [X.Y.Z] - <today>`
 # heading that takes its body, and the link block gains the version's
 # compare link (or the tag link, for a first release) with [Unreleased]
@@ -40,7 +40,7 @@ if git -C "$RELEASE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -
 	die "prepare: the tag $tag already exists"
 fi
 grep -q '^## \[Unreleased\]$' "$(changelog_path)" || die "prepare: CHANGELOG.md has no '## [Unreleased]' section to roll"
-[ -f "$(npm_manifest_path)" ] || die "prepare: no npm/package.json — the npm launcher package (docs/npm.md)"
+[ -f "$(npm_manifest_path)" ] || die "prepare: no npm/package.json — the npm launcher package (docs/ops/npm.md)"
 [ -n "$(changelog_section Unreleased)" ] || die "prepare: CHANGELOG.md's [Unreleased] section is empty — write the release's entries first"
 
 # Rewrite FILE through a filter, atomically (no `sed -i`: GNU and BSD differ).
