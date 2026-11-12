@@ -120,7 +120,7 @@ announcement is the state.
   with its resting colour swapped for `status_offline_color()` (the theme's
   `warning`, the retry clause's amber), so the state is told apart by colour
   as well as by word, and the turn's underlying verb keeps rotating
-  underneath — the committed summary still reads `Worked for 3m 2s`.
+  underneath — the committed summary still reads `Grepped for 3m 2s`.
 - **The clause.** `offline for 45s`, in the retry clause's slot and colour.
   It is one subtraction, not a second clock: `OfflineInfo::began` is the turn
   clock's reading (`TurnStatus::elapsed`, injected every frame by the draw

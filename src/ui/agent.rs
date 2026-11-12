@@ -805,7 +805,7 @@ pub fn agent_hint_line(app: &App) -> Line<'static> {
 }
 
 /// The synthesized status for an **agent session view**'s strip — the viewed
-/// agent's own spinner line (`Working… (elapsed · ↓ tokens · esc to
+/// agent's own spinner line (`Hatching… (elapsed · ↓ tokens · esc to
 /// interrupt)` shape, without the interrupt hint's meaning changing: Esc
 /// leaves the view). Built per draw from the roster entry, the agent's open
 /// thinking phase included (`Thinking for Ns`, boundary-injected like the

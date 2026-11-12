@@ -343,6 +343,17 @@ impl<'t> Session<'t> {
         let tips_file = config::load_tips_file(config::tips_json_path().as_deref());
         settings.tips = tips_file.enabled;
         app.seed_tips(tips_file.next);
+        // The status line's first verb is random per session
+        // (docs/status-indicator.md *The verb catalog*) — every agent's first
+        // turn and the /spinner preview open on it too — unless
+        // `ALTER_ZERO_FIRST_VERB` names one, which the smoke suite does so
+        // its phases know each turn's word.
+        let first_verb_pin = std::env::var("ALTER_ZERO_FIRST_VERB").ok();
+        let entropy = u64::from_le_bytes(super::host::random_bytes::<8>());
+        app.seed_status_verbs(alter_zero::app::StatusVerb::opening_index(
+            first_verb_pin.as_deref(),
+            entropy,
+        ));
         let settings = config::apply_setting_overrides(settings);
 
         // The MCP servers (docs/mcp.md): the config files parsed and merged

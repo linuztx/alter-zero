@@ -55,7 +55,7 @@ for _ in $(seq 1 250); do
 	if [ -z "$agent_thinking" ] && printf '%s' "$frame" | grep -qF "● Thinking…"; then
 		agent_thinking="$frame"
 	fi
-	if printf '%s' "$frame" | grep -qF "Working…" &&
+	if printf '%s' "$frame" | grep -qF "${VERB_TURN1}…" &&
 		printf '%s' "$frame" | grep -qF "│ Python" &&
 		printf '%s' "$frame" | grep -qF "│ Rust"; then
 		agent_grid="$frame"

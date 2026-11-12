@@ -74,7 +74,7 @@ printf '%s\n' "$short_spinner"
 expect_has "$short_spinner" -E '^  ❯ *$' "/spinner lost its search line on 12 rows"
 expect_has "$short_spinner" -E '^  → gravity' "/spinner lost its highlighted row on 12 rows"
 expect_has "$short_spinner" -E '^  ↓ [0-9]+ more below$' "/spinner does not name the rows under its window"
-expect_lacks "$short_spinner" -F "Working" "/spinner still shows its live preview on 12 rows"
+expect_lacks "$short_spinner" -F "$VERB_TURN1" "/spinner still shows its live preview on 12 rows"
 tmux send-keys -t "$S139" Escape
 sleep 0.4
 expect_has "$(pane "$S139")" -F "dummy_model_name" "Esc did not close /spinner back to the composer"

@@ -2,7 +2,7 @@
 //! hanging off the status line in the gutter a tool's output hangs from.
 //!
 //! ```text
-//! ⣤⣀⣀⣀⣀⣀⣀⣀ Working… (5s · ↓ 120 tokens · esc to interrupt)
+//! ⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (5s · ↓ 120 tokens · esc to interrupt)
 //!   ⎿  Tip: Press ctrl+o to see the whole transcript and every tool's output
 //! ```
 //!

@@ -107,7 +107,7 @@ fn render_live_hangs_the_tip_directly_under_the_status() {
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
     assert!(
-        row(&buf, 0, width).contains("Working…"),
+        row(&buf, 0, width).contains("Hatching…"),
         "{:?}",
         row(&buf, 0, width)
     );
@@ -126,7 +126,7 @@ fn before_the_delay_the_strip_is_the_status_alone() {
     let h = height(&app, width);
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
-    assert!(row(&buf, 0, width).contains("Working…"));
+    assert!(row(&buf, 0, width).contains("Hatching…"));
     assert_eq!(row(&buf, 1, width), "");
     assert!(row(&buf, 2, width).starts_with('─'));
 }
@@ -185,6 +185,6 @@ fn a_picker_opened_mid_turn_keeps_the_tip_above_itself() {
     let h = crate::ui::settings_height(&app, width, 40).expect("the menu is open");
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
-    assert!(row(&buf, 0, width).contains("Working…"));
+    assert!(row(&buf, 0, width).contains("Hatching…"));
     assert_eq!(row(&buf, 1, width), format!("  ⎿  Tip: {}", TIPS[0]));
 }

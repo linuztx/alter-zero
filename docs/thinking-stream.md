@@ -72,7 +72,7 @@ machinery in `term.rs`.
 - the `● Thinking…` header — the tool cell's own `TOOL_BULLET`, **blinking**
   at the shared frame pulse (`docs/tool-pulse.md`) exactly like a running
   tool's, beside a label carrying the status line's **shimmer** sweep
-  (`ui::status::shimmer_spans_from`, the same wave the `Working…` verb below it
+  (`ui::status::shimmer_spans_from`, the same wave the status verb below it
   wears, off the same frame clock); and
 - the **tail** of the reasoning so far in the `⎿` gutter
   (`TOOL_RESULT_PREFIX`, via `ui::file_cell::gutter_row_styled` — the corner on

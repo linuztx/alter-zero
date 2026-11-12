@@ -980,7 +980,7 @@ chain-of-thought streams live in the strip wearing the **tool cell's shape**:
 a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
 it means the same thing, blinking at the frame pulse beside a label carrying
 the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
-`Working…` wears over the page titles' gradient, floored here at the near-white
+the status verb wears over the page titles' gradient, floored here at the near-white
 `reasoning_shimmer_base()`, since codex's grey base is unreadable for a
 header) — over the
 thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
@@ -3081,12 +3081,12 @@ dress) under a white sweep ported from
 codex's `shimmer_spans` and moving on to the next verb every 30 s, the
 `Thinking for` clause in the thinking purple; on finish a dim
 `{done verb} for {n}s` summary — the past tense of the verb the line wore last,
-`Working…` → `Worked for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
+`Hatching…` → `Hatched for 12s` — commits to scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve every tool call in
 flight as failed — a parallel batch's running call and each `⎿ Waiting…`
 sibling alike, every one keeping its red cell and its place in the next
 request — commit the red `Conversation interrupted` notice and, under it, the
-turn's **receipt** (`Worked for 8s · ≈24.3k tokens` — the summary a finished
+turn's **receipt** (`Hatched for 8s · ≈24.3k tokens` — the summary a finished
 turn ends on, over the tally the line last showed, `≈` marking the share the
 round the Esc cut never reported; `TurnSummary::estimated`) — but
 when **nothing had streamed** (no partial, no tool, empty queue) it instead
@@ -3810,8 +3810,21 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `shimmer_spans`; the verbs themselves are `STATUS_VERBS` in `app/turn.rs` —
   each a `StatusVerb` pairing the live form with its past tense, rotated every
   `VERB_ROTATION` (30 s) by `App::set_status_times` and walked on across turns,
-  the summary reading the past tense of the verb the line last wore;
-  `docs/status-indicator.md`), the
+  the summary reading the past tense of the verb the line last wore — sixty
+  of them, each held by a test to the catalog's rules (never a generic
+  process word like `Generating`, never a word the strip already uses, a
+  regular verb, short enough to read whole, and the four the table retired
+  still restoring from old rollouts via `session::RETIRED_STATUS_VERBS`), the
+  walk starting on a **random** verb per session — the boundary's entropy
+  through the pure `StatusVerb::opening_index` into `App::seed_status_verbs`
+  at bootstrap (the `seed_tips` pattern; an unseeded `App`, every unit test,
+  opens on the table's first entry, `Hatching`), every agent's first turn
+  (`AgentRun::with_first_verb`) and the `/spinner` preview opening on that
+  same `App::first_status_verb`, and `ALTER_ZERO_FIRST_VERB` pinning it by
+  name for a run (`docs/status-indicator.md` *The verb catalog*); a table
+  edit means pasting the new `SUMMARY_RE`, `SUMMARY_TURN1…3` and `VERB_TURN1`
+  lines the turn test names into the smoke scripts, whose `lib.sh` pins the
+  suite's first verb to `VERB_TURN1`; `docs/status-indicator.md`), the
   slash-command palette (`MENU_*` — the `MENU_MARKER` `→ ` and its
   `MENU_INDENT` two-space inset, which every band below the box that lists
   something to pick opens its rows on (its placeholder rows on the inset), the

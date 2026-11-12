@@ -156,16 +156,22 @@ was not a safe transformation until each carried its own.
 | `count_bare_prompts` / `count_rules` / `count_footers` / `count_msg_lines` | the "exactly one input box on screen" counters the resize phases share |
 
 A turn's summary wears the past tense of the status verb it ended on
-(`Worked for 3s`, `Generated for 1m 5s` — `docs/status-indicator.md`), and a
+(`Hatched for 3s`, `Percolated for 1m 5s` — `docs/status-indicator.md`), and a
 turn that runs past 30s ends on a later verb than it opened on. So a phase
 that waits for *a* turn to settle matches `SUMMARY_RE`, the lib's pattern
 naming every past tense (`-E "^$SUMMARY_RE"`, or `wait_summaries` to count
 them), and only a phase that must tell turns apart on one screen names a
-turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Worked`,
-`Generated`, `Pondered`, … in order while each stays under 30s.
-`app::tests::turn` pins the pattern, its copies in the standalone scripts and
-the per-turn names to the verb table, so a verb added, dropped or reordered
-fails `cargo test` rather than a smoke run.
+turn's own verb — `SUMMARY_TURN1`…`3`, since a launch's turns end `Hatched`,
+`Percolated`, `Tinkered`, … in order while each stays under 30s — and a phase
+that finds the live status line by its word writes `"${VERB_TURN1}…"`, the
+word a launch's first turn, an agent's and the `/spinner` preview open on.
+A real session opens on a random verb, so the lib pins the suite's first one
+to `VERB_TURN1` (`ALTER_ZERO_FIRST_VERB`, exported and in every launch
+string) — a phase that builds its own launch string inherits the export.
+`app::tests::turn` pins the pattern, its copies in the standalone scripts,
+the per-turn names, `VERB_TURN1` and that export to the verb table, so a
+verb added, dropped or reordered fails `cargo test` rather than a smoke
+run.
 
 A slash-palette row opens on the selection's `→ ` marker or the two-space
 inset every other row wears, so a phase finds one by `PALETTE_ROW`

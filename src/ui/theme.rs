@@ -1562,9 +1562,8 @@ pub(super) const SPINNER_MENU_GAP: usize = 3;
 pub(super) const SPINNER_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
 /// The narrowest preview column the side-by-side page lays out: the sample
-/// status line reads whole with a minute on its clock (`Working… (1m 5s ·
-/// esc to interrupt)` behind the eight-cell track), the `/theme` sample's
-/// width. A terminal with less than the list, the gap and this stacks the
+/// status line reads whole as the page opens (`Hatching… (0s · esc to
+/// interrupt)` behind the eight-cell track), the `/theme` sample's width. A terminal with less than the list, the gap and this stacks the
 /// preview under the list.
 pub(super) const SPINNER_PREVIEW_MIN_COLS: usize = THEME_PREVIEW_MIN_COLS;
 
@@ -2400,7 +2399,7 @@ pub(super) fn status_retry_color() -> Color {
     palette().warning
 }
 
-/// Trailing ellipsis after the working verb (`Working…`).
+/// Trailing ellipsis after the working verb (`Hatching…`).
 pub(super) const STATUS_ELLIPSIS: &str = "…";
 
 /// Arrow for output tokens while the reply streams.
@@ -2485,7 +2484,7 @@ pub(super) const STATUS_GAP_ROWS: u16 = 1;
 // renderer pure (codex reads a process clock instead). ---
 
 /// The status verb's **resting** colour at display column `col` of its
-/// `total`-column text (`Working…`, a task's activeForm): the page titles'
+/// `total`-column text (`Hatching…`, a task's activeForm): the page titles'
 /// dress (`/mcp`, `/skills` — [`header_gradient_at`]), so the one word in
 /// motion on the line follows `/theme` the way the headlines do. Codex rests
 /// its verb on grey; the crest's sweep toward [`shimmer_highlight`] is

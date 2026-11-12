@@ -7,7 +7,7 @@ watching the screen with nothing to do. This is that row.
 ```
 ❯ refactor the parser
 
-⣤⣀⣀⣀⣀⣀⣀⣀ Working… (5s · ↓ 120 tokens · esc to interrupt)
+⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (5s · ↓ 120 tokens · esc to interrupt)
   ⎿  Tip: Press ctrl+o to see the whole transcript and every tool's output
 
 ────────────────────────────────────────────────────────────────────────────

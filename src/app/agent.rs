@@ -393,7 +393,8 @@ impl App {
                 spec.prompt.clone(),
                 spec.background,
             )
-            .with_call(spec.call_id.clone(), spec.arguments.clone(), position);
+            .with_call(spec.call_id.clone(), spec.arguments.clone(), position)
+            .with_first_verb(self.first_verb);
             // Its SubagentStart note may have beaten this announcement here.
             for note in self.take_early_agent_notes(&spec.id) {
                 run.apply(&note);
@@ -863,9 +864,10 @@ impl App {
                 Some(index) => self.retired_agents.remove(index),
                 None => None,
             };
-            self.agents.push(
-                revived.unwrap_or_else(|| AgentRun::new(id, description, agent_type, prompt, true)),
-            );
+            let first_verb = self.first_verb;
+            self.agents.push(revived.unwrap_or_else(|| {
+                AgentRun::new(id, description, agent_type, prompt, true).with_first_verb(first_verb)
+            }));
         }
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
             agent.background = true;

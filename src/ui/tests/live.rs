@@ -162,7 +162,7 @@ fn render_live_draws_the_status_row_while_streaming() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        all.contains("Working…") && all.contains("3s"),
+        all.contains("Hatching…") && all.contains("3s"),
         "the live status line is drawn in the strip: {all:?}"
     );
 }
@@ -271,7 +271,7 @@ fn render_live_strip_stacks_preview_gap_status_then_gap_above_the_box() {
         "blank gap row below the preview"
     );
     assert!(
-        row(&buf, 2, 40).contains("Working"),
+        row(&buf, 2, 40).contains("Hatching"),
         "status line on row 2: {:?}",
         row(&buf, 2, 40)
     );
@@ -542,7 +542,7 @@ fn render_live_paints_the_toast_below_the_status_while_streaming() {
         row(&buf, top_rule - 1, 60)
     );
     let all: String = (0..h).map(|y| row(&buf, y, 60)).collect();
-    assert!(all.contains("Working…"), "the status still shows above it");
+    assert!(all.contains("Hatching…"), "the status still shows above it");
 }
 
 #[test]
@@ -1094,7 +1094,7 @@ fn the_palette_over_a_streaming_table_keeps_the_composer_on_screen() {
     );
     assert!(all.contains("/clear"), "the palette shows below it: {all}");
     assert!(
-        all.contains("Working…"),
+        all.contains("Hatching…"),
         "and the turn's status line is still there: {all}"
     );
     assert!(

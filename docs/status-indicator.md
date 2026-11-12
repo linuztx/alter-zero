@@ -8,7 +8,7 @@ modelled on the spinner line in openai/codex and Claude Code.
 
 ● Happy to help! …                                          (streaming preview — existing)
 
-⣤⣀⣀⣀⣀⣀⣀⣀ Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — the ball hops, verb shimmers)
+⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (1s · ↓ 100 tokens · esc to interrupt)   (live status — the ball hops, verb shimmers)
                                                             (blank gap so the status clears the box)
 ─────────────────────────────────────                       (input box)
 ❯ ▏
@@ -16,15 +16,15 @@ modelled on the spinner line in openai/codex and Claude Code.
 ```
 
 On finish the status line is replaced by a dim summary committed to scrollback,
-opening with the **past tense of the verb the line wore** — `Working…` ends as
-`Worked for …`:
+opening with the **past tense of the verb the line wore** — `Hatching…` ends as
+`Hatched for …`:
 
 ```
 > Hi
 ● Happy to help! …                 (the finished reply)
-Worked for 20s                     (NEW: committed turn summary)
+Hatched for 20s                    (NEW: committed turn summary)
 
-> Thanks                           (the next turn — "Worked for 20s" stays put)
+> Thanks                           (the next turn — "Hatched for 20s" stays put)
 ```
 
 The rest of the docs call that cell "the `Done for Ns` summary" — its name
@@ -41,15 +41,15 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 
 | phase                | line                                                                          |
 |----------------------|-------------------------------------------------------------------------------|
-| pre-stream pause     | `(●•·   ) Working… (1s · ↑ 7 tokens · esc to interrupt)`                       |
-| streaming text       | `(•●    ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
-| streaming + thinking | `(·•●   ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
-| generating a tool call | `( ·•●  ) Working… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
-| after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
-| retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
+| pre-stream pause     | `(●•·   ) Hatching… (1s · ↑ 7 tokens · esc to interrupt)`                      |
+| streaming text       | `(•●    ) Hatching… (3s · ↓ 100 tokens · esc to interrupt)`                    |
+| streaming + thinking | `(·•●   ) Hatching… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`  |
+| generating a tool call | `( ·•●  ) Hatching… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
+| after a tool result  | `( ·•●  ) Hatching… (4s · ↑ 200 tokens · esc to interrupt)`                    |
+| retrying a failure   | `( ·•●  ) Hatching… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`      |
 | waiting for the network | `( ·•●  ) Waiting for internet… (2m 3s · ↑ 42 tokens · offline for 1m 10s · esc to interrupt)` — verb and clause amber, over a `⎿ ((·)) No connection to {host} — trying again · N attempts` row (`docs/offline.md`) |
-| finished (committed) | `Worked for 20s` — the past tense of the verb the line wore last                |
-| interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary over the tally the line last showed — `Worked for 8s · ≈24.3k tokens`, `≈` marking the share no usage frame reported (see `docs/interrupt.md`) |
+| finished (committed) | `Hatched for 20s` — the past tense of the verb the line wore last               |
+| interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary over the tally the line last showed — `Hatched for 8s · ≈24.3k tokens`, `≈` marking the share no usage frame reported (see `docs/interrupt.md`) |
 
 The turn opens with a **pre-stream pause** (the backend waits `STARTUP_DELAY`,
 3s, before its first chunk — so the indicator is visibly *working* before any
@@ -72,9 +72,10 @@ real backend's own latency plays the same role.
   wasted); all **ten** fixed-width frames, so nothing after it jitters). Like
   the shimmer, `ui::spinner_spans` is pure — the frame index derives from the
   boundary-supplied `elapsed`.
-- **verb** — a whimsical word (`Working`, `Cooking`, …) from `STATUS_VERBS`,
-  where each entry is one verb in both its forms (`StatusVerb { working, done
-  }` — `Working`/`Worked`, `Brewing`/`Brewed`). A turn's line opens on the
+- **verb** — a whimsical word (`Hatching`, `Spelunking`, …) from
+  `STATUS_VERBS`, where each entry is one verb in both its forms (`StatusVerb {
+  working, done }` — `Hatching`/`Hatched`, `Brewing`/`Brewed`); which words,
+  and why, is *The verb catalog* below. A turn's line opens on the
   entry after the last one a line wore and **moves on to the next every
   `VERB_ROTATION` (30 s)** of the turn's elapsed; the committed summary opens
   with the past tense of whichever verb the line wore last. Deterministic — no
@@ -240,8 +241,8 @@ transcript (stamp-free there — only user messages display a timestamp):
   and `estimated` the estimate's share no frame reported — non-zero only for
   an interrupted turn, whose total then reads `≈` (`docs/interrupt.md`).
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
-  (the seconds humanized by `format_elapsed` — `Worked for 20s`,
-  `Generated for 1m 30s`).
+  (the seconds humanized by `format_elapsed` — `Hatched for 20s`,
+  `Percolated for 1m 30s`).
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
@@ -330,9 +331,9 @@ by `every_status_verb_pairs_with_its_own_past_tense`), the line walks it as the
 turn runs, and the summary names the verb the line wore:
 
 ```
-⣤⣀⣀⣀⣀⣀⣀⣀ Working… (12s · ↓ 850 tokens · esc to interrupt)
-⣤⣀⣀⣀⣀⣀⣀⣀ Generating… (41s · ↓ 3.2k tokens · esc to interrupt)     (30 s in: the next verb)
-Generated for 52s                                                    (the verb it wore last)
+⣤⣀⣀⣀⣀⣀⣀⣀ Hatching… (12s · ↓ 850 tokens · esc to interrupt)
+⣤⣀⣀⣀⣀⣀⣀⣀ Percolating… (41s · ↓ 3.2k tokens · esc to interrupt)    (30 s in: the next verb)
+Percolated for 52s                                                   (the verb it wore last)
 ```
 
 - **Every 30 seconds** (`VERB_ROTATION`). A quick answer keeps a single verb,
@@ -352,9 +353,11 @@ Generated for 52s                                                    (the verb i
   come from the boundary's own end-of-turn clock: a turn that ends a few
   milliseconds past a rotation no frame drew still settles on the verb the
   last frame wore (`the_summary_names_the_verb_the_last_frame_drew`).
-- **The walk continues across turns.** `App::verb_cursor` is always one past
-  the last verb a line wore — `begin_stream` and every rotation move it — so
-  the next turn opens on a fresh verb, never the one the summary above it just
+- **The walk starts somewhere random and continues across turns.** A
+  session's first turn opens on a verb picked at random at startup (*The
+  verb catalog* below). From there `App::verb_cursor` is always one past the
+  last verb a line wore — `begin_stream` and every rotation move it — so the
+  next turn opens on a fresh verb, never the one the summary above it just
   named, whichever way the turn ended (an interrupt or an error included,
   since the cursor moves with the line, not at a turn-end site).
 - **Fixed verbs stay fixed.** A `!` shell's `Running…` (whose status line is
@@ -371,19 +374,121 @@ Generated for 52s                                                    (the verb i
   `AgentRun::rotate_verb`), never the freeze the boundary applies as each
   agent event lands (`App::freeze_agent_runtime`, which pins the exact elapsed
   a settle records): only a drawn frame moves the verb, so the agent's
-  `{verb} for Ns` summary names the verb its view showed. A chat continuation
-  opens one verb past the last, like a new main turn.
+  `{verb} for Ns` summary names the verb its view showed. An agent's first
+  turn opens on the session's own first verb (`AgentRun::with_first_verb`,
+  given `App::first_status_verb` at the launch); a chat continuation opens
+  one verb past the last, like a new main turn.
 - **The `/spinner` picker's sample line** is a first turn's line, so it opens
-  on the first verb and walks the table the same way while the user browses
-  (`docs/spinner.md`).
+  on the session's first verb and walks the table the same way while the
+  user browses (`docs/spinner.md`).
 - **Old rollouts read as they were recorded.** Summaries written before the
   pairing (`Done`, `Finished`, `Completed`, `Wrapped up`, `Ready`) still load
-  as their own statics (`session::LEGACY_DONE_VERBS`); a verb this build
-  doesn't know at all loads as `Done`.
+  as their own statics (`session::LEGACY_DONE_VERBS`), and so do the past
+  tenses of the verbs the catalog has since retired (`Worked`, `Generated`,
+  `Computed`, `Synthesized` — `session::RETIRED_STATUS_VERBS`, see *The verb
+  catalog*); a verb this build doesn't know at all loads as `Done`.
+
+## The verb catalog
+
+The line's word is there to give the wait some character, and for a long
+time it did not have much. The table had ten entries and opened on
+`Working…`, then `Generating…`, with `Computing…` and `Synthesizing…` further
+down — words any progress bar prints — and the walk restarted at the top every
+session, so the two blandest words were the two every session showed first.
+Ten entries at one per 30 s also meant a long turn came back to `Generating…`
+every five minutes.
+
+`STATUS_VERBS` is now sixty verbs written for this app, and the rules a word
+has to meet are each pinned by a test, so the next edit cannot quietly undo
+them:
+
+- **Character, never a process word.** No word a generic progress line could
+  print — `Working`, `Generating`, `Processing`, `Computing`, `Thinking`,
+  `Loading`, … (`no_status_verb_is_a_generic_process_word`). The strip says
+  what the turn is *actually* doing elsewhere: a tool cell, the `● Thinking…`
+  block, a task's activeForm.
+- **Never a word the strip already means something by.** `Running…` is a
+  command in flight, `Waiting…` a call queued behind it, `Thinking…` the
+  model's reasoning, `Waiting for internet…` a lost connection, `Compacting…`
+  a `/compact`. The status verb sits one row from all of them, so it may be
+  none of their words (`no_status_verb_borrows_a_word_the_strip_already_means_something_by`,
+  checked against the labels' own constants).
+- **A regular verb.** The summary is the word's own past tense, so every
+  entry pairs `-ing` with `-ed` on the same stem — no `Spinning`/`Spun`
+  (`every_status_verb_pairs_with_its_own_past_tense`).
+- **Short enough to read whole.** The `/spinner` preview walks the whole
+  table while the user browses, so each word must fit an 80-column terminal's
+  preview column with the clock at half an hour and `esc to interrupt)`
+  intact (`every_verb_reads_whole_in_the_preview_on_a_standard_terminal`);
+  the longest entries are twelve columns (`Overclocking`, `Unscrambling`).
+- **Long enough not to repeat.** Sixty entries at one per `VERB_ROTATION`
+  is half an hour of one turn before the line comes back to a word
+  (`the_line_never_repeats_a_verb_inside_half_an_hour`).
+- **How the summary reads, too.** A word is picked for its past tense as
+  much as for its live form: `Spelunked for 3m 2s · 48k tokens` is fine, while
+  anything that reads as idling (`Daydreaming`, `Dawdling`), trickery
+  (`Scheming`, `Bamboozling`), damage (`Jamming` — the summary would say
+  `Jammed`) or a security event (`Sniffing`, `Hacking`) is out: the line sits
+  beside real commands and must never read as an alarm. Nothing collides with
+  the receipt either — no `Caching`, whose `Cached for 12s · 3k tokens (2k
+  cached)` would say one word twice in two senses.
+
+**The order walks a handful of themes in turn** so neighbours differ: the
+mascots (`Hatching`, `Sprouting`, `Skittering`, `Blooming`, `Glimmering`,
+`Shimmering` — the last one the verb's own shimmer), the kitchen
+(`Percolating`, `Simmering`, `Marinating`, `Fermenting`, …), the workshop
+(`Tinkering`, `Whittling`, `Soldering`, `Tempering`, …), the expedition
+(`Spelunking`, `Foraging`, `Sleuthing`, `Excavating`, …), the study
+(`Pondering`, `Mulling`, `Cogitating`, `Noodling`, …), the alchemist's bench
+(`Conjuring`, `Transmuting`, `Alchemizing`, `Divining`, …), the terminal
+(`Grepping`, `Defragging`, `Overclocking`), the ranch (`Wrangling`,
+`Herding`, `Galloping`) and the bandstand (`Riffing`, `Harmonizing`).
+
+**A session opens on a random verb.** The table's first entry is
+`Hatching`, after the default mascot, a crested hatchling
+(`docs/mascot.md`), but a session does not start there. Starting there made
+`Hatching…` the one word every session's first turn, every agent's first
+turn and the `/spinner` preview showed, launch after launch, which is the
+monotony the catalog exists to end. So the boundary picks the session's
+first verb at startup (`tui::bootstrap`: eight bytes from the OS entropy
+source, `tui::host::random_bytes`, through the pure
+`StatusVerb::opening_index`) and seeds the walk with it
+(`App::seed_status_verbs`, the `App::seed_tips` pattern). A session's first
+turn opens there, and so do every agent's first turn
+(`AgentRun::with_first_verb`, given `App::first_status_verb` at the launch)
+and the `/spinner` preview's sample line: one pick per session, shared, so
+"the session's first verb" is one fact everywhere rather than three. The
+order stays fixed; the random start only chooses where the walk begins, so
+every verb still comes round before any repeats.
+
+**Randomness stays at the boundary.** The pure core never draws a random
+number: it takes the start as a seed, and an `App` nobody seeds (every unit
+test) opens on the table's first entry, so the tests still know which word
+each turn wears. `ALTER_ZERO_FIRST_VERB` pins the start for a run by name
+(the verb's live form, in any case; a name the table does not hold is no
+pin), which is how the smoke suite keeps its phases deterministic.
+
+**What did not change.** `VERB_ROTATION` is still 30 s. The six verbs the
+old table had that already had some character (`Pondering`, `Cooking`,
+`Brewing`, `Crunching`, `Conjuring`, `Churning`) stay; the four it drops
+restore from old rollouts by value (`session::RETIRED_STATUS_VERBS`). The
+agent tree's `⎿ Working…` row is not a status verb — it is a subagent's
+activity before its first call (`docs/agent-tool.md`) — and is unchanged.
+
+**The smoke suite follows the table, never the reverse.** `SUMMARY_RE` (in
+`scripts/smoke/lib.sh` and the three standalone scripts) names every past
+tense, `SUMMARY_TURN1`…`3` a launch's first three, and `VERB_TURN1` the live
+word a launch, an agent and the `/spinner` preview open on (the phases that
+find the status line by its word write `"${VERB_TURN1}…"`). They hold only
+because `lib.sh` exports `ALTER_ZERO_FIRST_VERB="$VERB_TURN1"` (and spells it
+out in every launch string), pinning the suite's walk to the table's first
+entry. All of it is pinned by
+`the_smoke_scripts_summary_patterns_follow_the_verb_table`, which names the
+exact line to paste when the table changes.
 
 ## The shimmer wave (ported from openai/codex)
 
-The verb (`Working…`) renders one **bold span per char**, colours from
+The verb (`Hatching…`) renders one **bold span per char**, colours from
 `ui::shimmer_spans` — a faithful port of codex `tui/src/shimmer.rs`:
 
 - a raised-cosine brightness band (`t = ½(1 + cos(π·dist/5))`, half-width 5

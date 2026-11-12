@@ -288,7 +288,7 @@ impl Session<'_> {
         }
     }
 
-    /// Record a turn's receipt — the dim `Worked for 12s · …` summary — and
+    /// Record a turn's receipt — the dim `Hatched for 12s · …` summary — and
     /// commit it under a blank spacer: the last thing a turn adds, whether it
     /// finished (`StreamDone`) or was interrupted under its notice
     /// (`docs/interrupt.md`). The caller settles the turn's held background
