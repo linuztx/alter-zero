@@ -386,10 +386,7 @@ const PERMANENT_REFRESH_ERRORS: &[&str] = &[
 /// speaking, not the AS.
 #[must_use]
 pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
-    let flat = || {
-        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        flat.chars().take(200).collect::<String>()
-    };
+    let flat = || crate::mcp::body_line(body, 200);
     let Some(status) = status else {
         return RefreshFailure::Transient(flat());
     };
@@ -811,8 +808,13 @@ pub fn well_known_candidates(base: &str, suffix: &str) -> Vec<String> {
 /// Where an authorization server's metadata is looked for — the spec's
 /// list, in its order. For an issuer with a path, RFC 8414 path insertion,
 /// OIDC path insertion, then OIDC path **appending** (where Keycloak's realms
-/// and Entra's tenants publish); without one, the two root documents. Never
-/// the root for a path issuer: that is some other issuer's metadata.
+/// and Entra's tenants publish); without one, the two root documents.
+///
+/// A path issuer's list ends on the root document too: a server that mounts
+/// its metadata routes at the origin publishes there whatever path its
+/// issuer has. For a path issuer the root is usually some *other* issuer's
+/// document — which is why every candidate is held to [`issuer_matches`],
+/// and that one, naming itself, is skipped.
 #[must_use]
 pub fn authorization_server_candidates(issuer: &str) -> Vec<String> {
     let Ok(parsed) = url::Url::parse(issuer) else {
@@ -830,6 +832,7 @@ pub fn authorization_server_candidates(issuer: &str) -> Vec<String> {
         format!("{origin}/.well-known/oauth-authorization-server{path}"),
         format!("{origin}/.well-known/openid-configuration{path}"),
         format!("{origin}{path}/.well-known/openid-configuration"),
+        format!("{origin}/.well-known/oauth-authorization-server"),
     ]
 }
 
@@ -1158,15 +1161,23 @@ pub struct AuthServerMeta {
     pub token_auth_methods: Vec<String>,
 }
 
+/// The HTTP client every request of a sign-in goes out on — one that names
+/// this app (`llm::mcp_auth_http_client`): an authorization server behind a
+/// gateway is refused there, with the gateway's 403, to a request naming no
+/// client, exactly as its MCP server is.
+fn auth_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+    crate::llm::mcp_auth_http_client(timeout).map_err(|e| e.to_string())
+}
+
 /// GET a metadata document as JSON, waiting at most `timeout`.
 fn get_json_within(url: &str, timeout: Duration) -> Result<Value, String> {
-    let client = crate::llm::http_client(timeout).map_err(|e| e.to_string())?;
+    let client = auth_client(timeout)?;
     let response = client
         .get(url)
         .header("Accept", "application/json")
         .header("MCP-Protocol-Version", crate::mcp::PROTOCOL_VERSION)
         .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", crate::llm::transport_message(&e)))?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status().as_u16()));
     }
@@ -1184,7 +1195,7 @@ fn post_form_raw(
     params: &[(String, String)],
     basic: Option<&str>,
 ) -> Result<(u16, String), String> {
-    let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let client = auth_client(HTTP_TIMEOUT)?;
     let mut request = client
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1195,7 +1206,7 @@ fn post_form_raw(
     let response = request
         .body(form_encode(params))
         .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", crate::llm::transport_message(&e)))?;
     let status = response.status().as_u16();
     Ok((status, response.text().unwrap_or_default()))
 }
@@ -1217,11 +1228,7 @@ fn oauth_error_detail(status: u16, body: &str) -> String {
     match (field("error"), field("error_description")) {
         (Some(error), Some(description)) => format!("HTTP {status}: {error}: {description}"),
         (Some(error), None) => format!("HTTP {status}: {error}"),
-        _ => {
-            let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            let flat: String = flat.chars().take(200).collect();
-            format!("HTTP {status}: {flat}")
-        }
+        _ => format!("HTTP {status}: {}", crate::mcp::body_line(body, 200)),
     }
 }
 
@@ -1553,16 +1560,21 @@ fn client_authentication_of(tokens: &StoredTokens) -> (Vec<(String, String)>, Op
 }
 
 /// Dynamically register a client (RFC 7591) for `redirect_uri`, asking for
-/// an authentication method the authorization server offers. A refusal
-/// carries the server's own reason (RFC 7591 §3.2.2).
+/// an authentication method the authorization server offers and naming the
+/// scopes the sign-in is about to ask for (`scope`; none when it asks for
+/// none). An authorization server may keep a client to the scopes it
+/// registered with, and then turns the authorize request away
+/// (`invalid_scope`) from one that registered none — after the browser has
+/// opened. A refusal carries the server's own reason (RFC 7591 §3.2.2).
 pub fn register_client(
     registration_endpoint: &str,
     redirect_uri: &str,
     supported_methods: &[String],
+    scope: Option<&str>,
 ) -> Result<ClientIdentity, String> {
-    let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let client = auth_client(HTTP_TIMEOUT)?;
     let method = registration_auth_method(supported_methods);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "client_name": "alter-zero",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
@@ -1573,13 +1585,16 @@ pub fn register_client(
         // OIDC default of "web" rejects exactly that redirect.
         "application_type": "native",
     });
+    if let Some(scope) = scope.map(str::trim).filter(|scope| !scope.is_empty()) {
+        body["scope"] = Value::String(scope.to_string());
+    }
     let response = client
         .post(registration_endpoint)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .body(body.to_string())
         .send()
-        .map_err(|e| format!("registration failed: {e}"))?;
+        .map_err(|e| format!("registration failed: {}", crate::llm::transport_message(&e)))?;
     let status = response.status().as_u16();
     let text = response.text().unwrap_or_default();
     if !(200..300).contains(&status) {
@@ -1710,6 +1725,21 @@ pub fn run_auth_flow(
     let meta = discover(server_url, challenge)?;
     still_wanted()?;
     let stored = load_tokens(store_path, server_url);
+    // Re-authorizing asks for what was granted before *and* what the server
+    // now wants — the step-up rule ("include these scopes alongside any
+    // previously granted scopes"), so a scope upgrade never drops the rest;
+    // another authorization server's scopes mean nothing here.
+    let granted = stored
+        .as_ref()
+        .filter(|tokens| same_authorization_server(tokens, &meta))
+        .and_then(|tokens| tokens.scope.as_deref());
+    // The entry's own scopes, when it names them, are what the user
+    // registered the client for — asked for as they are. Settled before any
+    // registration, which names them too.
+    let scopes = match configured.and_then(|config| config.scopes.clone()) {
+        Some(scopes) => Some(scopes),
+        None => scope_union(&[meta.scopes.as_deref(), granted]),
+    };
     let (callback, redirect_uri, client) = match configured
         .and_then(|config| Some((config, config.client_id.clone()?)))
     {
@@ -1774,9 +1804,12 @@ pub fn run_auth_flow(
                 {
                     client
                 }
-                (_, Some(endpoint)) => {
-                    register_client(endpoint, &redirect_uri, &meta.token_auth_methods)?
-                }
+                (_, Some(endpoint)) => register_client(
+                    endpoint,
+                    &redirect_uri,
+                    &meta.token_auth_methods,
+                    scopes.as_deref(),
+                )?,
                 // Nothing to register with: the old client on a new port is
                 // the one chance (an authorization server honouring RFC 8252
                 // §7.3 accepts it).
@@ -1796,20 +1829,6 @@ pub fn run_auth_flow(
     };
     still_wanted()?;
     let (verifier, code_challenge, state) = pkce_and_state()?;
-    // Re-authorizing asks for what was granted before *and* what the server
-    // now wants — the step-up rule ("include these scopes alongside any
-    // previously granted scopes"), so a scope upgrade never drops the rest;
-    // another authorization server's scopes mean nothing here.
-    let granted = stored
-        .as_ref()
-        .filter(|tokens| same_authorization_server(tokens, &meta))
-        .and_then(|tokens| tokens.scope.as_deref());
-    // The entry's own scopes, when it names them, are what the user
-    // registered the client for — asked for as they are.
-    let scopes = match configured.and_then(|config| config.scopes.clone()) {
-        Some(scopes) => Some(scopes),
-        None => scope_union(&[meta.scopes.as_deref(), granted]),
-    };
     let mut authorize_url = build_authorize_url(
         &meta.authorization_endpoint,
         &client.client_id,
@@ -1960,6 +1979,9 @@ mod tests {
                 "https://auth.test/.well-known/oauth-authorization-server/realms/acme",
                 "https://auth.test/.well-known/openid-configuration/realms/acme",
                 "https://auth.test/realms/acme/.well-known/openid-configuration",
+                // Last, the root: where a server that mounts its metadata at
+                // the origin publishes, whatever its issuer's path.
+                "https://auth.test/.well-known/oauth-authorization-server",
             ]
         );
         assert_eq!(
@@ -2127,6 +2149,38 @@ mod tests {
         );
         assert_eq!(meta.resource, format!("{base}/"));
         assert_eq!(meta.scopes.as_deref(), Some("mcp:tools"));
+    }
+
+    /// An issuer with a path whose server mounts its metadata at the origin
+    /// — the one place it publishes — is found there, last: the document
+    /// names that issuer, so it is that issuer's. A root document naming
+    /// another issuer is skipped like any other, wherever it is.
+    #[test]
+    fn a_path_issuer_publishing_only_at_the_root_is_found_there() {
+        let resource = (
+            "/.well-known/oauth-protected-resource/mcp",
+            r#"{"resource":"{base}/mcp","authorization_servers":["{base}/mcp"]}"#,
+        );
+        let base = discovery_fixture(vec![
+            resource,
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}/mcp","authorization_endpoint":"{base}/mcp/authorize","token_endpoint":"{base}/mcp/token","code_challenge_methods_supported":["S256"]}"#,
+            ),
+        ]);
+        let meta = discover(&format!("{base}/mcp"), None).expect("found at the root");
+        assert_eq!(meta.issuer.as_deref(), Some(format!("{base}/mcp").as_str()));
+        assert_eq!(meta.token_endpoint, format!("{base}/mcp/token"));
+        // The origin's own issuer at the root is not the one asked for.
+        let base = discovery_fixture(vec![
+            resource,
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}","authorization_endpoint":"{base}/authorize","token_endpoint":"{base}/token"}"#,
+            ),
+        ]);
+        let refused = discover(&format!("{base}/mcp"), None).expect_err("another issuer's");
+        assert!(refused.contains("names issuer"), "{refused}");
     }
 
     /// Resource metadata for another server is skipped; with none of its
@@ -3082,6 +3136,10 @@ mod tests {
         reply
     }
 
+    /// Each request an authorization-server fixture saw: its path beside the
+    /// `User-Agent` it carried.
+    type SeenAgents = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
     /// One fake authorization server: resource and AS metadata for
     /// `{base}/mcp`, dynamic registration (counted, its reply overridable),
     /// and a token endpoint recording each request's headers and body.
@@ -3089,6 +3147,10 @@ mod tests {
         base: String,
         registrations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         token_requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// Every request's path beside the `User-Agent` it carried.
+        agents: SeenAgents,
+        /// Each registration request's body.
+        registered: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     fn spawn_auth_server(register_reply: Option<(u16, &'static str)>) -> AuthServerFixture {
@@ -3101,16 +3163,31 @@ mod tests {
         registration: bool,
         register_reply: Option<(u16, &'static str)>,
     ) -> AuthServerFixture {
+        spawn_auth_server_behind(false, registration, register_reply)
+    }
+
+    /// [`spawn_auth_server_with`], behind a gateway when `gated`: one that
+    /// turns away any request naming no client — no `User-Agent`, a
+    /// firewall's stock rule — with a 403 web page, whatever it asked for.
+    fn spawn_auth_server_behind(
+        gated: bool,
+        registration: bool,
+        register_reply: Option<(u16, &'static str)>,
+    ) -> AuthServerFixture {
         use std::io::{BufRead, BufReader};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let registrations = std::sync::Arc::new(AtomicUsize::new(0));
         let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agents = SeenAgents::default();
+        let registered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let fixture = AuthServerFixture {
             base: base.clone(),
             registrations: std::sync::Arc::clone(&registrations),
             token_requests: std::sync::Arc::clone(&token_requests),
+            agents: std::sync::Arc::clone(&agents),
+            registered: std::sync::Arc::clone(&registered),
         };
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -3141,6 +3218,25 @@ mod tests {
                     .nth(1)
                     .unwrap_or_default()
                     .to_string();
+                let agent = head.lines().find_map(|header| {
+                    let (name, value) = header.split_once(':')?;
+                    name.eq_ignore_ascii_case("user-agent")
+                        .then(|| value.trim().to_string())
+                });
+                let named = agent.is_some();
+                agents.lock().unwrap().push((path.clone(), agent));
+                if gated && !named {
+                    let page = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n\
+                        <body>\r\n<center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                            page.len()
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
                 let (status, reply) = match path.as_str() {
                     "/.well-known/oauth-protected-resource/mcp" => (
                         200,
@@ -3160,6 +3256,7 @@ mod tests {
                         ),
                     ),
                     "/register" => {
+                        registered.lock().unwrap().push(body.clone());
                         let n = registrations.fetch_add(1, Ordering::SeqCst) + 1;
                         match register_reply {
                             Some((status, reply)) => (status, reply.to_string()),
@@ -3462,6 +3559,87 @@ mod tests {
         );
     }
 
+    /// A sign-in's own requests name this client too — both metadata
+    /// documents, the registration, the exchange and every renewal after it.
+    /// An authorization server behind the gateway its MCP server sits behind
+    /// turns away a request naming none, and the sign-in ended at discovery
+    /// with that gateway's 403.
+    #[test]
+    fn a_sign_in_gets_through_a_gateway_that_refuses_unnamed_clients() {
+        let fixture = spawn_auth_server_behind(true, true, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let (result, _) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("code-1"),
+            &CancelToken::new(),
+        );
+        assert_eq!(result, Ok(()));
+        refresh_grant(Some(&store), &server, None).expect("the renewal got through");
+        let agents = fixture.agents.lock().unwrap();
+        let asked = |path: &str| agents.iter().filter(|(asked, _)| asked == path).count();
+        assert_eq!(asked("/.well-known/oauth-protected-resource/mcp"), 1);
+        assert_eq!(asked("/.well-known/oauth-authorization-server"), 1);
+        assert_eq!(asked("/register"), 1);
+        assert_eq!(asked("/token"), 2, "the exchange, then the renewal");
+        let ours = crate::mcp::user_agent();
+        for (path, agent) in agents.iter() {
+            assert_eq!(agent.as_deref(), Some(ours.as_str()), "{path}");
+        }
+    }
+
+    /// A registration names the scopes the sign-in is about to ask for. An
+    /// authorization server that keeps a client to the scopes it registered
+    /// with turns the authorize request away (`invalid_scope`) from one that
+    /// registered none — after the browser has opened; and with nothing to
+    /// ask for, the registration names none.
+    #[test]
+    fn a_registration_names_the_scopes_the_sign_in_asks_for() {
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let server_url = format!("{}/mcp", fixture.base);
+        let run = |store: &Path, challenge: Option<&str>| {
+            let (_paste_tx, paste_rx) = mpsc::channel();
+            let progress = std::sync::Arc::new(Recorded::default());
+            run_auth_flow(
+                &SignIn {
+                    server_url: &server_url,
+                    challenge,
+                    store_path: Some(store),
+                    client: None,
+                },
+                &paste_rx,
+                &progress,
+                &approving_browser("code-1"),
+                &CancelToken::new(),
+            )
+            .expect("signed in");
+            progress.urls.lock().unwrap()[0].clone()
+        };
+        // The refusal's own challenge says what the server wants.
+        let authorize_url = run(
+            &dir.path().join("challenged.json"),
+            Some(r#"Bearer error="invalid_token", scope="read write""#),
+        );
+        assert_eq!(
+            redirect_param(&authorize_url, "scope").as_deref(),
+            Some("read write")
+        );
+        // Nothing asked for: no `scope` on the URL, none in the registration.
+        let authorize_url = run(&dir.path().join("plain.json"), None);
+        assert_eq!(redirect_param(&authorize_url, "scope"), None);
+        let registered = fixture.registered.lock().unwrap();
+        let bodies: Vec<Value> = registered
+            .iter()
+            .map(|body| serde_json::from_str(body).expect("a JSON registration"))
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["scope"], "read write");
+        assert!(bodies[1].get("scope").is_none(), "{}", bodies[1]);
+    }
+
     /// A client registered with another authorization server is never
     /// presented to this one (SEP-2352): the flow registers afresh.
     #[test]
@@ -3551,6 +3729,29 @@ mod tests {
             error.contains("invalid_redirect_uri")
                 && error.contains("loopback redirects are not allowed"),
             "{error}"
+        );
+    }
+
+    /// A refusal that is a web page — a gateway's, not the authorization
+    /// server's — is described by its title in a sign-in's reason and in a
+    /// renewal's, where its markup used to be printed whole.
+    #[test]
+    fn a_gateway_s_page_is_described_in_a_refusal() {
+        let page = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n\
+            <center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+        assert_eq!(
+            oauth_error_detail(403, page),
+            "HTTP 403: a web page titled \"403 Forbidden\""
+        );
+        assert_eq!(
+            refresh_failure_kind(Some(403), page),
+            RefreshFailure::Transient("HTTP 403: a web page titled \"403 Forbidden\"".to_string())
+        );
+        // A gateway's page at the statuses a verdict on the grant arrives
+        // with is still the gateway speaking: the grant is kept.
+        assert_eq!(
+            refresh_failure_kind(Some(400), page),
+            RefreshFailure::Transient("HTTP 400: a web page titled \"403 Forbidden\"".to_string())
         );
     }
 

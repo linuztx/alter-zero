@@ -30,8 +30,13 @@ use alter_zero::stream::{CancelToken, ReplySource, StreamEvent, ToolCallSummary}
 use alter_zero::{mcp, ui};
 
 /// The public DeepWiki MCP server — streamable HTTP, no authentication.
-/// A **legacy** (handshake) server: it settles at `2025-11-25`.
 const DEEPWIKI_URL: &str = "https://mcp.deepwiki.com/mcp";
+
+/// A public **legacy** (handshake) server: no `server/discover`, so its
+/// revision is whatever `initialize` settles — `2025-03-26` when this was
+/// written. No authentication. DeepWiki stood here until it began serving
+/// the modern revision.
+const LEGACY_URL: &str = "https://gitmcp.io/docs";
 
 /// A public **dual-era** server — it serves the modern `server/discover`
 /// *and* still answers the legacy `initialize`, which is precisely the shape
@@ -153,6 +158,27 @@ fn live_google_servers_wait_for_sign_in_while_open_ones_connect() {
     }
 }
 
+/// A server behind a gateway that turns away any request naming no client
+/// (`docs/mcp.md`): the connect reaches the server itself, whose answer is
+/// the `401` that starts its sign-in — it read `✘ failed`, over the
+/// gateway's `403` page — and the sign-in's own discovery, behind the same
+/// gateway, finds its authorization server: an issuer with a path, one that
+/// registers clients itself.
+#[test]
+#[ignore = "hits the network (spark.platform.askable.com)"]
+fn live_a_server_behind_a_gateway_asks_for_a_sign_in() {
+    const URL: &str = "https://spark.platform.askable.com/mcp/participant";
+    let manager = settled_server("askable", URL);
+    let status = manager.snapshot()[0].status.clone();
+    manager.shutdown();
+    assert_eq!(status, mcp::McpServerStatus::NeedsAuth);
+    let found = alter_zero::llm::mcp::discover(URL, None).expect("the sign-in's discovery");
+    assert_eq!(found.issuer.as_deref(), Some(URL));
+    assert_eq!(found.resource, URL);
+    assert_eq!(found.scopes.as_deref(), Some("participant"));
+    assert!(found.registration_endpoint.is_some());
+}
+
 /// The model under test.
 fn live_model() -> String {
     std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string())
@@ -260,7 +286,7 @@ fn live_strip_top(app: &App, width: u16) -> String {
 /// still serves, and every offline fixture in the world agreed with it
 /// because a fixture is written by whoever writes the test.
 #[test]
-#[ignore = "hits the network (docs.mcp.cloudflare.com, mcp.deepwiki.com)"]
+#[ignore = "hits the network (docs.mcp.cloudflare.com, gitmcp.io)"]
 fn live_each_server_reports_the_revision_it_settled_on() {
     let dual = connected_server("cfdocs", DUAL_ERA_URL);
     let modern = dual.snapshot()[0]
@@ -277,14 +303,14 @@ fn live_each_server_reports_the_revision_it_settled_on() {
     dual.shutdown();
 
     // The other half of the claim: a legacy server is not simply reported at
-    // whatever we propose. DeepWiki has no `server/discover`, so the
+    // whatever we propose. This one has no `server/discover`, so the
     // handshake settles the revision — a revision we speak, from its answer.
-    let legacy = connected_deepwiki();
+    let legacy = connected_server("legacy", LEGACY_URL);
     let identity = legacy.snapshot()[0]
         .identity
         .clone()
-        .expect("deepwiki initialized");
-    println!("{DEEPWIKI_URL} -> {}", identity.protocol_version);
+        .expect("the legacy server initialized");
+    println!("{LEGACY_URL} -> {}", identity.protocol_version);
     assert_ne!(identity.protocol_version, mcp::PROTOCOL_VERSION);
     assert!(
         mcp::SUPPORTED_VERSIONS.contains(&identity.protocol_version.as_str()),

@@ -551,6 +551,53 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     where it used to hold the connection, and itself, for good. A
     byte-order mark opening the stream is stripped (the SSE spec's rule;
     kept, it made the `endpoint` event never arrive).
+
+  **Every request to a remote server names this client**: `User-Agent:
+  alter-zero/{version}` (`mcp::user_agent` — the `clientInfo` name and
+  version as HTTP's `name/version` product), on both remote transports and
+  everything they send: each POST, the change stream, a legacy stream and
+  its POSTs, the answer to a server's own request. It is set on the HTTP
+  client they share (`llm::mcp_http_client`) rather than on each request, so
+  no request can be written without it, and an entry whose `headers` name a
+  `User-Agent` of their own sends that one instead. The HTTP library sends
+  none by itself, and a request naming no client is what a gateway's stock
+  rules turn away — a firewall's managed rule set, a CDN's browser check —
+  with a `403` web page of the gateway's, the server never asked. That is
+  how a server that was up and answering read `✘ failed` here:
+  `spark.platform.askable.com/mcp/participant` showed `HTTP 403` over
+  nginx's page, where the server's own answer, once a request reaches it,
+  is the `401` that starts its sign-in.
+
+  **A refusal is reported in the server's words, and markup isn't words.**
+  A refused request's body rides the message on one bounded line
+  (`mcp::body_line`) — except a **web page**, which is what a gateway, a
+  firewall or a website's own error handler answers with: that is described
+  by its title, `HTTP 403: a web page titled "403 Forbidden"`, where the
+  page printed whole put its tags on the `/mcp` page as the server's reason.
+  The sign-in's refusals read the same way (a registration, an exchange, a
+  renewal). And **a request that got no answer says why**: the HTTP
+  library's own words name only the URL (`error sending request for url
+  (…)`), so the message carries every cause under them — the connection
+  refused, no such host, a certificate nobody trusts, a proxy's tunnel that
+  failed.
+
+  **A connect rides out a server's bad moment.** The steps of a connect
+  that are safe to send twice — `initialize`, its
+  `notifications/initialized`, every page of `tools/list` — go again over
+  streamable HTTP when they got no answer (the connection refused or
+  dropped, a proxy's tunnel that failed) or an answer that says try again
+  (`408`, `429`, `500`, `502`, `503`, `504`): after 250 ms, then after a
+  second, three tries in all and every one inside the connect's own
+  deadline (`Transport::request_retrying`/`notify_retrying`). A gateway
+  answers `502` or `503` for a server that is still starting — a
+  serverless one's cold start, a deploy — and one such answer used to
+  leave the server `✘ failed`, its tools gone from the session, until
+  someone pressed Reconnect. Two requests are never sent twice: the **era
+  probe**, which is one question whatever it meets — the handshake comes
+  next either way, and a server that answers an unknown method with a
+  `500` must not cost every connect the pauses — and a **tool call**,
+  which may have run before its answer was lost.
+
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines; a notification takes the caller's
@@ -622,7 +669,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   When a revision on the `/mcp` page still looks wrong, the answer is one
   command away and involves no TUI at all: `cargo run --example mcp_probe --
   {url|command}` runs this very connect sequence and prints what the server
-  replied — identity, revision, capabilities, tools.
+  replied — identity, revision, capabilities, tools. Against a server that
+  wants a sign-in it runs the sign-in's discovery too — the metadata
+  documents only: nothing is registered and no browser opens — and prints
+  the authorization server it found, where it signs in and trades the code,
+  whether it registers clients itself, and the scopes that would be asked
+  for, so "why can't I authenticate?" has the same one-command answer.
 
   What that costs is one round trip per connect — sub-millisecond on stdio,
   one RTT on HTTP (measured against three live servers: 0.43 s, 0.69 s,
@@ -698,6 +750,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   first, RFC 6749's default); a client registered with
   `client_secret_basic` authenticates with HTTP Basic, neither half in the
   body (`client_authentication`, the exchange and every refresh alike).
+  It also **names the scopes the sign-in is about to ask for** (RFC 7591's
+  `scope`, left out when it asks for none — the scopes are settled before
+  the registration for that reason): an authorization server may keep a
+  client to the scopes it registered with, and one that does turns the
+  authorize request away — `invalid_scope`, after the browser has opened —
+  from a client that registered none.
   A refused registration or exchange carries the server's own `error` and
   `error_description` (`oauth_error_detail`) rather than a bare status, and
   a server offering no registration says how to add a pre-registered
@@ -746,6 +804,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   follows Google's published metadata, but has not been tried end to end.
   The review's `ServerParts` names an `oauth` change (`the OAuth client`).
 
+  **The sign-in's requests name this client too.** The metadata documents,
+  the registration, the exchange and every renewal go out on
+  `llm::mcp_auth_http_client`, which sends the `User-Agent` a server's own
+  requests carry (above): an authorization server sits behind the same kind
+  of gateway as its MCP server — usually the very same one — and a sign-in
+  to a server behind one ended at discovery with the gateway's `403`.
+  These requests follow any redirect, as a provider's do: they carry none
+  of an entry's headers, and a metadata document may be served from
+  elsewhere.
+
   **The flow stops where it should.** The cancel token is checked between
   discovery, registration and the browser, so Esc during discovery never
   opens a browser afterwards; with no config home to keep the grant in, the
@@ -775,15 +843,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     `StoredTokens::resource`, so a refreshed token's audience never drifts);
     without resource metadata, the canonical server URL (`canonical_resource`:
     lowercase scheme and host, no fragment, no lone `/`).
-  - The **authorization-server metadata** is looked for exactly where the
-    spec says (`authorization_server_candidates`): for an issuer with a
-    path, RFC 8414 path insertion, OIDC path insertion, then OIDC path
+  - The **authorization-server metadata** is looked for where the spec
+    says (`authorization_server_candidates`): for an issuer with a path,
+    RFC 8414 path insertion, OIDC path insertion, then OIDC path
     **appending** — where Keycloak realms and Entra tenants publish, and
-    which was never tried — and never the root, which for a path issuer is
-    some other issuer's document; and that document's `issuer` must be the
-    issuer its URL was built from (RFC 8414 §3.3, `issuer_matches`, with the
-    SDK's one trailing-slash tolerance) or it is skipped. That validated
-    issuer is the one RFC 9207's `iss` is then held to.
+    which was never tried — and then, last, **the root document**: a server
+    that mounts its metadata routes at the origin publishes there whatever
+    path its issuer has, and a sign-in to one ended with nothing found.
+    Wherever a document comes from, its `issuer` must be the issuer it was
+    looked up for (RFC 8414 §3.3, `issuer_matches`, with the SDK's one
+    trailing-slash tolerance) or it is skipped — which is what makes the
+    root safe to read: for a path issuer it is usually some *other*
+    issuer's document, and that one names itself. That validated issuer is
+    the one RFC 9207's `iss` is then held to.
   - Its endpoints must be **HTTPS** (`endpoint_is_secure`; loopback exempt
     for a server under development), and it must support **PKCE with
     S256**: metadata listing `code_challenge_methods_supported` without it
@@ -1387,7 +1459,13 @@ negotiation server, and an OAuth pair — an MCP endpoint demanding
 matrix (mid-session 401 → refresh → retry with the server never leaving
 Connected; proactive pre-call refresh with **zero** 401s seen; connect-time
 refresh; `invalid_grant` → cleared grant + needs-auth; a 503 → grant kept +
-`✘ failed`, never needs-auth). What
+`✘ failed`, never needs-auth), and a server and an authorization server
+each **behind a gateway that answers any request naming no client with a
+`403` web page** — so a green connect, call, sign-in and renewal through
+them prove every request carries the `User-Agent`, whichever request it
+is. The same scripted server puts a gateway's `502`/`503` page, or a
+connection closed without a word, in the place of any answer it is told
+to, which is how a connect's retries are counted request by request. What
 those can't prove — that a real server's tools, descriptions and parallel
 batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
 like every other live test:
@@ -1395,11 +1473,14 @@ like every other live test:
 ```sh
 # the public DeepWiki server only (no key needed)
 cargo test --test live_mcp -- --ignored --nocapture live_deepwiki_tool_descriptions
+# a real server behind such a gateway: it asks for a sign-in, and the
+# sign-in's discovery finds its authorization server (no key needed)
+cargo test --test live_mcp -- --ignored --nocapture live_a_server_behind_a_gateway
 # the whole round trip: a real model issuing a real parallel batch
 OPENROUTER_API_KEY=sk-or-… cargo test --test live_mcp -- --ignored --nocapture
 ```
 
-The second one folds the turn's real `StreamEvent`s into `App` the way
+The last one folds the turn's real `StreamEvent`s into `App` the way
 `tui::stream` does and asserts on the lines a terminal would show: the strip's
 one `● Calling Deepwiki 2 times…` cell, the single committed
 `Called Deepwiki 2 times`, and the per-call Ctrl+O headers with the model's own

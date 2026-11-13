@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::mcp::{
-    Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, header_value,
+    Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, body_line, header_value,
     initialize_params_for, notification, param_header_values, parse_incoming, request,
     server_request_answer, with_meta,
 };
@@ -40,6 +40,14 @@ const STDERR_TAIL_BYTES: usize = 4 * 1024;
 const HTTP_OP_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const HTTP_OP_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The pauses before a request that is safe to send twice goes again — a
+/// growing wait, two more tries at most, every one inside the request's own
+/// deadline (`docs/mcp.md`). Short under test.
+#[cfg(not(test))]
+const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
+#[cfg(test)]
+const RETRY_PAUSES: [Duration; 2] = [Duration::from_millis(10), Duration::from_millis(20)];
 
 /// The legacy SSE stream's per-read deadline — long, because the stream idles
 /// between replies (Claude Code deliberately un-timeouts it; we keep a stall
@@ -118,6 +126,44 @@ impl Transport {
             Self::Stdio(t) => t.notify(method, params),
             Self::Http(t) => t.notify(method, params, deadline, cancel),
             Self::Sse(t) => t.notify(method, params, deadline, cancel),
+        }
+    }
+
+    /// [`request`](Self::request) for a request that is safe to send twice
+    /// — the handshake's and a listing's, never a tool call's, which may
+    /// have run before its answer was lost. Over streamable HTTP, one that
+    /// got no answer (the connection refused or dropped, a proxy's tunnel
+    /// that failed) or an answer that says try again (`408`, `429`, `500`,
+    /// `502`, `503`, `504` — what a gateway says for a server still
+    /// starting) goes again after a growing pause, twice at most and inside
+    /// `deadline`. The other transports have no such answer to wait out: a
+    /// stdio server that fails has exited.
+    pub fn request_retrying(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
+        match self {
+            Self::Http(t) => t.request_retrying(method, params, deadline, cancel),
+            Self::Stdio(_) | Self::Sse(_) => self.request(method, params, deadline, cancel),
+        }
+    }
+
+    /// [`notify`](Self::notify), sent again as
+    /// [`request_retrying`](Self::request_retrying) sends a request again —
+    /// for a notification a handshake depends on.
+    pub fn notify_retrying(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
+        match self {
+            Self::Http(t) => t.notify_retrying(method, params, deadline, cancel),
+            Self::Stdio(_) | Self::Sse(_) => self.notify(method, params, deadline, cancel),
         }
     }
 
@@ -243,6 +289,30 @@ fn wait_channel<T>(
                 ));
             }
         }
+    }
+}
+
+/// Wait out `pause` before a request goes again, polling `cancel` like every
+/// transport wait. `Ok(false)` when `left` — what remains of the request's
+/// deadline — has no room for the pause and a request after it.
+fn wait_to_retry(
+    pause: Duration,
+    left: Duration,
+    cancel: &CancelToken,
+) -> Result<bool, TransportError> {
+    if left <= pause {
+        return Ok(false);
+    }
+    let until = Instant::now() + pause;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(TransportError::Cancelled);
+        }
+        let rest = until.saturating_duration_since(Instant::now());
+        if rest.is_zero() {
+            return Ok(true);
+        }
+        std::thread::sleep(POLL.min(rest));
     }
 }
 
@@ -852,6 +922,11 @@ enum PostOutcome {
     StreamBroken,
     /// The captured session id rode along (initialize).
     Session(Option<String>, Box<PostOutcome>),
+    /// The request got no answer at all, or one that says try again
+    /// ([`says_try_again`]) — nothing about the request itself, so one that
+    /// is safe to send twice may go again. Carries the story, which is the
+    /// failure's when it doesn't.
+    Unavailable(String),
     Err(TransportError),
 }
 
@@ -1023,6 +1098,30 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
+        self.request_with(method, params, deadline, cancel, &[])
+    }
+
+    /// [`Transport::request_retrying`] for streamable HTTP.
+    fn request_retrying(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Value, TransportError> {
+        self.request_with(method, params, deadline, cancel, &RETRY_PAUSES)
+    }
+
+    /// One request, sent again after each of `pauses` for as long as it
+    /// comes back [`PostOutcome::Unavailable`] and its deadline has room.
+    fn request_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+        pauses: &[Duration],
+    ) -> Result<Value, TransportError> {
         let started = Instant::now();
         let left = || deadline.saturating_sub(started.elapsed());
         let params = match &self.modern {
@@ -1030,6 +1129,14 @@ impl HttpTransport {
             None => params,
         };
         let mut outcome = self.send_once(method, &params, left(), cancel)?;
+        for pause in pauses {
+            if !matches!(outcome, PostOutcome::Unavailable(_))
+                || !wait_to_retry(*pause, left(), cancel)?
+            {
+                break;
+            }
+            outcome = self.send_once(method, &params, left(), cancel)?;
+        }
         if matches!(outcome, PostOutcome::SessionExpired) {
             // The session died under us. Start a new one and replay, so a
             // server restart or an idle timeout costs a round trip instead
@@ -1053,6 +1160,7 @@ impl HttpTransport {
             PostOutcome::StreamBroken => Err(TransportError::Failed(
                 "the event stream ended before the response arrived".to_string(),
             )),
+            PostOutcome::Unavailable(detail) => Err(TransportError::Failed(detail)),
             PostOutcome::Err(e) => Err(e),
             PostOutcome::Session(..) => unreachable!("unwrapped in send_once"),
         }
@@ -1117,6 +1225,7 @@ impl HttpTransport {
         )? {
             PostOutcome::Response(Ok(_)) | PostOutcome::Accepted => {}
             PostOutcome::Response(Err(e)) => return Err(TransportError::Rpc(e)),
+            PostOutcome::Unavailable(detail) => return Err(TransportError::Failed(detail)),
             PostOutcome::Err(e) => return Err(e),
             PostOutcome::SessionExpired | PostOutcome::StreamBroken => {
                 return Err(TransportError::Failed(
@@ -1140,17 +1249,57 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<(), TransportError> {
+        self.notify_with(method, params, deadline, cancel, &[])
+    }
+
+    /// [`Transport::notify_retrying`] for streamable HTTP.
+    fn notify_retrying(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
+        self.notify_with(method, params, deadline, cancel, &RETRY_PAUSES)
+    }
+
+    /// One notification, sent again after each of `pauses` for as long as
+    /// it comes back [`PostOutcome::Unavailable`] and its deadline has room.
+    fn notify_with(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+        pauses: &[Duration],
+    ) -> Result<(), TransportError> {
         // An acceptance failure is not worth failing the connect over, but a
         // transport error is surfaced. (Only the legacy handshake sends
         // notifications — the modern era has none of ours — but the `_meta`
         // and header rules are honoured all the same.)
+        let started = Instant::now();
+        let left = || deadline.saturating_sub(started.elapsed());
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let modern = self.modern_headers(method, &params);
-        match self.post(notification(method, params), None, modern, deadline, cancel)? {
+        let message = notification(method, params.clone());
+        let send = |transport: &Self, left: Duration| {
+            let modern = transport.modern_headers(method, &params);
+            transport.post(message.clone(), None, modern, left, cancel)
+        };
+        let mut outcome = send(self, left())?;
+        for pause in pauses {
+            if !matches!(outcome, PostOutcome::Unavailable(_))
+                || !wait_to_retry(*pause, left(), cancel)?
+            {
+                break;
+            }
+            outcome = send(self, left())?;
+        }
+        match outcome {
             PostOutcome::Err(e) => Err(e),
+            PostOutcome::Unavailable(detail) => Err(TransportError::Failed(detail)),
             _ => Ok(()),
         }
     }
@@ -1414,7 +1563,7 @@ fn post_blocking(
     }
     let response = match req.body(body.to_string()).send() {
         Ok(response) => response,
-        Err(e) => return PostOutcome::Err(TransportError::Failed(format!("request failed: {e}"))),
+        Err(e) => return PostOutcome::Unavailable(request_failed(&e)),
     };
     let status = response.status();
     let new_session = response
@@ -1452,12 +1601,14 @@ fn post_blocking(
         {
             return PostOutcome::Err(TransportError::Rpc(e));
         }
-        let detail = format!("HTTP {}: {}", status.as_u16(), one_line(&body, 200));
+        let detail = format!("HTTP {}: {}", status.as_u16(), body_line(&body, 200));
         // Only 400, 404 and 405 without a modern error body are the spec's
         // cue to try the legacy HTTP+SSE transport; any other refusal — a
         // 403, a 429, a redirect not followed — is the server's answer.
         return if matches!(status.as_u16(), 400 | 404 | 405) {
             PostOutcome::Err(TransportError::HttpRefused(detail))
+        } else if says_try_again(status.as_u16()) {
+            PostOutcome::Unavailable(detail)
         } else {
             PostOutcome::Err(TransportError::Failed(detail))
         };
@@ -1530,7 +1681,7 @@ fn post_blocking(
         Some(Incoming::OrphanError(error)) => wrap(PostOutcome::Response(Err(error))),
         Some(_) | None => PostOutcome::Err(TransportError::Failed(format!(
             "unexpected response body: {}",
-            one_line(&text, 200)
+            body_line(&text, 200)
         ))),
     }
 }
@@ -1610,7 +1761,8 @@ impl SseTransport {
                 Ok(response) => response,
                 Err(e) => {
                     let _ = endpoint_tx.send(Err(TransportError::Failed(format!(
-                        "could not open the event stream: {e}"
+                        "could not open the event stream: {}",
+                        crate::llm::transport_message(&e)
                     ))));
                     return;
                 }
@@ -1716,7 +1868,7 @@ impl SseTransport {
                 let response = req
                     .body(body)
                     .send()
-                    .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
+                    .map_err(|e| TransportError::Failed(request_failed(&e)))?;
                 let challenge = challenge_of(&response);
                 let status = response.status().as_u16();
                 if status == 401 || (status == 403 && wants_more_scope(challenge.as_deref())) {
@@ -1812,15 +1964,19 @@ fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError
     Ok(resolved.to_string())
 }
 
-/// Flatten a body to one bounded line for an error message.
-fn one_line(text: &str, max: usize) -> String {
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        let head: String = flat.chars().take(max).collect();
-        format!("{head}…")
-    }
+/// Does a status say "not now" rather than "no" — the request may be sent
+/// again? A timeout, a rate limit, and what a server, or the gateway in
+/// front of it, answers while it starts or restarts.
+const fn says_try_again(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+/// A request that got no answer, in words: the HTTP client's own — which
+/// name only the URL, "error sending request for url (…)" — and every cause
+/// under them, which is where the reason is: refused, no such host, a
+/// certificate nobody trusts, a proxy's tunnel that failed.
+fn request_failed(error: &reqwest::Error) -> String {
+    format!("request failed: {}", crate::llm::transport_message(error))
 }
 
 #[cfg(test)]
@@ -2205,12 +2361,6 @@ echo clean >> '{seen}'"#,
                 "{elsewhere}: {refused}"
             );
         }
-    }
-
-    #[test]
-    fn one_line_flattens_and_caps() {
-        assert_eq!(one_line("a\n  b\t c", 10), "a b c");
-        assert_eq!(one_line("abcdef", 3), "abc…");
     }
 
     // -----------------------------------------------------------------------

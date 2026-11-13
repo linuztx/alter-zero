@@ -416,40 +416,68 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// the `pool_idle_timeout` set here. The env config a client bakes in (proxy,
 /// CA paths) never changes mid-process (this crate forbids `set_var`).
 pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
-    cached_client(op_timeout, Redirects::Any)
+    cached_client(op_timeout, ClientKind::Provider)
 }
 
-/// [`http_client`] for **MCP servers**: a redirect is followed only while
-/// every hop stays on the origin the request went to (ten hops at most).
-/// What an MCP request carries — the config's own headers, an API key among
-/// them, and the bearer — rides every hop, and reqwest strips only
-/// `Authorization` and cookies when a redirect changes host, so a server
-/// that bounced the request elsewhere would hand the rest away. A stopped
-/// redirect comes back as its own `3xx` response, which the transport
-/// reports.
+/// [`http_client`] for **MCP servers**, with two differences
+/// (`docs/mcp.md`).
+///
+/// **Every request names this client** — a `User-Agent` of
+/// [`crate::mcp::user_agent`], set on the client so no request can go out
+/// without one; a header of that name on a request (an entry's own) replaces
+/// it. reqwest sends none by itself, and a request naming no client is what
+/// a gateway's stock rules turn away: a `403` web page from the firewall,
+/// the server never asked.
+///
+/// **A redirect is followed only while every hop stays on the origin the
+/// request went to** (ten hops at most). What an MCP request carries — the
+/// config's own headers, an API key among them, and the bearer — rides every
+/// hop, and reqwest strips only `Authorization` and cookies when a redirect
+/// changes host, so a server that bounced the request elsewhere would hand
+/// the rest away. A stopped redirect comes back as its own `3xx` response,
+/// which the transport reports.
 ///
 /// # Errors
 /// Returns [`LlmError::Http`] if the client can't be built.
 pub(crate) fn mcp_http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
-    cached_client(op_timeout, Redirects::SameOrigin)
+    cached_client(op_timeout, ClientKind::McpServer)
 }
 
-/// Which redirects a cached client follows.
+/// [`http_client`] for an **MCP sign-in** — the metadata documents, the
+/// registration, the token requests: named like every request to the server
+/// itself ([`mcp_http_client`]), since an authorization server sits behind
+/// the same kind of gateway and usually the very same one. Any redirect is
+/// followed, as for a provider: these requests carry none of an entry's
+/// headers, and a metadata document may be served from elsewhere.
+///
+/// # Errors
+/// Returns [`LlmError::Http`] if the client can't be built.
+pub(crate) fn mcp_auth_http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
+    cached_client(op_timeout, ClientKind::McpAuth)
+}
+
+/// What a cached client is for, which decides the redirects it follows and
+/// whether its requests name this app by themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Redirects {
-    /// reqwest's default — any, ten hops at most.
-    Any,
-    /// Only those staying on the first request's origin.
-    SameOrigin,
+enum ClientKind {
+    /// A model provider's: reqwest's default redirects (any, ten hops at
+    /// most) and no `User-Agent` of its own — the requests that need one
+    /// name the client their provider expects.
+    Provider,
+    /// An MCP server's: named, and only redirects staying on the first
+    /// request's origin.
+    McpServer,
+    /// An MCP sign-in's: named, and any redirect.
+    McpAuth,
 }
 
-fn cached_client(op_timeout: Duration, redirects: Redirects) -> Result<reqwest::blocking::Client> {
+fn cached_client(op_timeout: Duration, kind: ClientKind) -> Result<reqwest::blocking::Client> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    type Cache = Mutex<HashMap<(Duration, Redirects), reqwest::blocking::Client>>;
+    type Cache = Mutex<HashMap<(Duration, ClientKind), reqwest::blocking::Client>>;
     static CLIENTS: OnceLock<Cache> = OnceLock::new();
     let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (op_timeout, redirects);
+    let key = (op_timeout, kind);
     if let Ok(map) = cache.lock()
         && let Some(client) = map.get(&key)
     {
@@ -459,7 +487,10 @@ fn cached_client(op_timeout: Duration, redirects: Redirects) -> Result<reqwest::
         .pool_idle_timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
         .timeout(op_timeout);
-    if redirects == Redirects::SameOrigin {
+    if kind != ClientKind::Provider {
+        builder = builder.user_agent(crate::mcp::user_agent());
+    }
+    if kind == ClientKind::McpServer {
         builder = builder.redirect(reqwest::redirect::Policy::custom(|attempt| {
             let same_origin = attempt
                 .previous()
@@ -807,6 +838,72 @@ mod tests {
             LlmError::body_read(&plain).to_string(),
             "request failed: operation timed out"
         );
+    }
+
+    /// Serve one request on a loopback port and hand back its head — the
+    /// request line and headers, lowercased.
+    fn one_request_head() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                    break;
+                }
+                head.push_str(&line.to_ascii_lowercase());
+            }
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = tx.send(head);
+        });
+        (url, rx)
+    }
+
+    #[test]
+    fn every_mcp_client_names_this_app() {
+        // A request naming no client is what a gateway's stock rules refuse
+        // — a 403 web page before the server is asked anything — so both
+        // clients MCP traffic rides send a `User-Agent` by construction: the
+        // one a server's requests go out on, and the one its sign-in uses.
+        let expected = format!("user-agent: {}\r\n", crate::mcp::user_agent());
+        type Build = fn(Duration) -> Result<reqwest::blocking::Client>;
+        for build in [mcp_http_client as Build, mcp_auth_http_client as Build] {
+            let (url, head) = one_request_head();
+            build(Duration::from_secs(5))
+                .unwrap()
+                .get(&url)
+                .send()
+                .unwrap();
+            let head = head.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(head.contains(&expected), "no client named in: {head}");
+        }
+    }
+
+    #[test]
+    fn a_request_s_own_user_agent_replaces_the_default() {
+        // An entry's `headers` may name a client of their own (a server that
+        // gates on one): it is sent alone, never beside ours.
+        let (url, head) = one_request_head();
+        mcp_http_client(Duration::from_secs(5))
+            .unwrap()
+            .get(&url)
+            .header("User-Agent", "their-client/2")
+            .send()
+            .unwrap();
+        let head = head.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(head.contains("user-agent: their-client/2\r\n"), "{head}");
+        assert_eq!(head.matches("user-agent:").count(), 1, "{head}");
     }
 
     #[test]

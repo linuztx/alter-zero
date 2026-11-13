@@ -12,6 +12,43 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP servers behind a gateway that refuses unnamed clients now connect.**
+  Requests to a remote MCP server carried no `User-Agent`, and a gateway's
+  stock firewall rules turn such a request away before the server sees it.
+  A server behind one read `✘ failed` in `/mcp`, with `HTTP 403` and a web
+  page as its error, and **Authenticate** failed the same way, since the
+  sign-in's own requests met the same gateway. Every request to a server,
+  and every request of a sign-in to one, now names the app
+  (`alter-zero/{version}`). An entry whose `headers` set a `User-Agent`
+  sends that one instead.
+
+- **An MCP server having a bad moment at startup still connects.** One
+  failed request — the connection dropped, or a gateway's `502`/`503` for a
+  server that was still starting — left the server `✘ failed`, and its
+  tools out of the session, until Reconnect was pressed in `/mcp`. The
+  handshake and the tool listing are now tried up to three times, a moment
+  apart. A tool call is never sent twice.
+
+- **A failed MCP request says why.** A refusal that is a web page (a
+  gateway's, a firewall's) is named by its title, as in `HTTP 403: a web
+  page titled "403 Forbidden"`, where the page's HTML used to be printed as
+  the server's error. A request that got no answer names its cause (the
+  connection refused, no such host, a certificate that isn't trusted)
+  rather than only `error sending request for url (…)`.
+
+- **Signing in to an MCP server registers the scopes it asks for.** Some
+  authorization servers keep an app to the scopes it registered with, and
+  refused the sign-in (`invalid_scope`) after the browser had opened,
+  because the registration named none.
+
+- **Signing in finds an authorization server that publishes its metadata
+  only at the site's root.** For a sign-in address with a path, the
+  metadata was looked for under that path alone, so such a server ended
+  with `could not discover the authorization server`. The root document is
+  read last, and used only when it names that same address.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added
