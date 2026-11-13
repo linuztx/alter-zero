@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The web-search skill's scripts say why a search failed.** A key Tavily
+  refused ended `tavily_search.py` in a Python traceback; it now reads
+  `HTTP 401: this server refused the key (…)`, as Parallel's does. A
+  gateway's error page or an empty reply read `Expecting value: line 1
+  column 1 (char 0)`, and now names what came back, as in `HTTP 502: a web
+  page titled "502 Bad Gateway"`. A gateway's own `429` counts as a rate
+  limit. An answer on a connection the server left open is read at once,
+  where it was dropped after a minute's wait. A copy of the skill already
+  in `~/.alter-zero/skills/web-search/` is kept as it is: delete that
+  folder, and the next launch writes the fixed scripts.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

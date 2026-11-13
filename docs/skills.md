@@ -210,7 +210,7 @@ one finds the URLs (and can read them too).
 | --- | --- | --- | --- |
 | `exa_search.py` | Exa's hosted MCP server, `https://mcp.exa.ai/mcp`: `web_search_exa`, `web_fetch_exa` | a daily quota per address; a shared cloud address may get none | `EXA_API_KEY` |
 | `parallel_search.py` | Parallel's Search MCP, `https://search.parallel.ai/mcp`: `web_search`, `web_fetch` | rate limited per `session_id` | `PARALLEL_API_KEY` |
-| `tavily_search.py` | Tavily's hosted MCP, `https://mcp.tavily.com/mcp/`: `tavily_search`, `tavily_extract` | a monthly quota per address | `TAVILY_API_KEY` |
+| `tavily_search.py` | Tavily's hosted MCP, `https://mcp.tavily.com/mcp/`: `tavily_search`, `tavily_extract` | a daily and a monthly quota per address | `TAVILY_API_KEY` |
 | `jina_web_search.py` | Jina Reader (`r.jina.ai`) fetching a search engine's own results page | about 20 requests a minute | `JINA_API_KEY` |
 
 A key is read from its environment variable and sent only to its own
@@ -221,12 +221,19 @@ key as an argument, printing it, or tracing with `set -x`.
 **The three MCP clients share `mcp_http.py`**: one bare, stateless JSON-RPC
 `tools/call` POST over streamable HTTP (no `initialize`, no session), the
 answer decoded whether it arrives as one SSE event (Exa, Tavily) or as plain
-JSON (Parallel), and a failure classified: a 429, a JSON-RPC error that says
-it is a rate limit (Parallel answers its free-tier limit with HTTP 200), Exa's
+JSON (Parallel), and a failure classified: a 429 (a gateway's own included,
+which carries no JSON-RPC error to say so), a JSON-RPC error that says it is
+a rate limit (Parallel answers its free-tier limit with HTTP 200), Exa's
 `_meta["ai.exa/rateLimited"]` flag or Tavily's cap document is **rate
 limited**, printed as `rate limited (retry in 15m):` over the server's own
-message, word for word; a 401 **needs a key**, and anything else is an error
-carrying the server's text. Those errors are all that goes to stderr: a line
+message, word for word; a 401 **needs a key**, or **refused the key** when
+the request carried one, in the server's own words; and anything else is an
+error carrying the server's text, under its status. An event stream is read
+**only as far as its answer** (`read_body`): a server may hold the stream
+open after it has answered, and reading to the stream's end waited out the
+whole 60-second timeout and then failed with the answer already received.
+It is told by its type whatever the type's case, and read under a missing or
+wrong type too. Those errors are all that goes to stderr: a line
 per request (endpoint, status, size, time) cost the agent tokens on every
 search and filled the collapsed tool cell's few rows. Each script adds only
 its provider's request shape and result rendering. What the live services taught them, recorded as
@@ -238,9 +245,24 @@ tests against the live response shapes:
   instead of empty output and exit 0.
 - **Tavily answers a keyless client with a 401 OAuth challenge** unless the
   request carries its documented `X-Tavily-Access-Mode: keyless` header, and
-  it reports failures inside HTTP 200, `isError: false` results: a bad key as
-  an `error` document, the keyless cap as `{code, message, window,
-  retry_after_seconds, next_actions}`. Both are failures, never results.
+  it reports its keyless caps — a daily one and a monthly one — inside HTTP
+  200, `isError: false` results, as `{code, message, window,
+  retry_after_seconds, next_actions}`: a failure, never a result. A bad key
+  was an `error` document in such a result too, until it became the 401
+  below; that shape is still read.
+- **What stands in front of a server answers for it, and none of that is
+  JSON-RPC.** A key Tavily does not know is now refused with HTTP 401 and an
+  OAuth error document, `{"error": "invalid_token", "error_description":
+  …}`. Any document with an `error` key used to be read as a JSON-RPC error
+  — whose `error` is an object, not a string — so `tavily_search.py` ended
+  in a Python traceback where the agent needed a reason. A response is now
+  an object with a `result`, or with an `error` that is itself an object
+  (`is_response`), and everything else is **described as what it is**
+  (`described`): a gateway's web page by its title, where it read
+  `Expecting value: line 1 column 1 (char 0)`, the JSON parser's complaint;
+  an OAuth or a provider's own document by its words; an empty body as that.
+  A tool result or a listing of a shape no schema allows is an error too,
+  never an uncaught exception.
 - **A spent quota offers ways around itself**: x402 pay-per-call, signing up,
   bonus credits for answering survey questions. The scripts take none of
   them, and the body tells the agent never to either. The message naming

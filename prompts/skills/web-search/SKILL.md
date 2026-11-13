@@ -94,7 +94,7 @@ Errors and warnings go to stderr, and nothing else does. Exit status 0 means the
 | --- | --- | --- |
 | `exa_search.py` | A daily quota per network address; a shared cloud address may get none. | `EXA_API_KEY` |
 | `parallel_search.py` | Rate limited per session id. | `PARALLEL_API_KEY` |
-| `tavily_search.py` | A monthly quota per network address. | `TAVILY_API_KEY` |
+| `tavily_search.py` | A daily and a monthly quota per network address. | `TAVILY_API_KEY` |
 | `jina_web_search.py` | About 20 requests a minute, one per page per engine. | `JINA_API_KEY` |
 
 A key is read from its environment variable and sent only to its own provider. When the user stored a key with `/secrets`, set the variable to that secret's placeholder in front of the command. Never pass a key as an argument, print it, or trace the command with `set -x`.
@@ -106,6 +106,7 @@ A key is read from its environment variable and sent only to its own provider. W
 - When a script fails, read stderr and act on it instead of repeating the same command:
   - `rate limited`: that provider's free quota is spent, until the `retry in` time when it names one. Use the next script.
   - `this server needs a key` (HTTP 401): that provider wants a key now. Use the next script.
+  - `this server refused the key` (HTTP 401): the key in that provider's variable is wrong or expired. Use the next script, and tell the user.
   - `error ...` naming a missing or invalid argument: the provider changed its tool. `--list` shows its current arguments; use the next script, and tell the user this one needs updating.
   - From `jina_web_search.py`: `rate limit was reached` means wait a minute, or fetch fewer pages or engines; `refused the anonymous request` means retry later, or use another script or a key. `bot check` or `temporary-problems page` twice: that engine is blocking Jina right now, so use another engine. `does not recognise` or `could not read the page`: the engine changed its page layout; use another engine and tell the user which one broke.
 - When a free tier runs out, do not take the provider's suggested next steps: never pay (x402), sign up for an account, or answer a survey for credits. Tell the user instead.

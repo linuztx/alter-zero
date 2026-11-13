@@ -14,7 +14,8 @@ Standard library only; the MCP plumbing is `mcp_http.py`, which has to stay
 in this directory. Tests: `test_tavily_search.py` beside it in the
 repository (not seeded with the skill).
 
-What it shows (checked against the live service, 2026-10):
+What it shows (checked against the live service, 2026-10; the refused key and
+the daily cap, 2026-11):
 
 - Without a key the server answers 401 with an OAuth challenge — unless the
   request carries `X-Tavily-Access-Mode: keyless`, Tavily's documented free
@@ -25,14 +26,18 @@ What it shows (checked against the live service, 2026-10):
   session — answered as one SSE event. The tool text is the REST response as
   a JSON string, `auth_mode: "keyless"` included.
 - A key goes as `Authorization: Bearer tvly-…` (or `?tavilyApiKey=`); it
-  outranks the keyless header, and `x-api-key` is not read here. A bad key
-  comes back as HTTP 200, `isError: false`, with an `error` document as the
-  text — which is why `format_results` checks for one.
-- Past the keyless quota (monthly, per IP) the answer is still HTTP 200 and
-  `isError: false`: a `{"code": "monthly_cap_reached…", "message", "window",
-  "retry_after_seconds", "next_actions"}` document. Its next actions are x402
-  pay-per-call, signing up for a key, or bonus keyless credits for answering
-  two survey questions at `/keyless/bonus` — this script takes none of them.
+  outranks the keyless header, and `x-api-key` is not read here. A key the
+  server does not know is refused with HTTP 401 and an OAuth error document
+  (`{"error": "invalid_token", "error_description": …}`), which `mcp_http`
+  reports as a refused key. It used to come back as HTTP 200, `isError:
+  false`, with an `error` document as the text, and `format_results` still
+  checks for one.
+- Past the keyless quota (a daily cap and a monthly one, per IP) the answer
+  is still HTTP 200 and `isError: false`: a `{"code": "daily_cap_reached" or
+  "monthly_cap_reached…", "message", "window", "retry_after_seconds",
+  "next_actions"}` document. Its next actions are x402 pay-per-call, signing
+  up for a key, or bonus keyless credits for answering two survey questions
+  at `/keyless/bonus` — this script takes none of them.
 """
 
 import argparse
@@ -102,9 +107,10 @@ def format_results(text):
     results = doc.get("results")
     failed = doc.get("failed_results")
     if not isinstance(results, list) and not isinstance(failed, list):
-        # A refusal with no results: past the keyless quota it is
-        # `{"code": "monthly_cap_reached…", "message", "window",
-        # "retry_after_seconds", …}`, still HTTP 200 and `isError: false`.
+        # A refusal with no results: past a keyless quota it is
+        # `{"code": "daily_cap_reached" or "monthly_cap_reached…", "message",
+        # "window", "retry_after_seconds", …}`, still HTTP 200 and
+        # `isError: false`.
         if isinstance(doc.get("code"), str) and doc.get("message"):
             if "window" in doc or "retry_after_seconds" in doc:
                 retry_after = retry_after_secs(str(doc.get("retry_after_seconds")))

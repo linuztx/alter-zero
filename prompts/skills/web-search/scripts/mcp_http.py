@@ -10,12 +10,19 @@ JSON-RPC response as plain JSON (Parallel). Standard library only; urllib
 honours HTTPS_PROXY by itself and OpenSSL's default trust store honours
 SSL_CERT_FILE, so this works behind a proxy unchanged.
 
+What stands in front of a server answers for it at times, and none of that is
+a JSON-RPC response: a gateway's web page, a 429 with a line of text, a 401
+whose body is an OAuth error document. Each is reported as what it is
+(`described`), under its status — never as the JSON parser's complaint about
+it, and never as a traceback.
+
 Tests: `test_mcp_http.py` beside it in the repository (not seeded with the
 skill).
 """
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -79,7 +86,7 @@ class ProtocolError(SearchError):
 
 
 class AuthRequired(SearchError):
-    """The server refuses a keyless client (HTTP 401)."""
+    """The server wants a key, or refused the one it was sent (HTTP 401)."""
 
 
 def tool_call_body(request_id, tool, arguments):
@@ -97,66 +104,156 @@ def tools_list_body(request_id=1):
     return {"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": {}}
 
 
-def rpc_message(content_type, body):
-    """The JSON-RPC message a response body carries.
+def is_event_stream(content_type):
+    """Is this media type an event stream? Media types are case-insensitive
+    and may carry parameters (`; charset=utf-8`)."""
+    return content_type.strip().lower().startswith("text/event-stream")
 
-    An event stream yields its first event that is a response (`result` or
-    `error`); multi-line `data:` fields join with a newline, per the SSE spec.
-    Anything else is parsed as the JSON message itself.
+
+def is_response(msg):
+    """Is this a JSON-RPC response: an object with a `result`, or with an
+    `error` that is itself an object? An OAuth error document's `error` is a
+    string (`{"error": "invalid_token", "error_description": …}`), which is
+    what a server's authorization layer answers a bad key with."""
+    return isinstance(msg, dict) and ("result" in msg or isinstance(msg.get("error"), dict))
+
+
+def sse_response(lines):
+    """The first JSON-RPC response among an event stream's lines, or None.
+
+    Multi-line `data:` fields join with a newline, per the SSE spec; a blank
+    line ends an event, and so does the end of the lines, so a stream cut
+    short of its closing blank line still yields its last event.
     """
-    if not content_type.startswith("text/event-stream"):
-        try:
-            msg = json.loads(body)
-        except json.JSONDecodeError as e:
-            raise ProtocolError(str(e)) from e
-        if isinstance(msg, dict) and ("result" in msg or "error" in msg):
-            return msg
-        # A refusal from in front of the server (Cloudflare's JSON errors carry
-        # `title`/`detail`), not a JSON-RPC response.
-        if isinstance(msg, dict) and msg.get("title"):
-            raise ProtocolError(f"{msg['title']}: {msg.get('detail', '')}")
-        raise ProtocolError(f"not a JSON-RPC response: {body[:300]}")
     data = []
-    # A trailing blank line ends the last event, so a body without one still
-    # flushes it.
-    for line in body.splitlines() + [""]:
+    for line in list(lines) + [""]:
+        line = line.rstrip("\r\n")
         if not line:
             if data:
                 try:
                     msg = json.loads("\n".join(data))
                 except json.JSONDecodeError:
                     msg = None
-                if isinstance(msg, dict) and ("result" in msg or "error" in msg):
+                if is_response(msg):
                     return msg
                 data = []
         elif line.startswith("data:"):
             rest = line[len("data:") :]
             data.append(rest[1:] if rest.startswith(" ") else rest)
-    raise ProtocolError("no JSON-RPC response in the event stream")
+    return None
 
 
-def decode(status, content_type, body, www_authenticate=None):
+def web_page(body):
+    """`body` in words when it is an HTML document — `a web page titled "502
+    Bad Gateway"`, or `a web page` when it names no title — else None. A page
+    is what a gateway, a firewall or a website's own error handler answers
+    with."""
+    # Every page that has a title names it in its head.
+    head = body[:16384].lstrip()
+    lower = head.lower()
+    tags = ("<!doctype html", "<html", "<head", "<body", "<title")
+    if not lower.startswith("<") or not any(tag in lower for tag in tags):
+        return None
+    title = ""
+    opened = lower.find("<title")
+    start = lower.find(">", opened) + 1 if opened != -1 else 0
+    end = lower.find("</title", start) if start else -1
+    if end != -1:
+        title = " ".join(head[start:end].split())
+        # The few entities a title really carries; `&amp;` last, so that
+        # `&amp;lt;` stays the `&lt;` it spells.
+        for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&amp;", "&")):
+            title = title.replace(entity, char)
+    if not title:
+        return "a web page"
+    return f'a web page titled "{title[:80]}{"…" if len(title) > 80 else ""}"'
+
+
+def described(body):
+    """A body that is no JSON-RPC response, in words: what it is, or what it
+    says. A web page by its title; a JSON document by its own reason
+    (Cloudflare's `title`/`detail`, an OAuth `error`/`error_description`, a
+    `message` or `detail`); nothing at all as that; anything else as its text
+    on one bounded line."""
+    text = " ".join(body.split())
+    if not text:
+        return "an empty answer"
+    page = web_page(body)
+    if page:
+        return page
+    try:
+        doc = json.loads(body)
+    except json.JSONDecodeError:
+        return text[:300]
+    if isinstance(doc, dict):
+        words = {key: value for key, value in doc.items() if isinstance(value, str) and value}
+        # A refusal from in front of the server: Cloudflare's JSON errors.
+        if "title" in words:
+            return f"{words['title']}: {words.get('detail', '')}"
+        # An authorization layer's: RFC 6749's error document.
+        if "error" in words:
+            return ": ".join(filter(None, [words["error"], words.get("error_description")]))
+        for key in ("message", "detail"):
+            if key in words:
+                return words[key]
+    return f"not a JSON-RPC response: {body[:300]}"
+
+
+def rpc_message(content_type, body):
+    """The JSON-RPC message a response body carries.
+
+    An event stream yields its first event that is a response (`result` or
+    `error`). Anything else is parsed as the JSON message itself — or, when it
+    is not JSON, as the event stream it may still be: a server, or a proxy in
+    front of one, that drops or mislabels the type still sent an answer. A
+    body that is neither is a `ProtocolError` saying what it was (`described`).
+    """
+    if is_event_stream(content_type):
+        msg = sse_response(body.splitlines())
+        if msg is None:
+            raise ProtocolError("no JSON-RPC response in the event stream")
+        return msg
+    try:
+        msg = json.loads(body)
+    except json.JSONDecodeError:
+        msg = sse_response(body.splitlines())
+    if is_response(msg):
+        return msg
+    raise ProtocolError(described(body))
+
+
+def decode(status, content_type, body, www_authenticate=None, retry_after=None, keyed=False):
     """`rpc_message`, with the HTTP status naming what a non-answer means.
 
-    A 401 is a server that wants a key (its `WWW-Authenticate` says how); any
-    other error status with no JSON-RPC body is reported with the status.
+    A 401 is a server that wants a key — or, when the request carried one
+    (`keyed`), a server that refused it — in the server's own words, else
+    its `WWW-Authenticate`. A 429 is a rate limit whoever sent it: a gateway's
+    carries no JSON-RPC error to say so, only the status and `retry_after`.
+    Any other body that is no JSON-RPC response is reported under its status.
     """
     try:
         return rpc_message(content_type, body)
     except ProtocolError as e:
         if status == 401:
+            said = str(e) if body.strip() else None
+            verb = "refused the key" if keyed else "needs a key"
             raise AuthRequired(
-                f"HTTP 401: this server needs a key ({www_authenticate or body.strip() or 'no details'})"
+                f"HTTP 401: this server {verb} ({said or www_authenticate or 'no details'})"
             ) from e
-        if status >= 400:
-            raise ProtocolError(f"HTTP {status}: {e}") from e
-        raise
+        if status == 429:
+            raise RateLimited(str(e), retry_after) from e
+        raise ProtocolError(f"HTTP {status}: {e}") from e
 
 
 def joined_text(result):
-    """A tool result's `content[].text` parts, joined."""
-    parts = result.get("content") or []
-    return "\n".join(p["text"] for p in parts if isinstance(p.get("text"), str))
+    """A tool result's `content[].text` parts, joined; anything in `content`
+    that is not a text part is skipped."""
+    parts = result.get("content")
+    return "\n".join(
+        p["text"]
+        for p in (parts if isinstance(parts, list) else [])
+        if isinstance(p, dict) and isinstance(p.get("text"), str)
+    )
 
 
 def tool_text(msg, status, retry_after=None):
@@ -168,14 +265,21 @@ def tool_text(msg, status, retry_after=None):
     """
     error = msg.get("error")
     if error is not None:
+        if not isinstance(error, dict):
+            raise RpcError(0, str(error))
         message = error.get("message") or ""
+        if not isinstance(message, str):
+            message = json.dumps(message)
         if status == 429 or "rate limit" in message.lower():
             raise RateLimited(message, retry_after)
         raise RpcError(error.get("code", 0), message)
-    result = msg.get("result") or {}
+    result = msg.get("result")
+    if not isinstance(result, dict):
+        raise ProtocolError(f"not a tool result: {json.dumps(result)[:300]}")
     # A rate limit can also arrive as a 200 tool result flagged in `_meta`
     # (Exa's `ai.exa/rateLimited`).
-    meta = result.get("_meta") or {}
+    meta = result.get("_meta")
+    meta = meta if isinstance(meta, dict) else {}
     if any(k.rsplit("/", 1)[-1] == "rateLimited" and v is True for k, v in meta.items()):
         raise RateLimited(joined_text(result), retry_after)
     text = joined_text(result)
@@ -194,9 +298,14 @@ def tool_lines(result):
     """One line per tool a `tools/list` result names: its arguments, and
     which of them are required."""
     lines = []
-    for tool in result.get("tools") or []:
-        schema = tool.get("inputSchema") or {}
-        props = ", ".join(schema.get("properties") or {})
+    tools = result.get("tools") if isinstance(result, dict) else None
+    for tool in tools if isinstance(tools, list) else []:
+        if not isinstance(tool, dict):
+            continue
+        schema = tool.get("inputSchema")
+        schema = schema if isinstance(schema, dict) else {}
+        props = schema.get("properties")
+        props = ", ".join(props if isinstance(props, dict) else {})
         lines.append(f"{tool.get('name')}  ({props})  required: {schema.get('required', [])}")
     return lines
 
@@ -217,17 +326,50 @@ def post_json(url, payload, headers):
     except urllib.error.HTTPError as e:
         response = e
     with response:
-        body = response.read(BODY_MAX_BYTES).decode("utf-8", errors="replace")
+        body = read_body(response, response.headers.get("content-type", ""))
         return response.status, response.headers, body
+
+
+def read_body(response, content_type):
+    """The response's body as text, bounded.
+
+    An event stream is read only as far as its first JSON-RPC response. A
+    server may hold the stream open after it has answered, and reading to its
+    end waited out the whole timeout and then failed, the answer already
+    received. One that never answers is given up on after `TIMEOUT_SECS`,
+    however many keep-alives it sends meanwhile.
+    """
+    if not is_event_stream(content_type):
+        return response.read(BODY_MAX_BYTES).decode("utf-8", errors="replace")
+    lines, size, event = [], 0, 0
+    give_up = time.monotonic() + TIMEOUT_SECS
+    while size < BODY_MAX_BYTES and time.monotonic() < give_up:
+        raw = response.readline(BODY_MAX_BYTES - size)
+        if not raw:
+            break
+        size += len(raw)
+        lines.append(raw.decode("utf-8", errors="replace"))
+        if not raw.strip():
+            if sse_response(lines[event:]) is not None:
+                break
+            event = len(lines)
+    return "".join(lines)
 
 
 def call(url, payload, headers):
     """One MCP round trip: the decoded JSON-RPC message, plus status and
     `retry-after`."""
     status, resp_headers, body = post_json(url, payload, {"Accept": ACCEPT, **headers})
-    content_type = resp_headers.get("content-type", "")
-    msg = decode(status, content_type, body, resp_headers.get("www-authenticate"))
-    return msg, status, retry_after_secs(resp_headers.get("retry-after"))
+    retry_after = retry_after_secs(resp_headers.get("retry-after"))
+    msg = decode(
+        status,
+        resp_headers.get("content-type", ""),
+        body,
+        resp_headers.get("www-authenticate"),
+        retry_after,
+        any(name.lower() == "authorization" for name in headers),
+    )
+    return msg, status, retry_after
 
 
 def run(url, payload, headers, render=None):
@@ -236,7 +378,7 @@ def run(url, payload, headers, render=None):
     Returns the process exit code."""
     try:
         msg, status, retry_after = call(url, payload, headers)
-        if payload["method"] == "tools/list" and "result" in msg:
+        if payload["method"] == "tools/list" and isinstance(msg.get("result"), dict):
             print("\n".join(tool_lines(msg["result"])))
         else:
             text = tool_text(msg, status, retry_after)

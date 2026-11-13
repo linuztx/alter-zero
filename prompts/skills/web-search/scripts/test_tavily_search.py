@@ -4,10 +4,12 @@ document. The shared MCP decoding is tested in test_mcp_http.py. No network.
     python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'
 """
 
+import io
 import json
 import os
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +77,8 @@ class Render(unittest.TestCase):
         self.assertEqual(format_results(text), "Failed: https://x (timeout)")
 
     def test_an_error_document_in_a_200_result_is_an_error(self):
-        # A bad key comes back as HTTP 200, `isError: false`, and this text.
+        # A bad key used to come back as HTTP 200, `isError: false`, and this
+        # text (it is a 401 now, `RefusedKey` below); the shape is still read.
         text = (
             '{"error": "Search failed", "status": 401,'
             ' "detail": {"error": "Unauthorized: missing or invalid API key."}}'
@@ -115,6 +118,27 @@ class Render(unittest.TestCase):
         message = json.loads(self.CAP)["message"]
         self.assertEqual(str(caught.exception), f"rate limited (retry in 15m): {message}")
 
+    # The daily cap's live document (2026-11), verbatim but for its
+    # `next_actions`: a second window beside the monthly one.
+    DAILY_CAP = (
+        '{"code":"daily_cap_reached","message":"You reached the daily keyless Tavily'
+        " limit. To continue immediately, pay via x402 agentic payment"
+        " (https://docs.tavily.com/documentation/machine-payments/x402) or sign up at"
+        " https://tavily.com for a Tavily API key. Otherwise, retry after the time"
+        ' given in the Retry-After response header.","next_actions":[],"window":"day",'
+        '"retry_after_seconds":895,"auth_mode":"keyless"}'
+    )
+
+    def test_the_daily_cap_is_rate_limited_with_its_countdown_too(self):
+        with self.assertRaises(RateLimited) as caught:
+            format_results(self.DAILY_CAP)
+        self.assertEqual(caught.exception.retry_after, 895)
+        self.assertTrue(
+            str(caught.exception).startswith(
+                "rate limited (retry in 14m): You reached the daily keyless Tavily limit."
+            )
+        )
+
     def test_any_other_code_document_is_an_error(self):
         with self.assertRaises(SearchError) as caught:
             format_results('{"code": "bad_request", "message": "nope"}')
@@ -144,6 +168,36 @@ class Options(unittest.TestCase):
 
     def test_json_prints_the_document_untouched(self):
         self.assertIsNone(self.render_for(["--json", "a query"]))
+
+
+class RefusedKey(unittest.TestCase):
+    # Tavily's live answer to a key it does not know (2026-11): HTTP 401 and
+    # an OAuth error document. It used to be an `error` document inside a 200
+    # result; read as a JSON-RPC error, the new one crashed the script.
+    BODY = (
+        '{"error": "invalid_token", "error_description": "Authentication failed. The'
+        ' provided bearer token is invalid, expired, or no longer recognized by the server."}'
+    )
+
+    def test_a_refused_key_is_a_reason_on_stderr_not_a_traceback(self):
+        headers = {
+            "content-type": "application/json",
+            "www-authenticate": 'Bearer error="invalid_token"',
+        }
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch("mcp_http.post_json", return_value=(401, headers, self.BODY)),
+            mock.patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-not-a-key"}),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            code = main(["a query"])
+        self.assertEqual((code, out.getvalue()), (1, ""))
+        self.assertEqual(
+            err.getvalue(),
+            "HTTP 401: this server refused the key (invalid_token: Authentication failed. The"
+            " provided bearer token is invalid, expired, or no longer recognized by the server.)\n",
+        )
 
 
 if __name__ == "__main__":
