@@ -12,23 +12,9 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
-### Added
+## [0.19.0] - 2026-11-13
 
-- **Session files now record how each tool call ran and what each model
-  request cost.** Every `tool` line in a rollout
-  (`~/.alter-zero/sessions/…/rollout-*.jsonl`) carries the command's
-  `exit_code`, how long the call ran (`duration_ms`) and, when it failed,
-  why (`error_kind`: `tool_error`, `timed_out`, `interrupted`, `rejected`,
-  `classifier_denied`, `hook_blocked`, `approval_required`,
-  `tool_call_limit` or `backend_error`). A script no longer has to find
-  `Exit code: N` in the output text. Every model request also leaves a
-  `usage` line with the provider's own counts (`input`, `output`, `cached`,
-  `cache_write` and `reasoning`, plus `agent` for a subagent's and `compact`
-  for the request that wrote a compaction's summary), written where the
-  request finished, so the cost of each request and of each tool step can be
-  read from the file. The existing fields are unchanged, older builds skip what
-  they don't know, and the per-turn `summary` keeps its totals
-  (`docs/rollout-records.md`).
+### Added
 
 - **Headless mode: `alter-zero -p "prompt"` runs with no terminal at all.**
   The app used to need a terminal that answered its cursor query before it
@@ -59,6 +45,22 @@ release heading when a version is cut.
   default). Launched without `-p` where there is no terminal, the app now
   says it needs one and names `-p` instead of ending on
   `Error: Os { code: 6, … }`.
+
+- **Session files now record how each tool call ran and what each model
+  request cost.** Every `tool` line in a rollout
+  (`~/.alter-zero/sessions/…/rollout-*.jsonl`) carries the command's
+  `exit_code`, how long the call ran (`duration_ms`) and, when it failed,
+  why (`error_kind`: `tool_error`, `timed_out`, `interrupted`, `rejected`,
+  `classifier_denied`, `hook_blocked`, `approval_required`,
+  `tool_call_limit` or `backend_error`). A script no longer has to find
+  `Exit code: N` in the output text. Every model request also leaves a
+  `usage` line with the provider's own counts (`input`, `output`, `cached`,
+  `cache_write` and `reasoning`, plus `agent` for a subagent's and `compact`
+  for the request that wrote a compaction's summary), written where the
+  request finished, so the cost of each request and of each tool step can be
+  read from the file. The existing fields are unchanged, older builds skip what
+  they don't know, and the per-turn `summary` keeps its totals
+  (`docs/rollout-records.md`).
 
 - **A provider of your own can take the thinking level as
   `reasoning_effort`.** Ctrl+T's level rides every chat request in
@@ -2383,7 +2385,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/linuztx/alter-zero/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/linuztx/alter-zero/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/linuztx/alter-zero/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/linuztx/alter-zero/compare/v0.15.0...v0.16.0
