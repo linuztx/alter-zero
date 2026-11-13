@@ -60,6 +60,7 @@ fn request(
         detail: detail.map(str::to_string),
         agent: None,
         agent_id: None,
+        check_failure: None,
     }
 }
 

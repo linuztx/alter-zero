@@ -112,6 +112,7 @@ fn live_venice_classifier_prompt_view_and_synthetic_verdicts() {
             detail: None,
             agent: None,
             agent_id: None,
+            check_failure: None,
         };
         let verdict = classifier
             .classify(&request, &context, &CancelToken::new())

@@ -526,6 +526,7 @@ fn ask_at_gate(
         // stamp, since only the agent channel knows the id
         // (`tui::agent::Session::on_agent_event`).
         agent_id: None,
+        check_failure: None,
     };
     if gate.allows(&request) {
         return Gated::Allowed;

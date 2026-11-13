@@ -19,8 +19,8 @@ use crate::permission::{
     Approval, CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT, CHECK_FAILED_DISPLAY,
     CHECK_FAILED_RESULT, CLASSIFIER_ALLOWED_NOTE, ClassifierVerdict, PermissionDecision,
     PermissionGate, PermissionKind, PermissionMode, PermissionRequest, SCRATCHPAD_ALLOWED_NOTE,
-    UNATTENDED_DISPLAY, UNATTENDED_RESULT, classifier_denial_result, classifier_denied_display,
-    denial_result, denied_display, explain_display, explain_result,
+    UNATTENDED_DISPLAY, UNATTENDED_RESULT, check_failed_display, classifier_denial_result,
+    classifier_denied_display, denial_result, denied_display, explain_display, explain_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -32,8 +32,10 @@ const CANCELLED_DISPLAY: &str = "Interrupted by user";
 /// The **auto mode classifier** seam ([`approve_call`]'s `classify`
 /// parameter): given the request (the command in `target`, the model's
 /// description in `detail`), return the safety verdict — or `Err` when the
-/// classifier itself failed (network, an unparseable reply), which falls
-/// back to the ordinary prompt. The real implementation is
+/// classifier itself failed (a request its retries could not get through, a
+/// reply that was no verdict), which falls back to the ordinary prompt; the
+/// error's text is what that prompt then shows
+/// ([`PermissionRequest::check_failure`]). The real implementation is
 /// [`crate::llm::classifier::SafetyClassifier`]; tests inject scripts. (The
 /// explicit lifetime keeps the trait object borrow-friendly — a bare alias
 /// would default it to `'static`, refusing the backend's stack closures.)
@@ -86,6 +88,7 @@ pub fn permission_request(
                 detail: None,
                 agent,
                 agent_id: None,
+                check_failure: None,
             })
         }
         "edit" => {
@@ -102,6 +105,7 @@ pub fn permission_request(
                 detail: None,
                 agent,
                 agent_id: None,
+                check_failure: None,
             })
         }
         "bash" => {
@@ -117,6 +121,7 @@ pub fn permission_request(
                     .filter(|d| !d.is_empty()),
                 agent,
                 agent_id: None,
+                check_failure: None,
             })
         }
         // Typing into a running session asks like a command does
@@ -155,6 +160,7 @@ pub fn permission_request(
                 .filter(|text| !text.is_empty()),
             agent,
             agent_id: None,
+            check_failure: None,
         }),
         _ => None,
     }
@@ -187,6 +193,7 @@ fn session_request(
         detail: command,
         agent,
         agent_id: None,
+        check_failure: None,
     })
 }
 
@@ -199,8 +206,9 @@ fn session_request(
 /// of the user (`docs/permissions.md`): an allowed verdict runs the call with
 /// the [`CLASSIFIER_ALLOWED_NOTE`] on its cell, a denial rejects it with the
 /// classifier's reason on both texts, and a classifier *failure* falls
-/// through to the ordinary prompt below — unless the turn was cancelled out
-/// from under it, which resolves like a reaped gate wait.
+/// through to the ordinary prompt below, which says what the check said —
+/// unless the turn was cancelled out from under it, which resolves like a
+/// reaped gate wait.
 ///
 /// With no `gate` — `ALTER_ZERO_PERMISSIONS` off, or an embedder that built the
 /// backend directly — every call is allowed, exactly as before the feature.
@@ -300,7 +308,7 @@ pub fn approve_call(
     // PermissionRequest hook above still answers first — a user-configured
     // decider outranks the forced ask, exactly as it does in the reference's
     // permission dialog.
-    let mut check_failed = false;
+    let mut check_failure = None;
     if !force_ask
         && gate.mode() == PermissionMode::Auto
         && matches!(
@@ -332,13 +340,18 @@ pub fn approve_call(
                     kind: crate::stream::ToolErrorKind::Interrupted,
                 };
             }
-            // The classifier failed (network, an unparseable reply): fall
-            // back to asking the user — the safe posture, and the one that
-            // still works offline. With nobody to ask, the refusal below
-            // says the check failed rather than ruled.
-            Err(_) => check_failed = true,
+            // The classifier failed (a request its retries could not get
+            // through, a reply that was no verdict twice): fall back to
+            // asking the user — the safe posture, and the one that still
+            // works offline. What it said is kept: the prompt shows it, and
+            // with nobody to ask, the refusal below says the check failed
+            // rather than ruled, and why.
+            Err(error) => check_failure = Some(error),
         }
     }
+    // What the check said rides the request from here on: the refusal
+    // below and the prompt after it both say it (docs/permissions.md).
+    request.check_failure = check_failure;
     // Nobody to ask — a headless run (docs/headless.md): everything that
     // could decide without a human has had its say above, so the call is
     // refused here, before a prompt exists — no request, no wait, and no
@@ -350,17 +363,21 @@ pub fn approve_call(
         tool_use_id: call.id.clone(),
         tool_input: call.arguments.clone(),
     }) {
-        let (display, result) = if !check_failed {
-            (UNATTENDED_DISPLAY, UNATTENDED_RESULT)
-        } else if gate.first_check_failure(&request) {
+        let (display, result) = match &request.check_failure {
+            None => (UNATTENDED_DISPLAY.to_string(), UNATTENDED_RESULT),
             // A failed check is no verdict: the call may be retried once…
-            (CHECK_FAILED_DISPLAY, CHECK_FAILED_RESULT)
-        } else {
+            Some(error) if gate.first_check_failure(&request) => (
+                check_failed_display(CHECK_FAILED_DISPLAY, error),
+                CHECK_FAILED_RESULT,
+            ),
             // …and after that the model is told to stop.
-            (CHECK_FAILED_AGAIN_DISPLAY, CHECK_FAILED_AGAIN_RESULT)
+            Some(error) => (
+                check_failed_display(CHECK_FAILED_AGAIN_DISPLAY, error),
+                CHECK_FAILED_AGAIN_RESULT,
+            ),
         };
         return Approval::Reject {
-            display: display.to_string(),
+            display,
             result: result.to_string(),
             kind: crate::stream::ToolErrorKind::ApprovalRequired,
         };
@@ -1243,10 +1260,12 @@ mod tests {
         let gate = unattended(PermissionMode::Auto);
         let broken = |_: &PermissionRequest| Err("offline".to_string());
         let make = call("bash", r#"{"command":"make"}"#);
+        // …and the cell says what the check said, on the denial's own
+        // `Reason:` line — nobody is there to be shown a prompt that would.
         let failed = |display: &str, result: &str| {
             (
                 Approval::Reject {
-                    display: display.to_string(),
+                    display: format!("{display}\nReason: offline"),
                     result: result.to_string(),
                     kind: crate::stream::ToolErrorKind::ApprovalRequired,
                 },
@@ -1742,6 +1761,83 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
+    }
+
+    #[test]
+    fn a_failed_check_tells_the_prompt_why() {
+        // In auto mode a prompt is the exception, and one raised because the
+        // check failed looked exactly like one raised on purpose: the error
+        // was dropped, so "the classifier sometimes fails" was all a user
+        // could report. The request now carries what the check said.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        let classify = |_: &PermissionRequest| {
+            Err("HTTP 404: this model isn't available to this account".to_string())
+        };
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    Some(&classify),
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"python3 x.py"}"#),
+                    None,
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(
+            request.check_failure.as_deref(),
+            Some("HTTP 404: this model isn't available to this account")
+        );
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
+    }
+
+    #[test]
+    fn a_prompt_no_check_failed_on_carries_no_failure() {
+        // Manual mode asks about everything and reviews nothing.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Manual);
+        let cancel = CancelToken::new();
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"python3 x.py"}"#),
+                    None,
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(request.check_failure, None);
         gate.resolve(&request.id, PermissionDecision::Approve);
         assert_eq!(waiter.join().unwrap(), Approval::Allow);
     }

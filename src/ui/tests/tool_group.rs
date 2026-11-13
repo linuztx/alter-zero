@@ -473,6 +473,7 @@ fn the_permission_prompt_keeps_the_open_group_above_the_call_it_asks_about() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     let page = texts(&permission_lines(&app, 80, 40));
     assert_eq!(page[0], "● Reading 1 file… (ctrl+o to expand)", "{page:#?}");

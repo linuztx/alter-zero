@@ -958,6 +958,7 @@ fn the_quit_hint_tells_the_truth_about_esc() {
         detail: None,
         agent: Some("explorer".to_string()),
         agent_id: None,
+        check_failure: None,
     });
     assert!(!asking.turn_active(), "a background agent's request: idle");
     assert!(!asking.overlay_esc_backtracks());

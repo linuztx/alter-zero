@@ -51,6 +51,14 @@ release heading when a version is cut.
   turn retries, on the same **Error retry** setting, and a reply it cannot
   read is asked for one more time (`docs/permissions.md`).
 
+- **The prompt says why when auto mode's safety check failed.** A prompt
+  raised because the check itself failed looked the same as any other, so
+  there was nothing to tell a wrong model from a rate limit. It now reads
+  `Auto mode's safety check failed:` followed by what the check said, where
+  `This command requires approval` would have been, and a headless run
+  writes the same reason under the refused call (`docs/permissions.md`,
+  `docs/headless.md`).
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

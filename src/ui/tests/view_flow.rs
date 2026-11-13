@@ -118,6 +118,7 @@ fn a_covering_modal_suppresses_the_flow() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     assert!(
         view_flow(&app, 60, 20, NO_CAP).is_none(),
@@ -219,6 +220,7 @@ fn a_screen_tall_permission_prompt_flows_its_top() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     let (width, height) = (70u16, 24u16);
     let flow = view_flow(&app, width, height, NO_CAP).expect("the prompt overflows");
@@ -246,6 +248,7 @@ fn a_screen_tall_permission_prompt_flows_its_top() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     assert!(view_flow(&small, width, height, NO_CAP).is_none());
 }

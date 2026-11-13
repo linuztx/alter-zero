@@ -731,6 +731,7 @@ mod tests {
             detail: detail.map(str::to_string),
             agent: None,
             agent_id: None,
+            check_failure: None,
         }
     }
 
@@ -773,6 +774,7 @@ mod tests {
             detail: Some("List files".to_string()),
             agent: None,
             agent_id: None,
+            check_failure: None,
         };
         assert_eq!(
             classifier_request_prompt(&request, "/p"),
@@ -793,6 +795,7 @@ mod tests {
             detail: Some("bash -i".to_string()),
             agent: None,
             agent_id: None,
+            check_failure: None,
         };
         let prompt = classifier_request_prompt(&request, "/home/user/proj");
         assert!(
@@ -1108,6 +1111,7 @@ mod tests {
             detail: Some("List files".to_string()),
             agent: None,
             agent_id: None,
+            check_failure: None,
         };
         let mut context = ctx("Improve the project");
         context.record_call("read", r#"{"path":"/p/a.rs"}"#);

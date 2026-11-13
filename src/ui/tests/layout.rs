@@ -276,6 +276,7 @@ fn region_is_modal_only_while_a_permission_prompt_is_open() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     assert!(region_is_modal(&app));
 }

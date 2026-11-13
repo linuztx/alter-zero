@@ -2087,9 +2087,14 @@ failed request is retried on the turn's own **Error retry** budget and a
 reply that is no verdict gets one **repair turn** — the reply handed back
 with the correction — both inside `RETRY_WINDOW`, an unreachable host never
 waited for (`classifier::reach_verdict`, pure over an injected send); and a
-classifier **failure** falls back to the ordinary prompt (never an allow;
-`examples/classifier_probe.rs` runs a labelled corpus through the real
-classifier on any provider); `master` runs
+classifier **failure** falls back to the ordinary prompt (never an allow),
+**which says why**: the seam keeps what the check said on
+`PermissionRequest::check_failure` and the prompt shows `Auto mode's safety
+check failed: …` in the standing notice's place, wrapped never cut, a
+headless refusal carrying it on its `Reason:` line (`smoke.sh` Phase 154
+drives the id, a retry, the repair turn, a block and the failed check's
+prompt against a Cloud Code stub; `examples/classifier_probe.rs` runs a
+labelled corpus through the real classifier on any provider); `master` runs
 *everything* unasked — no prompt, no classifier, Claude Code's
 bypass-permissions) pinned flush at the
 footer's **right edge** (`{model} · {cwd}      auto` — its columns reserved

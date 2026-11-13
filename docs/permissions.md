@@ -496,7 +496,7 @@ approve(bash/MCP call) ── gate.allows()? ── yes ────────
                               └ no
                               classifier ── allow ──► runs, cell notes the classifier
                                           ── block ──► rejected with the reason
-                                          ── error ──► the ordinary prompt (fallback)
+                                          ── error ──► the ordinary prompt, saying why
 ```
 
 ### Read-only commands skip the classifier
@@ -774,7 +774,40 @@ later turns replay exactly what the model was told.
 
 A classifier **failure** — a request its retries could not get through, a
 reply that was no verdict twice — falls back to the ordinary prompt: asking
-the user is the safe posture, and the one that still works offline.
+the user is the safe posture, and the one that still works offline. **The
+prompt says so.** In auto mode a prompt is the exception, and one raised
+because the check itself failed used to look exactly like one raised on
+purpose: the error was dropped at the seam (`Err(_) => ask`), so "the
+classifier sometimes fails" was all a user could report, with nothing to
+tell a wrong model id from a rate limit from a model that cannot follow the
+format. The seam now keeps what the check said on the request
+(`PermissionRequest::check_failure`) and the prompt shows it where a
+command's standing notice would have been — it answers the same question,
+*why am I being asked?* — on every kind the classifier reviews:
+
+```
+ Bash command
+
+   cargo build
+   Build the project
+
+ Auto mode's safety check failed: HTTP 404: this model isn't available to
+ this account — pick another with /model.
+
+ Do you want to proceed?
+ ❯ 1. Yes
+```
+
+The notice (`permission::check_failure_notice`, in the caution amber) is
+**wrapped, never cut** at the width — its tail is the part that says what to
+do — and capped at `PERMISSION_CHECK_FAILURE_MAX_ROWS`, since a transport's
+message has no length of its own to stop at; the page's height is still the
+built row count, so the reserved region and the painted one cannot disagree
+(`the_reserved_height_equals_the_painted_rows` walks it). A headless run has
+no prompt to say it on, so there the refused call's cell carries it, on the
+denial's own `Reason:` line (`permission::check_failed_display`,
+`docs/headless.md`).
+
 The **dummy backend** never talks HTTP, so its auto-mode demo
 (a prompt naming "auto" + "permission") consults the deterministic offline
 heuristic instead (`permission::auto_verdict` — a small read-only prefix
@@ -1276,8 +1309,9 @@ explains itself with a toast instead of pretending to toggle anything, and
   allowed verdict returns `AllowNoted` (no prompt), a denial the classifier
   texts, files and allow-listed commands never consult it, manual/edit modes
   never consult it, master allows everything silently, a classifier failure
-  falls back to the prompt, a failure on a cancelled turn rejects without
-  one, and auto mode with no classifier attached still asks.
+  falls back to the prompt **carrying what the check said** (and a prompt no
+  check failed on carries nothing), a failure on a cancelled turn rejects
+  without one, and auto mode with no classifier attached still asks.
   `llm/classifier.rs` — the user-prompt build; the verdict's read
   (padding/case/a fence tolerated; an allow beside anything else, an allow
   with a reason, another spelling and the old tags all refused; a block
@@ -1293,6 +1327,11 @@ explains itself with a toast instead of pretending to toggle anything, and
   the classifier and a subagent's.
   `llm/agent.rs` — a noted approval emits `ToolStart → ToolNote → ToolEnd`
   and still runs the call.
+- `ui/tests/permission_view.rs` — the failed check's notice: in the standing
+  notice's place on a command and above the question on an MCP call and
+  session input, whole and wrapped, in the caution colour, capped for a
+  pathological message, absent when no check failed, with the frame still
+  hugging its content and the reserved height still the painted rows.
 - `examples/classifier_probe.rs` — the live probe: a labelled corpus through
   the real `SafetyClassifier` on any provider, one line per action with the
   verdict, the time, the number of requests it took and the reason or error
@@ -1444,6 +1483,16 @@ explains itself with a toast instead of pretending to toggle anything, and
   same prompt still flush, Ctrl+D round-trips the same way, both trips leave the
   screen *and* the scrollback byte-identical, and the prompt still resolves
   afterwards.
+- `smoke.sh` Phase 154 — auto mode's verdict in a real terminal, against a
+  Cloud Code stub that plays the turn and the verdict on it: the verdict is
+  asked of the id the catalog lists (`gemini-9-flash-high`, never the bare
+  one) with no tools and no thoughts, and an allow runs the command under
+  the classifier's note with no prompt; a `429` on the verdict's request is
+  asked again; a reply that is no verdict is answered by the repair turn,
+  whose three contents the stub reads back off its log; a block rejects with
+  its reason; and a check that fails for good (`404`) raises the prompt with
+  `Auto mode's safety check failed: …` in the standing notice's place,
+  wrapped whole, and answering it runs the command.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

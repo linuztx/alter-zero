@@ -290,7 +290,8 @@ spending a few dozen thought tokens on one whatever the level (an allow in
 why the classifier does not go looking for the lowest listed level). Before
 that fix every verdict on a
 grouped model failed, and each command auto mode should have reviewed came
-to the user as a prompt (`docs/permissions.md` *Auto mode: the classifier*).
+to the user as a prompt (`docs/permissions.md` *Auto mode: the classifier*,
+`smoke.sh` Phase 154).
 
 ## `/usage`
 

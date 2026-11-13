@@ -3292,6 +3292,20 @@ pub(super) fn permission_notice_color() -> Color {
     tool_dim_color()
 }
 
+/// The row that takes the standing notice's place when the prompt stands in
+/// for a verdict auto mode's classifier failed to reach
+/// (`permission::check_failure_notice`) — the caution amber: nothing is
+/// wrong with the call, but something is with the check that should have
+/// answered for it.
+pub(super) fn permission_check_failure_color() -> Color {
+    ask_warning_color()
+}
+
+/// The most rows that notice wraps to. A provider's own message is cut to a
+/// few hundred characters where it is read; a transport's is not, and an
+/// unbounded one would push the question and its options off the page.
+pub(super) const PERMISSION_CHECK_FAILURE_MAX_ROWS: usize = 6;
+
 /// The `❯ ` on the highlighted option row (the unselected rows indent by its
 /// width so the list stays aligned).
 pub(super) const PERMISSION_MARKER: &str = "❯ ";
