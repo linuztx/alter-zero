@@ -808,8 +808,13 @@ pub fn well_known_candidates(base: &str, suffix: &str) -> Vec<String> {
 /// Where an authorization server's metadata is looked for — the spec's
 /// list, in its order. For an issuer with a path, RFC 8414 path insertion,
 /// OIDC path insertion, then OIDC path **appending** (where Keycloak's realms
-/// and Entra's tenants publish); without one, the two root documents. Never
-/// the root for a path issuer: that is some other issuer's metadata.
+/// and Entra's tenants publish); without one, the two root documents.
+///
+/// A path issuer's list ends on the root document too: a server that mounts
+/// its metadata routes at the origin publishes there whatever path its
+/// issuer has. For a path issuer the root is usually some *other* issuer's
+/// document — which is why every candidate is held to [`issuer_matches`],
+/// and that one, naming itself, is skipped.
 #[must_use]
 pub fn authorization_server_candidates(issuer: &str) -> Vec<String> {
     let Ok(parsed) = url::Url::parse(issuer) else {
@@ -827,6 +832,7 @@ pub fn authorization_server_candidates(issuer: &str) -> Vec<String> {
         format!("{origin}/.well-known/oauth-authorization-server{path}"),
         format!("{origin}/.well-known/openid-configuration{path}"),
         format!("{origin}{path}/.well-known/openid-configuration"),
+        format!("{origin}/.well-known/oauth-authorization-server"),
     ]
 }
 
@@ -1973,6 +1979,9 @@ mod tests {
                 "https://auth.test/.well-known/oauth-authorization-server/realms/acme",
                 "https://auth.test/.well-known/openid-configuration/realms/acme",
                 "https://auth.test/realms/acme/.well-known/openid-configuration",
+                // Last, the root: where a server that mounts its metadata at
+                // the origin publishes, whatever its issuer's path.
+                "https://auth.test/.well-known/oauth-authorization-server",
             ]
         );
         assert_eq!(
@@ -2140,6 +2149,38 @@ mod tests {
         );
         assert_eq!(meta.resource, format!("{base}/"));
         assert_eq!(meta.scopes.as_deref(), Some("mcp:tools"));
+    }
+
+    /// An issuer with a path whose server mounts its metadata at the origin
+    /// — the one place it publishes — is found there, last: the document
+    /// names that issuer, so it is that issuer's. A root document naming
+    /// another issuer is skipped like any other, wherever it is.
+    #[test]
+    fn a_path_issuer_publishing_only_at_the_root_is_found_there() {
+        let resource = (
+            "/.well-known/oauth-protected-resource/mcp",
+            r#"{"resource":"{base}/mcp","authorization_servers":["{base}/mcp"]}"#,
+        );
+        let base = discovery_fixture(vec![
+            resource,
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}/mcp","authorization_endpoint":"{base}/mcp/authorize","token_endpoint":"{base}/mcp/token","code_challenge_methods_supported":["S256"]}"#,
+            ),
+        ]);
+        let meta = discover(&format!("{base}/mcp"), None).expect("found at the root");
+        assert_eq!(meta.issuer.as_deref(), Some(format!("{base}/mcp").as_str()));
+        assert_eq!(meta.token_endpoint, format!("{base}/mcp/token"));
+        // The origin's own issuer at the root is not the one asked for.
+        let base = discovery_fixture(vec![
+            resource,
+            (
+                "/.well-known/oauth-authorization-server",
+                r#"{"issuer":"{base}","authorization_endpoint":"{base}/authorize","token_endpoint":"{base}/token"}"#,
+            ),
+        ]);
+        let refused = discover(&format!("{base}/mcp"), None).expect_err("another issuer's");
+        assert!(refused.contains("names issuer"), "{refused}");
     }
 
     /// Resource metadata for another server is skipped; with none of its

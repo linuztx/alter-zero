@@ -36,6 +36,12 @@ release heading when a version is cut.
   refused the sign-in (`invalid_scope`) after the browser had opened,
   because the registration named none.
 
+- **Signing in finds an authorization server that publishes its metadata
+  only at the site's root.** For a sign-in address with a path, the
+  metadata was looked for under that path alone, so such a server ended
+  with `could not discover the authorization server`. The root document is
+  read last, and used only when it names that same address.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

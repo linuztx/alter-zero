@@ -821,15 +821,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     `StoredTokens::resource`, so a refreshed token's audience never drifts);
     without resource metadata, the canonical server URL (`canonical_resource`:
     lowercase scheme and host, no fragment, no lone `/`).
-  - The **authorization-server metadata** is looked for exactly where the
-    spec says (`authorization_server_candidates`): for an issuer with a
-    path, RFC 8414 path insertion, OIDC path insertion, then OIDC path
+  - The **authorization-server metadata** is looked for where the spec
+    says (`authorization_server_candidates`): for an issuer with a path,
+    RFC 8414 path insertion, OIDC path insertion, then OIDC path
     **appending** — where Keycloak realms and Entra tenants publish, and
-    which was never tried — and never the root, which for a path issuer is
-    some other issuer's document; and that document's `issuer` must be the
-    issuer its URL was built from (RFC 8414 §3.3, `issuer_matches`, with the
-    SDK's one trailing-slash tolerance) or it is skipped. That validated
-    issuer is the one RFC 9207's `iss` is then held to.
+    which was never tried — and then, last, **the root document**: a server
+    that mounts its metadata routes at the origin publishes there whatever
+    path its issuer has, and a sign-in to one ended with nothing found.
+    Wherever a document comes from, its `issuer` must be the issuer it was
+    looked up for (RFC 8414 §3.3, `issuer_matches`, with the SDK's one
+    trailing-slash tolerance) or it is skipped — which is what makes the
+    root safe to read: for a path issuer it is usually some *other*
+    issuer's document, and that one names itself. That validated issuer is
+    the one RFC 9207's `iss` is then held to.
   - Its endpoints must be **HTTPS** (`endpoint_is_secure`; loopback exempt
     for a server under development), and it must support **PKCE with
     S256**: metadata listing `code_challenge_methods_supported` without it
