@@ -59,6 +59,18 @@ release heading when a version is cut.
   writes the same reason under the refused call (`docs/permissions.md`,
   `docs/headless.md`).
 
+### Security
+
+- **A command cannot rewrite the question auto mode's safety check is
+  asked.** The command under review was shown to the reviewing model inside
+  a three-backtick code block, so a command containing a line of three
+  backticks (a heredoc makes that valid shell) could end the block and add
+  text after it that read as part of the request, such as a second, harmless
+  command to review. The block's fence is now always longer than anything
+  inside it, and the description beside it is kept to one line. The model
+  tested refused every such command before the change
+  (`docs/permissions.md`).
+
 ## [0.19.0] - 2026-11-13
 
 ### Added
