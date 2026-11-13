@@ -84,7 +84,7 @@ fn live_venice_classifier_prompt_view_and_synthetic_verdicts() {
     assert!(
         rows[system_at..user_at]
             .iter()
-            .all(|row| !row.contains("Do NOT include a <reason> tag")),
+            .all(|row| !row.contains("Do NOT include a reason")),
         "the full rubric is not dumped into the view"
     );
     for line in context.lines().filter(|line| !line.trim().is_empty()) {

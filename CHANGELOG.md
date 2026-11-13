@@ -12,6 +12,27 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto mode's safety check answers in JSON, and a reply that is not
+  exactly a verdict is never acted on.** The classifier that reviews a
+  command in your place used to answer `<block>yes</block>` or
+  `<block>no</block>`, and the app took the first such tag it found anywhere
+  in the reply. Two things could then allow a command nobody had judged
+  safe. A small model asked about `rm -rf ~/` answered
+  `<block>no</block><reason>… I cannot allow this action.</reason>`: it read
+  `no` as "do not run it", and the app ran it. And a model that echoed the
+  command back instead of judging it handed over whatever tags the command
+  itself carried. The verdict is now one JSON object, `{"verdict": "allow"}`
+  or `{"verdict": "block", "reason": "…"}`, whose words say what happens. An
+  allow counts only when it is the whole reply and gives no reason; anything
+  else is asked about once more, and after that the command comes to you.
+  The object is asked for in the prompt rather than through a provider's
+  structured output, which was measured and refused: on small models it
+  produced a well-formed allow for six of sixteen actions that should have
+  been blocked, and some routes reject the parameter outright
+  (`docs/permissions.md`).
+
 ### Fixed
 
 - **Auto mode reviews your commands on Google Antigravity's Gemini models.**
@@ -22,6 +43,13 @@ release heading when a version is cut.
   never checked and still ran, which made it look like the check failed
   only sometimes. The check now asks under the id your session uses
   (`docs/antigravity.md`).
+
+- **A provider that is busy for a moment no longer costs you a prompt.** The
+  safety check made one request and gave up on any failure, so a rate limit
+  that cleared in half a second or a reply cut short became a prompt where
+  the turn around it would have retried. The check now retries what the
+  turn retries, on the same **Error retry** setting, and a reply it cannot
+  read is asked for one more time (`docs/permissions.md`).
 
 ## [0.19.0] - 2026-11-13
 

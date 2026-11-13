@@ -423,7 +423,7 @@ fn abridge_skips_blank_lead_ins_and_an_empty_prompt() {
 fn the_real_prompt_abridges_to_its_four_sections() {
     // The feature's promise against the prompt it exists for: the page shows
     // the rubric's structure — its opening sentence, the three headed
-    // sections, the output contract's first shape — in a fraction of the
+    // sections, what the output contract asks for — in a fraction of the
     // rows, with every fold counted.
     let rows = abridge_prompt(CLASSIFIER_SYSTEM_PROMPT.trim(), CLASSIFIER_PROMPT_PEEK_COLS);
     let texts: Vec<String> = rows
@@ -441,8 +441,10 @@ fn the_real_prompt_abridges_to_its_four_sections() {
         assert!(texts.iter().any(|t| t == heading), "{heading}: {texts:?}");
     }
     assert!(
-        texts.iter().any(|t| t.contains("<block>yes</block>")),
-        "the output contract's shape survives: {texts:?}"
+        texts
+            .iter()
+            .any(|t| t.starts_with("Reply with one JSON object and nothing else")),
+        "the output contract's opening line survives: {texts:?}"
     );
     let folded: usize = rows
         .iter()
