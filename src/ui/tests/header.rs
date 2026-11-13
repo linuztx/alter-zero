@@ -61,12 +61,19 @@ fn header_shows_mascot_title_cwd_and_hint() {
         text.contains("~/alter-zero"),
         "cwd from the session: {text:?}"
     );
-    for token in ["/login", "/model", "/resume"] {
-        assert!(text.contains(token), "hint token {token}: {text:?}");
-    }
-    // The retired wordmark tiers and tagline are gone.
+    assert!(
+        text.contains("/ commands  @ files  ? shortcuts"),
+        "the hint names the composer's three keys: {text:?}"
+    );
+    // The retired wordmark tiers, tagline and command-list hint are gone.
     assert!(!text.contains("autonomous ai agent"), "tagline: {text:?}");
     assert!(!text.contains("╗"), "ANSI-Shadow art: {text:?}");
+    for retired in ["/login", "/model", "/resume"] {
+        assert!(
+            !text.contains(retired),
+            "the old hint's {retired}: {text:?}"
+        );
+    }
 }
 
 #[test]
@@ -87,7 +94,7 @@ fn header_rows_compose_art_beside_the_metadata() {
     assert_eq!(plain(&lines[1]), format!("{}~/alter-zero", pad(art[1])));
     assert_eq!(
         plain(&lines[2]),
-        format!("{}/login   /model   /resume", pad(art[2]))
+        format!("{}/ commands  @ files  ? shortcuts", pad(art[2]))
     );
     assert_eq!(lines.len(), art.len());
 }
@@ -116,7 +123,7 @@ fn header_meta_block_seats_lower_beside_a_taller_mascot() {
             mascot.name()
         );
         assert!(
-            plain(&lines[2]).contains("/login"),
+            plain(&lines[2]).contains("? shortcuts"),
             "{}: hint on row 2",
             mascot.name()
         );
@@ -160,7 +167,7 @@ fn header_title_is_bold_name_over_dim_version() {
 }
 
 #[test]
-fn header_cwd_wears_the_footers_path_colour_and_hint_is_cyan() {
+fn header_cwd_wears_the_footers_path_colour() {
     // The path is one colour wherever the app names it — the banner's cwd
     // row and the footer's cwd segment (docs/header.md, docs/footer.md).
     let lines = header_lines(&with_session(), 90);
@@ -179,12 +186,86 @@ fn header_cwd_wears_the_footers_path_colour_and_hint_is_cyan() {
         crate::ui::theme::header_meta_color(),
         "the path stands out from the dim version beside the title"
     );
-    let hint = lines[2]
-        .spans
+}
+
+#[test]
+fn header_hint_dresses_its_keys_like_the_shortcuts_band() {
+    // Each pair is a key in the accent beside its label in the dim — the
+    // `?` band's dress for its own entries (docs/shortcuts.md) — so the
+    // keys are what the eye finds, and the hint reads as a preview of that
+    // band under every theme.
+    use crate::ui::theme::{
+        HEADER_HINT, header_accent_color, shortcuts_key_color, shortcuts_text_color,
+    };
+    for theme in crate::app::Theme::ALL {
+        with_theme(theme, || {
+            let lines = header_lines(&with_session(), 90);
+            let hint = &lines[2];
+            let span_for = |text: &str| {
+                hint.spans
+                    .iter()
+                    .find(|s| s.content.trim() == text)
+                    .unwrap_or_else(|| panic!("{theme:?}: no {text:?} span in {hint:?}"))
+            };
+            for (key, label) in HEADER_HINT {
+                let key = span_for(key);
+                assert_eq!(key.style.fg, Some(header_accent_color()), "{theme:?}");
+                assert_eq!(key.style.fg, Some(shortcuts_key_color()), "{theme:?}");
+                let label = span_for(label);
+                assert_eq!(label.style.fg, Some(header_meta_color()), "{theme:?}");
+                assert_eq!(label.style.fg, Some(shortcuts_text_color()), "{theme:?}");
+            }
+        });
+    }
+}
+
+#[test]
+fn header_hint_spaces_its_pairs_like_the_shortcuts_band() {
+    // One space joins a key to its label, and the pairs sit the `?` band's
+    // narrowest gutter apart (two columns), so spacing alone groups each key
+    // with its label and the keys stay the only symbols on the row — no
+    // separator glyph between them (docs/header.md).
+    use crate::ui::theme::{HEADER_HINT, SHORTCUTS_MIN_GUTTER};
+    const {
+        assert!(
+            SHORTCUTS_MIN_GUTTER > 1,
+            "the pairs sit wider apart than a key and its label"
+        );
+    }
+    let pairs: Vec<String> = HEADER_HINT
         .iter()
-        .find(|s| s.content.contains("/login"))
-        .expect("a hint token span");
-    assert_eq!(hint.style.fg, Some(crate::ui::theme::header_accent_color()));
+        .map(|(key, label)| format!("{key} {label}"))
+        .collect();
+    let want = pairs.join(&" ".repeat(SHORTCUTS_MIN_GUTTER));
+    let row = plain(&header_lines(&with_session(), 90)[2]);
+    assert!(row.ends_with(&want), "{row:?} ends with {want:?}");
+}
+
+#[test]
+fn header_hint_keys_open_what_they_name() {
+    // The hint is a promise about the composer: from a fresh one, each key
+    // it shows opens the band its label names — `/` the command palette,
+    // `@` the file picker, `?` the shortcuts band. A key rebound, or a band
+    // that stopped opening on it, fails here rather than on the user who
+    // pressed what the banner said.
+    use crate::ui::theme::HEADER_HINT;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for (key, label) in HEADER_HINT {
+        let opened = |app: &App| match *label {
+            "commands" => app.command_menu.is_some(),
+            "files" => app.file_search.is_some(),
+            "shortcuts" => app.shortcuts_open,
+            other => panic!("the banner names {other:?}; teach this test what opens it"),
+        };
+        let mut app = with_session();
+        assert!(!opened(&app), "{label} open before {key} was pressed");
+        let mut chars = key.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            panic!("the hint key {key:?} is not one keystroke");
+        };
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        assert!(opened(&app), "{key} did not open the {label}");
+    }
 }
 
 #[test]
@@ -261,7 +342,10 @@ fn header_without_a_session_still_shows_mascot_and_version() {
         !text.contains("~/"),
         "no cwd row without a session: {text:?}"
     );
-    assert!(text.contains("/login"), "the hint still shows: {text:?}");
+    assert!(
+        text.contains("/ commands  @ files  ? shortcuts"),
+        "the hint still shows: {text:?}"
+    );
 }
 
 #[test]

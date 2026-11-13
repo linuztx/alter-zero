@@ -357,13 +357,13 @@ running turn** at the next round boundary, main session and subagent session
 alike — in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the **startup banner** (the
 gradient mascot beside the bold `Alter Zero (v…)` title, the cwd in the
-footer's path green, and the cyan `/login /model /resume` hint — chrome outside `history`, re-emitted atop
+footer's path green, and the `/ commands  @ files  ? shortcuts` key hint — each key in the accent beside a dim label, the `?` band's dress — chrome outside `history`, re-emitted atop
 every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/theme` picker's layout over the six-mascot catalog — a
 `Select mascot` title over a dim subtitle, the rows in the picker family's
 shape over a `(n/total)` counter, a bold-name-over-dim-description caption,
 and a **live banner preview** rendered by the header's own builder, laid
-**beside** the list from 56 columns and stacked under it below that, the
+**beside** the list from 59 columns and stacked under it below that, the
 three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
 short for that page, the family's compact one, the preview yielding
 (`docs/view-flow.md`) — the
@@ -531,7 +531,7 @@ the clipboard row says where the text goes, the file row names
 **closing** the page since the choice is its whole point; what is exported
 is `ui::export_text` — the Ctrl+O page's own rows top to bottom, the
 startup banner it opens with (mascot, `Alter Zero (v…)`, cwd, the
-`/login   /model   /resume` hint) included, every tool call's full output
+`/ commands  @ files  ? shortcuts` hint) included, every tool call's full output
 and the live tail mid-turn, the viewed agent's transcript inside its
 session view, at
 the terminal's width so the file lays out as the screen did, styles

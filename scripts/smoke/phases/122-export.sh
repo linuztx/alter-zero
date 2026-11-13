@@ -114,8 +114,8 @@ else
 	if ! head -3 "$export_file" | grep -qF "$HEADER_MARK (v"; then
 		fail "the file does not open with the startup banner's title row"
 	fi
-	expect_file_has "$export_file" -F "/login   /model   /resume" "the file does not carry the banner's hint row"
-	if [ "$(grep -nF "/login   /model   /resume" "$export_file" | head -1 | cut -d: -f1)" -ge "$(grep -nF "❯ hello there" "$export_file" | head -1 | cut -d: -f1)" ]; then
+	expect_file_has "$export_file" -F "/ commands  @ files  ? shortcuts" "the file does not carry the banner's hint row"
+	if [ "$(grep -nF "/ commands  @ files  ? shortcuts" "$export_file" | head -1 | cut -d: -f1)" -ge "$(grep -nF "❯ hello there" "$export_file" | head -1 | cut -d: -f1)" ]; then
 		fail "the banner does not sit above the conversation in the file"
 	fi
 	if grep -qE '[[:space:]]$' "$export_file"; then

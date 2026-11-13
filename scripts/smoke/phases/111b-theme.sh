@@ -16,9 +16,10 @@ smoke_begin
 # and the caption; a filtered
 # Enter switches the theme with a toast, a
 # {config}/theme.json write and a PURGE REBUILD that recolours what is already
-# on screen — the banner's `/login` hint goes from Mocha's sky to Dracula's
-# cyan, read off the raw SGR bytes (`capture-pane -e`); and a second process
-# against the same config home LAUNCHES in the saved theme.
+# on screen — the keys of the banner's `/ commands  @ files  ? shortcuts`
+# hint go from Mocha's sky to Dracula's cyan, read off the raw SGR bytes
+# (`capture-pane -e`); and a second process against the same config home
+# LAUNCHES in the saved theme.
 S111="${S}_theme"
 THEME_CFG="$(mktemp -d)"
 APP_THEME="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$THEME_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
@@ -26,13 +27,23 @@ APP_THEME="env ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CON
 # the default) and Dracula's cyan (#8BE9FD).
 THEME_MOCHA_SGR="38;2;137;220;235"
 THEME_DRACULA_SGR="38;2;139;233;253"
+# The banner's hint row, found by a label word: in the raw capture every key
+# and label is its own coloured run, so the row's text is never contiguous.
+THEME_HINT_WORD="shortcuts"
+# Whether raw capture $1 draws the hint's `?` key in SGR colour $2. The key
+# itself, not just its row: the mascot's first cell wears the gradient's
+# start, which is the same accent, so a row-wide match would pass without
+# the hint.
+hint_key_wears() {
+	printf '%s\n' "$1" | grep -F "$THEME_HINT_WORD" | grep -qF "${2}m?"
+}
 tmux new-session -d -s "$S111" -x 90 -y 34 "$APP_THEME"
 sleep 0.8
 theme_banner_raw="$(tmux capture-pane -t "$S111" -p -e)"
 echo "==== Phase 111: the banner hint wears the default theme's accent ===="
-if ! printf '%s\n' "$theme_banner_raw" | grep -F "/login" | grep -qF "$THEME_MOCHA_SGR"; then
-	fail "the banner's /login hint is not in Mocha's sky accent at launch"
-	printf '%s\n' "$theme_banner_raw" | grep -F "/login" | cat -v >&2
+if ! hint_key_wears "$theme_banner_raw" "$THEME_MOCHA_SGR"; then
+	fail "the banner hint's keys are not in Mocha's sky accent at launch"
+	printf '%s\n' "$theme_banner_raw" | grep -F "$THEME_HINT_WORD" | cat -v >&2
 fi
 tmux send-keys -t "$S111" -l "/theme"
 sleep 0.4
@@ -131,13 +142,13 @@ expect_has "$theme_after" -F "Theme: dracula" "the switch was not confirmed with
 if ! grep -qF '"theme": "dracula"' "$THEME_CFG/theme.json" 2>/dev/null; then
 	fail "theme.json was not written (or holds the wrong theme)"
 fi
-# The purge rebuild recoloured the banner already on screen: its /login hint
-# now carries Dracula's cyan and no longer Mocha's sky.
-if ! printf '%s\n' "$theme_after_raw" | grep -F "/login" | grep -qF "$THEME_DRACULA_SGR"; then
+# The purge rebuild recoloured the banner already on screen: its hint's keys
+# now carry Dracula's cyan and no longer Mocha's sky.
+if ! hint_key_wears "$theme_after_raw" "$THEME_DRACULA_SGR"; then
 	fail "the banner hint was not recoloured into Dracula's accent"
-	printf '%s\n' "$theme_after_raw" | grep -F "/login" | cat -v >&2
+	printf '%s\n' "$theme_after_raw" | grep -F "$THEME_HINT_WORD" | cat -v >&2
 fi
-if printf '%s\n' "$theme_after_raw" | grep -F "/login" | grep -qF "$THEME_MOCHA_SGR"; then
+if printf '%s\n' "$theme_after_raw" | grep -F "$THEME_HINT_WORD" | grep -qF "$THEME_MOCHA_SGR"; then
 	fail "the banner hint still carries Mocha's accent after the switch"
 fi
 expect_has "$theme_after" -F "dummy_model_name ·" "the composer and footer did not come back after the switch"
@@ -150,9 +161,9 @@ tmux kill-session -t "$S111" 2>/dev/null
 tmux new-session -d -s "$S111" -x 90 -y 34 "$APP_THEME"
 sleep 0.8
 theme_relaunch_raw="$(tmux capture-pane -t "$S111" -p -e)"
-if ! printf '%s\n' "$theme_relaunch_raw" | grep -F "/login" | grep -qF "$THEME_DRACULA_SGR"; then
+if ! hint_key_wears "$theme_relaunch_raw" "$THEME_DRACULA_SGR"; then
 	fail "a fresh launch did not paint the banner in the saved theme"
-	printf '%s\n' "$theme_relaunch_raw" | grep -F "/login" | cat -v >&2
+	printf '%s\n' "$theme_relaunch_raw" | grep -F "$THEME_HINT_WORD" | cat -v >&2
 fi
 tmux send-keys -t "$S111" -l "/theme"
 sleep 0.3

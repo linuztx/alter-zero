@@ -161,7 +161,7 @@ fn the_page_is_framed_with_search_rows_preview_and_hint() {
             "▙▄▙▄▟▄▟",
             "Alter Zero (v",
             "~/alter-zero",
-            "/login   /model",
+            "/ commands  @ files",
         ] {
             assert!(
                 texts.iter().any(|t| t.contains(expect)),
@@ -259,7 +259,7 @@ fn a_wide_terminal_lays_the_preview_beside_the_list() {
         .find(|t| t.trim_start().starts_with("(1/6)"))
         .expect("the counter");
     assert!(
-        counter.contains("/login   /model   /resume"),
+        counter.contains("/ commands  @ files  ? shortcuts"),
         "the banner's hint row beside the counter: {texts:#?}"
     );
 }
@@ -297,11 +297,13 @@ fn a_narrow_terminal_stacks_the_preview_under_the_list() {
 }
 
 #[test]
-fn the_layout_switches_once_and_beside_the_list_the_banner_keeps_its_art() {
+fn the_layout_switches_once_and_beside_the_list_the_banner_reads_whole() {
     // One breakpoint: every width from it up lays the preview beside the
     // list, every width under it stacks. At the breakpoint the banner still
-    // seats its art beside its title, and every caption reads whole, so the
-    // side-by-side page is one shape wherever it is laid out.
+    // seats its art beside its title, every row of it — the key hint, its
+    // widest, included — reads as the startup banner draws it, and every
+    // caption reads whole, so the side-by-side page is one shape wherever
+    // it is laid out.
     let mut app = open_app();
     let switch = (20u16..400)
         .find(|&w| is_beside(&app, w))
@@ -326,11 +328,38 @@ fn the_layout_switches_once_and_beside_the_list_the_banner_keeps_its_art() {
             texts.iter().any(|t| t.contains(mascot.art()[1])),
             "{mascot:?}'s banner keeps its art at {switch}: {texts:#?}"
         );
+        for row in crate::ui::header::header_lines_for(&app, *mascot, 400) {
+            let row = plain(&row);
+            assert!(
+                texts.iter().any(|t| t.contains(row.trim_end())),
+                "{mascot:?}'s banner row {row:?} is cut at {switch}: {texts:#?}"
+            );
+        }
         assert!(
             texts.iter().any(|t| t.contains(mascot.description())),
             "{mascot:?}'s caption reads whole at {switch}: {texts:#?}"
         );
     }
+}
+
+#[test]
+fn the_preview_column_is_as_wide_as_the_banner_needs_and_no_wider() {
+    // The narrowest column that shows every mascot's banner and caption
+    // whole: a column more is one the side-by-side page asks of the
+    // terminal for nothing, and a column less cuts the banner's widest row.
+    let app = with_session();
+    let need = Mascot::ALL
+        .iter()
+        .flat_map(|&mascot| {
+            crate::ui::header::header_lines_for(&app, mascot, 400)
+                .iter()
+                .map(|row| cols(plain(row).trim_end()))
+                .chain([cols(mascot.description())])
+                .collect::<Vec<_>>()
+        })
+        .max()
+        .expect("a catalog");
+    assert_eq!(crate::ui::theme::MASCOT_PREVIEW_MIN_COLS, need);
 }
 
 #[test]
