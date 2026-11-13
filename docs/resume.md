@@ -126,7 +126,7 @@ overlay machinery.
   Streaming deltas, the status line, and token tallies are never recorded —
   codex's persistence policy. (A *settled* thinking phase is an ordinary
   history item and does get its line; the raw deltas do not.)
-  Three **sidecar** records ride the same file without being history items:
+  Four **sidecar** records ride the same file without being history items:
   `"checkpoint"` (`docs/checkpoint.md`), `"model"` — the session's own
   model selection (`docs/session-model.md`: `llm::settings::ModelSelection`,
   the `config.json` entry's shape, written right after the meta line and
@@ -137,7 +137,13 @@ overlay machinery.
   one per model request with the provider's own counts, written where the
   request finished (`docs/rollout-records.md`: `session::usage_line`,
   placed among the items by `session::history_lines`, read back by
-  `session::parse_usage` so a rewrite keeps each where it sat).
+  `session::parse_usage` so a rewrite keeps each where it sat) — and
+  `"context_meter"`, the provider's count the footer's context gauge reads
+  on from and what its reports taught, written behind the request that
+  moved it, the newest winning (`docs/token-estimate.md` *Kept with the
+  session*: `session::context_meter_line`, `session::parse_context_meter`),
+  which is what makes a reopened conversation's gauge read what it read
+  before it was closed.
 - Serialization is `serde`/`serde_json` on **module-local record types**
   (`SessionMeta`, a tagged line enum) mapped to/from the app types, so the
   on-disk format is decoupled from `app/` and the app types stay
@@ -176,7 +182,12 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   `selection_written` watermark — the checkpoint pattern): a changed
   selection flushes at the next `sync` as a new `model` line, the file's
   first write carries it right after the meta, and a rewrite re-emits the
-  current one (`docs/session-model.md`).
+  current one (`docs/session-model.md`). The context meter rides it the same
+  way (`set_context_meter` before every sync, a `meter_written` watermark):
+  one that moved flushes as a new `context_meter` line behind the items and
+  `usage` lines of that sync, a rewrite re-emits the current one last, and
+  an adopted file's restored meter is taken as already written
+  (`docs/token-estimate.md`).
 - The scan for the picker also lives here: walk `{root}` year/month/day dirs
   descending collecting candidates (bounded by `RESUME_WALK_CAP`), sort by
   mtime descending (codex's Updated sort) **before** capping the expensive
@@ -242,7 +253,11 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   switch minus the `config.json` write — the footer, the Ctrl+T seed and
   the gauge follow; an environment pin keeps the pinned model, a provider
   this machine has no key for keeps the current one under a red `Can't
-  resume on …` toast; `docs/session-model.md`),
+  resume on …` toast; `docs/session-model.md`), **the context gauge is
+  restored** from the file's newest `context_meter` record, or from its
+  last `usage` line when it has none (`Session::restore_context_meter`, so
+  the footer reads what it read before the session was closed;
+  `docs/token-estimate.md` *Kept with the session*),
   `exit_overlay` + a **purge** `repaint_conversation` (like `/clear`) — the
   loaded session *replaces* the whole conversation, so the rebuild fills
   scrollback with its full history; a plain return would leave the previous

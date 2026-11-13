@@ -651,8 +651,7 @@ impl Session<'_> {
         {
             self.start_compact_turn(/*auto=*/ true);
         }
-        self.recorder
-            .sync(&self.app.history, self.app.history_generation());
+        self.sync_recorder();
         self.reaping.retain(|handle| !handle.is_finished());
     }
 
@@ -695,8 +694,7 @@ impl Session<'_> {
         let recorded = run.iter().any(
             |item| matches!(item, HistoryItem::Message(message) if message.role == Role::User),
         ) || start.resumed;
-        self.recorder
-            .sync(&self.app.history, self.app.history_generation());
+        self.sync_recorder();
         let _ = self.shutdown();
         write(&reporter.finish(&RunEnd {
             outcome: &outcome,

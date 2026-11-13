@@ -23,7 +23,9 @@ use alter_zero::app::HistoryItem;
 use alter_zero::checkpoint;
 use alter_zero::llm::ModelSelection;
 use alter_zero::session::{self, RequestUsage, SessionMeta};
+use alter_zero::tokens::MeterSnapshot;
 
+use super::Session;
 use super::host::{session_id, utc_stamp};
 use super::resume::sessions_root;
 
@@ -69,6 +71,18 @@ pub(crate) struct SessionRecorder {
     usage: Vec<RequestUsage>,
     /// How many of [`usage`](Self::usage) are already on disk.
     usage_written: usize,
+    /// The conversation's context meter as the session now holds it
+    /// (`docs/token-estimate.md` *Kept with the session*) — what the file's
+    /// next `context_meter` line records, so a resume reads the gauge on
+    /// from the provider's own count. `None` while there is nothing to keep
+    /// (no provider has counted a request, or the conversation is empty).
+    meter: Option<MeterSnapshot>,
+    /// What the active file's **newest** `context_meter` line says — the
+    /// meter's on-disk watermark (the [`written`](Self::written) pattern): a
+    /// meter that moved flushes as a new line at the next
+    /// [`sync`](Self::sync), behind the `usage` line of the request that
+    /// moved it, and a rewrite re-emits the current one.
+    meter_written: Option<MeterSnapshot>,
     /// The meta context of a *new* session file: the cwd once at startup, the
     /// model name as of the last [`set_model`](Self::set_model).
     cwd: String,
@@ -131,6 +145,8 @@ impl SessionRecorder {
             checkpoints_written: 0,
             usage: Vec::new(),
             usage_written: 0,
+            meter: None,
+            meter_written: None,
             cwd: cwd.display().to_string(),
             model: model.to_string(),
             selection,
@@ -228,6 +244,20 @@ impl SessionRecorder {
         }
     }
 
+    /// The conversation's context meter as the session holds it right now
+    /// (`App::context_meter_snapshot`), handed over before every
+    /// [`sync`](Self::sync): one that moved since the file's newest line —
+    /// a request's report, a rewind, a compaction — is written by it. A
+    /// meter alone never creates a file, and `None` writes nothing.
+    pub(crate) fn set_context_meter(&mut self, meter: Option<MeterSnapshot>) {
+        self.meter = meter;
+    }
+
+    /// Whether the file's newest `context_meter` line is out of date.
+    fn meter_pending(&self) -> bool {
+        self.meter.is_some() && self.meter != self.meter_written
+    }
+
     /// The checkpoints known this session — the loop reads these to pick the
     /// restore target for an Esc-Esc backtrack (`docs/backtrack.md`).
     pub(crate) fn checkpoints(&self) -> &[checkpoint::Checkpoint] {
@@ -292,9 +322,15 @@ impl SessionRecorder {
         let checkpoints_pending = self.checkpoints.len() > self.checkpoints_written;
         let usage_pending = self.usage.len() > self.usage_written;
         // Nothing new to write — neither items, checkpoints, a request's
-        // usage (docs/rollout-records.md) nor a changed model selection
-        // (docs/session-model.md).
-        if !items_grew && !checkpoints_pending && !usage_pending && !self.selection_pending() {
+        // usage (docs/rollout-records.md), a changed model selection
+        // (docs/session-model.md) nor a context meter that moved
+        // (docs/token-estimate.md).
+        if !items_grew
+            && !checkpoints_pending
+            && !usage_pending
+            && !self.selection_pending()
+            && !self.meter_pending()
+        {
             return;
         }
         // A checkpoint with no file yet (the startup/`/clear` pristine snapshot)
@@ -302,7 +338,8 @@ impl SessionRecorder {
         // empty session leaves no file. Hold it in memory until a history item
         // creates the file, at which point `append` flushes it alongside. A
         // pending checkpoint with a file that already exists does flush now.
-        // A selection alone is held the same way: the create writes it.
+        // A selection alone is held the same way: the create writes it. So
+        // is the meter, which the first append flushes.
         if !items_grew && self.active.is_none() {
             return;
         }
@@ -325,6 +362,10 @@ impl SessionRecorder {
         // …and so do the requests the old one paid for.
         self.usage.clear();
         self.usage_written = 0;
+        // The new file has no meter line yet; the session's own meter is
+        // handed over again before the next sync.
+        self.meter = None;
+        self.meter_written = None;
         // The new conversation runs on the session's own model: its file
         // records that at creation, a kept record belonging to the old file.
         self.written = None;
@@ -348,7 +389,11 @@ impl SessionRecorder {
     /// until a `/model` pick; a file with no record takes the session's
     /// model at the next `sync`. `usage` is the file's own `usage` lines
     /// (`session::parse_usage`, `docs/rollout-records.md`), taken over as
-    /// already written, so a later rewrite keeps each where it sat.
+    /// already written, so a later rewrite keeps each where it sat. `meter`
+    /// is the context meter as the session holds it once the file's own was
+    /// restored (`docs/token-estimate.md`), taken over as written too: a
+    /// resume chooses nothing, so it appends no line of its own, and the
+    /// meter is written again when it next moves.
     #[allow(clippy::too_many_arguments)] // everything one adopted file carries
     pub(crate) fn adopt(
         &mut self,
@@ -358,6 +403,7 @@ impl SessionRecorder {
         torn: bool,
         checkpoints: Vec<checkpoint::Checkpoint>,
         usage: Vec<RequestUsage>,
+        meter: Option<MeterSnapshot>,
         generation: u64,
         model: Option<ModelSelection>,
         honoured: bool,
@@ -369,6 +415,8 @@ impl SessionRecorder {
         self.checkpoints = checkpoints;
         self.usage_written = usage.len();
         self.usage = usage;
+        self.meter = meter;
+        self.meter_written = meter;
         self.keep_record = !honoured && model.is_some();
         self.written = model;
         // The load that adopted this file bumped the generation; swallowing
@@ -428,6 +476,16 @@ impl SessionRecorder {
             text.push('\n');
         }
         self.checkpoints_written = self.checkpoints.len();
+        // The context meter last, behind the request that moved it
+        // (docs/token-estimate.md): a reader takes a `usage` line that
+        // follows the newest meter line for a request it never saw.
+        if self.meter_pending()
+            && let Some(meter) = self.meter
+        {
+            text.push_str(&session::context_meter_line(&self.model, &meter, &stamp));
+            text.push('\n');
+            self.meter_written = Some(meter);
+        }
         let _ = file.write_all(text.as_bytes());
     }
 
@@ -498,7 +556,29 @@ impl SessionRecorder {
             text.push_str(&session::checkpoint_line(checkpoint, &stamp));
             text.push('\n');
         }
+        // One context meter line, last — the meter as it now stands, which
+        // a rewind has already moved (docs/token-estimate.md).
+        if let Some(meter) = self.meter {
+            text.push_str(&session::context_meter_line(&self.model, &meter, &stamp));
+            text.push('\n');
+        }
+        self.meter_written = self.meter;
         self.written = selection;
         let _ = std::fs::write(path, text);
+    }
+}
+
+impl Session<'_> {
+    /// Mirror the conversation to its rollout file (`docs/resume.md`): hand
+    /// the recorder the context meter as it now stands
+    /// (`docs/token-estimate.md` *Kept with the session*), then let it write
+    /// whatever moved — history growth, a rewind's rewrite, the sidecars.
+    /// Every place the loop syncs goes through here, so the file's meter is
+    /// never older than the items beside it.
+    pub(crate) fn sync_recorder(&mut self) {
+        self.recorder
+            .set_context_meter(self.app.context_meter_snapshot());
+        self.recorder
+            .sync(&self.app.history, self.app.history_generation());
     }
 }

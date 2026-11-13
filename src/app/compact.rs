@@ -165,13 +165,21 @@ impl App {
     /// is the one `/compact` uses for `Nothing to compact`, so the two never
     /// disagree about whether anything is there.
     pub(super) fn estimate_context(&mut self) -> (u64, usize) {
-        if !crate::context::derives_conversation(&self.history) {
+        self.estimate_context_up_to(self.history.len())
+    }
+
+    /// [`estimate_context`](Self::estimate_context) for the conversation as
+    /// it stood after its first `len` history items — the context a request
+    /// that finished there carried, as this session would send it.
+    fn estimate_context_up_to(&mut self, len: usize) -> (u64, usize) {
+        let history = self.history.get(..len).unwrap_or(&self.history);
+        if !crate::context::derives_conversation(history) {
             return (0, 0);
         }
         let messages = crate::context::context_messages_full(
             self.user_instructions.as_deref(),
             self.listings.as_deref(),
-            &self.history,
+            history,
         );
         let memo = &mut self.context_memo;
         let mut count = |text: &str| memo.count(text, &count_tokens);
@@ -198,10 +206,11 @@ impl App {
     /// Re-read the gauge for the history as it stands (the
     /// [`context_used`](Self::context_used) field doc): zero for a
     /// conversation that derives nothing; the meter's base plus the
-    /// calibrated estimate of what joined since, when the history only grew
-    /// past it; otherwise — the history moved under the base — the whole
-    /// context re-estimated, the base moved by the change, and the result
-    /// taken as the new base (`docs/token-estimate.md`).
+    /// calibrated estimate of what joined since — and of how the tool set
+    /// changed under it — when the history only grew past it; otherwise —
+    /// the history moved under the base — the whole context re-estimated,
+    /// the base moved by the change, and the result taken as the new base
+    /// (`docs/token-estimate.md`).
     pub(super) fn refresh_context_used(&mut self) {
         let now = self.history_signature();
         self.context_synced = Some(now);
@@ -211,14 +220,21 @@ impl App {
         }
         if let Some(joined) = self.history_since_base() {
             let added = estimate_messages_tokens(&crate::context::context_messages(joined));
-            self.context_used = self
-                .context_meter
-                .reading_after(u64::try_from(added).unwrap_or(u64::MAX));
+            // The tool schemas the next request carries stand in for the
+            // ones the base counted: the base itself stays put, so a set
+            // that comes back reads the number it read before.
+            self.context_used = self.context_meter.reading_changed(
+                u64::try_from(added)
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(self.tools_estimate),
+                self.context_base_tools,
+            );
             return;
         }
         let (estimate, _) = self.estimate_context();
         self.context_meter.rebase(estimate);
         self.context_base_at = Some(now);
+        self.context_base_tools = self.tools_estimate;
         self.context_used = self.context_meter.reading(estimate);
     }
 
@@ -245,6 +261,81 @@ impl App {
         if self.context_synced != Some(self.history_signature()) {
             self.refresh_context_used();
         }
+    }
+
+    /// The context meter as the conversation's rollout keeps it
+    /// (`docs/token-estimate.md` *Kept with the session*): the meter, where
+    /// in the history its base stands, and the tool schemas' share of that
+    /// base — so a resume reads on from the provider's own count instead of
+    /// estimating the whole context again, which no provider counts quite
+    /// the same way. `None` while there is nothing worth keeping: no
+    /// provider has counted a request (the offline demo — the estimate
+    /// alone is worked out again), or the base describes a history this one
+    /// has not been read against yet (an empty conversation, a rewind the
+    /// loop bottom has still to re-read).
+    #[must_use]
+    pub fn context_meter_snapshot(&self) -> Option<crate::tokens::MeterSnapshot> {
+        let (generation, after) = self.context_base_at?;
+        (generation == self.history_generation && self.context_meter.is_counted()).then_some(
+            crate::tokens::MeterSnapshot {
+                after,
+                tools: self.context_base_tools,
+                meter: self.context_meter,
+            },
+        )
+    }
+
+    /// Bring the context meter back as the resumed conversation's rollout
+    /// kept it ([`context_meter_snapshot`](Self::context_meter_snapshot)):
+    /// the gauge then reads what it read before the session was closed —
+    /// the recorded count, plus the estimate of what was recorded after it,
+    /// less whatever of the recorded tool set this session does not (yet)
+    /// offer. `model` is the model the meter counted in: on any other the
+    /// count still stands until this one reports, but what the reports
+    /// taught does not carry over (the [`set_session_info`] rule). A
+    /// snapshot standing past the end of the history — a file cut short —
+    /// is left alone. Call it once the session's model and tool set are in
+    /// place, after [`load_session`](Self::load_session).
+    ///
+    /// [`set_session_info`]: App::set_session_info
+    pub fn restore_context_meter(&mut self, snapshot: &crate::tokens::MeterSnapshot, model: &str) {
+        if snapshot.after > self.history.len() {
+            return;
+        }
+        self.context_meter = snapshot.meter;
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|session| session.model != model)
+        {
+            self.context_meter.model_changed();
+        }
+        self.context_base_at = Some((self.history_generation, snapshot.after));
+        self.context_base_tools = snapshot.tools;
+        self.refresh_context_used();
+    }
+
+    /// Read the gauge on from a request the resumed conversation's rollout
+    /// recorded but its kept meter never saw — every request of a session
+    /// recorded before the meter was kept, or the ones an older build
+    /// appended since (`docs/rollout-records.md`). The provider counted
+    /// `tokens` for the context of the first `after` history items; what
+    /// was recorded after them joined on top. The estimate set beside the
+    /// count is this session's, so the request teaches nothing
+    /// ([`crate::tokens::ContextMeter::anchor`]). One placed past the end of
+    /// the history, or before any conversation, anchors nothing.
+    pub fn anchor_context_meter(&mut self, after: usize, tokens: u64) {
+        if after > self.history.len() {
+            return;
+        }
+        let (estimate, images) = self.estimate_context_up_to(after);
+        if estimate == 0 {
+            return;
+        }
+        self.context_meter.anchor(tokens, estimate, images);
+        self.context_base_at = Some((self.history_generation, after));
+        self.context_base_tools = self.tools_estimate;
+        self.refresh_context_used();
     }
 
     /// What the provider's usage reports have taught about its tokens

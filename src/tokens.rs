@@ -23,7 +23,9 @@
 //! round, in its usage report. **[`Calibration`]** learns the first from
 //! those reports and **[`ContextMeter`]** keeps the second: the context
 //! gauge reads the provider's own count of the last request, plus the
-//! calibrated estimate of whatever changed since.
+//! calibrated estimate of whatever changed since. A session's rollout keeps
+//! the meter (**[`MeterSnapshot`]**), so a reopened conversation reads on
+//! from that count rather than estimating its whole context again.
 
 /// Estimates are summed in thousandths of a token, so a word part's quarter
 /// tokens and a run's fractions add up before anything is rounded.
@@ -518,6 +520,24 @@ impl Calibration {
         let corrected = self.correct(u64::try_from(estimate).unwrap_or(u64::MAX));
         usize::try_from(corrected).unwrap_or(usize::MAX)
     }
+
+    /// The two sums the ratio is taken from — the provider's tokens over the
+    /// samples, and the estimate of the same changes — which is the whole
+    /// of what was learned, as a session's rollout keeps it
+    /// ([`MeterSnapshot`]).
+    #[must_use]
+    pub const fn sums(&self) -> (u64, u64) {
+        (self.provider, self.estimated)
+    }
+
+    /// The calibration [`sums`](Self::sums) were taken from.
+    #[must_use]
+    pub const fn from_sums(provider: u64, estimated: u64) -> Self {
+        Self {
+            provider,
+            estimated,
+        }
+    }
 }
 
 /// The context size of one conversation, kept in the provider's tokens: what
@@ -527,12 +547,20 @@ impl Calibration {
 ///
 /// A report sets the **base** — the provider's count beside the estimate of
 /// the same context. Text that joins the conversation after it adds its
-/// corrected estimate ([`reading_after`](Self::reading_after)); a history
-/// that shrank or was replaced (a compaction, a rewind, `/clear`, a resumed
-/// session) takes the corrected estimate of what left away
-/// ([`reading`](Self::reading)), so the share of the count the estimate never
-/// saw — tool schemas, the provider's own framing — stays in. Each report
-/// also teaches the [`Calibration`], against the report before it.
+/// corrected estimate ([`reading_after`](Self::reading_after)); a part of
+/// the context the base counted that changed size under it (the tool
+/// schemas) moves the reading by the change
+/// ([`reading_changed`](Self::reading_changed)); a history that shrank or
+/// was replaced (a compaction, a rewind, `/clear`) takes the corrected
+/// estimate of what left away ([`reading`](Self::reading)), so the share of
+/// the count the estimate never saw — tool schemas, the provider's own
+/// framing — stays in. Each report also teaches the [`Calibration`], against
+/// the report before it.
+///
+/// A session's rollout keeps the meter ([`MeterSnapshot`]) and a resume
+/// brings it back ([`restored`](Self::restored)), so a reopened conversation
+/// reads on from the provider's own count rather than from an estimate of
+/// the whole context (`docs/token-estimate.md` *Kept with the session*).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ContextMeter {
     /// Where readings start from: a count, and the estimate of the same
@@ -542,14 +570,36 @@ pub struct ContextMeter {
     /// report learns against. `None` until one, and after a model switch.
     last_report: Option<(Count, usize)>,
     calibration: Calibration,
+    /// Whether a provider's count is in the base: a report set it, or it was
+    /// carried over from one. Without one the meter holds the estimate
+    /// alone, which a resume works out again.
+    counted: bool,
 }
 
 /// A context's size two ways: counted (by the provider, or carried over from
 /// a count) and estimated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Count {
-    tokens: u64,
-    estimate: u64,
+pub struct Count {
+    /// The context in the provider's tokens.
+    pub tokens: u64,
+    /// The estimate of the same context.
+    pub estimate: u64,
+}
+
+/// A [`ContextMeter`] and what places it in its conversation — what a
+/// session's rollout keeps, so a resume reads on from the provider's own
+/// count (`docs/token-estimate.md` *Kept with the session*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeterSnapshot {
+    /// How many of the conversation's history items the base's count
+    /// covers: what follows them joined the context after it.
+    pub after: usize,
+    /// The share of the base's estimate that was the tool schemas', so a
+    /// tool set that differs from the one it counted moves the reading by
+    /// the difference.
+    pub tools: u64,
+    /// The meter itself.
+    pub meter: ContextMeter,
 }
 
 impl ContextMeter {
@@ -567,9 +617,20 @@ impl ContextMeter {
             self.calibration
                 .learn(tokens - last.tokens, estimate - last.estimate);
         }
+        self.anchor(tokens, estimate, images);
+    }
+
+    /// A report read back from a recording rather than off the wire: the
+    /// provider's count of `tokens` stands, but `estimate` is today's
+    /// estimate of that request's context, not the one it was measured
+    /// with. It becomes the base and what the next report learns against,
+    /// and teaches nothing itself — the change since the report before it
+    /// would compare two estimates taken on different days.
+    pub fn anchor(&mut self, tokens: u64, estimate: u64, images: usize) {
         let count = Count { tokens, estimate };
         self.last_report = Some((count, images));
         self.base = Some(count);
+        self.counted = true;
     }
 
     /// The context size of a conversation the estimate now puts at
@@ -593,9 +654,20 @@ impl ContextMeter {
     /// context the base measured.
     #[must_use]
     pub fn reading_after(&self, added: u64) -> u64 {
-        self.base
-            .map_or(0, |base| base.tokens)
-            .saturating_add(self.calibration.correct(added))
+        self.reading_changed(added, 0)
+    }
+
+    /// The context size once `added` estimated tokens have joined the
+    /// context the base measured and `removed` have left it — text that
+    /// joined the conversation, and a tool set that grew or shrank under
+    /// the base. The base itself stays where it is: nothing is carried
+    /// over, so the same change read twice reads the same.
+    #[must_use]
+    pub fn reading_changed(&self, added: u64, removed: u64) -> u64 {
+        match self.base {
+            Some(base) => self.reading(base.estimate.saturating_add(added).saturating_sub(removed)),
+            None => self.calibration.correct(added.saturating_sub(removed)),
+        }
     }
 
     /// The history moved under the base (a rewind, a compaction, a resumed
@@ -620,6 +692,45 @@ impl ContextMeter {
     #[must_use]
     pub const fn calibration(&self) -> Calibration {
         self.calibration
+    }
+
+    /// Whether a provider's count is in the meter — a report reached it, or
+    /// its base was carried over from one. A meter without one reads the
+    /// estimate alone, which is nothing to keep with a session.
+    #[must_use]
+    pub const fn is_counted(&self) -> bool {
+        self.counted
+    }
+
+    /// Where readings start from, when anything has set it.
+    #[must_use]
+    pub const fn base(&self) -> Option<Count> {
+        self.base
+    }
+
+    /// The last report and the pictures its context held — what the next
+    /// report learns against.
+    #[must_use]
+    pub const fn last_report(&self) -> Option<(Count, usize)> {
+        self.last_report
+    }
+
+    /// The meter a session's rollout kept, from its parts
+    /// ([`base`](Self::base), [`last_report`](Self::last_report),
+    /// [`calibration`](Self::calibration)): it reads, and learns, exactly
+    /// as the one they were taken from.
+    #[must_use]
+    pub const fn restored(
+        base: Count,
+        last_report: Option<(Count, usize)>,
+        calibration: Calibration,
+    ) -> Self {
+        Self {
+            base: Some(base),
+            last_report,
+            calibration,
+            counted: true,
+        }
     }
 }
 
@@ -1131,6 +1242,112 @@ mod tests {
         meter.rebase(3_000);
         meter.measured(5_600, 4_500, 0);
         assert_eq!(meter.calibration().ratio_permille(), 1_200);
+    }
+
+    // ===== a meter kept with its session (docs/token-estimate.md) =====
+
+    #[test]
+    fn a_meter_no_report_reached_holds_no_count() {
+        // The estimate alone is nothing a resume could not work out again:
+        // only a meter a provider's count is in is worth keeping.
+        let mut meter = ContextMeter::default();
+        assert!(!meter.is_counted());
+        meter.rebase(4_000);
+        assert!(!meter.is_counted(), "a rebase of the bare estimate");
+        meter.measured(5_000, 4_000, 0);
+        assert!(meter.is_counted());
+        // What a count was carried into still holds it.
+        meter.rebase(2_000);
+        meter.model_changed();
+        assert!(meter.is_counted());
+    }
+
+    #[test]
+    fn a_restored_meter_is_the_meter_it_was_taken_from() {
+        // Its parts, written down and read back, make the same meter: the
+        // base a rewind moved, the report the next one learns against, and
+        // what the reports taught.
+        let mut meter = ContextMeter::default();
+        meter.measured(5_000, 4_000, 1);
+        meter.measured(6_200, 5_000, 1);
+        meter.rebase(3_000);
+        let base = meter.base().expect("a base");
+        let (provider, estimated) = meter.calibration().sums();
+        let restored = ContextMeter::restored(
+            base,
+            meter.last_report(),
+            Calibration::from_sums(provider, estimated),
+        );
+        assert_eq!(restored, meter);
+        assert_eq!(restored.reading_after(500), meter.reading_after(500));
+        assert_eq!(restored.calibration().ratio_permille(), 1_200);
+        // …and it learns on from the same report.
+        let mut live = meter;
+        let mut back = restored;
+        live.measured(7_400, 6_000, 1);
+        back.measured(7_400, 6_000, 1);
+        assert_eq!(back, live);
+    }
+
+    #[test]
+    fn a_restored_meter_with_no_report_learns_nothing_from_its_first() {
+        // A model switch dropped the report before the meter was kept.
+        let mut meter = ContextMeter::restored(
+            Count {
+                tokens: 5_000,
+                estimate: 4_000,
+            },
+            None,
+            Calibration::default(),
+        );
+        assert!(meter.is_counted());
+        meter.measured(9_000, 5_500, 0);
+        assert_eq!(meter.calibration().ratio_permille(), 1000);
+    }
+
+    #[test]
+    fn an_anchor_reads_from_a_recorded_count_and_teaches_nothing() {
+        // A request read back from a recording: the provider's count stands,
+        // but the estimate beside it is today's, not the one its request was
+        // measured with — so it is no sample against the report before it.
+        let mut meter = ContextMeter::default();
+        meter.measured(5_000, 4_000, 0);
+        meter.anchor(6_200, 5_000, 0);
+        assert_eq!(meter.calibration().ratio_permille(), 1000);
+        assert_eq!(meter.reading(5_000), 6_200);
+        assert!(meter.is_counted());
+        // The next report learns against it.
+        meter.measured(7_400, 6_000, 0);
+        assert_eq!(meter.calibration().ratio_permille(), 1_200);
+    }
+
+    #[test]
+    fn a_reading_moves_by_what_joined_less_what_left() {
+        // Text joined the conversation while a part of the context the base
+        // counted (the tool schemas) grew or shrank under it.
+        let mut meter = ContextMeter::default();
+        meter.measured(5_000, 4_000, 0);
+        assert_eq!(meter.reading_changed(300, 0), meter.reading_after(300));
+        assert_eq!(meter.reading_changed(300, 100), 5_200);
+        assert_eq!(meter.reading_changed(100, 300), 4_800);
+        assert_eq!(
+            meter.reading_changed(0, 9_000),
+            1_000,
+            "no more leaves than the estimate held"
+        );
+        // With no base it is the corrected change alone.
+        assert_eq!(ContextMeter::default().reading_changed(300, 100), 200);
+    }
+
+    #[test]
+    fn the_learned_sums_survive_being_written_down() {
+        let mut calibration = Calibration::default();
+        calibration.learn(1_200, 1_000);
+        let (provider, estimated) = calibration.sums();
+        assert_eq!((provider, estimated), (1_200, 1_000));
+        assert_eq!(Calibration::from_sums(provider, estimated), calibration);
+        // Sums no sample could have left correct nothing.
+        assert_eq!(Calibration::from_sums(7, 0).ratio_permille(), 1000);
     }
 
     #[test]

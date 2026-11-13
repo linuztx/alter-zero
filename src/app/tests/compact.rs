@@ -740,3 +740,322 @@ fn a_model_switch_starts_the_calibration_over() {
     app.sync_context_used();
     assert_eq!(app.context_used(), counted + estimate_of(&[&later]));
 }
+
+// --- the meter kept with its session (docs/token-estimate.md) ---
+
+/// A session the way the boundary sets one up before its first turn: a
+/// model, a system prompt, standing instructions and one tool — everything
+/// a request carries beside the conversation.
+fn standing_session(prompt: &str) -> App {
+    let mut app = App::new();
+    app.set_session_info("a-model", "~");
+    app.set_system_prompt(Some(prompt.to_string()));
+    app.set_user_instructions(Some("standing project instructions".to_string()));
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app
+}
+
+/// One turn of two requests — the reply that asked for a command, then the
+/// one that read its output — the provider counting `counted` for each.
+fn tool_turn(app: &mut App, question: &str, counted: [u64; 2]) {
+    app.record_user_message(question);
+    app.begin_stream();
+    app.apply_usage(&usage_of(counted[0], 40));
+    app.start_tool("Bash", "pwd", None);
+    app.end_tool("/home/user/project", true);
+    app.apply_usage(&usage_of(counted[1], 12));
+    app.push_chunk("Hi! What can I help you with?");
+    app.finish_stream();
+    app.end_turn(6);
+}
+
+/// The same conversation reopened in a new process: the same model and
+/// tools, and a system prompt naming that launch's own scratch directory —
+/// so an estimate of the whole context is never quite the recorded one.
+fn reopened(recorded: &App) -> App {
+    let mut app = standing_session("a system prompt naming another launch's scratch directory");
+    app.load_session(recorded.history.clone());
+    app
+}
+
+#[test]
+fn a_session_no_provider_counted_keeps_no_meter() {
+    // The estimate alone is nothing a resume could not work out again (the
+    // offline demo, a provider that reports no usage).
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.sync_context_used();
+    assert!(app.context_used() > 0);
+    assert_eq!(app.context_meter_snapshot(), None);
+}
+
+#[test]
+fn the_kept_meter_says_where_its_count_was_taken() {
+    let mut app = standing_session("a system prompt");
+    app.record_user_message("Hi");
+    app.begin_stream();
+    app.apply_usage(&usage_of(7_950, 40));
+    app.start_tool("Bash", "pwd", None);
+    app.end_tool("/home/user/project", true);
+    app.apply_usage(&usage_of(8_050, 12));
+    let at_the_report = app.history.len();
+    app.push_chunk("Hi! What can I help you with?");
+    app.finish_stream();
+    app.end_turn(6);
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    // What followed the report joined the context after it, so the base
+    // has not moved: the reply is read on top of it.
+    assert_eq!(snapshot.after, at_the_report);
+    assert!(app.history.len() > at_the_report);
+    assert_eq!(snapshot.tools, estimate_of(&[BASH_SCHEMA]));
+    assert_eq!(snapshot.meter.base().map(|base| base.tokens), Some(8_050));
+}
+
+#[test]
+fn a_resumed_session_reads_what_it_read_before_it_was_closed() {
+    // The reported bug: a footer reading `8.1k/475k` read `8.8k/475k` once
+    // the same conversation was reopened. The provider's count lived only in
+    // memory, so the reopened session estimated the whole context again —
+    // tool schemas the provider renders its own way included.
+    let mut app = standing_session("a system prompt naming this launch's scratch directory");
+    tool_turn(&mut app, "Hi", [7_950, 8_050]);
+    let before = app.context_used();
+    assert_eq!(
+        before,
+        8_050 + estimate_of(&["Hi! What can I help you with?"])
+    );
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    let mut resumed = reopened(&app);
+    assert_ne!(
+        resumed.context_used(),
+        before,
+        "the estimate alone reads something else"
+    );
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(resumed.context_used(), before);
+    // A resume that changes nothing leaves nothing new to write down.
+    assert_eq!(resumed.context_meter_snapshot(), Some(snapshot));
+}
+
+#[test]
+fn a_resumed_session_reads_on_as_the_live_one_would() {
+    // What joins after the resume is added to the same count, and the next
+    // report sets the base in both alike.
+    let mut app = standing_session("a system prompt");
+    tool_turn(&mut app, "Hi", [7_950, 8_050]);
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "a-model");
+    for session in [&mut app, &mut resumed] {
+        session.record_user_message("and a follow-up question");
+        session.sync_context_used();
+    }
+    assert_eq!(resumed.context_used(), app.context_used());
+    for session in [&mut app, &mut resumed] {
+        session.begin_stream();
+        session.apply_usage(&usage_of(8_300, 20));
+    }
+    assert_eq!(resumed.context_used(), 8_300);
+    assert_eq!(resumed.context_used(), app.context_used());
+}
+
+#[test]
+fn a_resumed_session_keeps_what_the_reports_taught() {
+    // The ratio corrects what joins next, every `/context` count and every
+    // Ctrl+D label: a reopened session that forgot it would show the same
+    // conversation in other numbers.
+    let mut app = standing_session("a system prompt");
+    let counted = calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    let ratio = app.context_calibration().ratio_permille();
+    assert!(ratio > 1_000, "{ratio}");
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(resumed.context_calibration().ratio_permille(), ratio);
+    assert_eq!(resumed.context_used(), counted);
+    let later = "other ".repeat(600);
+    resumed.record_user_message(&later);
+    resumed.sync_context_used();
+    assert_eq!(
+        resumed.context_used(),
+        counted
+            + resumed
+                .context_calibration()
+                .correct(estimate_of(&[&later]))
+    );
+}
+
+#[test]
+fn a_meter_kept_on_another_model_keeps_its_count_and_forgets_its_ratio() {
+    // The session could not come back on the recorded model (no key here,
+    // an environment pin): the count still stands until this model reports,
+    // but what the other one's tokenizer taught says nothing about it.
+    let mut app = standing_session("a system prompt");
+    let counted = calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "another-model");
+    assert_eq!(resumed.context_calibration().ratio_permille(), 1000);
+    assert_eq!(resumed.context_used(), counted);
+    // …and this model's first report is no sample against the other's.
+    resumed.record_user_message(&"other ".repeat(600));
+    resumed.begin_stream();
+    resumed.apply_usage(&usage_of(counted * 3, 0));
+    assert_eq!(resumed.context_calibration().ratio_permille(), 1000);
+}
+
+#[test]
+fn a_kept_meter_past_the_end_of_the_history_is_left_alone() {
+    // A file cut short after the record was written: the count describes
+    // items that are not there, so the estimate stands.
+    let mut app = standing_session("a system prompt");
+    tool_turn(&mut app, "Hi", [7_950, 8_050]);
+    let mut snapshot = app.context_meter_snapshot().expect("a provider counted");
+    snapshot.after = app.history.len() + 3;
+    let mut resumed = reopened(&app);
+    let estimated = resumed.context_used();
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(resumed.context_used(), estimated);
+    assert_eq!(resumed.context_meter_snapshot(), None);
+}
+
+#[test]
+fn a_recorded_request_the_meter_never_saw_anchors_the_reading() {
+    // A session recorded before the meter was kept still has every
+    // request's `usage` line (docs/rollout-records.md): the newest is the
+    // provider's count of the context up to where it sits, and what was
+    // recorded after it joined on top — the live reading, to the token.
+    let mut app = standing_session("a system prompt");
+    app.record_user_message("Hi");
+    app.begin_stream();
+    app.apply_usage(&usage_of(7_950, 40));
+    app.start_tool("Bash", "pwd", None);
+    app.end_tool("/home/user/project", true);
+    app.apply_usage(&usage_of(8_050, 12));
+    let at_the_report = app.history.len();
+    app.push_chunk("Hi! What can I help you with?");
+    app.finish_stream();
+    app.end_turn(6);
+    let before = app.context_used();
+    let mut resumed = reopened(&app);
+    resumed.anchor_context_meter(at_the_report, 8_050);
+    assert_eq!(resumed.context_used(), before);
+    let snapshot = resumed.context_meter_snapshot().expect("anchored");
+    assert_eq!(snapshot.after, at_the_report);
+    // The estimate beside the count is this launch's, so the change since
+    // is no sample: nothing was taught.
+    assert_eq!(resumed.context_calibration().ratio_permille(), 1000);
+    // A request placed past the end of the history anchors nothing.
+    let mut cut = reopened(&app);
+    let estimated = cut.context_used();
+    cut.anchor_context_meter(app.history.len() + 1, 8_050);
+    assert_eq!(cut.context_used(), estimated);
+}
+
+#[test]
+fn a_tool_set_that_changes_leaves_the_meter_where_the_report_put_it() {
+    // A tool set moves the reading by the change in its schemas' estimate
+    // and nothing else: the base still stands where the provider counted
+    // it, so the same set back reads the same number — and there is nothing
+    // new for the rollout to keep.
+    let mut app = App::new();
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    let kept = app.context_meter_snapshot();
+    assert!(kept.is_some());
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA, SEARCH_SCHEMA]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 5_000 + estimate_of(&[SEARCH_SCHEMA]));
+    assert_eq!(app.context_meter_snapshot(), kept);
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 5_000);
+    // A set that shrank below the one counted reads that much less.
+    app.set_tool_definitions(tool_set(&[]));
+    app.sync_context_used();
+    assert_eq!(app.context_used(), 5_000 - estimate_of(&[BASH_SCHEMA]));
+    assert_eq!(app.context_meter_snapshot(), kept);
+}
+
+#[test]
+fn a_resumed_session_missing_a_tool_reads_that_much_less_until_it_is_back() {
+    // An MCP server that had connected when the session was recorded has
+    // not yet in the reopened one: the next request would not carry its
+    // tools, so the reading says so — and reads the recorded number, to the
+    // token, once the server is back.
+    let mut app = standing_session("a system prompt");
+    app.set_tool_definitions(tool_set(&[BASH_SCHEMA, SEARCH_SCHEMA]));
+    tool_turn(&mut app, "Hi", [7_950, 8_050]);
+    let before = app.context_used();
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(
+        resumed.context_used(),
+        before - estimate_of(&[SEARCH_SCHEMA])
+    );
+    resumed.set_tool_definitions(tool_set(&[BASH_SCHEMA, SEARCH_SCHEMA]));
+    resumed.sync_context_used();
+    assert_eq!(resumed.context_used(), before);
+    assert_eq!(resumed.context_meter_snapshot(), Some(snapshot));
+}
+
+#[test]
+fn a_cleared_conversation_keeps_no_meter_until_it_has_one() {
+    let mut app = standing_session("a system prompt");
+    tool_turn(&mut app, "Hi", [7_950, 8_050]);
+    app.clear_conversation();
+    assert_eq!(app.context_meter_snapshot(), None, "nothing to place it in");
+    // The next conversation's first message carries the count over — what
+    // the provider counts beyond the estimate rides its requests too.
+    app.record_user_message("again");
+    app.sync_context_used();
+    let snapshot = app.context_meter_snapshot().expect("carried over");
+    assert_eq!(snapshot.after, 1);
+    assert_eq!(
+        snapshot.meter.base().map(|base| base.tokens),
+        Some(app.context_used())
+    );
+}
+
+#[test]
+fn a_rewound_session_resumes_on_what_the_rewind_left() {
+    // A rewind moves the base by the estimate of what it cut. The rollout
+    // keeps the meter as it then stands — not the cut turns' reports — so
+    // the reopened conversation reads the rewound number.
+    let mut app = standing_session("a system prompt");
+    tool_turn(&mut app, "first", [7_950, 8_050]);
+    tool_turn(&mut app, "second", [8_300, 8_400]);
+    app.backtrack.selected = Some(1);
+    app.confirm_backtrack();
+    let rewound = app.context_used();
+    assert!(rewound < 8_400, "{rewound}");
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    assert_eq!(snapshot.after, app.history.len());
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(resumed.context_used(), rewound);
+}
+
+#[test]
+fn a_compacted_session_resumes_on_what_the_compaction_left() {
+    let mut app = standing_session("a system prompt");
+    app.record_user_message(&"an early request with a lot of detail ".repeat(40));
+    app.begin_stream();
+    let (estimate, _) = app.estimate_context();
+    app.apply_usage(&usage_of(estimate + 3_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    app.begin_compact(false);
+    app.push_chunk("the gist");
+    let compaction = app.finish_compact(0).expect("a marker");
+    let snapshot = app.context_meter_snapshot().expect("a provider counted");
+    assert_eq!(snapshot.after, app.history.len());
+    let mut resumed = reopened(&app);
+    resumed.restore_context_meter(&snapshot, "a-model");
+    assert_eq!(resumed.context_used(), compaction.after);
+}

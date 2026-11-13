@@ -27,6 +27,7 @@ use crate::app::{
 };
 use crate::checkpoint::Checkpoint;
 use crate::llm::ModelSelection;
+use crate::tokens::{Calibration, ContextMeter, Count, MeterSnapshot};
 
 /// The `session_meta` payload — the first line of every rollout file (codex's
 /// `SessionMeta`: identity plus enough context to label the session later).
@@ -148,6 +149,14 @@ enum ItemRecord {
     /// [`parse_usage`], skipped by [`parse_session`], and skipped as an
     /// unknown record type by a build from before it.
     Usage(UsageRecord),
+    /// The conversation's context meter (`docs/token-estimate.md` *Kept with
+    /// the session*) — the provider's own count the footer gauge reads on
+    /// from, and what its reports taught — so a resume reads what the
+    /// session read before it was closed. Not a [`HistoryItem`]: read back
+    /// by [`parse_context_meter`] (the newest wins), skipped by
+    /// [`parse_session`], and skipped as an unknown record type by a build
+    /// from before it.
+    ContextMeter(ContextMeterRecord),
 }
 
 /// One model request's usage, as the rollout keeps it
@@ -222,6 +231,138 @@ impl UsageRecord {
             },
             agent: self.agent,
             compact: self.compact,
+        }
+    }
+}
+
+/// The context meter a rollout kept, as [`parse_context_meter`] reads it
+/// back (`docs/token-estimate.md` *Kept with the session*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedMeter {
+    /// The model whose tokens the meter counts in — what it learned says
+    /// nothing about another model's tokenizer.
+    pub model: String,
+    /// The meter, and where in the conversation it stands.
+    pub snapshot: MeterSnapshot,
+}
+
+/// What a rollout says about the size of its conversation's context: the
+/// meter it kept, and any request it recorded that the meter never saw.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordedContext {
+    /// The newest `context_meter` record; `None` for a file from before the
+    /// record existed, or one no provider reported usage for.
+    pub meter: Option<RecordedMeter>,
+    /// The newest of the conversation's own requests recorded **after**
+    /// that record — or, with no record, the newest at all. The recorder
+    /// writes the meter behind the request that moved it, so such a line is
+    /// a request no record covers (a build from before the record wrote
+    /// it): its `input` is the freshest count of the context the file
+    /// holds, of everything up to where it sits. A subagent's request and a
+    /// compaction's are never it — neither counts this conversation.
+    pub unseen: Option<RequestUsage>,
+}
+
+/// A [`MeterSnapshot`] on disk: the base's count beside the estimate of the
+/// same context, where in the history it stands, the tool schemas' share of
+/// that estimate, the report the next one learns against, and the two sums
+/// the learned ratio is taken from. Every field is `serde(default)`ed on the
+/// way back in, so a hand-edited line restores a meter that corrects
+/// nothing rather than failing the resume.
+#[derive(Serialize, Deserialize)]
+struct ContextMeterRecord {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    after: usize,
+    #[serde(default)]
+    tokens: u64,
+    #[serde(default)]
+    estimate: u64,
+    #[serde(default)]
+    tools: u64,
+    /// Absent after a model switch dropped it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<MeterReportRecord>,
+    #[serde(default)]
+    learned: MeterLearnedRecord,
+}
+
+/// The last usage report a meter saw: its count, the estimate of the same
+/// context, and the pictures that context held.
+#[derive(Serialize, Deserialize)]
+struct MeterReportRecord {
+    #[serde(default)]
+    tokens: u64,
+    #[serde(default)]
+    estimate: u64,
+    #[serde(default)]
+    images: usize,
+}
+
+/// What a meter's reports taught: the provider's tokens over the samples
+/// taken, and the estimate of the same changes.
+#[derive(Serialize, Deserialize, Default)]
+struct MeterLearnedRecord {
+    #[serde(default)]
+    provider: u64,
+    #[serde(default)]
+    estimated: u64,
+}
+
+impl ContextMeterRecord {
+    fn new(model: &str, snapshot: &MeterSnapshot) -> Self {
+        let base = snapshot.meter.base().unwrap_or(Count {
+            tokens: 0,
+            estimate: 0,
+        });
+        let (provider, estimated) = snapshot.meter.calibration().sums();
+        Self {
+            model: model.to_string(),
+            after: snapshot.after,
+            tokens: base.tokens,
+            estimate: base.estimate,
+            tools: snapshot.tools,
+            report: snapshot
+                .meter
+                .last_report()
+                .map(|(count, images)| MeterReportRecord {
+                    tokens: count.tokens,
+                    estimate: count.estimate,
+                    images,
+                }),
+            learned: MeterLearnedRecord {
+                provider,
+                estimated,
+            },
+        }
+    }
+
+    /// The record read back.
+    fn into_recorded(self) -> RecordedMeter {
+        let report = self.report.map(|report| {
+            (
+                Count {
+                    tokens: report.tokens,
+                    estimate: report.estimate,
+                },
+                report.images,
+            )
+        });
+        RecordedMeter {
+            model: self.model,
+            snapshot: MeterSnapshot {
+                after: self.after,
+                tools: self.tools,
+                meter: ContextMeter::restored(
+                    Count {
+                        tokens: self.tokens,
+                        estimate: self.estimate,
+                    },
+                    report,
+                    Calibration::from_sums(self.learned.provider, self.learned.estimated),
+                ),
+            },
         }
     }
 }
@@ -933,6 +1074,20 @@ pub fn usage_line(record: &RequestUsage, stamp: &str) -> String {
     line(stamp, ItemRecord::Usage(UsageRecord::from(record)))
 }
 
+/// Serialize the conversation's context meter as a rollout line
+/// (`docs/token-estimate.md` *Kept with the session*): `snapshot` as the
+/// session holds it, counted in `model`'s tokens. Append-only like the
+/// `model` record — [`parse_context_meter`] takes the newest — and written
+/// **behind** the `usage` line of the request that moved it, which is how a
+/// reader tells a request the record covers from one it never saw.
+#[must_use]
+pub fn context_meter_line(model: &str, snapshot: &MeterSnapshot, stamp: &str) -> String {
+    line(
+        stamp,
+        ItemRecord::ContextMeter(ContextMeterRecord::new(model, snapshot)),
+    )
+}
+
 /// The rollout lines for `items` — history from index `first` on — with each
 /// request's `usage` line placed where the request finished: right before
 /// the first item recorded after it ([`RequestUsage::after`]), or at the end
@@ -1045,6 +1200,38 @@ pub fn parse_usage(text: &str) -> Vec<RequestUsage> {
         }
     }
     usage
+}
+
+/// What a rollout kept about the size of its conversation's context
+/// (`docs/token-estimate.md` *Kept with the session*): the **newest**
+/// `context_meter` record, and the newest of the conversation's own
+/// requests recorded after it — one the record never saw
+/// ([`RecordedContext::unseen`]). A file from before the record existed has
+/// only its requests, so its last one is offered the same way; a file no
+/// provider reported usage for (the offline demo) has neither. Positions
+/// count exactly the items [`parse_session`] yields, [`parse_usage`]'s rule.
+#[must_use]
+pub fn parse_context_meter(text: &str) -> RecordedContext {
+    let mut items = Vec::new();
+    let mut recorded = RecordedContext::default();
+    for line in text.lines() {
+        match parse_line(line) {
+            Some(ItemRecord::ContextMeter(record)) => {
+                recorded.meter = Some(record.into_recorded());
+                // Every request before it is one it has seen.
+                recorded.unseen = None;
+            }
+            Some(ItemRecord::Usage(record)) => {
+                let request = record.into_request(items.len());
+                if request.agent.is_none() && !request.compact {
+                    recorded.unseen = Some(request);
+                }
+            }
+            Some(record) => push_history_item(&mut items, record),
+            None => {}
+        }
+    }
+    recorded
 }
 
 /// One rollout line's record, or `None` for a blank, malformed or
@@ -1226,12 +1413,15 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
         // `parse_checkpoints` reads them for the code reset. Skip here so
         // the loaded history matches what the user actually said. The
         // session's model record is the same kind of sidecar
-        // (`parse_model`, docs/session-model.md), and so is a request's usage
-        // (`parse_usage`, docs/rollout-records.md). The meta is the caller's.
+        // (`parse_model`, docs/session-model.md), and so are a request's usage
+        // (`parse_usage`, docs/rollout-records.md) and the context meter
+        // (`parse_context_meter`, docs/token-estimate.md). The meta is the
+        // caller's.
         ItemRecord::SessionMeta(_)
         | ItemRecord::Checkpoint(_)
         | ItemRecord::Model(_)
-        | ItemRecord::Usage(_) => {}
+        | ItemRecord::Usage(_)
+        | ItemRecord::ContextMeter(_) => {}
     }
 }
 
@@ -2108,6 +2298,198 @@ mod tests {
             }
         );
         assert_eq!((record.after, record.agent.as_deref()), (0, None));
+    }
+
+    // ===== the context meter, kept with the session (docs/token-estimate.md) =====
+
+    /// A meter two reports reached — the second taught it a ratio of 1.2 —
+    /// standing after the first three history items.
+    fn kept_meter() -> MeterSnapshot {
+        let mut meter = ContextMeter::default();
+        meter.measured(5_000, 4_000, 1);
+        meter.measured(6_200, 5_000, 1);
+        MeterSnapshot {
+            after: 3,
+            tools: 900,
+            meter,
+        }
+    }
+
+    #[test]
+    fn a_context_meter_line_keeps_the_meter_and_where_it_stands() {
+        let line = context_meter_line("gpt-test", &kept_meter(), "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "context_meter");
+        assert_eq!(value["timestamp"], "t");
+        let payload = &value["payload"];
+        assert_eq!(payload["model"], "gpt-test");
+        assert_eq!(payload["after"], 3);
+        // The base: the provider's count beside the estimate of the same
+        // context, and the tool schemas' share of that estimate.
+        assert_eq!(payload["tokens"], 6_200);
+        assert_eq!(payload["estimate"], 5_000);
+        assert_eq!(payload["tools"], 900);
+        // The report the next one learns against, and what the reports
+        // taught: the two sums the ratio is taken from.
+        assert_eq!(payload["report"]["tokens"], 6_200);
+        assert_eq!(payload["report"]["estimate"], 5_000);
+        assert_eq!(payload["report"]["images"], 1);
+        assert_eq!(payload["learned"]["provider"], 1_200);
+        assert_eq!(payload["learned"]["estimated"], 1_000);
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn a_meter_with_no_report_writes_none() {
+        // A model switch dropped it: the next report is no sample.
+        let mut snapshot = kept_meter();
+        snapshot.meter.model_changed();
+        let line = context_meter_line("gpt-test", &snapshot, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert!(value["payload"].get("report").is_none(), "{line}");
+        assert_eq!(value["payload"]["tokens"], 6_200, "the count stands");
+        assert_eq!(value["payload"]["learned"]["estimated"], 0);
+    }
+
+    #[test]
+    fn the_newest_context_meter_record_reads_back_whole() {
+        // Append-only, the newest wins — the `model` record's rule.
+        let mut older = kept_meter();
+        older.after = 1;
+        older.meter.rebase(2_000);
+        let newest = kept_meter();
+        let mut text = file_of(&tool_round());
+        for snapshot in [&older, &newest] {
+            text.push_str(&context_meter_line("gpt-test", snapshot, "t"));
+            text.push('\n');
+        }
+        let recorded = parse_context_meter(&text);
+        assert_eq!(
+            recorded.meter,
+            Some(RecordedMeter {
+                model: "gpt-test".into(),
+                snapshot: newest,
+            })
+        );
+        assert_eq!(recorded.unseen, None);
+        // A meter with no report reads back with none, too.
+        let mut switched = kept_meter();
+        switched.meter.model_changed();
+        text.push_str(&context_meter_line("another", &switched, "t"));
+        text.push('\n');
+        let recorded = parse_context_meter(&text).meter.expect("a record");
+        assert_eq!(recorded.model, "another");
+        assert_eq!(recorded.snapshot, switched);
+    }
+
+    #[test]
+    fn a_context_meter_line_is_no_history_and_moves_no_position() {
+        // A sidecar like `checkpoint`, `model` and `usage`: the transcript,
+        // every other sidecar's reader and each usage line's place read
+        // exactly as they do without it.
+        let records = vec![request(1, 1_000, 30), request(3, 1_400, 20)];
+        let mut plain = meta_line(&meta(), "t0");
+        plain.push('\n');
+        plain.push_str(&history_lines(&tool_round(), 0, &records, "t"));
+        let meter = context_meter_line("gpt-test", &kept_meter(), "t");
+        // The record in the middle of the file, between two items.
+        let mut lines: Vec<&str> = plain.lines().collect();
+        lines.insert(3, &meter);
+        let text = lines.join("\n");
+        assert_eq!(parse_session(&text), parse_session(&plain));
+        assert_eq!(parse_usage(&text), records);
+        assert!(parse_checkpoints(&text).is_empty());
+        assert_eq!(parse_model(&text), None);
+    }
+
+    #[test]
+    fn a_request_recorded_after_the_meter_is_one_it_never_saw() {
+        // The recorder writes the meter after the request that moved it, so
+        // a request line *behind* the newest record is one no record covers:
+        // a build from before the record appended it. The newest such
+        // request is the freshest count the file holds.
+        let mut text = meta_line(&meta(), "t0");
+        text.push('\n');
+        text.push_str(&history_lines(
+            &tool_round()[..3],
+            0,
+            &[request(1, 1_000, 30)],
+            "t",
+        ));
+        text.push_str(&context_meter_line("gpt-test", &kept_meter(), "t"));
+        text.push('\n');
+        assert_eq!(parse_context_meter(&text).unseen, None, "the record saw it");
+        // An older build's turn: two more requests, placed where they sat.
+        text.push_str(&history_lines(
+            &tool_round()[3..],
+            3,
+            &[request(3, 1_400, 20), request(5, 1_500, 10)],
+            "t",
+        ));
+        let recorded = parse_context_meter(&text);
+        assert!(recorded.meter.is_some());
+        assert_eq!(recorded.unseen, Some(request(5, 1_500, 10)));
+    }
+
+    #[test]
+    fn a_subagents_and_a_compactions_request_count_no_conversation() {
+        // Neither is the provider's count of this conversation's context: a
+        // subagent's is its own, a summarizer's is shaped unlike it.
+        let mut compact = request(5, 80_000, 2_000);
+        compact.compact = true;
+        let mut text = meta_line(&meta(), "t0");
+        text.push('\n');
+        text.push_str(&history_lines(
+            &tool_round(),
+            0,
+            &[request(1, 1_000, 30), agent_request(3), compact],
+            "t",
+        ));
+        assert_eq!(
+            parse_context_meter(&text).unseen,
+            Some(request(1, 1_000, 30))
+        );
+    }
+
+    #[test]
+    fn a_file_from_before_the_meter_was_kept_offers_its_last_request() {
+        let records = vec![request(1, 1_000, 30), request(3, 1_400, 20)];
+        let mut text = meta_line(&meta(), "t0");
+        text.push('\n');
+        text.push_str(&history_lines(&tool_round(), 0, &records, "t"));
+        assert_eq!(
+            parse_context_meter(&text),
+            RecordedContext {
+                meter: None,
+                unseen: Some(request(3, 1_400, 20)),
+            }
+        );
+        // …and one recorded with no provider's count at all says nothing.
+        assert_eq!(
+            parse_context_meter(&file_of(&tool_round())),
+            RecordedContext::default()
+        );
+        assert_eq!(parse_context_meter(""), RecordedContext::default());
+    }
+
+    #[test]
+    fn a_context_meter_line_missing_a_field_reads_it_as_zero() {
+        // A hand-edited or future-shaped line still parses: it restores a
+        // meter that corrects nothing rather than failing the resume.
+        let text = format!(
+            "{}\n{}\n",
+            meta_line(&meta(), "t0"),
+            r#"{"timestamp":"t","type":"context_meter","payload":{"tokens":5000,"extra":true}}"#
+        );
+        let recorded = parse_context_meter(&text).meter.expect("a record");
+        assert_eq!(recorded.model, "");
+        assert_eq!(recorded.snapshot.after, 0);
+        assert_eq!(
+            recorded.snapshot.meter.base().map(|base| base.tokens),
+            Some(5_000)
+        );
+        assert_eq!(recorded.snapshot.meter.last_report(), None);
+        assert_eq!(recorded.snapshot.meter.calibration().ratio_permille(), 1000);
     }
 
     // ===== checkpoints (docs/checkpoint.md) =====

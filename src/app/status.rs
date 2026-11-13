@@ -316,6 +316,7 @@ impl App {
             self.context_meter.measured(usage.input, estimate, images);
             let now = self.history_signature();
             self.context_base_at = Some(now);
+            self.context_base_tools = self.tools_estimate;
             self.context_synced = Some(now);
             self.context_used = self.context_meter.reading(estimate);
         }

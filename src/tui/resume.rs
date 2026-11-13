@@ -332,6 +332,10 @@ impl Session<'_> {
         // recorder adopts the file, which is told whether that record is
         // what the session now runs.
         let model = self.restore_session_model(recorded_model.as_ref());
+        // The context side (docs/token-estimate.md): the gauge reads on from
+        // the provider's count the file kept — once the model it counted in
+        // is the session's again.
+        self.restore_context_meter(&text);
         // A file whose last line lost its newline (a torn write) must not have
         // the next append glued onto it — the recorder prefixes the repair. The
         // parsed checkpoints are adopted too so later turns extend the same chain
@@ -346,6 +350,9 @@ impl Session<'_> {
             // Each request's usage line stays where it sat
             // (docs/rollout-records.md).
             session::parse_usage(&text),
+            // The meter as just restored is what the file says: a resume
+            // appends no line of its own.
+            self.app.context_meter_snapshot(),
             self.app.history_generation(),
             recorded_model,
             model.honoured,
@@ -373,6 +380,36 @@ impl Session<'_> {
             self.toast(failure, ToastKind::Error);
         }
         Ok(())
+    }
+
+    /// Bring the context gauge back as the resumed conversation's rollout
+    /// kept it (`docs/token-estimate.md` *Kept with the session*) — the
+    /// `/resume` picker's arm and the `--continue`/`--resume` boot alike,
+    /// once the session's model is the one that will answer. The footer then
+    /// reads what it read before the session was closed, instead of an
+    /// estimate of the whole context that no provider counts quite the same
+    /// way: the kept meter first, then any request the file recorded that
+    /// the meter never saw — every request of a file from before the meter
+    /// was kept, whose last `usage` line is the provider's own count of the
+    /// context it sits behind. A file with neither (the offline demo) reads
+    /// the estimate, as before.
+    pub(crate) fn restore_context_meter(&mut self, text: &str) {
+        let recorded = session::parse_context_meter(text);
+        // The tool set first: the reading moves by how it differs from the
+        // set the recorded count held, and a request read back from a `usage`
+        // line is set beside an estimate of everything a request carries. At
+        // a `--continue` boot the loop has not handed it over yet, and the
+        // first loop bottom must find nothing left to move.
+        self.app
+            .set_tool_definitions(self.models.backend().tool_definitions());
+        if let Some(meter) = &recorded.meter {
+            self.app
+                .restore_context_meter(&meter.snapshot, &meter.model);
+        }
+        if let Some(request) = &recorded.unseen {
+            self.app
+                .anchor_context_meter(request.after, request.usage.input);
+        }
     }
 
     /// Restore the working directory to the latest checkpoint at or before

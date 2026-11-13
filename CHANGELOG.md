@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The context gauge reads the same number after a session is reopened.**
+  The footer's `{used}/{window}` is kept in the provider's own count of the
+  last request, but that count lived only in memory, so `alter-zero -c`,
+  `--resume` and the `/resume` picker estimated the whole context again and
+  showed something else (`8.1k/475k` before the quit, `8.8k/475k` after).
+  The session file now keeps the count and what the provider's reports
+  taught, in a `context_meter` line, and a resume reads on from it, so the
+  footer, the `/context` page and the Ctrl+D labels agree with what they
+  showed before. Sessions recorded before this resume on the count in their
+  last `usage` line. A resume by itself writes nothing to the file
+  (`docs/token-estimate.md`).
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

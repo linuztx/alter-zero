@@ -130,7 +130,8 @@
 //! - [`tokens`]      — token estimates without a tokenizer, and the correction
 //!   the provider's usage reports teach them: the vocabulary-free `estimate`
 //!   behind `app::count_tokens`, and the `ContextMeter` the context gauge
-//!   reads (pure; see `docs/token-estimate.md`).
+//!   reads — kept in a session's rollout, so a resume reads on from the
+//!   provider's own count (pure; see `docs/token-estimate.md`).
 //! - [`trust`]       — what the user trusted to run: the hooks of their own
 //!   and their projects' `hooks.json` and each project's MCP servers — the
 //!   `trust.json` format, a hook's identity, new-or-changed classification,

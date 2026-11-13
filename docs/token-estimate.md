@@ -173,16 +173,22 @@ tokens:
 - **Before any frame, the estimate is the reading, tool schemas included.**
   The backend's tool set (`ReplySource::tool_definitions`, each schema as
   the client serializes it) is handed to `App` at every loop bottom and
-  estimated with the rest of the context. So the first request of a session,
-  a resumed one, and a provider that reports no usage all count the schemas
-  every request carries. A tool set that changes (an MCP server connecting,
-  the Tools knob) re-reads the whole context with the new set's estimate in
-  it, and a frame's base already holds the provider's count of the old one.
+  estimated with the rest of the context. So the first request of a session
+  and a provider that reports no usage both count the schemas every request
+  carries.
+- **A tool set that changes moves the reading, not the base.** An MCP
+  server connecting, the Tools knob: the reading moves by the estimate of
+  the schemas now offered less the estimate of the ones the base counted
+  (`App::context_base_tools`). The base stays where the provider counted
+  the old set, so the same set back reads the same number, and nothing is
+  re-estimated.
 - **A history the frame no longer describes moves the base.** A
-  compaction, a rewind, `/clear` followed by a new message, or `/resume`
-  re-estimates the whole context once and moves the reading by the
-  corrected estimate of the change. Whatever the provider counts beyond the
-  estimate stays in. Here is what that means for a compaction. The last
+  compaction, a rewind, or `/clear` followed by a new message re-estimates
+  the whole context once and moves the reading by the corrected estimate of
+  the change. Whatever the provider counts beyond the estimate stays in. A
+  resumed conversation is not one of these: its rollout kept the meter, and
+  the resume brings it back (*Kept with the session*, below). Here is what
+  moving the base means for a compaction. The last
   frame counted 88k for a context the estimate put at 84k, since the
   provider renders the tool schemas and frames the messages its own way. The
   summary leaves 6k estimated, the schemas among it. The gauge, and the
@@ -246,10 +252,102 @@ level down (`docs/agent-context-gauge.md`). It reads at its frames and at
 every settle, so its session view's gauge folds in the reply each turn
 ends on.
 
+### Kept with the session
+
+The meter is the session's memory of what the provider said, and it used to
+end with the process. A reopened conversation (`/resume`, `--resume`,
+`--continue`) had no base, so it read the estimate of its whole context,
+and the estimate is not the provider's count. A footer reading `8.1k/475k`
+read `8.8k/475k` after `alter-zero -c`: 0.7k of distance between the
+estimate and the provider's own count, nearly all of it in the system
+prompt and the tool schemas every request carries, none of it something
+the conversation had gained. The ratio went with it, so the `/context`
+page and the Ctrl+D labels counted the same conversation in other numbers
+too.
+
+The rollout now keeps the meter, as a `context_meter` sidecar line
+(`docs/rollout-records.md`, `tokens::MeterSnapshot`):
+
+- the **base**: the provider's count (`tokens`) beside the estimate of the
+  same context (`estimate`), and how many history items it covers
+  (`after`). What the file records after them joined the context later;
+- **`tools`**, the tool schemas' share of that estimate;
+- **`report`**, the last usage report, which the next one learns against,
+  and **`learned`**, the two sums the ratio is taken from;
+- **`model`**, the model all of it is counted in.
+
+A line is written whenever the meter moves (a report, a rewind, a
+compaction, a model switch), behind the `usage` line of the request that
+moved it, and the newest wins, like the `model` record. Between reports nothing is written:
+what joins is read on top of the base, and the base holds still.
+
+A resume restores it as written (`App::restore_context_meter`), once the
+session's model is the one that will answer. The gauge then reads the
+recorded count plus the estimate of what the file recorded after it, which
+is the sum the live session read, to the token. Nothing is estimated again,
+on purpose. An estimate of the whole context taken in the new process is
+never quite the recorded one: the system prompt names that launch's own
+scratch directory, whose session id differs in every process. Six launches
+sending one message from one directory estimated the same request at
+3,557 to 3,560 tokens. Three tokens are enough to turn `8.1k` into `8.2k`.
+
+What is different about the reopened session is read as a difference:
+
+- **Another model.** The recorded one has no key on this machine, or an
+  environment pin outranks it (`docs/session-model.md`). The count stands
+  until this model reports, and what the other model's tokenizer taught is
+  dropped, as on a `/model` switch.
+- **Another tool set.** The reading moves by the schemas now offered less
+  `tools`. An MCP server that had connected when the session was recorded
+  has not yet when the reopened one paints its first frame, so the footer
+  reads that much less, and then the recorded number once the server is
+  back. The meter never moves for it, so nothing is written either. This is
+  the reason a tool-set change no longer re-estimates the context.
+- **A file cut short**, whose record stands past the end of the history,
+  is left alone: the estimate stands.
+
+**A rollout from before the record** still has every request's `usage`
+line, and the newest of the conversation's own (never a subagent's or a
+compaction's) is the provider's count of the context up to where it sits.
+`App::anchor_context_meter` takes it as the base, beside this session's
+estimate of that context, and reads what was recorded after it on top. With
+nothing learned yet that is the number the live session read. It teaches
+nothing (`ContextMeter::anchor`): the estimate beside the count was taken
+today, and a ratio across estimates from two different launches measures
+the launches. The same rule covers a request an older build appended to a
+file that has a record: a `usage` line behind the newest `context_meter`
+line is one the record never saw (`session::parse_context_meter`).
+
+A resume writes nothing. The restored meter is what the file says, so the
+recorder takes it as written (`SessionRecorder::adopt`), and the next line
+is the one the next report leaves. A session no provider reported usage
+for (the offline demo) keeps no record at all: the estimate alone is
+worked out again.
+
+Tested at each layer. `tokens`: a restored meter is the meter it was taken
+from and learns on from the same report, an anchor teaches nothing, a
+reading moves by what joined less what left. `app::tests::compact`: a
+reopened session reads what it read before it was closed, reads on as the
+live one would, keeps the ratio, drops it on another model, and reads a
+missing tool as that much less until it is back; a rewound and a compacted
+session resume on what the rewind and the compaction left. `session`: the
+line's shape, the newest record read back whole, a request recorded behind
+it offered as unseen, and the line invisible to every other reader.
+`tests/headless.rs` reads the lines off a real run and its `-c`.
+`smoke.sh` Phase 154 compares the footer before the quit with the footer
+after `--continue`, after the `/resume` picker, on a file with the records
+taken out, once a ratio has been learned, and with an MCP server's tools in
+the count.
+
 ## Limits
 
-- The calibration lives in memory. A new session or a resumed one starts
-  at 1.0 and learns from its second frame on.
+- A new session starts at a ratio of 1.0 and learns from its second frame
+  on. A resumed one carries on from what its rollout kept; one recorded
+  before the meter was kept starts at 1.0 on the provider's last count.
+- Between reports the gauge reads only what joined the history and how
+  the tool set changed. A system prompt or `<system-reminder>` that changed
+  under it (an edited `AGENTS.md`, a skill added, an upgrade between a
+  session and its resume) is counted by the next report.
 - A picture is a flat 256 tokens in the estimate. The provider's real
   charge enters only through a frame's base, never through the ratio.
 - One ratio covers a whole conversation, so a session that mixes text a

@@ -21,6 +21,10 @@ The rollout now carries two more kinds of fact:
 
 Both are additions. The existing fields are untouched.
 
+A third line, `context_meter`, is not for analysis at all: it is what the
+footer's context gauge reads on from when the conversation is reopened
+(*The `context_meter` line*, below).
+
 ## What codex does (findings)
 
 The rollout format is a port of codex's (`docs/resume.md`), so codex is the
@@ -230,6 +234,53 @@ each, so the line lands right after the items recorded before it.
   calls' exit codes and durations are not in the file. Its requests' usage
   is.
 
+## The `context_meter` line
+
+The footer's context gauge is kept in the provider's own count: the last
+request's `input`, plus the estimate of what joined the conversation since
+(`docs/token-estimate.md`). That count is the session's memory of what the
+provider said, so the rollout keeps it, and a resume reads the gauge on
+from it instead of estimating the whole context again:
+
+```json
+{"timestamp":"…","type":"context_meter","payload":{"model":"gpt-5.5","after":7,
+ "tokens":18240,"estimate":19870,"tools":5120,
+ "report":{"tokens":18240,"estimate":19870,"images":0},
+ "learned":{"provider":5211,"estimated":7529}}}
+```
+
+- **`tokens`** is the provider's count the gauge reads from, and
+  **`estimate`** the app's estimate of that same context. A rewind or a
+  compaction moves both; right after a request they are its `input` and
+  the estimate of what it carried.
+- **`after`** is how many history items that count covers. What the file
+  records after them joined the context later and is read on top.
+- **`tools`** is the tool schemas' share of `estimate`, so a session
+  offering another tool set reads the difference.
+- **`report`** is the last usage report the meter saw (its count, the
+  estimate beside it, the pictures the context held), which the next
+  report is compared with. Absent after a model switch.
+- **`learned`** is what the reports taught about this provider's tokens
+  against the estimate: the provider's tokens over the changes sampled and
+  the estimate of the same changes. Their quotient is the ratio the
+  `/context` page and Ctrl+D count in.
+- **`model`** is the model all of it is counted in.
+
+It is a sidecar like `usage`: no history item, invisible to the transcript
+and to every other reader (`session::parse_context_meter` is its own). The
+line is written whenever the meter moves and the **newest wins**, the
+`model` record's rule. It sits **behind the `usage` line of the request
+that moved it**, and that order means something: a conversation's own
+`usage` line found after the newest `context_meter` line is a request the
+record never saw (a build from before the record wrote it), and a resume
+takes that request's `input` as the count instead. A file with no
+`context_meter` line at all is read the same way, from its last `usage`
+line. A rewrite (a backtrack, an undone submission) writes one line, last:
+the meter as the rewind left it. A resume writes none.
+
+A session no provider reported usage for (the offline demo) has no such
+line: there is no count to keep.
+
 ## Compatibility
 
 - **Old files read as before.** Every new field is `serde(default)`ed, and an
@@ -241,6 +292,10 @@ each, so the line lands right after the items recorded before it.
   `usage` lines it never knew, as such a rewrite drops any line it skipped.
 - Nothing about the **summary** changed: its per-turn sums stay as they were,
   so a reader of them is unaffected.
+- **A file with no `context_meter` line** (any recorded before it existed)
+  resumes on its last `usage` line's count. An older build skips the line,
+  and one that appends to the file leaves `usage` lines behind it that the
+  next resume reads as newer than the record.
 
 ## Reading a rollout
 
@@ -261,7 +316,10 @@ jq -c 'select(.type=="usage") | .payload' rollout.jsonl
   the `usage` line's shape (`agent` and `compact` only when they say
   something), the placement merge (`history_lines`), what a rewrite keeps
   (`retain_usage`), the read back (`parse_usage`), and `parse_session`
-  skipping the line.
+  skipping the line. For the `context_meter` line: its shape, `report`
+  written only when there is one, the newest record read back whole, a
+  request behind it offered as unseen (never a subagent's or a
+  compaction's), and every other reader unmoved by it.
 - `llm::agent`'s tests drive `run_agent` with a fake executor: the outcome's
   exit code and a measured duration on the resolving event, `tool_error` as
   the default kind, each refusal's kind with no duration, and a call handed
@@ -275,7 +333,10 @@ jq -c 'select(.type=="usage") | .payload' rollout.jsonl
   reads the rollout it wrote: a `usage` line per request, in order around the
   `tool` line, that line's `exit_code`, `duration_ms` and `error_kind`, the
   turn's `summary` summing the lines — and, after a `--continue`, the first
-  turn's lines where they were with the second turn's after them. It also
+  turn's lines where they were with the second turn's after them. A second
+  test reads a `context_meter` line behind each `usage` line, the newest
+  holding the last request's count, and none appended by the `--continue`
+  itself. It also
   reads a subagent's requests under its id, a compaction's request marked
   `compact`, and a headless refusal recorded as `approval_required` with no
   exit code and no time.

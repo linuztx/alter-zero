@@ -294,6 +294,11 @@ pub struct App {
     /// `(generation, length)` — so a reading estimates only what joined
     /// after it; `None` before any.
     context_base_at: Option<(u64, usize)>,
+    /// The tool schemas' estimate ([`tools_estimate`](Self::tools_estimate))
+    /// when the base was taken — their share of the base's own estimate. A
+    /// tool set that changes moves the reading by the difference and leaves
+    /// the base where the provider counted it.
+    context_base_tools: u64,
     /// The `(generation, length)` of the history
     /// [`context_used`](Self::context_used) last read, so the loop-bottom
     /// sync re-reads only when it moved.

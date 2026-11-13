@@ -1012,6 +1012,99 @@ fn the_rollout_records_each_request_and_how_each_call_ran() {
 }
 
 #[test]
+fn the_rollout_keeps_the_context_meter_behind_each_request() {
+    // The context gauge reads on from the provider's own count of the last
+    // request, and that count is kept with the conversation so a resume
+    // reads it too (docs/token-estimate.md *Kept with the session*): every
+    // request that moves the meter leaves a `context_meter` line behind its
+    // `usage` line.
+    let world = World::new("meter");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} run it"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    /// The file's `usage` and `context_meter` lines, in order, and each
+    /// meter's payload beside how many history items precede its line.
+    fn meters(lines: &[serde_json::Value]) -> (Vec<&str>, Vec<(&serde_json::Value, u64)>) {
+        let sidecars = [
+            "session_meta",
+            "model",
+            "usage",
+            "checkpoint",
+            "context_meter",
+        ];
+        let mut kinds = Vec::new();
+        let mut found = Vec::new();
+        let mut items = 0;
+        for line in lines {
+            let kind = line["type"].as_str().unwrap_or_default();
+            if kind == "context_meter" {
+                found.push((&line["payload"], items));
+            }
+            if ["usage", "context_meter"].contains(&kind) {
+                kinds.push(kind);
+            } else if !sidecars.contains(&kind) {
+                items += 1;
+            }
+        }
+        (kinds, found)
+    }
+    let lines = rollout(&world);
+    let (kinds, found) = meters(&lines);
+    let request = ["usage", "context_meter"];
+    assert_eq!(kinds, [request, request].concat(), "{lines:#?}");
+    // The newest is the count of the request that read the tool's result:
+    // the provider's own number, the model it counted in, and — the base
+    // sitting where that request finished — every item recorded before it.
+    let (newest, before) = found[1];
+    assert_eq!(newest["tokens"], 2400);
+    assert_eq!(newest["report"]["tokens"], 2400);
+    assert_eq!(newest["model"], "stub-model");
+    assert_eq!(newest["after"], before);
+    assert_eq!(before, 2, "the prompt and the call: {lines:#?}");
+    assert!(
+        newest["estimate"]
+            .as_u64()
+            .is_some_and(|estimate| estimate > 0),
+        "{newest}"
+    );
+    assert!(
+        newest["tools"].as_u64().is_some_and(|tools| tools > 0),
+        "the tool schemas' share of that estimate: {newest}"
+    );
+
+    // A continued conversation restores the meter and writes nothing for
+    // it: the next line is the one its own first request leaves.
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "-c",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} again"),
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let resumed = rollout(&world);
+    assert_eq!(resumed[..lines.len()], lines[..], "the first run's lines");
+    let (kinds, found) = meters(&resumed);
+    assert_eq!(kinds, [request; 4].concat(), "{resumed:#?}");
+    let (first, before) = found[2];
+    assert_eq!(first["tokens"], 1800, "the continued run's first request");
+    assert_eq!(first["after"], before);
+}
+
+#[test]
 fn a_subagents_requests_are_recorded_under_its_id() {
     // A subagent's requests are paid for by the conversation that launched
     // it: their lines land in its rollout, tagged with the id its

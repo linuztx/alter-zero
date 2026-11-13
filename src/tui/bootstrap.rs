@@ -936,6 +936,10 @@ impl<'t> Session<'t> {
                 // before the recorder adopts the file, which is told whether
                 // that record is what the session now runs.
                 let model = self.restore_session_model(recorded_model.as_ref());
+                // The context side (docs/token-estimate.md): the gauge reads
+                // on from the provider's count the file kept, so the footer
+                // says what it said before the session was closed.
+                self.restore_context_meter(&text);
                 let torn = !text.is_empty() && !text.ends_with('\n');
                 self.recorder.adopt(
                     path,
@@ -946,6 +950,9 @@ impl<'t> Session<'t> {
                     // Each request's usage line stays where it sat
                     // (docs/rollout-records.md).
                     session::parse_usage(&text),
+                    // The meter as just restored is what the file says: a
+                    // resume appends no line of its own.
+                    self.app.context_meter_snapshot(),
                     self.app.history_generation(),
                     recorded_model,
                     model.honoured,
@@ -1016,8 +1023,7 @@ impl<'t> Session<'t> {
     pub(crate) fn shutdown(mut self) -> Option<String> {
         // The quit arms break before the loop-bottom sync — catch the last
         // change.
-        self.recorder
-            .sync(&self.app.history, self.app.history_generation());
+        self.sync_recorder();
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
         // …and the tip walk's position, for a quit that drew a tip on its way
@@ -1142,8 +1148,7 @@ impl<'t> Session<'t> {
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch history)
         // cost no I/O.
-        self.recorder
-            .sync(&self.app.history, self.app.history_generation());
+        self.sync_recorder();
         // Tell the herdr pane what the session is doing now (docs/herdr.md) —
         // after the recorder sync, so a conversation's first message reports
         // the session id its file was just created under. A compare when

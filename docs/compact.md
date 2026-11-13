@@ -159,10 +159,14 @@ the same threshold — **90% of the model's context window**
   (the reply, a tool's output, the next message, read at the loop bottom
   so it shows before the next request), and across a mutation that count
   moved by the calibrated estimate of the change: after a compaction
-  (codex's `recompute_token_usage`), a backtrack, a `/resume`, a `/clear`
-  (→ 0 until the next message). A session that never sees a usage frame
-  (the dummy) reads the estimate alone, the tool schemas' among it, which
-  is also what the first request reads before its frame lands.
+  (codex's `recompute_token_usage`), a backtrack, a `/clear` (→ 0 until the
+  next message). A resume is no such mutation: the conversation's rollout
+  kept the count, and `/resume`, `--resume` and `--continue` bring it back,
+  so the footer reads what it read before the session was closed
+  (`docs/token-estimate.md` *Kept with the session*). A session that never
+  sees a usage frame (the dummy) reads the estimate alone, the tool schemas'
+  among it, which is also what the first request reads before its frame
+  lands.
 - **A subagent's session view gauges that agent, not the lead**
   (`docs/agent-context-gauge.md`): `App::context_gauge` — the footer's one
   question — answers with the viewed agent's own context

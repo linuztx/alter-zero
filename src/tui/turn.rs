@@ -152,8 +152,7 @@ impl Session<'_> {
         // `UserPromptSubmit` — already names the transcript instead of racing
         // the loop-bottom sync that would otherwise create it, which then has
         // nothing left to write (docs/hooks.md).
-        self.recorder
-            .sync(&self.app.history, self.app.history_generation());
+        self.sync_recorder();
         // A real prompt is the user's, whatever a loop-initiated turn left
         // marked (docs/hooks.md).
         self.models.clear_synthetic_turn();

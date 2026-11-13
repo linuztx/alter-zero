@@ -1306,7 +1306,9 @@ line with the provider's counts, `agent` on a subagent's and `compact` on a
 compaction's, placed where it finished by `session::history_lines`, kept
 through a rewrite by `session::retain_usage` (a subagent's even past the
 cut, since it was billed) and adopted back on a resume by
-`session::parse_usage`) in `docs/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
+`session::parse_usage` — beside them the `context_meter` sidecar, which is
+no analysis record but the context gauge's own count, kept so a resume
+reads it back, `docs/token-estimate.md`) in `docs/rollout-records.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the
 code**, not just the transcript: rewinding restores the working directory to the
@@ -2768,10 +2770,19 @@ via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
 gauge (the last usage frame's `input` plus the calibrated estimate of what
 joined since, read at the loop bottom so a paste or a tool's output shows
-before the next request; a compaction, rewind or `/resume` moves that count
+before the next request; a compaction or rewind moves that count
 by the estimate of the change, keeping the provider's own count of what
-rides every request; before any frame the estimate, the tool schemas'
-included — `tokens::ContextMeter`,
+rides every request, and a tool set that changes moves the reading by the
+change in its schemas' estimate while the count stays where the provider
+took it; **a resume restores it** — the rollout keeps the meter as a
+`context_meter` sidecar line, written behind the request that moved it, the
+newest winning, and `/resume`, `--resume` and `--continue` bring it back as
+written (`App::restore_context_meter`), so a reopened conversation reads
+what it read before it was closed instead of an estimate of the whole
+context, which no provider counts the same way (`8.1k/475k` had come back
+as `8.8k/475k`); a rollout from before the record reads on from its last
+`usage` line (`App::anchor_context_meter`); `smoke.sh` Phase 154; before any
+frame the estimate, the tool schemas' included — `tokens::ContextMeter`,
 `docs/token-estimate.md`; **inside an agent
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the

@@ -180,9 +180,9 @@ impl App {
     /// `ReplySource::tool_definitions`, pulled at every loop bottom). The
     /// same set in a new handle is no change, so the boundary can pull
     /// freely; a different one moves the page's signature, and the context
-    /// gauge re-reads the whole context with the new set's estimate in it —
-    /// every request carries the schemas, the first one included
-    /// (`docs/token-estimate.md`).
+    /// gauge re-reads with the new set's estimate in place of the one its
+    /// base counted — every request carries the schemas, the first one
+    /// included (`docs/token-estimate.md`).
     pub fn set_tool_definitions(&mut self, tools: Arc<[ToolDefinition]>) {
         if !Arc::ptr_eq(&self.tool_definitions, &tools) && *self.tool_definitions != *tools {
             self.tools_estimate = tools
@@ -191,8 +191,8 @@ impl App {
                 .fold(0, u64::saturating_add);
             self.tool_definitions = tools;
             self.tool_definitions_revision += 1;
-            // The last report's base carried the old set: estimate it all.
-            self.context_base_at = None;
+            // The base keeps the count of the set it was taken with; the
+            // next reading moves by the change (`context_base_tools`).
             self.context_synced = None;
         }
     }
