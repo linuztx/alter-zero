@@ -1554,16 +1554,21 @@ fn client_authentication_of(tokens: &StoredTokens) -> (Vec<(String, String)>, Op
 }
 
 /// Dynamically register a client (RFC 7591) for `redirect_uri`, asking for
-/// an authentication method the authorization server offers. A refusal
-/// carries the server's own reason (RFC 7591 §3.2.2).
+/// an authentication method the authorization server offers and naming the
+/// scopes the sign-in is about to ask for (`scope`; none when it asks for
+/// none). An authorization server may keep a client to the scopes it
+/// registered with, and then turns the authorize request away
+/// (`invalid_scope`) from one that registered none — after the browser has
+/// opened. A refusal carries the server's own reason (RFC 7591 §3.2.2).
 pub fn register_client(
     registration_endpoint: &str,
     redirect_uri: &str,
     supported_methods: &[String],
+    scope: Option<&str>,
 ) -> Result<ClientIdentity, String> {
     let client = auth_client(HTTP_TIMEOUT)?;
     let method = registration_auth_method(supported_methods);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "client_name": "alter-zero",
         "redirect_uris": [redirect_uri],
         "grant_types": ["authorization_code", "refresh_token"],
@@ -1574,6 +1579,9 @@ pub fn register_client(
         // OIDC default of "web" rejects exactly that redirect.
         "application_type": "native",
     });
+    if let Some(scope) = scope.map(str::trim).filter(|scope| !scope.is_empty()) {
+        body["scope"] = Value::String(scope.to_string());
+    }
     let response = client
         .post(registration_endpoint)
         .header("Content-Type", "application/json")
@@ -1711,6 +1719,21 @@ pub fn run_auth_flow(
     let meta = discover(server_url, challenge)?;
     still_wanted()?;
     let stored = load_tokens(store_path, server_url);
+    // Re-authorizing asks for what was granted before *and* what the server
+    // now wants — the step-up rule ("include these scopes alongside any
+    // previously granted scopes"), so a scope upgrade never drops the rest;
+    // another authorization server's scopes mean nothing here.
+    let granted = stored
+        .as_ref()
+        .filter(|tokens| same_authorization_server(tokens, &meta))
+        .and_then(|tokens| tokens.scope.as_deref());
+    // The entry's own scopes, when it names them, are what the user
+    // registered the client for — asked for as they are. Settled before any
+    // registration, which names them too.
+    let scopes = match configured.and_then(|config| config.scopes.clone()) {
+        Some(scopes) => Some(scopes),
+        None => scope_union(&[meta.scopes.as_deref(), granted]),
+    };
     let (callback, redirect_uri, client) = match configured
         .and_then(|config| Some((config, config.client_id.clone()?)))
     {
@@ -1775,9 +1798,12 @@ pub fn run_auth_flow(
                 {
                     client
                 }
-                (_, Some(endpoint)) => {
-                    register_client(endpoint, &redirect_uri, &meta.token_auth_methods)?
-                }
+                (_, Some(endpoint)) => register_client(
+                    endpoint,
+                    &redirect_uri,
+                    &meta.token_auth_methods,
+                    scopes.as_deref(),
+                )?,
                 // Nothing to register with: the old client on a new port is
                 // the one chance (an authorization server honouring RFC 8252
                 // §7.3 accepts it).
@@ -1797,20 +1823,6 @@ pub fn run_auth_flow(
     };
     still_wanted()?;
     let (verifier, code_challenge, state) = pkce_and_state()?;
-    // Re-authorizing asks for what was granted before *and* what the server
-    // now wants — the step-up rule ("include these scopes alongside any
-    // previously granted scopes"), so a scope upgrade never drops the rest;
-    // another authorization server's scopes mean nothing here.
-    let granted = stored
-        .as_ref()
-        .filter(|tokens| same_authorization_server(tokens, &meta))
-        .and_then(|tokens| tokens.scope.as_deref());
-    // The entry's own scopes, when it names them, are what the user
-    // registered the client for — asked for as they are.
-    let scopes = match configured.and_then(|config| config.scopes.clone()) {
-        Some(scopes) => Some(scopes),
-        None => scope_union(&[meta.scopes.as_deref(), granted]),
-    };
     let mut authorize_url = build_authorize_url(
         &meta.authorization_endpoint,
         &client.client_id,
@@ -3096,6 +3108,8 @@ mod tests {
         token_requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
         /// Every request's path beside the `User-Agent` it carried.
         agents: SeenAgents,
+        /// Each registration request's body.
+        registered: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     fn spawn_auth_server(register_reply: Option<(u16, &'static str)>) -> AuthServerFixture {
@@ -3126,11 +3140,13 @@ mod tests {
         let registrations = std::sync::Arc::new(AtomicUsize::new(0));
         let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let agents = SeenAgents::default();
+        let registered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let fixture = AuthServerFixture {
             base: base.clone(),
             registrations: std::sync::Arc::clone(&registrations),
             token_requests: std::sync::Arc::clone(&token_requests),
             agents: std::sync::Arc::clone(&agents),
+            registered: std::sync::Arc::clone(&registered),
         };
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -3199,6 +3215,7 @@ mod tests {
                         ),
                     ),
                     "/register" => {
+                        registered.lock().unwrap().push(body.clone());
                         let n = registrations.fetch_add(1, Ordering::SeqCst) + 1;
                         match register_reply {
                             Some((status, reply)) => (status, reply.to_string()),
@@ -3530,6 +3547,56 @@ mod tests {
         for (path, agent) in agents.iter() {
             assert_eq!(agent.as_deref(), Some(ours.as_str()), "{path}");
         }
+    }
+
+    /// A registration names the scopes the sign-in is about to ask for. An
+    /// authorization server that keeps a client to the scopes it registered
+    /// with turns the authorize request away (`invalid_scope`) from one that
+    /// registered none — after the browser has opened; and with nothing to
+    /// ask for, the registration names none.
+    #[test]
+    fn a_registration_names_the_scopes_the_sign_in_asks_for() {
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let server_url = format!("{}/mcp", fixture.base);
+        let run = |store: &Path, challenge: Option<&str>| {
+            let (_paste_tx, paste_rx) = mpsc::channel();
+            let progress = std::sync::Arc::new(Recorded::default());
+            run_auth_flow(
+                &SignIn {
+                    server_url: &server_url,
+                    challenge,
+                    store_path: Some(store),
+                    client: None,
+                },
+                &paste_rx,
+                &progress,
+                &approving_browser("code-1"),
+                &CancelToken::new(),
+            )
+            .expect("signed in");
+            progress.urls.lock().unwrap()[0].clone()
+        };
+        // The refusal's own challenge says what the server wants.
+        let authorize_url = run(
+            &dir.path().join("challenged.json"),
+            Some(r#"Bearer error="invalid_token", scope="read write""#),
+        );
+        assert_eq!(
+            redirect_param(&authorize_url, "scope").as_deref(),
+            Some("read write")
+        );
+        // Nothing asked for: no `scope` on the URL, none in the registration.
+        let authorize_url = run(&dir.path().join("plain.json"), None);
+        assert_eq!(redirect_param(&authorize_url, "scope"), None);
+        let registered = fixture.registered.lock().unwrap();
+        let bodies: Vec<Value> = registered
+            .iter()
+            .map(|body| serde_json::from_str(body).expect("a JSON registration"))
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["scope"], "read write");
+        assert!(bodies[1].get("scope").is_none(), "{}", bodies[1]);
     }
 
     /// A client registered with another authorization server is never

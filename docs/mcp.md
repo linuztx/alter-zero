@@ -728,6 +728,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   first, RFC 6749's default); a client registered with
   `client_secret_basic` authenticates with HTTP Basic, neither half in the
   body (`client_authentication`, the exchange and every refresh alike).
+  It also **names the scopes the sign-in is about to ask for** (RFC 7591's
+  `scope`, left out when it asks for none — the scopes are settled before
+  the registration for that reason): an authorization server may keep a
+  client to the scopes it registered with, and one that does turns the
+  authorize request away — `invalid_scope`, after the browser has opened —
+  from a client that registered none.
   A refused registration or exchange carries the server's own `error` and
   `error_description` (`oauth_error_detail`) rather than a bare status, and
   a server offering no registration says how to add a pre-registered

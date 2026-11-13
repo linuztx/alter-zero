@@ -31,6 +31,11 @@ release heading when a version is cut.
   connection refused, no such host, a certificate that isn't trusted)
   rather than only `error sending request for url (…)`.
 
+- **Signing in to an MCP server registers the scopes it asks for.** Some
+  authorization servers keep an app to the scopes it registered with, and
+  refused the sign-in (`invalid_scope`) after the browser had opened,
+  because the registration named none.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added
