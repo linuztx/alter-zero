@@ -115,8 +115,8 @@ so an empty history *is* an empty conversation.
 own rows, built by the same `TranscriptCache` walk so the export and the
 pager can never disagree, starting where the page starts: the **startup
 banner** the terminal opened with — the mascot beside `Alter Zero (v…)`,
-the cwd, the `/login   /model   /resume` hint — then one blank row and the
-conversation. The banner is kept on purpose: the file is a record of what
+the cwd, the `/ commands  @ files  ? shortcuts` hint — then one blank row
+and the conversation. The banner is kept on purpose: the file is a record of what
 the terminal showed, and a transcript that opens the way the session did
 says which tool wrote it, which version, and where it ran, without a header
 of its own being invented for it. Under it, every message, every tool

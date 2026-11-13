@@ -1520,11 +1520,13 @@ pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 pub(super) const MASCOT_PREVIEW_GAP: usize = THEME_PREVIEW_GAP;
 
 /// The narrowest preview column the side-by-side page lays out: the banner
-/// keeps its art beside its title and its `/login /model /resume` hint (36
-/// columns) and every caption reads whole (37), with a little room left for
-/// the cwd row, which the banner `…`-cuts as it always has. A terminal with
-/// less than the list, the gap and this stacks the preview under the list.
-pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 40;
+/// keeps its art beside its title and its
+/// `/ commands  @ files  ? shortcuts` hint whole (43 columns beside the
+/// widest art, the banner's widest row) and every caption reads whole
+/// (37), the cwd row `…`-cut past that as the banner always cuts it. A
+/// terminal with less than the list, the gap and this stacks the preview
+/// under the list.
+pub(super) const MASCOT_PREVIEW_MIN_COLS: usize = 43;
 
 // --- the inline /spinner picker (docs/spinner.md). The /theme picker's
 // layout over the spinner-style catalog: the family's header, frame and `❯`
@@ -3029,10 +3031,22 @@ pub(super) const SHELL_BULLET: &str = "! ";
 /// banner and every sentence the app speaks its name in can't drift apart.
 pub(super) const HEADER_NAME: &str = crate::APP_NAME;
 
-/// The command hint beside the mascot — bare `/token`s in the accent colour,
-/// three-space separated. Deliberately prose-free so it can't collide with
-/// the smoke suite's `for commands` / footer markers.
-pub(super) const HEADER_HINT: &[&str] = &["/login", "/model", "/resume"];
+/// The hint beside the mascot: the composer's three keys as `(key, label)`
+/// pairs — `/` opens the command palette, `@` the file picker, `?` the
+/// shortcuts band — drawn `/ commands  @ files  ? shortcuts`, each key in
+/// the accent one space from its label in the dim, the `?` band's dress for
+/// its own entries ([`shortcuts_key_color`], [`shortcuts_text_color`]), and
+/// the pairs [`HEADER_HINT_GAP`] columns apart. The labels drop the band's
+/// `for`, which keeps the row clear of the smoke suite's `for commands`
+/// marker.
+pub(super) const HEADER_HINT: &[(&str, &str)] =
+    &[("/", "commands"), ("@", "files"), ("?", "shortcuts")];
+
+/// Blank columns between the hint's pairs: the `?` band's own narrowest
+/// gutter ([`SHORTCUTS_MIN_GUTTER`]), so spacing alone groups each key with
+/// its label — one space inside a pair, two between pairs — and the keys
+/// stay the only symbols on the row.
+pub(super) const HEADER_HINT_GAP: usize = SHORTCUTS_MIN_GUTTER;
 
 /// Columns between the mascot art's right edge and the metadata column —
 /// two, per the user's spec (a wider gap read as detached).
@@ -3065,7 +3079,8 @@ pub(super) fn header_gradient_at(col: usize, total: usize) -> Color {
     lerp_color(header_gradient_start(), header_gradient_end(), t)
 }
 
-/// The version badge + hint-token colour — the cyan accent, so they pop.
+/// The narrow badge's version, the hint's keys and a notice card's title —
+/// the cyan accent, so they pop.
 pub(super) fn header_accent_color() -> Color {
     inline_code_color()
 }

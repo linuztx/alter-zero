@@ -2,16 +2,17 @@
 
 A Claude-Code-style **header** committed to scrollback at launch: the
 session's block-character **mascot** (see `docs/mascot.md`) beside the
-product name + version, the working directory, and a one-line command hint.
-It is the first thing the user sees, and it scrolls up into history naturally
-as the conversation grows — exactly like Claude Code's welcome banner.
+product name + version, the working directory, and a one-line hint naming
+the composer's keys. It is the first thing the user sees, and it scrolls up
+into history naturally as the conversation grows — exactly like Claude
+Code's welcome banner.
 
 ## What it shows
 
 ```
  ▙▄▙▄▟▄▟   Alter Zero (v0.1.0)
 ▝▜▄███▄▛▘  ~/inline-tui
-  ▘▘ ▝▝    /login   /model   /resume
+  ▘▘ ▝▝    / commands  @ files  ? shortcuts
 ```
 
 - **Mascot** — the selected mascot's art (crest by default, switched with
@@ -28,8 +29,13 @@ as the conversation grows — exactly like Claude Code's welcome banner.
   (`header_cwd_color()` is `footer_cwd_color()`, `docs/footer.md`), so the
   path is one colour at both ends of the screen. Skipped when no session info
   is injected.
-- **Hint** — bare command tokens (`/login`, `/model`, `/resume`) in the cyan
-  accent, three-space separated (dim separators).
+- **Hint** — the composer's three keys, `/ commands  @ files  ? shortcuts`:
+  each key in the cyan accent one space from its label in the dim — the
+  `?` band's own dress for its entries (`docs/shortcuts.md`), under every
+  theme — and the pairs two spaces apart, the band's own narrowest gutter
+  (`HEADER_HINT_GAP` is `SHORTCUTS_MIN_GUTTER`). Each key does from a fresh
+  composer what its label names: `/` opens the command palette, `@` the
+  file picker, `?` the shortcuts band (*Why the hint names keys* below).
 
 The metadata rows sit in one aligned column at `art width + 2`, and the
 block is **vertically centered** in a mascot taller than it, ties resolving
@@ -41,13 +47,41 @@ is exactly the metadata's height *with* a session; the live case is the
 ```
  ▙▄▙▄▟▄▟
 ▝▜▄███▄▛▘  Alter Zero (v0.1.0)
-  ▘▘ ▝▝    /login   /model   /resume
+  ▘▘ ▝▝    / commands  @ files  ? shortcuts
 ```
 
 Art rows without a metadata neighbour render alone (no trailing pad), and
 metadata rows past the art (nothing in today's catalog) would keep their
 column. Every row is clamped to the width with a trailing `…`, exactly like
 `footer_line`.
+
+## Why the hint names keys, not commands
+
+The hint used to list three commands, `/login   /model   /resume`: sign in,
+pick a model, pick a conversation back up. Each of them is one row of the
+`/` palette, which lists every command with what it does, and the first run
+already points at the first two: every user-facing offline demo reply closes
+on the `/login` then `/model` hand-off (`docs/dummy-backend.md`). What
+nothing else on screen teaches is the composer itself, so the banner's one
+row of advice names the three keys that open everything else: `/` reaches
+every command (those three included), `@` puts a file's path in the
+message, and `?` lists the rest of the keys.
+
+The row is three of the `?` band's own entries, and it reads like them —
+keys in the accent, labels in the dim — in the terse wording the band takes
+on a narrow pane (`/ commands`, never `/ for commands`), with `file paths`
+shortened to `files`. Dropping the `for` also keeps the banner clear of
+`for commands`, the string the smoke suite reads as the band being open
+(Phase 11). One space joins a key to its label and two separate the
+pairs, the band's own narrowest gutter, so spacing alone groups each key
+with its label and the three keys stay the only symbols on the row. The
+footer's ` · ` was tried between the pairs and taken back out: it added a
+fourth symbol beside three keys that are symbols already, and the cyan
+keys already mark where each pair starts, so only a copy with no colour
+(an `/export` file) read any better for it. A test presses each key on a
+fresh composer and checks that it opens what its label names
+(`header_hint_keys_open_what_they_name`), so the banner cannot go on
+advertising a key that stopped working.
 
 ## Responsive fallback
 
@@ -128,8 +162,8 @@ kept clear of the strings other phases key on (`for commands`,
   the banner share one builder (`docs/mascot.md`).
 - `banner_tail(banner, tail) -> Vec<Line<'static>>` — the banner + a blank
   spacer over a purge rebuild's repaint tail (see *Surviving every rebuild*).
-- `HEADER_NAME` / `HEADER_HINT` / `HEADER_ART_GAP` — the title word, the hint
-  tokens, and the art→metadata gap.
+- `HEADER_NAME` / `HEADER_HINT` / `HEADER_ART_GAP` — the title word, the
+  hint's `(key, label)` pairs, and the art→metadata gap.
 - `header_gradient_start()` / `header_gradient_end()` — the mascot gradient's
   endpoints; `gradient_spans` lerps per display column and coalesces
   equal-colour runs into spans.
@@ -142,7 +176,11 @@ kept clear of the strings other phases key on (`for commands`,
   trailing pad on meta-less rows); the metadata block seats lower beside a
   taller mascot (every mascot's session-less banner puts its two rows at
   1–2, art alone above); it follows `App::mascot`; the title is bold-name + dim-version,
-  the cwd in the footer's path colour, the hint in the accent; the art carries the accent → link gradient; a
+  the cwd in the footer's path colour, the hint's keys in the accent beside
+  dim labels — the `?` band's dress — under every theme, the pairs the
+  band's narrowest gutter apart, and each key it shows opens what its
+  label names from a fresh composer
+  (`header_hint_keys_open_what_they_name`); the art carries the accent → link gradient; a
   very narrow width falls back to the text badge and never exceeds the
   width; a session-less `App` still renders art + version (no cwd row); the
   banner contains none of the smoke-reserved strings at any width for any

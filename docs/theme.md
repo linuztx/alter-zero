@@ -462,8 +462,8 @@ closed the picker; the boundary (`tui::theme::Session::select_theme`):
    toast riding the rebuilt frame. The transcript and context caches rebuild
    on their next read (keyed on the theme, above). The switch is visible at
    once, exactly like a resize's repaint; `smoke.sh` Phase 111 reads the
-   banner's `/login` hint off the raw SGR bytes before and after and sees
-   Mocha's sky become Dracula's cyan.
+   keys of the banner's hint off the raw SGR bytes before and after and
+   sees Mocha's sky become Dracula's cyan.
 
 At startup `tui::bootstrap` seeds `App::theme` from `theme.json` and
 activates it **before the banner is built** (an absent or corrupt file keeps
@@ -609,7 +609,7 @@ the saved theme.
   keyword, the ANSI theme's palette colours, a highlighter keeping its
   theme.
 - `scripts/smoke.sh` Phase 111 — the picker end to end in a real terminal:
-  the banner hint in the default accent (raw SGR), the palette entry, the
+  the banner hint's keys in the default accent (raw SGR), the palette entry, the
   open page with its title, its five swatched rows over the `(1/11)`
   counter and its real-cell preview **beside the list** at 90 columns, ↓
   moving the marker and the caption, a **resize to 64 columns stacking the

@@ -114,6 +114,14 @@ release heading when a version is cut.
   `cargo build --release` from a checkout is unchanged
   (`docs/binary-size.md`).
 
+- **The startup banner shows the keys that open everything else.** Its last
+  row read `/login   /model   /resume`; it now reads
+  `/ commands  @ files  ? shortcuts`: each key in the theme's accent beside
+  a dim label, spaced the way the `?` shortcuts list shows its entries. `/`
+  opens the command palette, which lists `/login`, `/model` and `/resume`
+  with every other command, `@` picks a file to mention, and `?` lists the
+  rest of the keys (`docs/header.md`).
+
 - **The status line has sixty new verbs, and none of them is
   `Generating…`.** The word beside the spinner came from a list of ten that
   opened on `Working…` and `Generating…` and later read `Computing…` and

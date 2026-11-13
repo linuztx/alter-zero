@@ -235,7 +235,10 @@ backtrack to.
 - **No persistent `? for shortcuts` hint**: codex has an always-present
   footer line to put it on; we deliberately keep the idle live region at its
   minimum (one box, nothing else), so discoverability costs a row we don't
-  want to spend. The band itself is the documentation once found.
+  want to spend. The startup banner names the key instead, once, at launch:
+  its hint row is three of this band's entries in its terse wording and
+  dress, `/ commands  @ files  ? shortcuts` (`docs/header.md`). The band
+  itself is the documentation once found.
 - **No paste-burst guard**: our `paste::PasteBurst` lives at the I/O boundary
   and only times redraws — the pure `App` can't see it. A non-bracketed paste
   beginning with `?` into an empty composer briefly toggles the band (the

@@ -60,7 +60,9 @@ pub(super) fn page_title_line(text: &str, width: u16) -> Line<'static> {
 
 /// The metadata column beside the mascot, one span-row each: the bold name +
 /// dim `(v…)` version, the cwd in the footer's path colour (only with
-/// session info), and the cyan command hint.
+/// session info), and the key hint — `/ commands  @ files  ? shortcuts`,
+/// each key in the accent beside its dim label ([`HEADER_HINT`]), the pairs
+/// [`HEADER_HINT_GAP`] columns apart.
 fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
     let accent = Style::new().fg(header_accent_color());
     let dim = Style::new().fg(header_meta_color());
@@ -75,11 +77,12 @@ fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
         )]);
     }
     let mut hint: Vec<Span<'static>> = Vec::new();
-    for (i, token) in HEADER_HINT.iter().enumerate() {
+    for (i, &(key, label)) in HEADER_HINT.iter().enumerate() {
         if i > 0 {
-            hint.push(Span::styled("   ", dim));
+            hint.push(Span::styled(" ".repeat(HEADER_HINT_GAP), dim));
         }
-        hint.push(Span::styled(*token, accent));
+        hint.push(Span::styled(key, accent));
+        hint.push(Span::styled(format!(" {label}"), dim));
     }
     rows.push(hint);
     rows

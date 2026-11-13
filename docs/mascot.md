@@ -30,7 +30,7 @@ column across the art block's width.
 
 ## The `/mascot` picker
 
-On a terminal with room for the list, a gap and the banner — 56 columns over
+On a terminal with room for the list, a gap and the banner — 59 columns over
 this catalog — the preview sits **beside** the list, the `/theme` picker's
 layout (`docs/theme.md`):
 
@@ -46,7 +46,7 @@ layout (`docs/theme.md`):
     sprout
     twin         ▙▄▙▄▟▄▟   Alter Zero (v0.18.0)
     skiter      ▝▜▄███▄▛▘  ~/alter-zero
-    (1/6)         ▘▘ ▝▝    /login   /model   /resume
+    (1/6)         ▘▘ ▝▝    / commands  @ files  ? shortcuts
 
   ↑/↓ to navigate · Type to search · Enter to choose · Esc to cancel
 ────────────────────────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ On a narrower one the same preview stacks under the list:
 
    ▙▄▙▄▟▄▟   Alter Zero (v0.14.0)
   ▝▜▄███▄▛▘  ~/alter-zero
-    ▘▘ ▝▝    /login   /model   /resume
+    ▘▘ ▝▝    / commands  @ files  ? shortcuts
 
   ↑/↓ to navigate · Type to search · Enter to choose …
 ──────────────────────────────────────────────────────
@@ -99,12 +99,14 @@ its description in the frame's dim.
   preview sits beside the list once the terminal has room for the list
   column (the widest row the catalog can paint, 12 columns), then
   `MASCOT_PREVIEW_GAP` (4, the `/theme` gap), then `MASCOT_PREVIEW_MIN_COLS`
-  (40: the banner keeps its art beside its title and its `/login /model
-  /resume` hint, 36 columns, and every caption reads whole, 37). That is 56
-  columns, so every standard terminal gets it. Under that the preview stacks
-  under the list after a gap, inset two columns. There is one breakpoint, and
-  at it the banner still seats its art and every caption reads whole
-  (`the_layout_switches_once_and_beside_the_list_the_banner_keeps_its_art`).
+  (43: the banner keeps its art beside its title and its
+  `/ commands  @ files  ? shortcuts` hint whole, 43 columns beside the
+  widest art, and every caption reads whole, 37). That is 59 columns, so
+  every standard terminal gets it. Under that the preview stacks under the list
+  after a gap, inset two columns. There is one breakpoint, and at it every
+  row of the banner reads as the startup banner draws it and every caption
+  reads whole
+  (`the_layout_switches_once_and_beside_the_list_the_banner_reads_whole`).
   The list column is a constant of the catalog, so neither ↑/↓ nor a search
   moves the preview sideways
   (`the_preview_column_holds_still_as_the_list_moves_and_filters`).
@@ -269,8 +271,9 @@ a project.
   captioned preview, hint) at a wide and a narrow width, the marker and
   indent, the preview beside the list on one column
   (an 80-column terminal included) and stacked under it after a gap on a
-  narrow one, the one breakpoint with the banner's art and every caption
-  kept at it, the preview column holding still through ↑/↓ and searches, the
+  narrow one, the one breakpoint with the whole banner, its hint included,
+  and every caption kept at it, the preview column no wider than that
+  needs, the preview column holding still through ↑/↓ and searches, the
   caption's bold title over its dim description and every caption whole at
   80 columns, the preview following the selection, the stable height, the
   active ✓ and its seat, the no-match placeholder, no stacked blanks, width
