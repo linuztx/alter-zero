@@ -652,7 +652,12 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   When a revision on the `/mcp` page still looks wrong, the answer is one
   command away and involves no TUI at all: `cargo run --example mcp_probe --
   {url|command}` runs this very connect sequence and prints what the server
-  replied — identity, revision, capabilities, tools.
+  replied — identity, revision, capabilities, tools. Against a server that
+  wants a sign-in it runs the sign-in's discovery too — the metadata
+  documents only: nothing is registered and no browser opens — and prints
+  the authorization server it found, where it signs in and trades the code,
+  whether it registers clients itself, and the scopes that would be asked
+  for, so "why can't I authenticate?" has the same one-command answer.
 
   What that costs is one round trip per connect — sub-millisecond on stdio,
   one RTT on HTTP (measured against three live servers: 0.43 s, 0.69 s,
