@@ -57,10 +57,10 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
         "web-search/SKILL.md",
         include_str!("../../prompts/skills/web-search/SKILL.md"),
     ),
-    // The scripts its body runs. Seeded without the executable bit (a plain
-    // write), so the body runs each through `python3`. The three MCP clients
-    // import `mcp_http.py` from their own directory, and the unit tests stay
-    // beside them in the repository, unseeded.
+    // The scripts its body runs. Seeded without the executable bit (the mode
+    // a plain write gives), so the body runs each through `python3`. The
+    // three MCP clients import `mcp_http.py` from their own directory, and
+    // the unit tests stay beside them in the repository, unseeded.
     (
         "web-search/scripts/exa_search.py",
         include_str!("../../prompts/skills/web-search/scripts/exa_search.py"),
@@ -84,6 +84,95 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
     (
         "yt-dlp/SKILL.md",
         include_str!("../../prompts/skills/yt-dlp/SKILL.md"),
+    ),
+];
+
+/// Every version of each built-in skill file that a build wrote **before
+/// builds kept the record** of what they wrote (`docs/skills.md` *Following a
+/// release*) — what tells a copy nobody edited from an edited one in a config
+/// home an earlier release filled.
+///
+/// Frozen: a version written from here on is in the record beside the files,
+/// so an edit to a built-in file adds nothing to this list, and a new
+/// built-in file needs no row.
+const EARLIER_SKILL_VERSIONS: [super::seed::EarlierVersions<'static>; 12] = [
+    (
+        "flaredantic/SKILL.md",
+        &["sha256:6b4e0ffc55d093fe8506bfa59bb97eb8accb7436a56343806b493d70d101a579"],
+    ),
+    (
+        "flaredantic/reference.md",
+        &["sha256:d526d11b96b6701a26032f91838f6c969951fd998d228358b1ab4dbaa37b4db6"],
+    ),
+    (
+        "jina-reader/SKILL.md",
+        &["sha256:061632f34cb06839d61e578735250b4490c634ed73cb1b4b75e85de375e75854"],
+    ),
+    (
+        "skill-creator/SKILL.md",
+        &[
+            "sha256:d6b0ec10ef9db48a98e16e572bfa017437bc4470d535fd08cc4498439ee7695a",
+            "sha256:599c25c0f06911874946787708d0ea8af46f3f900655e92e8f54f1690066f1ca",
+        ],
+    ),
+    (
+        "skill-creator/reference.md",
+        &[
+            "sha256:70a5eaf1cbcf17fcefc3cc357c0a2732e9ac0ae91d7cc5bafaf40c28e38ef03c",
+            "sha256:ccd94c033123c6673504f74a2db3a5e5ae301c893169230205936d9e5a944ae6",
+        ],
+    ),
+    (
+        "web-search/SKILL.md",
+        &[
+            "sha256:7aca315b6fe9e52407a51a180985117b42009066f2e8c9b7ee8872690e3a9854",
+            "sha256:f3a9c550fc878640acd8cc9fcceb1a612c4083cb7b34d7ec4bf2407c7e730100",
+            "sha256:2e236c135fa7fd1d03c16989d612e55211bffb4601ad480f96ac6418efb7f37c",
+            "sha256:667b565e4d8891f90817adb3a979cf63ddad9d490d82c40b34b2bf8e06e73e35",
+            "sha256:6f83cf1c8e6ca6c0205883e243e0f62c8f2db3a508d22c0ddea5d81d6b7c12d0",
+        ],
+    ),
+    (
+        "web-search/scripts/exa_search.py",
+        &[
+            "sha256:c41ec094a60ae2bfb633459bcd5aa4a30c9199f37c8f269277a08b55389c6418",
+            "sha256:c280435f80aeabe123ad475979e5de0daf95548e0c6ec11c62ccadea117fb728",
+            "sha256:58e05587c9277efe26f315f9697c3e15833b6c9e75008505801e3669459b347a",
+        ],
+    ),
+    (
+        "web-search/scripts/parallel_search.py",
+        &[
+            "sha256:71ad31001ca819773cc2779e8fa0fa1a6c49e871a953bc28ea48e5e8c4447e96",
+            "sha256:a92ba08fee2151dbaa4d24a0f7b54439b69e2cf9bb0e3080c4dab628b7bb8f89",
+            "sha256:5bb06d0ac4816eaf20ee37f758b3c2f0adf383e89105fb2170277ecc27985a5a",
+        ],
+    ),
+    (
+        "web-search/scripts/tavily_search.py",
+        &[
+            "sha256:a4ab6fecf40c01dcd1b844cd4a040698c319b88d7aa7cd70b013768f4b730728",
+            "sha256:3eb5a9786c4bf520bf0197f5f644c43620f80d4fb3b0edd5993eb6a14fa24235",
+            "sha256:804be935493bd310c5fe5074d9d2300c3c5bc144a45ecd0eaefc4644c42f63c0",
+            "sha256:ccf93a8c07edb93282d68c75ff44a05b77b4bf9295e5cc80fca7c8a687804582",
+        ],
+    ),
+    (
+        "web-search/scripts/mcp_http.py",
+        &[
+            "sha256:d6f310b3cc24cdd49eab3b368ecd62cf61505fdf5e60464460a825f8a5a156d1",
+            "sha256:c407872dcdbce64604c88bed59429e4dd2cab5224007290afe3858fb1cc20250",
+            "sha256:0c564a92714aa671eb2c0df4d9c330949770f58ac78ab0a08bf73bcd0399b4bb",
+            "sha256:59f67abce4c6321c514bf5e517a0c056b52d7f4267b7d72ec3b89c53d5522852",
+        ],
+    ),
+    (
+        "web-search/scripts/jina_web_search.py",
+        &["sha256:8c061b227738a030a04a0e17409849493cbbfbe983d5e85d97bae733dd7fee93"],
+    ),
+    (
+        "yt-dlp/SKILL.md",
+        &["sha256:843859abf84bf5e2745d596050de7e659d3041e10afa627c9c4df50ae9bc20f0"],
     ),
 ];
 
@@ -171,42 +260,25 @@ pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf
     builtin_skills_dir(config_home, override_dir().as_deref())
 }
 
-/// Write the built-in skills into `root`, **skipping any whose `SKILL.md` is
-/// already there** — so a fresh install finds them on disk and can edit them,
-/// a later launch never discards those edits, and a deleted one comes back.
+/// Bring the built-in skills under `root` up to this build
+/// (`docs/skills.md` *Following a release*): a file that is missing is
+/// written, a copy nobody edited is replaced by this build's version, and a
+/// copy the user edited is kept exactly as it is.
 ///
-/// The agent definitions' rule, for the same reason (`docs/subagents.md` —
-/// a seed that overwrote would silently replace the user's own copy on every
-/// restart). Turning a built-in skill *off* is `/skills`, which persists;
-/// deleting the folder only lasts until the next launch.
+/// So a fresh install finds the skills on disk and can edit them, a later
+/// launch never discards those edits, a deleted file comes back — and a fix to
+/// a built-in script reaches the installs that already have the skill, which
+/// a seed that only ever wrote missing files never did. What tells an edited
+/// copy from an untouched one is the record this keeps beside the files, and,
+/// for a config home an earlier release filled, `EARLIER_SKILL_VERSIONS`.
+///
+/// Turning a built-in skill *off* is `/skills`, which persists; deleting the
+/// folder only lasts until the next launch.
 ///
 /// Failures are collected, never thrown: a read-only config home costs the
 /// built-in skill, not the session.
 pub fn seed_builtin_skills(root: &Path) -> Vec<SkillError> {
-    let mut errors = Vec::new();
-    for (relative, contents) in BUILTIN_SKILL_FILES {
-        let path = root.join(relative);
-        if path.exists() {
-            continue;
-        }
-        let Some(dir) = path.parent() else {
-            continue;
-        };
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            errors.push(SkillError {
-                path: dir.to_path_buf(),
-                message: err.to_string(),
-            });
-            continue;
-        }
-        if let Err(err) = std::fs::write(&path, contents) {
-            errors.push(SkillError {
-                path,
-                message: err.to_string(),
-            });
-        }
-    }
-    errors
+    super::seed::seed(root, &BUILTIN_SKILL_FILES, &EARLIER_SKILL_VERSIONS)
 }
 
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
@@ -1371,6 +1443,75 @@ mod tests {
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "web-search"));
+    }
+
+    /// A built-in file's bytes as this build carries them.
+    fn built_in(relative: &str) -> &'static str {
+        BUILTIN_SKILL_FILES
+            .iter()
+            .find(|(path, _)| *path == relative)
+            .map(|(_, contents)| *contents)
+            .expect("a built-in file")
+    }
+
+    #[test]
+    fn a_built_in_file_nobody_edited_follows_the_release() {
+        // An earlier release wrote its own versions of these two files and
+        // recorded them; the user then edited one. This build replaces the
+        // one nobody touched — the reason a fix to a built-in script reaches
+        // an install that already has the skill — and keeps the other.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let earlier_release = [
+            (
+                "web-search/SKILL.md",
+                "---\nname: web-search\ndescription: An earlier release's.\n---\n",
+            ),
+            (
+                "web-search/scripts/mcp_http.py",
+                "print('an earlier release')\n",
+            ),
+        ];
+        assert!(super::super::seed::seed(&root, &earlier_release, &[]).is_empty());
+        write_skill(&root, "web-search", &skill_md("Mine.", "my own search"));
+
+        assert!(seed_builtin_skills(&root).is_empty());
+
+        assert!(
+            std::fs::read_to_string(root.join("web-search/scripts/mcp_http.py")).expect("read")
+                == built_in("web-search/scripts/mcp_http.py"),
+            "the untouched script is this build's"
+        );
+        assert!(
+            std::fs::read_to_string(root.join("web-search").join(SKILL_FILE_NAME))
+                .expect("read")
+                .contains("my own search"),
+            "the edited SKILL.md is kept"
+        );
+    }
+
+    #[test]
+    fn the_record_is_no_skill_and_no_error() {
+        // The record sits in the root the walk reads: it must not be listed,
+        // and must not be reported as a skill that will not parse.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(root.join(super::super::seed::RECORD_FILE).is_file());
+
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+
+        assert!(errors.is_empty(), "{errors:?}");
+        let skill_files = BUILTIN_SKILL_FILES
+            .iter()
+            .filter(|(path, _)| path.ends_with(SKILL_FILE_NAME))
+            .count();
+        assert_eq!(skills.len(), skill_files);
+    }
+
+    #[test]
+    fn the_earlier_versions_are_fingerprints_of_built_in_files() {
+        super::super::seed::assert_earlier_versions(&BUILTIN_SKILL_FILES, &EARLIER_SKILL_VERSIONS);
     }
 
     #[test]

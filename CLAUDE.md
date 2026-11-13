@@ -1571,8 +1571,10 @@ capitalized built-ins, MCP wire names, a trailing `*` globbing a server), over
 an optional body that **replaces the persona** for that type while the
 environment/scratchpad blocks and the subagent note stay; the built-in
 `general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` on first
-run from the copies embedded out of `prompts/agents/` — editable files, never
-clobbered, and the last-resort fallback (`AgentDefinition::is_builtin`, a
+run from the copies embedded out of `prompts/agents/` — editable files, an
+edited one never clobbered and an untouched one replaced by a release's newer
+version (the built-in skills' `.seeded.json` record, below), and the
+last-resort fallback (`AgentDefinition::is_builtin`, a
 `path` of `None`) since the schema's default type must always resolve —
 discovered from `{cwd}/.alter-zero/agents`, the project root's, then
 `{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
@@ -2563,9 +2565,21 @@ every other `include_str!`'d markdown (a file there missing from
 `BUILTIN_SKILL_FILES` fails `every_authored_built_in_file_is_embedded`, a
 script's `test_*` files excepted) and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
-use it) the way the agent definitions are — editable, never clobbered, a
-deleted file back next launch, the off-switch being `/skills`, which persists,
-rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
+use it) the way the agent definitions are — editable, an edited copy never
+clobbered, a deleted file back next launch, the off-switch being `/skills`,
+which persists, rather than `rm -rf`, **and a copy nobody edited replaced by
+the build's own version** (`llm::seed`, the one writer both seeds share,
+`docs/skills.md` *Following a release*: a `.seeded.json` record beside the
+files holds the sha256 of what the app last wrote at each path, so a copy
+that still has it was never edited; a config home from before the record is
+told apart by `EARLIER_SKILL_VERSIONS`, the frozen list of every version a
+build wrote until then, which the record outranks once a file is in it; a
+read-only file is left alone, a linked one replaced where it lives, a
+replaced one keeps its mode, each write a synced temporary file renamed into
+place since half a file would read as an edit and be kept; a seed that only
+wrote missing files left every install on the copy its first launch wrote,
+so a fix to a built-in script reached new installs alone) — but **never into
+an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
 agent *type* must resolve (`general-purpose` is the `agent` schema's default).

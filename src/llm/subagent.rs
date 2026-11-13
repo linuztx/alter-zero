@@ -1,5 +1,7 @@
 //! Subagent definitions' boundary half (`docs/subagents.md`): find the
-//! `agents/*.md` files on disk, and seed the built-in ones the first time.
+//! `agents/*.md` files on disk, and keep the built-in ones among them — written
+//! the first time, and replaced by a release's newer version while nobody has
+//! edited them.
 //!
 //! [`crate::llm::skill`]'s sibling — every rule lives in the pure
 //! [`crate::subagents`] module and this is the adapter that touches the
@@ -31,6 +33,29 @@ const BUILTIN_FILES: [(&str, &str); 2] = [
     (
         "explore.md",
         include_str!("../../prompts/agents/explore.md"),
+    ),
+];
+
+/// Every version of each built-in definition that a build wrote **before
+/// builds kept the record** of what they wrote (`docs/subagents.md`
+/// *Seeding*) — what tells a default nobody edited from an edited one in a
+/// config home an earlier release filled. Frozen: a version written from
+/// here on is in the record beside the files.
+const EARLIER_VERSIONS: [super::seed::EarlierVersions<'static>; 2] = [
+    (
+        "general-purpose.md",
+        &[
+            "sha256:fae0ab67ba79c8d3a679daf2dfd69bb59fa9744c3fda8d3c76da176da733c9f5",
+            "sha256:88f96cc20e8290c3e267eaff491efc1747a9653338bdbd2c44b9f65ffba780ee",
+        ],
+    ),
+    (
+        "explore.md",
+        &[
+            "sha256:9147f347f5065ed2f451303bbe05b97713600f55da5f8348115eb88923940959",
+            "sha256:60d7a8555258633bce1566b5d27eb4d9de5ccdc3907c3ce8ecff388b68dcde89",
+            "sha256:cb8b8da16cc681b1788f13e0ac53971119145b7814aca418a2b2a40ce5bcd125",
+        ],
     ),
 ];
 
@@ -104,37 +129,29 @@ fn override_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// Write the built-in definitions into `dir`, skipping any that are already
-/// there — so a fresh install finds them on disk and can edit them, an
-/// **edited** default is never clobbered, and a release that adds a default
-/// gets it on the next launch (`docs/subagents.md`).
+/// Bring the built-in definitions in `dir` up to this build
+/// (`docs/subagents.md` *Seeding*): one that is missing is written, a default
+/// nobody edited is replaced by this build's version, and an **edited**
+/// default is never clobbered. So a fresh install finds them on disk and can
+/// edit them, and a release that adds or improves a default delivers it on
+/// the next launch. What tells an edited default from an untouched one is the
+/// record kept beside the files and, for a directory an earlier release
+/// filled, `EARLIER_VERSIONS`.
 ///
 /// Best-effort: a directory that cannot be created or a file that cannot be
 /// written is returned as an error for the startup toast, never a failed
 /// launch — the embedded copies still back the types up ([`with_builtins`]).
 #[must_use]
 pub fn seed_default_agents(dir: &Path) -> Vec<AgentFileError> {
-    let mut errors = Vec::new();
+    // Made here rather than per file, so a directory that cannot be made is
+    // one row in the toast and not one for each default.
     if let Err(err) = std::fs::create_dir_all(dir) {
-        errors.push(AgentFileError {
+        return vec![AgentFileError {
             path: dir.to_path_buf(),
             message: err.to_string(),
-        });
-        return errors;
+        }];
     }
-    for (name, contents) in BUILTIN_FILES {
-        let path = dir.join(name);
-        if path.exists() {
-            continue;
-        }
-        if let Err(err) = std::fs::write(&path, contents) {
-            errors.push(AgentFileError {
-                path,
-                message: err.to_string(),
-            });
-        }
-    }
-    errors
+    super::seed::seed(dir, &BUILTIN_FILES, &EARLIER_VERSIONS)
 }
 
 /// The embedded definitions, parsed. They carry **no** path — nothing read
@@ -390,6 +407,99 @@ mod tests {
             .find(|a| a.name == "explore")
             .expect("explore");
         assert_eq!(explore.description, "Mine.");
+    }
+
+    /// A built-in definition's bytes as this build carries them.
+    fn built_in(name: &str) -> &'static str {
+        BUILTIN_FILES
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, contents)| *contents)
+            .expect("a built-in definition")
+    }
+
+    #[test]
+    fn a_default_nobody_edited_follows_the_release() {
+        // An earlier release wrote and recorded its own `explore.md`; the
+        // user never touched it, so this build's version takes its place.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        let earlier_release = [(
+            "explore.md",
+            "---\ndescription: An earlier release's.\n---\n",
+        )];
+        assert!(super::super::seed::seed(&dir, &earlier_release, &[]).is_empty());
+
+        let errors = seed_default_agents(&dir);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            std::fs::read_to_string(dir.join("explore.md")).unwrap() == built_in("explore.md"),
+            "the untouched default is this build's"
+        );
+    }
+
+    /// `general-purpose.md` byte for byte as the first build to seed it wrote
+    /// it — a file from before there was a record of what was written.
+    const FIRST_GENERAL_PURPOSE: &str = r#"---
+name: general-purpose
+description: General-purpose agent for researching complex questions, searching for code, and running multi-step tasks. Use it when a job is open-ended and you want the conclusion rather than every intermediate step.
+# `model:` — a provider model id (e.g. `kimi-k3`) to run this type on, or
+# `inherit` for whatever model the session is using.
+model: inherit
+# `tools:` — a comma-separated allowlist. OMIT IT for every tool (what this
+# file does). Built-in names are capitalized — Bash, Read, Write, Edit, Skill —
+# and MCP tools keep their wire spelling, with a trailing `*` globbing a whole
+# server: `mcp__deepwiki__ask_question`, `mcp__deepwiki__*`, `mcp__*`.
+#
+#   tools: Bash, Read, Edit, mcp__deepwiki__*
+#
+# Anything written BELOW this frontmatter block becomes this type's system
+# prompt, replacing the Alter Zero persona for agents of this type. Leaving it
+# empty — as here — keeps the session's own persona.
+---
+"#;
+
+    #[test]
+    fn a_default_from_before_the_record_is_replaced_when_nobody_edited_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("general-purpose.md"), FIRST_GENERAL_PURPOSE).unwrap();
+        // The same file with one line of the user's own: an edit, kept.
+        let edited = format!("{FIRST_GENERAL_PURPOSE}My own instructions.\n");
+        std::fs::write(dir.join("explore.md"), &edited).unwrap();
+
+        let errors = seed_default_agents(&dir);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            std::fs::read_to_string(dir.join("general-purpose.md")).unwrap()
+                == built_in("general-purpose.md"),
+            "the untouched early copy is this build's now"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("explore.md")).unwrap(),
+            edited
+        );
+    }
+
+    #[test]
+    fn the_record_is_no_definition_and_no_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        assert!(seed_default_agents(&dir).is_empty());
+        assert!(dir.join(super::super::seed::RECORD_FILE).is_file());
+
+        let (agents, errors) = discover_agents(&[dir]);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(agents.len(), BUILTIN_FILES.len());
+    }
+
+    #[test]
+    fn the_earlier_versions_are_fingerprints_of_built_in_files() {
+        super::super::seed::assert_earlier_versions(&BUILTIN_FILES, &EARLIER_VERSIONS);
     }
 
     #[test]

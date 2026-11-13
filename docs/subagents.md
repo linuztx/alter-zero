@@ -74,10 +74,17 @@ which is also what makes a test run hermetic.
 
 The two defaults ship embedded in the binary (`prompts/agents/*.md` in the
 repo, `include_str!`'d beside every other markdown this crate carries). At startup each is
-**written into the user root when that file is absent** — so a fresh install
-finds them on disk and can edit them, and a release that adds a default gets
-it too. Deleting one brings it back next launch; to change a default, edit
-it (that is what the seeding is *for*).
+**kept in the user root**: written when the file is absent, and replaced by
+this build's version while nobody has edited it — so a fresh install finds
+them on disk and can edit them, and a release that adds or improves a default
+delivers it. An **edited** default is never overwritten; deleting one brings
+the shipped version back next launch; to change a default, edit it (that is
+what the seeding is *for*). What tells an edited default from an untouched
+one is the `.seeded.json` record beside the files, or, in a directory an
+earlier release filled, the versions those releases wrote
+(`EARLIER_VERSIONS`) — the built-in skills' mechanism, one writer for both
+(`llm::seed`, `docs/skills.md` *Following a release*). The record sits in
+whichever directory is seeded, so in an `ALTER_ZERO_AGENTS_DIR` override too.
 
 If the walk still ends without one of them — no writable home, an
 `ALTER_ZERO_AGENTS_DIR` pointed at a read-only directory — the embedded
@@ -202,6 +209,7 @@ re-broken reports again).
 | `src/frontmatter.rs` | the shared `---` frontmatter parse (skills + agents) |
 | `src/subagents.rs` | pure: `AgentDefinition`, the parse, `AgentTools::allows`, the listing, the reminder wrapper, `SubagentRegistry` |
 | `src/llm/subagent.rs` | boundary: the root walk, the discovery, the seeding of the embedded defaults |
+| `src/llm/seed.rs` | the writer the seeding shares with the built-in skills: each file's step, the `.seeded.json` record |
 | `prompts/agents/*.md` | the embedded defaults themselves |
 
 `ALTER_ZERO_AGENTS_DIR` relocates the roots. There is no separate on/off

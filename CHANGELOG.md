@@ -12,6 +12,19 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Built-in skills and agent definitions follow the release.** The files in
+  `~/.alter-zero/skills/` and `~/.alter-zero/agents/` were written at the
+  first launch and never again, so an improvement to one reached new
+  installs only: every other install kept the copy it started with. A file
+  you have not edited is now replaced by the release's version at the next
+  launch, and a file you edited is still never touched. The app tells the
+  two apart by a record of what it wrote, `.seeded.json` beside the files;
+  an install from before the record is recognised by the versions earlier
+  releases shipped. To keep a file at its version, edit it or make it
+  read-only; to get the shipped version back, delete it.
+
 ### Fixed
 
 - **The web-search skill's scripts say why a search failed.** A key Tavily
@@ -21,9 +34,9 @@ release heading when a version is cut.
   column 1 (char 0)`, and now names what came back, as in `HTTP 502: a web
   page titled "502 Bad Gateway"`. A gateway's own `429` counts as a rate
   limit. An answer on a connection the server left open is read at once,
-  where it was dropped after a minute's wait. A copy of the skill already
-  in `~/.alter-zero/skills/web-search/` is kept as it is: delete that
-  folder, and the next launch writes the fixed scripts.
+  where it was dropped after a minute's wait. An install that already has
+  the skill gets the fixed scripts at its next launch, unless it edited
+  them.
 
 ## [0.19.0] - 2026-11-13
 

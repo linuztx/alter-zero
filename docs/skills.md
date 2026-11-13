@@ -126,18 +126,19 @@ a persona — and every one of those fails silently: the walk only looks for
 never chosen. The rules are cheap to state and impossible to guess.
 
 Authored in `prompts/skills/<name>/` and `include_str!`'d beside every
-other markdown this crate carries, then **written into `{config_home}/skills`
-at startup when the file is absent** — the agent definitions' rule
-(`docs/subagents.md`), for the agent definitions' reasons: a default that is a
-real file on disk can be read, edited and diffed, and a release that improves
-it ships the improvement. `every_authored_built_in_file_is_embedded` keeps the
-directory and the embedded list in step: a file authored under
-`prompts/skills/` but left out of `BUILTIN_SKILL_FILES` fails the test suite
-instead of quietly missing from every install (a script's `test_*` unit tests
-stay out on purpose). The seed runs *before* the walk, so the session that
-installed the app can already use it. An edited copy is never overwritten; a
-deleted file comes back next launch, so the off-switch is `/skills` (which
-persists) rather than `rm -rf`.
+other markdown this crate carries, then **kept in `{config_home}/skills`** —
+the agent definitions' rule (`docs/subagents.md`), for the agent definitions'
+reasons: a default that is a real file on disk can be read, edited and
+diffed, and a release that improves it ships the improvement.
+`every_authored_built_in_file_is_embedded` keeps the directory and the
+embedded list in step: a file authored under `prompts/skills/` but left out
+of `BUILTIN_SKILL_FILES` fails the test suite instead of quietly missing from
+every install (a script's `test_*` unit tests stay out on purpose). The seed
+runs *before* the walk, so the session that installed the app can already use
+it. A file that is missing is written, so a deleted one comes back next
+launch and the off-switch is `/skills` (which persists) rather than `rm -rf`;
+an edited copy is never overwritten; and a copy nobody edited is replaced by
+this build's version — *Following a release*, below.
 
 One difference from the agent definitions: `ALTER_ZERO_SKILLS_DIR` is **never
 seeded into**. That variable replaces the root list — it says "these are the
@@ -146,6 +147,75 @@ works without, where a built-in *agent type* has to resolve because
 `general-purpose` is the `agent` schema's default. So the override is honoured
 literally: nothing of ours is written into a directory the user curates, and a
 hermetic run (`smoke.sh`) keeps the empty root it made.
+
+#### Following a release
+
+A built-in file on disk is the user's from the moment they change it. Until
+then it is the app's, and it has to follow the release. A seed that only ever
+wrote missing files did not: every install kept the copy its *first* launch
+wrote, so a fix to a built-in script — `web-search`'s were the case that
+showed it — reached new installs and nobody else.
+
+Telling an edited copy from an untouched one takes a memory of what was
+written. That is `{config_home}/skills/.seeded.json`: each built-in file's
+path, and the sha256 of the bytes the app last wrote there.
+
+```json
+{
+  "files": {
+    "web-search/scripts/mcp_http.py": "sha256:59f67abc…",
+    "yt-dlp/SKILL.md": "sha256:843859ab…"
+  }
+}
+```
+
+At startup each built-in file takes one of four steps (`llm::seed`, the
+writer the agent definitions share):
+
+| The copy on disk | What happens |
+| --- | --- |
+| missing | this build's version is written, and recorded |
+| already this build's version | nothing is written; it is recorded |
+| has the fingerprint the record holds | nobody edited it: this build's version replaces it, and is recorded |
+| anything else | it is the user's: kept, and the record left as it is |
+
+A config home that a release from before the record filled has none, so its
+files are told apart by `EARLIER_SKILL_VERSIONS` instead: the fingerprint of
+every version of each built-in file that a build wrote before there was a
+record. A copy that is byte for byte one of those was never edited and is
+replaced; anything else is an edit and stays. The list was read off the
+repository's history — for every commit, the bytes behind each entry of the
+seed's own table — and is frozen, since a version written from here on is in
+the record: editing a built-in file adds nothing to it, and a new built-in
+file needs no row. The record outranks it: once a file is recorded, a copy
+set back to an earlier version on purpose is an edit like any other.
+
+What follows from that:
+
+- **An edit is never overwritten**, by this release or any later one. To get
+  the shipped version back, delete the file: it is written again and followed
+  from then on. So is a copy whose edit was taken back to exactly what the
+  app wrote.
+- **A read-only file is left alone.** The app does not replace a file behind
+  its mode, so `chmod a-w` pins a built-in file at its version, and a copy
+  linked in from a store nothing may write to costs no toast at each launch.
+- **A link stays a link.** A file linked in from a dotfiles checkout is
+  replaced where it lives.
+- **A replaced file keeps its permissions**, so a script made executable
+  stays so. A new file gets the mode a plain write gives.
+- **A write is whole or not at all**: a temporary file beside the target,
+  synced, then renamed over it. Half a file would read as an edit at the next
+  launch and be kept for good.
+- **A copy nobody edited is always the running build's version**, whether
+  that build is newer or older than the one that wrote it. Two builds can
+  share a config home (a downgrade, a container on another version), which is
+  also why a file a build does not carry is left where it is and its entry
+  stays in the record: the build that lacks a file must not make the other
+  forget it wrote it.
+- **The record is the app's own bookkeeping.** One that is missing or will
+  not parse is started over, and a failure to write it is not reported; the
+  files are then told apart as in an install from before it. A *file* that
+  could not be written is reported in the startup toast, as it always was.
 
 #### Why `skill-creator` is two files
 
@@ -191,7 +261,7 @@ non-automatic retries rather than an assumption that HTTP success means
 complete extraction.
 
 Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`,
-never overwrites an existing file, respects project-root precedence and can
+never overwrites a file you edited, respects project-root precedence and can
 be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
 receives no built-ins. Offline regression tests exercise the actual
 seed → discovery → listing → tool-load path and verify that local edits
@@ -936,6 +1006,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
 | `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
 | `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
+| `src/llm/seed.rs` | the writer the built-in skills and the built-in agent definitions share: each file's step, the `.seeded.json` record, the whole-or-nothing write (*Following a release*) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
 | `src/context.rs` | the leading listing fragment |

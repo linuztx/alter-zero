@@ -154,7 +154,10 @@ is loadable on the very next message — no restart:
    which root it came from, and never create a second copy in a different root:
    the first root wins and the other becomes dead weight nobody edits.
 2. **Read the whole file** before changing anything. It may be the user's own
-   work, or a seeded default they have edited.
+   work, or a seeded default they have edited. A built-in skill's file is
+   replaced by each release's version only while nobody has edited it, so an
+   edit keeps that file as it is from then on: say so when you change one.
+   Deleting the file brings the shipped version back at the next launch.
 3. **Edit, do not rewrite.** Change the lines the request is about and leave
    the rest — including the `name`, which is how the model, the listing and
    `skills.json` all refer to it. Renaming means a new folder and a stale

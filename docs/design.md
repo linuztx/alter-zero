@@ -592,9 +592,12 @@ which Ctrl+V reads the clipboard from.
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
 - **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`,
-  `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and seed absent files
-  in the personal root before discovery. Existing files are never overwritten,
-  project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
+  `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and are kept
+  in the personal root before discovery: a missing file is written, a copy
+  nobody edited is replaced by the build's own version (told apart by the
+  `.seeded.json` record beside the files), and an edited file is never
+  overwritten. Project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is
+  never seeded.
   Jina Reader adds curl-based public web/PDF retrieval instructions;
   `web-search` seeds four standard-library Python scripts beside its
   `SKILL.md`, searching keyless through Exa's, Parallel's and Tavily's hosted
@@ -741,7 +744,8 @@ which Ctrl+V reads the clipboard from.
   persona half of that type's system prompt. The cwd's, the project root's and
   `~/.alter-zero/agents` are walked at **every turn start**, so a file the
   agent just wrote for itself is launchable on the next turn; the two built-ins
-  are seeded into the user's directory as editable files and stay compiled in
+  are seeded into the user's directory as editable files — an edited one kept,
+  an untouched one following the release — and stay compiled in
   as the fallback; the `tools:` allowlist is enforced where a call **runs**,
   not only where the specs are offered; and the model picks a type from the
   `<system-reminder>` that carries the skill listing beside it, under one

@@ -260,8 +260,9 @@ impl<'t> Session<'t> {
         // The built-in `skill-creator` is seeded into the personal root first,
         // so this very walk finds it — a skill that appeared only on the
         // *second* launch would be missing from exactly the session that just
-        // installed the app. Never clobbers an edited copy, and skipped
-        // entirely when ALTER_ZERO_SKILLS_DIR replaced the roots.
+        // installed the app. Never clobbers an edited copy, replaces one
+        // nobody edited with this build's version, and is skipped entirely
+        // when ALTER_ZERO_SKILLS_DIR replaced the roots.
         let mut skill_errors = match alter_zero::llm::skill::resolved_builtin_skills_dir(
             config::config_home().as_deref(),
         ) {

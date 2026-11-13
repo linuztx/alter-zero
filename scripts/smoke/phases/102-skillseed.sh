@@ -11,7 +11,9 @@ smoke_begin
 # — the whole directory, its `reference.md` included, since the body sends the
 # model there for the substitution tokens a body cannot spell out — a later
 # launch must never clobber a copy the user edited, and a deleted file has to
-# come back. The fourth is the difference from the agent definitions: an
+# come back — while a copy nobody edited is replaced by the build's own
+# version (*Following a release*). The last is the difference from the agent
+# definitions: an
 # ALTER_ZERO_SKILLS_DIR override is NEVER seeded into (it says "these are the
 # skills, and only these" — and this suite's own hermetic sessions depend on
 # that dir staying exactly as empty as it was made).
@@ -62,6 +64,13 @@ for seeded in SKILL.md reference.md; do
 		fail "the first launch did not seed the authored flaredantic/$seeded"
 	fi
 done
+# The seed keeps a record of what it wrote beside the files (`.seeded.json`):
+# a path and the sha256 of its bytes. It is what tells a copy nobody edited
+# from an edited one once a release ships a newer version.
+SK_RECORD="$SK_CFG/skills/.seeded.json"
+if ! grep -qF '"web-search/scripts/mcp_http.py": "sha256:' "$SK_RECORD" 2>/dev/null; then
+	fail "the first launch did not record the files it seeded"
+fi
 # web-search's body runs the scripts seeded beside it, so they have to land
 # too, and as programs that start from there: three of them import
 # mcp_http.py from their own directory. `--help` touches no network.
@@ -118,6 +127,34 @@ fi
 if [ ! -f "$SK_WEB/scripts/mcp_http.py" ]; then
 	fail "a deleted web-search script did not come back on the next launch"
 fi
+# A copy nobody edited follows the release. An earlier release is played here
+# by putting another version of one file on disk and recording it the way the
+# seed does, so it is a copy this app wrote and nobody touched: the launch has
+# to replace it with the build's own. The files edited above are not in this
+# record, and stay the user's.
+sha256_of() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | cut -d' ' -f1
+	else
+		shasum -a 256 "$1" | cut -d' ' -f1
+	fi
+}
+printf '%s\n' "---" "name: jina-reader" "description: AN-EARLIER-RELEASE." "---" >"$SK_CFG/skills/jina-reader/SKILL.md"
+printf '{"files": {"jina-reader/SKILL.md": "sha256:%s"}}\n' "$(sha256_of "$SK_CFG/skills/jina-reader/SKILL.md")" >"$SK_RECORD"
+tmux new-session -d -s "$S102" -x 100 -y 24 "$APP_SK"
+sleep 1.2
+submit "$S102" "/quit"
+sleep 0.6
+tmux kill-session -t "$S102" 2>/dev/null
+if ! cmp -s "$SMOKE_ROOT/prompts/skills/jina-reader/SKILL.md" "$SK_CFG/skills/jina-reader/SKILL.md"; then
+	fail "an untouched copy from an earlier release was not replaced by this build's"
+fi
+if ! grep -q "MINE-NOT-YOURS" "$SK_CFG/skills/skill-creator/SKILL.md" 2>/dev/null; then
+	fail "replacing an untouched file clobbered an edited one"
+fi
+if ! grep -qF '"jina-reader/SKILL.md": "sha256:' "$SK_RECORD" 2>/dev/null; then
+	fail "the replaced file is not in the record"
+fi
 # And the override is left alone: an explicit skills root is the user's set,
 # and every other phase in this suite runs against one that must stay empty.
 SK_OVERRIDE="$(mktemp -d)"
@@ -135,4 +172,4 @@ if [ -e "$SK_CFG2/skills" ]; then
 	fail "the override run seeded the config home behind its back"
 fi
 rm -rf "$SK_CFG" "$SK_CFG2" "$SK_HOME" "$SK_OVERRIDE"
-echo "==== Phase 102: the built-in skill seeds once, survives an edit, comes back if deleted, and never touches an override root ===="
+echo "==== Phase 102: the built-in skill seeds once, survives an edit, comes back if deleted, follows the release while untouched, and never touches an override root ===="

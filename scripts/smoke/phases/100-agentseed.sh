@@ -39,6 +39,11 @@ for seeded in general-purpose explore; do
 		fail "the first launch did not seed $seeded.md"
 	fi
 done
+# What was written is recorded beside the files, so a later release can tell a
+# default nobody edited (it replaces that) from an edited one (it keeps that).
+if ! grep -qF '"explore.md": "sha256:' "$AG_CFG/agents/.seeded.json" 2>/dev/null; then
+	fail "the first launch did not record the definitions it seeded"
+fi
 # The frontmatter the model reads, and the comments the *user* reads: a file
 # that documents neither key is a file nobody can edit with confidence.
 if ! grep -q "^name: general-purpose" "$AG_CFG/agents/general-purpose.md" 2>/dev/null; then
