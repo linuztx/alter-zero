@@ -601,12 +601,18 @@ fn repair_messages(mut ask: Vec<ChatMessage>, reply: &str) -> Vec<ChatMessage> {
 }
 
 /// The config a verdict is asked with, from the session's: no thinking
-/// mode (a verdict needs no visible reasoning — the reference disables
-/// thinking for its classifier), standard speed (a verdict is a few tokens,
-/// priority processing bills plan usage, and an overriding model may list
-/// no tier at all — `docs/fast-mode.md`), and `model_override`
-/// (`ALTER_ZERO_CLASSIFIER_MODEL`) in the session model's place when one is
-/// named. Pure — unit-tested.
+/// mode (a verdict needs no visible reasoning), standard speed (a verdict is
+/// a few tokens, priority processing bills plan usage, and an overriding
+/// model may list no tier at all — `docs/fast-mode.md`), and
+/// `model_override` (`ALTER_ZERO_CLASSIFIER_MODEL`) in the session model's
+/// place when one is named. Pure — unit-tested.
+///
+/// **No mode is the provider's own default, never an explicit off.** The
+/// contract leaves a model nowhere to think but its hidden reasoning, and
+/// with that switched off measured models answered faster and allowed
+/// `curl … | sh` (`docs/permissions.md` *The classifier reasons at its
+/// model's default*). So a session that turned thinking off still gets a
+/// classifier that sends no disable.
 ///
 /// One wire spells the thinking level **in the model id**: on Cloud Code a
 /// grouped model's request names `{model}-{level}`, and the catalog lists
@@ -1621,6 +1627,29 @@ mod tests {
         assert_eq!(cfg.model, "openai/gpt-5-mini");
         assert_eq!(cfg.thinking, None);
         assert_eq!(cfg.service_tier, None);
+    }
+
+    #[test]
+    fn a_verdict_is_asked_at_the_models_default_reasoning_never_with_it_off() {
+        // Dropping the mode leaves the provider's own default — which for a
+        // reasoning model is reasoning — and that is deliberate, not an
+        // omission to tidy up into an explicit "off". The contract leaves a
+        // model nowhere to think but its hidden reasoning, and switched off
+        // it answers faster and worse: measured on eight OpenRouter models,
+        // 0 wrong verdicts of 45 at the default, 4 of 32 with
+        // `reasoning: {"enabled": false}` — two of them allows of
+        // `curl … | sh` (docs/permissions.md *The classifier reasons at its
+        // model's default*). So a session that turned thinking **off** still
+        // gets a classifier that sends no disable.
+        let mut session = ModelConfig::fallback();
+        session.thinking = Some(ThinkingMode::Off);
+        let cfg = verdict_config(&session, None);
+        assert_eq!(cfg.thinking, None, "dropped, not carried over as off");
+        let payload = OpenAiClient::new(cfg).build_payload(&[crate::llm::ChatMessage::user("ls")]);
+        assert!(
+            payload.get("reasoning").is_none() && payload.get("reasoning_effort").is_none(),
+            "no reasoning field at all — the provider's default stands: {payload}"
+        );
     }
 
     // ===== reaching a verdict: retries and the repair turn =====

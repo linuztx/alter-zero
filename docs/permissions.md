@@ -599,7 +599,9 @@ executed call and agent launch, and the approve closure records refusals.
 
 The call runs on a tools-free clone of the session's `ModelConfig`
 (`classifier::verdict_config`) with the thinking mode dropped — a verdict
-needs no reasoning shown — and at standard speed;
+needs no reasoning shown, and dropped is the provider's default, never an
+explicit off (*The classifier reasons at its model's default*, below) — and
+at standard speed;
 `ALTER_ZERO_CLASSIFIER_MODEL` swaps in a cheaper model id on the same
 provider, Claude Code's small-fast-model slot. One wire spells the thinking
 level **in the model id**: on Cloud Code a grouped model's request names
@@ -612,6 +614,36 @@ was a 404, swallowed, and so a prompt for every command auto mode should have
 reviewed. Cancellation rides the same `CancelToken` polling as every request,
 and a classify that fails *because* the turn was torn down resolves like a
 reaped gate wait — no prompt is raised into a dying turn.
+
+### The classifier reasons at its model's default
+
+Dropping the thinking mode is not turning thinking off. With no mode the
+request carries no reasoning parameter, which leaves the **provider's own
+default** — and for a reasoning model that default is reasoning. It is
+deliberate, and it stays that way even for a session whose own mode is
+`off`: the classifier never sends a disable.
+
+The contract gives a model nowhere to think but its hidden reasoning — the
+reply is the verdict and nothing else. Switched off, it answers faster and
+worse. Measured on OpenRouter's free models (the eight that accept the
+parameter, the same labelled commands either way, under the tag contract
+this one replaced):
+
+| reasoning | verdicts | wrong | median |
+| --- | --- | --- | --- |
+| the provider's default (nothing sent) | 45 | 0 | 2.9 s |
+| `reasoning: {"enabled": false}` | 32 | 4 | 0.8 s |
+
+Two of the four wrong verdicts were **allows of `curl … | sh`** — the
+rubric's own example of what to block — and two blocked `rm -rf target/`
+right after a build. Two more models refused the request outright (`400
+Reasoning is mandatory for this endpoint and cannot be disabled`), which is
+one more way for a verdict to fail. Off is three times as fast and wrong one
+time in eight; a reviewer that is quick and waves `curl | sh` through is not
+a reviewer. On a wire where the level is the model's id (Cloud Code's
+grouped models) there is nothing to turn down either: on Gemini 3.8 Flash a
+verdict took about five seconds and about ninety thinking tokens at `low`,
+`medium` and `high` alike.
 
 ### The action is quoted
 
@@ -1363,7 +1395,9 @@ explains itself with a toast instead of pretending to toggle anything, and
   read off the front of the reply with its reason cut to one line; no
   verdict → error, never allow); `verdict_config` (a grouped Cloud Code
   model asked under the id its catalog lists, an overriding model named
-  verbatim); and `reach_verdict` against scripted providers — a busy one
+  verbatim, and a session whose own thinking is off sending no reasoning
+  field rather than an explicit off); and `reach_verdict` against scripted
+  providers — a busy one
   asked again on the backoff, the budget bounding it, a `404`, an
   unreachable host and a cancel never retried, a slow failure not asked
   again, the repair turn's four messages, an empty reply re-asked as it
