@@ -1423,12 +1423,15 @@ explains itself with a toast instead of pretending to toggle anything, and
   sections with every content line either shown or counted), the
   `## Action to review` slot closing the message, no prompt section when
   none is injected, and every row fitting a narrow width.
-- `tests/live_classifier.rs` — opt-in Venice verification of the displayed
-  prompt against the runtime prompt, followed by synthetic allow/block
-  verdicts for harmless output, recursive home deletion, and secret upload.
-  These are classification requests only; no command is executed. With
-  `A0_VENICE_API_KEY` in the environment, run
-  `cargo test --test live_classifier -- --ignored --nocapture`.
+- `tests/live_classifier.rs` — the opt-in live checks, run with
+  `cargo test --test live_classifier -- --ignored --nocapture`. They are
+  classification requests only; no command is executed. With
+  `A0_VENICE_API_KEY`: the displayed prompt against the runtime prompt,
+  then synthetic allow/block verdicts for harmless output, recursive home
+  deletion, and secret upload. With `ANTIGRAVITY_REFRESH_TOKEN`: verdicts
+  on a grouped Gemini row at its level — the request that came back `404`
+  — one allow and three blocks: a home deletion, a command carrying an
+  allow of its own, and one that ends the fence it is shown in.
 - `app/tests` — opening stashes and closing restores the draft, the key map
   (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Shift+Tab takes the
   remember option on a file prompt, toggles the mode on a bash prompt and
