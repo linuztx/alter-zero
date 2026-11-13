@@ -244,9 +244,18 @@ Three requests deliberately run at **standard** whatever the session's tier:
   review of a parallel implementation demonstrated exactly that sequence
   against this code, which is why the rule has a pure test of its own.
 
-`/clear` and `/resume` never touch the state (the model did not change); a
-switch to a model listing no tier clears it (`App::set_speed(None)`), which
-blanks the footer's tier word and takes the tier rows out of the palette.
+`/clear` never touches the state (the model did not change). A resume
+brings back the tier the conversation itself was on: every tier command
+writes the session's `model` record as well as `config.json`
+(`Session::set_speed` → `record_session_model`, `docs/session-model.md`), so
+a conversation switched to fast comes back fast whatever the directory's
+entry says by then. That write was once missing — the switch reached
+`config.json` and never the rollout — and a footer reading `gpt-… medium
+fast` came back from `alter-zero -c` reading `gpt-… medium`: the record
+still named the tier the session had started on, and the resume restored
+it. A switch to a model listing no tier clears the state
+(`App::set_speed(None)`), which blanks the footer's tier word and takes the
+tier rows out of the palette.
 
 ## Verified live
 
@@ -300,7 +309,11 @@ footer word, no `Speed:` toast), then a ChatGPT Codex model whose listing
 — served by a local stub standing in for the token mint and the `/models`
 catalog — names two tiers, `/fast` and `/ultrafast` rows after `/model`
 wearing the record's descriptions, each toggled with its toast and its
-footer word, one listing fetch on the stub's log. Phase 1 asserts the
+footer word, one listing fetch on the stub's log — and then the resume: a
+conversation switched to fast has `"tier":"priority"` on its rollout's
+newest `model` record, `--continue` comes back wearing `fast`, and it still
+does once the directory's entry has been switched back to standard and a
+new session starts without it. Phase 1 asserts the
 palette's row cap by counting rows rather than naming whichever command
 sits eighth, so the tier rows landing before `/login` break nothing.
 

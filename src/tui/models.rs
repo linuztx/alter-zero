@@ -2206,6 +2206,11 @@ impl Session<'_> {
             .as_ref()
             .map(|t| (t.support.clone(), t.mode));
         self.models.persist(thinking.as_ref());
+        // The tier is this conversation's from here on — its rollout records
+        // it, so a resume comes back on it (docs/session-model.md). Without
+        // this the file kept the tier the session started on, and reopening
+        // a conversation switched to fast brought it back at standard speed.
+        self.record_session_model(false);
         let text = match &tier {
             Some(tier) if !tier.description.is_empty() => {
                 format!("Speed: {} — {}", tier.label(), tier.description)

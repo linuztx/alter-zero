@@ -26,6 +26,13 @@ release heading when a version is cut.
   last `usage` line. A resume by itself writes nothing to the file
   (`docs/token-estimate.md`).
 
+- **A conversation switched to a speed tier comes back on it.** `/fast` (or
+  any tier command) was saved for the directory but never written to the
+  session's own record, so reopening the conversation restored the tier it
+  had started on: `gpt-… medium fast` came back as `gpt-… medium`. The
+  switch is now recorded with the session, as a `/model` pick and a Ctrl+T
+  cycle already were (`docs/session-model.md`).
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

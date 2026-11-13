@@ -158,3 +158,10 @@ Instance A on `x`, instance B on `y`, same cwd:
   cannot reach on the fresh launch's model under the `Can't resume on …`
   toast, and a rollout with no record (a pre-feature file) on the
   directory's entry, which it then records.
+- `scripts/smoke.sh` Phase 117 (the `/fast` writer): a tier command's
+  switch lands on the rollout's newest `model` record, `--continue` comes
+  back on the tier, and — the directory's entry switched back to standard
+  by another session — still does, while a new session starts standard.
+  The record once missed this writer (`Session::set_speed` never told the
+  recorder), so a conversation switched to fast resumed at the tier it had
+  started on.

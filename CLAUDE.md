@@ -805,7 +805,11 @@ model={model}[;tier={tier}]` header (sent on every ChatGPT request, tier or
 not), shown after the thinking mode in the footer (`gpt-5.5 medium fast ·
 ~/repo`), persisted as `config.json`'s `speed` blob beside the `thinking`
 one (the empty blob marking a model known to list none, an absent one
-probed for like an unknown thinking state) and carried across a `/model`
+probed for like an unknown thinking state), written to the session's own
+`model` record by every tier command so a resume comes back on it
+(`Session::set_speed` → `record_session_model`; the write was once missing
+and a conversation switched to fast resumed at the tier it had started on,
+`smoke.sh` Phase 117), and carried across a `/model`
 switch to a model listing the same tier — while a pinned subagent model
 (`with_model`) and the auto-mode classifier run standard, since a tier the
 model does not list is a request the backend may refuse; verified live
@@ -2943,7 +2947,7 @@ entry *and* the last selection, `persist` only the directory's own pair) — **a
 the session's own on top of that** (`docs/session-model.md`: the rollout
 gains an append-only `model` record — `llm::settings::ModelSelection`, the
 `config.json` entry's own shape — written with the file, on every `/model`
-pick, Ctrl+T cycle and probe answer, the newest winning
+pick, Ctrl+T cycle, speed-tier command and probe answer, the newest winning
 (`session::parse_model`, the `parse_checkpoints` sidecar's twin), that
 `/resume`, `--resume` and `--continue` all hand to `ModelSession::restore`
 through the one `Session::restore_session_model` — a `/model` switch minus

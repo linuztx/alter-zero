@@ -243,5 +243,87 @@ dump "the key store" "$t_env"
 expect_has "$t_env" -F "CHATGPT_CODEX_REFRESH_TOKEN=rt-117-rotated" "the rotated refresh token was not stored under the current variable name"
 expect_lacks "$t_env" -F "OPENAI_CHATGPT_REFRESH_TOKEN" "the rotation was written under the old variable name"
 
-kill "$T_SERVER" 2>/dev/null
 tmux kill-session -t "$S117B" 2>/dev/null
+
+# ---- half three: the tier is the conversation's, and a resume brings it back ----
+# A `/fast` switch is a fact about the session (docs/session-model.md): its
+# rollout's `model` record takes the tier, so reopening the conversation
+# comes back on it. The record used to keep the tier the session STARTED on —
+# the switch reached config.json and never the rollout — so a conversation
+# switched to fast came back at standard speed (`gpt-… medium fast` before
+# the quit, `gpt-… medium` after `-c`). The same stub and provider file, but
+# the selection saved in config.json instead of pinned by the environment (a
+# pin outranks a session's record, by design), and the token read from the
+# key store the half above rotated into.
+S117C="${S}_tierresume"
+cat >"$SMOKE_CFG/config.json" <<'CONFIG'
+{ "provider": "chatgpt_codex", "model": "gpt-5.6-sol" }
+CONFIG
+R_DIR="$(work_dir tier)"
+R_APP="env NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_OPENAI_ISSUER=$T_BASE ALTER_ZERO_PROVIDERS_FILE=$T_PROVIDERS $APP_ABS"
+# r_quit SESSION — /quit the instance and wait for it to be gone.
+r_quit() {
+	submit "$1" "/quit"
+	wait_gone 10 "$1" || {
+		fail "session $1 did not quit"
+		tmux kill-session -t "$1" 2>/dev/null
+	}
+}
+# r_fast SESSION — run /fast once its row is listed (the startup probe's
+# listing lands in the background), printing the pane.
+r_fast() {
+	local _ seen=""
+	for _ in $(seq 1 60); do
+		keys "$1" C-u
+		type_text "$1" "/fast"
+		sleep 0.3
+		seen="$(tmux capture-pane -t "$1" -p)"
+		if printf '%s\n' "$seen" | grep -qE "${PALETTE_ROW}fast +1\.5x speed"; then
+			keys "$1" Enter
+			return 0
+		fi
+	done
+	printf '%s\n' "$seen"
+	return 1
+}
+launch -c "$R_DIR" "$S117C" 100 30 "$R_APP"
+wait_for 10 "$S117C" -F "gpt-5.6-sol ·" || fail "the saved ChatGPT selection never reached the footer"
+r_fast "$S117C" || fail "/fast never became a palette row for the saved selection"
+tier_on="$(wait_pane 8 "$S117C" -F "Speed: fast — 1.5x speed, increased usage")"
+dump "/fast in the session to be resumed" "$tier_on"
+expect_has "$tier_on" -F "gpt-5.6-sol fast ·" "the footer does not wear fast"
+# A local shell turn records the conversation: no request is ever sent.
+submit "$S117C" "!echo tier"
+wait_for 10 "$S117C" -E "⎿ +tier" || fail "the shell turn never ran (no rollout to record the tier into)"
+r_quit "$S117C"
+R_FILE="$(find "$SMOKE_SESSIONS" -type f -name 'rollout-*.jsonl' | sort | tail -n 1)"
+r_model="$(grep -F '"type":"model"' "$R_FILE" | tail -n 1)"
+note "the conversation's newest model record"
+printf '%s\n' "$r_model"
+expect_has "$r_model" -F '"tier":"priority"' "the rollout's model record does not carry the tier /fast selected"
+# --continue: the conversation comes back fast.
+launch -c "$R_DIR" "$S117C" 100 30 "$R_APP --continue"
+tier_back="$(wait_pane 10 "$S117C" -F "gpt-5.6-sol fast ·")" ||
+	fail "--continue brought the conversation back without the tier it was switched to"
+dump "--continue of the fast conversation" "$tier_back"
+expect_has "$tier_back" -F "! echo tier" "--continue did not reopen the conversation"
+r_quit "$S117C"
+# The directory's entry moves back to standard, as /fast in another session
+# here would move it: a NEW session starts standard, and the conversation —
+# its own record, not the directory's — still comes back fast.
+launch -c "$R_DIR" "$S117C" 100 30 "$R_APP"
+wait_for 10 "$S117C" -F "gpt-5.6-sol fast ·" || fail "a new session did not start on the directory's saved tier"
+r_fast "$S117C" || fail "/fast is not a palette row in the second session"
+wait_for 8 "$S117C" -F "Speed: standard" || fail "/fast again did not switch the second session to standard"
+r_quit "$S117C"
+launch -c "$R_DIR" "$S117C" 100 30 "$R_APP"
+fresh_std="$(wait_pane 10 "$S117C" -F "gpt-5.6-sol ·")" || fail "a new session did not start on the directory's entry"
+expect_lacks "$fresh_std" -F "gpt-5.6-sol fast" "a new session started fast after the directory's entry went back to standard"
+r_quit "$S117C"
+launch -c "$R_DIR" "$S117C" 100 30 "$R_APP --continue"
+tier_own="$(wait_pane 10 "$S117C" -F "gpt-5.6-sol fast ·")" ||
+	fail "--continue ran the directory's standard entry instead of the conversation's own tier"
+dump "--continue once the directory's entry is standard again" "$tier_own"
+r_quit "$S117C"
+
+kill "$T_SERVER" 2>/dev/null
