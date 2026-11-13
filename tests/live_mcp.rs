@@ -30,8 +30,13 @@ use alter_zero::stream::{CancelToken, ReplySource, StreamEvent, ToolCallSummary}
 use alter_zero::{mcp, ui};
 
 /// The public DeepWiki MCP server — streamable HTTP, no authentication.
-/// A **legacy** (handshake) server: it settles at `2025-11-25`.
 const DEEPWIKI_URL: &str = "https://mcp.deepwiki.com/mcp";
+
+/// A public **legacy** (handshake) server: no `server/discover`, so its
+/// revision is whatever `initialize` settles — `2025-03-26` when this was
+/// written. No authentication. DeepWiki stood here until it began serving
+/// the modern revision.
+const LEGACY_URL: &str = "https://gitmcp.io/docs";
 
 /// A public **dual-era** server — it serves the modern `server/discover`
 /// *and* still answers the legacy `initialize`, which is precisely the shape
@@ -281,7 +286,7 @@ fn live_strip_top(app: &App, width: u16) -> String {
 /// still serves, and every offline fixture in the world agreed with it
 /// because a fixture is written by whoever writes the test.
 #[test]
-#[ignore = "hits the network (docs.mcp.cloudflare.com, mcp.deepwiki.com)"]
+#[ignore = "hits the network (docs.mcp.cloudflare.com, gitmcp.io)"]
 fn live_each_server_reports_the_revision_it_settled_on() {
     let dual = connected_server("cfdocs", DUAL_ERA_URL);
     let modern = dual.snapshot()[0]
@@ -298,14 +303,14 @@ fn live_each_server_reports_the_revision_it_settled_on() {
     dual.shutdown();
 
     // The other half of the claim: a legacy server is not simply reported at
-    // whatever we propose. DeepWiki has no `server/discover`, so the
+    // whatever we propose. This one has no `server/discover`, so the
     // handshake settles the revision — a revision we speak, from its answer.
-    let legacy = connected_deepwiki();
+    let legacy = connected_server("legacy", LEGACY_URL);
     let identity = legacy.snapshot()[0]
         .identity
         .clone()
-        .expect("deepwiki initialized");
-    println!("{DEEPWIKI_URL} -> {}", identity.protocol_version);
+        .expect("the legacy server initialized");
+    println!("{LEGACY_URL} -> {}", identity.protocol_version);
     assert_ne!(identity.protocol_version, mcp::PROTOCOL_VERSION);
     assert!(
         mcp::SUPPORTED_VERSIONS.contains(&identity.protocol_version.as_str()),
