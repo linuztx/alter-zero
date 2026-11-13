@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::mcp::{
-    Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, header_value,
+    Incoming, LEGACY_PROTOCOL_VERSION, ParamHeader, RpcError, SseParser, body_line, header_value,
     initialize_params_for, notification, param_header_values, parse_incoming, request,
     server_request_answer, with_meta,
 };
@@ -1414,7 +1414,7 @@ fn post_blocking(
     }
     let response = match req.body(body.to_string()).send() {
         Ok(response) => response,
-        Err(e) => return PostOutcome::Err(TransportError::Failed(format!("request failed: {e}"))),
+        Err(e) => return PostOutcome::Err(TransportError::Failed(request_failed(&e))),
     };
     let status = response.status();
     let new_session = response
@@ -1452,7 +1452,7 @@ fn post_blocking(
         {
             return PostOutcome::Err(TransportError::Rpc(e));
         }
-        let detail = format!("HTTP {}: {}", status.as_u16(), one_line(&body, 200));
+        let detail = format!("HTTP {}: {}", status.as_u16(), body_line(&body, 200));
         // Only 400, 404 and 405 without a modern error body are the spec's
         // cue to try the legacy HTTP+SSE transport; any other refusal — a
         // 403, a 429, a redirect not followed — is the server's answer.
@@ -1530,7 +1530,7 @@ fn post_blocking(
         Some(Incoming::OrphanError(error)) => wrap(PostOutcome::Response(Err(error))),
         Some(_) | None => PostOutcome::Err(TransportError::Failed(format!(
             "unexpected response body: {}",
-            one_line(&text, 200)
+            body_line(&text, 200)
         ))),
     }
 }
@@ -1610,7 +1610,8 @@ impl SseTransport {
                 Ok(response) => response,
                 Err(e) => {
                     let _ = endpoint_tx.send(Err(TransportError::Failed(format!(
-                        "could not open the event stream: {e}"
+                        "could not open the event stream: {}",
+                        crate::llm::transport_message(&e)
                     ))));
                     return;
                 }
@@ -1716,7 +1717,7 @@ impl SseTransport {
                 let response = req
                     .body(body)
                     .send()
-                    .map_err(|e| TransportError::Failed(format!("request failed: {e}")))?;
+                    .map_err(|e| TransportError::Failed(request_failed(&e)))?;
                 let challenge = challenge_of(&response);
                 let status = response.status().as_u16();
                 if status == 401 || (status == 403 && wants_more_scope(challenge.as_deref())) {
@@ -1812,15 +1813,12 @@ fn resolve_endpoint(base: &str, endpoint: &str) -> Result<String, TransportError
     Ok(resolved.to_string())
 }
 
-/// Flatten a body to one bounded line for an error message.
-fn one_line(text: &str, max: usize) -> String {
-    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        let head: String = flat.chars().take(max).collect();
-        format!("{head}…")
-    }
+/// A request that got no answer, in words: the HTTP client's own — which
+/// name only the URL, "error sending request for url (…)" — and every cause
+/// under them, which is where the reason is: refused, no such host, a
+/// certificate nobody trusts, a proxy's tunnel that failed.
+fn request_failed(error: &reqwest::Error) -> String {
+    format!("request failed: {}", crate::llm::transport_message(error))
 }
 
 #[cfg(test)]
@@ -2205,12 +2203,6 @@ echo clean >> '{seen}'"#,
                 "{elsewhere}: {refused}"
             );
         }
-    }
-
-    #[test]
-    fn one_line_flattens_and_caps() {
-        assert_eq!(one_line("a\n  b\t c", 10), "a b c");
-        assert_eq!(one_line("abcdef", 3), "abc…");
     }
 
     // -----------------------------------------------------------------------

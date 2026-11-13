@@ -24,6 +24,13 @@ release heading when a version is cut.
   (`alter-zero/{version}`). An entry whose `headers` set a `User-Agent`
   sends that one instead.
 
+- **A failed MCP request says why.** A refusal that is a web page (a
+  gateway's, a firewall's) is named by its title, as in `HTTP 403: a web
+  page titled "403 Forbidden"`, where the page's HTML used to be printed as
+  the server's error. A request that got no answer names its cause (the
+  connection refused, no such host, a certificate that isn't trusted)
+  rather than only `error sending request for url (…)`.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

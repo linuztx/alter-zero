@@ -947,9 +947,151 @@ fn elide_long_strings(value: &Value) -> Value {
     }
 }
 
+/// How much of a body is searched for a web page's title — every page that
+/// has one names it in its head.
+const PAGE_HEAD_BYTES: usize = 16 * 1024;
+
+/// The most of a web page's title a message carries.
+const PAGE_TITLE_MAX_CHARS: usize = 80;
+
+/// A response body as one bounded line for an error message — the answer's
+/// own words, white space flattened and cut at `max` characters. A **web
+/// page** is described instead, by its title (`a web page titled "403
+/// Forbidden"`): an HTML document is what a gateway, a firewall or a
+/// website's own error handler answers with, and printed whole its markup
+/// buried the one thing it says (`docs/mcp.md`).
+#[must_use]
+pub fn body_line(body: &str, max: usize) -> String {
+    if let Some(page) = web_page(body) {
+        return page;
+    }
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let head: String = flat.chars().take(max).collect();
+        format!("{head}…")
+    }
+}
+
+/// `body` in words when it is an HTML document: `a web page titled "…"`, or
+/// `a web page` when its head names no title. `None` for anything else —
+/// JSON, plain text, XML — which is the answer's own words.
+fn web_page(body: &str) -> Option<String> {
+    let mut end = body.len().min(PAGE_HEAD_BYTES);
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = body[..end].trim_start();
+    // ASCII lowercasing moves no byte, so an offset found in the copy is the
+    // same offset in the original.
+    let lower = head.to_ascii_lowercase();
+    let is_page = lower.starts_with('<')
+        && ["<!doctype html", "<html", "<head", "<body", "<title"]
+            .iter()
+            .any(|tag| lower.contains(tag));
+    if !is_page {
+        return None;
+    }
+    let title = lower
+        .find("<title")
+        .and_then(|open| {
+            let start = open + lower[open..].find('>')? + 1;
+            let end = start + lower[start..].find("</title")?;
+            Some(&head[start..end])
+        })
+        .map(|title| {
+            // The handful of entities a title really carries; `&amp;` last,
+            // so `&amp;lt;` stays the `&lt;` it spells.
+            let mut text = title.to_string();
+            for (entity, character) in [
+                ("&lt;", "<"),
+                ("&gt;", ">"),
+                ("&quot;", "\""),
+                ("&#39;", "'"),
+                ("&apos;", "'"),
+                ("&nbsp;", " "),
+                ("&amp;", "&"),
+            ] {
+                text = text.replace(entity, character);
+            }
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        })
+        .filter(|title| !title.is_empty());
+    Some(match title {
+        Some(title) if title.chars().count() > PAGE_TITLE_MAX_CHARS => {
+            let cut: String = title.chars().take(PAGE_TITLE_MAX_CHARS).collect();
+            format!("a web page titled \"{cut}…\"")
+        }
+        Some(title) => format!("a web page titled \"{title}\""),
+        None => "a web page".to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a gateway answers a request it turns away with — nginx's page,
+    /// byte for byte.
+    const FORBIDDEN_PAGE: &str = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n\
+        <body>\r\n<center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+
+    #[test]
+    fn a_body_reads_as_one_bounded_line() {
+        assert_eq!(body_line("a\n  b\t c", 10), "a b c");
+        assert_eq!(body_line("abcdef", 3), "abc…");
+        assert_eq!(body_line("", 10), "");
+        // The server's own words stay its own: JSON and XML are text.
+        assert_eq!(
+            body_line("{\"error\":\n  \"nope\"}", 200),
+            "{\"error\": \"nope\"}"
+        );
+        let xml = "<?xml version=\"1.0\"?><Error><Code>AccessDenied</Code></Error>";
+        assert_eq!(body_line(xml, 200), xml);
+    }
+
+    #[test]
+    fn a_web_page_is_described_by_its_title_never_dumped() {
+        // Markup isn't an answer: a gateway's page printed whole buried the
+        // one thing it says under its tags.
+        assert_eq!(
+            body_line(FORBIDDEN_PAGE, 200),
+            "a web page titled \"403 Forbidden\""
+        );
+        // Whatever the case, the attributes and the white space around it —
+        // and with the handful of entities a title really carries.
+        let page = "\n<!DOCTYPE html>\n<HTML lang=\"en\"><Head>\n<TITLE id=\"t\">\n  Attention Required! &amp;\n  Cloudflare&#39;s &lt;check&gt;\n</TITLE>";
+        assert_eq!(
+            body_line(page, 200),
+            "a web page titled \"Attention Required! & Cloudflare's <check>\""
+        );
+        // An entity outside that handful stays as written.
+        assert_eq!(
+            body_line("<html><title>caf&eacute;</title></html>", 200),
+            "a web page titled \"caf&eacute;\""
+        );
+        // No title, or an empty one: still a page, and still not dumped.
+        assert_eq!(
+            body_line("<html><body>nope</body></html>", 200),
+            "a web page"
+        );
+        assert_eq!(
+            body_line("<!doctype html><title> </title><p>x</p>", 200),
+            "a web page"
+        );
+        // A page's title is its own bounded line.
+        let long = format!("<html><title>{}</title></html>", "x".repeat(300));
+        assert_eq!(
+            body_line(&long, 200),
+            format!("a web page titled \"{}…\"", "x".repeat(80))
+        );
+        // Text that merely mentions a tag is text.
+        assert_eq!(
+            body_line("error: expected <html> here", 200),
+            "error: expected <html> here"
+        );
+    }
 
     /// A change notification is told apart from everything else a server
     /// sends — a response, its own request — by its method and the `id` it

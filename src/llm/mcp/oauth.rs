@@ -386,10 +386,7 @@ const PERMANENT_REFRESH_ERRORS: &[&str] = &[
 /// speaking, not the AS.
 #[must_use]
 pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
-    let flat = || {
-        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        flat.chars().take(200).collect::<String>()
-    };
+    let flat = || crate::mcp::body_line(body, 200);
     let Some(status) = status else {
         return RefreshFailure::Transient(flat());
     };
@@ -1174,7 +1171,7 @@ fn get_json_within(url: &str, timeout: Duration) -> Result<Value, String> {
         .header("Accept", "application/json")
         .header("MCP-Protocol-Version", crate::mcp::PROTOCOL_VERSION)
         .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", crate::llm::transport_message(&e)))?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status().as_u16()));
     }
@@ -1203,7 +1200,7 @@ fn post_form_raw(
     let response = request
         .body(form_encode(params))
         .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", crate::llm::transport_message(&e)))?;
     let status = response.status().as_u16();
     Ok((status, response.text().unwrap_or_default()))
 }
@@ -1225,11 +1222,7 @@ fn oauth_error_detail(status: u16, body: &str) -> String {
     match (field("error"), field("error_description")) {
         (Some(error), Some(description)) => format!("HTTP {status}: {error}: {description}"),
         (Some(error), None) => format!("HTTP {status}: {error}"),
-        _ => {
-            let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            let flat: String = flat.chars().take(200).collect();
-            format!("HTTP {status}: {flat}")
-        }
+        _ => format!("HTTP {status}: {}", crate::mcp::body_line(body, 200)),
     }
 }
 
@@ -1587,7 +1580,7 @@ pub fn register_client(
         .header("Accept", "application/json")
         .body(body.to_string())
         .send()
-        .map_err(|e| format!("registration failed: {e}"))?;
+        .map_err(|e| format!("registration failed: {}", crate::llm::transport_message(&e)))?;
     let status = response.status().as_u16();
     let text = response.text().unwrap_or_default();
     if !(200..300).contains(&status) {
@@ -3628,6 +3621,29 @@ mod tests {
             error.contains("invalid_redirect_uri")
                 && error.contains("loopback redirects are not allowed"),
             "{error}"
+        );
+    }
+
+    /// A refusal that is a web page — a gateway's, not the authorization
+    /// server's — is described by its title in a sign-in's reason and in a
+    /// renewal's, where its markup used to be printed whole.
+    #[test]
+    fn a_gateway_s_page_is_described_in_a_refusal() {
+        let page = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n\
+            <center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+        assert_eq!(
+            oauth_error_detail(403, page),
+            "HTTP 403: a web page titled \"403 Forbidden\""
+        );
+        assert_eq!(
+            refresh_failure_kind(Some(403), page),
+            RefreshFailure::Transient("HTTP 403: a web page titled \"403 Forbidden\"".to_string())
+        );
+        // A gateway's page at the statuses a verdict on the grant arrives
+        // with is still the gateway speaking: the grant is kept.
+        assert_eq!(
+            refresh_failure_kind(Some(400), page),
+            RefreshFailure::Transient("HTTP 400: a web page titled \"403 Forbidden\"".to_string())
         );
     }
 

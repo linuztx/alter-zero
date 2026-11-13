@@ -1333,6 +1333,85 @@ mod tests {
         }
     }
 
+    /// A refusal that is a web page — a gateway's, a firewall's, a website's
+    /// own error page — is described by its title: printed whole, its markup
+    /// was what the `/mcp` page showed as the server's reason.
+    #[test]
+    fn a_refusal_that_is_a_web_page_is_described_not_dumped() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok() && line.trim() != "" {
+                    line.clear();
+                }
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{FORBIDDEN_PAGE}",
+                        FORBIDDEN_PAGE.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let config = McpServerConfig::Http {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: Default::default(),
+            sse_fallback: true,
+            oauth: None,
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                assert_eq!(detail, "HTTP 403: a web page titled \"403 Forbidden\"");
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+    }
+
+    /// A request that got no answer says why. The HTTP client's own words
+    /// name only the URL ("error sending request for url (…)"); the cause —
+    /// refused, no such host, a certificate nobody trusts — is underneath.
+    #[test]
+    fn a_request_that_fails_names_its_cause() {
+        // A loopback port nothing listens on: the kernel refuses at once.
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().unwrap().port()
+        };
+        let config = McpServerConfig::Http {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => {
+                assert!(
+                    detail.to_ascii_lowercase().contains("refused"),
+                    "the cause is missing from: {detail}"
+                );
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+    }
+
     #[test]
     fn a_legacy_stdio_server_connects_through_the_fallback() {
         // A scripted `sh` LEGACY MCP server: our request ids are

@@ -568,6 +568,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   nginx's page, where the server's own answer, once a request reaches it,
   is the `401` that starts its sign-in.
 
+  **A refusal is reported in the server's words, and markup isn't words.**
+  A refused request's body rides the message on one bounded line
+  (`mcp::body_line`) — except a **web page**, which is what a gateway, a
+  firewall or a website's own error handler answers with: that is described
+  by its title, `HTTP 403: a web page titled "403 Forbidden"`, where the
+  page printed whole put its tags on the `/mcp` page as the server's reason.
+  The sign-in's refusals read the same way (a registration, an exchange, a
+  renewal). And **a request that got no answer says why**: the HTTP
+  library's own words name only the URL (`error sending request for url
+  (…)`), so the message carries every cause under them — the connection
+  refused, no such host, a certificate nobody trusts, a proxy's tunnel that
+  failed.
+
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines; a notification takes the caller's
