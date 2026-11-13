@@ -603,7 +603,15 @@ anything without a recognisable verdict is an **error, never an allow**. The
 call runs on a tools-free clone of the session's `ModelConfig` with thinking
 dropped (a verdict needs no reasoning budget); `ALTER_ZERO_CLASSIFIER_MODEL`
 swaps in a cheaper model id on the same provider — Claude Code's
-small-fast-model slot. Cancellation rides the same `CancelToken` polling as
+small-fast-model slot. One wire spells the thinking level **in the model
+id**: on Cloud Code a grouped model's request names `{model}-{level}`, and
+the catalog lists no bare `gemini-3.8-flash` (`docs/antigravity.md` *The
+catalog*). So the id is resolved before the mode is dropped
+(`classifier::verdict_config`), and the verdict is asked of the very id the
+session's own requests name — the one id known to be listed. Dropping the
+mode alone asked for an id that does not exist: every verdict on a grouped
+Antigravity model was a 404, swallowed, and so a prompt for every command
+auto mode should have reviewed. Cancellation rides the same `CancelToken` polling as
 every request, and a classify that fails *because* the turn was torn down
 resolves like a reaped gate wait — no prompt is raised into a dying turn.
 

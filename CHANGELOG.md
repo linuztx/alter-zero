@@ -12,6 +12,17 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto mode reviews your commands on Google Antigravity's Gemini models.**
+  On a model whose thinking level is part of its id, such as
+  `gemini-3.8-flash`, every safety check asked for a model the account's
+  catalog does not list and got a 404, so each command auto mode should have
+  reviewed came to you as a prompt instead. Commands that only read were
+  never checked and still ran, which made it look like the check failed
+  only sometimes. The check now asks under the id your session uses
+  (`docs/antigravity.md`).
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

@@ -31,7 +31,7 @@
 
 use std::collections::VecDeque;
 
-use super::config::ModelConfig;
+use super::config::{ModelConfig, WireApi};
 use super::openai::OpenAiClient;
 use super::tools::{display_name, flatten_one_line, summarize_call};
 use crate::permission::{ClassifierVerdict, PermissionKind, PermissionRequest, mcp_label};
@@ -380,6 +380,37 @@ pub fn parse_verdict(text: &str) -> Result<ClassifierVerdict, String> {
     }
 }
 
+/// The config a verdict is asked with, from the session's: no thinking
+/// mode (a verdict needs no visible reasoning — the reference disables
+/// thinking for its classifier), standard speed (a verdict is a few tokens,
+/// priority processing bills plan usage, and an overriding model may list
+/// no tier at all — `docs/fast-mode.md`), and `model_override`
+/// (`ALTER_ZERO_CLASSIFIER_MODEL`) in the session model's place when one is
+/// named. Pure — unit-tested.
+///
+/// One wire spells the thinking level **in the model id**: on Cloud Code a
+/// grouped model's request names `{model}-{level}`, and the catalog lists
+/// no bare `gemini-3.8-flash` (`docs/antigravity.md` *The catalog*). So the
+/// id is resolved **before** the mode is dropped — the verdict is asked of
+/// the very id the session's own requests name, which is the one id known
+/// to be listed. Dropping the mode alone asked for one that is not: a 404
+/// on every verdict. An overriding model is named verbatim; the session's
+/// mode says nothing about another model's levels.
+#[must_use]
+pub fn verdict_config(session: &ModelConfig, model_override: Option<&str>) -> ModelConfig {
+    let mut cfg = session.clone();
+    match model_override.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(model) => cfg.model = model.to_string(),
+        None if cfg.wire_api == WireApi::CloudCode => {
+            cfg.model = super::cloud_code::runtime_model(&cfg.model, cfg.thinking);
+        }
+        None => {}
+    }
+    cfg.thinking = None;
+    cfg.service_tier = None;
+    cfg
+}
+
 /// The auto mode classifier bound to one provider: a tools-free client on
 /// the session's model (or the `ALTER_ZERO_CLASSIFIER_MODEL` override — a
 /// cheap fast model on the same provider, Claude Code's small-model slot),
@@ -391,32 +422,19 @@ pub struct SafetyClassifier {
 }
 
 impl SafetyClassifier {
-    /// Build the classifier for the backend's resolved config. The clone
-    /// drops the session's thinking mode (a verdict needs no visible
-    /// reasoning budget — the reference disables thinking for its
-    /// classifier) and never carries tools; `ALTER_ZERO_CLASSIFIER_MODEL`
-    /// swaps the model id on the same provider. Boundary code (env + cwd
-    /// reads), like the rest of the backend constructors.
+    /// Build the classifier for the backend's resolved config
+    /// ([`verdict_config`]). It never carries tools;
+    /// `ALTER_ZERO_CLASSIFIER_MODEL` swaps the model id on the same
+    /// provider. Boundary code (env + cwd reads), like the rest of the
+    /// backend constructors.
     #[must_use]
     pub fn new(cfg: &ModelConfig) -> Self {
-        let mut cfg = cfg.clone();
-        if let Some(model) = std::env::var("ALTER_ZERO_CLASSIFIER_MODEL")
-            .ok()
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty())
-        {
-            cfg.model = model;
-        }
-        cfg.thinking = None;
-        // …and at standard speed: a verdict is a few tokens, priority
-        // processing bills plan usage, and an overriding classifier model
-        // may list no tier at all (docs/fast-mode.md).
-        cfg.service_tier = None;
+        let model = std::env::var("ALTER_ZERO_CLASSIFIER_MODEL").ok();
         let cwd = std::env::current_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_else(|_| "(unknown)".to_string());
         Self {
-            client: OpenAiClient::new(cfg),
+            client: OpenAiClient::new(verdict_config(cfg, model.as_deref())),
             cwd,
         }
     }
@@ -464,6 +482,7 @@ impl SafetyClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::reasoning::{ReasoningEffort, ThinkingMode};
     use crate::permission::PermissionKind;
 
     fn mcp_request(target: &str, body: &str, detail: Option<&str>) -> PermissionRequest {
@@ -959,6 +978,87 @@ mod tests {
                 "{reply:?} must not produce a verdict"
             );
         }
+    }
+
+    // ===== the request a verdict is asked with (docs/permissions.md) =====
+
+    /// The session's config on the Cloud Code wire, on a model whose
+    /// thinking level is its id's suffix (`docs/antigravity.md`).
+    fn cloud_code_cfg(model: &str, thinking: Option<ThinkingMode>) -> ModelConfig {
+        ModelConfig {
+            model: model.to_string(),
+            wire_api: crate::llm::WireApi::CloudCode,
+            thinking,
+            ..ModelConfig::fallback()
+        }
+    }
+
+    #[test]
+    fn a_grouped_cloud_code_model_is_asked_under_the_id_its_catalog_lists() {
+        // On the Cloud Code wire a grouped model's thinking level is the
+        // suffix of the id the request names: the catalog lists
+        // `gemini-3.8-flash-high`, never `gemini-3.8-flash`. Dropping the
+        // mode alone asked for an id that does not exist — a 404 on every
+        // verdict, and so a prompt for every reviewed command.
+        let session = cloud_code_cfg(
+            "gemini-3.8-flash",
+            Some(ThinkingMode::Effort(ReasoningEffort::High)),
+        );
+        let cfg = verdict_config(&session, None);
+        assert_eq!(cfg.model, "gemini-3.8-flash-high");
+        assert_eq!(cfg.thinking, None, "and no thoughts are asked for");
+        let payload = crate::llm::cloud_code::build_payload(
+            &cfg,
+            &[],
+            &[crate::llm::ChatMessage::user("ls")],
+            None,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(payload["model"], "gemini-3.8-flash-high", "{payload}");
+        assert!(
+            payload["request"]["generationConfig"]
+                .get("thinkingConfig")
+                .is_none(),
+            "{payload}"
+        );
+        // An id that already names its level, or a model with none, is
+        // asked for as it is.
+        for (model, thinking) in [
+            ("gpt-oss-120b-medium", Some(ThinkingMode::On)),
+            ("claude-sonnet-4-6", None),
+            (
+                "gemini-3.8-flash-low",
+                Some(ThinkingMode::Effort(ReasoningEffort::High)),
+            ),
+        ] {
+            let cfg = verdict_config(&cloud_code_cfg(model, thinking), None);
+            assert_eq!(cfg.model, model);
+        }
+    }
+
+    #[test]
+    fn an_overriding_classifier_model_is_asked_for_as_named() {
+        // `ALTER_ZERO_CLASSIFIER_MODEL` names another model on the provider,
+        // whose levels the session's mode says nothing about.
+        let session = cloud_code_cfg(
+            "gemini-3.8-flash",
+            Some(ThinkingMode::Effort(ReasoningEffort::High)),
+        );
+        let cfg = verdict_config(&session, Some("gemini-3.1-flash-lite"));
+        assert_eq!(cfg.model, "gemini-3.1-flash-lite");
+        assert_eq!(cfg.thinking, None);
+    }
+
+    #[test]
+    fn every_other_wire_keeps_its_model_and_drops_the_mode() {
+        let mut session = ModelConfig::fallback();
+        session.model = "openai/gpt-5-mini".to_string();
+        session.thinking = Some(ThinkingMode::Effort(ReasoningEffort::High));
+        session.service_tier = Some("priority".to_string());
+        let cfg = verdict_config(&session, None);
+        assert_eq!(cfg.model, "openai/gpt-5-mini");
+        assert_eq!(cfg.thinking, None);
+        assert_eq!(cfg.service_tier, None);
     }
 
     #[test]

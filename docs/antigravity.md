@@ -278,6 +278,20 @@ backend's own curated list. `/model` lists:
   `supportsThinking` — for Claude only on a `-thinking` id, the one Claude
   route the backend takes a thinking budget on.
 
+A request made **without** a thinking mode on a grouped row has no level to
+append, and the bare `gemini-3.8-flash` is an id the catalog does not list —
+a 404. One request does that on purpose: auto mode's classifier drops the
+mode, since a verdict needs no thoughts shown. So it resolves the runtime id
+first (`classifier::verdict_config`, through `cloud_code::runtime_model`)
+and asks under the session's own `{model}-{level}`, without
+`includeThoughts`; the level costs a verdict nothing measurable, the model
+spending a few dozen thought tokens on one whatever the level (an allow in
+2–5 s and a block in 5–15 s at `low`, `medium` and `high` alike — which is
+why the classifier does not go looking for the lowest listed level). Before
+that fix every verdict on a
+grouped model failed, and each command auto mode should have reviewed came
+to the user as a prompt (`docs/permissions.md` *Auto mode: the classifier*).
+
 ## `/usage`
 
 The same `fetchAvailableModels` answer carries each model's `quotaInfo`
