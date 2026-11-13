@@ -24,6 +24,13 @@ release heading when a version is cut.
   (`alter-zero/{version}`). An entry whose `headers` set a `User-Agent`
   sends that one instead.
 
+- **An MCP server having a bad moment at startup still connects.** One
+  failed request — the connection dropped, or a gateway's `502`/`503` for a
+  server that was still starting — left the server `✘ failed`, and its
+  tools out of the session, until Reconnect was pressed in `/mcp`. The
+  handshake and the tool listing are now tried up to three times, a moment
+  apart. A tool call is never sent twice.
+
 - **A failed MCP request says why.** A refusal that is a web page (a
   gateway's, a firewall's) is named by its title, as in `HTTP 403: a web
   page titled "403 Forbidden"`, where the page's HTML used to be printed as

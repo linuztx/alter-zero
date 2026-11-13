@@ -581,6 +581,23 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   refused, no such host, a certificate nobody trusts, a proxy's tunnel that
   failed.
 
+  **A connect rides out a server's bad moment.** The steps of a connect
+  that are safe to send twice — `initialize`, its
+  `notifications/initialized`, every page of `tools/list` — go again over
+  streamable HTTP when they got no answer (the connection refused or
+  dropped, a proxy's tunnel that failed) or an answer that says try again
+  (`408`, `429`, `500`, `502`, `503`, `504`): after 250 ms, then after a
+  second, three tries in all and every one inside the connect's own
+  deadline (`Transport::request_retrying`/`notify_retrying`). A gateway
+  answers `502` or `503` for a server that is still starting — a
+  serverless one's cold start, a deploy — and one such answer used to
+  leave the server `✘ failed`, its tools gone from the session, until
+  someone pressed Reconnect. Two requests are never sent twice: the **era
+  probe**, which is one question whatever it meets — the handshake comes
+  next either way, and a server that answers an unknown method with a
+  `500` must not cost every connect the pauses — and a **tool call**,
+  which may have run before its answer was lost.
+
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines; a notification takes the caller's
@@ -1446,7 +1463,9 @@ refresh; `invalid_grant` → cleared grant + needs-auth; a 503 → grant kept +
 each **behind a gateway that answers any request naming no client with a
 `403` web page** — so a green connect, call, sign-in and renewal through
 them prove every request carries the `User-Agent`, whichever request it
-is. What
+is. The same scripted server puts a gateway's `502`/`503` page, or a
+connection closed without a word, in the place of any answer it is told
+to, which is how a connect's retries are counted request by request. What
 those can't prove — that a real server's tools, descriptions and parallel
 batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
 like every other live test:

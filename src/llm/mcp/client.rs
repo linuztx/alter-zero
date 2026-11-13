@@ -309,7 +309,11 @@ fn handshake(
 
 /// The legacy handshake: `initialize` (proposing `version`) →
 /// `notifications/initialized`, the server's settled revision echoed on
-/// later streamable-HTTP requests.
+/// later streamable-HTTP requests. Both are safe to send twice, and go
+/// again when they got no answer or one that says try again
+/// ([`Transport::request_retrying`]) — a server still starting behind its
+/// gateway must not read `✘ failed` for one bad moment. The era probe before
+/// them is not: whatever it meets, this handshake is what comes next.
 fn legacy_handshake(
     mut transport: Transport,
     version: &str,
@@ -317,7 +321,7 @@ fn legacy_handshake(
     cancel: &CancelToken,
 ) -> Result<Connection, Handshake> {
     transport.set_legacy();
-    let result = match transport.request(
+    let result = match transport.request_retrying(
         "initialize",
         initialize_params_for(version),
         left(until),
@@ -337,7 +341,7 @@ fn legacy_handshake(
         http.set_protocol_version(&identity.protocol_version);
     }
     transport
-        .notify(
+        .notify_retrying(
             "notifications/initialized",
             Value::Null,
             left(until),
@@ -383,7 +387,9 @@ fn finish(
 /// model can't be offered, and arm the transport's `x-mcp-header` mirror
 /// with the rest's declarations. What a connect ends on, and what a call
 /// refused with `-32020 HeaderMismatch` runs again before its one retry
-/// (the spec's "SHOULD call `tools/list` to check for changes").
+/// (the spec's "SHOULD call `tools/list` to check for changes"). A page
+/// that got no answer, or one that says try again, is asked for again
+/// ([`Transport::request_retrying`]).
 pub(super) fn list_tools(
     transport: &mut Transport,
     until: Instant,
@@ -397,7 +403,7 @@ pub(super) fn list_tools(
     // otherwise be paged through until `MAX_TOOL_PAGES`.
     let mut sent: HashSet<String> = HashSet::new();
     for page_number in 0..MAX_TOOL_PAGES {
-        let page = match transport.request(
+        let page = match transport.request_retrying(
             "tools/list",
             tools_list_params(cursor.as_deref()),
             left(until),
@@ -1165,20 +1171,49 @@ mod tests {
         }
     }
 
-    /// What a gateway answers a request it turns away with — nginx's page,
-    /// byte for byte.
-    const FORBIDDEN_PAGE: &str = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n\
-        <body>\r\n<center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+    /// What a gateway answers in a server's place — nginx's page for
+    /// `status`, byte for byte, under its status line.
+    fn gateway_page(status: u16) -> (String, String) {
+        let reason = match status {
+            403 => "Forbidden",
+            502 => "Bad Gateway",
+            503 => "Service Temporarily Unavailable",
+            other => panic!("no page for {other}"),
+        };
+        let page = format!(
+            "<html>\r\n<head><title>{status} {reason}</title></head>\r\n<body>\r\n\
+             <center><h1>{status} {reason}</h1></center>\r\n</body>\r\n</html>\r\n"
+        );
+        (format!("{status} {reason}"), page)
+    }
 
-    /// Each request a gated fixture saw: its JSON-RPC method beside the
+    /// What a request meets in place of a scripted fixture's answer.
+    #[derive(Clone, Copy)]
+    enum Trouble {
+        /// A gateway's web page under this status.
+        Page(u16),
+        /// The connection closed without a word.
+        Hangup,
+    }
+
+    /// Each request a scripted fixture saw: its JSON-RPC method beside the
     /// `User-Agent` it carried.
     type SeenRequests = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
 
-    /// A legacy streamable-HTTP server behind a gateway that turns away any
-    /// request naming no client — no `User-Agent`, a firewall's stock rule —
-    /// with a 403 web page, before the server is asked anything. Returns its
-    /// URL and what every request carried.
-    fn spawn_gated_http_fixture() -> (String, SeenRequests) {
+    /// The methods a scripted fixture was asked, in order.
+    fn methods(seen: &SeenRequests) -> Vec<String> {
+        let seen = seen.lock().unwrap();
+        seen.iter().map(|(method, _)| method.clone()).collect()
+    }
+
+    /// A legacy streamable-HTTP server on a real socket, each request first
+    /// passing `trouble` — handed its method, how many times that method has
+    /// now been asked, and the `User-Agent` it carried — which may put
+    /// something in the answer's place. Returns its URL and what every
+    /// request carried.
+    fn spawn_scripted_http_fixture(
+        trouble: impl Fn(&str, usize, Option<&str>) -> Option<Trouble> + Send + 'static,
+    ) -> (String, SeenRequests) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
         let seen = SeenRequests::default();
@@ -1211,8 +1246,11 @@ mod tests {
                 let message = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
                 let id = message.get("id").cloned().unwrap_or(Value::Null);
                 let method = message["method"].as_str().unwrap_or_default().to_string();
-                let named = agent.is_some();
-                record.lock().unwrap().push((method.clone(), agent));
+                let asked = {
+                    let mut record = record.lock().unwrap();
+                    record.push((method.clone(), agent.clone()));
+                    record.iter().filter(|(asked, _)| *asked == method).count()
+                };
                 let respond = |stream: &mut std::net::TcpStream,
                                status: &str,
                                content_type: &str,
@@ -1223,15 +1261,20 @@ mod tests {
                     );
                     let _ = stream.write_all(response.as_bytes());
                 };
-                if !named {
-                    respond(&mut stream, "403 Forbidden", "text/html", FORBIDDEN_PAGE);
-                    continue;
+                match trouble(&method, asked, agent.as_deref()) {
+                    Some(Trouble::Page(status)) => {
+                        let (status, page) = gateway_page(status);
+                        respond(&mut stream, &status, "text/html", &page);
+                        continue;
+                    }
+                    Some(Trouble::Hangup) => continue,
+                    None => {}
                 }
                 let result = match method.as_str() {
                     "initialize" => serde_json::json!({
                         "protocolVersion": "2025-06-18",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "gated", "version": "0.1"}
+                        "serverInfo": {"name": "scripted", "version": "0.1"}
                     }),
                     "notifications/initialized" => {
                         respond(&mut stream, "202 Accepted", "application/json", "");
@@ -1262,6 +1305,13 @@ mod tests {
         (format!("http://127.0.0.1:{port}/mcp"), seen)
     }
 
+    /// [`spawn_scripted_http_fixture`] behind a gateway that turns away any
+    /// request naming no client — no `User-Agent`, a firewall's stock rule —
+    /// with a 403 web page, before the server is asked anything.
+    fn spawn_gated_http_fixture() -> (String, SeenRequests) {
+        spawn_scripted_http_fixture(|_, _, agent| agent.is_none().then_some(Trouble::Page(403)))
+    }
+
     /// Every request names this client, so a gateway that refuses requests
     /// naming none — which answered the connect with a 403 web page, the
     /// server never asked — lets the whole session through.
@@ -1277,7 +1327,7 @@ mod tests {
         let cancel = CancelToken::new();
         let mut connection = connect(&config, None, None, Duration::from_secs(10), &cancel)
             .unwrap_or_else(|e| panic!("the gateway turned the connect away: {e:?}"));
-        assert_eq!(connection.identity.name, "gated");
+        assert_eq!(connection.identity.name, "scripted");
         assert_eq!(connection.tools.len(), 1);
         let result = connection
             .transport
@@ -1289,10 +1339,8 @@ mod tests {
             )
             .expect("call");
         assert_eq!(crate::mcp::parse_call_result(&result).text, "through");
-        let seen = seen.lock().unwrap();
-        let methods: Vec<&str> = seen.iter().map(|(method, _)| method.as_str()).collect();
         assert_eq!(
-            methods,
+            methods(&seen),
             [
                 "server/discover",
                 "initialize",
@@ -1301,6 +1349,7 @@ mod tests {
                 "tools/call"
             ]
         );
+        let seen = seen.lock().unwrap();
         let ours = crate::mcp::user_agent();
         for (method, agent) in seen.iter() {
             assert_eq!(agent.as_deref(), Some(ours.as_str()), "{method}");
@@ -1338,27 +1387,9 @@ mod tests {
     /// was what the `/mcp` page showed as the server's reason.
     #[test]
     fn a_refusal_that_is_a_web_page_is_described_not_dumped() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { break };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                while reader.read_line(&mut line).is_ok() && line.trim() != "" {
-                    line.clear();
-                }
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{FORBIDDEN_PAGE}",
-                        FORBIDDEN_PAGE.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
+        let (url, _) = spawn_scripted_http_fixture(|_, _, _| Some(Trouble::Page(403)));
         let config = McpServerConfig::Http {
-            url: format!("http://127.0.0.1:{port}/mcp"),
+            url,
             headers: Default::default(),
             sse_fallback: true,
             oauth: None,
@@ -1410,6 +1441,125 @@ mod tests {
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("unexpectedly connected"),
         }
+    }
+
+    /// A connect rides out a server's bad moment: each step that is safe to
+    /// send twice — the handshake, its notification, the listing — is sent
+    /// again when it got no answer, or one that says try again (a gateway's
+    /// `502`/`503` over a server still starting). One such answer used to
+    /// leave the server `✘ failed` until someone pressed Reconnect.
+    #[test]
+    fn a_connect_rides_out_a_bad_moment() {
+        let (url, seen) = spawn_scripted_http_fixture(|method, asked, _| match (method, asked) {
+            ("initialize", 1) => Some(Trouble::Page(503)),
+            ("notifications/initialized", 1) => Some(Trouble::Hangup),
+            ("tools/list", 1) => Some(Trouble::Page(502)),
+            _ => None,
+        });
+        let config = McpServerConfig::Http {
+            url,
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let connection = connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .unwrap_or_else(|e| panic!("one bad moment failed the connect: {e:?}"));
+        assert_eq!(connection.tools.len(), 1);
+        assert_eq!(
+            methods(&seen),
+            [
+                "server/discover",
+                "initialize",
+                "initialize",
+                "notifications/initialized",
+                "notifications/initialized",
+                "tools/list",
+                "tools/list"
+            ]
+        );
+    }
+
+    /// A server that stays down is asked three times, then reported with
+    /// what it last said.
+    #[test]
+    fn a_server_that_stays_down_is_reported_after_three_tries() {
+        let (url, seen) = spawn_scripted_http_fixture(|method, _, _| {
+            (method == "initialize").then_some(Trouble::Page(503))
+        });
+        let config = McpServerConfig::Http {
+            url,
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        match connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        ) {
+            Err(ConnectError::Failed(detail)) => assert_eq!(
+                detail,
+                "HTTP 503: a web page titled \"503 Service Temporarily Unavailable\""
+            ),
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("unexpectedly connected"),
+        }
+        assert_eq!(
+            methods(&seen),
+            ["server/discover", "initialize", "initialize", "initialize"]
+        );
+    }
+
+    /// Only what is safe to send twice is. The era probe is one question —
+    /// whatever it meets, the handshake comes next — and a tool call may
+    /// have run before its answer was lost.
+    #[test]
+    fn the_era_probe_and_a_tool_call_are_sent_once() {
+        let (url, seen) = spawn_scripted_http_fixture(|method, _, _| {
+            matches!(method, "server/discover" | "tools/call").then_some(Trouble::Page(503))
+        });
+        let config = McpServerConfig::Http {
+            url,
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let cancel = CancelToken::new();
+        let mut connection = connect(&config, None, None, Duration::from_secs(10), &cancel)
+            .unwrap_or_else(|e| panic!("connect: {e:?}"));
+        let refused = connection
+            .transport
+            .request(
+                "tools/call",
+                crate::mcp::call_params("ask_question", &serde_json::json!({})),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect_err("the gateway answered for the server");
+        assert_eq!(
+            refused,
+            TransportError::Failed(
+                "HTTP 503: a web page titled \"503 Service Temporarily Unavailable\"".to_string()
+            )
+        );
+        assert_eq!(
+            methods(&seen),
+            [
+                "server/discover",
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call"
+            ]
+        );
     }
 
     #[test]
