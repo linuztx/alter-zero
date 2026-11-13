@@ -12,6 +12,18 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP servers behind a gateway that refuses unnamed clients now connect.**
+  Requests to a remote MCP server carried no `User-Agent`, and a gateway's
+  stock firewall rules turn such a request away before the server sees it.
+  A server behind one read `✘ failed` in `/mcp`, with `HTTP 403` and a web
+  page as its error, and **Authenticate** failed the same way, since the
+  sign-in's own requests met the same gateway. Every request to a server,
+  and every request of a sign-in to one, now names the app
+  (`alter-zero/{version}`). An entry whose `headers` set a `User-Agent`
+  sends that one instead.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

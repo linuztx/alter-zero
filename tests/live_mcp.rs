@@ -153,6 +153,27 @@ fn live_google_servers_wait_for_sign_in_while_open_ones_connect() {
     }
 }
 
+/// A server behind a gateway that turns away any request naming no client
+/// (`docs/mcp.md`): the connect reaches the server itself, whose answer is
+/// the `401` that starts its sign-in — it read `✘ failed`, over the
+/// gateway's `403` page — and the sign-in's own discovery, behind the same
+/// gateway, finds its authorization server: an issuer with a path, one that
+/// registers clients itself.
+#[test]
+#[ignore = "hits the network (spark.platform.askable.com)"]
+fn live_a_server_behind_a_gateway_asks_for_a_sign_in() {
+    const URL: &str = "https://spark.platform.askable.com/mcp/participant";
+    let manager = settled_server("askable", URL);
+    let status = manager.snapshot()[0].status.clone();
+    manager.shutdown();
+    assert_eq!(status, mcp::McpServerStatus::NeedsAuth);
+    let found = alter_zero::llm::mcp::discover(URL, None).expect("the sign-in's discovery");
+    assert_eq!(found.issuer.as_deref(), Some(URL));
+    assert_eq!(found.resource, URL);
+    assert_eq!(found.scopes.as_deref(), Some("participant"));
+    assert!(found.registration_endpoint.is_some());
+}
+
 /// The model under test.
 fn live_model() -> String {
     std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string())

@@ -1158,9 +1158,17 @@ pub struct AuthServerMeta {
     pub token_auth_methods: Vec<String>,
 }
 
+/// The HTTP client every request of a sign-in goes out on — one that names
+/// this app (`llm::mcp_auth_http_client`): an authorization server behind a
+/// gateway is refused there, with the gateway's 403, to a request naming no
+/// client, exactly as its MCP server is.
+fn auth_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+    crate::llm::mcp_auth_http_client(timeout).map_err(|e| e.to_string())
+}
+
 /// GET a metadata document as JSON, waiting at most `timeout`.
 fn get_json_within(url: &str, timeout: Duration) -> Result<Value, String> {
-    let client = crate::llm::http_client(timeout).map_err(|e| e.to_string())?;
+    let client = auth_client(timeout)?;
     let response = client
         .get(url)
         .header("Accept", "application/json")
@@ -1184,7 +1192,7 @@ fn post_form_raw(
     params: &[(String, String)],
     basic: Option<&str>,
 ) -> Result<(u16, String), String> {
-    let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let client = auth_client(HTTP_TIMEOUT)?;
     let mut request = client
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1560,7 +1568,7 @@ pub fn register_client(
     redirect_uri: &str,
     supported_methods: &[String],
 ) -> Result<ClientIdentity, String> {
-    let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let client = auth_client(HTTP_TIMEOUT)?;
     let method = registration_auth_method(supported_methods);
     let body = serde_json::json!({
         "client_name": "alter-zero",
@@ -3082,6 +3090,10 @@ mod tests {
         reply
     }
 
+    /// Each request an authorization-server fixture saw: its path beside the
+    /// `User-Agent` it carried.
+    type SeenAgents = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
     /// One fake authorization server: resource and AS metadata for
     /// `{base}/mcp`, dynamic registration (counted, its reply overridable),
     /// and a token endpoint recording each request's headers and body.
@@ -3089,6 +3101,8 @@ mod tests {
         base: String,
         registrations: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         token_requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        /// Every request's path beside the `User-Agent` it carried.
+        agents: SeenAgents,
     }
 
     fn spawn_auth_server(register_reply: Option<(u16, &'static str)>) -> AuthServerFixture {
@@ -3101,16 +3115,29 @@ mod tests {
         registration: bool,
         register_reply: Option<(u16, &'static str)>,
     ) -> AuthServerFixture {
+        spawn_auth_server_behind(false, registration, register_reply)
+    }
+
+    /// [`spawn_auth_server_with`], behind a gateway when `gated`: one that
+    /// turns away any request naming no client — no `User-Agent`, a
+    /// firewall's stock rule — with a 403 web page, whatever it asked for.
+    fn spawn_auth_server_behind(
+        gated: bool,
+        registration: bool,
+        register_reply: Option<(u16, &'static str)>,
+    ) -> AuthServerFixture {
         use std::io::{BufRead, BufReader};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let registrations = std::sync::Arc::new(AtomicUsize::new(0));
         let token_requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agents = SeenAgents::default();
         let fixture = AuthServerFixture {
             base: base.clone(),
             registrations: std::sync::Arc::clone(&registrations),
             token_requests: std::sync::Arc::clone(&token_requests),
+            agents: std::sync::Arc::clone(&agents),
         };
         std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -3141,6 +3168,25 @@ mod tests {
                     .nth(1)
                     .unwrap_or_default()
                     .to_string();
+                let agent = head.lines().find_map(|header| {
+                    let (name, value) = header.split_once(':')?;
+                    name.eq_ignore_ascii_case("user-agent")
+                        .then(|| value.trim().to_string())
+                });
+                let named = agent.is_some();
+                agents.lock().unwrap().push((path.clone(), agent));
+                if gated && !named {
+                    let page = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n\
+                        <body>\r\n<center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                            page.len()
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
                 let (status, reply) = match path.as_str() {
                     "/.well-known/oauth-protected-resource/mcp" => (
                         200,
@@ -3460,6 +3506,37 @@ mod tests {
             load_tokens(Some(&store), &server).unwrap().client_id,
             "cid-2"
         );
+    }
+
+    /// A sign-in's own requests name this client too — both metadata
+    /// documents, the registration, the exchange and every renewal after it.
+    /// An authorization server behind the gateway its MCP server sits behind
+    /// turns away a request naming none, and the sign-in ended at discovery
+    /// with that gateway's 403.
+    #[test]
+    fn a_sign_in_gets_through_a_gateway_that_refuses_unnamed_clients() {
+        let fixture = spawn_auth_server_behind(true, true, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let (result, _) = sign_in(
+            &fixture,
+            &store,
+            &approving_browser("code-1"),
+            &CancelToken::new(),
+        );
+        assert_eq!(result, Ok(()));
+        refresh_grant(Some(&store), &server, None).expect("the renewal got through");
+        let agents = fixture.agents.lock().unwrap();
+        let asked = |path: &str| agents.iter().filter(|(asked, _)| asked == path).count();
+        assert_eq!(asked("/.well-known/oauth-protected-resource/mcp"), 1);
+        assert_eq!(asked("/.well-known/oauth-authorization-server"), 1);
+        assert_eq!(asked("/register"), 1);
+        assert_eq!(asked("/token"), 2, "the exchange, then the renewal");
+        let ours = crate::mcp::user_agent();
+        for (path, agent) in agents.iter() {
+            assert_eq!(agent.as_deref(), Some(ours.as_str()), "{path}");
+        }
     }
 
     /// A client registered with another authorization server is never

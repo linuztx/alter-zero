@@ -551,6 +551,23 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     where it used to hold the connection, and itself, for good. A
     byte-order mark opening the stream is stripped (the SSE spec's rule;
     kept, it made the `endpoint` event never arrive).
+
+  **Every request to a remote server names this client**: `User-Agent:
+  alter-zero/{version}` (`mcp::user_agent` — the `clientInfo` name and
+  version as HTTP's `name/version` product), on both remote transports and
+  everything they send: each POST, the change stream, a legacy stream and
+  its POSTs, the answer to a server's own request. It is set on the HTTP
+  client they share (`llm::mcp_http_client`) rather than on each request, so
+  no request can be written without it, and an entry whose `headers` name a
+  `User-Agent` of their own sends that one instead. The HTTP library sends
+  none by itself, and a request naming no client is what a gateway's stock
+  rules turn away — a firewall's managed rule set, a CDN's browser check —
+  with a `403` web page of the gateway's, the server never asked. That is
+  how a server that was up and answering read `✘ failed` here:
+  `spark.platform.askable.com/mcp/participant` showed `HTTP 403` over
+  nginx's page, where the server's own answer, once a request reaches it,
+  is the `401` that starts its sign-in.
+
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines; a notification takes the caller's
@@ -745,6 +762,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   above), and signing in to Google's this way is **experimental**: it
   follows Google's published metadata, but has not been tried end to end.
   The review's `ServerParts` names an `oauth` change (`the OAuth client`).
+
+  **The sign-in's requests name this client too.** The metadata documents,
+  the registration, the exchange and every renewal go out on
+  `llm::mcp_auth_http_client`, which sends the `User-Agent` a server's own
+  requests carry (above): an authorization server sits behind the same kind
+  of gateway as its MCP server — usually the very same one — and a sign-in
+  to a server behind one ended at discovery with the gateway's `403`.
+  These requests follow any redirect, as a provider's do: they carry none
+  of an entry's headers, and a metadata document may be served from
+  elsewhere.
 
   **The flow stops where it should.** The cancel token is checked between
   discovery, registration and the browser, so Esc during discovery never
@@ -1387,7 +1414,11 @@ negotiation server, and an OAuth pair — an MCP endpoint demanding
 matrix (mid-session 401 → refresh → retry with the server never leaving
 Connected; proactive pre-call refresh with **zero** 401s seen; connect-time
 refresh; `invalid_grant` → cleared grant + needs-auth; a 503 → grant kept +
-`✘ failed`, never needs-auth). What
+`✘ failed`, never needs-auth), and a server and an authorization server
+each **behind a gateway that answers any request naming no client with a
+`403` web page** — so a green connect, call, sign-in and renewal through
+them prove every request carries the `User-Agent`, whichever request it
+is. What
 those can't prove — that a real server's tools, descriptions and parallel
 batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
 like every other live test:
@@ -1395,11 +1426,14 @@ like every other live test:
 ```sh
 # the public DeepWiki server only (no key needed)
 cargo test --test live_mcp -- --ignored --nocapture live_deepwiki_tool_descriptions
+# a real server behind such a gateway: it asks for a sign-in, and the
+# sign-in's discovery finds its authorization server (no key needed)
+cargo test --test live_mcp -- --ignored --nocapture live_a_server_behind_a_gateway
 # the whole round trip: a real model issuing a real parallel batch
 OPENROUTER_API_KEY=sk-or-… cargo test --test live_mcp -- --ignored --nocapture
 ```
 
-The second one folds the turn's real `StreamEvent`s into `App` the way
+The last one folds the turn's real `StreamEvent`s into `App` the way
 `tui::stream` does and asserts on the lines a terminal would show: the strip's
 one `● Calling Deepwiki 2 times…` cell, the single committed
 `Called Deepwiki 2 times`, and the per-call Ctrl+O headers with the model's own

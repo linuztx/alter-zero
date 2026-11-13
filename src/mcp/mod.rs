@@ -55,7 +55,7 @@ pub use self::protocol::{
     input_schema_problem, is_modern_error, listen_params, model_input_schema, notification,
     notification_method, parse_call_result, parse_discover, parse_incoming, parse_initialize,
     parse_tools_page, request, request_meta, result_type_problem, server_request_answer,
-    tools_list_params, unsupported_versions, with_meta,
+    tools_list_params, unsupported_versions, user_agent, with_meta,
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{

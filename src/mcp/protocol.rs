@@ -281,6 +281,17 @@ fn client_info() -> Value {
     })
 }
 
+/// The `User-Agent` every request to an MCP server carries, and every
+/// request of a sign-in to one: this client's `clientInfo` as HTTP's
+/// `name/version` product, `alter-zero/{version}`. What `clientInfo` tells
+/// the server in the protocol, this tells whatever stands in front of it —
+/// and a gateway's stock rules turn away a request naming no client with a
+/// `403` web page, the server never asked (`docs/mcp.md`).
+#[must_use]
+pub fn user_agent() -> String {
+    format!("alter-zero/{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// The `_meta` object every modern (2026-07-28) request carries: the
 /// protocol version, this client's identity, and its capabilities — an
 /// empty object, the schema's own spelling for "no optional capabilities"
@@ -1108,6 +1119,26 @@ mod tests {
         assert!(
             shown.contains("elicitation") && shown.contains("sampling"),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_user_agent_is_the_client_info_as_a_product() {
+        // One identity, two layers: what `clientInfo` tells the server in
+        // the protocol, the `User-Agent` tells whatever stands in front of
+        // it, as HTTP's `name/version` product.
+        let info = client_info();
+        assert_eq!(
+            user_agent(),
+            format!(
+                "{}/{}",
+                info["name"].as_str().unwrap(),
+                info["version"].as_str().unwrap()
+            )
+        );
+        assert_eq!(
+            user_agent(),
+            format!("alter-zero/{}", env!("CARGO_PKG_VERSION"))
         );
     }
 

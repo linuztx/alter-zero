@@ -1165,6 +1165,174 @@ mod tests {
         }
     }
 
+    /// What a gateway answers a request it turns away with — nginx's page,
+    /// byte for byte.
+    const FORBIDDEN_PAGE: &str = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n\
+        <body>\r\n<center><h1>403 Forbidden</h1></center>\r\n</body>\r\n</html>\r\n";
+
+    /// Each request a gated fixture saw: its JSON-RPC method beside the
+    /// `User-Agent` it carried.
+    type SeenRequests = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A legacy streamable-HTTP server behind a gateway that turns away any
+    /// request naming no client — no `User-Agent`, a firewall's stock rule —
+    /// with a 403 web page, before the server is asked anything. Returns its
+    /// URL and what every request carried.
+    fn spawn_gated_http_fixture() -> (String, SeenRequests) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let seen = SeenRequests::default();
+        let record = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let (mut content_length, mut agent) = (0usize, None);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let Some((name, value)) = header.split_once(':') else {
+                        continue;
+                    };
+                    match name.to_ascii_lowercase().as_str() {
+                        "content-length" => content_length = value.trim().parse().unwrap_or(0),
+                        "user-agent" => agent = Some(value.trim().to_string()),
+                        _ => {}
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let message = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+                let id = message.get("id").cloned().unwrap_or(Value::Null);
+                let method = message["method"].as_str().unwrap_or_default().to_string();
+                let named = agent.is_some();
+                record.lock().unwrap().push((method.clone(), agent));
+                let respond = |stream: &mut std::net::TcpStream,
+                               status: &str,
+                               content_type: &str,
+                               body: &str| {
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                if !named {
+                    respond(&mut stream, "403 Forbidden", "text/html", FORBIDDEN_PAGE);
+                    continue;
+                }
+                let result = match method.as_str() {
+                    "initialize" => serde_json::json!({
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "gated", "version": "0.1"}
+                    }),
+                    "notifications/initialized" => {
+                        respond(&mut stream, "202 Accepted", "application/json", "");
+                        continue;
+                    }
+                    "tools/list" => serde_json::json!({"tools": [
+                        {"name": "ask_question", "description": "Ask.",
+                         "inputSchema": {"type": "object", "properties": {}}}
+                    ]}),
+                    "tools/call" => {
+                        serde_json::json!({"content": [{"type": "text", "text": "through"}]})
+                    }
+                    _ => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "unknown"}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "application/json", &body);
+                        continue;
+                    }
+                };
+                let body =
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                respond(&mut stream, "200 OK", "application/json", &body);
+            }
+        });
+        (format!("http://127.0.0.1:{port}/mcp"), seen)
+    }
+
+    /// Every request names this client, so a gateway that refuses requests
+    /// naming none — which answered the connect with a 403 web page, the
+    /// server never asked — lets the whole session through.
+    #[test]
+    fn a_gateway_that_refuses_unnamed_clients_lets_every_request_through() {
+        let (url, seen) = spawn_gated_http_fixture();
+        let config = McpServerConfig::Http {
+            url,
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let cancel = CancelToken::new();
+        let mut connection = connect(&config, None, None, Duration::from_secs(10), &cancel)
+            .unwrap_or_else(|e| panic!("the gateway turned the connect away: {e:?}"));
+        assert_eq!(connection.identity.name, "gated");
+        assert_eq!(connection.tools.len(), 1);
+        let result = connection
+            .transport
+            .request(
+                "tools/call",
+                crate::mcp::call_params("ask_question", &serde_json::json!({})),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect("call");
+        assert_eq!(crate::mcp::parse_call_result(&result).text, "through");
+        let seen = seen.lock().unwrap();
+        let methods: Vec<&str> = seen.iter().map(|(method, _)| method.as_str()).collect();
+        assert_eq!(
+            methods,
+            [
+                "server/discover",
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "tools/call"
+            ]
+        );
+        let ours = crate::mcp::user_agent();
+        for (method, agent) in seen.iter() {
+            assert_eq!(agent.as_deref(), Some(ours.as_str()), "{method}");
+        }
+    }
+
+    /// An entry whose `headers` name a client of their own — for a server
+    /// that gates on one — sends that, never ours beside it.
+    #[test]
+    fn an_entry_s_own_user_agent_is_the_one_sent() {
+        let (url, seen) = spawn_gated_http_fixture();
+        let config = McpServerConfig::Http {
+            url,
+            headers: [("User-Agent".to_string(), "their-client/2".to_string())].into(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        connect(
+            &config,
+            None,
+            None,
+            Duration::from_secs(10),
+            &CancelToken::new(),
+        )
+        .unwrap_or_else(|e| panic!("connect: {e:?}"));
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty());
+        for (method, agent) in seen.iter() {
+            assert_eq!(agent.as_deref(), Some("their-client/2"), "{method}");
+        }
+    }
+
     #[test]
     fn a_legacy_stdio_server_connects_through_the_fallback() {
         // A scripted `sh` LEGACY MCP server: our request ids are
