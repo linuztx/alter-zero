@@ -23,8 +23,10 @@ release heading when a version is cut.
   taught, in a `context_meter` line, and a resume reads on from it, so the
   footer, the `/context` page and the Ctrl+D labels agree with what they
   showed before. Sessions recorded before this resume on the count in their
-  last `usage` line. A resume by itself writes nothing to the file
-  (`docs/token-estimate.md`).
+  last `usage` line. The `/resume` picker no longer carries the count of the
+  conversation a session had open into the one it opens, so a conversation
+  reads the same number whether it is reopened there or with `-c`. A resume
+  by itself writes nothing to the file (`docs/token-estimate.md`).
 
 - **A conversation switched to a speed tier comes back on it.** `/fast` (or
   any tier command) was saved for the directory but never written to the

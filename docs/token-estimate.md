@@ -318,6 +318,18 @@ the launches. The same rule covers a request an older build appended to a
 file that has a record: a `usage` line behind the newest `context_meter`
 line is one the record never saw (`session::parse_context_meter`).
 
+**Wherever it is reopened**, a conversation reads from its own file. A
+resume starts the meter from nothing (`App::load_session`): a running
+session's meter holds the count and the ratio of the conversation it had
+open, which describe that conversation, not the one the `/resume` picker
+loads in its place. Carried over, they moved a reopened conversation with
+no count of its own by the last one's distance from its estimate (the
+picker read 17.2k where `--continue` read 18.6k for the same file,
+`smoke.sh` Phase 154), and corrected an anchored one by a ratio its own
+provider had never taught. So the picker reads exactly what `--continue`
+reads in a new process: the file's record, else its last `usage` line,
+else its estimate.
+
 A resume writes nothing. The restored meter is what the file says, so the
 recorder takes it as written (`SessionRecorder::adopt`), and the next line
 is the one the next report leaves. A session no provider reported usage
@@ -330,14 +342,17 @@ reading moves by what joined less what left. `app::tests::compact`: a
 reopened session reads what it read before it was closed, reads on as the
 live one would, keeps the ratio, drops it on another model, and reads a
 missing tool as that much less until it is back; a rewound and a compacted
-session resume on what the rewind and the compaction left. `session`: the
+session resume on what the rewind and the compaction left; and the picker,
+inside a session that counted another conversation, reads one with no count
+of its own, or one anchored on a recorded request, as a new launch does. `session`: the
 line's shape, the newest record read back whole, a request recorded behind
 it offered as unseen, and the line invisible to every other reader.
 `tests/headless.rs` reads the lines off a real run and its `-c`.
 `smoke.sh` Phase 154 compares the footer before the quit with the footer
 after `--continue`, after the `/resume` picker, on a file with the records
-taken out, once a ratio has been learned, and with an MCP server's tools in
-the count.
+taken out, once a ratio has been learned, on a file with every count taken
+out (after `--continue`, and after the picker inside a session that counted
+another conversation), and with an MCP server's tools in the count.
 
 ## Limits
 

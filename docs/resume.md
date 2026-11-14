@@ -257,7 +257,9 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   restored** from the file's newest `context_meter` record, or from its
   last `usage` line when it has none (`Session::restore_context_meter`, so
   the footer reads what it read before the session was closed;
-  `docs/token-estimate.md` *Kept with the session*),
+  `docs/token-estimate.md` *Kept with the session*) — never from the count
+  of the conversation it replaces, which `App::load_session` lets go of
+  first, so the picker reads what `--continue` reads,
   `exit_overlay` + a **purge** `repaint_conversation` (like `/clear`) — the
   loaded session *replaces* the whole conversation, so the rebuild fills
   scrollback with its full history; a plain return would leave the previous

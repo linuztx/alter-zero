@@ -1059,3 +1059,78 @@ fn a_compacted_session_resumes_on_what_the_compaction_left() {
     resumed.restore_context_meter(&snapshot, "a-model");
     assert_eq!(resumed.context_used(), compaction.after);
 }
+
+/// A session that has already counted a conversation of its own — a base a
+/// report set, and a ratio two reports taught — into which the `/resume`
+/// picker then loads another one.
+fn counted_session() -> App {
+    let mut app = standing_session("a system prompt");
+    calibrated_at_three_halves(&mut app, &"word ".repeat(600));
+    app.finish_stream();
+    app.end_turn(3);
+    assert!(app.context_calibration().ratio_permille() > 1_000);
+    app
+}
+
+#[test]
+fn the_picker_reads_a_conversation_with_no_count_of_its_own_as_a_new_launch_does() {
+    // The `/resume` picker loads into a session that counted another
+    // conversation. That count, and the ratio its reports taught, describe
+    // the conversation that went. One whose rollout kept no count — no
+    // provider reported its usage, or its record stands past the end of a
+    // file cut short — reads its own estimate, as `--continue` reads it in
+    // a new process, and not the last conversation's count moved by the
+    // difference.
+    let mut uncounted = standing_session("a system prompt");
+    uncounted.record_user_message("a question no provider counted");
+    uncounted.begin_stream();
+    uncounted.push_chunk(&"an answer of many words ".repeat(80));
+    uncounted.finish_stream();
+    uncounted.end_turn(2);
+    let mut cut = standing_session("a system prompt");
+    tool_turn(&mut cut, "Hi", [7_950, 8_050]);
+    let mut past_the_end = cut.context_meter_snapshot().expect("a provider counted");
+    past_the_end.after = cut.history.len() + 3;
+    for (recorded, kept) in [(&uncounted, None), (&cut, Some(past_the_end))] {
+        let mut launched = standing_session("a system prompt");
+        let mut picked = counted_session();
+        for app in [&mut launched, &mut picked] {
+            app.load_session(recorded.history.clone());
+            if let Some(snapshot) = &kept {
+                app.restore_context_meter(snapshot, "a-model");
+            }
+        }
+        assert_eq!(picked.context_used(), launched.context_used());
+        assert_eq!(picked.context_calibration().ratio_permille(), 1000);
+        assert_eq!(
+            picked.context_meter_snapshot(),
+            None,
+            "no count of this conversation's to keep"
+        );
+    }
+}
+
+#[test]
+fn the_picker_anchors_a_recorded_request_with_nothing_learned_as_a_new_launch_does() {
+    // A rollout from before the meter was kept, opened from the picker: its
+    // newest request anchors the reading and, as in a new process, nothing
+    // has been learned yet. What was recorded after it is added at its own
+    // estimate, not at the ratio the last conversation's reports taught.
+    let mut recorded = standing_session("a system prompt");
+    recorded.record_user_message("Hi");
+    recorded.begin_stream();
+    recorded.apply_usage(&usage_of(8_050, 12));
+    let at_the_report = recorded.history.len();
+    recorded.push_chunk(&"a long answer of many words ".repeat(120));
+    recorded.finish_stream();
+    recorded.end_turn(4);
+    let mut launched = standing_session("a system prompt");
+    let mut picked = counted_session();
+    for app in [&mut launched, &mut picked] {
+        app.load_session(recorded.history.clone());
+        app.anchor_context_meter(at_the_report, 8_050);
+    }
+    assert_eq!(launched.context_used(), recorded.context_used());
+    assert_eq!(picked.context_used(), launched.context_used());
+    assert_eq!(picked.context_calibration().ratio_permille(), 1000);
+}

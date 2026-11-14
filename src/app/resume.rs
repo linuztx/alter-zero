@@ -145,7 +145,15 @@ impl App {
         // belongs to the resumed conversation, not to any new turn — fence it
         // off from the interrupt-undo (docs/interrupt.md).
         self.undo_floor = self.history.len();
-        // The gauge re-seats on the loaded conversation (docs/compact.md).
+        // The gauge re-seats on the loaded conversation (docs/compact.md),
+        // from nothing: what the last conversation's reports counted and
+        // taught describes the one that went. The resumed one reads on from
+        // its own rollout's count (`restore_context_meter`,
+        // `anchor_context_meter`), or from its estimate when it kept none —
+        // the same number a new process reads, wherever it was reopened
+        // (docs/token-estimate.md *Kept with the session*).
+        self.context_meter = crate::tokens::ContextMeter::default();
+        self.context_base_at = None;
         self.refresh_context_used();
         self.close_resume_picker();
     }

@@ -28,9 +28,14 @@ smoke_begin
 #   (e) two long answers later the meter has learned how this provider counts
 #       (the change between two frames against the estimate of it), and the
 #       next `--continue` reads the number that ratio made — which the
-#       uncorrected estimate of the last answer would miss by a kilotoken.
+#       uncorrected estimate of the last answer would miss by a kilotoken;
+#   (f) with every count taken out — a rollout from before 0.19.0, or one
+#       whose provider reports no usage — `--continue` reads the estimate,
+#       and so does the `/resume` picker inside a session that has just
+#       counted a conversation of its own: that count describes the
+#       conversation that went, and is not carried into the one reopened.
 # And with a stdio MCP server's tools in the request:
-#   (f) a session recorded with the server connected reads, reopened, the
+#   (g) a session recorded with the server connected reads, reopened, the
 #       recorded number once the server is back — its tools were in the
 #       provider's count, and a tool set that changes moves the reading
 #       without moving the meter, so nothing is appended here either.
@@ -192,7 +197,35 @@ launch -c "$G_DIR" "$S154" 110 30 "$G_APP --continue"
 g_reopened "$S154" "$G3" "--continue after the meter learned the provider's ratio"
 g_quit "$S154"
 
-# ---- (f) with an MCP server's tools in the count ----
+# ---- (f) no count kept: the picker reads the estimate --continue reads ----
+# Both readings are estimates of the whole context taken in two processes,
+# so the scratchpad is off for this step: its directory names each launch's
+# own session, which moves such an estimate by a few tokens between launches.
+sed -i.bak -e '/"type":"context_meter"/d' -e '/"type":"usage"/d' "$G_FILE" && rm -f "$G_FILE.bak"
+expect_file_lacks "$G_FILE" -F '"type":"usage"' "the usage lines were not taken out"
+G_BARE="env ALTER_ZERO_SCRATCHPAD=0 $G_APP"
+launch -c "$G_DIR" "$S154" 110 30 "$G_BARE --continue"
+wait_for 10 "$S154" -S -6000 -- -F "a long answer please" || fail "--continue did not reopen the stripped conversation"
+bare="$(wait_settled 10 "$S154" -F "/200k")"
+GE="$(g_gauge "$bare")"
+note "with no count kept, --continue reads the estimate: $GE"
+expect_ne "$GE" "$G3" "a rollout with every count taken out still read the count"
+g_quit "$S154"
+launch -c "$G_DIR" "$S154" 110 30 "$G_BARE"
+wait_for 10 "$S154" -F "stub-model · ~/gauge" || fail "the session that counts another conversation never came up"
+submit "$S154" "a fresh question"
+wait_summaries 20 "$S154" 1 -S -200 >/dev/null || fail "the fresh conversation's turn never settled"
+fresh="$(wait_settled 5 "$S154" -F "/200k")"
+note "the fresh conversation, counted by the stub, reads $(g_gauge "$fresh")"
+# The picker never lists the conversation it is opened in, so its one row
+# here is the stripped conversation's.
+submit "$S154" "/resume"
+wait_for 5 "$S154" -F "first question" || fail "the /resume picker does not list the stripped conversation"
+keys "$S154" Enter
+g_reopened "$S154" "$GE" "the /resume picker's load into a session that counted another conversation"
+g_quit "$S154"
+
+# ---- (g) with an MCP server's tools in the count ----
 # The /mcp phase's scripted stdio server, answering at once — its one tool
 # described at length, so its schema is a share of the context the footer's
 # rounding shows: a reading that lost the tool, or counted it twice, is
