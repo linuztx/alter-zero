@@ -28,14 +28,17 @@ pub enum ModelLoad {
 /// The inline `/model` picker's state (`None` on [`App`] when closed). Unlike
 /// the alternate-screen `/resume` picker, this one **replaces the composer**
 /// in the bottom live region with its own `>` search prompt and a scrolling
-/// model list. Its rows come from the boundary's `/v1/models` fetch
-/// ([`App::set_models`]); the filtered view derives on demand ([`matches`]).
+/// model list. Its rows are every configured provider's listing — kept from
+/// an earlier fetch, or fetched by this round ([`App::begin_model_round`],
+/// [`App::finish_model_fetch`], `docs/model-cache.md`); the filtered view
+/// derives on demand ([`matches`]).
 ///
 /// [`matches`]: ModelPicker::matches
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelPicker {
-    /// Every fetched model, provider-tagged and sorted (empty while loading).
-    /// Grows as each provider's fetch lands ([`App::add_models`]).
+    /// Every listed model, provider-tagged and sorted (empty while loading).
+    /// Each provider's rows are its kept listing until its fetch lands and
+    /// replaces them ([`App::finish_model_fetch`]).
     pub models: Vec<ModelEntry>,
     /// Whether the list is still loading, ready, or errored.
     pub status: ModelLoad,
@@ -50,24 +53,62 @@ pub struct ModelPicker {
     /// row (a merged multi-provider list can carry the same id twice). Empty when
     /// unknown — the ✓ then falls back to matching the id alone.
     pub active_provider: String,
-    /// Provider fetches still outstanding — the `/model` picker fetches **every**
-    /// configured provider in parallel and merges their lists as they arrive
-    /// (docs/llm.md). Drives the `loading more…` counter hint, and at zero with
-    /// no models it settles the all-failed error.
-    pub pending: usize,
-    /// Providers whose model fetch failed, kept so the picker can show which
-    /// lists are missing (a `⚠ … unavailable` note beside a partial list, or
-    /// one red row per provider when they all fail).
-    pub errors: Vec<ModelFetchError>,
+    /// Every configured provider's list, in the order the boundary found
+    /// them — where its rows on screen came from, whether this round is
+    /// fetching it, and why its fetch failed — the `/model` picker fetches
+    /// **every** configured provider in parallel and merges their lists as
+    /// they arrive (`docs/llm.md`, `docs/model-cache.md`). What the counter's
+    /// notes are read off (`loading more…`, `refreshing…`, `updated 2h ago`,
+    /// `… unavailable`, `… not refreshed`), and with no rows and nothing
+    /// out, whether the page settles on the all-failed error.
+    pub lists: Vec<ProviderList>,
+    /// The round of fetches in flight, or the last one: a fetch's answer is
+    /// merged only when it names it ([`App::finish_model_fetch`]).
+    pub round: u64,
+    /// The wall clock, in Unix seconds — injected by the boundary every draw
+    /// ([`App::set_model_picker_now`]), so the page says how old its lists
+    /// are and reads no clock of its own.
+    pub now: i64,
+    /// Whether the user has moved the highlight or typed: an untouched
+    /// picker re-seats on the model in use as lists land, a touched one
+    /// keeps the row it is on.
+    pub touched: bool,
 }
 
-/// A provider whose `/model` fetch failed, with the concise reason to surface.
+/// One configured provider's list in the open picker
+/// (`docs/model-cache.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelFetchError {
-    /// The provider's human label (its `name`, e.g. `OpenRouter`).
-    pub provider: String,
-    /// The one-line failure reason (an [`crate::llm::LlmError`] rendering).
-    pub message: String,
+pub struct ProviderList {
+    /// The provider's id — what its rows carry as [`ModelEntry::provider`].
+    pub id: String,
+    /// Its name, for the notes about it (`OpenRouter unavailable`).
+    pub name: String,
+    /// When the rows on screen were listed, in Unix seconds — the cache's
+    /// date for kept rows, the fetch's for fresh ones; `None` while nothing
+    /// of the provider's has been listed.
+    pub listed_at: Option<i64>,
+    /// Whether this round is fetching it.
+    pub fetching: bool,
+    /// Why its fetch failed, when it did.
+    pub error: Option<String>,
+}
+
+/// What the boundary knows of a configured provider as a round of fetches
+/// begins ([`App::begin_model_round`]): what was kept of its list, and
+/// whether to fetch it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderLoad {
+    /// The provider's id.
+    pub id: String,
+    /// Its name.
+    pub name: String,
+    /// When the kept rows were listed, in Unix seconds — `None` when nothing
+    /// was kept.
+    pub listed_at: Option<i64>,
+    /// The kept rows, empty when nothing was kept.
+    pub models: Vec<ModelEntry>,
+    /// Whether this round fetches it.
+    pub fetch: bool,
 }
 
 impl ModelPicker {
@@ -105,19 +146,85 @@ impl ModelPicker {
             && (self.active_provider.is_empty() || m.provider == self.active_provider)
     }
 
+    /// Whether a provider with nothing on screen yet is being fetched — the
+    /// counter's `loading more…`, and why a search with no match cannot say
+    /// so yet: the provider still on its way may list the very model.
+    #[must_use]
+    pub fn loading(&self) -> bool {
+        self.lists
+            .iter()
+            .any(|list| list.fetching && list.listed_at.is_none())
+    }
+
+    /// Whether a provider whose kept rows are on screen is being fetched
+    /// again — the counter's `refreshing…` (`docs/model-cache.md`).
+    #[must_use]
+    pub fn refreshing(&self) -> bool {
+        self.lists
+            .iter()
+            .any(|list| list.fetching && list.listed_at.is_some())
+    }
+
+    /// Whether any fetch of this round is still out.
+    #[must_use]
+    pub fn fetching(&self) -> bool {
+        self.lists.iter().any(|list| list.fetching)
+    }
+
+    /// When the oldest list on screen was listed, in Unix seconds — how old
+    /// the page can be, which is what its `updated` says. `None` while
+    /// nothing has been listed.
+    #[must_use]
+    pub fn listed_at(&self) -> Option<i64> {
+        self.lists.iter().filter_map(|list| list.listed_at).min()
+    }
+
+    /// The highlighted row's `(provider, id)`, the key a merge finds it
+    /// again by.
+    fn highlighted_key(&self) -> Option<(String, String)> {
+        self.highlighted()
+            .map(|m| (m.provider.clone(), m.id.clone()))
+    }
+
+    /// Sort the rows by id then provider and drop exact `(provider, id)`
+    /// duplicates — the merged list's one order, however the rows arrived.
+    fn sort_rows(&mut self) {
+        self.models
+            .sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.provider.cmp(&b.provider)));
+        self.models
+            .dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
+    }
+
+    /// Seat the highlight after the rows changed under it: an untouched
+    /// picker on the model in use (the top when it is not listed), a touched
+    /// one on the row it was on (`keep`), else as near its old place as the
+    /// list now allows.
+    fn reseat(&mut self, keep: Option<(String, String)>) {
+        let matches = self.matches();
+        let selected = if self.touched {
+            keep.and_then(|(provider, id)| {
+                matches
+                    .iter()
+                    .position(|m| m.provider == provider && m.id == id)
+            })
+            .unwrap_or_else(|| self.selected.min(matches.len().saturating_sub(1)))
+        } else {
+            matches.iter().position(|m| self.is_active(m)).unwrap_or(0)
+        };
+        self.selected = selected;
+    }
+
     /// Recompute the display status from the merge so far: `Ready` the moment any
     /// model is present (shown while the rest still load), else `Loading` while
     /// fetches are outstanding, else `Error` when every provider failed with no
     /// models, else `Ready` (all done, genuinely empty). The `Error` string is
-    /// left empty — the picker renders the per-provider [`errors`] instead.
-    ///
-    /// [`errors`]: ModelPicker::errors
+    /// left empty — the picker renders each failed list's reason instead.
     fn recompute_status(&mut self) {
         self.status = if !self.models.is_empty() {
             ModelLoad::Ready
-        } else if self.pending > 0 {
+        } else if self.fetching() {
             ModelLoad::Loading
-        } else if !self.errors.is_empty() {
+        } else if self.lists.iter().any(|list| list.error.is_some()) {
             ModelLoad::Error(String::new())
         } else {
             ModelLoad::Ready
@@ -172,8 +279,7 @@ impl App {
         };
         picker.models = models;
         picker.status = ModelLoad::Ready;
-        picker.pending = 0;
-        picker.errors.clear();
+        picker.lists.clear();
         // Seat the highlight on the active model if it's in the (unfiltered)
         // list, so the picker opens focused on the current choice.
         picker.selected = picker
@@ -183,86 +289,109 @@ impl App {
             .unwrap_or(0);
     }
 
-    /// Begin a multi-provider model load: record how many provider fetches are
-    /// in flight and reset to the empty `Loading` state. The boundary spawns one
-    /// worker per configured provider after this; each result arrives via
-    /// [`add_models`] / [`add_model_error`]. No-op if the picker closed meanwhile.
+    /// Lay a round of fetches over the open picker — on open, and on every
+    /// Ctrl+R — returning the round every result must name, or `None` when
+    /// the picker is closed. `loads` is every configured provider, in the
+    /// order the boundary found them (`docs/model-cache.md`):
     ///
-    /// [`add_models`]: App::add_models
-    /// [`add_model_error`]: App::add_model_error
-    pub fn begin_model_load(&mut self, pending: usize) {
-        if let Some(picker) = self.model_picker.as_mut() {
-            picker.models.clear();
-            picker.errors.clear();
-            picker.selected = 0;
-            picker.pending = pending;
-            picker.status = ModelLoad::Loading;
-        }
-    }
-
-    /// Merge one provider's fetched models into the open picker: append, re-sort
-    /// by id then provider, drop exact `(provider, id)` dupes, and mark one
-    /// outstanding fetch done. The list appears as soon as the first provider
-    /// lands (status → `Ready`) and grows as the rest arrive. The highlight rides
-    /// the same model across the merge, unless the user hasn't touched the picker
-    /// yet — then it re-seats on the active model once its provider loads. No-op
-    /// if the picker closed meanwhile. See `docs/llm.md`.
-    pub fn add_models(&mut self, models: Vec<ModelEntry>) {
-        let Some(picker) = self.model_picker.as_mut() else {
-            return;
-        };
-        picker.pending = picker.pending.saturating_sub(1);
-        // An untouched picker (no search, highlight at the top) re-seats on the
-        // active model when its provider lands; once the user navigates or
-        // filters, the current highlight is preserved across the merge instead.
-        let untouched = picker.query.is_empty() && picker.selected == 0;
-        let keep = picker
-            .highlighted()
-            .map(|m| (m.provider.clone(), m.id.clone()));
-        picker.models.extend(models);
-        picker
-            .models
-            .sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.provider.cmp(&b.provider)));
-        picker
-            .models
-            .dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
-        picker.recompute_status();
-        picker.selected = if untouched {
-            picker
-                .matches()
+    /// - a provider the picker already shows keeps the rows on screen, and
+    ///   their date, through the round — a refresh never blanks a list it
+    ///   is about to replace;
+    /// - any other shows the rows the boundary kept for it, at once;
+    /// - a provider the picker shows that is not in `loads` any more (its
+    ///   key went, its block left `providers.toml`) leaves with its rows.
+    ///
+    /// A provider the round fetches starts clean of its last failure. The
+    /// highlight follows [`ModelPicker::touched`]'s rule.
+    pub fn begin_model_round(&mut self, loads: Vec<ProviderLoad>) -> Option<u64> {
+        let picker = self.model_picker.as_mut()?;
+        self.model_rounds += 1;
+        picker.round = self.model_rounds;
+        let keep = picker.highlighted_key();
+        let previous = std::mem::take(&mut picker.lists);
+        let mut shown = std::mem::take(&mut picker.models);
+        let mut rows = Vec::new();
+        for load in loads {
+            let on_screen = previous
                 .iter()
-                .position(|m| m.id == picker.active_id)
-                .unwrap_or(0)
-        } else {
-            let clamped = picker
-                .selected
-                .min(picker.matches().len().saturating_sub(1));
-            keep.and_then(|(p, i)| {
-                picker
-                    .matches()
-                    .iter()
-                    .position(|m| m.provider == p && m.id == i)
-            })
-            .unwrap_or(clamped)
-        };
+                .find(|list| list.id == load.id)
+                .and_then(|list| list.listed_at);
+            let listed_at = if let Some(at) = on_screen {
+                let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut shown)
+                    .into_iter()
+                    .partition(|m| m.provider == load.id);
+                shown = rest;
+                rows.extend(own);
+                Some(at)
+            } else {
+                rows.extend(load.models);
+                load.listed_at
+            };
+            picker.lists.push(ProviderList {
+                id: load.id,
+                name: load.name,
+                listed_at,
+                fetching: load.fetch,
+                error: None,
+            });
+        }
+        picker.models = rows;
+        picker.sort_rows();
+        picker.recompute_status();
+        picker.reseat(keep);
+        Some(picker.round)
     }
 
-    /// Record that one provider's model fetch failed: keep the reason (shown as a
-    /// `⚠ … unavailable` note beside a partial list, or a red row when every
-    /// provider fails) and mark the fetch done. No-op if the picker closed. See
-    /// `docs/llm.md`.
-    pub fn add_model_error(&mut self, provider: impl Into<String>, message: impl Into<String>) {
-        let Some(picker) = self.model_picker.as_mut() else {
+    /// One provider's fetch landed. Dropped when the picker has closed, or
+    /// when `round` is not the picker's own — an earlier round's answer, or
+    /// a closed picker's. A listing **replaces** the provider's rows (a
+    /// model it no longer lists goes) and dates them `listed_at`, the time
+    /// the boundary kept them at; a failure keeps whatever rows the
+    /// provider showed beside the reason — kept rows stay usable, and the
+    /// page says they could not be refreshed.
+    pub fn finish_model_fetch(
+        &mut self,
+        round: u64,
+        provider: &str,
+        result: Result<Vec<ModelEntry>, String>,
+        listed_at: i64,
+    ) {
+        let Some(picker) = self
+            .model_picker
+            .as_mut()
+            .filter(|picker| picker.round == round)
+        else {
             return;
         };
-        picker.pending = picker.pending.saturating_sub(1);
-        picker.errors.push(ModelFetchError {
-            provider: provider.into(),
-            message: message.into(),
-        });
+        let keep = picker.highlighted_key();
+        let Some(list) = picker
+            .lists
+            .iter_mut()
+            .find(|list| list.id == provider && list.fetching)
+        else {
+            return;
+        };
+        list.fetching = false;
+        match result {
+            Ok(models) => {
+                list.listed_at = Some(listed_at);
+                list.error = None;
+                picker.models.retain(|m| m.provider != provider);
+                picker.models.extend(models);
+                picker.sort_rows();
+            }
+            Err(message) => list.error = Some(message),
+        }
         picker.recompute_status();
-        let last = picker.matches().len().saturating_sub(1);
-        picker.selected = picker.selected.min(last);
+        picker.reseat(keep);
+    }
+
+    /// Inject the wall clock (Unix seconds) into the open picker — the
+    /// boundary does it every draw, as it does for `/usage`.
+    pub fn set_model_picker_now(&mut self, now: i64) {
+        if let Some(picker) = self.model_picker.as_mut() {
+            picker.now = now;
+        }
     }
 
     /// Record that the model fetch failed — the picker shows `message` in red.
@@ -282,8 +411,7 @@ impl App {
         if let Some(picker) = self.model_picker.as_mut() {
             picker.status = ModelLoad::NeedsLogin;
             picker.models.clear();
-            picker.errors.clear();
-            picker.pending = 0;
+            picker.lists.clear();
             picker.selected = 0;
         }
     }
@@ -312,6 +440,7 @@ impl App {
         };
         picker.query.push_str(&flat);
         picker.selected = 0;
+        picker.touched = true;
     }
 
     /// Keys while the inline `/model` picker is open. Mirrors the `/resume`
@@ -333,8 +462,24 @@ impl App {
         let Some(picker) = self.model_picker.as_mut() else {
             return Action::None;
         };
+        // Ctrl+R asks every provider again (`docs/model-cache.md`) — not a
+        // plain `r`, which has to keep typing into the search
+        // (`deepseek-r1`). Not while a round is still out: it already
+        // answers the question, the `/usage` page's `r` rule.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+            return if picker.fetching() {
+                Action::None
+            } else {
+                Action::RefreshModels
+            };
+        }
         let len = picker.matches().len();
         let last = len.saturating_sub(1);
+        // Every key but Enter, Esc on an empty search and the ones that do
+        // nothing is the user taking the highlight over.
+        if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+            picker.touched = true;
+        }
         match key.code {
             KeyCode::Up => picker.selected = wrap_step(picker.selected, len, -1),
             KeyCode::Down => picker.selected = wrap_step(picker.selected, len, 1),
@@ -363,6 +508,7 @@ impl App {
                 }
                 picker.query.clear();
                 picker.selected = 0;
+                picker.touched = true;
             }
             KeyCode::Backspace => {
                 picker.query.pop();

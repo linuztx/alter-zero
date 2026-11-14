@@ -484,12 +484,24 @@ fn the_search_cursor_clamps_inside_a_narrow_terminal() {
 fn all_failed_picker_height_covers_each_error_row() {
     let mut app = App::new();
     app.open_model_picker("x");
-    app.begin_model_load(2);
-    app.add_model_error("OpenRouter", "HTTP 500");
-    app.add_model_error("Agent Zero API", "HTTP 401");
+    let load = |id: &str, name: &str| crate::app::ProviderLoad {
+        id: id.into(),
+        name: name.into(),
+        listed_at: None,
+        models: Vec::new(),
+        fetch: true,
+    };
+    let round = app
+        .begin_model_round(vec![
+            load("openrouter", "OpenRouter"),
+            load("a0_venice", "Agent Zero API"),
+        ])
+        .unwrap();
+    app.finish_model_fetch(round, "openrouter", Err("HTTP 500".into()), 0);
+    app.finish_model_fetch(round, "a0_venice", Err("HTTP 401".into()), 0);
     // The placeholder page's chrome — rule, title, subtitle, gap, search,
-    // gap, rule (7) — + 2 error rows = 9.
-    assert_eq!(model_picker_height(&app, 74, 40), Some(9));
+    // gap, rule (7) — + 2 error rows + the `ctrl+r to try again` row = 10.
+    assert_eq!(model_picker_height(&app, 74, 40), Some(10));
 }
 
 #[test]

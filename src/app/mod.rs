@@ -98,7 +98,7 @@ pub use self::login::{
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
-pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
+pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
@@ -613,6 +613,9 @@ pub struct App {
     /// page, so a result from a page closed and reopened since can never
     /// name the new page's round.
     usage_rounds: u64,
+    /// The last `/model` round handed out — kept here rather than on the
+    /// picker for the same reason ([`App::begin_model_round`]).
+    model_rounds: u64,
     /// How the local clock reads an instant (its UTC offset there), injected
     /// once at the I/O boundary ([`App::set_local_offset`]) — the `/usage`
     /// page's reset times. `None` in unit tests: UTC.

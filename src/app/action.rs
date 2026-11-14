@@ -125,6 +125,10 @@ pub enum Action {
     /// the picker is **inline** (it grows the bottom region in place), not an
     /// alternate-screen overlay. See `docs/llm.md`.
     OpenModelPicker,
+    /// Ctrl+R in the model picker: fetch every configured provider's list
+    /// again, whatever the cache says, keeping the rows on screen while the
+    /// round runs. See `docs/model-cache.md`.
+    RefreshModels,
     /// The inline model picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::model_picker`] is already cleared; the loop just repaints the
     /// collapsed region.

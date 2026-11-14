@@ -162,6 +162,14 @@ Two smaller guards keep the fetch bounded beyond the parse:
   balloon the worker with an unbounded `read_to_string`; a body cut at the
   cap fails the parse as an ordinary decode error.
 
+Since the picker kept its lists (`docs/model-cache.md`), an open within the
+hour makes no request at all, so it pays none of the above: it reads each
+provider's kept rows off disk, typed, through a buffer and never through a
+`Value` tree. A 611 KB OpenRouter-shaped listing keeps as a 37 KB file, so
+what an open allocates is the same ~0.05 MB of rows the table already
+counts. The cache is not held between opens: the disk is the cache, and the
+rows live only while the picker is open, as they always did.
+
 ## Measured and deliberately not changed
 
 **`ModelPicker::matches` allocates** a `Vec<&ModelEntry>` per call and

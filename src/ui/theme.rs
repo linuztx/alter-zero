@@ -1189,6 +1189,45 @@ pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
 /// list shows what's landed so far and keeps growing). See `docs/llm.md`.
 pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
 
+/// The counter's dim note while the lists on screen — kept from an earlier
+/// open — are being fetched again behind them: the `/usage` page's word
+/// (`docs/model-cache.md`).
+pub(super) const MODEL_REFRESHING: &str = "refreshing…";
+
+/// What leads the note saying how old the lists on screen are
+/// (`updated 2h ago`).
+pub(super) const MODEL_UPDATED: &str = "updated ";
+
+/// How old, in seconds, the oldest list on screen must be before the page
+/// says so — and offers Ctrl+R. A list listed a moment ago has no age worth
+/// reading, and asking for it again would bring back the same rows, so a
+/// page fresh off the network stays the page it always was.
+pub(super) const MODEL_AGE_SHOWN_SECS: i64 = 60;
+
+/// The key that asks every provider for its list again
+/// (`docs/model-cache.md`), said beside the counter where pressing it is
+/// worth something: the lists are old, or a provider failed. Left out whole
+/// rather than cut when the row has no room for it.
+pub(super) const MODEL_REFRESH_HINT: &str = "ctrl+r to refresh";
+
+/// Under the red rows of a page where every provider failed.
+pub(super) const MODEL_RETRY_HINT: &str = "ctrl+r to try again";
+
+/// What a provider whose fetch failed with nothing of it to show is noted
+/// as, in red — `GitHub Copilot unavailable`.
+pub(super) const MODEL_UNAVAILABLE: &str = "unavailable";
+
+/// What a provider whose kept list could not be refreshed is noted as —
+/// `OpenRouter not refreshed`, beside the rows it still shows.
+pub(super) const MODEL_NOT_REFRESHED: &str = "not refreshed";
+
+/// The amber a list kept through a failed refresh is noted in, and its
+/// reason: its rows are still there and still usable, so not the red of a
+/// provider with nothing to show — the `/usage` page's failed-refresh note.
+pub(super) fn model_stale_color() -> Color {
+    usage_warn_color()
+}
+
 /// The most display rows a failed provider's *reason* block may take under the
 /// list. The collapsed `{provider} unavailable` note names the provider and
 /// nothing else, so the reason is rendered beneath it — but a provider that

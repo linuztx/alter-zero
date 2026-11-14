@@ -3717,7 +3717,24 @@ region hid exactly the turn the picker was opened beside — the reported bug,
 which the band had first (`docs/llm.md`, `docs/background.md`,
 `docs/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
 while a picker is open, the permission-prompt rule, since the picker owns
-every key).
+every key). **`/model` opens on the lists it kept** (`docs/model-cache.md`):
+each provider's listing is written to `{config_home}/model-cache/{id}.json`
+by the fetch worker as it lands (temp file + rename, one file per provider
+so the parallel workers never share one), and an open shows it at once —
+nothing fetched under an hour old (`llm::model_cache::MODEL_CACHE_TTL_SECS`),
+shown **and** fetched again behind its rows once older, kept by another app
+version, or a self-hosted server's (`auth = "optional_key"`: the kind of
+provider, not its address — a loopback rule caught the smoke stub), and
+another server's listing (`listing_source`, a SHA-256 of the wire, auth,
+bases and headers, never the key) not shown at all; every open and every
+**Ctrl+R** (never a plain `r`, which types into the search) is a **round**
+whose number every result names (`App::begin_model_round` /
+`finish_model_fetch`, the counter on `App` like `usage_rounds`), a listing
+**replacing** its provider's rows, a failure keeping them as an amber
+`not refreshed`, the counter saying `updated 2h ago` / `refreshing…` and
+offering `ctrl+r to refresh` only when pressing it would change something;
+a `/login` save drops the kept lists of every provider the saved variable
+configures (`tui::config::providers_reading`); `smoke.sh` Phase 155.
 **`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
 (`docs/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as

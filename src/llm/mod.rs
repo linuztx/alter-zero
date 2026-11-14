@@ -37,6 +37,7 @@ pub mod keystore;
 pub mod local;
 mod loopback;
 pub mod mcp;
+pub mod model_cache;
 pub mod models;
 pub mod ollama;
 pub mod openai;

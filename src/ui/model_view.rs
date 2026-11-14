@@ -79,6 +79,18 @@ pub(super) fn compact_page_with_header(
     picker_page(header, search, body, width)
 }
 
+/// How long ago something was read, in one unit: `just now`, `3m ago`,
+/// `2h ago`, `1d ago` — the `/usage` page's `updated` and the `/model`
+/// page's, worded the same.
+pub(super) fn age_text(seconds: i64) -> String {
+    match seconds.max(0) {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3_600 => format!("{}m ago", s / 60),
+        s if s < 86_400 => format!("{}h ago", s / 3_600),
+        s => format!("{}d ago", s / 86_400),
+    }
+}
+
 /// A picker's `❯` search line, carrying what was typed.
 pub(super) fn search_line(query: &str) -> Line<'static> {
     Line::from(vec![
@@ -708,21 +720,23 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         // **wrapped**, because the error text is the only diagnostic the
         // user gets and a silent clip hid the cause at narrow widths.
         ModelLoad::Error(msg) => {
-            if picker.errors.is_empty() {
+            let mut rows: Vec<Line<'static>> = if failures(picker).next().is_none() {
                 model_wrapped_rows(&format!("Error: {msg}"), error_color(), width)
             } else {
-                picker
-                    .errors
-                    .iter()
-                    .flat_map(|e| {
-                        model_wrapped_rows(
-                            &format!("{}: {}", e.provider, e.message),
-                            error_color(),
-                            width,
-                        )
+                failures(picker)
+                    .flat_map(|(list, error)| {
+                        model_wrapped_rows(&format!("{}: {error}", list.name), error_color(), width)
                     })
                     .collect()
-            }
+            };
+            // Ctrl+R asks every provider again — what the user wants after
+            // reading why they all failed (`docs/model-cache.md`).
+            rows.push(model_placeholder_row(
+                MODEL_RETRY_HINT,
+                model_meta_color(),
+                width,
+            ));
+            rows
         }
         // No key configured yet — an inviting cyan hint, not a red error.
         // Wrapped: the actionable "run /login" tail must survive any width.
@@ -737,14 +751,28 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
                 // being searched for. Keep the loading placeholder until every
                 // list has landed rather than flashing `No matching models`
                 // and then filling in the match seconds later.
-                let text = if picker.pending > 0 {
-                    MODEL_LOADING
-                } else if picker.models.is_empty() {
+                // The same goes for a refresh over kept rows: the list it
+                // brings may hold the model too (`docs/model-cache.md`).
+                if picker.fetching() {
+                    return vec![model_placeholder_row(
+                        MODEL_LOADING,
+                        model_meta_color(),
+                        width,
+                    )];
+                }
+                let text = if picker.models.is_empty() {
                     MODEL_NONE
                 } else {
                     MODEL_NO_MATCH
                 };
-                return vec![model_placeholder_row(text, model_meta_color(), width)];
+                // The model searched for may have been listed since the
+                // lists on screen were: say how old they are, and how to
+                // ask again, where the counter would have.
+                let lead = vec![
+                    Span::raw(MODEL_INDENT),
+                    Span::styled(text, Style::new().fg(model_meta_color())),
+                ];
+                return vec![with_notes(lead, list_notes(picker, false), width)];
             }
             let max = MODEL_MENU_MAX_ROWS as usize;
             let selected = picker.selected.min(matches.len() - 1);
@@ -774,38 +802,92 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
         return Line::default();
     }
     let selected = picker.selected.min(matches.len() - 1);
-    let mut spans = list_counter_line(selected, matches.len()).spans;
-    // Beside the counter, the multi-provider load status: dim while more
-    // providers are still fetching, red when one finished but failed.
-    if let Some((text, color)) = model_load_status_suffix(picker) {
+    let lead = list_counter_line(selected, matches.len()).spans;
+    with_notes(lead, list_notes(picker, true), width)
+}
+
+/// What the page says about its lists, in order, each in its colour
+/// (`docs/model-cache.md`): how old the oldest one on screen is, once that
+/// is worth reading ([`MODEL_AGE_SHOWN_SECS`]); with `progress`, what is
+/// still on its way — `loading more…` while a provider with nothing on
+/// screen is being fetched, else `refreshing…` while kept rows are; then
+/// what failed, by what it cost: red `unavailable` for a provider with
+/// nothing to show, amber `not refreshed` for one whose kept rows stay.
+/// And last, whether the page offers Ctrl+R — nothing is out, and the lists
+/// are old enough to be worth asking for again or a provider failed.
+fn list_notes(picker: &ModelPicker, progress: bool) -> (Vec<(String, Color)>, bool) {
+    let age = picker
+        .listed_at()
+        .map(|at| picker.now - at)
+        .filter(|age| *age >= MODEL_AGE_SHOWN_SECS);
+    let mut notes = Vec::new();
+    if let Some(age) = age {
+        notes.push((
+            format!("{MODEL_UPDATED}{}", age_text(age)),
+            model_meta_color(),
+        ));
+    }
+    if progress && picker.loading() {
+        notes.push((MODEL_LOADING_MORE.to_string(), model_meta_color()));
+    } else if progress && picker.refreshing() {
+        notes.push((MODEL_REFRESHING.to_string(), model_meta_color()));
+    }
+    let (kept, lost): (Vec<&ProviderList>, Vec<&ProviderList>) = failures(picker)
+        .map(|(list, _)| list)
+        .partition(|list| list.listed_at.is_some());
+    if let Some(note) = failure_note(&lost, MODEL_UNAVAILABLE) {
+        notes.push((note, error_color()));
+    }
+    if let Some(note) = failure_note(&kept, MODEL_NOT_REFRESHED) {
+        notes.push((note, model_stale_color()));
+    }
+    let offers_refresh =
+        !picker.fetching() && (age.is_some() || !lost.is_empty() || !kept.is_empty());
+    (notes, offers_refresh)
+}
+
+/// `{provider} {what}` for one failed provider, `{n} providers {what}` for
+/// several, nothing for none.
+fn failure_note(failed: &[&ProviderList], what: &str) -> Option<String> {
+    match failed {
+        [] => None,
+        [one] => Some(format!("{} {what}", one.name)),
+        many => Some(format!("{} providers {what}", many.len())),
+    }
+}
+
+/// Every provider whose fetch failed, with why.
+fn failures(picker: &ModelPicker) -> impl Iterator<Item = (&ProviderList, &str)> {
+    picker
+        .lists
+        .iter()
+        .filter_map(|list| list.error.as_deref().map(|error| (list, error)))
+}
+
+/// `lead` followed by `notes` (each after [`MODEL_STATUS_SEP`]), then the
+/// [`MODEL_REFRESH_HINT`] when the page offers it **and** it fits whole —
+/// a narrow row gives the hint up first, never half of it — the whole
+/// clamped to `width` with a dim `…` ([`clamp_spans`]).
+fn with_notes(
+    lead: Vec<Span<'static>>,
+    (notes, offers_refresh): (Vec<(String, Color)>, bool),
+    width: u16,
+) -> Line<'static> {
+    let mut spans = lead;
+    for (text, color) in notes {
         spans.push(Span::styled(
             format!("{MODEL_STATUS_SEP}{text}"),
             Style::new().fg(color),
         ));
     }
-    clamp_spans(spans, width as usize)
-}
-
-/// The trailing status shown beside the `(n/total)` counter during a
-/// multi-provider load: `loading more…` (dim) while fetches are still out, then
-/// a red `{provider} unavailable` / `N providers unavailable` note if any
-/// failed. `None` once every provider succeeded. See `docs/llm.md`.
-fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
-    if picker.pending > 0 {
-        Some((MODEL_LOADING_MORE.to_string(), model_meta_color()))
-    } else if picker.errors.len() == 1 {
-        Some((
-            format!("{} unavailable", picker.errors[0].provider),
-            error_color(),
-        ))
-    } else if !picker.errors.is_empty() {
-        Some((
-            format!("{} providers unavailable", picker.errors.len()),
-            error_color(),
-        ))
-    } else {
-        None
+    if offers_refresh {
+        let hint = format!("{MODEL_STATUS_SEP}{MODEL_REFRESH_HINT}");
+        let used: usize = spans.iter().map(|span| cols(&span.content)).sum();
+        if used + cols(&hint) <= width as usize {
+            spans.push(Span::styled(hint, Style::new().fg(model_meta_color())));
+        }
     }
+    clamp_spans(spans, width as usize)
 }
 
 /// Why each failed provider failed, wrapped under the list's detail at
@@ -818,14 +900,19 @@ fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
 /// Bounded to [`MODEL_ERROR_MAX_ROWS`]: a provider that answers a blocked
 /// request with an HTML page would otherwise push the list off the frame.
 fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
-    let mut rows: Vec<Line<'static>> = picker
-        .errors
-        .iter()
-        .flat_map(|e| {
+    let mut rows: Vec<Line<'static>> = failures(picker)
+        .flat_map(|(list, error)| {
+            // A provider whose kept rows stay on screen failed a refresh —
+            // amber, like its note beside the counter.
+            let color = if list.listed_at.is_some() {
+                model_stale_color()
+            } else {
+                error_color()
+            };
             inset_wrapped_rows(
                 MODEL_DETAIL_INDENT,
-                &format!("{}: {}", e.provider, e.message),
-                error_color(),
+                &format!("{}: {error}", list.name),
+                color,
                 width,
             )
         })
@@ -838,13 +925,16 @@ fn model_error_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
         // room for the marker instead of leaving it off.
         if let Some(last) = rows.pop() {
             let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+            let color = last
+                .spans
+                .iter()
+                .rev()
+                .find_map(|span| span.style.fg)
+                .unwrap_or_else(error_color);
             let room = (width as usize).saturating_sub(1).max(1);
             let mut cut = super::wrap::truncate_cols(text.trim_end(), room);
             cut.push('…');
-            rows.push(Line::from(Span::styled(
-                cut,
-                Style::new().fg(error_color()),
-            )));
+            rows.push(Line::from(Span::styled(cut, Style::new().fg(color))));
         }
     }
     rows

@@ -14,6 +14,42 @@ const MODEL_SEARCH_ROW: u16 = 4;
 /// line, a gap, then the list.
 const MODEL_FIRST_ROW: u16 = MODEL_SEARCH_ROW + 2;
 
+/// The wall clock the age tests read the page at (Unix seconds).
+const NOW: i64 = 1_763_100_000;
+
+/// A provider's list on the open page.
+fn provider_list(
+    name: &str,
+    listed_at: Option<i64>,
+    fetching: bool,
+    error: Option<&str>,
+) -> ProviderList {
+    ProviderList {
+        id: name.to_lowercase().replace(' ', "_"),
+        name: name.into(),
+        listed_at,
+        fetching,
+        error: error.map(str::to_string),
+    }
+}
+
+/// A provider whose fetch failed with nothing of it ever listed.
+fn unavailable(name: &str, message: &str) -> ProviderList {
+    provider_list(name, None, false, Some(message))
+}
+
+/// The page's counter row, as text.
+fn counter_row(picker: &ModelPicker, width: u16) -> String {
+    use crate::ui::model_view::model_view_lines;
+    model_view_lines(picker, width, TALL)
+        .iter()
+        .map(plain)
+        .find(|l| l.trim_start().starts_with('('))
+        .expect("the counter row")
+        .trim_end()
+        .to_string()
+}
+
 /// Twelve models from one stub provider.
 fn twelve_stub_models() -> Vec<ModelEntry> {
     (0..12)
@@ -35,7 +71,7 @@ fn the_whole_page_is_titled_and_lists_seven_models_under_the_search_prompt() {
     // highlighted model's name hanging under the ids.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(twelve_stub_models(), 0, "stub/model-00");
-    picker.pending = 1;
+    picker.lists.push(provider_list("Other", None, true, None));
     let texts: Vec<String> = model_view_lines(&picker, 90, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
@@ -118,10 +154,9 @@ fn the_picker_frame_hugs_its_content_in_every_state() {
     let mut no_match = model_picker(three_models(), 0, "x");
     no_match.query = "zzzz".into();
     let mut partial = model_picker(three_models(), 0, "x");
-    partial.errors.push(ModelFetchError {
-        provider: "Agent Zero API".into(),
-        message: "HTTP 401".into(),
-    });
+    partial
+        .lists
+        .push(unavailable("Agent Zero API", "HTTP 401"));
     let loading = ModelPicker {
         active_id: "x".into(),
         ..ModelPicker::default()
@@ -284,7 +319,9 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     // placeholder stays `Loading models…` until the count settles at zero.
     let mut picker = model_picker(three_models(), 0, "x");
     picker.query = "chatgpt".into();
-    picker.pending = 1;
+    picker
+        .lists
+        .push(provider_list("ChatGPT Codex", None, true, None));
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
     let loading = row(&buf, MODEL_FIRST_ROW, 60);
@@ -292,7 +329,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     assert!(!loading.contains("No matching models"), "{loading:?}");
 
     // Every provider has answered: the query genuinely matches nothing now.
-    picker.pending = 0;
+    picker.lists[0].fetching = false;
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
     let settled = row(&buf, MODEL_FIRST_ROW, 60);
@@ -331,10 +368,10 @@ fn provider_errors_wrap_instead_of_clipping() {
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(vec![], 0, "x");
     picker.status = ModelLoad::Error("legacy".into());
-    picker.errors.push(ModelFetchError {
-        provider: "openrouter".into(),
-        message: "HTTP 429 too many requests — retry after sixty seconds".into(),
-    });
+    picker.lists.push(unavailable(
+        "openrouter",
+        "HTTP 429 too many requests — retry after sixty seconds",
+    ));
     let lines = model_view_lines(&picker, 40, TALL);
     for line in &lines {
         assert!(
@@ -404,10 +441,9 @@ fn the_counter_suffix_clamps_to_the_width() {
     // buffer edge; the assembled counter line now clamps with a dim `…`.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.errors.push(ModelFetchError {
-        provider: "a-very-long-provider-name-indeed".into(),
-        message: "boom".into(),
-    });
+    picker
+        .lists
+        .push(unavailable("a-very-long-provider-name-indeed", "boom"));
     let lines = model_view_lines(&picker, 30, TALL);
     for line in &lines {
         assert!(
@@ -452,10 +488,10 @@ fn a_failed_provider_shows_its_reason_beneath_the_list() {
     // recorded and never rendered anywhere.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.errors.push(ModelFetchError {
-        provider: "GitHub Copilot".into(),
-        message: "HTTP 403: no Copilot subscription on this account".into(),
-    });
+    picker.lists.push(unavailable(
+        "GitHub Copilot",
+        "HTTP 403: no Copilot subscription on this account",
+    ));
     let text = model_view_lines(&picker, 70, TALL)
         .iter()
         .map(plain)
@@ -473,10 +509,7 @@ fn every_failed_providers_reason_is_shown() {
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(three_models(), 0, "x");
     for (provider, message) in [("GitHub Copilot", "boom"), ("OpenRouter", "kaboom")] {
-        picker.errors.push(ModelFetchError {
-            provider: provider.into(),
-            message: message.into(),
-        });
+        picker.lists.push(unavailable(provider, message));
     }
     let text = model_view_lines(&picker, 70, TALL)
         .iter()
@@ -493,10 +526,9 @@ fn a_page_length_failure_reason_is_capped_not_left_to_own_the_picker() {
     // otherwise push the list off the top of the frame.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.errors.push(ModelFetchError {
-        provider: "GitHub Copilot".into(),
-        message: "wordy ".repeat(400),
-    });
+    picker
+        .lists
+        .push(unavailable("GitHub Copilot", &"wordy ".repeat(400)));
     let lines = model_view_lines(&picker, 70, TALL);
     let reason_rows = lines
         .iter()
@@ -530,10 +562,7 @@ fn a_clean_load_adds_no_reason_rows_at_all() {
     let picker = model_picker(three_models(), 0, "x");
     let before = model_view_lines(&picker, 70, TALL).len();
     let mut failed = model_picker(three_models(), 0, "x");
-    failed.errors.push(ModelFetchError {
-        provider: "GitHub Copilot".into(),
-        message: "boom".into(),
-    });
+    failed.lists.push(unavailable("GitHub Copilot", "boom"));
     assert!(
         model_view_lines(&failed, 70, TALL).len() > before,
         "the block only exists when something failed"
@@ -1029,4 +1058,175 @@ fn a_tiny_terminal_keeps_the_model_search_line_over_a_placeholder() {
             );
         }
     }
+}
+
+// --- what the page says about the lists it shows (docs/model-cache.md) ---
+
+/// Three models whose provider's list was listed `age` seconds before the
+/// page is read, its fetch out or not, and failed or not.
+fn kept_picker(age: i64, fetching: bool, error: Option<&str>) -> ModelPicker {
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.now = NOW;
+    picker.lists.push(provider_list(
+        "OpenRouter",
+        Some(NOW - age),
+        fetching,
+        error,
+    ));
+    picker
+}
+
+#[test]
+fn a_kept_list_says_how_old_it_is_and_how_to_refresh_it() {
+    let picker = kept_picker(2 * 3_600, false, None);
+    assert_eq!(
+        counter_row(&picker, 90),
+        "    (1/3)   ·   updated 2h ago   ·   ctrl+r to refresh"
+    );
+}
+
+#[test]
+fn a_list_fetched_just_now_says_nothing_more_than_its_count() {
+    // A page whose lists were just listed is the page it always was: no age
+    // to read, and nothing to gain from asking again.
+    let picker = kept_picker(30, false, None);
+    assert_eq!(counter_row(&picker, 90), "    (1/3)");
+}
+
+#[test]
+fn a_kept_list_being_refreshed_keeps_its_age_and_says_so() {
+    let picker = kept_picker(2 * 3_600, true, None);
+    assert_eq!(
+        counter_row(&picker, 90),
+        "    (1/3)   ·   updated 2h ago   ·   refreshing…"
+    );
+    // A local server's list is asked for again however young it is.
+    let young = kept_picker(10, true, None);
+    assert_eq!(counter_row(&young, 90), "    (1/3)   ·   refreshing…");
+}
+
+#[test]
+fn the_oldest_list_on_screen_dates_the_page() {
+    let mut picker = kept_picker(30, false, None);
+    picker.lists.push(provider_list(
+        "Agent Zero API",
+        Some(NOW - 3 * 3_600),
+        false,
+        None,
+    ));
+    assert!(
+        counter_row(&picker, 90).contains("updated 3h ago"),
+        "{}",
+        counter_row(&picker, 90)
+    );
+}
+
+#[test]
+fn a_failed_refresh_is_noted_in_amber_beside_the_rows_it_kept() {
+    // Its rows are still on screen and still usable: not the red
+    // `unavailable` of a provider with nothing to show, but the amber the
+    // `/usage` page keeps a failed refresh's last report under.
+    use crate::ui::model_view::model_view_lines;
+    use crate::ui::theme::usage_warn_color;
+    let picker = kept_picker(2 * 3_600, false, Some("HTTP 503: overloaded"));
+    assert_eq!(
+        counter_row(&picker, 120),
+        "    (1/3)   ·   updated 2h ago   ·   OpenRouter not refreshed   ·   ctrl+r to refresh"
+    );
+    let lines = model_view_lines(&picker, 120, TALL);
+    let note = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.contains("OpenRouter not refreshed"))
+        .expect("the note");
+    assert_eq!(note.style.fg, Some(usage_warn_color()));
+    let reason = lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.content.contains("HTTP 503: overloaded"))
+        .expect("the reason is on the page");
+    assert_eq!(reason.style.fg, Some(usage_warn_color()));
+    assert!(
+        !joined(&lines).contains("unavailable"),
+        "{}",
+        joined(&lines)
+    );
+}
+
+#[test]
+fn failures_are_counted_by_what_they_cost() {
+    let mut picker = kept_picker(30, false, Some("boom"));
+    picker.lists.push(provider_list(
+        "Agent Zero API",
+        Some(NOW - 30),
+        false,
+        Some("bang"),
+    ));
+    picker.lists.push(unavailable("GitHub Copilot", "HTTP 403"));
+    assert_eq!(
+        counter_row(&picker, 140),
+        "    (1/3)   ·   GitHub Copilot unavailable   ·   2 providers not refreshed   ·   ctrl+r to refresh"
+    );
+}
+
+#[test]
+fn the_refresh_hint_is_left_out_rather_than_cut() {
+    // The hint is the first thing a narrow terminal gives up — whole, so a
+    // half key name never reads as advice.
+    let picker = kept_picker(2 * 3_600, false, None);
+    let row = counter_row(&picker, 45);
+    assert_eq!(row, "    (1/3)   ·   updated 2h ago");
+}
+
+#[test]
+fn a_search_with_no_match_in_a_kept_list_says_how_old_the_list_is() {
+    // The model being searched for may have been listed since: say how old
+    // the list is and how to ask again, where the counter would have.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = kept_picker(2 * 3_600, false, None);
+    picker.query = "zzzz".into();
+    let rows: Vec<String> = model_view_lines(&picker, 90, TALL)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(
+        rows.iter()
+            .any(|r| r == "  No matching models   ·   updated 2h ago   ·   ctrl+r to refresh"),
+        "{rows:#?}"
+    );
+    // …but not over a list listed a moment ago: nothing new would come.
+    let mut fresh = kept_picker(30, false, None);
+    fresh.query = "zzzz".into();
+    let text = joined(&model_view_lines(&fresh, 90, TALL));
+    assert!(text.contains("No matching models"), "{text}");
+    assert!(!text.contains("ctrl+r"), "{text}");
+}
+
+#[test]
+fn a_search_waits_for_a_refresh_before_saying_nothing_matches() {
+    // A refresh may list the very model being searched for — the loading
+    // rule, over kept rows.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = kept_picker(2 * 3_600, true, None);
+    picker.query = "zzzz".into();
+    let text = joined(&model_view_lines(&picker, 90, TALL));
+    assert!(text.contains("Loading models…"), "{text}");
+    assert!(!text.contains("No matching models"), "{text}");
+}
+
+#[test]
+fn a_page_where_every_provider_failed_offers_to_try_again() {
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(vec![], 0, "x");
+    picker.status = ModelLoad::Error(String::new());
+    picker.lists.push(unavailable("OpenRouter", "HTTP 500"));
+    let texts: Vec<String> = model_view_lines(&picker, 60, TALL)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let at = texts
+        .iter()
+        .position(|t| t == "  OpenRouter: HTTP 500")
+        .expect("the reason row");
+    assert_eq!(texts[at + 1], "  ctrl+r to try again", "{texts:#?}");
 }

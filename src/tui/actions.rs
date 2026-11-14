@@ -186,6 +186,7 @@ impl Session<'_> {
             }
             Action::SetPermissionMode(mode) => self.set_permission_mode(mode),
             Action::OpenModelPicker => self.open_model_picker(),
+            Action::RefreshModels => self.refresh_model_picker(),
             Action::CloseModelPicker => self.close_model_picker(),
             Action::SelectModel {
                 provider,

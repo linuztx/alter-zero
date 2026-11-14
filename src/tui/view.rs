@@ -98,6 +98,12 @@ impl Session<'_> {
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
         }
+        // …and so does the `/model` page's `updated 2h ago`
+        // (docs/model-cache.md).
+        if self.app.model_picker.is_some() {
+            self.app
+                .set_model_picker_now(super::host::unix_secs_signed());
+        }
         // How long a `/login` device code has left, when one is on screen
         // (docs/copilot.md).
         if self.app.device_login_active() {

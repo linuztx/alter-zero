@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, LocalChoice, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
+    FileSearch, LocalChoice, Message, ProviderChoice, ProviderList, RetryInfo, SigninKind,
     SubscriptionChoice,
 };
 

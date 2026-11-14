@@ -55,7 +55,13 @@ fn counter_notes_more_providers_still_loading() {
     // A partial list (one provider in, another still fetching) shows the
     // list now with a dim "loading more…" hint beside the counter.
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.pending = 1;
+    picker.lists.push(ProviderList {
+        id: "a0_venice".into(),
+        name: "Agent Zero API".into(),
+        listed_at: None,
+        fetching: true,
+        error: None,
+    });
     let mut buf = buffer(60, 13);
     render_model_picker(buf.area, &mut buf, &picker);
     let counter = row(&buf, 9, 60);
@@ -66,9 +72,12 @@ fn counter_notes_more_providers_still_loading() {
 #[test]
 fn counter_notes_a_provider_that_failed() {
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.errors.push(ModelFetchError {
-        provider: "Agent Zero API".into(),
-        message: "HTTP 401".into(),
+    picker.lists.push(ProviderList {
+        id: "a0_venice".into(),
+        name: "Agent Zero API".into(),
+        listed_at: None,
+        fetching: false,
+        error: Some("HTTP 401".into()),
     });
     // Found by content, not by row index: the page grew a reason row under the
     // list (`model_error_lines`) and it is bottom-anchored, so a fixed row
@@ -89,18 +98,21 @@ fn counter_notes_a_provider_that_failed() {
 fn all_failed_picker_shows_one_red_row_per_provider() {
     let mut picker = model_picker(vec![], 0, "x");
     picker.status = ModelLoad::Error(String::new());
-    picker.errors = vec![
-        ModelFetchError {
-            provider: "OpenRouter".into(),
-            message: "HTTP 500".into(),
-        },
-        ModelFetchError {
-            provider: "Agent Zero API".into(),
-            message: "HTTP 401".into(),
-        },
-    ];
-    // Natural height: collapsed chrome (4) + 2 error rows = 6.
-    let mut buf = buffer(60, 6);
+    picker.lists = [
+        ("openrouter", "OpenRouter", "HTTP 500"),
+        ("a0_venice", "Agent Zero API", "HTTP 401"),
+    ]
+    .map(|(id, name, error)| ProviderList {
+        id: id.into(),
+        name: name.into(),
+        listed_at: None,
+        fetching: false,
+        error: Some(error.into()),
+    })
+    .to_vec();
+    // Natural height: collapsed chrome (4) + 2 error rows + the dim
+    // `ctrl+r to try again` row = 7.
+    let mut buf = buffer(60, 7);
     render_model_picker(buf.area, &mut buf, &picker);
     let r0 = row(&buf, 3, 60);
     let r1 = row(&buf, 4, 60);

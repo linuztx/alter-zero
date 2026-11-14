@@ -11,8 +11,10 @@
 //! - [`spawn_file_search_worker`] — the `@` picker's walk + rank
 //!   (`docs/file-search.md`), fed by [`dispatch_file_search`].
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
-//! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
-//!   picker and the startup capability probe (`docs/llm.md`).
+//! - [`spawn_model_fetch`] — one provider's model list for the `/model`
+//!   picker, kept in the cache as it lands (`docs/llm.md`,
+//!   `docs/model-cache.md`); [`spawn_probe_fetch`] — the active provider's,
+//!   for the startup capability probe.
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
 //!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
@@ -39,11 +41,39 @@ use alter_zero::stream::CancelToken;
 
 use super::Session;
 
-/// A finished `/model` fetch from one provider: its human label (for a failure
-/// note) and either the provider's models or a one-line error. The picker
-/// fetches every configured provider in parallel and merges these as they land.
-/// Carried on the model-fetch worker's channel. See `docs/llm.md`.
-pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
+/// A finished `/model` fetch from one provider, carried on the model-fetch
+/// worker's channel: the round it answers (the picker drops another
+/// round's), the provider's id, when it was listed — the date the cache
+/// keeps it under — and the provider's models or a one-line error. The
+/// picker fetches every configured provider in parallel and merges these as
+/// they land. See `docs/llm.md`, `docs/model-cache.md`.
+#[derive(Debug)]
+pub(crate) struct ModelFetch {
+    pub(crate) round: u64,
+    pub(crate) provider: String,
+    pub(crate) listed_at: i64,
+    pub(crate) result: Result<Vec<ModelEntry>, String>,
+}
+
+/// One provider's fetch in a `/model` round, as the boundary plans it
+/// (`ModelSession::model_round`): the config it is fetched with, and where
+/// its listing is kept once it lands — `None` with no config home.
+pub(crate) struct ModelFetchJob {
+    pub(crate) provider: String,
+    pub(crate) cfg: Option<ModelConfig>,
+    pub(crate) cache: Option<CacheTarget>,
+}
+
+/// Where a fetched listing is kept, and what it was fetched from
+/// (`llm::model_cache::listing_source`).
+pub(crate) struct CacheTarget {
+    pub(crate) dir: PathBuf,
+    pub(crate) source: String,
+}
+
+/// The startup capability probe's answer: the provider it fetched and
+/// either its models or a one-line error (`docs/reasoning.md`).
+pub(crate) type ProbeFetch = (String, Result<Vec<ModelEntry>, String>);
 
 /// What the `/login` workers report back. A sign-in sends two messages, in
 /// order — the code to show, then the flow's verdict (`docs/copilot.md`); a
@@ -635,25 +665,64 @@ pub(crate) fn spawn_image_paste(
     });
 }
 
-/// Fetch one provider's `/models` list on a background thread (the image-paste
-/// pattern), sending the labelled result to the loop. One of these is spawned
-/// per configured provider so they fetch in parallel; a cancelled fetch (the
-/// picker closed) is dropped. See `docs/llm.md`.
+/// One provider's `/models` list, fetched with `cfg` — or why not.
+fn fetch_list(cfg: Option<&ModelConfig>, cancel: &CancelToken) -> Result<Vec<ModelEntry>, String> {
+    match cfg {
+        Some(cfg) => llm::models::fetch_models(cfg, cancel).map_err(|e| e.to_string()),
+        None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
+    }
+}
+
+/// Fetch one provider's `/models` list for the `/model` picker's `round` on
+/// a background thread (the image-paste pattern), keep it in the cache, and
+/// send it to the loop. One of these is spawned per provider the round
+/// fetches, so they fetch in parallel. A listing is kept even when the
+/// picker has closed meanwhile — it is no less true for it, and the next
+/// open shows it at once — but only a fetch nobody cancelled is delivered.
+/// The cache is written here, off the loop, one file per provider, so the
+/// parallel workers never write the same file. See `docs/llm.md`,
+/// `docs/model-cache.md`.
 pub(crate) fn spawn_model_fetch(
-    label: String,
-    cfg: Option<ModelConfig>,
+    round: u64,
+    job: ModelFetchJob,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
 ) {
     std::thread::spawn(move || {
-        let result: Result<Vec<ModelEntry>, String> = match cfg {
-            Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
-            None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
-        };
-        // Don't deliver a result the picker no longer wants.
-        if !cancel.is_cancelled() {
-            let _ = tx.send((label, result));
+        let mut result = fetch_list(job.cfg.as_ref(), &cancel);
+        let listed_at = super::host::unix_secs_signed();
+        if let (Ok(models), Some(cache)) = (result.as_mut(), job.cache) {
+            let listing = llm::model_cache::CachedListing {
+                fetched_at: listed_at,
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                source: cache.source,
+                models: std::mem::take(models),
+            };
+            super::config::store_model_listing(&cache.dir, &job.provider, &listing);
+            *models = listing.models;
         }
+        if !cancel.is_cancelled() {
+            let _ = tx.send(ModelFetch {
+                round,
+                provider: job.provider,
+                listed_at,
+                result,
+            });
+        }
+    });
+}
+
+/// Fetch the active provider's `/models` list for the startup capability
+/// probe on a background thread, sending the answer to the loop
+/// (`docs/reasoning.md`).
+pub(crate) fn spawn_probe_fetch(
+    provider: String,
+    cfg: Option<ModelConfig>,
+    tx: tokio::sync::mpsc::UnboundedSender<ProbeFetch>,
+) {
+    std::thread::spawn(move || {
+        let result = fetch_list(cfg.as_ref(), &CancelToken::new());
+        let _ = tx.send((provider, result));
     });
 }
 
