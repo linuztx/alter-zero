@@ -58,6 +58,7 @@ widened for the split.
 | `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
+| `sponsor.rs` | The sponsor catalog and the read-only `/sponsor` page's state (`docs/sponsor.md`). |
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `context_usage.rs` | The `/context` page's state — the counted breakdown, its signature, the highlight that follows the largest category until moved — the injected tool sets, the provider's last frame and the since-launch ledger (`docs/context-usage.md`). The counting itself is the top-level `crate::context_usage`. |
 | `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
@@ -100,6 +101,7 @@ widened for the split.
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
 | `theme_view.rs` | The inline `/theme` picker — swatch rows in the picker family's shape with a real-cell preview in the highlighted theme beside them (under them on a narrow terminal) (`docs/theme.md`). |
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
+| `sponsor_view.rs` | The read-only `/sponsor` page — `/donate`'s frame over the sponsor link and the contact address (`docs/sponsor.md`). |
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `context_usage_view.rs` | The read-only `/context` page — the window bar, the legend with the highlighted category's parts beside or under it, the provider's usage rows and cache meter, and its shedding ladder (`docs/context-usage.md`). |
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |
@@ -152,6 +154,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `spinner.rs` | Applying a `/spinner` selection: the per-directory `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
+| `sponsor.rs` | Applying a `/sponsor` copy: the clipboard write + the toast (`docs/sponsor.md`). |
 | `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `context_usage.rs` | Keeping an open `/context` page live: the backend's tool set (or the viewed agent type's) handed over on the open and at every loop bottom, then the re-count (`docs/context-usage.md`). |
 | `secrets.rs` | The `/secrets` page's saves, deletes and copies: the `secrets.json` read-modify-write, the shared store, the reminder sync (`docs/secrets.md`). |

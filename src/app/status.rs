@@ -460,7 +460,7 @@ impl App {
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
-    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/secrets`,
+    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/sponsor`, `/secrets`,
     /// `/export`, `/context`, `/usage`) own every key the same way, so the
     /// running cell they keep visible above themselves stays hintless while
     /// one is open (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
@@ -479,6 +479,7 @@ impl App {
             || self.spinner_picker.is_some()
             || self.theme_picker.is_some()
             || self.donate_picker.is_some()
+            || self.sponsor_page.is_some()
             || self.secrets_page.is_some()
             || self.export_picker.is_some()
             || self.context_usage.is_some()

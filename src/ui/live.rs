@@ -807,6 +807,16 @@ pub fn render_live_with_preview(
         render_donate_picker(body, buf, app);
         return;
     }
+    // …and the read-only `/sponsor` page, its twin. See `docs/sponsor.md`.
+    if app.sponsor_page.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::sponsor_view::sponsor_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        render_sponsor_page(body, buf, app);
+        return;
+    }
     // …and the `/secrets` page, the same built-line body — its values
     // masked in the builder. See `docs/secrets.md`.
     if app.secrets_page.is_some() {

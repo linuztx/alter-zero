@@ -56,6 +56,7 @@ mod settings;
 mod skill_picker;
 mod skills_menu;
 mod spinner;
+mod sponsor;
 mod status;
 mod tasks;
 mod theme;
@@ -115,6 +116,7 @@ pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
+pub use self::sponsor::{SPONSOR_LINKS, SponsorLink, SponsorPage};
 pub use self::status::{
     OfflineInfo, RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary,
 };
@@ -592,6 +594,10 @@ pub struct App {
     /// sibling (no text entry) over the const donation-address catalog.
     /// See `docs/donate.md`.
     pub donate_picker: Option<DonatePicker>,
+    /// The open `/sponsor` page; `None` when closed. The `/donate` page's
+    /// twin (no text entry) over the const sponsor catalog — the
+    /// developer's sponsor page and contact address. See `docs/sponsor.md`.
+    pub sponsor_page: Option<SponsorPage>,
     /// The open `/export` page; `None` when closed. The `/donate` page's
     /// sibling (no text entry) over the two export targets — the clipboard
     /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.

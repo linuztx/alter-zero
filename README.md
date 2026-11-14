@@ -265,6 +265,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/skills` | Browse skills and enable or disable each one |
 | `/mcp` | Manage MCP servers |
 | `/donate` | Support the project with a crypto donation |
+| `/sponsor` | Sponsor the developer or get in touch |
 | `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
 | `/quit` | Exit the app |
 
@@ -374,6 +375,8 @@ Alter Zero is free and open source. If it earns a place in your terminal, a dona
 | BTC (Bitcoin) | Bitcoin Native SegWit | `bc1qhwamfrwuhz64pk00l75ykfff2ang22ns64chf7` |
 | ETH (Ethereum) | Ethereum, Linea, Base, Arbitrum, BNB Chain, OP, Polygon | `0xEAf6fbabB9DBE7a23BfE22A7A6c4aCe02063524b` |
 | SOL (Solana) | Solana | `Gwhv5c6uAa6aAz1MjwzV9QJpbm7CJWy2kuCeZ75mFc94` |
+
+Prefer GitHub? Sponsor the developer at [github.com/sponsors/linuztx](https://github.com/sponsors/linuztx), or write to <linuztx@gmail.com>. `/sponsor` shows both inside the app.
 
 > **Important:** Send only on a network listed for that address. Confirm that the asset and selected network match before sending. An address may look valid on another network, but funds sent on an unlisted or mismatched network may be unrecoverable.
 

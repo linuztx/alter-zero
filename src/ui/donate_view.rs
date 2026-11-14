@@ -27,8 +27,11 @@ use crate::app::{DONATION_ADDRESSES, DonationAddress};
 /// verb and the name bold and washed left-to-right in the banner's accent →
 /// link gradient (the mascot's own wash, `docs/header.md`). Clamped with a
 /// trailing `…` at a width that can't seat it, like every banner row.
-fn title_line(width: u16) -> Line<'static> {
-    let title = format!("{DONATE_TITLE_PREFIX}{HEADER_NAME}");
+///
+/// `prefix` is the title's verb: `Support ` here, `Sponsor ` on the
+/// `/sponsor` page, which opens on the same row (`docs/sponsor.md`).
+pub(super) fn title_line(prefix: &str, width: u16) -> Line<'static> {
+    let title = format!("{prefix}{HEADER_NAME}");
     let mut spans = vec![
         Span::raw(MODEL_INDENT),
         Span::styled(DONATE_HEART, Style::new().fg(donate_heart_color())),
@@ -45,7 +48,16 @@ fn title_line(width: u16) -> Line<'static> {
 /// the coin — the row says what the address is *for*, and where it may be
 /// sent is the caption under its box ([`network_rows`]), which keeps this
 /// row one glance wide however many chains an address answers on.
-fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16) -> Line<'static> {
+///
+/// The `/sponsor` page's rows are the same row over its own catalog
+/// (`docs/sponsor.md`), so the two words arrive as `lead` and `tail`.
+pub(super) fn label_line(
+    index: usize,
+    lead: &str,
+    tail: &str,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
     let accent = Style::new().fg(model_selected_color());
     let dim = Style::new().fg(model_meta_color());
     let (marker, marker_style, number_style, ticker_style) = if selected {
@@ -66,20 +78,17 @@ fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16)
         )
     };
     let number = format!("{}. ", index + 1);
-    let used = cols(MODEL_INDENT)
-        + cols(marker)
-        + cols(&number)
-        + cols(entry.ticker)
-        + cols(DONATE_LABEL_GAP);
+    let used =
+        cols(MODEL_INDENT) + cols(marker) + cols(&number) + cols(lead) + cols(DONATE_LABEL_GAP);
     let room = (width as usize).saturating_sub(used);
     clamp_spans(
         vec![
             Span::raw(MODEL_INDENT),
             Span::styled(marker.to_string(), marker_style),
             Span::styled(number, number_style),
-            Span::styled(entry.ticker.to_string(), ticker_style),
+            Span::styled(lead.to_string(), ticker_style),
             Span::raw(DONATE_LABEL_GAP),
-            Span::styled(ellipsize(entry.coin, room), dim),
+            Span::styled(ellipsize(tail, room), dim),
         ],
         width as usize,
     )
@@ -92,13 +101,23 @@ fn label_line(index: usize, entry: &DonationAddress, selected: bool, width: u16)
 /// nothing is ever cut) and the walls follow. The border lights in the
 /// accent under the highlighted row and stays the dim frame colour under the
 /// others; the address itself is bright and bold on every row.
-fn address_box(entry: &DonationAddress, selected: bool, width: u16) -> Vec<Line<'static>> {
+///
+/// `link`, when given, is the target the value opens — stamped on every row
+/// of a wrapped value, so any fragment opens the whole target, and
+/// underlined to say so (`docs/links.md`). The donation addresses name none;
+/// the `/sponsor` page's rows do.
+pub(super) fn value_box(
+    value: &str,
+    link: Option<&str>,
+    selected: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
     let indent = format!("{MODEL_INDENT}{DEVICE_BOX_INDENT}");
     let pad = cols(DEVICE_BOX_PAD);
     // Walls + padding on both sides + at least one content column.
     let min_box = 2 + 2 * pad + 1;
     let avail = (width as usize).saturating_sub(cols(&indent));
-    let natural = cols(entry.address) + 2 * pad + 2;
+    let natural = cols(value) + 2 * pad + 2;
     let box_width = natural.min(avail).max(min_box);
     let inner = box_width - 2 - 2 * pad;
     let border = Style::new().fg(if selected {
@@ -109,6 +128,10 @@ fn address_box(entry: &DonationAddress, selected: bool, width: u16) -> Vec<Line<
     let address_style = Style::new()
         .fg(donate_address_color())
         .add_modifier(Modifier::BOLD);
+    let address_style = match link {
+        Some(url) => crate::links::linked(address_style.add_modifier(Modifier::UNDERLINED), url),
+        None => address_style,
+    };
     let bar = DEVICE_BOX_HORIZONTAL.repeat(box_width - 2);
     let mut lines = vec![clamp_spans(
         vec![
@@ -120,7 +143,7 @@ fn address_box(entry: &DonationAddress, selected: bool, width: u16) -> Vec<Line<
         ],
         width as usize,
     )];
-    for row in wrap_output(entry.address, inner as u16) {
+    for row in wrap_output(value, inner as u16) {
         let fill = inner.saturating_sub(cols(&row));
         lines.push(clamp_spans(
             vec![
@@ -192,9 +215,15 @@ fn network_rows(entry: &DonationAddress, width: u16) -> Vec<Line<'static>> {
 /// rounded box and the networks caption under it.
 fn address_block(index: usize, selected: usize, open: bool, width: u16) -> Vec<Line<'static>> {
     let entry = &DONATION_ADDRESSES[index];
-    let mut block = vec![label_line(index, entry, index == selected, width)];
+    let mut block = vec![label_line(
+        index,
+        entry.ticker,
+        entry.coin,
+        index == selected,
+        width,
+    )];
     if open {
-        block.extend(address_box(entry, index == selected, width));
+        block.extend(value_box(entry.address, None, index == selected, width));
         block.extend(network_rows(entry, width));
     }
     block
@@ -245,41 +274,68 @@ pub fn donate_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static
     let Some(picker) = app.donate_picker.as_ref() else {
         return Vec::new();
     };
-    let count = DONATION_ADDRESSES.len();
-    let selected = picker.selected.min(count.saturating_sub(1));
-    let header = || {
-        vec![
-            vec![title_line(width)],
-            model_wrapped_rows(DONATE_BLURB, model_meta_color(), width),
-        ]
-    };
-    let caution = || model_wrapped_rows(DONATE_CAUTION, donate_caution_color(), width);
-    let hint = || model_placeholder_row(DONATE_HINT, model_meta_color(), width);
-    let tail = || vec![caution(), vec![hint()]];
-    // Every address its own block, each one boxed.
+    boxed_list_page(
+        height,
+        width,
+        picker.selected,
+        DONATION_ADDRESSES.len(),
+        &|| {
+            vec![
+                vec![title_line(DONATE_TITLE_PREFIX, width)],
+                model_wrapped_rows(DONATE_BLURB, model_meta_color(), width),
+            ]
+        },
+        &|| {
+            vec![
+                model_wrapped_rows(DONATE_CAUTION, donate_caution_color(), width),
+                vec![model_placeholder_row(
+                    DONATE_HINT,
+                    model_meta_color(),
+                    width,
+                )],
+            ]
+        },
+        &|index, selected, open| address_block(index, selected, open, width),
+    )
+}
+
+/// A run of blocks between a page's rules — a header's rows, a tail's.
+pub(super) type Blocks = Vec<Vec<Line<'static>>>;
+
+/// The ladder [`donate_view_lines`] documents, over any list of labelled
+/// boxes: `header` and `tail` build the blocks above and below the list, and
+/// `block(index, selected, open)` builds entry `index` — its label row, plus
+/// its box and whatever sits under it when `open`. The `/sponsor` page is the
+/// same ladder over its own catalog (`docs/sponsor.md`).
+pub(super) fn boxed_list_page(
+    height: u16,
+    width: u16,
+    selected: usize,
+    count: usize,
+    header: &dyn Fn() -> Blocks,
+    tail: &dyn Fn() -> Blocks,
+    block: &dyn Fn(usize, usize, bool) -> Vec<Line<'static>>,
+) -> Vec<Line<'static>> {
+    let selected = selected.min(count.saturating_sub(1));
+    // Every entry its own block, each one boxed.
     let boxed = || {
         (0..count)
-            .map(|i| address_block(i, selected, true, width))
-            .collect::<Vec<_>>()
+            .map(|i| block(i, selected, true))
+            .collect::<Blocks>()
     };
-    // One block: the label rows, the highlighted address opened in place.
+    // One block: the label rows, the highlighted entry opened in place.
     let accordion = || {
         vec![
             (0..count)
-                .flat_map(|i| address_block(i, selected, i == selected, width))
+                .flat_map(|i| block(i, selected, i == selected))
                 .collect::<Vec<_>>(),
         ]
     };
-    let page = |parts: Vec<Vec<Vec<Line<'static>>>>| donate_page(parts.concat(), width);
-    // The highlighted address alone, its numbered label saying where it
+    let page = |parts: Vec<Blocks>| donate_page(parts.concat(), width);
+    // The highlighted entry alone, its numbered label saying where it
     // stands: the overflow slots that counted the others would sit straight
-    // under the top rule, hugging it blank at the first address.
-    let single = || {
-        page(vec![
-            vec![address_block(selected, selected, true, width)],
-            tail(),
-        ])
-    };
+    // under the top rule, hugging it blank at the first entry.
+    let single = || page(vec![vec![block(selected, selected, true)], tail()]);
     first_page_that_fits(
         height,
         &[
