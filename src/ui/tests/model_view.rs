@@ -1030,3 +1030,108 @@ fn a_tiny_terminal_keeps_the_model_search_line_over_a_placeholder() {
         }
     }
 }
+
+#[test]
+fn a_multi_provider_list_heads_each_provider_and_drops_the_tag() {
+    // #25: a list spanning providers is grouped under bold provider headings,
+    // and the `[provider]` tag — redundant under a header — yields its columns
+    // to the id. The counter and the `Model Name:` line still count models.
+    use crate::ui::model_view::model_view_lines;
+    let picker = model_picker(
+        vec![
+            model_entry("b/y", "a0_venice", "B Y"),
+            model_entry("a/x", "openrouter", "A X"),
+            model_entry("c/z", "openrouter", "C Z"),
+        ],
+        0,
+        "b/y",
+    );
+    let texts: Vec<String> = model_view_lines(&picker, 90, 200)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        &texts[6..11],
+        [
+            "  a0_venice",
+            "  → b/y ✓",
+            "  openrouter",
+            "    a/x",
+            "    c/z",
+        ],
+        "one heading per provider, no [provider] tag on the rows"
+    );
+    assert_eq!(texts[11], "    (1/3)", "the counter counts models");
+    assert_eq!(
+        texts[13], "    Model Name: B Y",
+        "the name line follows the highlighted model, not the row"
+    );
+}
+
+#[test]
+fn the_highlight_moves_over_models_not_provider_headings() {
+    // `selected` addresses `matches()`, so a step from the first provider's
+    // model lands on the next provider's first model, not on its heading.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(
+        vec![
+            model_entry("b/y", "a0_venice", "B Y"),
+            model_entry("a/x", "openrouter", "A X"),
+            model_entry("c/z", "openrouter", "C Z"),
+        ],
+        1,
+        "b/y",
+    );
+    picker.selected = 1;
+    let texts: Vec<String> = model_view_lines(&picker, 90, 200)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(
+        texts[6], "  a0_venice",
+        "the heading itself is not selected"
+    );
+    assert_eq!(
+        texts[9],
+        "  → a/x",
+        "the arrow sits on the first openrouter model: {:?}",
+        &texts[6..11]
+    );
+}
+
+#[test]
+fn a_window_that_clips_a_heading_keeps_the_tag_on_its_models() {
+    // A grouped window can start mid-group on a short terminal. The heading is
+    // then off screen, so its rows keep the `[provider]` tag rather than make
+    // the provider a guess; the next group's heading is in the window and its
+    // rows drop it.
+    use crate::ui::model_view::model_view_lines;
+    let picker = model_picker(
+        vec![
+            model_entry("alpha/model-00", "alpha", "Alpha 0"),
+            model_entry("alpha/model-01", "alpha", "Alpha 1"),
+            model_entry("alpha/model-02", "alpha", "Alpha 2"),
+            model_entry("beta/model-00", "beta", "Beta 0"),
+            model_entry("beta/model-01", "beta", "Beta 1"),
+            model_entry("beta/model-02", "beta", "Beta 2"),
+        ],
+        2,
+        "x",
+    );
+    let texts: Vec<String> = model_view_lines(&picker, 90, 12)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "  → alpha/model-02 [alpha]"),
+        "the selected model kept its tag under a clipped heading: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t == "  alpha"),
+        "the alpha heading is above the window: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t == "  beta"),
+        "the beta heading is in the window: {texts:?}"
+    );
+}

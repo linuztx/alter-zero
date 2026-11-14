@@ -278,16 +278,18 @@ user's mock, `docs/view-flow.md` *The frame hugs its content*):
 
   ❯ cla                                                  (search prompt, cyan '❯')
 
-  → anthropic/claude-3-haiku [openrouter]                (selected: '→' under the '❯')
-    anthropic/claude-3.5-haiku [openrouter]
-    claude-opus-4-8-fast [a0_venice] ✓                   (active: ✓)
+  a0_venice                                              (provider heading, bold + dim)
+    claude-opus-4-8-fast ✓                               (active: ✓)
+  openrouter
+  → anthropic/claude-3-haiku                             (selected: '→' under the '❯')
+    anthropic/claude-3.5-haiku
     (3/12)   ·   loading more…                           (position/total + load status, dim)
 
     Model Name: Anthropic: Claude 3.5 Haiku              (friendly name, dim)
 ────────────────────────────────────────────────
 ```
 
-The window holds seven models (`MODEL_MENU_MAX_ROWS`), the selection riding
+The window holds seven rows — models plus any provider headings (`MODEL_MENU_MAX_ROWS`), the selection riding
 its middle; the counter, the `Model Name:` line and a failed provider's
 reasons hang under the ids (`MODEL_DETAIL_INDENT`). The subtitle says what
 Enter does to the session and to the directory (`docs/session-model.md`,
@@ -328,11 +330,19 @@ Enter does to the session and to the directory (`docs/session-model.md`,
   instead of offering models the user can't use.
 - Otherwise the boundary fetches **every configured provider in parallel** — one
   worker thread each (the image-paste pattern), all sharing one cancel token —
-  and merges the results into a single provider-tagged list as they land
-  (`App::begin_model_load` up front, then `App::add_models` / `App::add_model_error`
-  per result on a dedicated channel). The picker shows `Loading models…` until the
-  **first** provider answers, then the list — growing and re-sorting (by id, then
-  provider; exact `(provider, id)` dupes dropped) as the rest arrive. The
+  and merges the results into one list as they land (`App::begin_model_load` up
+  front, then `App::add_models` / `App::add_model_error` per result on a
+  dedicated channel). The picker shows `Loading models…` until the **first**
+  provider answers, then the list — growing and re-sorting (by provider, then
+  id; exact `(provider, id)` dupes dropped) as the rest arrive. When the list
+  spans more than one provider it is **grouped**: a bold provider heading
+  before each provider's rows, and the `[provider]` tag is dropped from them
+  while that heading is in the same window (`ModelPicker::rows`) — a short
+  terminal's window can start mid-group, and those rows keep the tag rather
+  than make the provider a guess. A single-provider list — and a search that
+  narrows to one provider — has no headings and keeps the tag, so the common
+  case is unchanged. The counter and the `Model Name:` line still count models: the
+  highlight never sits on a heading. The
   highlight rides the same model across each merge, or re-seats on the active
   model once its provider lands (unless the user has already moved/filtered).
   A **search that matches nothing in the partial list keeps saying

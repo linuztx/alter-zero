@@ -5,6 +5,7 @@ use super::layout::model_has_detail;
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, ellipsize};
 use super::*;
+use crate::app::ModelListRow;
 
 /// A two-space-inset single-row line (placeholder / hint / description) in
 /// the picker family's list area, `…`-cut to `width` ([`ellipsize`]) — the
@@ -679,8 +680,21 @@ fn linked_segments(line: &str, base: Style) -> Vec<(String, Style)> {
 /// `[provider]` tag is dim, and the active model carries a green ✓. The id is
 /// `…`-cut so the tag stays visible *and* the cut shows — two long ids
 /// clipped silently read as twins.
-fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Line<'static> {
-    let tag = format!(" [{}]", entry.provider);
+///
+/// `show_provider_tag` is false in a grouped list, where the header above the
+/// rows already names the provider; the freed columns go to the id.
+fn model_row(
+    entry: &ModelEntry,
+    selected: bool,
+    active: bool,
+    width: u16,
+    show_provider_tag: bool,
+) -> Line<'static> {
+    let tag = if show_provider_tag {
+        format!(" [{}]", entry.provider)
+    } else {
+        String::new()
+    };
     let active_mark = if active { MODEL_ACTIVE_MARK } else { "" };
     let reserved = row_head_cols() + cols(&tag) + cols(active_mark);
     let id_room = (width as usize).saturating_sub(reserved).max(1);
@@ -693,9 +707,25 @@ fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Li
     Line::from(spans)
 }
 
+/// One provider heading in a grouped list: the provider's id, bold and dim,
+/// under the list's indent; `…`-cut like any other single row.
+fn provider_row(provider: &str, width: u16) -> Line<'static> {
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            ellipsize(provider, room),
+            Style::new()
+                .fg(model_meta_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 /// The picker's list lines: a single placeholder while loading / errored /
-/// empty, else the model rows windowed ([`centered_window`]) to keep the
-/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`].
+/// empty, else the rows windowed ([`centered_window`]) to keep the selection
+/// **centered** and capped at [`MODEL_MENU_MAX_ROWS`]. A grouped list counts
+/// its provider headers as rows and never selects one.
 fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     match &picker.status {
         ModelLoad::Loading => vec![model_placeholder_row(
@@ -748,13 +778,35 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             }
             let max = MODEL_MENU_MAX_ROWS as usize;
             let selected = picker.selected.min(matches.len() - 1);
-            let offset = centered_window(matches.len(), selected, max);
-            matches
+            let rows = picker.rows();
+            let selected_row = rows
                 .iter()
-                .enumerate()
-                .skip(offset)
-                .take(max)
-                .map(|(i, m)| model_row(m, i == selected, picker.is_active(m), width))
+                .position(|row| matches!(row, ModelListRow::Model(i) if *i == selected))
+                .unwrap_or(0);
+            let offset = centered_window(rows.len(), selected_row, max);
+            let visible = &rows[offset..(offset + max).min(rows.len())];
+            // A row only trusts the heading above it while that heading is in
+            // the same window; a window that starts mid-group keeps the
+            // `[provider]` tag so the provider is never a guess.
+            let headed: Vec<&str> = visible
+                .iter()
+                .filter_map(|row| match row {
+                    ModelListRow::Provider(provider) => Some(*provider),
+                    ModelListRow::Model(_) => None,
+                })
+                .collect();
+            visible
+                .iter()
+                .map(|row| match row {
+                    ModelListRow::Provider(provider) => provider_row(provider, width),
+                    ModelListRow::Model(i) => model_row(
+                        matches[*i],
+                        *i == selected,
+                        picker.is_active(matches[*i]),
+                        width,
+                        !headed.contains(&matches[*i].provider.as_str()),
+                    ),
+                })
                 .collect()
         }
     }
@@ -968,12 +1020,33 @@ pub(super) fn model_view_lines(
     };
     let matches = picker.matches();
     let selected = picker.selected.min(matches.len() - 1);
+    let rows = picker.rows();
+    let selected_row = rows
+        .iter()
+        .position(|row| matches!(row, ModelListRow::Model(i) if *i == selected))
+        .unwrap_or(0);
     let window = |max| {
-        let (above, range, below) = list_window(matches.len(), selected, max);
-        let rows = matches[range.clone()]
+        let (above, range, below) = list_window(rows.len(), selected_row, max);
+        let visible = &rows[range];
+        let headed: Vec<&str> = visible
             .iter()
-            .zip(range)
-            .map(|(m, i)| model_row(m, i == selected, picker.is_active(m), width))
+            .filter_map(|row| match row {
+                ModelListRow::Provider(provider) => Some(*provider),
+                ModelListRow::Model(_) => None,
+            })
+            .collect();
+        let rows = visible
+            .iter()
+            .map(|row| match row {
+                ModelListRow::Provider(provider) => provider_row(provider, width),
+                ModelListRow::Model(i) => model_row(
+                    matches[*i],
+                    *i == selected,
+                    picker.is_active(matches[*i]),
+                    width,
+                    !headed.contains(&matches[*i].provider.as_str()),
+                ),
+            })
             .collect();
         (above, rows, below)
     };

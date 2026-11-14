@@ -34,8 +34,9 @@ pub enum ModelLoad {
 /// [`matches`]: ModelPicker::matches
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelPicker {
-    /// Every fetched model, provider-tagged and sorted (empty while loading).
-    /// Grows as each provider's fetch lands ([`App::add_models`]).
+    /// Every fetched model, provider-tagged and sorted by provider, then id
+    /// (empty while loading). Grows as each provider's fetch lands
+    /// ([`App::add_models`]).
     pub models: Vec<ModelEntry>,
     /// Whether the list is still loading, ready, or errored.
     pub status: ModelLoad,
@@ -70,14 +71,39 @@ pub struct ModelFetchError {
     pub message: String,
 }
 
+/// The picker list's canonical order: provider, then id; exact
+/// `(provider, id)` duplicates dropped. `matches` re-sorts too, so a list
+/// built by hand (a test, a future caller) still draws in this order.
+fn sort_models(models: &mut Vec<ModelEntry>) {
+    models.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
+    models.dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
+}
+
+/// One row of the picker's list: a provider's header, or one model.
+///
+/// The list is **grouped by provider** when it spans more than one — the
+/// header is a row of its own, and [`ModelListRow::Model`] carries the model's
+/// index in [`ModelPicker::matches`], so selection, paging and the `(n/total)`
+/// counter keep counting models and skip headers. A single-provider list has
+/// no header rows (the tag on each row already says which provider it is).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelListRow<'a> {
+    /// A provider's heading, shown once before its models.
+    Provider(&'a str),
+    /// One model, addressed by its index in [`ModelPicker::matches`].
+    Model(usize),
+}
+
 impl ModelPicker {
-    /// The rows the picker shows: models whose id, provider, or friendly name
+    /// The models the picker shows: those whose id, provider, or friendly name
     /// contains the query (case-insensitive substring; every model for an empty
-    /// query), keeping the fetched (alphabetical) order.
+    /// query), ordered by **provider, then id** — the order the list is grouped
+    /// and drawn in.
     #[must_use]
     pub fn matches(&self) -> Vec<&ModelEntry> {
         let query = self.query.to_lowercase();
-        self.models
+        let mut matches: Vec<&ModelEntry> = self
+            .models
             .iter()
             .filter(|m| {
                 query.is_empty()
@@ -85,7 +111,40 @@ impl ModelPicker {
                     || m.provider.to_lowercase().contains(&query)
                     || m.display_name.to_lowercase().contains(&query)
             })
-            .collect()
+            .collect();
+        matches.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
+        matches
+    }
+
+    /// Whether the current matches span more than one provider, i.e. whether
+    /// the list draws provider headers. Derived from the **filtered** list: a
+    /// search that narrows to one provider shows no header (and keeps the
+    /// `[provider]` tag on its rows).
+    #[must_use]
+    pub fn is_grouped(&self) -> bool {
+        let matches = self.matches();
+        let Some(first) = matches.first() else {
+            return false;
+        };
+        matches.iter().any(|m| m.provider != first.provider)
+    }
+
+    /// The list's rows: a [`ModelListRow::Provider`] header at each provider
+    /// boundary when [`is_grouped`](Self::is_grouped), and every model once.
+    #[must_use]
+    pub fn rows(&self) -> Vec<ModelListRow<'_>> {
+        let matches = self.matches();
+        let grouped = self.is_grouped();
+        let mut rows = Vec::with_capacity(matches.len() + 2);
+        let mut provider: Option<&str> = None;
+        for (index, model) in matches.iter().enumerate() {
+            if grouped && provider != Some(model.provider.as_str()) {
+                rows.push(ModelListRow::Provider(&model.provider));
+                provider = Some(&model.provider);
+            }
+            rows.push(ModelListRow::Model(index));
+        }
+        rows
     }
 
     /// The highlighted model in the current filtered view, if any (an empty
@@ -171,6 +230,7 @@ impl App {
             return;
         };
         picker.models = models;
+        sort_models(&mut picker.models);
         picker.status = ModelLoad::Ready;
         picker.pending = 0;
         picker.errors.clear();
@@ -201,7 +261,7 @@ impl App {
     }
 
     /// Merge one provider's fetched models into the open picker: append, re-sort
-    /// by id then provider, drop exact `(provider, id)` dupes, and mark one
+    /// by provider then id, drop exact `(provider, id)` dupes, and mark one
     /// outstanding fetch done. The list appears as soon as the first provider
     /// lands (status → `Ready`) and grows as the rest arrive. The highlight rides
     /// the same model across the merge, unless the user hasn't touched the picker
@@ -220,12 +280,7 @@ impl App {
             .highlighted()
             .map(|m| (m.provider.clone(), m.id.clone()));
         picker.models.extend(models);
-        picker
-            .models
-            .sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.provider.cmp(&b.provider)));
-        picker
-            .models
-            .dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
+        sort_models(&mut picker.models);
         picker.recompute_status();
         picker.selected = if untouched {
             picker
