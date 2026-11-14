@@ -32,9 +32,15 @@ input, context window, speed tiers) and four facts about them:
   removing one file.
 - **Written by the worker**, off the loop, the moment its fetch lands, beside
   the file and then renamed over it, so another instance reading at that
-  moment reads the old listing or the new one, never half of either. A
-  listing that lands after the picker closed is still kept: it is no less
-  true for that.
+  moment reads the old listing or the new one, never half of either.
+- **A fetch the picker gave up on keeps nothing.** Closing the picker (or a
+  newer round) cancels its fetches, and one that lands anyway (`fetch_models`
+  stops at the headers when cancelled, but a body already arriving is read
+  to its end) is neither kept nor delivered. Closing the picker may be the
+  start of a `/login` save that drops the provider's kept list (below), and
+  a listing read with the credential that save replaced, written after it,
+  would pass for fresh for an hour. Keeping it would only have saved the
+  next open one fetch.
 - **Compact, and only what the picker shows.** A row leaves out its provider
   (the file is the provider's) and a name that only repeats its id. The
   measured cost: a 611 KB OpenRouter-shaped listing of 420 models keeps as a
@@ -184,5 +190,6 @@ still arriving cannot prove a query has no match.
   list; after a restart the kept list is the page with **no request**; Ctrl+R
   brings a new model and keeps it; a list aged two hours shows at once under
   `updated 2h ago · refreshing…` until the answer replaces it; a 503 keeps
-  the rows as `Stub not refreshed`; and a key saved through `/login` drops
-  the file.
+  the rows as `Stub not refreshed`; a key saved through `/login` drops the
+  file; and a fetch whose body is still arriving when the picker closes
+  keeps nothing.

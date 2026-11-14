@@ -676,11 +676,13 @@ fn fetch_list(cfg: Option<&ModelConfig>, cancel: &CancelToken) -> Result<Vec<Mod
 /// Fetch one provider's `/models` list for the `/model` picker's `round` on
 /// a background thread (the image-paste pattern), keep it in the cache, and
 /// send it to the loop. One of these is spawned per provider the round
-/// fetches, so they fetch in parallel. A listing is kept even when the
-/// picker has closed meanwhile — it is no less true for it, and the next
-/// open shows it at once — but only a fetch nobody cancelled is delivered.
-/// The cache is written here, off the loop, one file per provider, so the
-/// parallel workers never write the same file. See `docs/llm.md`,
+/// fetches, so they fetch in parallel. The cache is written here, off the
+/// loop, one file per provider, so the parallel workers never write the
+/// same file. A fetch cancelled before it lands — the picker closed, a
+/// newer round began — keeps **nothing** and sends nothing: closing the
+/// picker may be the start of a `/login` save that drops the provider's
+/// kept list, and a listing read with the credential that save replaced,
+/// written after it, would pass for fresh for an hour. See `docs/llm.md`,
 /// `docs/model-cache.md`.
 pub(crate) fn spawn_model_fetch(
     round: u64,
@@ -690,6 +692,11 @@ pub(crate) fn spawn_model_fetch(
 ) {
     std::thread::spawn(move || {
         let mut result = fetch_list(job.cfg.as_ref(), &cancel);
+        // `fetch_models` stops at the headers when cancelled, but a body
+        // still arriving then is read to its end — so ask again here.
+        if cancel.is_cancelled() {
+            return;
+        }
         let listed_at = super::host::unix_secs_signed();
         if let (Ok(models), Some(cache)) = (result.as_mut(), job.cache) {
             let listing = llm::model_cache::CachedListing {
@@ -701,14 +708,12 @@ pub(crate) fn spawn_model_fetch(
             super::config::store_model_listing(&cache.dir, &job.provider, &listing);
             *models = listing.models;
         }
-        if !cancel.is_cancelled() {
-            let _ = tx.send(ModelFetch {
-                round,
-                provider: job.provider,
-                listed_at,
-                result,
-            });
-        }
+        let _ = tx.send(ModelFetch {
+            round,
+            provider: job.provider,
+            listed_at,
+            result,
+        });
     });
 }
 

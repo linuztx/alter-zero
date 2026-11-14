@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 155 — /model's list cache: kept across a restart, Ctrl+R, an aged list refreshed behind its rows, a failed refresh, /login dropping it
+# Phase 155 — /model's list cache: kept across a restart, Ctrl+R, an aged list refreshed behind its rows, a failed refresh, /login dropping it, a fetch given up on keeping nothing
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -18,7 +18,11 @@ smoke_begin
 #       answer replaces its rows;
 #   (e) a refresh that fails keeps the rows it could not refresh, noted
 #       `Stub not refreshed` with the way to try again — never `unavailable`;
-#   (f) a key saved for the provider through /login drops its kept list.
+#   (f) a key saved for the provider through /login drops its kept list;
+#   (g) a fetch the picker gave up on (closed while it was out) keeps
+#       nothing: the close may be the start of a /login save, and a list
+#       read with the key that save replaced must not land after it and pass
+#       for fresh.
 S155="${S}_modelcache"
 STATE="$SMOKE_TMP/stub155"
 mkdir -p "$STATE"
@@ -59,6 +63,10 @@ class Stub(BaseHTTPRequestHandler):
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))
         self.end_headers()
+        # `body_delay` holds the body back after the headers have gone: a
+        # big catalog on a slow link, still arriving when a fetch is given up.
+        self.wfile.flush()
+        time.sleep(float(read("body_delay", "0")))
         self.wfile.write(data)
 
     def log_message(self, *_args):
@@ -190,5 +198,20 @@ saved="$(wait_pane 5 "$S155" -F "Saved STUB_API_KEY")" || fail "the key was not 
 dump "a key saved for the stub" "$saved"
 [ -e "$CACHE" ] && fail "saving the stub's key left its kept list behind ($CACHE)"
 
+# ---- (g) a fetch the picker gave up on keeps nothing ----
+# The answer's headers go at once and its body is held back, so the fetch is
+# past every check it makes before reading when the picker closes on it.
+printf '3' >"$STATE/body_delay"
+before="$(requests)"
+asked_again() { [ "$(requests)" -gt "$before" ]; }
+submit "$S155" "/model"
+wait_for 3 "$S155" -F "Loading models…" || fail "/model with nothing kept did not load"
+poll 3 asked_again || fail "/model did not ask the stub for its list"
+sleep 0.5 # the headers are in; the body is still on its way
+close_model
+sleep 4 # the held-back body lands while nothing waits for it
+[ -e "$CACHE" ] && fail "a fetch the picker gave up on kept its listing ($CACHE)"
+rm -f "$STATE/body_delay"
+
 tmux kill-session -t "$S155" 2>/dev/null
-echo "==== Phase 155: /model opens on its kept lists, refreshes them with Ctrl+R or once they age, keeps them through a failed refresh, and forgets one /login re-keys ===="
+echo "==== Phase 155: /model opens on its kept lists, refreshes them with Ctrl+R or once they age, keeps them through a failed refresh, forgets one /login re-keys, and keeps nothing from a fetch it gave up on ===="

@@ -3720,7 +3720,9 @@ while a picker is open, the permission-prompt rule, since the picker owns
 every key). **`/model` opens on the lists it kept** (`docs/model-cache.md`):
 each provider's listing is written to `{config_home}/model-cache/{id}.json`
 by the fetch worker as it lands (temp file + rename, one file per provider
-so the parallel workers never share one), and an open shows it at once —
+so the parallel workers never share one; a fetch cancelled before it lands
+keeps nothing, so a list read with a credential a `/login` save has since
+replaced can never land after that save), and an open shows it at once —
 nothing fetched under an hour old (`llm::model_cache::MODEL_CACHE_TTL_SECS`),
 shown **and** fetched again behind its rows once older, kept by another app
 version, or a self-hosted server's (`auth = "optional_key"`: the kind of
