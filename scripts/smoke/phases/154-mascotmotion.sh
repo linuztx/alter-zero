@@ -18,8 +18,11 @@ smoke_begin
 # session writes NOTHING; the first cell puts the banner back to rest for
 # good — sent mid-move, and again when the app quits mid-move — the two
 # things that open a fresh banner greet from it again: `/clear`, and a
-# mascot just chosen in `/mascot`; and the picker's preview greets as the
-# highlight lands on a mascot.
+# mascot just chosen in `/mascot`; the picker's preview greets as the
+# highlight lands on a mascot; and while the first message is typed the
+# mascot watches it, its eyes on the caret's third of the composer, looking
+# away a few seconds after the last keystroke — and at once when the draft
+# is cleared.
 #
 # The suite pins the animation off (lib.sh); these launches turn it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘`, its frill
@@ -29,6 +32,9 @@ MM_APP="env $CFG_ENV_NOHIST ALTER_ZERO_MASCOT_ANIMATION=1 ALTER_ZERO_STARTUP_DEL
 MM_REST_TOP=' ▙▄▙▄▟▄▟   Alter Zero'
 MM_REST_EYES='▝▜▄███▄▛▘'
 MM_FLARE=' ▙▙▙▄▟▟▟   Alter Zero'
+# The crest watching the composer: its eyes turned to the left, to the right.
+MM_WATCH_LEFT='▝▜▟███▟▛▘'
+MM_WATCH_RIGHT='▝▜▙███▙▛▘'
 MM_LOG="$SMOKE_TMP/mascot.stream"
 
 # mm_record SESSION — start recording every byte the app writes to the pane.
@@ -106,16 +112,17 @@ tmux kill-session -t "$S154" 2>/dev/null
 # --- the first cell stills it, mid-move ------------------------------------
 launch "$S154" 80 24 "$MM_APP"
 type_text "$S154" "hi"
-# The greeting's flare holds for most of half a second: send the message
-# while the frill is up. (If the poll misses it the message is sent at rest,
-# and every check below still has to hold.)
-wait_for 6 "$S154" -F "$MM_FLARE" || note "the flare was not caught on screen; submitting at rest"
+# The mascot watches the draft — its eyes turned to the caret, a pose off
+# rest: send the message while they are. (If the poll misses it the message
+# is sent at rest, and every check below still has to hold.)
+wait_for 6 "$S154" -F "$MM_WATCH_LEFT" || note "the watching eyes were not caught on screen; submitting at rest"
 keys "$S154" Enter
 mm_turn="$(wait_summaries 60 "$S154" 1 -S -80)"
 dump "after the first turn" "$mm_turn"
 expect_has "$mm_turn" -F "$MM_REST_TOP" "the banner over the conversation is not at its rest art"
 expect_has "$mm_turn" -F "$MM_REST_EYES" "the banner over the conversation has its eyes off rest"
 expect_lacks "$mm_turn" -F "$MM_FLARE" "a pose was left in the scrollback above the conversation"
+expect_lacks "$mm_turn" -F "$MM_WATCH_LEFT" "the eyes that watched the draft were left turned in the scrollback"
 expect_eq "$(printf '%s\n' "$mm_turn" | grep -c 'Alter Zero (v')" "1" "the first cell doubled the banner"
 # Scrollback does not move: with a conversation under it the banner is
 # never written again.
@@ -154,6 +161,50 @@ dump "after /clear's greeting" "$mm_fresh"
 expect_has "$mm_fresh" -F "$MM_REST_TOP" "the banner did not come back to its rest art after /clear's greeting"
 expect_eq "$(mm_banners "$S154")" "1" "/clear left more than one banner behind"
 expect_eq "$(count_bare_prompts "$mm_fresh")" "1" "/clear's greeting disturbed the composer"
+tmux kill-session -t "$S154" 2>/dev/null
+
+# --- watching the user type ------------------------------------------------
+# While the first message is typed the mascot reads along: its eyes go to the
+# caret's third of the composer — the left while the line is short, the right
+# once it reaches the composer's last third — and a few seconds after the
+# last keystroke (MASCOT_WATCH_LINGER, 4s) it looks away and goes back to its
+# own moves. A watch shows no rest eyes (a blink shows a lid), so the first
+# rest eyes after the typing stops are the look away.
+launch "$S154" 80 24 "$MM_APP"
+mm_record "$S154"
+wait_file 10 "$MM_LOG" -aF '▆' || fail "the launch's greeting never blinked"
+tmux pipe-pane -t "$S154"
+sleep 1
+type_text "$S154" "hello"
+if ! wait_for 3 "$S154" -F "$MM_WATCH_LEFT"; then
+	fail "the mascot did not turn its eyes to a caret in the composer's left third"
+fi
+type_text "$S154" " the quick brown fox jumps over the lazy dog and runs on"
+if ! wait_for 3 "$S154" -F "$MM_WATCH_RIGHT"; then
+	fail "the mascot did not follow the caret into the composer's right third"
+fi
+mm_typed_at="$(date +%s.%N)"
+if ! wait_for 9 "$S154" -F "$MM_REST_EYES"; then
+	fail "the mascot never looked away from a draft left alone"
+fi
+mm_looked_away="$(python3 -c "print(round($(date +%s.%N) - $mm_typed_at, 1))")"
+note "the mascot looked away ${mm_looked_away}s after the last keystroke"
+if python3 -c "import sys; sys.exit(0 if 3.0 <= $mm_looked_away <= 7.5 else 1)"; then :; else
+	fail "the mascot looked away ${mm_looked_away}s after the last keystroke (expected about 4s)"
+fi
+# A cleared draft leaves nothing to read: the mascot looks away at once.
+type_text "$S154" "x"
+if ! wait_for 3 "$S154" -F "$MM_WATCH_RIGHT"; then
+	fail "the mascot did not watch the draft again after a keystroke"
+fi
+keys "$S154" C-u
+if ! wait_for 1.5 "$S154" -F "$MM_REST_EYES"; then
+	fail "the mascot kept watching an emptied composer"
+fi
+mm_watched="$(pane "$S154")"
+dump "after the watch" "$mm_watched"
+expect_eq "$(mm_banners "$S154")" "1" "watching the draft left more than one banner behind"
+expect_eq "$(count_bare_prompts "$mm_watched")" "1" "watching the draft disturbed the composer"
 tmux kill-session -t "$S154" 2>/dev/null
 
 # --- quitting mid-move leaves the banner at rest ---------------------------

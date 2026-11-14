@@ -232,30 +232,115 @@ fn is_moved_half_a_cell(mascot: Mascot, frame: &[&str]) -> bool {
     })
 }
 
+/// `row` padded with blanks to `width` columns, as a row of cells.
+fn padded(row: &str, width: usize) -> Vec<char> {
+    let mut cells: Vec<char> = row.chars().collect();
+    cells.resize(width.max(cells.len()), ' ');
+    cells
+}
+
+/// Whether `frame` raises a limb from `mascot`'s side: two neighbouring
+/// rows redrawn, and nothing in them but the art's two edge columns — an
+/// arm, a petal, a claw lifted from the body's side to its shoulder.
+fn raises_a_limb(mascot: Mascot, frame: &[&str]) -> bool {
+    let (rest, width) = (mascot.art(), mascot.art_width());
+    let changed: Vec<usize> = (0..rest.len())
+        .filter(|&row| frame[row] != rest[row])
+        .collect();
+    changed.len() == 2
+        && changed[1] == changed[0] + 1
+        && changed.iter().all(|&row| {
+            let (now, was) = (padded(frame[row], width), padded(rest[row], width));
+            (1..width - 1).all(|col| now[col] == was[col])
+        })
+}
+
+/// Whether `frame` is `mascot` **turned** about its own middle, the way a
+/// stone turns to show its edge: every half-row of ink as wide as the rest
+/// art's or narrower, about the same middle, and at least one narrower.
+fn turns(mascot: Mascot, frame: &[&str]) -> bool {
+    let width = mascot.art_width();
+    let (Some(now), Some(was)) = (quarters(frame, width), quarters(mascot.art(), width)) else {
+        return false;
+    };
+    let span = |half_row: &Vec<bool>| {
+        let inked: Vec<usize> = (0..half_row.len()).filter(|&x| half_row[x]).collect();
+        inked.first().copied().zip(inked.last().copied())
+    };
+    let mut narrower = false;
+    for (now, was) in now.iter().zip(&was) {
+        match (span(now), span(was)) {
+            (None, was) => narrower |= was.is_some(),
+            (Some((a, b)), Some((c, d))) if a >= c && b <= d && a + b == c + d => {
+                narrower |= a > c;
+            }
+            _ => return false,
+        }
+    }
+    narrower
+}
+
 #[test]
 fn a_frame_redraws_one_part_of_the_mascot_or_moves_all_of_it_half_a_cell() {
     // Eyes, a crest, a leaf, an ear, the legs, a spark: each lives on one
-    // row, and a frame that moves it leaves the other two rows as drawn.
-    // The one other thing a frame may do is move the whole mascot half a
-    // cell — a dip, a lean — which redraws every row and changes nothing:
-    // moved back, it is the rest art again, with one part moved at most.
+    // row, and a frame that moves it leaves the other two rows as drawn —
+    // but a limb raised from the body's side reaches into the row above,
+    // and redraws the two at the art's edges and nowhere else. The other
+    // things a frame may do: move the whole mascot half a cell — a dip, a
+    // lean — which redraws every row and changes nothing (moved back, it is
+    // the rest art again, with one part moved at most), or turn it about
+    // its middle, narrower, the way the gem shows its edge.
     for mascot in Mascot::ALL {
         let rest = mascot.art();
         let mut whole = 0;
         for frame in mascot.motion_frames() {
             let redrawn = frame.iter().zip(rest).filter(|(a, b)| a != b).count();
-            if redrawn == 1 {
+            if redrawn == 1 || raises_a_limb(mascot, frame) || turns(mascot, frame) {
                 continue;
             }
             assert!(
                 is_moved_half_a_cell(mascot, frame),
-                "{}: {frame:?} is neither one row redrawn nor the mascot moved half a cell",
+                "{}: {frame:?} is neither a part moved, the mascot moved half a cell nor it turned",
                 mascot.name()
             );
             whole += 1;
         }
         assert!(whole >= 2, "{}: never moves as a whole", mascot.name());
     }
+}
+
+#[test]
+fn the_mascots_with_limbs_at_their_sides_raise_them() {
+    // The crest's arms, the bloom's petals, the skitterer's claws: each is
+    // a quarter cell at the body's side, and each comes up to the shoulder.
+    for mascot in [Mascot::Crest, Mascot::Bloom, Mascot::Skiter] {
+        assert!(
+            mascot
+                .motion_frames()
+                .iter()
+                .any(|frame| raises_a_limb(mascot, frame)),
+            "{} never raises a limb",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn the_gem_spins_edge_on_and_back() {
+    // Narrower, thin, edge-on — a single column — and back the way it went:
+    // the stone turning, not a frame of something else.
+    let gem = Mascot::Gem;
+    let edge_on = |art: &[&str]| art.iter().all(|row| row.trim().chars().count() <= 1);
+    let spin = clips(gem, SEED, MASCOT_GREETING_MS, 900_000)
+        .into_iter()
+        .find(|clip| clip.2.iter().any(|pose| edge_on(pose.art)))
+        .expect("the gem spins");
+    let arts: Vec<&[&str]> = spin.2.iter().map(|pose| pose.art).collect();
+    let mut back = arts.clone();
+    back.reverse();
+    assert_eq!(arts, back, "the way back retraces the way there");
+    assert!(arts.iter().all(|art| turns(gem, art)), "{arts:?}");
+    assert!(arts.len() >= 5, "{arts:?}");
 }
 
 #[test]
@@ -450,7 +535,19 @@ fn the_greeting_shows_each_mascots_own_move_then_a_blink() {
 fn a_sweep_runs_once_from_edge_to_edge() {
     for mascot in Mascot::ALL {
         let sweep = &clips(mascot, SEED, 0, MASCOT_GREETING_MS)[0];
-        let progress: Vec<f32> = sweep.2.iter().filter_map(|pose| pose.shine).collect();
+        assert!(
+            sweep.2.iter().all(|pose| pose
+                .shine
+                .is_some_and(|shine| shine.band == ShineBand::Sweep)),
+            "{}: the greeting's light is the broad sweep",
+            mascot.name()
+        );
+        let progress: Vec<f32> = sweep
+            .2
+            .iter()
+            .filter_map(|pose| pose.shine)
+            .map(|shine| shine.progress)
+            .collect();
         assert!(
             progress.len() >= 15,
             "{}: a {}-frame sweep",
@@ -478,6 +575,153 @@ fn a_sweep_runs_once_from_edge_to_edge() {
         assert!(
             (500..=1_000).contains(&length),
             "{}: {length}ms",
+            mascot.name()
+        );
+    }
+}
+
+/// The clips over ten minutes of `mascot`'s timeline that are light and
+/// nothing else: the art at rest throughout, something lit on it.
+fn light_clips(mascot: Mascot) -> Vec<(u64, u64, Vec<MascotPose>)> {
+    clips(mascot, SEED, MASCOT_GREETING_MS, 600_000)
+        .into_iter()
+        .filter(|clip| {
+            clip.2.iter().all(|pose| pose.art == mascot.art())
+                && clip
+                    .2
+                    .iter()
+                    .any(|pose| pose.shine.is_some() || pose.glow > 0)
+        })
+        .collect()
+}
+
+#[test]
+fn every_mascot_glows_and_fades() {
+    // A breath of light: the whole mascot brightens by degrees and dims the
+    // same way, its art unmoved — the light swelling through it rather than
+    // crossing it.
+    for mascot in Mascot::ALL {
+        let glows: Vec<Vec<u8>> = light_clips(mascot)
+            .iter()
+            .filter(|clip| {
+                clip.2
+                    .iter()
+                    .all(|pose| pose.shine.is_none() && pose.glow > 0)
+            })
+            .map(|clip| clip.2.iter().map(|pose| pose.glow).collect())
+            .collect();
+        assert!(
+            glows.len() >= 3,
+            "{}: {} glows in ten minutes",
+            mascot.name(),
+            glows.len()
+        );
+        for levels in glows {
+            let peak = levels.iter().copied().max().unwrap();
+            let top = levels.iter().position(|&level| level == peak).unwrap();
+            assert!(levels.len() >= 5, "{}: {levels:?}", mascot.name());
+            assert!(
+                levels[..=top].windows(2).all(|pair| pair[0] < pair[1]),
+                "{}: {levels:?} swells by degrees",
+                mascot.name()
+            );
+            assert!(
+                levels[top..].windows(2).all(|pair| pair[0] > pair[1]),
+                "{}: {levels:?} fades by degrees",
+                mascot.name()
+            );
+            assert!(
+                (40..=70).contains(&peak),
+                "{}: a glow, not a flash: {levels:?}",
+                mascot.name()
+            );
+            assert!(
+                levels[0] <= 20 && levels[levels.len() - 1] <= 20,
+                "{}: {levels:?} starts and ends faint",
+                mascot.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_glint_crosses_from_either_side_quicker_than_the_sweep() {
+    // A glint is a narrow catch of the light, gone in half a second, and it
+    // comes from either side — not only the way the greeting's sweep runs.
+    for mascot in Mascot::ALL {
+        let mut sides = BTreeSet::new();
+        for clip in light_clips(mascot) {
+            let shines: Vec<MascotShine> = clip.2.iter().filter_map(|pose| pose.shine).collect();
+            let Some(first) = shines.first() else {
+                continue;
+            };
+            if first.band == ShineBand::Sweep {
+                continue;
+            }
+            assert!(
+                shines.iter().all(|shine| shine.band == first.band),
+                "{}: a glint changed sides",
+                mascot.name()
+            );
+            let progress: Vec<f32> = shines.iter().map(|shine| shine.progress).collect();
+            assert!(
+                progress.windows(2).all(|pair| pair[0] < pair[1]),
+                "{}: {progress:?}",
+                mascot.name()
+            );
+            assert!(
+                progress[0] < 0.1 && progress[progress.len() - 1] > 0.9,
+                "{}: {progress:?} edge to edge",
+                mascot.name()
+            );
+            let length = clip.1 - clip.0;
+            assert!(
+                (300..=650).contains(&length),
+                "{}: a {length}ms glint",
+                mascot.name()
+            );
+            sides.insert(format!("{:?}", first.band));
+        }
+        assert_eq!(
+            sides,
+            BTreeSet::from(["GlintFromLeft".to_string(), "GlintFromRight".to_string()]),
+            "{}",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn the_gem_catches_the_light_in_two_flashes() {
+    // The cut gem's own way with light: a flash to full strength, dark, and
+    // a flash again — over the stone at rest.
+    let flashes: Vec<Vec<u8>> = light_clips(Mascot::Gem)
+        .iter()
+        .map(|clip| clip.2.iter().map(|pose| pose.glow).collect::<Vec<u8>>())
+        .filter(|levels| levels.contains(&100))
+        .collect();
+    assert!(
+        flashes.len() >= 3,
+        "{} flashes in ten minutes",
+        flashes.len()
+    );
+    for levels in flashes {
+        let full = levels.iter().filter(|&&level| level == 100).count();
+        assert_eq!(full, 2, "{levels:?}");
+        let first = levels.iter().position(|&level| level == 100).unwrap();
+        let second = levels.iter().rposition(|&level| level == 100).unwrap();
+        assert!(
+            levels[first..second].contains(&0),
+            "{levels:?} goes dark between its flashes"
+        );
+    }
+    // A flash is the gem's alone: the others glow, never at full strength.
+    for mascot in EYED {
+        assert!(
+            light_clips(mascot)
+                .iter()
+                .all(|clip| clip.2.iter().all(|pose| pose.glow < 100)),
+            "{}",
             mascot.name()
         );
     }
@@ -546,9 +790,19 @@ fn a_clip_never_runs_into_the_next() {
 // ===== the repertoire =====
 
 /// What a clip showed, with its timing left out: what tells one move from
-/// another on a timeline that names none.
-fn shown(clip: &(u64, u64, Vec<MascotPose>)) -> Vec<Vec<&'static str>> {
-    clip.2.iter().map(|pose| pose.art.to_vec()).collect()
+/// another on a timeline that names none — the art, and the light on it (a
+/// glow from a glint, a glint from the left from one from the right).
+fn shown(clip: &(u64, u64, Vec<MascotPose>)) -> Vec<(Vec<&'static str>, Option<ShineBand>, u8)> {
+    clip.2
+        .iter()
+        .map(|pose| {
+            (
+                pose.art.to_vec(),
+                pose.shine.map(|shine| shine.band),
+                pose.glow,
+            )
+        })
+        .collect()
 }
 
 /// Whether a clip is a blink (or two): nothing but the eyes closing and
@@ -857,6 +1111,164 @@ fn a_wink_shuts_one_eye_and_leaves_the_other_open() {
 }
 
 #[test]
+fn a_lidded_eye_winks_through_its_lid() {
+    // The three with a lid close one eye the way they blink: through the
+    // lid, held shut, and back.
+    for mascot in [Mascot::Crest, Mascot::Bloom, Mascot::Twin] {
+        let seen = looks(mascot);
+        for look in [('▆', '▄'), ('▄', '▆')] {
+            assert!(seen.contains(&look), "{}: never {look:?}", mascot.name());
+        }
+    }
+}
+
+/// Whether `clip` **closes on a blink**: having done something else, it
+/// stands still a moment and blinks — the eyes' punctuation at the end of a
+/// cheer, a pulled face, a doze.
+fn closes_on_a_blink(mascot: Mascot, clip: &(u64, u64, Vec<MascotPose>)) -> bool {
+    let rest = MascotPose::rest(mascot);
+    let (open, _) = eyes(mascot, mascot.art());
+    let blink: &[(char, char)] = if open == '▄' {
+        &[('▆', '▆'), ('█', '█'), ('▆', '▆')]
+    } else {
+        &[('█', '█')]
+    };
+    let poses = &clip.2;
+    let Some(before) = poses.len().checked_sub(blink.len() + 1) else {
+        return false;
+    };
+    !is_blink(mascot, clip)
+        && poses[before] == rest
+        && poses[before + 1..]
+            .iter()
+            .zip(blink)
+            .all(|(pose, look)| eyes(mascot, pose.art) == *look)
+        && poses[..before].iter().any(|pose| *pose != rest)
+}
+
+#[test]
+fn some_moves_close_on_a_blink() {
+    // A blink is punctuation as well as a move: a cheer, a pulled face and
+    // a doze each end on one, the way something alive collects itself.
+    for mascot in EYED {
+        let closing: BTreeSet<_> = clips(mascot, SEED, MASCOT_GREETING_MS, 900_000)
+            .iter()
+            .filter(|clip| closes_on_a_blink(mascot, clip))
+            .map(shown)
+            .collect();
+        assert!(
+            closing.len() >= 2,
+            "{}: {} moves close on a blink",
+            mascot.name(),
+            closing.len()
+        );
+    }
+}
+
+/// The side of the art `art` changes, when it changes nothing but one
+/// side's last two columns: an arm raised on that side.
+fn arm_side(mascot: Mascot, art: &[&str]) -> Option<char> {
+    let (rest, width) = (mascot.art(), mascot.art_width());
+    let changed: BTreeSet<usize> = (0..rest.len())
+        .flat_map(|row| {
+            let (now, was) = (padded(art[row], width), padded(rest[row], width));
+            (0..width).filter(move |&col| now[col] != was[col])
+        })
+        .collect();
+    if changed.is_empty() {
+        None
+    } else if changed.iter().all(|&col| col < 2) {
+        Some('L')
+    } else if changed.iter().all(|&col| col >= width - 2) {
+        Some('R')
+    } else {
+        None
+    }
+}
+
+#[test]
+fn a_wave_closes_on_a_wink_of_the_eye_beside_the_arm() {
+    // The crest and the seedling wave an arm — and wink the eye on that
+    // side when they are done: a hello.
+    for mascot in [Mascot::Crest, Mascot::Sprout] {
+        let (open, _) = eyes(mascot, mascot.art());
+        let mut sides = BTreeSet::new();
+        for clip in clips(mascot, SEED, MASCOT_GREETING_MS, 900_000) {
+            let arms: BTreeSet<char> = clip
+                .2
+                .iter()
+                .filter_map(|pose| arm_side(mascot, pose.art))
+                .collect();
+            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, p.art)).collect();
+            let wink = match arms.iter().next() {
+                Some('L') if arms.len() == 1 => ('█', open),
+                Some('R') if arms.len() == 1 => (open, '█'),
+                _ => continue,
+            };
+            if looks.contains(&wink) {
+                sides.extend(arms);
+                let other = (wink.1, wink.0);
+                assert!(
+                    !looks.contains(&other),
+                    "{}: winked the other eye",
+                    mascot.name()
+                );
+            }
+        }
+        assert_eq!(
+            sides,
+            BTreeSet::from(['L', 'R']),
+            "{}: waves and winks on",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn feet_patter_on_the_spot() {
+    // The four that stand on feet step from one pair to the other and back,
+    // three times over, the rest of them still.
+    for mascot in [Mascot::Crest, Mascot::Bloom, Mascot::Sprout, Mascot::Twin] {
+        let rest = mascot.art();
+        let pattered = clips(mascot, SEED, MASCOT_GREETING_MS, 900_000)
+            .iter()
+            .any(|clip| {
+                let arts: Vec<&[&str]> = clip.2.iter().map(|pose| pose.art).collect();
+                let steps: BTreeSet<&[&str]> = arts.iter().copied().collect();
+                arts.len() >= 6
+                    && steps.len() == 2
+                    && arts.windows(2).all(|pair| pair[0] != pair[1])
+                    && arts
+                        .iter()
+                        .all(|art| art[0] == rest[0] && art[1] == rest[1] && art[2] != rest[2])
+            });
+        assert!(pattered, "{} never patters", mascot.name());
+    }
+}
+
+#[test]
+fn eyes_wander_off_and_blink_where_they_went() {
+    // A daydream: the eyes go to one side and stay there, blink while they
+    // are away, and are still there after — something seen, and looked at.
+    for mascot in EYED {
+        let (left, right) = narrowed(mascot);
+        for side in [left, right] {
+            let wandered = clips(mascot, SEED, MASCOT_GREETING_MS, 900_000)
+                .iter()
+                .any(|clip| {
+                    let looks: Vec<(char, char)> =
+                        clip.2.iter().map(|pose| eyes(mascot, pose.art)).collect();
+                    looks.first() == Some(&(side, side))
+                        && looks.last() == Some(&(side, side))
+                        && looks.contains(&('█', '█'))
+                        && clip.1 - clip.0 >= 900
+                });
+            assert!(wandered, "{}: never wanders to {side:?}", mascot.name());
+        }
+    }
+}
+
+#[test]
 fn only_eyes_with_a_lid_widen_and_squint() {
     // The eighth-block ramp that draws a lid also draws an eye opened wide
     // (`▂`) — for the three whose eyes sit in a cell's upper half. Wide,
@@ -889,7 +1301,7 @@ fn every_look_is_one_the_eyes_are_known_to_give() {
             (open, '█'),
         ];
         if open == '▄' {
-            known.extend([('▆', '▆'), ('▂', '▂'), ('▂', '▆')]);
+            known.extend([('▆', '▆'), ('▂', '▂'), ('▂', '▆'), ('▆', open), (open, '▆')]);
         }
         for look in looks(mascot) {
             assert!(known.contains(&look), "{}: {look:?}", mascot.name());
@@ -1206,4 +1618,223 @@ fn a_preview_holds_still_when_the_motion_is_off() {
         MascotPose::rest(Mascot::Bloom)
     );
     assert_eq!(app.mascot_frame_in(true), None);
+}
+
+// ===== watching the user type =====
+
+/// An app animating `mascot`, its first frame at `at` — an empty composer.
+fn watching_app(mascot: Mascot, at: u64) -> App {
+    let mut app = animated(at);
+    app.set_mascot(mascot);
+    app
+}
+
+/// How long the mascot keeps its eyes on the composer after a keystroke.
+fn linger() -> u64 {
+    u64::try_from(MASCOT_WATCH_LINGER.as_millis()).unwrap()
+}
+
+#[test]
+fn a_caret_is_read_by_the_third_of_the_composer_it_sits_in() {
+    assert_eq!(Gaze::of_caret(0, 90), Gaze::Left);
+    assert_eq!(Gaze::of_caret(29, 90), Gaze::Left);
+    assert_eq!(Gaze::of_caret(30, 90), Gaze::Ahead);
+    assert_eq!(Gaze::of_caret(59, 90), Gaze::Ahead);
+    assert_eq!(Gaze::of_caret(60, 90), Gaze::Right);
+    // The caret's own column past a row the text fills.
+    assert_eq!(Gaze::of_caret(90, 90), Gaze::Right);
+    // A field with no width is no reason to panic.
+    let _ = Gaze::of_caret(3, 0);
+}
+
+#[test]
+fn the_mascot_watches_the_caret_while_the_user_types() {
+    // While a message is being typed the mascot reads along: its eyes go to
+    // the left while the caret is in the composer's left third, straight
+    // ahead in the middle, to the right in the right third.
+    for mascot in EYED {
+        let mut app = watching_app(mascot, 10_000);
+        type_str(&mut app, "hello");
+        app.set_mascot_clock(ms(10_100));
+        let (left, right) = narrowed(mascot);
+        let look = |gaze: Gaze| eyes(mascot, app.banner_pose_watching(gaze).art);
+        assert_eq!(look(Gaze::Left), (left, left), "{}", mascot.name());
+        assert_eq!(look(Gaze::Right), (right, right), "{}", mascot.name());
+        assert_eq!(
+            app.banner_pose_watching(Gaze::Ahead),
+            MascotPose::rest(mascot),
+            "{}",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn the_gem_turns_its_facet_toward_the_caret() {
+    // No eyes to follow it with: the stone turns, its facet sliding a cell
+    // toward the caret's side.
+    let mut app = watching_app(Mascot::Gem, 10_000);
+    type_str(&mut app, "hello");
+    app.set_mascot_clock(ms(10_100));
+    assert_eq!(app.banner_pose_watching(Gaze::Left).art[1], "▝▀█▄███▀▘");
+    assert_eq!(app.banner_pose_watching(Gaze::Right).art[1], "▝▀███▄█▀▘");
+}
+
+#[test]
+fn a_watching_mascot_still_blinks_now_and_then() {
+    // Its eyes on the text, it blinks every few seconds, the way anything
+    // reading does — and between blinks they stay on the caret.
+    for mascot in EYED {
+        let mut app = watching_app(mascot, 5_000);
+        let (_, right) = narrowed(mascot);
+        let mut blinks = 0;
+        let mut was_shut = false;
+        for (i, at) in (5_100..15_100u64).step_by(50).enumerate() {
+            if i % 6 == 0 {
+                type_str(&mut app, "x");
+            }
+            app.set_mascot_clock(ms(at));
+            let look = eyes(mascot, app.banner_pose_watching(Gaze::Right).art);
+            let shut = look == ('█', '█');
+            blinks += usize::from(shut && !was_shut);
+            was_shut = shut;
+            assert!(
+                [(right, right), ('█', '█'), ('▆', '▆')].contains(&look),
+                "{}: {look:?} at {at}",
+                mascot.name()
+            );
+        }
+        assert!(
+            (2..=5).contains(&blinks),
+            "{}: {blinks} blinks in ten seconds of typing",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn the_mascot_goes_back_to_its_own_moves_when_the_typing_stops() {
+    // A few seconds after the last keystroke it looks away from the text
+    // and is itself again — but a move its timeline started meanwhile is
+    // not joined half way through: it waits for the next.
+    for mascot in Mascot::ALL {
+        let mut app = watching_app(mascot, 20_000);
+        type_str(&mut app, "hi");
+        app.set_mascot_clock(ms(20_000));
+        let end = 20_000 + linger();
+        app.set_mascot_clock(ms(end - 1));
+        if mascot != Mascot::Gem {
+            let (_, right) = narrowed(mascot);
+            let look = eyes(mascot, app.banner_pose_watching(Gaze::Right).art);
+            assert!(
+                [(right, right), ('█', '█'), ('▆', '▆')].contains(&look),
+                "{}: still watching just before the end, {look:?}",
+                mascot.name()
+            );
+        }
+        let under_way: Vec<(u64, u64)> = clips(mascot, SEED, 0, end + 12_000)
+            .iter()
+            .filter(|clip| clip.0 < end && clip.1 > end)
+            .map(|clip| (clip.0, clip.1))
+            .collect();
+        for at in (end..end + 12_000).step_by(5) {
+            app.set_mascot_clock(ms(at));
+            let pose = app.banner_pose_watching(Gaze::Right);
+            if under_way.iter().any(|&(from, to)| at >= from && at < to) {
+                assert_eq!(pose, MascotPose::rest(mascot), "{} at {at}", mascot.name());
+            } else {
+                assert_eq!(pose, mascot.pose(SEED, ms(at)), "{} at {at}", mascot.name());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_frame_is_due_at_every_change_while_it_watches() {
+    // The loop sleeps for as long as the pose holds: while the mascot
+    // watches, to its next blink or the end of the watch — and the frame it
+    // wakes for always shows something new.
+    for mascot in Mascot::ALL {
+        let mut app = watching_app(mascot, 30_000);
+        type_str(&mut app, "hi");
+        app.set_mascot_clock(ms(30_000));
+        let end = 30_000 + linger() + 6_000;
+        let mut at = 30_000;
+        while at < end {
+            app.set_mascot_clock(ms(at));
+            let pose = app.banner_pose_watching(Gaze::Left);
+            let due = app.mascot_frame_in(true).expect("a frame is due");
+            let hold = u64::try_from(due.as_millis()).unwrap();
+            assert!(hold > 0, "{} at {at}", mascot.name());
+            for t in (at..at + hold).step_by(7) {
+                app.set_mascot_clock(ms(t));
+                assert_eq!(
+                    app.banner_pose_watching(Gaze::Left),
+                    pose,
+                    "{} at {t}: changed inside a hold from {at}",
+                    mascot.name()
+                );
+            }
+            app.set_mascot_clock(ms(at + hold));
+            if pose.shine.is_none() {
+                assert_ne!(
+                    app.banner_pose_watching(Gaze::Left),
+                    pose,
+                    "{} at {}: woke for nothing",
+                    mascot.name(),
+                    at + hold
+                );
+            }
+            at += hold;
+        }
+    }
+}
+
+#[test]
+fn an_emptied_composer_ends_the_watch_at_once() {
+    // Ctrl+U, a message sent, `/clear` typed and run: nothing is left to
+    // read, so the mascot looks away now rather than stare at an empty box.
+    let mascot = Mascot::Crest;
+    let mut app = watching_app(mascot, 40_000);
+    type_str(&mut app, "hi");
+    app.set_mascot_clock(ms(40_000));
+    app.input.clear();
+    app.set_mascot_clock(ms(40_500));
+    let (left, _) = narrowed(mascot);
+    assert_ne!(
+        eyes(mascot, app.banner_pose_watching(Gaze::Left).art),
+        (left, left)
+    );
+}
+
+#[test]
+fn a_launch_watches_nothing() {
+    // The first frame sees an empty composer and no keystroke: the mascot
+    // goes about its own business from the start.
+    for mascot in Mascot::ALL {
+        let mut app = watching_app(mascot, 0);
+        for at in (0..20_000).step_by(37) {
+            app.set_mascot_clock(ms(at));
+            assert_eq!(
+                app.banner_pose_watching(Gaze::Left),
+                mascot.pose(SEED, ms(at)),
+                "{} at {at}",
+                mascot.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_clock_that_starts_over_forgets_what_it_watched() {
+    // `/clear` and a `/mascot` choice start the clock over so the banner
+    // greets; a watch from before belongs to the old clock.
+    let mut app = watching_app(Mascot::Crest, 50_000);
+    type_str(&mut app, "hi");
+    app.set_mascot_clock(ms(50_000));
+    app.set_mascot_clock(ms(100));
+    assert_eq!(
+        app.banner_pose_watching(Gaze::Left),
+        Mascot::Crest.pose(SEED, ms(100))
+    );
 }

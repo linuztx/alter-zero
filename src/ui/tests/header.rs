@@ -618,7 +618,7 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
 
 // --- the live banner: the mascot in motion (docs/mascot-animation.md) ---
 
-use crate::app::{MASCOT_GREETING_MS, MascotPose};
+use crate::app::{MASCOT_GREETING_MS, MascotPose, MascotShine, ShineBand};
 use crate::ui::header::header_lines_posed;
 
 /// The seed the animated fixtures run on.
@@ -657,6 +657,14 @@ fn cells(line: &Line) -> Vec<(String, Option<Color>)> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+/// The broad sweep `progress` of the way across.
+fn sweep(progress: f32) -> MascotShine {
+    MascotShine {
+        band: ShineBand::Sweep,
+        progress,
+    }
 }
 
 /// How far `color` sits from `other`, summed over the three channels.
@@ -730,7 +738,10 @@ fn no_pose_moves_the_metadata_or_the_banners_shape() {
         let rest = header_lines(&app, 90);
         let column = mascot.art_width();
         for art in mascot.motion_frames() {
-            let pose = MascotPose { art, shine: None };
+            let pose = MascotPose {
+                art,
+                ..MascotPose::rest(mascot)
+            };
             let lines = header_lines_posed(&app, mascot, &pose, 90);
             assert_eq!(lines.len(), rest.len(), "{}: {art:?}", mascot.name());
             for (i, (line, was)) in lines.iter().zip(&rest).enumerate() {
@@ -785,7 +796,7 @@ fn a_banner_with_nothing_moving_is_the_committed_banner() {
 fn a_sweep_lights_the_art_under_its_band_and_nothing_else() {
     use crate::ui::theme::{header_gradient_at, shimmer_highlight};
     let mascot = Mascot::Crest;
-    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|p| p >= 0.5));
+    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|s| s.progress >= 0.5));
     let app = animated(mascot, middle);
     let frame = banner_frame_lines(&app, 90);
     let rest = banner_block_lines(&app, 90);
@@ -820,7 +831,7 @@ fn a_sweep_leans_like_a_glint() {
     // slanted streak, the way light catches a surface, rather than a bar.
     use crate::ui::theme::header_gradient_at;
     let mascot = Mascot::Bloom;
-    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|p| p >= 0.5));
+    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|s| s.progress >= 0.5));
     let frame = banner_frame_lines(&animated(mascot, middle), 90);
     let width = mascot.art_width();
     let brightest = |row: usize| {
@@ -843,8 +854,8 @@ fn a_sweep_enters_and_leaves_the_art_without_a_jump() {
         app.set_mascot(mascot);
         let rest = header_lines(&app, 90);
         let entering = MascotPose {
-            art: mascot.art(),
-            shine: Some(0.0),
+            shine: Some(sweep(0.0)),
+            ..MascotPose::rest(mascot)
         };
         assert_eq!(
             header_lines_posed(&app, mascot, &entering, 90),
@@ -853,8 +864,8 @@ fn a_sweep_enters_and_leaves_the_art_without_a_jump() {
             mascot.name()
         );
         let leaving = MascotPose {
-            art: mascot.art(),
-            shine: Some(0.999),
+            shine: Some(sweep(0.999)),
+            ..MascotPose::rest(mascot)
         };
         let lines = header_lines_posed(&app, mascot, &leaving, 90);
         for (line, was) in lines.iter().zip(&rest) {
@@ -866,6 +877,106 @@ fn a_sweep_enters_and_leaves_the_art_without_a_jump() {
             }
         }
     }
+}
+
+#[test]
+fn a_glow_lifts_every_cell_of_the_art_alike() {
+    // A glow is the light swelling through the whole mascot, not crossing
+    // it: every cell of the art is lifted the same share of the way toward
+    // the highlight, the glyphs and the metadata beside them untouched.
+    use crate::ui::theme::{MASCOT_SHINE_MAX_BLEND, header_gradient_at, shimmer_highlight};
+    use crate::ui::wrap::lerp_color;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        let glowing = MascotPose {
+            glow: 50,
+            ..MascotPose::rest(mascot)
+        };
+        let lines = header_lines_posed(&app, mascot, &glowing, 90);
+        let text = |lines: &[Line]| lines.iter().map(plain).collect::<Vec<_>>();
+        assert_eq!(text(&lines), text(&rest), "{}: light only", mascot.name());
+        let width = mascot.art_width();
+        for (line, was) in lines.iter().zip(&rest) {
+            let (now, was) = (cells(line), cells(was));
+            for (col, (glyph, color)) in now.iter().enumerate().take(width) {
+                if glyph == " " {
+                    continue;
+                }
+                let want = lerp_color(
+                    header_gradient_at(col, width),
+                    shimmer_highlight(),
+                    0.5 * MASCOT_SHINE_MAX_BLEND,
+                );
+                assert_eq!(*color, Some(want), "{}: column {col}", mascot.name());
+            }
+            assert_eq!(&now[width.min(now.len())..], &was[width.min(was.len())..]);
+        }
+    }
+}
+
+#[test]
+fn a_glint_lights_a_narrow_band_from_its_own_side() {
+    // A glint is the sweep's narrow, quick sibling: early on, one entering
+    // from the right lights the art's right-hand cells and leaves its left
+    // ones as they were — and the other way about from the left — and at
+    // its brightest it lights fewer cells of a row than the sweep does.
+    use crate::ui::theme::header_gradient_at;
+    let mascot = Mascot::Bloom;
+    let mut app = with_session();
+    app.set_mascot(mascot);
+    let width = mascot.art_width();
+    let lit = |band: ShineBand, progress: f32| -> Vec<u32> {
+        let pose = MascotPose {
+            shine: Some(MascotShine { band, progress }),
+            ..MascotPose::rest(mascot)
+        };
+        let lines = header_lines_posed(&app, mascot, &pose, 90);
+        let row = cells(&lines[1]);
+        (0..width)
+            .map(|col| distance(row[col].1, header_gradient_at(col, width)))
+            .collect()
+    };
+    let from_right = lit(ShineBand::GlintFromRight, 0.3);
+    assert!(
+        from_right[..3].iter().all(|&lift| lift == 0),
+        "{from_right:?}"
+    );
+    assert!(
+        from_right[width - 3..].iter().any(|&lift| lift > 0),
+        "{from_right:?}"
+    );
+    let from_left = lit(ShineBand::GlintFromLeft, 0.3);
+    assert!(
+        from_left[width - 3..].iter().all(|&lift| lift == 0),
+        "{from_left:?}"
+    );
+    assert!(from_left[..3].iter().any(|&lift| lift > 0), "{from_left:?}");
+    // Mid-crossing, the glint's band is the narrower of the two.
+    let count = |lifts: &[u32]| lifts.iter().filter(|&&lift| lift > 0).count();
+    let glint = count(&lit(ShineBand::GlintFromLeft, 0.5));
+    let broad = count(&lit(ShineBand::Sweep, 0.5));
+    assert!(
+        glint > 0 && glint < broad,
+        "glint {glint} cells, sweep {broad}"
+    );
+}
+
+#[test]
+fn the_live_banner_follows_the_caret_across_the_composer() {
+    // Typing the first message, the mascot reads along: a caret in the
+    // composer's right third has its eyes to the right, one at the start of
+    // the line to the left.
+    let mut app = animated(Mascot::Crest, 20_000);
+    app.input.insert_str(&"word ".repeat(14));
+    app.set_mascot_clock(Duration::from_millis(20_050));
+    let row = plain(&banner_frame_lines(&app, 90)[1]);
+    assert!(row.starts_with("▝▜▙███▙▛▘"), "{row:?}");
+    app.input.move_home();
+    app.set_mascot_clock(Duration::from_millis(20_100));
+    let row = plain(&banner_frame_lines(&app, 90)[1]);
+    assert!(row.starts_with("▝▜▟███▟▛▘"), "{row:?}");
 }
 
 #[test]

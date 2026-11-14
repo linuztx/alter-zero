@@ -3092,6 +3092,14 @@ pub(super) const MASCOT_SHINE_HALF_WIDTH: f32 = 2.5;
 /// streak, the way light catches a surface.
 pub(super) const MASCOT_SHINE_LEAN: f32 = 0.5;
 
+/// A glint's half-width in columns: the band lights two or three cells of
+/// a row, a narrow catch of the light rather than the sweep's broad wash.
+pub(super) const MASCOT_GLINT_HALF_WIDTH: f32 = 1.5;
+
+/// A glint's lean — a column a row, steeper than the sweep's, so the quick
+/// streak reads as light glancing off the mascot.
+pub(super) const MASCOT_GLINT_LEAN: f32 = 1.0;
+
 /// The crest's blend toward [`mascot_shine_color`] — a little under the
 /// verb's ([`SHIMMER_MAX_BLEND`]), since a solid block of near-white reads
 /// far louder than a letter of it.

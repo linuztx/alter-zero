@@ -18,17 +18,23 @@ release heading when a version is cut.
   screen — at launch, and again after `/clear` — the mascot is alive: a
   light sweeps it as the screen opens, it shows its own move, and it
   blinks; from there it does something every few seconds, in an order that
-  differs every session. Each of the six knows twenty moves or more: it
-  blinks, glances, winks, stares and crosses its eyes; it bounces, wiggles,
-  dances and peeks to one side, the whole creature moving half a cell; and
-  it has moves of its own — the crest flares, ripples and ducks its frill,
-  the bloom flutters, seesaws and puffs up, the sprout sways, unfurls its
-  leaves and waves, the twin flicks, wiggles and droops its ears, the skiter
-  skitters and stretches, and the gem, which has no eyes, sparkles at every
-  corner and turns its facet in the light. Left alone for a minute and a
-  half, four of them nod off. The moves are dealt like a deck rather than
-  rolled, so the mascot gets through everything it knows before it repeats
-  itself and never does the same thing twice running. It stops the moment the first message is
+  differs every session. Each of the six knows nearly thirty moves: it
+  blinks, glances, winks, stares, crosses its eyes and daydreams; it
+  bounces, wiggles, dances and peeks to one side, the whole creature moving
+  half a cell; it waves and winks, and cheers with its arms (petals, ears,
+  claws) thrown up; it catches the light — a glint from either side, a glow
+  that swells through it and fades; and it has moves of its own — the crest
+  flares, ripples and ducks its frill, the bloom flutters, swells and
+  wobbles, the sprout sways and unfurls its leaves, the twin flicks, splays
+  and droops its ears, the skiter skitters, stretches and raises its claws,
+  and the gem, which has no eyes, sparkles at every corner, turns its facet,
+  spins edge-on and flashes. Left alone for two minutes, four of them nod
+  off. The moves are dealt like a deck rather than rolled, so the mascot
+  gets through everything it knows before it repeats itself and never does
+  the same thing twice running. While the first message is typed it
+  **watches**: its eyes follow the caret across the composer, reading along,
+  and a few seconds after the last keystroke it goes back to its own moves.
+  It stops the moment the first message is
   sent: the banner above a conversation always stands still, and so does
   the one in the Ctrl+O transcript and in an export. The `/mascot` picker's
   preview moves too, each mascot greeting as the highlight lands on it, so

@@ -6,7 +6,7 @@ use super::theme::*;
 use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
 use super::*;
 
-use crate::app::{Mascot, MascotPose};
+use crate::app::{Mascot, MascotPose, MascotShine, ShineBand};
 
 /// `text` as spans coloured cell by cell — `color_at(glyph, column)` for each
 /// glyph at its display column — with equal-colour runs coalesced.
@@ -42,28 +42,37 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
     colored_spans(text, |_, col| header_gradient_at(col, total))
 }
 
-/// How far a sweep of light lifts the art cell at (`col`, `row`) toward its
-/// highlight, `0.0..=`[`MASCOT_SHINE_MAX_BLEND`], `progress` of the way
-/// through a sweep across art `total` columns wide and `rows` tall
-/// (`docs/mascot-animation.md`).
+/// How far a band of light lifts the art cell at (`col`, `row`) toward its
+/// highlight, `0.0..=`[`MASCOT_SHINE_MAX_BLEND`], as `shine` crosses art
+/// `total` columns wide and `rows` tall (`docs/mascot-animation.md`).
 ///
-/// The light is a raised-cosine band [`MASCOT_SHINE_HALF_WIDTH`] columns
-/// either side of its crest — the status verb's shimmer, sized for nine
-/// columns — and each row sits [`MASCOT_SHINE_LEAN`] columns further along
-/// the sweep than the row above, so the band crosses the art as a leaning
-/// streak rather than a bar. It runs from a half-width before the art to a
-/// half-width past it, so a sweep opens on the art unlit and the light
-/// arrives and leaves by degrees: no cell pops.
-fn shine_at(col: usize, row: usize, rows: usize, total: usize, progress: f32) -> f32 {
-    let lean = |row: usize| MASCOT_SHINE_LEAN * row as f32;
+/// The light is a raised-cosine band — the status verb's shimmer, sized for
+/// nine columns — and each row sits a little further along the band's way
+/// than the row above, so it crosses the art as a leaning streak rather than
+/// a bar. The greeting's **sweep** is broad and leans gently
+/// ([`MASCOT_SHINE_HALF_WIDTH`], [`MASCOT_SHINE_LEAN`]); a **glint** is
+/// narrow and steep ([`MASCOT_GLINT_HALF_WIDTH`], [`MASCOT_GLINT_LEAN`]) and
+/// enters from either side, the same streak run the other way. Either runs
+/// from a half-width before the art to a half-width past it, so it opens on
+/// the art unlit and the light arrives and leaves by degrees: no cell pops.
+fn shine_at(col: usize, row: usize, rows: usize, total: usize, shine: MascotShine) -> f32 {
+    let (half, slant, progress) = match shine.band {
+        ShineBand::Sweep => (MASCOT_SHINE_HALF_WIDTH, MASCOT_SHINE_LEAN, shine.progress),
+        ShineBand::GlintFromLeft => (MASCOT_GLINT_HALF_WIDTH, MASCOT_GLINT_LEAN, shine.progress),
+        ShineBand::GlintFromRight => (
+            MASCOT_GLINT_HALF_WIDTH,
+            MASCOT_GLINT_LEAN,
+            1.0 - shine.progress,
+        ),
+    };
+    let lean = |row: usize| slant * row as f32;
     let far = total.saturating_sub(1) as f32 + lean(rows.saturating_sub(1));
-    let from = -MASCOT_SHINE_HALF_WIDTH;
-    let crest = from + (far + MASCOT_SHINE_HALF_WIDTH - from) * progress;
+    let crest = -half + (far + 2.0 * half) * progress;
     let off = (col as f32 + lean(row) - crest).abs();
-    if off >= MASCOT_SHINE_HALF_WIDTH {
+    if off >= half {
         return 0.0;
     }
-    let lift = 0.5 * (1.0 + (std::f32::consts::PI * off / MASCOT_SHINE_HALF_WIDTH).cos());
+    let lift = 0.5 * (1.0 + (std::f32::consts::PI * off / half).cos());
     MASCOT_SHINE_MAX_BLEND * lift
 }
 
@@ -79,24 +88,36 @@ fn is_spark(glyph: &str) -> bool {
 
 /// One row of a mascot's art in the banner gradient, as `pose` lights it:
 /// each cell its gradient colour, lifted toward [`mascot_shine_color`] where
-/// a sweep is passing ([`shine_at`]), and a spark in that colour outright.
-/// At rest this is [`gradient_spans`] exactly, so the banner scrollback
-/// holds is the one it always held.
+/// a band of light is passing ([`shine_at`]) or by the pose's glow — the
+/// same share of the way for every cell, `glow` percent of
+/// [`MASCOT_SHINE_MAX_BLEND`] — whichever lifts it more; and a spark in
+/// that colour outright. Light falls on ink, so a blank cell keeps its
+/// colour. At rest this is [`gradient_spans`] exactly, so the banner
+/// scrollback holds is the one it always held.
 fn art_spans(
     text: &str,
     row: usize,
     rows: usize,
     total: usize,
-    shine: Option<f32>,
+    pose: &MascotPose,
 ) -> Vec<Span<'static>> {
+    let glow = f32::from(pose.glow) / 100.0 * MASCOT_SHINE_MAX_BLEND;
     colored_spans(text, |glyph, col| {
         if is_spark(glyph) {
             return mascot_shine_color();
         }
         let color = header_gradient_at(col, total);
-        match shine.map(|progress| shine_at(col, row, rows, total, progress)) {
-            Some(lift) if lift > 0.0 => lerp_color(color, mascot_shine_color(), lift),
-            _ => color,
+        if glyph == " " {
+            return color;
+        }
+        let band = pose
+            .shine
+            .map_or(0.0, |shine| shine_at(col, row, rows, total, shine));
+        let lift = band.max(glow);
+        if lift > 0.0 {
+            lerp_color(color, mascot_shine_color(), lift)
+        } else {
+            color
         }
     })
 }
@@ -398,7 +419,7 @@ pub(super) fn header_lines_posed(
         let mut spans: Vec<Span<'static>> = Vec::new();
         let art_cols = art.get(i).map_or(0, |row| cols(row));
         if let Some(row) = art.get(i) {
-            spans.extend(art_spans(row, i, art.len(), art_w, pose.shine));
+            spans.extend(art_spans(row, i, art.len(), art_w, pose));
         }
         if let Some(meta_row) = i.checked_sub(offset).and_then(|k| meta.get(k)) {
             spans.push(Span::raw(
@@ -423,14 +444,17 @@ pub fn banner_block_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The banner over its blank spacer **as it should look now**: the session's
-/// mascot in its animation's current pose ([`App::banner_pose`]) while the
-/// conversation under it is empty, and [`banner_block_lines`] exactly
-/// whenever nothing is moving — so a frame at rest has nothing to repaint.
-/// What the boundary repaints the committed block with, in place
+/// mascot in its animation's current pose while the conversation under it is
+/// empty — its eyes on the caret's third of the composer while the user
+/// types ([`App::banner_pose_watching`]) — and [`banner_block_lines`]
+/// exactly whenever nothing is moving, so a frame at rest has nothing to
+/// repaint. What the boundary repaints the committed block with, in place
 /// (docs/mascot-animation.md).
 #[must_use]
 pub fn banner_frame_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines = header_lines_posed(app, app.mascot(), &app.banner_pose(), width);
+    let gaze = super::layout::caret_gaze(app, width);
+    let pose = app.banner_pose_watching(gaze);
+    let mut lines = header_lines_posed(app, app.mascot(), &pose, width);
     lines.push(Line::default());
     lines
 }

@@ -98,7 +98,10 @@ pub use self::login::{
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
-pub use self::mascot_motion::{MASCOT_GREETING_MS, MASCOT_SHINE_FRAME, MascotPose};
+pub use self::mascot_motion::{
+    Gaze, MASCOT_GREETING_MS, MASCOT_SHINE_FRAME, MASCOT_WATCH_LINGER, MascotPose, MascotShine,
+    ShineBand,
+};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
@@ -590,6 +593,15 @@ pub struct App {
     /// highlighted; `None` with no picker open. See
     /// `docs/mascot-animation.md`.
     mascot_preview: Option<(Mascot, Duration)>,
+    /// The run of typing the banner mascot is watching — its eyes on the
+    /// composer while the user types the first message — kept by
+    /// [`set_mascot_clock`](App::set_mascot_clock) from what each frame
+    /// finds in the composer. See `docs/mascot-animation.md`.
+    mascot_watch: Option<mascot_motion::Watch>,
+    /// The composer's draft and caret as the last frame saw them, hashed:
+    /// what tells [`set_mascot_clock`](App::set_mascot_clock) a key was
+    /// pressed. `None` until the first frame has looked.
+    mascot_draft: Option<u64>,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row
