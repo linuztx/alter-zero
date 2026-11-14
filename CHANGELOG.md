@@ -12,6 +12,27 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto mode's safety check answers in JSON, and a reply that is not
+  exactly a verdict is never acted on.** The classifier that reviews a
+  command in your place used to answer `<block>yes</block>` or
+  `<block>no</block>`, and the app took the first such tag it found anywhere
+  in the reply. Two things could then allow a command nobody had judged
+  safe. A small model asked about `rm -rf ~/` answered
+  `<block>no</block><reason>… I cannot allow this action.</reason>`: it read
+  `no` as "do not run it", and the app ran it. And a model that echoed the
+  command back instead of judging it handed over whatever tags the command
+  itself carried. The verdict is now one JSON object, `{"verdict": "allow"}`
+  or `{"verdict": "block", "reason": "…"}`, whose words say what happens. An
+  allow counts only when it is the whole reply and gives no reason; anything
+  else is asked about once more, and after that the command comes to you.
+  The object is asked for in the prompt rather than through a provider's
+  structured output, which was measured and refused: on small models it
+  produced a well-formed allow for six of sixteen actions that should have
+  been blocked, and some routes reject the parameter outright
+  (`docs/permissions.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
@@ -48,6 +69,46 @@ release heading when a version is cut.
   metadata was looked for under that path alone, so such a server ended
   with `could not discover the authorization server`. The root document is
   read last, and used only when it names that same address.
+
+- **Auto mode reviews your commands on Google Antigravity's Gemini models.**
+  On a model whose thinking level is part of its id, such as
+  `gemini-3.8-flash`, every safety check asked for a model the account's
+  catalog does not list and got a 404, so each command auto mode should have
+  reviewed came to you as a prompt instead. Commands that only read were
+  never checked and still ran, which made it look like the check failed
+  only sometimes. The check now asks under the id your session uses
+  (`docs/antigravity.md`).
+
+- **A provider that is busy for a moment no longer costs you a prompt.** The
+  safety check made one request and gave up on any failure, so a rate limit
+  that cleared in half a second or a reply cut short became a prompt where
+  the turn around it would have retried. The check now retries what the
+  turn retries, on the same **Error retry** setting, and a reply it cannot
+  read is asked for one more time (`docs/permissions.md`).
+
+- **The prompt says why when auto mode's safety check failed.** A prompt
+  raised because the check itself failed looked the same as any other, so
+  there was nothing to tell a wrong model from a rate limit. It now reads
+  `Auto mode's safety check failed:` followed by what the check said, where
+  `This command requires approval` would have been, and a headless run
+  writes the same reason under the refused call (`docs/permissions.md`,
+  `docs/headless.md`).
+
+### Security
+
+- **A command and its description can no longer write lines of the question
+  auto mode's safety check is asked.** The reviewing model was shown the
+  agent's description as written and the command inside a three-backtick
+  code block. A description with line breaks could add a command block of
+  its own, naming something harmless, above the real one. A command
+  containing a line of three backticks (a heredoc makes that valid shell)
+  could end its block and carry on as the request. Shown
+  `rm -rf ~/.ssh ~/.aws` dressed in one of those two ways, Gemini 3.8 Flash
+  allowed it 9 times in 24; it now refuses all 24. The block's fence is
+  always longer than anything inside it, and each description is kept to
+  one line. Many models can still be talked round by what a command says
+  about itself, which no quoting changes, so auto mode's reviewer needs to
+  be a model that resists it (`docs/permissions.md` says how to check one).
 
 ## [0.19.0] - 2026-11-13
 

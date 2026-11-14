@@ -1355,6 +1355,7 @@ fn a_stopped_agents_prompts_leave_the_screen_and_the_rest_stay() {
         detail: None,
         agent: Some("general-purpose".into()),
         agent_id: Some(agent.into()),
+        check_failure: None,
     };
     let mut app = launched_background_agents();
     app.open_permission(asked_by("p1", "a1"));

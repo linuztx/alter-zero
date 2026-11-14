@@ -13,6 +13,7 @@ fn request(id: &str, kind: PermissionKind, target: &str) -> PermissionRequest {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     }
 }
 

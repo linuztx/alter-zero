@@ -36,6 +36,7 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
@@ -2031,8 +2032,12 @@ sends any other non-allowlisted `bash` command to the **auto
 mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
-`ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
-seam in the user's stead, **task-aware**: each verdict reads the session's
+`ALTER_ZERO_CLASSIFIER_MODEL` overrides the model; asked under the id the
+session's own requests name, `classifier::verdict_config` — on the Cloud
+Code wire a grouped model's thinking level is its id's suffix, and dropping
+the mode alone asked for the unlisted `gemini-3.8-flash`, a 404 on every
+verdict) consulted by the approve seam in the user's stead, **task-aware**:
+each verdict reads the session's
 truncated context (`classifier::ClassifierContext` — two **rolling windows
 over the conversation**, not one turn: the newest `CONTEXT_MAX_REQUESTS`
 (10) user requests over the newest `CONTEXT_MAX_ACTIONS` (20) capped
@@ -2065,8 +2070,31 @@ the same event; the one inline exception is the quiet resolved MCP cell,
 whose one-line `Called {server}` stays note-less — Ctrl+O and the rollout
 keep its record, `docs/mcp.md`), a **deny** rejects it red (`Denied by auto mode
 classifier` + `Reason: …`) through the ordinary `ToolRejected` path with a
-Claude-Code-style stop-or-adjust model text, and a classifier **failure**
-falls back to the ordinary prompt (never an allow); `master` runs
+Claude-Code-style stop-or-adjust model text; the verdict is **one JSON
+object the prompt asks for** — `{"verdict": "allow"}` or `{"verdict":
+"block", "reason": "…"}` — read leniently about form and **strictly about
+content** (`classifier::parse_verdict`: an allow is the whole reply and
+gives no reason, or it is not one — the action under review can carry the
+contract's own words, and a small model that echoed it back, or answered
+`rm -rf ~/` with an allow whose reason was *"I cannot allow this action"*,
+was read as allowing it under the tag contract this replaced; a block needs
+only to open the reply; one spelling), **never through a provider's
+structured output**, which was measured and refused — it turns a confused
+model's unreadable reply into a well-formed wrong allow (six of sixteen on a
+small model), and Antigravity's GPT-OSS route answers it with a 400
+(`docs/permissions.md` *Why the verdict is JSON the prompt asks for*); a
+failed request is retried on the turn's own **Error retry** budget and a
+reply that is no verdict gets one **repair turn** — the reply handed back
+with the correction — both inside `RETRY_WINDOW`, an unreachable host never
+waited for (`classifier::reach_verdict`, pure over an injected send); and a
+classifier **failure** falls back to the ordinary prompt (never an allow),
+**which says why**: the seam keeps what the check said on
+`PermissionRequest::check_failure` and the prompt shows `Auto mode's safety
+check failed: …` in the standing notice's place, wrapped never cut, a
+headless refusal carrying it on its `Reason:` line (`smoke.sh` Phase 154
+drives the id, a retry, the repair turn, a block and the failed check's
+prompt against a Cloud Code stub; `examples/classifier_probe.rs` runs a
+labelled corpus through the real classifier on any provider); `master` runs
 *everything* unasked — no prompt, no classifier, Claude Code's
 bypass-permissions) pinned flush at the
 footer's **right edge** (`{model} · {cwd}      auto` — its columns reserved

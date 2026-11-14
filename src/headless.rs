@@ -2123,6 +2123,7 @@ mod tests {
                 detail: None,
                 agent: agent.map(Into::into),
                 agent_id: agent.map(|_| "a1".into()),
+                check_failure: None,
             },
             tool_name: "bash".into(),
             tool_use_id: "call_7".into(),

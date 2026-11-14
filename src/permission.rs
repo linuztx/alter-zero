@@ -163,6 +163,15 @@ pub struct PermissionRequest {
     /// only an id can tell the viewed agent's own `⎿ Waiting…` batch from
     /// another agent's, or from the main turn's. Two agents can share a type.
     pub agent_id: Option<String>,
+    /// What auto mode's classifier said when it was asked about this call
+    /// and **failed** — a request its provider refused, a reply that was no
+    /// verdict — so the call came to the user instead. The prompt shows it
+    /// ([`check_failure_notice`]): in auto mode a prompt is the exception,
+    /// and one with no word on why read as a classifier that "sometimes
+    /// fails" (`docs/permissions.md`). `None` for a call no check failed on —
+    /// one the mode never reviews, one a hook sent to the user, any call
+    /// outside auto mode.
+    pub check_failure: Option<String>,
 }
 
 /// A call an unattended gate refused (`docs/headless.md` *Permissions*): the
@@ -427,6 +436,27 @@ pub const CHECK_FAILED_AGAIN_RESULT: &str = "This tool call was not executed: au
      safety check failed again, and nobody else can approve the call in this non-interactive \
      (headless) run. Do not retry it. Continue with what does not need it; if it is essential, \
      end your answer by saying what you needed to run and why.";
+
+/// [`CHECK_FAILED_DISPLAY`] (or [`CHECK_FAILED_AGAIN_DISPLAY`]) with what
+/// the check said on a second line — the denial's `Reason:` shape
+/// ([`classifier_denied_display`]). A headless run has no prompt to say it
+/// on, and "the safety check failed" alone names nothing a user can fix.
+#[must_use]
+pub fn check_failed_display(headline: &str, reason: &str) -> String {
+    match Some(reason.trim()).filter(|reason| !reason.is_empty()) {
+        Some(reason) => format!("{headline}\nReason: {reason}"),
+        None => headline.to_string(),
+    }
+}
+
+/// The row a prompt carries when it stands in for a verdict auto mode's
+/// classifier failed to reach ([`PermissionRequest::check_failure`]) — in
+/// the place of a command's standing "requires approval" notice, since it
+/// answers the same question: *why am I being asked?*
+#[must_use]
+pub fn check_failure_notice(reason: &str) -> String {
+    format!("Auto mode's safety check failed: {}", reason.trim())
+}
 
 /// The model-facing tool result for Ctrl+E — explain the command instead of
 /// running it.
@@ -1435,6 +1465,7 @@ mod tests {
             detail: None,
             agent: None,
             agent_id: None,
+            check_failure: None,
         }
     }
 
@@ -2066,6 +2097,26 @@ mod tests {
         assert!(
             result.contains("was not executed"),
             "the model must know nothing ran: {result}"
+        );
+    }
+
+    #[test]
+    fn a_failed_check_is_named_with_what_it_said() {
+        // On the prompt that stands in for the verdict…
+        assert_eq!(
+            check_failure_notice("HTTP 404: this model isn't available to this account"),
+            "Auto mode's safety check failed: HTTP 404: this model isn't available to this account"
+        );
+        // …and, with nobody to prompt, on the refused call's cell, in the
+        // denial's own two-line shape.
+        assert_eq!(
+            check_failed_display(CHECK_FAILED_DISPLAY, "offline"),
+            "Not run: the safety check failed (headless run)\nReason: offline"
+        );
+        // A check that failed without a word still has its headline.
+        assert_eq!(
+            check_failed_display(CHECK_FAILED_AGAIN_DISPLAY, "  "),
+            CHECK_FAILED_AGAIN_DISPLAY
         );
     }
 
