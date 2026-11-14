@@ -67,6 +67,9 @@ pub enum SettingKey {
     /// Downscale a large image before it is **sent to the model**
     /// (`docs/images.md`) — nothing to do with the display.
     AutoResizeImages,
+    /// Let the banner's mascot blink and stir while the conversation is
+    /// still empty (`docs/mascot-motion.md`).
+    MascotAnimation,
     /// How many times a failed request is retried (`llm::retry`); a lost
     /// connection is waited for instead, and `0` turns both off
     /// (`docs/offline.md`).
@@ -116,6 +119,7 @@ impl SettingKey {
         Self::ShowImages,
         Self::ImageWidth,
         Self::AutoResizeImages,
+        Self::MascotAnimation,
         Self::ErrorRetry,
         Self::Tools,
         Self::PermissionMode,
@@ -142,6 +146,7 @@ impl SettingKey {
             Self::ShowImages => "Show images",
             Self::ImageWidth => "Image width",
             Self::AutoResizeImages => "Auto-resize images",
+            Self::MascotAnimation => "Mascot animation",
             Self::ErrorRetry => "Error retry",
             Self::Tools => "Tools",
             Self::PermissionMode => "Permission mode",
@@ -176,6 +181,9 @@ impl SettingKey {
             Self::ImageWidth => "Preferred inline image width in terminal columns",
             Self::AutoResizeImages => {
                 "Resize large images to 2000x2000 before sending them to the model"
+            }
+            Self::MascotAnimation => {
+                "Let the banner's mascot blink and stir until the conversation starts"
             }
             Self::ErrorRetry => {
                 "Retries before a failed request gives up — a lost connection is waited for"
@@ -311,6 +319,11 @@ pub struct SessionSettings {
     /// `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub auto_resize_images: bool,
+    /// Let the banner's mascot move while the conversation is empty
+    /// (default `true`, `docs/mascot-motion.md`) — and the `/mascot`
+    /// picker's preview with it.
+    #[serde(skip_serializing_if = "is_true")]
+    pub mascot_animation: bool,
     /// Retries per failed request (default 3).
     #[serde(skip_serializing_if = "is_default_retry")]
     pub error_retry: u32,
@@ -391,6 +404,7 @@ impl Default for SessionSettings {
             show_images: true,
             image_width: DEFAULT_IMAGE_WIDTH,
             auto_resize_images: true,
+            mascot_animation: true,
             error_retry: crate::llm::retry::MAX_RETRIES,
             tools: true,
             checkpoints: false,
@@ -533,6 +547,7 @@ impl SessionSettings {
             SettingKey::ShowImages => bool_text(self.images_active()),
             SettingKey::ImageWidth => self.image_width.to_string(),
             SettingKey::AutoResizeImages => bool_text(self.auto_resize_images),
+            SettingKey::MascotAnimation => bool_text(self.mascot_animation),
             SettingKey::ErrorRetry => self.error_retry.to_string(),
             SettingKey::Tools => bool_text(self.tools),
             SettingKey::PermissionMode => mode.map_or_else(
@@ -575,6 +590,7 @@ impl SessionSettings {
                 self.image_width = next_in(IMAGE_WIDTH_CHOICES, &self.image_width);
             }
             SettingKey::AutoResizeImages => self.auto_resize_images = !self.auto_resize_images,
+            SettingKey::MascotAnimation => self.mascot_animation = !self.mascot_animation,
             SettingKey::ErrorRetry => self.error_retry = next_in(RETRY_CHOICES, &self.error_retry),
             SettingKey::Tools => self.tools = !self.tools,
             SettingKey::PermissionMode => return false,
@@ -616,6 +632,7 @@ impl SessionSettings {
             SettingKey::ShowImages => self.show_images = live.show_images,
             SettingKey::ImageWidth => self.image_width = live.image_width,
             SettingKey::AutoResizeImages => self.auto_resize_images = live.auto_resize_images,
+            SettingKey::MascotAnimation => self.mascot_animation = live.mascot_animation,
             SettingKey::ErrorRetry => self.error_retry = live.error_retry,
             SettingKey::Tools => self.tools = live.tools,
             SettingKey::Checkpoints => self.checkpoints = live.checkpoints,

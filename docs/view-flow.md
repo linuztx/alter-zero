@@ -64,6 +64,13 @@ both regimes. Frozen text is what scrollback holds for everything else on the
 screen, and it is what the reported bug asked for: *"if it's not shown in the
 terminal window just freeze it instead of removing the detail."*
 
+Two pickers move between keystrokes as well — every row of `/spinner`
+(`docs/spinner.md`), and the highlighted mascot blinking in `/mascot`'s
+preview (`docs/mascot-motion.md`) — and sign their **selection and query**
+for the same reason. Their pages shed rows rather than flow (below), so for
+them the signature is a backstop: were a page ever to overshoot, a frame of
+motion would still never churn a purge rebuild.
+
 The flowed rows are not history, so nothing may be left behind when they go
 stale. The boundary (`tui::view`) keeps the signature of what it last flowed
 (`Session::flowed_view`) and, on any mismatch — the page navigated, the search
@@ -142,7 +149,7 @@ the same thing in the same place on every one (`model_view`'s
   → Hide thinking        false               the window: `→` under the `❯`
     Verbose output       false
     …                                        (five rows; /model 7, /theme 10)
-    (1/20)                                   the counter, under the names
+    (1/21)                                   the counter, under the names
                                              gap
     Hide the model's chain-of-thought …      the highlighted row's detail
                                              gap

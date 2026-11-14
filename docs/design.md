@@ -1473,7 +1473,22 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
 `term.rs` is, like `src/tui/`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`,
 and its own pure corners — the `visible_cells` wide-glyph emitter, the
-`keyboard_enhancement_disabled` predicate — are unit-tested in place.
+`keyboard_enhancement_disabled` predicate, the banner's seat — are unit-tested
+in place.
+
+One committed thing is repainted after it is written: the **startup banner**,
+whose mascot moves until the conversation's first cell lands
+(`docs/mascot-motion.md`). The viewport knows which rows it wrote are the
+banner (`insert_banner`, `reflow`'s `banner_rows`) and keeps a **seat** for
+them while they are still on the screen — carried by every scroll, dropped the
+moment a row leaves the top, on a resize and on a purge. A frame hands `draw`
+the banner's rows for the moment and they are painted over the seat, diffed,
+inside the frame's synchronized update; a frame that scrolls the screen paints
+the committed rows first, and `restore` settles them on the way out, so no row
+that reaches the terminal's scrollback — or is left behind at exit — is ever
+mid-move. The motion itself is a pure function of time (`app::mascot_motion`),
+and the loop sleeps for exactly a pose's hold, so an idle banner costs one
+frame per pose change and nothing between acts.
 
 ### The smoke suite defines its own environment
 
@@ -1496,10 +1511,13 @@ a phase run on its own is as hermetic as one run by the suite):
   would report its turns to the developer's real multiplexer —
   `docs/herdr.md`) before its first launch, then spells out per launch the ones
   it wants —
-  exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
-  `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
+  exporting four switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
+  `ALTER_ZERO_UPDATE_CHECK`, `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three
-  seconds; the phases that test each feature turn it back on for themselves). Each
+  seconds, and `ALTER_ZERO_MASCOT_ANIMATION`, since the banner's mascot blinks
+  until a conversation starts and a capture taken mid-blink reads another
+  mascot's art; the phases that test each feature turn it back on for
+  themselves). Each
   is load-bearing: a resolvable key reaches a live provider instead of the
   dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
   assertion (the `/theme` banner accent, the focused shell indicator, the

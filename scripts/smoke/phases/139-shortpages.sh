@@ -45,7 +45,11 @@ sleep 0.4
 short_settings_walk="$(pane "$S139")"
 echo "==== Phase 139: /settings after seven ↓ ===="
 printf '%s\n' "$short_settings_walk"
-expect_has "$short_settings_walk" -E '^  → Permission mode +' "the /settings window did not follow the selection"
+# Which row seven ↓ land on is the menu's business (a setting added above it
+# moves it); that the window rode the selection off its first row is this
+# phase's.
+expect_has "$short_settings_walk" -E '^  → [A-Z][a-z]' "the /settings window did not follow the selection"
+expect_lacks "$short_settings_walk" -F "Hide thinking" "the /settings window still shows its first row after seven ↓"
 expect_has "$short_settings_walk" -E '^  ↑ [0-9]+ more above$' "/settings does not name the rows over its window"
 expect_has "$short_settings_walk" -E '^  ↓ [0-9]+ more below$' "/settings lost the row naming what is under its window"
 tmux send-keys -t "$S139" Escape

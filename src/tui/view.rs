@@ -242,11 +242,17 @@ impl Session<'_> {
         // layout reserves it. See `docs/markdown.md`, `docs/table-streaming.md`.
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
+        // The banner's rows for this frame while its mascot moves — `None`
+        // once the conversation has a cell, which is the committed banner
+        // (docs/mascot-motion.md). The viewport paints them over the banner
+        // where it sits, if it is still on the screen.
+        let banner = ui::banner_motion_lines(&self.app, self.term.screen().width);
         let app = &self.app;
         // `term` places the cursor from the final (content-anchored) viewport
         // via `ui::cursor_position`, which mirrors render_live's layout exactly.
         self.term.draw(
             height,
+            banner,
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )
@@ -498,8 +504,12 @@ impl Session<'_> {
             self.app.settings().verbose,
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
-        // `history` and would otherwise be lost (docs/header.md).
-        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        // `history` and would otherwise be lost (docs/header.md). Its rows
+        // head the tail, which is how the viewport knows where the banner is
+        // while it is still on screen (docs/mascot-motion.md).
+        let banner = ui::header_lines(&self.app, screen.width);
+        let banner_rows = banner.len();
+        let mut tail = ui::banner_tail(banner, tail);
         // A screen-tall framed view flows its page top into scrollback: the
         // rows ride the tail's very end, so they land directly above the live
         // region — the page reads whole across the seam. Recomputed here, at
@@ -515,6 +525,7 @@ impl Session<'_> {
         let app = &self.app;
         self.term.reflow(
             tail,
+            banner_rows,
             height,
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
@@ -567,7 +578,9 @@ impl Session<'_> {
         if let Some(text) = &streaming {
             tail.extend(self.agent_render.committed_rows(text, screen.width));
         }
-        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        let banner = ui::header_lines(&self.app, screen.width);
+        let banner_rows = banner.len();
+        let mut tail = ui::banner_tail(banner, tail);
         // A framed view opened from the agent view's own palette renders over
         // it and flows the same way (`docs/view-flow.md`) — the rebuild is
         // this view's, so the flow rides this tail.
@@ -579,6 +592,7 @@ impl Session<'_> {
         let app = &self.app;
         self.term.reflow(
             tail,
+            banner_rows,
             height,
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
@@ -806,6 +820,19 @@ impl Session<'_> {
         // shimmer over the page (`docs/copilot.md`).
         if self.app.device_login_active() {
             self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
+        }
+        // The mascot's motion keeps a chain of its own, and a sparse one: a
+        // frame when its pose next changes and none before — nothing at all
+        // between a blink and the next act, so an idle screen stays silent
+        // and the cursor is left alone (`docs/mascot-motion.md`). The banner
+        // counts only while it is still on screen to repaint; the `/mascot`
+        // picker's preview counts while it is open.
+        if let Some(after) = ui::mascot_motion_due(
+            &self.app,
+            self.term.screen().width,
+            self.term.banner_on_screen(),
+        ) {
+            self.frame.schedule_frame_in(after);
         }
         Ok(())
     }

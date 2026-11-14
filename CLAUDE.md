@@ -276,7 +276,7 @@ Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
@@ -368,7 +368,49 @@ three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
 short for that page, the family's compact one, the preview yielding
 (`docs/view-flow.md`) — the
 choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
+the banner at once) in `docs/mascot.md`, and the **mascot's motion**
+(`docs/mascot-motion.md`: from launch until the conversation holds its first
+cell the banner's mascot is alive — 0.7 s in it greets (a glint, the move its
+description names, a blink), then every 3.0–6.6 s it blinks, glances or moves
+again. Each mascot's stills are `Mascot::stills(Gesture)` — `Blink`, `Glance`,
+`Signature`, `Glint` — drawn **in the resting art's place** (the rest's row
+count, never wider than the block, single-width block glyphs, so the metadata
+column never moves): eyes are holes, so an upper-half eye closes through a
+lid (`▄` → `▆` → `█`) and glances by narrowing to a quadrant (`▟`/`▙`), a
+lower-half one cuts to `█` and glances `▜`/`▛`, and the gem's facet stands in
+for an eye; the signatures are the crest's frill dropping and flaring, the
+bloom swelling, the sprout's leaf swaying, the twin's ears flicking, the
+skitterer skittering, and the gem's glint travelling back; the glint is
+colour only, a three-cell band leaning a column a row (`MascotPose::light`)
+lifted toward the brightest ink. The schedule is the pure
+`app::mascot_motion(mascot, seed, elapsed) -> MascotMotion { pose, holds }`
+over 4.8 s bars — bar 0 the greeting, every later bar one act hashed from the
+seed and the bar's index — whose `holds` runs to the next pose that
+**differs**, across a bar boundary, so the loop sleeps exactly that long
+(`ui::mascot_motion_due`, re-armed from the draw tick): one frame per pose
+change and **nothing on the wire between acts**, never the status line's
+32 ms chain, which on an idle screen shimmers the cursor. `elapsed` counts
+from an epoch `App::set_pulse` latches on the first frame — never from
+launch, since the checkpoint snapshot can hold that frame for seconds — and
+`/clear` resets it, so the fresh banner greets again. It moves only while
+`App::banner_in_motion` — the **Mascot animation** setting on, `history`
+empty, no agent session view — and it is painted **in place**, over the
+committed banner, the one thing above the live region a frame may repaint:
+`InlineViewport::insert_banner` (and `reflow`'s `banner_rows`) tell the
+viewport which rows it wrote are the banner, it keeps a `BannerSeat` for
+them while they are wholly on screen — carried through `scroll_up`, dropped
+when a row leaves the top, on a resize and on a purge — and `draw` takes the
+banner's rows for the frame (`ui::banner_motion_lines`) and paints them over
+the seat, diffed, inside the frame's synchronized update. **A frame that
+scrolls the screen paints the committed rows first** and `restore` settles
+them, so no row that reaches scrollback or is left behind at exit is ever
+mid-move, and `header_lines` — what the transcript and `/export` show — is
+always the resting art. The `/mascot` picker's preview moves on a clock of
+its own (`MascotPicker::shown_at`), greeting as the highlight lands on a
+mascot, its flow signed on the selection like `/spinner`'s.
+`ALTER_ZERO_MASCOT_ANIMATION` seeds the row for a run, and the smoke suite
+exports it `0`, since its phases read the banner's art off the screen;
+`smoke.sh` Phase 154), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
 like `/mascot`, over a nine-style catalog — `comet` (the list's first row, and the status line's
 look before there was a catalog), the braille-track `gravity`
@@ -2782,10 +2824,12 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-twenty rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty-one rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
-**Auto-resize images** — the three from `docs/images.md` — **Error retry**,
+**Auto-resize images** — the three from `docs/images.md` —
+**Mascot animation** — whether the banner's mascot moves until the
+conversation starts, `docs/mascot-motion.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 **Skills**, **MCP** — the session-wide switch over the `/mcp` servers, on

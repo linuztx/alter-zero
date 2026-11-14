@@ -1301,6 +1301,13 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     if let Some(on) = env_flag_set("ALTER_ZERO_VERBOSE") {
         settings.verbose = on;
     }
+    // The **Mascot animation** row: the banner's mascot holds still for the
+    // run (docs/mascot-motion.md) — the smoke suite exports it `0`, since
+    // its phases read the banner's art off the screen and a blink between
+    // two captures says nothing about the app.
+    if let Some(on) = env_flag_set("ALTER_ZERO_MASCOT_ANIMATION") {
+        settings.mascot_animation = on;
+    }
     // `ALTER_ZERO_HOOKS` seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
     // seeds Tools — an override for this run, never saved (docs/hooks.md).
     // It used to be ANDed over the row instead, which could only ever turn

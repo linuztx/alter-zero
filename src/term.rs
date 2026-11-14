@@ -44,6 +44,14 @@
 //! `Show`, so the frame-start `Hide` stands and the cursor stays away for as
 //! long as the options do (`docs/permissions.md`).
 //!
+//! One committed thing is repainted after it is written: the **startup
+//! banner**, while its rows are still on the screen (`BannerSeat`). Its
+//! mascot moves until the conversation starts (`docs/mascot-motion.md`), so
+//! a frame may carry the banner's rows for the moment and they are painted
+//! over the committed ones in place — diffed, inside the frame's
+//! synchronized update, and always at rest before the screen scrolls, so a
+//! row that reaches the terminal's scrollback is never mid-move.
+//!
 //! [`draw`]: InlineViewport::draw
 //! [`reflow`]: InlineViewport::reflow
 
@@ -127,6 +135,19 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pending: Vec<Line<'static>>,
+    /// Which rows of `pending` are the startup banner — the index of its
+    /// first row and how many there are ([`insert_banner`]) — so the flush
+    /// that writes them can seat it. Dropped with the queue by a [`reflow`],
+    /// which is told its tail's own banner rows instead.
+    ///
+    /// [`insert_banner`]: InlineViewport::insert_banner
+    /// [`reflow`]: InlineViewport::reflow
+    pending_banner: Option<(usize, usize)>,
+    /// The startup banner **while it is still on the screen**: where its rows
+    /// are, and what they show (`docs/mascot-motion.md`). `None` before the
+    /// banner is written, once any of its rows has scrolled off the top, and
+    /// between a resize and the rebuild that follows it.
+    banner: Option<BannerSeat>,
     /// Set when the screen moved **one-way while an inline modal was open**
     /// ([`ui::region_is_modal`] — the tool-permission prompt): its growth (or
     /// a commit under it) scrolled chat into the terminal's scrollback, or a
@@ -339,6 +360,8 @@ impl InlineViewport {
             prev: None,
             overlay_prev: None,
             pending: Vec::new(),
+            pending_banner: None,
+            banner: None,
             modal_scrolled: false,
             painted_bottom: top.saturating_add(height),
             keyboard_enhanced,
@@ -369,6 +392,8 @@ impl InlineViewport {
             prev: None,
             overlay_prev: None,
             pending: Vec::new(),
+            pending_banner: None,
+            banner: None,
             modal_scrolled: false,
             painted_bottom: 1,
             keyboard_enhanced: false,
@@ -496,11 +521,19 @@ impl InlineViewport {
     /// close can purge-rebuild instead of shrinking over the rows it can't
     /// refill (`docs/permissions.md`).
     ///
+    /// `banner` is the startup banner's rows **for this frame** — its mascot
+    /// mid-blink, say (`ui::banner_motion_lines`) — or `None` for the banner
+    /// as it was committed. While the banner is still on the screen they are
+    /// painted over it in place, diffed, in this same update; a frame that
+    /// scrolls the screen paints the committed rows whatever it was handed,
+    /// so nothing mid-move ever reaches scrollback (`docs/mascot-motion.md`).
+    ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
     /// [`insert_before`]: InlineViewport::insert_before
     pub fn draw(
         &mut self,
         height: u16,
+        banner: Option<Vec<Line<'static>>>,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<()> {
@@ -530,7 +563,7 @@ impl InlineViewport {
         // free on plain terminals — it lands in the same synchronized update, so
         // the cursor simply reappears at the prompt with no visible flicker.
         queue!(self.backend, Hide)?;
-        let painted = self.paint_live(height, render, app);
+        let painted = self.paint_live(height, banner, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
         ended?;
@@ -538,13 +571,15 @@ impl InlineViewport {
     }
 
     /// The body of one inline frame, bracketed by [`draw`]'s synchronized update:
-    /// flush the pending scrollback lines, re-pin the viewport to `height`,
-    /// render and paint the live region. Returns the painted buffer for `prev`.
+    /// paint the banner's rows for the frame, flush the pending scrollback
+    /// lines, re-pin the viewport to `height`, render and paint the live
+    /// region. Returns the painted buffer for `prev`.
     ///
     /// [`draw`]: InlineViewport::draw
     fn paint_live(
         &mut self,
         height: u16,
+        banner: Option<Vec<Line<'static>>>,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
@@ -564,6 +599,16 @@ impl InlineViewport {
         if flushing {
             self.view.height = height;
         }
+        // The banner first, while its rows are where the seat says they are
+        // — and **at rest** if this frame is about to move the screen (a
+        // flush, or a region growing past the bottom): a scroll is one-way,
+        // and a row that reaches the terminal's scrollback mid-blink would
+        // stay that way. The first cell's own frame is such a frame, which
+        // is how the banner settles before it becomes history
+        // (`docs/mascot-motion.md`).
+        let moves = flushing
+            || ui::repin(self.view.y, self.view.height, height, self.screen.height).scroll_up > 0;
+        self.paint_banner(if moves { None } else { banner })?;
         self.flush_pending()?;
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
         // A tool-permission prompt grows by this same rule — the chat above
@@ -682,11 +727,37 @@ impl InlineViewport {
         self.pending.extend(lines);
     }
 
-    /// Write any queued [`insert_before`] lines above the viewport and empty the
-    /// queue. Called inside a frame's synchronized update ([`draw`]) or, as a
-    /// backstop, by [`restore`].
+    /// Queue the **startup banner** for scrollback, like [`insert_before`] —
+    /// and remember which queued rows are it, so the frame that writes them
+    /// can seat it: from then until one of its rows scrolls off the top, a
+    /// [`draw`] may repaint it in place (`docs/mascot-motion.md`). `lines`
+    /// are the banner as committed — its mascot at rest (`ui::header_lines`).
     ///
     /// [`insert_before`]: InlineViewport::insert_before
+    /// [`draw`]: InlineViewport::draw
+    pub fn insert_banner(&mut self, lines: Vec<Line<'static>>) {
+        if self.headless {
+            return;
+        }
+        self.pending_banner = Some((self.pending.len(), lines.len()));
+        self.pending.extend(lines);
+    }
+
+    /// Whether the startup banner is still wholly on the screen, where a
+    /// frame can repaint it — what the loop asks before it schedules the
+    /// mascot's next move (`ui::mascot_motion_due`).
+    #[must_use]
+    pub const fn banner_on_screen(&self) -> bool {
+        self.banner.is_some()
+    }
+
+    /// Write any queued [`insert_before`] lines above the viewport and empty the
+    /// queue. Called inside a frame's synchronized update ([`draw`]) or, as a
+    /// backstop, by [`restore`]. A banner among them ([`insert_banner`]) is
+    /// seated where it landed.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    /// [`insert_banner`]: InlineViewport::insert_banner
     /// [`draw`]: InlineViewport::draw
     /// [`restore`]: InlineViewport::restore
     fn flush_pending(&mut self) -> io::Result<()> {
@@ -694,7 +765,52 @@ impl InlineViewport {
             return Ok(());
         }
         let lines = std::mem::take(&mut self.pending);
-        self.write_above(lines)
+        // The banner's rows and how far above the viewport its first one
+        // lands: every row from it to the end of the batch.
+        let banner = self.pending_banner.take().and_then(|(index, rows)| {
+            let banner = lines.get(index..index + rows)?.to_vec();
+            Some((banner, lines.len() - index))
+        });
+        self.write_above(lines)?;
+        if let Some((banner, above)) = banner {
+            self.banner = BannerSeat::new(banner, self.view.y, above, self.screen.width);
+        }
+        Ok(())
+    }
+
+    /// Paint the banner's rows for this frame over its seat — `pose`, or the
+    /// committed rows for `None` — sending only the cells that differ from
+    /// what the seat shows, and nothing at all when none do. A no-op once
+    /// the banner has left the screen.
+    fn paint_banner(&mut self, pose: Option<Vec<Line<'static>>>) -> io::Result<()> {
+        let Some(seat) = self.banner.as_ref() else {
+            return Ok(());
+        };
+        let next = seat.frame(pose);
+        match overlay_paint(Some(&seat.shown), &next) {
+            OverlayPaint::Unchanged => return Ok(()),
+            OverlayPaint::Diff(updates) => self.draw_cells(updates.into_iter())?,
+            OverlayPaint::Full => {
+                let area = next.area;
+                self.draw_cells(visible_cells(
+                    &next.content,
+                    usize::from(area.width),
+                    Position::new(area.x, area.y),
+                ))?;
+            }
+        }
+        if let Some(seat) = self.banner.as_mut() {
+            seat.shown = next;
+        }
+        Ok(())
+    }
+
+    /// Put the banner back as it was committed — what [`restore`] does on
+    /// the way out, so quitting mid-blink leaves the resting art behind.
+    ///
+    /// [`restore`]: InlineViewport::restore
+    fn settle_banner(&mut self) -> io::Result<()> {
+        self.paint_banner(None)
     }
 
     /// Commit `lines` into scrollback directly above the viewport, pushing the
@@ -814,6 +930,8 @@ impl InlineViewport {
     fn clear_scrollback_and_screen(&mut self) -> io::Result<()> {
         write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
         self.prev = None;
+        // The banner went with the screen; the rebuild seats its own.
+        self.banner = None;
         // A blank screen holds no painted region for the rebuild's paint to
         // clear beneath (the rebuild's own scrolls keep it at zero).
         self.painted_bottom = 0;
@@ -849,6 +967,11 @@ impl InlineViewport {
         // re-records the real one).
         self.painted_bottom = self.painted_bottom.min(height);
         self.prev = None; // geometry moved under us; repaint in full next draw
+        // …and the banner with everything else: where the emulator put its
+        // rows is unknown until the rebuild that follows writes them again.
+        if changed {
+            self.banner = None;
+        }
         // …and the alt screen the emulator just reflowed under us. The area
         // check in `overlay_paint` is NOT enough on its own: a resize burst can
         // coalesce into one frame (`on_resize` asks for a frame, but the
@@ -879,11 +1002,16 @@ impl InlineViewport {
     /// ordinary overlay return never comes here — it *flushes* its queue
     /// through [`draw`] instead, keeping the terminal's own scrollback.)
     ///
+    /// The first `banner_rows` rows of `tail` are the startup banner
+    /// (`ui::banner_tail` puts it there): when the rebuilt screen still holds
+    /// them, the banner is seated again, at rest (`docs/mascot-motion.md`).
+    ///
     /// [`insert_before`]: InlineViewport::insert_before
     /// [`draw`]: InlineViewport::draw
     pub fn reflow(
         &mut self,
         tail: Vec<Line<'static>>,
+        banner_rows: usize,
         height: u16,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
@@ -897,6 +1025,8 @@ impl InlineViewport {
         // queue thousands of rows), while the flush path's `mem::take` already
         // releases it — the rebuild drops the stale queue the same way.
         drop(std::mem::take(&mut self.pending));
+        // …and the queue's banner mark with it: the tail carries its own.
+        self.pending_banner = None;
         // A modal open right now takes its seat by this rebuild's real write —
         // note it (`modal_scrolled`): the close must purge-rebuild or its
         // collapse strands the box above the rows it vacates. Recording this
@@ -913,7 +1043,7 @@ impl InlineViewport {
         // even emits its clear as a bare `write!` outside the diff, so hiding
         // here is the only thing that keeps the cursor out of that jog.
         queue!(self.backend, Hide)?;
-        let painted = self.paint_reflow(tail, height, render, app);
+        let painted = self.paint_reflow(tail, banner_rows, height, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
         ended?;
@@ -928,6 +1058,7 @@ impl InlineViewport {
     fn paint_reflow(
         &mut self,
         tail: Vec<Line<'static>>,
+        banner_rows: usize,
         height: u16,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
@@ -941,7 +1072,13 @@ impl InlineViewport {
         self.backend.set_cursor_position(Position::new(0, 0))?;
         self.prev = None; // the screen is being rebuilt out from under `prev`
         self.view = Rect::new(0, 0, self.screen.width, height);
+        // The banner heads the tail; seat it where the rebuild leaves it —
+        // nowhere, when the tail outgrew the screen and took it to
+        // scrollback.
+        let banner: Vec<Line<'static>> = tail.iter().take(banner_rows).cloned().collect();
+        let above = tail.len();
         self.write_above(tail)?;
+        self.banner = BannerSeat::new(banner, self.view.y, above, self.screen.width);
         // `write_above` seated the viewport just below the tail; paint the live
         // region there in this same frame (a no-op repin — no scroll, no vacated
         // rows; `prev` is `None`, so `paint_frame` blits in full).
@@ -1144,6 +1281,11 @@ impl InlineViewport {
         if OVERLAY_ACTIVE.swap(false, Ordering::SeqCst) {
             let _ = execute!(self.backend, LeaveAlternateScreen);
         }
+        // The banner is left as it was committed: a quit mid-blink must not
+        // leave the mascot's eyes shut in the user's terminal — and it comes
+        // before the flush below, which may scroll it away
+        // (`docs/mascot-motion.md`).
+        self.settle_banner()?;
         // A quit can land between an `insert_before` and the draw tick that would
         // have flushed it (e.g. a notice, then an instant Ctrl+C): write any queued
         // lines now so committed content is never lost with the session. No
@@ -1278,14 +1420,17 @@ impl InlineViewport {
     /// Scroll the whole screen up `n` rows by appending lines at the bottom, so
     /// the rows that fall off the top enter the terminal's real scrollback.
     /// Everything painted moves up with them, the last painted region's
-    /// bottom included — `painted_bottom` is a screen row, so it is carried
-    /// here, at the one place the screen scrolls.
+    /// bottom and the banner's seat included — both are screen rows, so they
+    /// are carried here, at the one place the screen scrolls.
     fn scroll_up(&mut self, n: u16) -> io::Result<()> {
         if n > 0 {
             self.backend
                 .set_cursor_position(Position::new(0, self.screen.height.saturating_sub(1)))?;
             self.backend.append_lines(n)?;
             self.painted_bottom = self.painted_bottom.saturating_sub(n);
+            // The banner moves with the screen — and is no longer seated the
+            // moment a row of it leaves the top.
+            self.banner = self.banner.take().and_then(|seat| seat.scrolled(n));
         }
         Ok(())
     }
@@ -1332,6 +1477,77 @@ impl InlineViewport {
             width,
             Position::new(area.x, area.y),
         ))
+    }
+}
+
+/// The startup banner **while it is still on the screen** — the one thing
+/// above the live region a frame may repaint (`docs/mascot-motion.md`).
+///
+/// The banner is committed like any other row, but until the conversation's
+/// first cell lands its mascot moves, and until a row of it scrolls off the
+/// top it is still at a place the viewport knows: `rest.area`. A frame hands
+/// [`InlineViewport::draw`] the banner's rows for the moment and they are
+/// painted here, in place, diffed against what the seat shows.
+///
+/// Pure bookkeeping, so it is unit-tested while the writes around it are
+/// only smoke-covered: where the banner is seated, how a scroll carries it,
+/// and what a frame's rows come to.
+#[derive(Debug, Clone, PartialEq)]
+struct BannerSeat {
+    /// The banner as it was committed — its mascot at rest — at its place
+    /// on the screen. What a frame with no pose paints, what a frame that
+    /// scrolls the screen paints first, and what is left behind on the way
+    /// out.
+    rest: Buffer,
+    /// What the banner's rows show right now: `rest`, or the pose last
+    /// painted over it. The baseline the next frame is diffed against.
+    shown: Buffer,
+}
+
+impl BannerSeat {
+    /// Seat a banner of `lines` (as committed) whose first row was written
+    /// `above` rows above a live region now at `view_top`, on a `width`-wide
+    /// screen. `None` when there is no banner, or when any of it is past the
+    /// top of the screen — a row in the terminal's scrollback cannot be
+    /// repainted, and a mascot moving in only its lower rows would not be
+    /// one.
+    fn new(lines: Vec<Line<'static>>, view_top: u16, above: usize, width: u16) -> Option<Self> {
+        let rows = u16::try_from(lines.len()).ok().filter(|rows| *rows > 0)?;
+        let top = u16::try_from(usize::from(view_top).checked_sub(above)?).ok()?;
+        let rest = Self::rendered(lines, Rect::new(0, top, width, rows));
+        Some(Self {
+            shown: rest.clone(),
+            rest,
+        })
+    }
+
+    /// `lines` as cells at `area`, rendered the way a commit renders them
+    /// (`write_above_chunk`), so the seat's cells are the screen's.
+    fn rendered(lines: Vec<Line<'static>>, area: Rect) -> Buffer {
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(lines).render(area, &mut buffer);
+        buffer
+    }
+
+    /// The seat after the screen scrolled up `n` rows — `None` once its
+    /// first row has left the screen.
+    fn scrolled(mut self, n: u16) -> Option<Self> {
+        let top = self.rest.area.y.checked_sub(n)?;
+        self.rest.area.y = top;
+        self.shown.area.y = top;
+        Some(self)
+    }
+
+    /// The cells a frame paints over the seat: `pose`'s rows, or the
+    /// committed ones for `None` — and for rows that are not the banner's
+    /// shape, which are never painted over it.
+    fn frame(&self, pose: Option<Vec<Line<'static>>>) -> Buffer {
+        match pose {
+            Some(lines) if lines.len() == usize::from(self.rest.area.height) => {
+                Self::rendered(lines, self.rest.area)
+            }
+            _ => self.rest.clone(),
+        }
     }
 }
 
@@ -1631,10 +1847,15 @@ mod tests {
     use ratatui::layout::{Position, Rect};
     use ratatui::style::Style;
 
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::text::Line;
+
     use super::{
-        HEADLESS_SIZE, InlineViewport, OverlayPaint, keyboard_enhancement_disabled, overlay_paint,
-        visible_cells,
+        BannerSeat, HEADLESS_SIZE, InlineViewport, Output, OverlayPaint,
+        keyboard_enhancement_disabled, overlay_paint, visible_cells,
     };
+    use crate::app::App;
+    use crate::images::ImageStore;
 
     #[test]
     fn a_headless_viewport_paints_nothing_and_keeps_nothing() {
@@ -1651,13 +1872,294 @@ mod tests {
             "nothing queued for a paint that never comes"
         );
         let app = crate::app::App::new();
-        assert!(term.draw(5, |_, _| {}, &app).is_ok());
-        assert!(term.reflow(vec!["row".into()], 5, |_, _| {}, &app).is_ok());
+        term.insert_banner(vec!["a banner row".into()]);
+        assert!(term.pending.is_empty(), "nor a banner");
+        assert!(term.draw(5, None, |_, _| {}, &app).is_ok());
+        assert!(
+            term.reflow(vec!["row".into()], 1, 5, |_, _| {}, &app)
+                .is_ok()
+        );
+        assert!(
+            !term.banner_on_screen(),
+            "nothing is on a screen it has not"
+        );
         assert!(term.enter_overlay().is_ok());
         assert!(term.draw_overlay(|_, _| {}).is_ok());
         assert!(term.exit_overlay().is_ok());
         assert!(term.restore().is_ok());
         assert!(term.take_typeahead().is_empty());
+    }
+
+    // --- the banner's seat (docs/mascot-motion.md) ---
+
+    /// One plain row per text.
+    fn rows(texts: &[&str]) -> Vec<Line<'static>> {
+        texts
+            .iter()
+            .map(|text| Line::from((*text).to_string()))
+            .collect()
+    }
+
+    /// Screen row `y` of `buf` as text, trailing blanks trimmed.
+    fn text_row(buf: &Buffer, y: u16) -> String {
+        (buf.area.x..buf.area.right())
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// A viewport that does all of its bookkeeping over no terminal at all:
+    /// a `width` × `height` screen whose one-row live region sits at `top`.
+    /// Unlike [`InlineViewport::headless`] it paints — into nothing — so the
+    /// rows it tracks can be read back.
+    fn detached(width: u16, height: u16, top: u16) -> InlineViewport {
+        InlineViewport {
+            backend: CrosstermBackend::new(Output::Nowhere),
+            screen: Rect::new(0, 0, width, height),
+            view: Rect::new(0, top, width, 1),
+            prev: None,
+            overlay_prev: None,
+            pending: Vec::new(),
+            pending_banner: None,
+            banner: None,
+            modal_scrolled: false,
+            painted_bottom: top + 1,
+            keyboard_enhanced: false,
+            hyperlinks: false,
+            images: ImageStore::disabled(),
+            typeahead: Vec::new(),
+            headless: false,
+        }
+    }
+
+    const ART: [&str; 3] = ["art 1", "art 2", "art 3"];
+    /// [`ART`] mid-move: its middle row redrawn.
+    const POSE: [&str; 3] = ["art 1", "ART 2", "art 3"];
+
+    /// A 40 × 12 screen whose first frame committed a notice, the banner and
+    /// a spacer from row 2 down: the banner on rows 3–5, the four-row live
+    /// region under the spacer at row 7.
+    fn seated() -> InlineViewport {
+        let mut term = detached(40, 12, 2);
+        term.insert_before(rows(&["a notice above the banner"]));
+        term.insert_banner(rows(&ART));
+        term.insert_before(rows(&[""]));
+        term.draw(4, None, |_, _| {}, &App::new()).expect("drawn");
+        term
+    }
+
+    /// The seat of a viewport that has one.
+    fn seat(term: &InlineViewport) -> &BannerSeat {
+        term.banner.as_ref().expect("the banner is seated")
+    }
+
+    #[test]
+    fn a_banner_is_seated_only_while_it_is_wholly_on_screen() {
+        // Its first row four rows above a live region at row 6: rows 2–4.
+        let seat = BannerSeat::new(rows(&ART), 6, 4, 20).expect("on screen");
+        assert_eq!(seat.rest.area, Rect::new(0, 2, 20, 3));
+        assert_eq!(text_row(&seat.rest, 2), "art 1");
+        assert_eq!(text_row(&seat.rest, 4), "art 3");
+        assert_eq!(seat.shown, seat.rest, "seated as committed: at rest");
+        assert!(
+            BannerSeat::new(rows(&ART), 4, 4, 20).is_some(),
+            "flush against the top of the screen is still on it"
+        );
+        assert!(
+            BannerSeat::new(rows(&ART), 3, 4, 20).is_none(),
+            "its first row is in scrollback"
+        );
+        assert!(BannerSeat::new(Vec::new(), 6, 0, 20).is_none(), "no banner");
+    }
+
+    #[test]
+    fn a_scroll_carries_the_seat_and_the_top_of_the_screen_ends_it() {
+        let seat = BannerSeat::new(rows(&ART), 6, 4, 20).expect("on screen");
+        let moved = seat.scrolled(2).expect("still on screen");
+        assert_eq!(moved.rest.area, Rect::new(0, 0, 20, 3));
+        assert_eq!(moved.shown.area, moved.rest.area);
+        assert_eq!(text_row(&moved.rest, 0), "art 1", "the rows came along");
+        assert!(
+            moved.scrolled(1).is_none(),
+            "a row that left the screen cannot be repainted"
+        );
+    }
+
+    #[test]
+    fn a_seat_paints_only_the_cells_a_pose_changes() {
+        let seat = BannerSeat::new(rows(&["▙▄▙", "▜▄▛", "▘ ▝"]), 6, 4, 20).expect("on screen");
+        let next = seat.frame(Some(rows(&["▙▄▙", "▜█▛", "▘ ▝"])));
+        let OverlayPaint::Diff(updates) = overlay_paint(Some(&seat.shown), &next) else {
+            panic!("a pose that differs paints a diff");
+        };
+        let cells: Vec<(u16, u16, &str)> = updates
+            .iter()
+            .map(|(x, y, cell)| (*x, *y, cell.symbol()))
+            .collect();
+        assert_eq!(cells, [(1, 3, "█")], "one eye, at its place on the screen");
+        // The resting frame over a resting seat is silence…
+        assert!(matches!(
+            overlay_paint(Some(&seat.shown), &seat.frame(None)),
+            OverlayPaint::Unchanged
+        ));
+        // …and rows that are not the banner's shape are not painted over it.
+        assert_eq!(seat.frame(Some(rows(&["one row"]))), seat.rest);
+    }
+
+    #[test]
+    fn the_first_frame_seats_the_banner_where_it_was_written() {
+        let mut term = detached(40, 12, 2);
+        term.insert_before(rows(&["a notice above the banner"]));
+        term.insert_banner(rows(&ART));
+        term.insert_before(rows(&[""]));
+        assert!(!term.banner_on_screen(), "queued, not on the screen yet");
+        term.draw(4, None, |_, _| {}, &App::new()).expect("drawn");
+        assert!(term.banner_on_screen());
+        assert_eq!(seat(&term).rest.area, Rect::new(0, 3, 40, 3));
+        assert_eq!(text_row(&seat(&term).rest, 4), "art 2");
+        assert_eq!(term.view_top(), 7, "the region sits under the spacer");
+    }
+
+    #[test]
+    fn a_pose_is_painted_over_the_seat_and_rest_returns_without_one() {
+        let mut term = seated();
+        let app = App::new();
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        assert_eq!(text_row(&seat(&term).shown, 4), "ART 2");
+        assert_eq!(
+            text_row(&seat(&term).rest, 4),
+            "art 2",
+            "what was committed"
+        );
+        // No pose for the frame is the resting art back on the screen.
+        term.draw(4, None, |_, _| {}, &app).expect("drawn");
+        assert_eq!(seat(&term).shown, seat(&term).rest);
+    }
+
+    #[test]
+    fn a_frame_that_commits_paints_the_banner_at_rest_first() {
+        // The first cell's own frame: the clock still says mid-move, but the
+        // row is about to become history, and history does not blink.
+        let mut term = seated();
+        let app = App::new();
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        term.insert_before(rows(&["the first cell"]));
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        assert_eq!(seat(&term).shown, seat(&term).rest);
+        // The commit took the row under the spacer, the region one row down
+        // to the bottom of the screen: nothing scrolled, so the seat holds.
+        assert_eq!(seat(&term).rest.area.y, 3);
+        assert_eq!(term.view_top(), 8);
+    }
+
+    #[test]
+    fn a_region_growing_past_the_bottom_rests_the_banner_and_carries_its_seat() {
+        let mut term = seated();
+        let app = App::new();
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        // Six rows from row 7 overflow the twelve-row screen by one.
+        term.draw(6, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        assert_eq!(
+            seat(&term).shown,
+            seat(&term).rest,
+            "at rest before it moves"
+        );
+        assert_eq!(seat(&term).rest.area.y, 2, "carried up with the screen");
+        // Once the screen has stopped moving the pose is back.
+        term.draw(6, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        assert_eq!(text_row(&seat(&term).shown, 3), "ART 2");
+    }
+
+    #[test]
+    fn a_banner_scrolled_off_the_top_is_no_longer_seated() {
+        let mut term = seated();
+        let app = App::new();
+        // Nine rows from row 7: the screen scrolls four, the banner's first
+        // row (at 3) with it.
+        term.draw(9, None, |_, _| {}, &app).expect("drawn");
+        assert!(!term.banner_on_screen());
+        // …and a pose handed to a later frame is painted nowhere.
+        term.draw(9, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        assert!(!term.banner_on_screen());
+    }
+
+    #[test]
+    fn a_commit_that_pushes_the_banner_into_scrollback_unseats_it() {
+        let mut term = seated();
+        term.insert_before(rows(&["1", "2", "3", "4", "5", "6"]));
+        term.draw(4, None, |_, _| {}, &App::new()).expect("drawn");
+        assert!(!term.banner_on_screen());
+    }
+
+    #[test]
+    fn a_rebuild_reseats_the_banner_at_the_top_of_the_screen() {
+        let mut term = seated();
+        let app = App::new();
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &app)
+            .expect("drawn");
+        let mut tail = rows(&ART);
+        tail.extend(rows(&["", "a rebuilt cell", ""]));
+        term.reflow(tail, 3, 4, |_, _| {}, &app).expect("rebuilt");
+        assert_eq!(seat(&term).rest.area, Rect::new(0, 0, 40, 3));
+        assert_eq!(seat(&term).shown, seat(&term).rest, "rebuilt at rest");
+        assert_eq!(term.view_top(), 6);
+    }
+
+    #[test]
+    fn a_rebuild_whose_tail_overflows_the_screen_seats_nothing() {
+        let mut term = seated();
+        let mut tail = rows(&ART);
+        tail.extend(rows(&["", "1", "2", "3", "4", "5", "6", "7"]));
+        term.reflow(tail, 3, 4, |_, _| {}, &App::new())
+            .expect("rebuilt");
+        assert!(!term.banner_on_screen(), "its top rows are in scrollback");
+        // A rebuild that names no banner rows seats none either.
+        let mut term = seated();
+        term.reflow(rows(&["a cell"]), 0, 4, |_, _| {}, &App::new())
+            .expect("rebuilt");
+        assert!(!term.banner_on_screen());
+    }
+
+    #[test]
+    fn a_rebuild_drops_a_banner_still_queued() {
+        // A startup picker's resume: the queued banner never reached the
+        // screen, and the rebuild's own is the one that is seated.
+        let mut term = detached(40, 12, 2);
+        term.insert_banner(rows(&ART));
+        term.reflow(rows(&["a cell"]), 0, 4, |_, _| {}, &App::new())
+            .expect("rebuilt");
+        assert!(!term.banner_on_screen());
+        term.insert_before(rows(&["later"]));
+        term.draw(4, None, |_, _| {}, &App::new()).expect("drawn");
+        assert!(!term.banner_on_screen(), "the stale mark seats nothing");
+    }
+
+    #[test]
+    fn a_resize_unseats_the_banner_until_the_rebuild() {
+        // The emulator moved the rows to fit the new size; where the banner
+        // went is anyone's guess until the purge rebuild writes it again.
+        let mut term = seated();
+        assert!(!term.resized(40, 12), "the same size moves nothing");
+        assert!(term.banner_on_screen());
+        assert!(term.resized(50, 12));
+        assert!(!term.banner_on_screen());
+    }
+
+    #[test]
+    fn leaving_settles_the_banner_at_rest() {
+        let mut term = seated();
+        term.draw(4, Some(rows(&POSE)), |_, _| {}, &App::new())
+            .expect("drawn");
+        term.settle_banner().expect("settled");
+        assert_eq!(seat(&term).shown, seat(&term).rest);
     }
 
     /// Render `line` into a `width`-wide one-row buffer the way every full-cell

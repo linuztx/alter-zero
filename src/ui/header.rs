@@ -3,10 +3,10 @@
 
 use super::inline::{inline_spans, wrap_inline};
 use super::theme::*;
-use super::wrap::{clamp_spans, cols, wrap_text};
+use super::wrap::{blend_color, clamp_spans, cols, wrap_text};
 use super::*;
 
-use crate::app::Mascot;
+use crate::app::{Mascot, MascotPose};
 
 /// Colour `text` with a left-to-right [`header_gradient_start`] →
 /// [`header_gradient_end`] gradient keyed by absolute display column across
@@ -14,11 +14,31 @@ use crate::app::Mascot;
 /// cyan → blue wash (docs/header.md) — `total` is the art block's width, so
 /// the wash is uniform down the block and a short row simply stops earlier.
 pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
+    lit_gradient_spans(text, total, |_| 0.0)
+}
+
+/// [`gradient_spans`] under a light: the cell starting at display column
+/// `col` is lifted off the gradient toward the brightest ink
+/// ([`shimmer_highlight`]) by `light(col)` — 0 leaves it exactly on the
+/// gradient, 1 is the light's full strength ([`MASCOT_GLINT_MAX_BLEND`]).
+/// The mascot's glint, whose shape is `MascotPose::light`
+/// (`docs/mascot-motion.md`).
+fn lit_gradient_spans(
+    text: &str,
+    total: usize,
+    light: impl Fn(usize) -> f32,
+) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;
     let mut run: Option<(Color, String)> = None;
     for g in text.graphemes(true) {
-        let color = header_gradient_at(col, total);
+        let base = header_gradient_at(col, total);
+        let strength = light(col);
+        let color = if strength > 0.0 {
+            blend_color(shimmer_highlight(), base, strength * MASCOT_GLINT_MAX_BLEND)
+        } else {
+            base
+        };
         match &mut run {
             Some((c, s)) if *c == color => s.push_str(g),
             _ => {
@@ -251,30 +271,101 @@ pub fn notice_card_lines(heading: &str, body: &str, width: u16) -> Vec<Line<'sta
 /// the Ctrl+O transcript shows it as chrome too ([`transcript_lines`]).
 /// Returns no trailing spacer (the caller adds one, the
 /// `insert_before(msg); insert_before(blank)` pattern).
+///
+/// Always the mascot **at rest**: this is what reaches scrollback, the
+/// transcript and `/export`, and a record does not blink. The banner in
+/// motion is [`banner_motion_lines`] (`docs/mascot-motion.md`).
 #[must_use]
 pub fn header_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     header_lines_for(app, app.mascot(), width)
 }
 
-/// The banner as it would render with `mascot` — the `/mascot` picker's live
-/// preview calls this directly, so the preview and the real banner share one
-/// builder and can never disagree (docs/mascot.md).
+/// The banner as it would render with `mascot` at rest — the banner slot the
+/// `/mascot` picker sizes its preview by (docs/mascot.md).
+#[must_use]
+pub(super) fn header_lines_for(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
+    banner_lines(app, mascot, &MascotPose::rest(mascot), width)
+}
+
+/// The banner with its mascot **in motion**, as the rows to paint over the
+/// committed banner this frame — or `None` when nothing moves: the session
+/// does not let it ([`App::banner_in_motion`]), or `width` is the badge
+/// tier's, which has no art to move. Before the greeting and between acts
+/// these are exactly [`header_lines`]. See `docs/mascot-motion.md`.
+#[must_use]
+pub fn banner_motion_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
+    let motion = app.banner_motion()?;
+    let mascot = app.mascot();
+    seats_art(mascot, width).then(|| banner_lines(app, mascot, &motion.pose, width))
+}
+
+/// How long until anything the mascot's motion draws next changes — when
+/// the boundary should draw again — or `None` when nothing moves and no
+/// frame is owed. The sooner of the banner's next pose (only while the
+/// banner is still `banner_on_screen`, the viewport's answer, and `width`
+/// seats its art) and the open `/mascot` picker's preview. Nothing under an
+/// alternate-screen overlay, where neither is on screen and a frame drawn
+/// for nothing costs a text selection (`docs/overlay-repaint.md`).
+///
+/// A pose's hold runs to the next pose that differs, so a banner at rest
+/// between acts is due only at its next act — one frame per change, never a
+/// chain (`docs/mascot-motion.md`).
+#[must_use]
+pub fn mascot_motion_due(app: &App, width: u16, banner_on_screen: bool) -> Option<Duration> {
+    if app.view.is_overlay() {
+        return None;
+    }
+    let banner = (banner_on_screen && seats_art(app.mascot(), width))
+        .then(|| app.banner_motion())
+        .flatten()
+        .map(|motion| motion.holds);
+    let preview = app.mascot_preview_motion().map(|motion| motion.holds);
+    match (banner, preview) {
+        (Some(banner), Some(preview)) => Some(banner.min(preview)),
+        (banner, preview) => banner.or(preview),
+    }
+}
+
+/// The columns the banner's title takes beside the art: the name and its
+/// `(v…)` version.
+fn title_cols() -> usize {
+    cols(HEADER_NAME) + cols(&format!(" (v{})", env!("CARGO_PKG_VERSION")))
+}
+
+/// Whether `width` seats `mascot`'s art beside the full title — the mascot
+/// tier. Narrower, the banner is the one-line text badge, which has no art.
+fn seats_art(mascot: Mascot, width: u16) -> bool {
+    usize::from(width) >= mascot.art_width() + HEADER_ART_GAP + title_cols()
+}
+
+/// The banner with `mascot` in `pose` — the one builder behind the committed
+/// banner ([`header_lines`], the resting pose), the banner in motion
+/// ([`banner_motion_lines`]) and the `/mascot` picker's preview, so the
+/// three can never disagree (docs/mascot.md, docs/mascot-motion.md).
+///
+/// A pose is drawn **in the resting art's place**: its rows are the resting
+/// art's row count and no wider than the block (`Mascot::art_width`), so the
+/// metadata column stays exactly where the resting banner has it.
 ///
 /// Two tiers: the mascot banner (art rows flush-left wearing the gradient,
 /// each metadata row at `art width + gap`, clamped with a trailing `…`), or —
 /// when the width can't seat the art beside the full title — a one-line text
-/// badge over the same clamped metadata rows.
+/// badge over the same clamped metadata rows, which no pose changes.
 #[must_use]
-pub(super) fn header_lines_for(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
+pub(super) fn banner_lines(
+    app: &App,
+    mascot: Mascot,
+    pose: &MascotPose,
+    width: u16,
+) -> Vec<Line<'static>> {
     let w = width as usize;
     let meta = meta_rows(app);
-    let art = mascot.art();
+    let art = pose.art;
     let art_w = mascot.art_width();
-    let title_w = cols(HEADER_NAME) + cols(&format!(" (v{})", env!("CARGO_PKG_VERSION")));
 
     // Too narrow to seat the art beside the title: the one-line badge — the
     // gradient name + an accent version — over the same metadata rows.
-    if w < art_w + HEADER_ART_GAP + title_w {
+    if !seats_art(mascot, width) {
         let accent = Style::new().fg(header_accent_color());
         let mut badge = vec![Span::raw(HEADER_INDENT)];
         badge.extend(gradient_spans(HEADER_NAME, cols(HEADER_NAME)));
@@ -308,7 +399,7 @@ pub(super) fn header_lines_for(app: &App, mascot: Mascot, width: u16) -> Vec<Lin
         let mut spans: Vec<Span<'static>> = Vec::new();
         let art_cols = art.get(i).map_or(0, |row| cols(row));
         if let Some(row) = art.get(i) {
-            spans.extend(gradient_spans(row, art_w));
+            spans.extend(lit_gradient_spans(row, art_w, |col| pose.light(col, i)));
         }
         if let Some(meta_row) = i.checked_sub(offset).and_then(|k| meta.get(k)) {
             spans.push(Span::raw(

@@ -7,15 +7,17 @@
 //! other rows indented under it, a five-row window over the `(n/total)`
 //! counter — and a **live banner preview** of the highlighted mascot under a
 //! caption naming it. The preview is built by
-//! [`header_lines_for`](super::header::header_lines_for), the *same* builder
+//! [`banner_lines`](super::header::banner_lines), the *same* builder
 //! the startup banner uses, so what the picker shows and what Enter produces
-//! can never disagree. Once the terminal has room for the list, a gap and
+//! can never disagree — and it wears the highlighted mascot's **motion**:
+//! the moment the highlight lands on a mascot it greets, so the page shows
+//! what each one does (`docs/mascot-motion.md`). Once the terminal has room for the list, a gap and
 //! the banner, the preview sits **beside** the list; a narrower terminal
 //! stacks it under the list ([`PreviewLayout`]). The banner slot is padded
 //! to the tallest mascot, and the list column is sized off the whole
 //! catalog, so the frame holds still as ↑/↓ and a search move the list.
 
-use super::header::header_lines_for;
+use super::header::{banner_lines, header_lines_for};
 use super::model_view::{
     PreviewLayout, capitalized, caption_lines, compact_page, compact_page_with_header,
     first_page_that_fits, list_counter_line, list_window, marked_row_head, model_placeholder_row,
@@ -25,7 +27,7 @@ use super::theme::*;
 use super::wrap::{clamp_spans, spans_cols};
 use super::*;
 
-use crate::app::{Mascot, MascotRow};
+use crate::app::{Mascot, MascotPose, MascotRow};
 
 /// One mascot row in the picker family's shape: `{indent}{→ }{name}{ ✓}`
 /// ([`marked_row_head`]) — the selected row's marker and name in the
@@ -111,11 +113,14 @@ fn list_lines(
     lines
 }
 
-/// The preview for `mascot` at `width`: the caption ([`caption_lines`] —
-/// the mascot's name in bold over its description in the frame's dim), a
-/// gap, and the live banner — the startup banner's own builder at `width`,
-/// so the preview *is* the banner — padded with blank rows to the tallest
-/// banner any mascot draws there ([`banner_slot`]).
+/// The preview for `mascot` — the highlighted one — at `width`: the caption
+/// ([`caption_lines`] — the mascot's name in bold over its description in
+/// the frame's dim), a gap, and the live banner — the startup banner's own
+/// builder at `width`, so the preview *is* the banner — padded with blank
+/// rows to the tallest banner any mascot draws there ([`banner_slot`]). The
+/// banner wears the mascot's motion on the preview's own clock
+/// ([`App::mascot_preview_motion`]), at rest when the setting stills it; a
+/// pose is the resting art's shape, so no frame resizes the slot.
 fn preview_lines(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::from(caption_lines(
         &capitalized(mascot.name()),
@@ -124,7 +129,10 @@ fn preview_lines(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
     ));
     lines.push(Line::default());
     let slot = banner_slot(app, width);
-    let mut banner = header_lines_for(app, mascot, width);
+    let pose = app
+        .mascot_preview_motion()
+        .map_or(MascotPose::rest(mascot), |motion| motion.pose);
+    let mut banner = banner_lines(app, mascot, &pose, width);
     banner.truncate(slot);
     banner.resize(slot, Line::default());
     lines.extend(banner);

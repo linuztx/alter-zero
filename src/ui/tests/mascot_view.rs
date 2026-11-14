@@ -773,3 +773,113 @@ fn a_tiny_terminal_keeps_the_mascot_search_line() {
         "Enter to choose",
     );
 }
+
+// ===== the preview in motion (docs/mascot-motion.md) =====
+
+/// The first moment on the preview's clock that `mascot` strikes the first
+/// still of its signature.
+fn signature_time(mascot: Mascot) -> std::time::Duration {
+    use crate::app::{Gesture, mascot_motion};
+    let target = mascot.stills(Gesture::Signature)[0].pose;
+    let mut at = std::time::Duration::ZERO;
+    loop {
+        let motion = mascot_motion(mascot, 0, at);
+        if motion.pose == target {
+            return at;
+        }
+        at += motion.holds;
+        assert!(at < crate::app::MOTION_BAR, "no signature in the greeting");
+    }
+}
+
+#[test]
+fn the_preview_wears_the_highlighted_mascots_motion() {
+    for width in [WIDE, NARROW] {
+        let mut app = open_app();
+        app.set_pulse(std::time::Duration::ZERO);
+        let rest = texts(&app, width);
+        assert!(
+            rest.iter().any(|row| row.contains("▙▄▙▄▟▄▟")),
+            "the preview opens at rest: {rest:#?}"
+        );
+        app.set_pulse(signature_time(Mascot::Crest));
+        let moved = texts(&app, width);
+        assert!(
+            moved.iter().any(|row| row.contains("▄▄▄▄▄▄▄")),
+            "the frill is down: {moved:#?}"
+        );
+        assert!(
+            !moved.iter().any(|row| row.contains("▙▄▙▄▟▄▟")),
+            "the resting frill is gone from the preview: {moved:#?}"
+        );
+        assert_eq!(moved.len(), rest.len(), "the page holds its height");
+        // Only the art moved: the same rows, cut past the art, read the same.
+        let diff: Vec<usize> = (0..rest.len()).filter(|&i| rest[i] != moved[i]).collect();
+        assert_eq!(diff.len(), 1, "one row redrew: {diff:?}");
+    }
+}
+
+#[test]
+fn every_mascot_greets_in_the_preview() {
+    // The page is a showcase: highlight a mascot and it makes its move.
+    use crate::app::Gesture;
+    for (index, mascot) in Mascot::ALL.into_iter().enumerate() {
+        if mascot == Mascot::Gem {
+            continue; // its signature is light — no glyph to look for
+        }
+        let mut app = open_app();
+        select(&mut app, index);
+        app.set_pulse(std::time::Duration::ZERO);
+        app.set_pulse(signature_time(mascot));
+        let still = mascot.stills(Gesture::Signature)[0].pose;
+        let page = texts(&app, WIDE);
+        let changed = still
+            .art
+            .iter()
+            .zip(mascot.art())
+            .find(|(moved, rest)| moved != rest)
+            .map(|(moved, _)| moved.trim())
+            .expect("the signature redraws a row");
+        assert!(
+            page.iter().any(|row| row.contains(changed)),
+            "{}: {changed:?} not in {page:#?}",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn the_preview_is_still_with_the_setting_off() {
+    let mut app = open_app();
+    app.settings_mut().mascot_animation = false;
+    app.set_pulse(std::time::Duration::ZERO);
+    let rest = texts(&app, WIDE);
+    app.set_pulse(signature_time(Mascot::Crest));
+    assert_eq!(texts(&app, WIDE), rest);
+}
+
+#[test]
+fn the_page_holds_its_height_through_every_pose() {
+    // A pose is the resting art's shape, so no frame resizes the page — on
+    // the whole page and on every rung under it.
+    use crate::app::{MOTION_BAR, mascot_motion};
+    for (index, mascot) in Mascot::ALL.into_iter().enumerate() {
+        for (width, height) in [(WIDE, TALL), (NARROW, TALL), (WIDE, 12), (WIDE, 7)] {
+            let mut app = open_app();
+            select(&mut app, index);
+            app.set_pulse(std::time::Duration::ZERO);
+            let rows = mascot_menu_rows(&app, width, height);
+            let mut at = std::time::Duration::ZERO;
+            while at < MOTION_BAR {
+                app.set_pulse(at);
+                assert_eq!(
+                    mascot_menu_rows(&app, width, height),
+                    rows,
+                    "{} at {at:?} on {width}x{height}",
+                    mascot.name()
+                );
+                at += mascot_motion(mascot, 0, at).holds;
+            }
+        }
+    }
+}

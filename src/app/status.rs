@@ -440,6 +440,9 @@ impl App {
     /// live cell animates too. See `docs/tool-pulse.md`.
     pub fn set_pulse(&mut self, pulse: Duration) {
         self.pulse = pulse;
+        // A mascot waiting on its first frame starts its motion from this
+        // one (docs/mascot-motion.md).
+        self.latch_mascot_clocks();
     }
 
     /// The current animation phase — see [`set_pulse`](App::set_pulse). Zero

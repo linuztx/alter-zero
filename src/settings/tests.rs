@@ -924,3 +924,68 @@ fn the_ask_timeout_row_follows_max_tool_calls() {
     assert_eq!(all[at - 1], SettingKey::MaxToolCalls);
     assert_eq!(all[at + 1], SettingKey::Tips);
 }
+
+// ===== Mascot animation (docs/mascot-motion.md) =====
+
+#[test]
+fn the_mascot_animation_row_is_on_by_default_and_cycles_anywhere() {
+    // The banner's mascot moves until the user says otherwise. It needs
+    // nothing from the host, so the row is never unavailable.
+    let mut s = SessionSettings::default();
+    assert!(s.mascot_animation, "on by default");
+    assert_eq!(SettingKey::MascotAnimation.label(), "Mascot animation");
+    assert!(
+        SettingKey::MascotAnimation.description().contains("mascot"),
+        "the description says what the row moves"
+    );
+    assert!(s.is_available(SettingKey::MascotAnimation, MANUAL));
+    assert!(s.is_available(SettingKey::MascotAnimation, None));
+    assert_eq!(s.value_text(SettingKey::MascotAnimation, MANUAL), "true");
+    assert!(s.cycle(SettingKey::MascotAnimation));
+    assert!(!s.mascot_animation);
+    assert_eq!(s.value_text(SettingKey::MascotAnimation, MANUAL), "false");
+    assert!(s.cycle(SettingKey::MascotAnimation));
+    assert!(s.mascot_animation, "a boolean: back on");
+}
+
+#[test]
+fn the_mascot_animation_row_closes_the_rows_about_what_is_drawn() {
+    // It reads with the rows that decide what the screen shows — after the
+    // pictures, before the rows about how a request runs.
+    let all = SettingKey::ALL;
+    let at = all
+        .iter()
+        .position(|k| *k == SettingKey::MascotAnimation)
+        .expect("listed");
+    assert_eq!(all[at - 1], SettingKey::AutoResizeImages);
+    assert_eq!(all[at + 1], SettingKey::ErrorRetry);
+}
+
+#[test]
+fn a_stilled_mascot_is_what_the_directory_records() {
+    // Per directory, like the mascot itself — and a diff from the defaults,
+    // so an untouched session writes nothing about it.
+    assert!(
+        !SessionSettings::default()
+            .to_json()
+            .contains("mascot_animation")
+    );
+    let still = SessionSettings {
+        mascot_animation: false,
+        ..SessionSettings::default()
+    };
+    let json = still.to_json();
+    assert!(json.contains("\"mascot_animation\": false"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), still);
+
+    let mut file = SettingsFile::default();
+    file.record_value("/a", SettingKey::MascotAnimation, &still);
+    assert!(!file.settings_for("/a").mascot_animation, "saved for /a");
+    assert!(
+        file.settings_for("/b").mascot_animation,
+        "another directory keeps the default"
+    );
+    // The seed a hand-edited file carries stills every new directory.
+    let seeded = SettingsFile::parse(r#"{"mascot_animation": false}"#);
+    assert!(!seeded.settings_for("/anywhere").mascot_animation);
+}

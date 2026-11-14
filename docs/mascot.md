@@ -28,6 +28,12 @@ own accent → link gradient (`header_gradient_start()` →
 `header_gradient_end()` — the theme's, `docs/theme.md`), keyed by display
 column across the art block's width.
 
+`art()` is the mascot **at rest** — what is committed to scrollback, what
+the transcript and `/export` show. Until the conversation starts, the
+banner's mascot also **moves**: it greets at launch, then blinks, glances
+and makes the move its description names. The stills, the schedule and
+where they are painted are `docs/mascot-motion.md`.
+
 ## The `/mascot` picker
 
 On a terminal with room for the list, a gap and the banner — 59 columns over
@@ -95,6 +101,11 @@ cwd, the version, the hint and the gradient all preview exactly. Over it
 sits `/theme`'s caption: the mascot's name as a bold title (`Crest`) over
 its description in the frame's dim.
 
+The preview **moves** like the banner does (`docs/mascot-motion.md`), on a
+clock of its own: the moment the highlight lands on a mascot it greets — a
+glint, its signature move, a blink — so walking the list shows what each
+one does. With the **Mascot animation** setting off the preview is still.
+
 - **Beside the list on a wide terminal, under it on a narrow one.** The
   preview sits beside the list once the terminal has room for the list
   column (the widest row the catalog can paint, 12 columns), then
@@ -113,7 +124,8 @@ its description in the frame's dim.
 - **The frame never jumps.** The banner slot is padded to the tallest banner
   any mascot would draw at that width. Today's catalog is uniform, but the
   padding is what keeps that true of any mascot added later (the `/settings`
-  always-emit rule). The `→ {name}` rows carry the `/model` picker's green
+  always-emit rule). A mascot in motion keeps to its resting art's shape, so
+  no pose resizes the slot either. The `→ {name}` rows carry the `/model` picker's green
   `✓` on the session's current mascot, and the open seats the highlight on
   it.
 - **One layout, three pickers.** `ui::model_view::PreviewLayout` lays the
@@ -239,17 +251,21 @@ a project.
 ## API
 
 - `app::Mascot` — the catalog (`ALL`, `name`, `description`, `art`,
-  `art_width`, `from_name`), `Default` = `Crest`.
-- `app::MascotPicker` / `MascotRow` — the open picker's state and one derived
+  `art_width`, `from_name`), `Default` = `Crest`; its motion is
+  `Mascot::stills` and `app::mascot_motion` (`docs/mascot-motion.md`).
+- `app::MascotPicker` / `MascotRow` — the open picker's state (the
+  selection, the query, and `shown_at`, the preview's clock) and one derived
   row; `App::mascot()`, `set_mascot`, `open_mascot_picker`,
   `close_mascot_picker`, `mascot_rows`, `highlighted_mascot`,
-  `on_key_mascot_picker`.
+  `mascot_preview_motion`, `on_key_mascot_picker`.
 - `app::MascotFile` — the `mascot.json` format: `app::LookFile` over
   `app::Mascot` (`Look::KEY = "mascot"`) — `parse`/`to_json`, `project`,
   `choice_for`, `adopt`, `record`, over the `last` + `projects` fields.
 - `ui::mascot_view` — `mascot_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `mascot_picker_height`,
-  `render_mascot_picker`; `ui::header::header_lines_for` renders the preview,
+  `render_mascot_picker`; `ui::header::banner_lines` renders the preview in
+  the highlighted mascot's pose (`header_lines_for`, the resting banner,
+  sizes its slot),
   and `ui::model_view::PreviewLayout` (over `MASCOT_PREVIEW_GAP` and
   `MASCOT_PREVIEW_MIN_COLS`) lays it beside the list or under it.
 - `tui::mascot::Session::select_mascot`, `tui::config::{mascot_json_path,
@@ -282,6 +298,8 @@ a project.
   search line) and the rungs under it down to the search line, nothing
   flowing at any height.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
+- `app/tests/mascot_motion.rs`, and the motion tests of the two files above
+  — the stills, the schedule, the preview's clock (`docs/mascot-motion.md`).
 - `scripts/smoke.sh` Phase 139 — the side-by-side page fitting a 12-row
   terminal whole, and the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:

@@ -145,6 +145,7 @@ def main():
         'ALTER_ZERO_HISTORY_FILE': '/dev/null', 'ALTER_ZERO_CHECKPOINTS': '0',
         'ALTER_ZERO_PROJECT_CONFIG': '0', 'ALTER_ZERO_PROJECT_DOC_MAX_BYTES': '0',
         'ALTER_ZERO_TELEMETRY': '0', 'ALTER_ZERO_UPDATE_CHECK': '0', 'ALTER_ZERO_TIPS': '0',
+        'ALTER_ZERO_MASCOT_ANIMATION': '0',
         'ALTER_ZERO_PERMISSIONS': '0', 'ALTER_ZERO_CONTEXT_WINDOW': '1000000',
     }
     # Isolate all app-specific overrides and model keys. Keep the runtime's

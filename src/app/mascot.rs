@@ -146,6 +146,12 @@ pub struct MascotPicker {
     /// (space selects, the `/settings` grammar), Backspace pops, Esc clears
     /// then closes.
     pub query: String,
+    /// The frame clock ([`App::pulse`]) of the first frame the highlighted
+    /// mascot was previewed on — what its preview's motion counts from, so a
+    /// mascot greets as the highlight lands on it (`docs/mascot-motion.md`).
+    /// `None` until a frame latches it, and again whenever the highlight
+    /// moves to another mascot.
+    pub shown_at: Option<Duration>,
 }
 
 impl App {
@@ -177,6 +183,7 @@ impl App {
         self.mascot_picker = Some(MascotPicker {
             selected,
             query: String::new(),
+            shown_at: None,
         });
     }
 
@@ -237,8 +244,24 @@ impl App {
     /// the search). Owns **every** key while open (routed at the top of
     /// [`on_key`]).
     ///
+    /// A key that moves the highlight onto another mascot restarts the
+    /// preview's motion, so the newly highlighted one greets from the top
+    /// (`docs/mascot-motion.md`).
+    ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_mascot_picker(&mut self, key: KeyEvent) -> Action {
+        let before = self.highlighted_mascot();
+        let action = self.mascot_picker_key(key);
+        if self.highlighted_mascot() != before
+            && let Some(picker) = self.mascot_picker.as_mut()
+        {
+            picker.shown_at = None;
+        }
+        action
+    }
+
+    /// [`on_key_mascot_picker`](Self::on_key_mascot_picker)'s key grammar.
+    fn mascot_picker_key(&mut self, key: KeyEvent) -> Action {
         // Ctrl+C closes the picker (never quits — the composer-clear/quit
         // rules don't apply while it owns the keys), like the `/settings` menu.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {

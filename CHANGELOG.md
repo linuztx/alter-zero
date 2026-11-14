@@ -12,6 +12,22 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The banner's mascot is alive until the conversation starts.** From
+  launch until the first message is sent, the mascot beside the startup
+  banner moves: about a second in it greets (a glint of light, the move its
+  description names, a blink), and from then on it blinks, glances left and
+  right, and makes its move again every few seconds. Each of the six has
+  its own: the crest flares its frill, the bloom swells, the sprout's leaf
+  sways, the twin flicks its ears, the skitterer skitters, the gem catches
+  the light. The first message settles it at rest for good, `/clear` wakes
+  it again, and quitting never leaves it mid-blink in your terminal.
+  Between moves the app writes nothing at all. The `/mascot` picker's
+  preview moves too, so walking the list shows what each mascot does.
+  **Mascot animation** in `/settings` turns it off for a directory, and
+  `ALTER_ZERO_MASCOT_ANIMATION=0` for a run (`docs/mascot-motion.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**

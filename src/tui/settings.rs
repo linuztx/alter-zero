@@ -324,6 +324,10 @@ impl Session<'_> {
             // is read by the draw tick on every reading of the idle clock, so
             // `never` stops a running wait at once (docs/ask.md).
             SettingKey::HideThinking | SettingKey::AutoCompact | SettingKey::AskTimeout => {}
+            // Read by every frame: the one this keystroke schedules already
+            // draws the banner without its motion — at rest, even when the
+            // row was turned off mid-blink (docs/mascot-motion.md).
+            SettingKey::MascotAnimation => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

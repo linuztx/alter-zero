@@ -354,6 +354,11 @@ impl<'t> Session<'t> {
             first_verb_pin.as_deref(),
             entropy,
         ));
+        // The mascot's schedule is the session's own (docs/mascot-motion.md):
+        // when it blinks and what it does between blinks, so two terminals
+        // side by side do not move in step. The greeting is the same on
+        // every seed.
+        app.seed_mascot_motion(u64::from_le_bytes(super::host::random_bytes::<8>()));
         let settings = config::apply_setting_overrides(settings);
 
         // The MCP servers (docs/mcp.md): the config files parsed and merged
@@ -979,8 +984,11 @@ impl<'t> Session<'t> {
         // never enters `history`, so it reaches neither the model nor the
         // `/resume` rollout. It flows in through the normal flicker-free pipeline
         // (the next draw writes it above the box in one synchronized frame).
+        // Queued as the *banner*, so the viewport knows which rows it is:
+        // until the conversation's first cell lands its mascot moves, painted
+        // over these rows where they sit (docs/mascot-motion.md).
         let width = self.term.screen().width;
-        self.term.insert_before(ui::header_lines(&self.app, width));
+        self.term.insert_banner(ui::header_lines(&self.app, width));
         self.term.insert_before(vec![Line::default()]);
         // A --continue/--resume load commits the loaded conversation under the
         // banner through the same pipeline (docs/cli.md) — insert_before, never a

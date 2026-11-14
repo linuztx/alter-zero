@@ -45,6 +45,7 @@ mod keys;
 mod login;
 mod look;
 mod mascot;
+mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
@@ -97,6 +98,10 @@ pub use self::login::{
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
+pub use self::mascot_motion::{
+    Gesture, MOTION_ACT_EARLIEST, MOTION_ACT_LATEST, MOTION_BAR, MOTION_GREETING_DELAY,
+    MascotMotion, MascotPose, Still, mascot_motion,
+};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
@@ -568,6 +573,16 @@ pub struct App {
     /// default) — chosen in the `/mascot` picker, seeded at the boundary from
     /// `mascot.json` before the first frame. See `docs/mascot.md`.
     mascot: Mascot,
+    /// Which schedule the mascot's motion follows — when it blinks, what it
+    /// does between blinks ([`mascot_motion`]). The boundary seeds it with
+    /// entropy at bootstrap ([`seed_mascot_motion`](Self::seed_mascot_motion));
+    /// unseeded it is schedule 0. See `docs/mascot-motion.md`.
+    mascot_motion_seed: u64,
+    /// The frame-clock reading ([`pulse`](Self::pulse)) of the first frame
+    /// the banner was up for — what its mascot's motion counts from. `None`
+    /// until a frame latches it ([`set_pulse`](Self::set_pulse)), and again
+    /// after `/clear`, whose fresh banner greets from the top.
+    banner_epoch: Option<Duration>,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row
@@ -1293,6 +1308,9 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        // The banner comes back fresh, so its mascot greets from the top on
+        // the next frame (docs/mascot-motion.md).
+        self.banner_epoch = None;
         // The group's calls went with the history they were held in.
         self.drop_tool_group();
         // A cleared slate holds no tasks — the boundary resets the shared

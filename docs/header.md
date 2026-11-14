@@ -16,7 +16,9 @@ Code's welcome banner.
 ```
 
 - **Mascot** — the selected mascot's art (crest by default, switched with
-  `/mascot`), drawn flush-left and coloured with a left-to-right
+  `/mascot`) — which **moves** until the conversation starts: it greets at
+  launch, then blinks and stirs, painted over these rows in place
+  (`docs/mascot-motion.md`) — drawn flush-left and coloured with a left-to-right
   **accent → link gradient** (the theme's own two accents — Catppuccin
   Mocha's sky `#89DCEB` → blue `#89B4FA` by default, One Dark's `#56B6C2` →
   `#61AFEF` under `/theme onedark`; `docs/theme.md`) keyed by display column
@@ -112,16 +114,26 @@ The one wrinkle of an inline TUI whose reflow rebuilds from `history`
 header is not part of. So it is re-emitted at the I/O boundary:
 
 1. **Startup** — `tui::bootstrap` commits it once via
-   `term.insert_before(ui::header_lines(&app, width))` (plus a blank spacer),
+   `term.insert_banner(ui::header_lines(&app, width))` (plus a blank spacer),
    right before the first paint. It flows into scrollback through the normal
-   flicker-free pipeline.
+   flicker-free pipeline — `insert_banner` is `insert_before` that also
+   tells the viewport which queued rows are the banner.
 2. **Every purge rebuild** (resize, `/clear`, a history rewind, a `/mascot`
    switch) — the purge dropped scrollback outright, so `repaint_conversation`
    restores the banner over the rebuilt tail via the pure
    `ui::banner_tail(banner, tail)` (banner + spacer + tail): it reappears
    after a resize **and** after `/clear` (a fresh-start banner, matching
    Claude Code's `/clear`), and a `/mascot` switch redraws it with the new
-   mascot at once (`docs/mascot.md`).
+   mascot at once (`docs/mascot.md`). `reflow` is told how many rows at the
+   head of the tail are the banner.
+
+Both commit the mascot **at rest**. Knowing which rows the banner is lets
+the viewport do the one thing it does for nothing else it has committed:
+while the banner is still on the screen and the conversation is empty, a
+frame may repaint it in place with the mascot mid-move — and always back at
+rest before a row of it can scroll into the terminal's scrollback
+(`docs/mascot-motion.md`). The banner is still chrome, still outside
+`history`, and still exactly these rows everywhere a record is kept.
 
 An **overlay return** (Ctrl+O / `/resume` / Ctrl+D) needs no re-emission at
 all: it never rewrites the screen — everything that committed while the
@@ -154,12 +166,19 @@ kept clear of the strings other phases key on (`for commands`,
 ## API (all pure, in `ui/header.rs`)
 
 - `header_lines(app: &App, width: u16) -> Vec<Line<'static>>` — the whole
-  banner as scrollback rows for the session's mascot, sized to `width`. No
-  trailing spacer; the caller adds one (the `insert_before(msg);
+  banner as scrollback rows for the session's mascot **at rest**, sized to
+  `width`. No trailing spacer; the caller adds one (the `insert_before(msg);
   insert_before(blank)` pattern).
-- `header_lines_for(app, mascot, width)` (`pub(super)`) — the same banner for
-  an explicit mascot: the `/mascot` picker's live preview, so the preview and
-  the banner share one builder (`docs/mascot.md`).
+- `banner_lines(app, mascot, pose, width)` (`pub(super)`) — the one builder:
+  the banner for an explicit mascot in an explicit pose. `header_lines` is
+  its resting pose, the `/mascot` picker's live preview its highlighted
+  mascot's, so the three share one builder (`docs/mascot.md`);
+  `header_lines_for(app, mascot, width)` is the resting banner for an
+  explicit mascot.
+- `banner_motion_lines(app, width)` — the banner with its mascot in motion,
+  for the frame being drawn, or `None` when nothing moves; and
+  `mascot_motion_due(app, width, banner_on_screen)` — how long until it next
+  changes (`docs/mascot-motion.md`).
 - `banner_tail(banner, tail) -> Vec<Line<'static>>` — the banner + a blank
   spacer over a purge rebuild's repaint tail (see *Surviving every rebuild*).
 - `HEADER_NAME` / `HEADER_HINT` / `HEADER_ART_GAP` — the title word, the
@@ -185,6 +204,9 @@ kept clear of the strings other phases key on (`for commands`,
   width; a session-less `App` still renders art + version (no cwd row); the
   banner contains none of the smoke-reserved strings at any width for any
   mascot.
+- `ui/tests/header.rs` unit tests (the mascot in motion): a pose swaps the
+  art and nothing beside it, the glint's colours, the committed banner and
+  the transcript never moving (`docs/mascot-motion.md`).
 - `ui/tests/header.rs` unit tests (`banner_tail_*`): the banner + spacer
   restore over the rebuilt tail, and a long tail never clips it.
 - `ui/tests/header.rs` unit tests (`transcript_*`): the transcript opens with
@@ -198,4 +220,6 @@ kept clear of the strings other phases key on (`for commands`,
   no-duplication half (never more than one banner in screen+scrollback after
   a mid-stream return over a long conversation); Phases 16/17 confirm it
   doesn't disturb the `/clear`-blank or resize structural counts; Phase 86
-  drives the `/mascot` switch (`docs/mascot.md`).
+  drives the `/mascot` switch (`docs/mascot.md`); Phase 154 the mascot's
+  motion (`docs/mascot-motion.md`) — every other phase runs with it stilled
+  (`ALTER_ZERO_MASCOT_ANIMATION=0`), since they read the art off the screen.

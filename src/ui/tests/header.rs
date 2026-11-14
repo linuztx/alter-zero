@@ -615,3 +615,316 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
         });
     }
 }
+
+// ===== the mascot in motion (docs/mascot-motion.md) =====
+
+/// The foreground colour of each display column of `line`.
+fn column_colors(line: &Line) -> Vec<Option<Color>> {
+    line.spans
+        .iter()
+        .flat_map(|span| std::iter::repeat_n(span.style.fg, cols(&span.content)))
+        .collect()
+}
+
+#[test]
+fn the_resting_pose_is_the_banner_as_committed() {
+    use crate::app::MascotPose;
+    use crate::ui::header::banner_lines;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        for width in [90, 40, 24, 12] {
+            assert_eq!(
+                banner_lines(&app, mascot, &MascotPose::rest(mascot), width),
+                header_lines(&app, width),
+                "{} at {width}",
+                mascot.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_pose_is_drawn_in_the_resting_arts_place() {
+    // Every still of every gesture swaps the art and nothing else: the same
+    // rows, and the metadata column exactly where the resting banner has it.
+    use crate::app::Gesture;
+    use crate::ui::header::banner_lines;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        let w = mascot.art_width();
+        for gesture in Gesture::ALL {
+            for still in mascot.stills(gesture) {
+                let lines = banner_lines(&app, mascot, &still.pose, 90);
+                assert_eq!(lines.len(), rest.len(), "{} {gesture:?}", mascot.name());
+                for (row, (line, rest_line)) in lines.iter().zip(&rest).enumerate() {
+                    let text = plain(line);
+                    let art: String = text.chars().take(w).collect();
+                    assert_eq!(
+                        art.trim_end(),
+                        still.pose.art[row].trim_end(),
+                        "{} {gesture:?} row {row}: the still's art",
+                        mascot.name()
+                    );
+                    let beside: String = text.chars().skip(w).collect();
+                    let rest_beside: String = plain(rest_line).chars().skip(w).collect();
+                    assert_eq!(
+                        beside,
+                        rest_beside,
+                        "{} {gesture:?} row {row}: the metadata moved",
+                        mascot.name()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pose_keeps_a_lone_art_row_unpadded() {
+    // A session-less banner's first row is art alone; a still of it is too.
+    use crate::app::Gesture;
+    use crate::ui::header::banner_lines;
+    let app = App::new();
+    for still in Mascot::Crest.stills(Gesture::Signature) {
+        let lines = banner_lines(&app, Mascot::Crest, &still.pose, 90);
+        assert_eq!(plain(&lines[0]), still.pose.art[0]);
+    }
+}
+
+#[test]
+fn a_pose_changes_nothing_in_the_badge_tier() {
+    // Too narrow for the art: there is nothing to move.
+    use crate::app::Gesture;
+    use crate::ui::header::banner_lines;
+    let app = with_session();
+    for gesture in Gesture::ALL {
+        for still in Mascot::Crest.stills(gesture) {
+            assert_eq!(
+                banner_lines(&app, Mascot::Crest, &still.pose, 14),
+                header_lines(&app, 14)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_glint_lifts_the_glyphs_it_lights_and_no_others() {
+    // Where the band is and how it fades is the pose's (`MascotPose::light`);
+    // the banner colours exactly the cells it lights, the crest brightest.
+    use crate::app::MascotPose;
+    use crate::ui::header::banner_lines;
+    use crate::ui::theme::{MASCOT_GLINT_MAX_BLEND, shimmer_highlight};
+    use crate::ui::wrap::blend_color;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        for centre in -3..=11i8 {
+            let pose = MascotPose {
+                art: mascot.art(),
+                glint: Some(centre),
+            };
+            let lines = banner_lines(&app, mascot, &pose, 90);
+            for (row, (line, rest_line)) in lines.iter().zip(&rest).enumerate() {
+                assert_eq!(plain(line), plain(rest_line), "a glint moves no glyph");
+                let (lit, resting) = (column_colors(line), column_colors(rest_line));
+                assert_eq!(lit.len(), resting.len());
+                for col in 0..lit.len() {
+                    let light = pose.light(col, row);
+                    assert_eq!(
+                        lit[col] != resting[col],
+                        light > 0.0,
+                        "{} centre {centre}: row {row} col {col} (light {light})",
+                        mascot.name()
+                    );
+                    if light > 0.0 {
+                        assert_eq!(
+                            lit[col],
+                            Some(blend_color(
+                                shimmer_highlight(),
+                                resting[col].expect("the art is coloured"),
+                                light * MASCOT_GLINT_MAX_BLEND
+                            )),
+                            "{} centre {centre}: row {row} col {col}",
+                            mascot.name()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_still_of_a_glint_redraws_the_banner_and_a_missed_one_does_not() {
+    // A still that lit nothing would be a frame drawn for nothing; a glint
+    // that is off the art altogether is the resting banner, cell for cell.
+    use crate::app::{Gesture, MascotPose};
+    use crate::ui::header::banner_lines;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        for still in mascot.stills(Gesture::Glint) {
+            assert_ne!(
+                banner_lines(&app, mascot, &still.pose, 90),
+                rest,
+                "{}: the glint at {:?} lights nothing",
+                mascot.name(),
+                still.pose.glint
+            );
+        }
+        for outside in [-20, 40] {
+            let pose = MascotPose {
+                art: mascot.art(),
+                glint: Some(outside),
+            };
+            assert_eq!(banner_lines(&app, mascot, &pose, 90), rest);
+        }
+    }
+}
+
+#[test]
+fn a_glint_keeps_to_the_terminals_own_colours_under_the_ansi_theme() {
+    // The terminal owns a named colour's value, so the band cannot mix one:
+    // every cell is its resting colour or the highlight, whole.
+    use crate::app::{Gesture, Theme};
+    use crate::ui::header::banner_lines;
+    use crate::ui::theme::shimmer_highlight;
+    with_theme(Theme::Ansi, || {
+        let app = with_session();
+        let rest = header_lines(&app, 90);
+        let mut lit_somewhere = false;
+        for still in Mascot::Crest.stills(Gesture::Glint) {
+            let lines = banner_lines(&app, Mascot::Crest, &still.pose, 90);
+            for (line, rest_line) in lines.iter().zip(&rest) {
+                for (colour, resting) in column_colors(line).iter().zip(column_colors(rest_line)) {
+                    assert!(
+                        *colour == resting || *colour == Some(shimmer_highlight()),
+                        "an invented colour: {colour:?}"
+                    );
+                    lit_somewhere |= *colour != resting;
+                }
+            }
+        }
+        assert!(lit_somewhere, "the glint still shows");
+    });
+}
+
+#[test]
+fn the_banner_in_motion_is_the_resting_banner_until_its_greeting() {
+    use crate::app::MOTION_GREETING_DELAY;
+    let mut app = with_session();
+    app.set_pulse(Duration::ZERO);
+    assert_eq!(banner_motion_lines(&app, 90), Some(header_lines(&app, 90)));
+    app.set_pulse(MOTION_GREETING_DELAY);
+    let lit = banner_motion_lines(&app, 90).expect("in motion");
+    assert_ne!(lit, header_lines(&app, 90), "the greeting's glint is on it");
+    let texts = |lines: &[Line]| lines.iter().map(plain).collect::<Vec<_>>();
+    assert_eq!(texts(&lit), texts(&header_lines(&app, 90)));
+}
+
+#[test]
+fn a_banner_that_does_not_move_has_no_motion_lines() {
+    // The first cell stills it for good…
+    let mut app = with_session();
+    app.record_user_message("hello");
+    assert_eq!(banner_motion_lines(&app, 90), None);
+    // …the setting stills it…
+    let mut app = with_session();
+    app.settings_mut().mascot_animation = false;
+    assert_eq!(banner_motion_lines(&app, 90), None);
+    // …and the badge tier has no art to move.
+    let app = with_session();
+    assert!(banner_motion_lines(&app, 90).is_some());
+    assert_eq!(banner_motion_lines(&app, 14), None);
+}
+
+#[test]
+fn the_committed_banner_and_the_transcript_never_move() {
+    // `header_lines` is what reaches scrollback, the Ctrl+O transcript and
+    // /export — records, and a record does not blink.
+    use crate::app::{MOTION_GREETING_DELAY, MascotPose};
+    let mut app = with_session();
+    let rest = header_lines(&app, 90);
+    app.set_pulse(Duration::ZERO);
+    app.set_pulse(MOTION_GREETING_DELAY + Duration::from_millis(100));
+    assert_ne!(
+        app.banner_motion().expect("in motion").pose,
+        MascotPose::rest(Mascot::Crest),
+        "the mascot is mid-greeting"
+    );
+    assert_eq!(header_lines(&app, 90), rest);
+    let transcript = transcript_lines(&app, 90);
+    assert_eq!(&transcript[..rest.len()], &rest[..]);
+}
+
+#[test]
+fn the_next_motion_frame_is_due_when_the_banners_pose_changes() {
+    use crate::app::{MOTION_GREETING_DELAY, View};
+    let mut app = with_session();
+    app.set_pulse(Duration::ZERO);
+    assert_eq!(
+        mascot_motion_due(&app, 90, true),
+        Some(MOTION_GREETING_DELAY)
+    );
+    app.set_pulse(Duration::from_millis(200));
+    assert_eq!(
+        mascot_motion_due(&app, 90, true),
+        Some(MOTION_GREETING_DELAY - Duration::from_millis(200)),
+        "what is left of the hold"
+    );
+    assert_eq!(
+        mascot_motion_due(&app, 90, false),
+        None,
+        "the banner has left the screen"
+    );
+    assert_eq!(mascot_motion_due(&app, 14, true), None, "the badge tier");
+    // Under an overlay nothing inline is on screen: no frame is asked for.
+    app.view = View::ToolOutput;
+    assert_eq!(mascot_motion_due(&app, 90, true), None);
+}
+
+#[test]
+fn a_still_banner_asks_for_no_frames() {
+    let mut app = with_session();
+    app.set_pulse(Duration::ZERO);
+    app.record_user_message("hello");
+    assert_eq!(mascot_motion_due(&app, 90, true), None);
+    let mut app = with_session();
+    app.settings_mut().mascot_animation = false;
+    app.open_mascot_picker();
+    app.set_pulse(Duration::ZERO);
+    assert_eq!(mascot_motion_due(&app, 90, true), None);
+}
+
+#[test]
+fn an_open_mascot_picker_keeps_its_previews_frames_due() {
+    use crate::app::{MOTION_GREETING_DELAY, mascot_motion};
+    // Over a conversation the banner is still, but the preview moves.
+    let mut app = with_session();
+    app.record_user_message("hello");
+    app.open_mascot_picker();
+    app.set_pulse(Duration::from_secs(9));
+    assert_eq!(
+        mascot_motion_due(&app, 90, false),
+        Some(MOTION_GREETING_DELAY)
+    );
+    // With both moving, the frame is due at the sooner of the two.
+    let mut app = with_session();
+    app.set_pulse(Duration::ZERO);
+    app.set_pulse(Duration::from_millis(1_000));
+    app.open_mascot_picker();
+    app.set_pulse(Duration::from_millis(1_001));
+    let banner = mascot_motion(Mascot::Crest, 0, Duration::from_millis(1_001)).holds;
+    assert!(banner < MOTION_GREETING_DELAY, "mid-glint: {banner:?}");
+    assert_eq!(mascot_motion_due(&app, 90, true), Some(banner));
+    assert_eq!(
+        mascot_motion_due(&app, 90, false),
+        Some(MOTION_GREETING_DELAY),
+        "only the preview is on screen"
+    );
+}
