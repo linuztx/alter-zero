@@ -61,15 +61,19 @@ release heading when a version is cut.
 
 ### Security
 
-- **A command cannot rewrite the question auto mode's safety check is
-  asked.** The command under review was shown to the reviewing model inside
-  a three-backtick code block, so a command containing a line of three
-  backticks (a heredoc makes that valid shell) could end the block and add
-  text after it that read as part of the request, such as a second, harmless
-  command to review. The block's fence is now always longer than anything
-  inside it, and the description beside it is kept to one line. The model
-  tested refused every such command before the change
-  (`docs/permissions.md`).
+- **A command and its description can no longer write lines of the question
+  auto mode's safety check is asked.** The reviewing model was shown the
+  agent's description as written and the command inside a three-backtick
+  code block. A description with line breaks could add a command block of
+  its own, naming something harmless, above the real one. A command
+  containing a line of three backticks (a heredoc makes that valid shell)
+  could end its block and carry on as the request. Shown
+  `rm -rf ~/.ssh ~/.aws` dressed in one of those two ways, Gemini 3.8 Flash
+  allowed it 9 times in 24; it now refuses all 24. The block's fence is
+  always longer than anything inside it, and each description is kept to
+  one line. Many models can still be talked round by what a command says
+  about itself, which no quoting changes, so auto mode's reviewer needs to
+  be a model that resists it (`docs/permissions.md` says how to check one).
 
 ## [0.19.0] - 2026-11-13
 
