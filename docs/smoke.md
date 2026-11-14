@@ -120,7 +120,7 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   `ALTER_ZERO_*`, `OLLAMA_HOST`, `NO_COLOR`, the display variables unset;
   telemetry, the update check, the spinner tips, the banner mascot's motion
   (`docs/mascot-motion.md` — the phases read the banner's art off the screen,
-  and a capture taken mid-blink finds another mascot's row; Phase 154 turns
+  and a capture taken mid-move finds another mascot's row; Phase 154 turns
   it back on) and the project's `AGENTS.md` exported off; the permission mode exported `manual`, since a session starts
   in auto, where the dummy's writes never ask, and the prompt phases are
   about the prompt — Phase 64 unsets it to cover the default; and

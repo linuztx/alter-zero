@@ -45,7 +45,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Show images** | `true` / `false` | Whether a pasted screenshot and the `read` tool's image reads are drawn as pictures in the conversation (`docs/images.md`). `false (unavailable)` when the terminal can't draw one. Cycling it purge-rebuilds, so committed pictures appear or vanish at once. |
 | **Image width** | `60` / `80` / `120` | An inline picture's width **cap**, in columns — clamped to the terminal, and never used to blow a small picture up. Cycling it purge-rebuilds like **Show images**. |
 | **Auto-resize images** | `true` / `false` | Whether a large picture is downscaled to 2000×2000 before it is **sent to the model** (`docs/images.md`). Nothing to do with the display, so the row stays available even on a terminal that can't draw. |
-| **Mascot animation** | `true` / `false` | Whether the banner's mascot blinks, glances and makes its move while the conversation is still empty — and the `/mascot` picker's preview with it (`docs/mascot-motion.md`). `false` leaves both at rest. Read by every frame, so turning it off settles a mascot mid-blink on the very next one. Seeded from `ALTER_ZERO_MASCOT_ANIMATION`. |
+| **Mascot animation** | `true` / `false` | Whether the banner's mascot moves — hops, waves, winks, dozes off — while the conversation is still empty — and the `/mascot` picker's preview with it (`docs/mascot-motion.md`). `false` leaves both at rest. Read by every frame, so turning it off settles a mascot mid-move on the very next one. Seeded from `ALTER_ZERO_MASCOT_ANIMATION`. |
 | **Error retry** | `0` / `1` / `2` / `3` / `5` / `10` | How many times a request the provider **answers badly** (a `5xx`, a reset, a stall) is retried before the error surfaces (`llm::retry`, the `retrying n/N` status). A connection that cannot be made at all is not counted: it is **waited for**, every few seconds for as long as it takes, under the `Waiting for internet…` status (`docs/offline.md`). `0` means never retry, the wait included. Was the fixed `MAX_RETRIES = 3`. |
 | **Tools** | `true` / `false` | Whether `bash`/`read`/`write`/`edit`/`agent` are offered to the model at all (`docs/tools.md`). Seeded from `ALTER_ZERO_TOOLS`. Off also withdraws both halves of the `<system-reminder>` — the skills listing and the agent-type listing (`docs/subagents.md`): a roster for a tool the request never carries is a dead end. |
 | **Permission mode** | `manual` / `edit` / **`auto`** / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. **`auto` until a project saves another mode**, which it keeps per project in `permissions.json` rather than `settings.json`; seeded for a run, and never saved, from `ALTER_ZERO_PERMISSION_MODE`. |
@@ -314,7 +314,7 @@ docs`.
   - **Mascot animation** needs nothing either: `App::banner_in_motion` reads
     the row every frame, so the frame the keystroke schedules already draws
     the banner without its motion — at rest, even when the row was turned
-    off mid-blink — and no further frame is asked for
+    off mid-move — and no further frame is asked for
     (`docs/mascot-motion.md`).
   - **Show tips** writes its own file — `tips.json`, beside the walk's
     position (`docs/tips.md`) — and needs nothing else: `App::tip` reads the

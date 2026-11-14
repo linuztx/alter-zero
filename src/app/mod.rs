@@ -100,7 +100,7 @@ pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
 pub use self::mascot_motion::{
     Gesture, MOTION_ACT_EARLIEST, MOTION_ACT_LATEST, MOTION_BAR, MOTION_GREETING_DELAY,
-    MascotMotion, MascotPose, Still, mascot_motion,
+    MascotMotion, MascotPose, Side, Still, mascot_motion,
 };
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};

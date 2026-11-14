@@ -2,68 +2,142 @@
 
 The startup banner's mascot (`docs/header.md`, `docs/mascot.md`) is alive
 while there is nothing else to look at: from launch until the conversation
-holds its first cell, it blinks, glances about, and now and then makes the
-one move its description names. The moment a message is sent it settles
-into its resting art for good, because from then on it is scrollback.
+holds its first cell it hops, waves, patters its feet, winks, glances about,
+dozes off and starts awake — a different thing every few seconds. The moment
+a message is sent it settles into its resting art for good, because from
+then on it is scrollback.
 
 ```
- ▙▄▙▄▟▄▟        ▙▄▙▄▟▄▟        ▙▄▙▄▟▄▟        ▄▄▄▄▄▄▄
-▝▜▄███▄▛▘      ▝▜█████▛▘      ▝▜▟███▟▛▘      ▝▜▄███▄▛▘
-  ▘▘ ▝▝          ▘▘ ▝▝          ▘▘ ▝▝          ▘▘ ▝▝
-   rest            blink          glance      frill down
+ ▙▄▙▄▟▄▟        ▙▄▙▄▟▄▟       ▝▙▄▙▄▟▄▟▘      ▖ ▖ ▗ ▗        ▄▄▙▄▟▄▄
+▝▜▄███▄▛▘      ▝▜▄████▛▘       ▜▄███▄▛      ▗█▀███▀█▖      ▝▜█████▛▘
+  ▘▘ ▝▝          ▘▘ ▝▝          ▘▘ ▝▝        ▝▛▛▀▜▜▘         ▘▘ ▝▝
+   rest            wink         arms up      mid-hop         asleep
 ```
 
-## What moves
+## A pose is a body with eyes
 
-Every mascot has the same small vocabulary, drawn in its own anatomy:
+`app::MascotPose` is what a mascot looks like at one instant, and it has two
+layers:
 
-| gesture     | what it is                                                        |
-| ----------- | ----------------------------------------------------------------- |
-| `Blink`     | the eyes close and open                                           |
-| `Glance`    | the eyes look left, then right                                    |
-| `Signature` | the move the mascot's description names                           |
-| `Glint`     | a slanted band of light crosses the art (colour only, no glyphs)  |
+- a **body** — one frame of art, the resting art's shape exactly: its row
+  count, never wider than its widest row, single-width block glyphs only.
+  That is what lets a pose be drawn *in the resting art's place* — the
+  metadata column beside it never moves (`ui::header`), and the tests hold
+  every still of every gesture to it;
+- the **eyes** laid over it, each in one of six states.
 
-**Eyes are holes** — a half cell of background punched in a solid face — so
-an eye's states are the block glyphs that reshape the hole:
+**Eyes are holes** — half a cell of background punched in a solid face — so
+an eye's states are the block glyphs that reshape the hole, and they are the
+same for every mascot whose eye sits in the same half of its cell:
 
-- `▄`-eyed (crest, bloom, twin; the hole is the cell's upper half): the lid
-  rises through `▆` to `█` and back, which reads as an eyelid rather than a
-  cut; a glance narrows the hole to one quadrant, `▟` (left) or `▙` (right).
-- `▀`-eyed (sprout, skiter; the hole is the lower half): the blink is the
-  plain cut to `█` — there is no block glyph for "upper five eighths" — and
-  a glance is `▜` (left) or `▛` (right).
-- The gem has no eyes. Its `Blink` is its centre facet closing, its `Glance`
-  the facet sliding a cell left and right — the gem turning in the light.
+| state  | upper-half eye (`▄`: crest, bloom, twin, the gem's facet) | lower-half eye (`▀`: sprout, skiter) |
+| ------ | --------------------------------------------------------- | ------------------------------------ |
+| open   | `▄`                                                       | `▀`                                  |
+| lidded | `▆`                                                       | — (no glyph: it closes in one cut)   |
+| shut   | `█`                                                       | `█`                                  |
+| left   | `▟`                                                       | `▜`                                  |
+| right  | `▙`                                                       | `▛`                                  |
+| wide   | `▂`                                                       | `▔`                                  |
 
-The signatures:
+That is why **one** choreography of blinks, winks and glances serves all six
+mascots (`Mascot::look_stills`, `Eye::glyph`), and each mascot's own tables
+hold only what its body does. There is no looking up or down: an eye is
+enclosed by the half of its own cell it does not fill, and a hole moved to
+the other half opens onto the gap between the feet (or the sky) and stops
+being an eye — the frames were drawn, looked at, and thrown away.
 
-| mascot   | signature                                                        |
-| -------- | ---------------------------------------------------------------- |
-| `crest`  | drops its frill flat and flares it back up from the middle       |
-| `bloom`  | swells — the head fills out to its full width and eases back     |
-| `sprout` | its leaf sways left, then right                                  |
-| `twin`   | flicks one ear, then the other                                   |
-| `skiter` | skitters in place, legs trading positions three times            |
-| `gem`    | catches the light a second time — the glint, travelling back     |
+A body frame that moves the **whole creature** is the resting art's half
+cells, each moved one over: every glyph in the catalog is a quadrant block,
+so a half-cell shift folds back into quadrant blocks exactly. A hop is the
+art half a row lower (the sprout, which stands on the block's floor, springs
+half a row *up*, its leaf's tip leaving the block for the moment); the
+skitterer's scuttle is the art half a column left and right. The tests
+decode the art to half cells and replay the shift, so a hand-typed frame
+cannot drift from it.
 
-Every still keeps the art block's shape: the resting art's row count, never
-wider than its widest row, single-width block glyphs only. That is what
-lets a pose be drawn *in the resting art's place* — the metadata column
-beside it never moves (`ui::header`), and the catalog tests hold every
-still of every gesture to it.
+Light moves no glyph. A **glint** is a band of the theme's brightest ink
+three cells wide — full under its centre, half as strong a column off — that
+**leans a column a row**, like a `/`, and crosses the art one column a still.
+The lean is what makes it read as light glancing off the mascot rather than a
+bar wiping across it. It lights ink only, never a blank cell, and its stills
+run from the first position that lights a glyph to the last, so no still is
+a frame drawn for nothing. A **glow** lights every glyph alike — swelling to
+60% and fading the way it came, or flashing to full strength, which is how
+the gem catches the light. `MascotPose::light(col, row)` is both — the
+stronger of the two — and how a lit glyph is coloured is the renderer's:
+lifted off the banner gradient toward `shimmer_highlight()`, the status
+verb's own crest, so under the `ansi` theme, whose colours the terminal
+owns, a cell steps to the highlight whole instead of mixing (a glow shows
+there as one flash at its peak).
 
-The **glint** moves no glyph. It is a band of the theme's brightest ink
-three cells wide — full under its centre, half as strong a column off —
-that **leans a column a row**, like a `/`, and crosses the art one column a
-still (`MascotPose::light`). The lean is what makes it read as light
-glancing off the mascot rather than a bar wiping across it. It lights ink
-only, never a blank cell, and its stills run from the first position that
-lights a glyph to the last, so no still is a frame drawn for nothing. How a
-lit glyph is coloured is the renderer's: lifted off the banner gradient
-toward `shimmer_highlight()` — the status verb's own crest — so under the
-`ansi` theme, whose colours the terminal owns, a cell steps to the
-highlight whole instead of mixing.
+## What a mascot does
+
+`app::Gesture` names the moves. The first seven are **looks** — the eyes
+and nothing else — and the rest are **moves** of the body or of the light
+on it. A sided gesture carries its `Side`; every mascot is the same either
+side of its middle, so the other side is the same stills in a mirror
+(`Gesture::mirrored`).
+
+| gesture          | what it is                                                          |
+| ---------------- | ------------------------------------------------------------------- |
+| `Blink`          | the eyes close and open — through a lid where the glyphs allow one   |
+| `Wink(side)`     | one eye closes and is held shut a moment                             |
+| `Glance(side)`   | the eyes look one way, then the other                                |
+| `Dart(side)`     | the eyes flick from side to side, twice                              |
+| `Cross`          | the eyes cross                                                       |
+| `Widen`          | the eyes go wide                                                     |
+| `Doze`           | it sags, sleeps a second, and starts awake wide-eyed                 |
+| `Signature`      | the move the mascot's description names                              |
+| `Flourish(side)` | a second move of the mascot's own                                    |
+| `Hop`            | the whole mascot bobs half a cell and back                           |
+| `Wave(side)`     | a hello with an arm — or both, or the claws                          |
+| `Cheer`          | a hop with the arms thrown up at the top of it                       |
+| `Patter`         | the feet patter on the spot, two at a time                           |
+| `Glow`           | the whole mascot swells with light and fades (colour only)           |
+| `Glint(side)`    | a slanted band of light crosses the art (colour only)                |
+
+Every mascot has a signature and a flourish of its own, a hop, and the
+light. Not every one has a body for the rest: `Mascot::stills(gesture)`
+answers with no stills for a move its body cannot make, and no act of a
+mascot asks for one:
+
+| mascot   | signature                | flourish                    | hop        | wave        | cheer            | patter | asleep            |
+| -------- | ------------------------ | --------------------------- | ---------- | ----------- | ---------------- | ------ | ----------------- |
+| `crest`  | drops its frill and flares it | a ripple along the frill | down       | one arm     | both arms up     | ✓      | frill half down   |
+| `bloom`  | swells                   | its head wobbles            | down       | flaps both  | both arms up     | ✓      | head to one side  |
+| `sprout` | its leaf sways           | unfurls two leaves          | **up**     | one arm     | —                | ✓      | leaf bent         |
+| `twin`   | flicks one ear, then the other | splays both ears      | down       | —           | ears splayed     | ✓      | one ear flat      |
+| `skiter` | skitters in place        | scuttles half a cell each way | down     | both claws  | claws up         | —      | as it stands      |
+| `gem`    | catches the light: two flashes | spins, edge-on and back | floats, slowly | —      | —                | —      | —                 |
+
+The gem has no eyes; its one centre facet stands in for one. Its `Blink` is
+the facet closing, its `Glance` the facet sliding a cell left and right — the
+gem turning in the light — its `Dart` the facet narrowing from side to side,
+its `Widen` the facet opening, and it neither winks, crosses nor dozes. Its
+signature is the one that moves no glyph: what a cut gem does is catch the
+light.
+
+## Acts
+
+What the schedule plays is not a gesture but an **act**: a gesture, or a
+short phrase of them with rests between (`Beat::Do`, `Beat::Rest`). A phrase
+is what makes a move read as a creature rather than a clip — it waves and
+then winks, it starts awake and blinks the sleep out of its eyes.
+
+Each mascot has two lists of acts (`Mascot::moves`, `Mascot::looks`):
+
+- its **moves** — `Signature` · `Flourish` · `Hop, Hop` · `Cheer, Blink` ·
+  `Wave, Wink` (or `Wave, Blink` where both arms wave) · `Patter` · `Glow` ·
+  `Glint`, less whatever its body cannot make — five for the gem (`Signature`
+  · `Flourish` · `Hop` · `Glow` · `Glint`), seven or eight for the others;
+- its **looks** — `Blink` · `Glance` · `Wink` · `Dart` · `Cross, Blink` ·
+  `Widen, Blink` · `Doze, Blink, Blink` — four for the gem.
+
+**A blink is punctuation.** Exactly one look is a bare blink; the rest of a
+mascot's blinking closes some other act. The first version of this feature
+played a blink in two bars out of three, and what it looked like was a
+mascot that only ever blinks; `a_bare_blink_is_a_small_share_of_what_a_mascot_does`
+holds a blink-only bar to one in eight.
 
 ## When it moves
 
@@ -73,17 +147,31 @@ the pose to draw and how long it holds. No state advances; the same inputs
 give the same pose, which is what makes it testable and what lets the
 `/mascot` picker run a second, independent clock through the same function.
 
-Time is cut into **bars** of `MOTION_BAR` (4.8 s). Each bar plays one
-**act** — a gesture, or a short run of them with rests between — starting
-somewhere in the bar's middle and ending well before the bar does:
+Time is cut into **bars** of `MOTION_BAR` (4.8 s). Each bar plays one act,
+starting somewhere in the bar's middle and over well before the bar is:
 
 - **Bar 0 is the greeting**: 0.7 s after the banner appears, a glint crosses
   the mascot, it makes its signature move, and it blinks. About two seconds
-  of motion at launch, then calm.
-- **Every later bar** starts its act 0.9–2.7 s in (hashed from the seed and
-  the bar's index), so acts begin 3.0–6.6 s apart — never a metronome, never
-  two at once — and picks the act by weight: a blink a little over half the
-  time, then a double blink, a glance, the signature, a glint.
+  of motion at launch, the same on every seed, then calm.
+- **Every later bar** plays the next act, **a move and a look by turns** —
+  a move first — so no stretch of an idle banner is all eyes, and no bar
+  plays what the one before it did.
+- Each kind is **dealt like a deck** (`dealt`): every cycle through a list
+  is a fresh shuffle that plays each act once, so a mascot goes through
+  everything it can do before any of it comes round again — thirty seconds
+  of idling is six different acts. No act plays twice in a row, even across
+  the join between two cycles: a cycle never opens on the act the last one
+  closed on — the first act it may open on is brought forward instead. The
+  first cycle joins onto the **greeting** the same way: the signature leads
+  the moves and the glint closes them, the bare blink leads the looks, and
+  the first cycle opens on none of the three (`greeted`), so what follows
+  the greeting is always something it has not just shown.
+- A sided gesture is played **either way round**, on a coin flipped for the
+  bar: which eye winks, which way it glances first, which arm waves.
+- The act **starts** 0.9–2.7 s into its bar, hashed from the seed and the
+  bar's index — never a metronome — or sooner for a long act, which is
+  scattered over what it leaves of the bar: the bar's last 0.9 s are always
+  at rest, so consecutive acts begin 3.0–6.6 s apart and never run together.
 
 A bar begins and ends at rest, and a pose's `holds` runs to the **next pose
 that differs**, across a bar boundary if need be. So the boundary can sleep
@@ -153,10 +241,11 @@ records, and a record does not blink.
 
 The picker's preview *is* the banner (`docs/mascot.md`), so it moves too —
 and the moment a mascot is highlighted it plays its greeting from the top,
-which makes the page a showcase: ↓ onto `skiter` and it skitters. The
-preview's clock is its own (`MascotPicker::shown_at`, latched on the first
-frame after the highlight lands, cleared whenever the highlight moves), so
-it never depends on how long the session has been running.
+which makes the page a showcase: ↓ onto `skiter` and it skitters, stay on it
+and it goes on through its moves and its looks. The preview's clock is its
+own (`MascotPicker::shown_at`, latched on the first frame after the
+highlight lands, cleared whenever the highlight moves), so it never depends
+on how long the session has been running.
 
 A page that ticks between keystrokes must not sign its flow on its rows
 (`docs/view-flow.md`): the picker signs its selection and query instead,
@@ -176,11 +265,16 @@ captures is a failure that says nothing about the app.
 - `app::mascot_motion(mascot, seed, elapsed) -> MascotMotion { pose, holds }`
   — the timeline; `MOTION_BAR`, `MOTION_GREETING_DELAY`,
   `MOTION_ACT_EARLIEST`/`MOTION_ACT_LATEST` are its measures.
-- `app::MascotPose { art, glint }` — one instant: `MascotPose::rest`, and
-  `light(col, row)`, how strongly the glint lights a glyph.
-  `app::Gesture` and `Mascot::stills(gesture) -> Vec<Still { pose, hold }>`
-  — the stills (`app/mascot_motion.rs`, each written against the catalog's
-  own resting rows, so a still can only differ in the row it redraws).
+- `app::MascotPose` — one instant: `MascotPose::rest`, `rows()` (the body
+  with its eyes, as the rows to draw), `light(col, row)` (how strongly the
+  pose's light falls on a glyph) and the light itself, `glint` and `glow`.
+- `app::Gesture`, `app::Side`, `Gesture::mirrored`, `Gesture::ALL`, and
+  `Mascot::stills(gesture) -> Vec<Still { pose, hold }>` — the stills
+  (`app/mascot_motion.rs`: the eyes' one choreography, and each mascot's
+  body frames written against the catalog's own resting rows, so a frame
+  can only differ in the rows it redraws).
+- Inside `app`: `Beat`, `GREETING`, `Mascot::moves`/`looks` (the acts),
+  `Kind` and `dealt(seed, kind, turn, count)` (which act a turn plays).
 - `App::seed_mascot_motion`, `App::banner_in_motion`, `App::banner_motion`,
   `App::mascot_preview_motion`; the clocks are latched in `App::set_pulse`.
 - `ui::banner_motion_lines(app, width)` — the banner in its current pose, or
@@ -193,24 +287,51 @@ captures is a failure that says nothing about the app.
   of `draw`, the `banner_rows` argument of `reflow`; the seat itself is
   `term.rs`'s private `BannerSeat`.
 
+## Adding a move
+
+A new move for one mascot is a table of frames beside its others and an arm
+in `Mascot::body_frames`; a new look for all of them is a list of eye states
+in `Mascot::look_stills`. Either way it becomes something the mascot *does*
+by being listed in an act (`CREST_MOVES`, `LOOKS`, …), and the tests then
+hold it to the rules without being told about it: the art block's shape, no
+still that repeats its neighbour, a sided gesture mirrored, the act fitting
+its bar. Draw the frames on the half-cell grid and **look at them rendered**
+before typing them in — every frame here was, and a third of the candidates
+did not survive it (a mouth, eyes looking down, a sparkle of loose cells).
+
 ## Tests
 
-- `app/tests/mascot_motion.rs` — every still of every gesture keeps the art
-  block's shape; a blink closes every eye and touches nothing else, through
-  a lid where the glyphs allow one; a glance looks one way then the other;
-  every signature is the mascot's own; the glint's shape, and that every
-  still of it lights a glyph; the greeting's order, the same on every seed;
-  bars open and close at rest and acts are spaced and never keep time; a
-  hold runs exactly to the next pose that differs, across a bar boundary;
-  the schedule is the seed's and every gesture turns up; the epoch latch,
-  `/clear`'s reset and the picker's own clock; the predicate's three
+- `app/tests/mascot_motion.rs` — the stills: every one keeps the art block's
+  shape and none repeats its neighbour; a blink closes every eye and nothing
+  else, through a lid where the glyphs allow one; a wink closes one; a
+  glance looks one way then the other, left first when asked; darting eyes
+  trade two looks; crossed eyes look at each other; wide eyes open the hole;
+  a doze sags, sleeps a second and starts awake; every signature and every
+  flourish is the mascot's own; a hop is the resting art half a cell lower
+  (the sprout's higher), replayed on the half-cell grid, as is the
+  skitterer's scuttle; a wave leaves the face alone; a cheer is a hop with
+  the arms up; pattering feet trade places, two a step; a sided gesture the
+  other way is its mirror image; the glint's shape, the glow's swell, the
+  gem's two flashes and its spin; a mascot makes no move its body lacks, and
+  every one makes those every body can. The acts: a
+  handful of each kind, none playing like another, one bare blink, every one
+  fitting its bar. The schedule: the greeting's order, the same on every
+  seed; bars open and close at rest and acts are spaced and never keep time;
+  a long act starts early enough to finish; a hold runs exactly to the next
+  pose that differs, across a bar boundary; a deal plays every act once a
+  cycle, never one twice in a row, afresh each cycle, and never opens on
+  what the greeting showed — on the timeline too; moves and looks take turns and play what is
+  dealt; a sided act plays both ways; a bare blink is a small share; half a
+  minute shows six different things. And the session: the epoch latch,
+  `/clear`'s reset, the picker's own clock, the predicate's three
   conditions.
 - `ui/tests/header.rs` — the resting pose is the banner as committed; a
-  pose swaps the art and nothing beside it; the glint lifts exactly the
-  glyphs the pose lights, and keeps to the terminal's colours under `ansi`;
-  `banner_motion_lines` is `None` once a cell lands, with the setting off,
-  and in the badge tier; the committed banner and the transcript never
-  move; when the next frame is due, and that a still banner asks for none.
+  pose swaps the art and nothing beside it; light lifts exactly the glyphs
+  the pose lights — a glint's band, a glow's every glyph — and keeps to the
+  terminal's colours under `ansi`; `banner_motion_lines` is `None` once a
+  cell lands, with the setting off, and in the badge tier; the committed
+  banner and the transcript never move; when the next frame is due, and that
+  a still banner asks for none.
 - `ui/tests/mascot_view.rs` — the preview wears the highlighted mascot's
   motion, every mascot greets in it, the setting stills it, and the page
   holds its height through every pose.
@@ -221,8 +342,10 @@ captures is a failure that says nothing about the app.
   a resize, and a rebuild that outgrew the screen; reseated by a rebuild;
   settled on the way out.
 - `scripts/smoke.sh` Phase 154 — a real terminal with the animation on: the
-  art moves within the greeting; between acts not one frame is drawn, and a
-  long idle draws a handful, never a chain; the first message leaves the
+  art moves within the greeting; between acts not one frame is drawn; the
+  bar after the greeting plays a move — the frill or the feet change, in
+  glyph or in colour — and the bar after that moves the eyes; a long idle
+  draws a handful of frames, never a chain; the first message leaves the
   banner at rest, colours and all, in the frame that commits it, and it
   never moves again on screen or in scrollback; `/clear` greets again; a
   quit mid-glint leaves the resting art; the `/mascot` preview moves; and

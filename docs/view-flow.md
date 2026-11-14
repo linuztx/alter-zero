@@ -65,7 +65,7 @@ screen, and it is what the reported bug asked for: *"if it's not shown in the
 terminal window just freeze it instead of removing the detail."*
 
 Two pickers move between keystrokes as well — every row of `/spinner`
-(`docs/spinner.md`), and the highlighted mascot blinking in `/mascot`'s
+(`docs/spinner.md`), and the highlighted mascot moving in `/mascot`'s
 preview (`docs/mascot-motion.md`) — and sign their **selection and query**
 for the same reason. Their pages shed rows rather than flow (below), so for
 them the signature is a backstop: were a page ever to overshoot, a frame of

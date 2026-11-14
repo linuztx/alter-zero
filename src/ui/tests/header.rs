@@ -664,7 +664,7 @@ fn a_pose_is_drawn_in_the_resting_arts_place() {
                     let art: String = text.chars().take(w).collect();
                     assert_eq!(
                         art.trim_end(),
-                        still.pose.art[row].trim_end(),
+                        still.pose.rows()[row],
                         "{} {gesture:?} row {row}: the still's art",
                         mascot.name()
                     );
@@ -690,7 +690,7 @@ fn a_pose_keeps_a_lone_art_row_unpadded() {
     let app = App::new();
     for still in Mascot::Crest.stills(Gesture::Signature) {
         let lines = banner_lines(&app, Mascot::Crest, &still.pose, 90);
-        assert_eq!(plain(&lines[0]), still.pose.art[0]);
+        assert_eq!(plain(&lines[0]), still.pose.rows()[0]);
     }
 }
 
@@ -710,47 +710,61 @@ fn a_pose_changes_nothing_in_the_badge_tier() {
     }
 }
 
+/// The gestures of `mascot` that move no glyph: light on the resting art —
+/// a glint either way, a glow, and the gem's signature, which is a flash.
+fn light_gestures(mascot: Mascot) -> Vec<crate::app::Gesture> {
+    use crate::app::{Gesture, Side};
+    let mut gestures = vec![
+        Gesture::Glint(Side::Left),
+        Gesture::Glint(Side::Right),
+        Gesture::Glow,
+    ];
+    if mascot == Mascot::Gem {
+        gestures.push(Gesture::Signature);
+    }
+    gestures
+}
+
 #[test]
-fn a_glint_lifts_the_glyphs_it_lights_and_no_others() {
-    // Where the band is and how it fades is the pose's (`MascotPose::light`);
-    // the banner colours exactly the cells it lights, the crest brightest.
-    use crate::app::MascotPose;
+fn light_lifts_the_glyphs_it_falls_on_and_no_others() {
+    // Where the light is and how strong is the pose's (`MascotPose::light`):
+    // a glint's leaning band, a glow over everything. The banner colours
+    // exactly the cells it lights, the strongest brightest.
     use crate::ui::header::banner_lines;
-    use crate::ui::theme::{MASCOT_GLINT_MAX_BLEND, shimmer_highlight};
+    use crate::ui::theme::{MASCOT_LIGHT_MAX_BLEND, shimmer_highlight};
     use crate::ui::wrap::blend_color;
     for mascot in Mascot::ALL {
         let mut app = with_session();
         app.set_mascot(mascot);
         let rest = header_lines(&app, 90);
-        for centre in -3..=11i8 {
-            let pose = MascotPose {
-                art: mascot.art(),
-                glint: Some(centre),
-            };
-            let lines = banner_lines(&app, mascot, &pose, 90);
-            for (row, (line, rest_line)) in lines.iter().zip(&rest).enumerate() {
-                assert_eq!(plain(line), plain(rest_line), "a glint moves no glyph");
-                let (lit, resting) = (column_colors(line), column_colors(rest_line));
-                assert_eq!(lit.len(), resting.len());
-                for col in 0..lit.len() {
-                    let light = pose.light(col, row);
-                    assert_eq!(
-                        lit[col] != resting[col],
-                        light > 0.0,
-                        "{} centre {centre}: row {row} col {col} (light {light})",
-                        mascot.name()
-                    );
-                    if light > 0.0 {
+        for gesture in light_gestures(mascot) {
+            for still in mascot.stills(gesture) {
+                let pose = still.pose;
+                let lines = banner_lines(&app, mascot, &pose, 90);
+                for (row, (line, rest_line)) in lines.iter().zip(&rest).enumerate() {
+                    assert_eq!(plain(line), plain(rest_line), "light moves no glyph");
+                    let (lit, resting) = (column_colors(line), column_colors(rest_line));
+                    assert_eq!(lit.len(), resting.len());
+                    for col in 0..lit.len() {
+                        let light = pose.light(col, row);
                         assert_eq!(
-                            lit[col],
-                            Some(blend_color(
-                                shimmer_highlight(),
-                                resting[col].expect("the art is coloured"),
-                                light * MASCOT_GLINT_MAX_BLEND
-                            )),
-                            "{} centre {centre}: row {row} col {col}",
+                            lit[col] != resting[col],
+                            light > 0.0,
+                            "{} {gesture:?}: row {row} col {col} (light {light})",
                             mascot.name()
                         );
+                        if light > 0.0 {
+                            assert_eq!(
+                                lit[col],
+                                Some(blend_color(
+                                    shimmer_highlight(),
+                                    resting[col].expect("the art is coloured"),
+                                    light * MASCOT_LIGHT_MAX_BLEND
+                                )),
+                                "{} {gesture:?}: row {row} col {col}",
+                                mascot.name()
+                            );
+                        }
                     }
                 }
             }
@@ -759,58 +773,94 @@ fn a_glint_lifts_the_glyphs_it_lights_and_no_others() {
 }
 
 #[test]
-fn every_still_of_a_glint_redraws_the_banner_and_a_missed_one_does_not() {
-    // A still that lit nothing would be a frame drawn for nothing; a glint
-    // that is off the art altogether is the resting banner, cell for cell.
-    use crate::app::{Gesture, MascotPose};
+fn every_lit_still_redraws_the_banner() {
+    // A still that lit nothing would be a frame drawn for nothing. (The one
+    // dark still is the gem's, between the two flashes of its signature —
+    // and that one is the resting banner, cell for cell.)
+    use crate::app::MascotPose;
     use crate::ui::header::banner_lines;
     for mascot in Mascot::ALL {
         let mut app = with_session();
         app.set_mascot(mascot);
         let rest = header_lines(&app, 90);
-        for still in mascot.stills(Gesture::Glint) {
-            assert_ne!(
-                banner_lines(&app, mascot, &still.pose, 90),
-                rest,
-                "{}: the glint at {:?} lights nothing",
-                mascot.name(),
-                still.pose.glint
-            );
-        }
-        for outside in [-20, 40] {
-            let pose = MascotPose {
-                art: mascot.art(),
-                glint: Some(outside),
-            };
-            assert_eq!(banner_lines(&app, mascot, &pose, 90), rest);
+        for gesture in light_gestures(mascot) {
+            for still in mascot.stills(gesture) {
+                let lines = banner_lines(&app, mascot, &still.pose, 90);
+                if still.pose == MascotPose::rest(mascot) {
+                    assert_eq!(lines, rest);
+                } else {
+                    assert_ne!(
+                        lines,
+                        rest,
+                        "{} {gesture:?}: the light at {:?}/{} lights nothing",
+                        mascot.name(),
+                        still.pose.glint,
+                        still.pose.glow
+                    );
+                }
+            }
         }
     }
 }
 
 #[test]
-fn a_glint_keeps_to_the_terminals_own_colours_under_the_ansi_theme() {
-    // The terminal owns a named colour's value, so the band cannot mix one:
-    // every cell is its resting colour or the highlight, whole.
-    use crate::app::{Gesture, Theme};
+fn a_glow_lights_every_glyph_alike() {
+    // Not a band: the whole mascot at one strength, so the gradient under it
+    // still runs cyan to blue, only paler.
+    use crate::app::Gesture;
+    use crate::ui::header::banner_lines;
+    let app = with_session();
+    let rest = header_lines(&app, 90);
+    let w = Mascot::Crest.art_width();
+    for still in Mascot::Crest.stills(Gesture::Glow) {
+        let lines = banner_lines(&app, Mascot::Crest, &still.pose, 90);
+        for (line, rest_line) in lines.iter().zip(&rest) {
+            let text: Vec<char> = plain(line).chars().collect();
+            let (lit, resting) = (column_colors(line), column_colors(rest_line));
+            for col in 0..w.min(text.len()) {
+                assert_eq!(
+                    lit[col] != resting[col],
+                    text[col] != ' ',
+                    "col {col} of {:?}",
+                    plain(line)
+                );
+            }
+            // The metadata beside the art keeps its colours.
+            assert_eq!(lit[w..], resting[w..]);
+        }
+    }
+}
+
+#[test]
+fn light_keeps_to_the_terminals_own_colours_under_the_ansi_theme() {
+    // The terminal owns a named colour's value, so light cannot mix one:
+    // every cell is its resting colour or the highlight, whole. A glint
+    // still crosses, and a glow still shows at its peak.
+    use crate::app::Theme;
     use crate::ui::header::banner_lines;
     use crate::ui::theme::shimmer_highlight;
     with_theme(Theme::Ansi, || {
-        let app = with_session();
+        let mut app = with_session();
+        app.set_mascot(Mascot::Gem);
         let rest = header_lines(&app, 90);
-        let mut lit_somewhere = false;
-        for still in Mascot::Crest.stills(Gesture::Glint) {
-            let lines = banner_lines(&app, Mascot::Crest, &still.pose, 90);
-            for (line, rest_line) in lines.iter().zip(&rest) {
-                for (colour, resting) in column_colors(line).iter().zip(column_colors(rest_line)) {
-                    assert!(
-                        *colour == resting || *colour == Some(shimmer_highlight()),
-                        "an invented colour: {colour:?}"
-                    );
-                    lit_somewhere |= *colour != resting;
+        for gesture in light_gestures(Mascot::Gem) {
+            let mut lit_somewhere = false;
+            for still in Mascot::Gem.stills(gesture) {
+                let lines = banner_lines(&app, Mascot::Gem, &still.pose, 90);
+                for (line, rest_line) in lines.iter().zip(&rest) {
+                    for (colour, resting) in
+                        column_colors(line).iter().zip(column_colors(rest_line))
+                    {
+                        assert!(
+                            *colour == resting || *colour == Some(shimmer_highlight()),
+                            "{gesture:?}: an invented colour: {colour:?}"
+                        );
+                        lit_somewhere |= *colour != resting;
+                    }
                 }
             }
+            assert!(lit_somewhere, "{gesture:?} still shows");
         }
-        assert!(lit_somewhere, "the glint still shows");
     });
 }
 

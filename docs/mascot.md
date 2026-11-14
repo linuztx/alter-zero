@@ -30,9 +30,10 @@ column across the art block's width.
 
 `art()` is the mascot **at rest** — what is committed to scrollback, what
 the transcript and `/export` show. Until the conversation starts, the
-banner's mascot also **moves**: it greets at launch, then blinks, glances
-and makes the move its description names. The stills, the schedule and
-where they are painted are `docs/mascot-motion.md`.
+banner's mascot also **moves**: it greets at launch, then every few seconds
+does something else — hops, waves, patters its feet, winks, dozes off, makes
+the move its description names. The stills, the acts, the schedule and where
+they are painted are `docs/mascot-motion.md`.
 
 ## The `/mascot` picker
 
@@ -104,7 +105,8 @@ its description in the frame's dim.
 The preview **moves** like the banner does (`docs/mascot-motion.md`), on a
 clock of its own: the moment the highlight lands on a mascot it greets — a
 glint, its signature move, a blink — so walking the list shows what each
-one does. With the **Mascot animation** setting off the preview is still.
+one does, and staying on one shows the rest of it, a move and a look by
+turns. With the **Mascot animation** setting off the preview is still.
 
 - **Beside the list on a wide terminal, under it on a narrow one.** The
   preview sits beside the list once the terminal has room for the list
@@ -299,7 +301,8 @@ a project.
   flowing at any height.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
 - `app/tests/mascot_motion.rs`, and the motion tests of the two files above
-  — the stills, the schedule, the preview's clock (`docs/mascot-motion.md`).
+  — the stills, the acts, the schedule, the preview's clock
+  (`docs/mascot-motion.md`).
 - `scripts/smoke.sh` Phase 139 — the side-by-side page fitting a 12-row
   terminal whole, and the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:

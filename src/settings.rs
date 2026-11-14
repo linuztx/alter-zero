@@ -67,8 +67,8 @@ pub enum SettingKey {
     /// Downscale a large image before it is **sent to the model**
     /// (`docs/images.md`) — nothing to do with the display.
     AutoResizeImages,
-    /// Let the banner's mascot blink and stir while the conversation is
-    /// still empty (`docs/mascot-motion.md`).
+    /// Let the banner's mascot move — hop, wave, wink — while the
+    /// conversation is still empty (`docs/mascot-motion.md`).
     MascotAnimation,
     /// How many times a failed request is retried (`llm::retry`); a lost
     /// connection is waited for instead, and `0` turns both off
@@ -183,7 +183,7 @@ impl SettingKey {
                 "Resize large images to 2000x2000 before sending them to the model"
             }
             Self::MascotAnimation => {
-                "Let the banner's mascot blink and stir until the conversation starts"
+                "Let the banner's mascot hop, wave and wink until the conversation starts"
             }
             Self::ErrorRetry => {
                 "Retries before a failed request gives up — a lost connection is waited for"

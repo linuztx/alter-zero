@@ -55,7 +55,7 @@ widened for the split.
 | `login.rs` | The inline `/login` onboarding. |
 | `look.rs` | The per-directory persistence the two looks share: the `Look` trait and `LookFile<T>` — the `mascot.json`/`spinner.json` format, `config.json`'s last-and-pinned rule (`docs/per-directory-state.md`). |
 | `mascot.rs` | The banner-mascot catalog (with its `Look` impl, the `mascot` key), the `/mascot` picker's state (`docs/mascot.md`). |
-| `mascot_motion.rs` | The mascot's motion: each mascot's stills (blink, glance, signature, glint), the bar schedule `mascot_motion` reads the pose off, and when the session lets the banner move (`docs/mascot-motion.md`). |
+| `mascot_motion.rs` | The mascot's motion: a pose (a body frame with the eyes laid over it, and the light on it), the stills of each gesture — the eyes' one choreography and each mascot's own body frames — the acts that phrase them, the bar schedule that deals a move and a look by turns and that `mascot_motion` reads the pose off, and when the session lets the banner move (`docs/mascot-motion.md`). |
 | `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
@@ -95,7 +95,7 @@ widened for the split.
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |
 | `footer.rs` | The footer row, the toast, the queued rows, and what displaces the footer. |
-| `header.rs` | The startup banner — the gradient mascot beside the metadata column (`docs/mascot.md`) — at rest and in a pose, with the glint's colours and when the next motion frame is due (`docs/mascot-motion.md`). |
+| `header.rs` | The startup banner — the gradient mascot beside the metadata column (`docs/mascot.md`) — at rest and in a pose, with the colours of the light on it (a glint, a glow) and when the next motion frame is due (`docs/mascot-motion.md`). |
 | `mascot_view.rs` | The inline `/mascot` picker with its live, moving banner preview (`docs/mascot.md`). |
 | `spinner_view.rs` | The inline `/spinner` picker — live spinner rows over a sample status-line preview (`docs/spinner.md`). |
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |

@@ -1514,8 +1514,8 @@ a phase run on its own is as hermetic as one run by the suite):
   exporting four switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
   `ALTER_ZERO_UPDATE_CHECK`, `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three
-  seconds, and `ALTER_ZERO_MASCOT_ANIMATION`, since the banner's mascot blinks
-  until a conversation starts and a capture taken mid-blink reads another
+  seconds, and `ALTER_ZERO_MASCOT_ANIMATION`, since the banner's mascot moves
+  until a conversation starts and a capture taken mid-move reads another
   mascot's art; the phases that test each feature turn it back on for
   themselves). Each
   is load-bearing: a resolvable key reaches a live provider instead of the

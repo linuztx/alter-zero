@@ -17,7 +17,7 @@ Code's welcome banner.
 
 - **Mascot** — the selected mascot's art (crest by default, switched with
   `/mascot`) — which **moves** until the conversation starts: it greets at
-  launch, then blinks and stirs, painted over these rows in place
+  launch, then hops, waves, winks and stirs, painted over these rows in place
   (`docs/mascot-motion.md`) — drawn flush-left and coloured with a left-to-right
   **accent → link gradient** (the theme's own two accents — Catppuccin
   Mocha's sky `#89DCEB` → blue `#89B4FA` by default, One Dark's `#56B6C2` →
@@ -205,8 +205,9 @@ kept clear of the strings other phases key on (`for commands`,
   banner contains none of the smoke-reserved strings at any width for any
   mascot.
 - `ui/tests/header.rs` unit tests (the mascot in motion): a pose swaps the
-  art and nothing beside it, the glint's colours, the committed banner and
-  the transcript never moving (`docs/mascot-motion.md`).
+  art and nothing beside it, the colours of the light on it (a glint's band,
+  a glow's every glyph), the committed banner and the transcript never
+  moving (`docs/mascot-motion.md`).
 - `ui/tests/header.rs` unit tests (`banner_tail_*`): the banner + spacer
   restore over the rebuilt tail, and a long tail never clips it.
 - `ui/tests/header.rs` unit tests (`transcript_*`): the transcript opens with

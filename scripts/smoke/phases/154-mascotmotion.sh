@@ -7,12 +7,15 @@ smoke_begin
 
 # the banner mascot's motion (docs/mascot-motion.md). From launch until the
 # conversation holds its first cell the mascot is alive: 0.7s in it greets (a
-# glint, its signature move, a blink), then now and then it blinks, glances
-# or moves again. It is painted IN PLACE, over the banner the launch
+# glint, its signature move, a blink), then every few seconds it does
+# something else — a move of its body or of the light on it, then a look of
+# its eyes, by turns. It is painted IN PLACE, over the banner the launch
 # committed — the one thing above the live region a frame may repaint — and
 # it must leave no trace of itself anywhere a record is kept:
 #
 #   - it moves at all, and within the greeting (the art's rows change);
+#   - what follows the greeting is a MOVE, not another blink: the frill or
+#     the feet change, glyphs or colours, and then the eyes get their turn;
 #   - between acts it is SILENT — one frame per pose change, never a chain
 #     (measured with pipe-pane, like Phase 94: an idle screen that writes
 #     thirty frames a second shimmers the cursor and eats a selection).
@@ -110,6 +113,38 @@ banner_cells() {
 	shift
 	pane "$sess" -e "$@" | head -3
 }
+# body_of CELLS — the frill and the feet of a banner_cells capture: the two
+# art rows no look ever touches. (The eyes are on the row between.)
+body_of() {
+	printf '%s\n' "$1" | sed -n '1p;3p'
+}
+# face_of CELLS — the row the eyes are on.
+face_of() {
+	printf '%s\n' "$1" | sed -n '2p'
+}
+# art_of CELLS — a banner_cells capture as the art alone, its colours
+# stripped: what a dump can show. A move of the light changes no glyph, so
+# its art is the resting banner's.
+art_of() {
+	printf '%s\n' "$1" | sed $'s/\x1b\\[[0-9;]*m//g'
+}
+# changes_until NANOS SESSION PART — poll until that reading of `date +%s%N`
+# for a capture whose PART (body_of / face_of) is not the resting banner's,
+# printing the capture that caught it. Returns 1 if none did.
+changes_until() {
+	local deadline="$1" sess="$2" part="$3" last="" rest
+	rest="$("$part" "$REST_CELLS")"
+	while [ "$(date +%s%N)" -lt "$deadline" ]; do
+		last="$(banner_cells "$sess")"
+		if [ "$("$part" "$last")" != "$rest" ]; then
+			printf '%s\n' "$last"
+			return 0
+		fi
+		sleep 0.02
+	done
+	printf '%s\n' "$last"
+	return 1
+}
 
 # ---- the reference: a stilled launch -----------------------------------
 note "ALTER_ZERO_MASCOT_ANIMATION=0: the banner holds still and writes nothing"
@@ -155,15 +190,33 @@ at_rest "$resting" || {
 	dump "between acts" "$resting"
 	fail "the mascot is not at rest between its acts"
 }
-# …and over a longer idle it does move again (the schedule goes on): an act
-# every 3.0–6.6s, a dozen frames at most — where a chain draws ~190 in 6s.
-if ! moved_within 9 "$S154" >/dev/null; then
-	fail "the mascot never moved again after its greeting (9s)"
+# …and the schedule goes on: one act a bar (4.8s), a move and a look by
+# turns. The bar after the greeting plays a MOVE — the body or the light on
+# it, never just the eyes — somewhere between 5.7s and 8.7s after the first
+# frame, on any seed: the frill or the feet change, in glyph or in colour.
+note "what follows the greeting is a move of the body, not another blink"
+if first_move="$(changes_until $((launched + 8800000000)) "$S154" body_of)"; then
+	dump "the first move, caught (a move of the light shows as the resting art)" "$(art_of "$first_move")"
+else
+	dump "the banner at the end of the bar" "$(art_of "$first_move")"
+	fail "the bar after the greeting moved nothing but the eyes (or nothing at all)"
 fi
+# …and the bar after that is the eyes' turn: a look, 10.5–13.5s in. (The
+# move is over 8.7s in at the latest, and a hop moves the face row too, so
+# the wait for the eyes starts once it must be.)
+note "then the eyes get their turn"
+sleep_until $((launched + 8900000000))
+if look="$(changes_until $((launched + 13900000000)) "$S154" face_of)"; then
+	dump "the first look, caught" "$(art_of "$look")"
+else
+	fail "the second bar after the greeting never moved the eyes"
+fi
+# Over a longer idle that is an act every 3.0–6.6s, a couple of dozen frames
+# at most — where a chain draws ~190 in 6s.
 idle_frames="$(pane_frames "$S154" 6)"
 note "frames drawn over 6s of idling: $idle_frames"
 if [ "$idle_frames" -gt 60 ]; then
-	fail "an idle banner drew $idle_frames frames in 6s — that is a chain, not a blink"
+	fail "an idle banner drew $idle_frames frames in 6s — that is a chain, not an act"
 fi
 tmux kill-session -t "$S154" 2>/dev/null
 

@@ -71,6 +71,7 @@ use alter_zero::app::{
     MascotPicker,
     MascotPose,
     MascotRow,
+    Side,
     Still,
     mascot_motion,
     MOTION_ACT_EARLIEST,

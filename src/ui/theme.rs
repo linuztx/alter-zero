@@ -3079,13 +3079,13 @@ pub(super) fn header_gradient_at(col: usize, total: usize) -> Color {
     lerp_color(header_gradient_start(), header_gradient_end(), t)
 }
 
-/// How far the mascot's **glint** lifts a glyph under its crest toward
-/// [`shimmer_highlight`] — the band of brighter ink that crosses the art in
-/// the greeting and now and then after (`docs/mascot-motion.md`; where the
-/// band is, and how it fades and leans, is `MascotPose::light`). The status
-/// verb's own crest ([`SHIMMER_MAX_BLEND`]), so the two lights on screen
-/// are one light.
-pub(super) const MASCOT_GLINT_MAX_BLEND: f32 = SHIMMER_MAX_BLEND;
+/// How far the mascot's **light** lifts a glyph at its full strength toward
+/// [`shimmer_highlight`] — under the crest of the glint that crosses the art
+/// in the greeting and now and then after, and over the whole of a flashing
+/// gem (`docs/mascot-motion.md`; where the light falls and how strongly is
+/// `MascotPose::light`). The status verb's own crest
+/// ([`SHIMMER_MAX_BLEND`]), so the two lights on screen are one light.
+pub(super) const MASCOT_LIGHT_MAX_BLEND: f32 = SHIMMER_MAX_BLEND;
 
 /// The narrow badge's version, the hint's keys and a notice card's title —
 /// the cyan accent, so they pop.

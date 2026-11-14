@@ -132,9 +132,9 @@ smoke_sanitize_env() {
 	# long would find in the strip it asserts on. Off for the suite; the
 	# tips phase (125) turns them back on for its own launches.
 	export ALTER_ZERO_TIPS=0
-	# The banner's mascot blinks and stirs until a conversation starts
+	# The banner's mascot moves until a conversation starts
 	# (docs/mascot-motion.md), and a hundred phases read the banner's art off
-	# the screen: a capture taken mid-blink finds another mascot's row where
+	# the screen: a capture taken mid-move finds another mascot's row where
 	# it expected the crest's. Still for the suite, exported and spelled out
 	# in every launch string; the motion phase (154) turns it back on for its
 	# own launches.

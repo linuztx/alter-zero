@@ -371,21 +371,44 @@ choice persisted **per working directory** in `mascot.json` (`docs/per-directory
 the banner at once) in `docs/mascot.md`, and the **mascot's motion**
 (`docs/mascot-motion.md`: from launch until the conversation holds its first
 cell the banner's mascot is alive — 0.7 s in it greets (a glint, the move its
-description names, a blink), then every 3.0–6.6 s it blinks, glances or moves
-again. Each mascot's stills are `Mascot::stills(Gesture)` — `Blink`, `Glance`,
-`Signature`, `Glint` — drawn **in the resting art's place** (the rest's row
-count, never wider than the block, single-width block glyphs, so the metadata
-column never moves): eyes are holes, so an upper-half eye closes through a
-lid (`▄` → `▆` → `█`) and glances by narrowing to a quadrant (`▟`/`▙`), a
-lower-half one cuts to `█` and glances `▜`/`▛`, and the gem's facet stands in
-for an eye; the signatures are the crest's frill dropping and flaring, the
-bloom swelling, the sprout's leaf swaying, the twin's ears flicking, the
-skitterer skittering, and the gem's glint travelling back; the glint is
-colour only, a three-cell band leaning a column a row (`MascotPose::light`)
-lifted toward the brightest ink. The schedule is the pure
+description names, a blink), then every 3.0–6.6 s it does something else: a
+**move** of its body or of the light on it and a **look** of its eyes, by
+turns. A pose (`MascotPose`) is a **body** — one frame of art, drawn **in the
+resting art's place** (the rest's row count, never wider than the block,
+single-width block glyphs, so the metadata column never moves) — with the
+**eyes** laid over it (`rows()`): eyes are holes, so an eye's states are the
+glyphs that reshape the hole — an upper-half eye `▄` lids `▆`, shuts `█`,
+looks `▟`/`▙`, widens `▂`; a lower-half one `▀` cuts to `█`, looks `▜`/`▛`,
+widens `▔`; the gem's facet stands in for an eye — which is why one
+choreography of looks serves every mascot (`Blink`, `Wink`, `Glance`, `Dart`,
+`Cross`, `Widen`, `Doze`; never up or down, where the hole would open onto
+the gap under the body) and each mascot's own tables hold only what its body
+does: `Signature` (the crest's frill dropping and flaring, the bloom
+swelling, the sprout's leaf swaying, the twin's ears flicking, the skitterer
+skittering, the gem catching the light in two flashes), `Flourish` (a ripple
+along the frill, a wobble of the head, two leaves unfurling, the ears
+splaying, a scuttle half a cell each way, the gem **spinning** edge-on and
+back), `Hop` — the resting art's half
+cells each moved one row, exact because every glyph is a quadrant block, the
+sprout springing up where the others drop and the gem floating slowly —
+`Wave`, `Cheer`, `Patter`, and the light: `Glint`, a three-cell band leaning
+a column a row, and `Glow`, every glyph alike (`MascotPose::light`, lifted
+toward the brightest ink).
+`Mascot::stills(Gesture)` answers with no stills for a move a body cannot
+make; a sided gesture carries its `Side`, and since every mascot is the same
+either side of its middle the other side is the same stills in a mirror.
+What a bar plays is an **act**, a gesture or a short phrase of them
+(`Cheer, Blink` · `Wave, Wink` · `Doze, Blink, Blink`), from the mascot's
+two lists, `Mascot::moves` and `Mascot::looks` — and **a blink is
+punctuation**: exactly one look is a bare blink, since a mascot whose bars
+were two-thirds blinks read as one that only ever blinks. The schedule is the pure
 `app::mascot_motion(mascot, seed, elapsed) -> MascotMotion { pose, holds }`
-over 4.8 s bars — bar 0 the greeting, every later bar one act hashed from the
-seed and the bar's index — whose `holds` runs to the next pose that
+over 4.8 s bars — bar 0 the greeting, every later bar the next act, a move
+then a look, each kind **dealt like a deck** (`dealt`: a fresh shuffle every
+cycle that plays each act once, never one twice in a row across the join,
+the first cycle never opening on the glint, the signature or the blink the
+greeting just showed), a sided gesture flipped on a coin, the start scattered over
+what the act leaves of its bar — whose `holds` runs to the next pose that
 **differs**, across a bar boundary, so the loop sleeps exactly that long
 (`ui::mascot_motion_due`, re-armed from the draw tick): one frame per pose
 change and **nothing on the wire between acts**, never the status line's

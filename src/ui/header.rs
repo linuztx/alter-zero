@@ -20,8 +20,8 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
 /// [`gradient_spans`] under a light: the cell starting at display column
 /// `col` is lifted off the gradient toward the brightest ink
 /// ([`shimmer_highlight`]) by `light(col)` — 0 leaves it exactly on the
-/// gradient, 1 is the light's full strength ([`MASCOT_GLINT_MAX_BLEND`]).
-/// The mascot's glint, whose shape is `MascotPose::light`
+/// gradient, 1 is the light's full strength ([`MASCOT_LIGHT_MAX_BLEND`]).
+/// The mascot's glint and its glow, whose shape is `MascotPose::light`
 /// (`docs/mascot-motion.md`).
 fn lit_gradient_spans(
     text: &str,
@@ -35,7 +35,7 @@ fn lit_gradient_spans(
         let base = header_gradient_at(col, total);
         let strength = light(col);
         let color = if strength > 0.0 {
-            blend_color(shimmer_highlight(), base, strength * MASCOT_GLINT_MAX_BLEND)
+            blend_color(shimmer_highlight(), base, strength * MASCOT_LIGHT_MAX_BLEND)
         } else {
             base
         };
@@ -360,7 +360,7 @@ pub(super) fn banner_lines(
 ) -> Vec<Line<'static>> {
     let w = width as usize;
     let meta = meta_rows(app);
-    let art = pose.art;
+    let art = pose.rows();
     let art_w = mascot.art_width();
 
     // Too narrow to seat the art beside the title: the one-line badge — the

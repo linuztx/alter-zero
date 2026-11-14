@@ -831,13 +831,12 @@ fn every_mascot_greets_in_the_preview() {
         select(&mut app, index);
         app.set_pulse(std::time::Duration::ZERO);
         app.set_pulse(signature_time(mascot));
-        let still = mascot.stills(Gesture::Signature)[0].pose;
+        let still = mascot.stills(Gesture::Signature)[0].pose.rows();
         let page = texts(&app, WIDE);
         let changed = still
-            .art
             .iter()
             .zip(mascot.art())
-            .find(|(moved, rest)| moved != rest)
+            .find(|(moved, rest)| moved.as_str() != **rest)
             .map(|(moved, _)| moved.trim())
             .expect("the signature redraws a row");
         assert!(
