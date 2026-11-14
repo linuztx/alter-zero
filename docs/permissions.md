@@ -1388,7 +1388,8 @@ explains itself with a toast instead of pretending to toggle anything, and
   without one, and auto mode with no classifier attached still asks.
   `llm/classifier.rs` — the user-prompt build (the action in a fence no
   backtick run inside it can close, for a command, an MCP call's arguments
-  and a session's input alike, and every claim beside it on one line); the
+  and a session's input alike, every claim beside it on one line, and the
+  working directory on one line whichever of the three it is); the
   verdict's read
   (padding/case/a fence tolerated; an allow beside anything else, an allow
   with a reason, another spelling and the old tags all refused; a block
