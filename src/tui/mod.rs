@@ -450,6 +450,15 @@ pub(crate) struct StatusClocks {
     /// round's tool cells and its agent tree stay in step, and a background
     /// agent's live cell keeps animating between turns.
     loop_start: Instant,
+    /// When the startup banner first reached the screen — the epoch of the
+    /// mascot's animation clock (`App::set_mascot_clock`,
+    /// `docs/mascot-animation.md`). Its own reading rather than
+    /// `loop_start`, which is taken before the session-start checkpoint and
+    /// can be seconds older: the mascot's greeting is scripted from the
+    /// moment the user can see it. A `/clear` or a resize never restarts it —
+    /// the animation is picked up where it is — and a `/mascot` switch
+    /// always does, so the mascot just chosen greets.
+    banner_start: Option<Instant>,
 }
 
 impl StatusClocks {
@@ -462,6 +471,7 @@ impl StatusClocks {
             thinking_start: None,
             command_start: None,
             loop_start: Instant::now(),
+            banner_start: None,
         }
     }
 

@@ -106,6 +106,16 @@ fn the_title_wears_the_page_title_dress_over_a_dim_subtitle() {
     );
 }
 
+/// Where **Permission mode** sits in the menu — a row deep enough in the list
+/// that the window has rows to hide on both sides of it. Found by its key,
+/// so a row added ahead of it moves these tests with it.
+fn permission_mode_index() -> usize {
+    SettingKey::ALL
+        .iter()
+        .position(|key| *key == SettingKey::PermissionMode)
+        .expect("the row is listed")
+}
+
 #[test]
 fn the_window_shows_five_settings_and_the_counter_names_the_rest() {
     let mut app = settings_app();
@@ -113,7 +123,8 @@ fn the_window_shows_five_settings_and_the_counter_names_the_rest() {
     assert_eq!(SETTINGS_MENU_MAX_ROWS, 5);
     assert_eq!(setting_rows(&page_at(&app, 90, TALL), &labels), 5);
     // Deep in the list the window rides the selection, centred on it.
-    select(&mut app, 7); // Permission mode
+    let at = permission_mode_index();
+    select(&mut app, at);
     let texts = page_at(&app, 90, TALL);
     let rows: Vec<&String> = texts
         .iter()
@@ -124,7 +135,7 @@ fn the_window_shows_five_settings_and_the_counter_names_the_rest() {
     assert!(
         texts
             .iter()
-            .any(|t| *t == format!("    (8/{})", SettingKey::ALL.len())),
+            .any(|t| *t == format!("    ({}/{})", at + 1, SettingKey::ALL.len())),
         "{texts:#?}"
     );
 }
@@ -689,15 +700,16 @@ fn the_compact_settings_page_is_the_familys_short_page() {
 #[test]
 fn the_compact_settings_window_keeps_the_selection_in_its_middle() {
     let mut app = settings_app();
-    select(&mut app, 7); // Permission mode
+    let at = permission_mode_index();
+    select(&mut app, at);
     let texts = page_at(&app, 78, 12);
-    assert_eq!(texts[5], "  ↑ 6 more above", "{texts:#?}");
+    assert_eq!(texts[5], format!("  ↑ {} more above", at - 1), "{texts:#?}");
     assert!(texts[6].starts_with("    Tools"), "{texts:#?}");
     assert!(texts[7].starts_with("  → Permission mode"), "{texts:#?}");
     assert!(texts[8].starts_with("    Checkpoints"), "{texts:#?}");
     assert_eq!(
         texts[9],
-        format!("  ↓ {} more below", SettingKey::ALL.len() - 9),
+        format!("  ↓ {} more below", SettingKey::ALL.len() - at - 2),
         "{texts:#?}"
     );
 }

@@ -45,6 +45,7 @@ mod keys;
 mod login;
 mod look;
 mod mascot;
+mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
@@ -97,6 +98,7 @@ pub use self::login::{
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
+pub use self::mascot_motion::{MASCOT_GREETING_MS, MASCOT_SHINE_FRAME, MascotPose};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
@@ -568,6 +570,18 @@ pub struct App {
     /// default) — chosen in the `/mascot` picker, seeded at the boundary from
     /// `mascot.json` before the first frame. See `docs/mascot.md`.
     mascot: Mascot,
+    /// The seed of the mascot's idle animation — the boundary's entropy,
+    /// handed over once at bootstrap ([`seed_mascot_motion`]). `None` until
+    /// then, which is every unit test's `App` and a headless run's: a mascot
+    /// nobody seeded never moves. See `docs/mascot-animation.md`.
+    ///
+    /// [`seed_mascot_motion`]: App::seed_mascot_motion
+    mascot_motion: Option<u64>,
+    /// How far into its timeline the mascot's animation is — time since the
+    /// banner first reached the screen, injected before every draw
+    /// ([`set_mascot_clock`](App::set_mascot_clock), the
+    /// [`set_pulse`](App::set_pulse) pattern).
+    mascot_clock: Duration,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row

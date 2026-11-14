@@ -12,6 +12,24 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **The banner mascot moves while the conversation is empty.** On a fresh
+  screen — at launch, and again after `/clear` — the mascot is alive: a
+  light sweeps it as the app opens, it shows its own move, and it blinks;
+  from there it blinks and glances every few seconds, on a rhythm that
+  differs every session. Each of the six has a move of its own: the crest
+  flares its frill, the bloom flutters, the sprout sways and unfurls a
+  leaf, the twin flicks an ear, the skiter skitters, and the gem, which has
+  no eyes, twinkles and glints. It stops the moment the first message is
+  sent: the banner above a conversation always stands still, and so does
+  the one in the Ctrl+O transcript and in an export. The `/mascot` picker's
+  preview moves the same way, so a mascot can be chosen for how it behaves,
+  and the one you choose greets from the banner.
+  An idle screen stays cheap: a blink rewrites two cells, and nothing is
+  written between moves. Turn it off with the new **Animate mascot** row in
+  `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**

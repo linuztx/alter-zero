@@ -156,6 +156,13 @@ smoke_sanitize_env() {
 	# suite, exported (a phase's own launch string inherits it) and spelled
 	# out in every launch string.
 	export ALTER_ZERO_FIRST_VERB="$VERB_TURN1"
+	# The banner mascot blinks and moves while the conversation is empty
+	# (docs/mascot-animation.md), on a rhythm drawn by lot — so a capture of
+	# a fresh screen would hold whatever pose the lot fell on, and a byte
+	# count of an idle one whatever frame it wrote. Still for the suite,
+	# exported and spelled out in every launch string; the animation phase
+	# (154) turns it back on for its own launches.
+	export ALTER_ZERO_MASCOT_ANIMATION=0
 }
 
 # ---------------------------------------------------------------------------
@@ -259,10 +266,10 @@ smoke_begin() {
 	# Filesystem checkpoints are OFF for every launch in the repo's cwd: a
 	# checkpoint restore does `git reset --hard` + `git clean` on the working
 	# directory. Only phases that run in a throwaway cwd re-enable them.
-	# Lifecycle hooks, the project config layer and the spinner tips are off
-	# for hermeticity too, and the permission mode is manual (the sanitizer's
-	# note on it).
-	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_TIPS=0 ALTER_ZERO_PERMISSION_MODE=manual ALTER_ZERO_VERBOSE=1 ALTER_ZERO_FIRST_VERB=$VERB_TURN1"
+	# Lifecycle hooks, the project config layer, the spinner tips and the
+	# banner mascot's animation are off for hermeticity too, and the
+	# permission mode is manual (the sanitizer's notes on them).
+	CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_SESSIONS_DIR=$SMOKE_SESSIONS ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_AGENTS_DIR=$SMOKE_AGENTS ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_TELEMETRY=0 ALTER_ZERO_UPDATE_CHECK=0 ALTER_ZERO_TIPS=0 ALTER_ZERO_PERMISSION_MODE=manual ALTER_ZERO_VERBOSE=1 ALTER_ZERO_FIRST_VERB=$VERB_TURN1 ALTER_ZERO_MASCOT_ANIMATION=0"
 	# Persistence seeds the input history from a file on startup; /dev/null
 	# gives every launch an EMPTY history so the ↑/↓ and Ctrl+R assertions are
 	# unaffected by earlier submissions.

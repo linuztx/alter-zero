@@ -865,6 +865,10 @@ fn env_flag(name: &str) -> bool {
     }
 }
 
+/// The variable that seeds the `/settings` **Animate mascot** row for a run
+/// (`docs/mascot-animation.md`).
+const MASCOT_ANIMATION_ENV: &str = "ALTER_ZERO_MASCOT_ANIMATION";
+
 /// An **explicitly set** `ALTER_ZERO_*` on/off flag, or `None` when the
 /// variable is absent. The `/settings` seed needs the distinction [`env_flag`]
 /// erases: an unset variable must leave the saved value alone, where a set one
@@ -1355,6 +1359,12 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     // privacy switch, so it never withdraws the row (`docs/tips.md`).
     if let Some(on) = env_flag_set(alter_zero::tips::TIPS_ENV) {
         settings.tips = on;
+    }
+    // The Animate mascot row: `ALTER_ZERO_MASCOT_ANIMATION` seeds it for the
+    // run, never saved — the smoke suite exports it falsy so the banner its
+    // phases read holds still (docs/mascot-animation.md).
+    if let Some(on) = env_flag_set(MASCOT_ANIMATION_ENV) {
+        settings.animate_mascot = on;
     }
     settings
 }

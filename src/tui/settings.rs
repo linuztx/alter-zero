@@ -322,8 +322,13 @@ impl Session<'_> {
             SettingKey::Verbose => rebuild = true,
             // Read where they are used — nothing to rebuild. The ask timeout
             // is read by the draw tick on every reading of the idle clock, so
-            // `never` stops a running wait at once (docs/ask.md).
-            SettingKey::HideThinking | SettingKey::AutoCompact | SettingKey::AskTimeout => {}
+            // `never` stops a running wait at once (docs/ask.md); the mascot
+            // row is read by the frame that poses the banner, so off puts it
+            // back to rest on the very next draw (docs/mascot-animation.md).
+            SettingKey::HideThinking
+            | SettingKey::AutoCompact
+            | SettingKey::AskTimeout
+            | SettingKey::AnimateMascot => {}
             // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
             // The one per-user row: its file is telemetry.json, and turning

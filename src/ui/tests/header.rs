@@ -615,3 +615,291 @@ fn update_card_uses_the_active_theme_for_title_border_and_commands() {
         });
     }
 }
+
+// --- the live banner: the mascot in motion (docs/mascot-animation.md) ---
+
+use crate::app::{MASCOT_GREETING_MS, MascotPose};
+use crate::ui::header::header_lines_posed;
+
+/// The seed the animated fixtures run on.
+const MOTION_SEED: u64 = 0x5EED;
+
+/// An app whose mascot animates, `at` milliseconds into its timeline.
+fn animated(mascot: Mascot, at: u64) -> App {
+    let mut app = with_session();
+    app.set_mascot(mascot);
+    app.seed_mascot_motion(MOTION_SEED);
+    app.set_mascot_clock(Duration::from_millis(at));
+    app
+}
+
+/// The first millisecond of `mascot`'s greeting at which its pose satisfies
+/// `wanted` — found on the timeline, so no test spells the script's times.
+fn pose_time(mascot: Mascot, wanted: impl Fn(&MascotPose) -> bool) -> u64 {
+    (0..MASCOT_GREETING_MS)
+        .find(|&at| wanted(&mascot.pose(MOTION_SEED, Duration::from_millis(at))))
+        .unwrap_or_else(|| panic!("{}: no such pose in the greeting", mascot.name()))
+}
+
+/// When the crest's eyes are shut.
+fn crest_blinks_at() -> u64 {
+    pose_time(Mascot::Crest, |pose| pose.art[1] == "▝▜█████▛▘")
+}
+
+/// A line's cells: each glyph with the colour it is drawn in.
+fn cells(line: &Line) -> Vec<(String, Option<Color>)> {
+    line.spans
+        .iter()
+        .flat_map(|span| {
+            span.content
+                .graphemes(true)
+                .map(|g| (g.to_string(), span.style.fg))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// How far `color` sits from `other`, summed over the three channels.
+fn distance(color: Option<Color>, other: Color) -> u32 {
+    let (r, g, b) = rgb_of(color.expect("a coloured cell"));
+    let (or, og, ob) = rgb_of(other);
+    u32::from(r.abs_diff(or)) + u32::from(g.abs_diff(og)) + u32::from(b.abs_diff(ob))
+}
+
+#[test]
+fn the_committed_banner_wears_the_rest_pose_whatever_the_clock_says() {
+    // `header_lines` is what reaches scrollback, the Ctrl+O transcript and
+    // an export. Scrollback cannot be repainted, so a blink committed there
+    // would be shut eyes for the rest of the session.
+    let app = animated(Mascot::Crest, crest_blinks_at());
+    assert_ne!(
+        app.banner_pose(),
+        MascotPose::rest(Mascot::Crest),
+        "the fixture is mid-blink"
+    );
+    let still = with_session();
+    assert_eq!(header_lines(&app, 90), header_lines(&still, 90));
+    let mut block = header_lines(&still, 90);
+    block.push(Line::default());
+    assert_eq!(
+        banner_block_lines(&app, 90),
+        block,
+        "the banner over its spacer"
+    );
+    assert_eq!(
+        banner_tail(header_lines(&still, 90), Vec::new()),
+        block,
+        "exactly what a rebuild of an empty conversation writes"
+    );
+}
+
+#[test]
+fn the_live_banner_draws_the_pose_beside_unmoved_metadata() {
+    let app = animated(Mascot::Crest, crest_blinks_at());
+    let frame = banner_frame_lines(&app, 90);
+    let rest = banner_block_lines(&app, 90);
+    assert_eq!(frame.len(), rest.len(), "a pose never changes the height");
+    assert!(
+        plain(&frame[1]).starts_with("▝▜█████▛▘  ~/alter-zero"),
+        "{:?}",
+        plain(&frame[1])
+    );
+    // Only the eyes' two cells differ, on the one row they sit in.
+    for (row, (now, was)) in frame.iter().zip(&rest).enumerate() {
+        let changed: Vec<usize> = cells(now)
+            .iter()
+            .zip(cells(was))
+            .enumerate()
+            .filter(|(_, (a, b))| **a != *b)
+            .map(|(col, _)| col)
+            .collect();
+        let want: &[usize] = if row == 1 { &[2, 6] } else { &[] };
+        assert_eq!(changed, want, "row {row}");
+    }
+    assert_eq!(frame.last(), Some(&Line::default()), "the spacer row");
+}
+
+#[test]
+fn no_pose_moves_the_metadata_or_the_banners_shape() {
+    // Whatever a frame draws, the title, the cwd and the hint stay on their
+    // rows at their column, and the banner keeps its height: the composer
+    // under it never shifts for a blink.
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        let column = mascot.art_width();
+        for art in mascot.motion_frames() {
+            let pose = MascotPose { art, shine: None };
+            let lines = header_lines_posed(&app, mascot, &pose, 90);
+            assert_eq!(lines.len(), rest.len(), "{}: {art:?}", mascot.name());
+            for (i, (line, was)) in lines.iter().zip(&rest).enumerate() {
+                let (now, was) = (cells(line), cells(was));
+                assert_eq!(
+                    &now[column.min(now.len())..],
+                    &was[column.min(was.len())..],
+                    "{}: {art:?} row {i}",
+                    mascot.name()
+                );
+                assert!(
+                    plain(line).starts_with(art[i]),
+                    "{}: {art:?} row {i} drawn verbatim",
+                    mascot.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_banner_with_nothing_moving_is_the_committed_banner() {
+    // Standing still, the live block is the block scrollback holds — so a
+    // frame at rest repaints nothing at all.
+    let moving = crest_blinks_at();
+    // Not seeded.
+    let mut unseeded = with_session();
+    unseeded.set_mascot_clock(Duration::from_millis(moving));
+    // The row off.
+    let mut off = animated(Mascot::Crest, moving);
+    off.settings_mut().animate_mascot = false;
+    // A conversation under it.
+    let mut busy = animated(Mascot::Crest, moving);
+    busy.record_user_message("hi");
+    // Between clips.
+    let rested = animated(Mascot::Crest, 0);
+    for (what, app) in [
+        ("unseeded", unseeded),
+        ("row off", off),
+        ("a conversation", busy),
+        ("between clips", rested),
+    ] {
+        assert_eq!(
+            banner_frame_lines(&app, 90),
+            banner_block_lines(&app, 90),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn a_sweep_lights_the_art_under_its_band_and_nothing_else() {
+    use crate::ui::theme::{header_gradient_at, shimmer_highlight};
+    let mascot = Mascot::Crest;
+    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|p| p >= 0.5));
+    let app = animated(mascot, middle);
+    let frame = banner_frame_lines(&app, 90);
+    let rest = banner_block_lines(&app, 90);
+    // Light only: not a glyph changes.
+    let text = |lines: &[Line]| lines.iter().map(plain).collect::<Vec<_>>();
+    assert_eq!(text(&frame), text(&rest));
+    let width = mascot.art_width();
+    let (lit, unlit) = (cells(&frame[1]), cells(&rest[1]));
+    // The band is over the art's middle: those cells sit nearer the
+    // highlight than their own gradient colour, the far edges do not move…
+    let highlight = shimmer_highlight();
+    assert!(
+        distance(lit[width / 2].1, highlight) < distance(unlit[width / 2].1, highlight) / 2,
+        "{lit:?}"
+    );
+    assert_eq!(lit[0].1, Some(header_gradient_at(0, width)), "{lit:?}");
+    // …and the light falls off smoothly to either side of its crest.
+    let glow: Vec<u32> = (0..width)
+        .map(|col| distance(lit[col].1, header_gradient_at(col, width)))
+        .collect();
+    let crest = glow.iter().copied().max().unwrap();
+    let peak = glow.iter().position(|&g| g == crest).unwrap();
+    assert!(glow[..=peak].windows(2).all(|p| p[0] <= p[1]), "{glow:?}");
+    assert!(glow[peak..].windows(2).all(|p| p[0] >= p[1]), "{glow:?}");
+    // The metadata beside it is untouched.
+    assert_eq!(&lit[width..], &unlit[width..]);
+}
+
+#[test]
+fn a_sweep_leans_like_a_glint() {
+    // The band crosses the lower rows a little ahead of the upper ones — a
+    // slanted streak, the way light catches a surface, rather than a bar.
+    use crate::ui::theme::header_gradient_at;
+    let mascot = Mascot::Bloom;
+    let middle = pose_time(mascot, |pose| pose.shine.is_some_and(|p| p >= 0.5));
+    let frame = banner_frame_lines(&animated(mascot, middle), 90);
+    let width = mascot.art_width();
+    let brightest = |row: usize| {
+        let lit = cells(&frame[row]);
+        (0..width.min(lit.len()))
+            .filter(|&col| lit[col].0 != " ")
+            .max_by_key(|&col| distance(lit[col].1, header_gradient_at(col, width)))
+            .unwrap()
+    };
+    assert!(brightest(1) <= brightest(0), "row 1 trails row 0");
+    assert!(brightest(1) < width - 1 && brightest(1) > 0);
+}
+
+#[test]
+fn a_sweep_enters_and_leaves_the_art_without_a_jump() {
+    // The band starts and ends off the art, so the first and last frames of
+    // a sweep are the rest colours — no cell pops as the light arrives.
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        let entering = MascotPose {
+            art: mascot.art(),
+            shine: Some(0.0),
+        };
+        assert_eq!(
+            header_lines_posed(&app, mascot, &entering, 90),
+            rest,
+            "{}",
+            mascot.name()
+        );
+        let leaving = MascotPose {
+            art: mascot.art(),
+            shine: Some(0.999),
+        };
+        let lines = header_lines_posed(&app, mascot, &leaving, 90);
+        for (line, was) in lines.iter().zip(&rest) {
+            for (cell, rested) in cells(line).iter().zip(cells(was)) {
+                let (Some(_), Some(rested)) = (cell.1, rested.1) else {
+                    continue;
+                };
+                assert!(distance(cell.1, rested) <= 6, "{}: {cell:?}", mascot.name());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_spark_is_drawn_in_the_sweeps_light() {
+    // The gem's twinkle is light, not gem: its spark wears the highlight the
+    // sweep lifts the art toward, whatever column it opens in.
+    use crate::ui::theme::shimmer_highlight;
+    let mascot = Mascot::Gem;
+    let at = pose_time(mascot, |pose| pose.art[2].contains('✶'));
+    let frame = banner_frame_lines(&animated(mascot, at), 90);
+    let spark = cells(&frame[2])
+        .into_iter()
+        .find(|(glyph, _)| glyph == "✶")
+        .expect("the open spark");
+    assert_eq!(spark.1, Some(shimmer_highlight()));
+    // The stone beside it keeps the gradient.
+    let stone = cells(&frame[2])
+        .into_iter()
+        .find(|(glyph, _)| glyph == "▀")
+        .expect("the gem's tip");
+    assert_ne!(stone.1, Some(shimmer_highlight()));
+}
+
+#[test]
+fn the_narrow_badge_has_no_art_to_move() {
+    // Too narrow for the mascot, the banner is the one-line text badge:
+    // nothing on it animates, and nothing is scheduled for it.
+    let app = animated(Mascot::Crest, crest_blinks_at());
+    assert!(banner_shows_art(&app, 90));
+    assert!(!banner_shows_art(&app, 20));
+    assert_eq!(banner_frame_lines(&app, 20), banner_block_lines(&app, 20));
+    // The breakpoint is the banner's own.
+    for width in 0..120u16 {
+        let badge = !header_text(&app, width).contains('▛');
+        assert_eq!(banner_shows_art(&app, width), !badge, "at {width}");
+    }
+}

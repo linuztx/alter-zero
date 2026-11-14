@@ -28,6 +28,14 @@ own accent → link gradient (`header_gradient_start()` →
 `header_gradient_end()` — the theme's, `docs/theme.md`), keyed by display
 column across the art block's width.
 
+Each mascot also **moves** — it blinks, glances, and has one move of its
+own (the crest flares its frill, the sprout unfurls a leaf, the gem
+twinkles) — while the conversation under the banner is empty, and in the
+picker's preview. The frames live beside the art (`app/mascot_motion.rs`),
+each the rest art with one part moved, held to the same rules: the art's
+three rows, never wider than it, single-width glyphs. The whole design is
+`docs/mascot-animation.md`.
+
 ## The `/mascot` picker
 
 On a terminal with room for the list, a gap and the banner — 59 columns over
@@ -91,7 +99,13 @@ row — over the `(n/total)` counter, and a hint led by the navigation
 preview**. It is built by the *same* `ui::header` builder the startup banner
 uses (`header_lines_for(app, mascot, width)`, at the preview column's width),
 so what the picker shows and what Enter produces can never disagree — the
-cwd, the version, the hint and the gradient all preview exactly. Over it
+cwd, the version, the hint and the gradient all preview exactly. And it
+**moves**: the preview is the banner in the pose the highlighted mascot's
+animation is in now (`header_lines_posed` over `App::mascot_pose_for`), so
+a mascot can be chosen for how it behaves, not only how it stands — each on
+its own rhythm, never in step with the banner above it
+(`docs/mascot-animation.md`). A frame changes cells inside the art block and
+nothing else, so the page holds still around it. Over it
 sits `/theme`'s caption: the mascot's name as a bold title (`Crest`) over
 its description in the frame's dim.
 
@@ -199,6 +213,9 @@ and closed the picker; the boundary (`tui::mascot::Session::select_mascot`):
    way to redraw it. The switch is visible immediately, exactly like a
    resize's repaint; a mid-turn switch keeps the in-flight partial through
    the standard rebuild path (invariant 3).
+4. **restarts the animation's clock**, so over an empty conversation the
+   mascot just chosen greets — the sweep of light, its own move, a blink
+   (`docs/mascot-animation.md`).
 
 At startup `tui::bootstrap` seeds `App::mascot` from `mascot.json` before the
 first frame commits the header — the directory's own entry, or, launched in
@@ -247,9 +264,12 @@ a project.
 - `app::MascotFile` — the `mascot.json` format: `app::LookFile` over
   `app::Mascot` (`Look::KEY = "mascot"`) — `parse`/`to_json`, `project`,
   `choice_for`, `adopt`, `record`, over the `last` + `projects` fields.
+- `app::MascotPose`, `Mascot::pose` / `pose_holds`, `App::mascot_pose_for` —
+  the animation (`docs/mascot-animation.md`).
 - `ui::mascot_view` — `mascot_view_lines` (the page builder; its length is
   the reserved height, `docs/view-flow.md`), `mascot_picker_height`,
-  `render_mascot_picker`; `ui::header::header_lines_for` renders the preview,
+  `render_mascot_picker`; `ui::header::header_lines_posed` renders the
+  preview (`header_lines_for`, the rest pose, sizes its slot),
   and `ui::model_view::PreviewLayout` (over `MASCOT_PREVIEW_GAP` and
   `MASCOT_PREVIEW_MIN_COLS`) lays it beside the list or under it.
 - `tui::mascot::Session::select_mascot`, `tui::config::{mascot_json_path,
@@ -282,6 +302,8 @@ a project.
   search line) and the rungs under it down to the search line, nothing
   flowing at any height.
 - `ui/tests/header.rs` — the banner side (`docs/header.md`).
+- `app/tests/mascot_motion.rs` and the motion tests in the two files above —
+  the animation (`docs/mascot-animation.md`).
 - `scripts/smoke.sh` Phase 139 — the side-by-side page fitting a 12-row
   terminal whole, and the search line on 7.
 - `scripts/smoke.sh` Phase 86 — the picker end to end in a real terminal:

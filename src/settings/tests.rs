@@ -924,3 +924,80 @@ fn the_ask_timeout_row_follows_max_tool_calls() {
     assert_eq!(all[at - 1], SettingKey::MaxToolCalls);
     assert_eq!(all[at + 1], SettingKey::Tips);
 }
+
+// ===== the Animate mascot row (docs/mascot-animation.md) =====
+
+#[test]
+fn the_mascot_animates_until_a_directory_turns_it_off() {
+    // The banner mascot blinks and moves while the conversation is empty.
+    // Motion on an idle screen is not for everyone, so it is a row: on until
+    // turned off, needing nothing from the host, and — like every default —
+    // off the wire until it changes.
+    let s = SessionSettings::default();
+    assert!(s.animate_mascot, "on by default");
+    assert_eq!(SettingKey::AnimateMascot.label(), "Animate mascot");
+    assert_eq!(s.value_text(SettingKey::AnimateMascot, MANUAL), "true");
+    assert!(s.is_available(SettingKey::AnimateMascot, MANUAL));
+    assert!(
+        s.is_available(SettingKey::AnimateMascot, None),
+        "with no gate too"
+    );
+    assert_eq!(s.to_json().trim(), "{}");
+    let mut off = s;
+    assert!(off.cycle(SettingKey::AnimateMascot));
+    assert!(!off.animate_mascot);
+    assert_eq!(off.value_text(SettingKey::AnimateMascot, MANUAL), "false");
+    let json = off.to_json();
+    assert!(json.contains("\"animate_mascot\": false"), "{json}");
+    assert_eq!(SessionSettings::parse(&json), off);
+    assert!(off.cycle(SettingKey::AnimateMascot));
+    assert!(off.animate_mascot, "a boolean: back on");
+}
+
+#[test]
+fn the_animate_mascot_row_closes_the_rows_about_what_is_drawn() {
+    // Thinking, tool cells, pictures, then the banner: the rows that decide
+    // what the screen shows read together, ahead of the ones about requests.
+    let at = |key| SettingKey::ALL.iter().position(|k| *k == key).unwrap();
+    assert_eq!(
+        at(SettingKey::AnimateMascot),
+        at(SettingKey::AutoResizeImages) + 1
+    );
+    assert_eq!(
+        at(SettingKey::ErrorRetry),
+        at(SettingKey::AnimateMascot) + 1
+    );
+}
+
+#[test]
+fn the_animate_mascot_description_says_when_it_moves() {
+    // The search matches descriptions, so the row is found by what it does —
+    // and its description stays clear of the words other rows are found by.
+    let description = SettingKey::AnimateMascot.description().to_lowercase();
+    for word in ["banner", "blink", "empty"] {
+        assert!(description.contains(word), "{word:?} in {description:?}");
+    }
+    for taken in [
+        "image", "retry", "hook", "telem", "update", "tip", "mcp", "tool", "skill",
+    ] {
+        assert!(!description.contains(taken), "{taken:?} in {description:?}");
+    }
+}
+
+#[test]
+fn a_cycled_animate_mascot_row_is_what_the_directory_records() {
+    let mut file = SettingsFile::default();
+    let live = SessionSettings {
+        animate_mascot: false,
+        ..SessionSettings::default()
+    };
+    file.record_value("/a", SettingKey::AnimateMascot, &live);
+    assert!(
+        !file.settings_for("/a").animate_mascot,
+        "the cycled key is saved"
+    );
+    assert!(
+        file.settings_for("/b").animate_mascot,
+        "another directory keeps the default"
+    );
+}

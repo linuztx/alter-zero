@@ -3079,6 +3079,31 @@ pub(super) fn header_gradient_at(col: usize, total: usize) -> Color {
     lerp_color(header_gradient_start(), header_gradient_end(), t)
 }
 
+// --- The mascot's sweep of light (docs/mascot-animation.md): the status
+// verb's shimmer, sized for an art block nine columns wide. ---
+
+/// The sweep's half-width in columns: the band lights about five of the
+/// art's nine at its widest, so it reads as a glint crossing the mascot
+/// rather than the whole mascot flashing.
+pub(super) const MASCOT_SHINE_HALF_WIDTH: f32 = 2.5;
+
+/// How many columns further along the sweep each art row sits than the row
+/// above it — the band's lean. Half a column a row draws it as a slanted
+/// streak, the way light catches a surface.
+pub(super) const MASCOT_SHINE_LEAN: f32 = 0.5;
+
+/// The crest's blend toward [`mascot_shine_color`] — a little under the
+/// verb's ([`SHIMMER_MAX_BLEND`]), since a solid block of near-white reads
+/// far louder than a letter of it.
+pub(super) const MASCOT_SHINE_MAX_BLEND: f32 = 0.8;
+
+/// What a sweep lifts the art toward, and what a spark beside it is drawn
+/// in: the shimmer's own highlight, so the banner's light and the status
+/// line's are one light under every theme.
+pub(super) fn mascot_shine_color() -> Color {
+    shimmer_highlight()
+}
+
 /// The narrow badge's version, the hint's keys and a notice card's title —
 /// the cyan accent, so they pop.
 pub(super) fn header_accent_color() -> Color {

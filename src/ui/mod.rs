@@ -117,8 +117,8 @@ pub use self::footer::{
     search_line, shell_mode_line, toast_line, toast_rows,
 };
 pub use self::header::{
-    header_lines, notice_card_lines, startup_notice_lines, startup_paragraph_lines,
-    telemetry_notice_lines, update_notice_lines,
+    banner_block_lines, banner_frame_lines, banner_shows_art, header_lines, notice_card_lines,
+    startup_notice_lines, startup_paragraph_lines, telemetry_notice_lines, update_notice_lines,
 };
 pub use self::hook_cell::hook_report_lines;
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};

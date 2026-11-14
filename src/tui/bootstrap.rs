@@ -354,6 +354,10 @@ impl<'t> Session<'t> {
             first_verb_pin.as_deref(),
             entropy,
         ));
+        // The banner mascot's idle animation keeps its own rhythm per session
+        // (docs/mascot-animation.md): seeded here whether or not the row is
+        // on, so `/settings` can turn it on mid-session.
+        app.seed_mascot_motion(u64::from_le_bytes(super::host::random_bytes::<8>()));
         let settings = config::apply_setting_overrides(settings);
 
         // The MCP servers (docs/mcp.md): the config files parsed and merged
@@ -980,8 +984,16 @@ impl<'t> Session<'t> {
         // `/resume` rollout. It flows in through the normal flicker-free pipeline
         // (the next draw writes it above the box in one synchronized frame).
         let width = self.term.screen().width;
-        self.term.insert_before(ui::header_lines(&self.app, width));
-        self.term.insert_before(vec![Line::default()]);
+        let banner = ui::banner_block_lines(&self.app, width);
+        self.term.insert_before(banner.clone());
+        // Over an empty conversation the banner stays repaintable where it
+        // lands, so its mascot can move until the first cell is committed
+        // under it (docs/mascot-animation.md) — and its animation's clock
+        // starts with the frame that shows it.
+        if self.app.banner_is_live() {
+            self.term.anchor_above(banner);
+        }
+        self.clocks.banner_start = Some(std::time::Instant::now());
         // A --continue/--resume load commits the loaded conversation under the
         // banner through the same pipeline (docs/cli.md) — insert_before, never a
         // Purge: a fresh launch must not wipe the user's terminal scrollback (the

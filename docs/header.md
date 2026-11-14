@@ -5,7 +5,9 @@ session's block-character **mascot** (see `docs/mascot.md`) beside the
 product name + version, the working directory, and a one-line hint naming
 the composer's keys. It is the first thing the user sees, and it scrolls up
 into history naturally as the conversation grows — exactly like Claude
-Code's welcome banner.
+Code's welcome banner. Until then — while no cell has been committed under
+it — its mascot **moves**: it blinks, glances and plays its own move, the
+committed rows repainted in place (`docs/mascot-animation.md`).
 
 ## What it shows
 
@@ -123,6 +125,15 @@ header is not part of. So it is re-emitted at the I/O boundary:
    Claude Code's `/clear`), and a `/mascot` switch redraws it with the new
    mascot at once (`docs/mascot.md`).
 
+Both commit the banner **standing still** — `header_lines` is the rest pose
+whatever the mascot's animation is doing — and, when the banner is all they
+wrote (an empty conversation), both leave it **anchored**: the viewport may
+repaint those rows in place until the first cell lands under them, so the
+mascot can move (`InlineViewport::anchor_above`, `docs/mascot-animation.md`).
+The first cell, a scroll that would carry the banner off the screen and the
+quit each put it back to the rows written here first, so what scrollback
+holds is always this banner.
+
 An **overlay return** (Ctrl+O / `/resume` / Ctrl+D) needs no re-emission at
 all: it never rewrites the screen — everything that committed while the
 overlay was up flushes from the viewport's pending queue *beneath* whatever is
@@ -154,12 +165,21 @@ kept clear of the strings other phases key on (`for commands`,
 ## API (all pure, in `ui/header.rs`)
 
 - `header_lines(app: &App, width: u16) -> Vec<Line<'static>>` — the whole
-  banner as scrollback rows for the session's mascot, sized to `width`. No
-  trailing spacer; the caller adds one (the `insert_before(msg);
-  insert_before(blank)` pattern).
-- `header_lines_for(app, mascot, width)` (`pub(super)`) — the same banner for
-  an explicit mascot: the `/mascot` picker's live preview, so the preview and
-  the banner share one builder (`docs/mascot.md`).
+  banner as scrollback rows for the session's mascot, sized to `width`,
+  **at rest**. No trailing spacer; the caller adds one (the
+  `insert_before(msg); insert_before(blank)` pattern).
+- `header_lines_posed(app, mascot, pose, width)` (`pub(super)`) — the one
+  builder behind every banner: an explicit mascot in an explicit
+  `MascotPose` (its art's rows and how far a sweep of light has crossed
+  them). `header_lines_for(app, mascot, width)` is it at rest; the `/mascot`
+  picker's preview is it in the highlighted mascot's current pose
+  (`docs/mascot.md`).
+- `banner_block_lines(app, width)` / `banner_frame_lines(app, width)` — the
+  banner over its spacer as committed, and as it should look *now*: what the
+  boundary anchors and what it repaints the anchor with
+  (`docs/mascot-animation.md`). Equal whenever nothing is moving.
+- `banner_shows_art(app, width)` — whether this width draws the mascot at
+  all (the text badge has nothing to animate).
 - `banner_tail(banner, tail) -> Vec<Line<'static>>` — the banner + a blank
   spacer over a purge rebuild's repaint tail (see *Surviving every rebuild*).
 - `HEADER_NAME` / `HEADER_HINT` / `HEADER_ART_GAP` — the title word, the
@@ -191,6 +211,9 @@ kept clear of the strings other phases key on (`for commands`,
   the banner + a spacer before the history walk.
 - `ui/tests/wrap.rs`: the mascot tier still fits at the smoke suite's 50-col
   resize width, and no width in a broad sweep overflows.
+- `ui/tests/header.rs` unit tests for the live banner — the committed one
+  always at rest, a pose never moving the metadata, the sweep's light
+  (`docs/mascot-animation.md` lists them).
 - `scripts/smoke.sh` Phase 45: the header shows at startup (the `Alter Zero`
   marker), survives a resize (still present after 80×24 → 50×24 → 80×24),
   re-shows after `/clear`, tops the Ctrl+O transcript (empty and with a real

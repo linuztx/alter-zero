@@ -233,7 +233,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Rich output.** Stream Markdown, tables, highlighted code, and collapsible reasoning blocks, with clickable URLs and file paths in supported terminals.
 - **Inline images.** Paste screenshots with **Ctrl+V**. Images render natively in kitty, iTerm2, and sixel terminals, with a character-based fallback elsewhere.
 - **Inspect the session.** **Ctrl+O** opens the expanded transcript; **Ctrl+D** shows the context sent to the model. Start a line with `!` for a shell command or use `@` to pick a file.
-- **Live customisation.** Preview eleven themes with `/theme`, six mascots with `/mascot`, and nine spinner styles with `/spinner`. `/settings` brings the remaining controls together in a searchable menu.
+- **Live customisation.** Preview eleven themes with `/theme`, six animated mascots with `/mascot`, and nine spinner styles with `/spinner`. `/settings` brings the remaining controls together in a searchable menu.
 - **Works with herdr.** In a [herdr](https://herdr.dev) pane, the sidebar shows when the agent is working, waiting on your approval, or done, and a restarted herdr resumes the conversation. There is nothing to set up.
 
 ## Commands & shortcuts

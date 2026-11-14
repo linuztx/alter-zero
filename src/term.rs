@@ -31,6 +31,16 @@
 //!   growth and the box repaint land as a single atomic frame (no flushed state
 //!   ever lacks the box — the streaming flicker; see `docs/flicker.md`).
 //!
+//! One block of committed rows is the exception to "written once": the
+//! startup banner, which the loop may [`anchor_above`] the live region and
+//! then repaint **in place** — its mascot blinks while the conversation under
+//! it is empty (`docs/mascot-animation.md`). A row above the region is an
+//! ordinary screen row until a scroll carries it off the top, so the repaint
+//! is a handful of cells inside the same synchronized frame; what the block
+//! may show, and when it must be put back, is the pure `anchor` module's.
+//!
+//! [`anchor_above`]: InlineViewport::anchor_above
+//!
 //! The hardware cursor is **hidden for the whole body of every frame** and shown
 //! again only at its final prompt seat (each of [`draw`]/[`reflow`] queues a
 //! `Hide` right after opening its synchronized update; `paint_frame` queues the
@@ -77,6 +87,7 @@ use crate::images::{self, ImageStore};
 use crate::links;
 use crate::ui;
 
+mod anchor;
 pub mod query;
 
 /// A content-anchored inline viewport whose height can change between draws (its
@@ -205,6 +216,15 @@ pub struct InlineViewport {
     /// method that would paint returns at once and every commit is dropped
     /// as it is queued, so the session runs whole and shows nothing.
     headless: bool,
+    /// The block of committed rows that may still be repainted in place —
+    /// the startup banner while the conversation under it is empty
+    /// ([`anchor_above`], `docs/mascot-animation.md`). `None` nearly always:
+    /// once a conversation starts, once any of the block has scrolled off
+    /// the top, and after every resize or purge rebuild until the loop
+    /// declares the rebuilt banner again.
+    ///
+    /// [`anchor_above`]: InlineViewport::anchor_above
+    anchor: Option<anchor::Anchor>,
 }
 
 /// Where a viewport's escapes go: the terminal — or, for a headless run,
@@ -348,6 +368,7 @@ impl InlineViewport {
             images,
             typeahead: replies.typed,
             headless: false,
+            anchor: None,
         })
     }
 
@@ -376,6 +397,7 @@ impl InlineViewport {
             images: ImageStore::disabled(),
             typeahead: Vec::new(),
             headless: true,
+            anchor: None,
         }
     }
 
@@ -455,6 +477,61 @@ impl InlineViewport {
     #[must_use]
     pub const fn pending_rows(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Declare the last `rest.len()` rows committed above the live region —
+    /// the banner and its spacer, queued a moment ago or just written by a
+    /// rebuild — as the block this viewport may repaint in place
+    /// (`docs/mascot-animation.md`). From here [`pose_anchor`] says what the
+    /// block should show and every [`draw`] writes the cells that differ,
+    /// until the loop [`release_anchor`]s it, any of it scrolls off the top,
+    /// or a resize or [`reflow`] moves the screen (each of which drops the
+    /// declaration: the rebuilt banner is declared anew).
+    ///
+    /// `rest` is what was committed, and what the block is put back to
+    /// before its rows may move — only the banner standing still ever
+    /// reaches scrollback.
+    ///
+    /// [`pose_anchor`]: InlineViewport::pose_anchor
+    /// [`release_anchor`]: InlineViewport::release_anchor
+    /// [`draw`]: InlineViewport::draw
+    /// [`reflow`]: InlineViewport::reflow
+    pub fn anchor_above(&mut self, rest: Vec<Line<'static>>) {
+        if self.headless || rest.is_empty() {
+            return;
+        }
+        self.anchor = Some(anchor::Anchor::new(rest, self.pending.len()));
+    }
+
+    /// Whether a block is anchored above the live region — after a draw,
+    /// whether the banner is still on screen where it can be repainted,
+    /// which is the loop's cue to keep scheduling its frames.
+    #[must_use]
+    pub const fn has_anchor(&self) -> bool {
+        self.anchor.is_some()
+    }
+
+    /// Say what the anchored block should show from the next [`draw`] on:
+    /// its rows in the mascot's current pose. A no-op with no block, and a
+    /// frame whose pose is what the screen already shows writes nothing.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    pub fn pose_anchor(&mut self, lines: Vec<Line<'static>>) {
+        if let Some(anchor) = &mut self.anchor {
+            anchor.pose(lines);
+        }
+    }
+
+    /// Let the anchored block go: the next [`draw`] puts it back to the rows
+    /// it was committed as and forgets it. The loop calls this the moment
+    /// the conversation stops being empty — from there the banner is
+    /// history, and history does not move.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    pub const fn release_anchor(&mut self) {
+        if let Some(anchor) = &mut self.anchor {
+            anchor.release();
+        }
     }
 
     /// Whether the screen moved one-way while an inline modal was open (see
@@ -566,6 +643,14 @@ impl InlineViewport {
         }
         self.flush_pending()?;
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
+        // The region is about to push the screen up: the anchored block goes
+        // back to its rest rows first, at the row it still sits on — only
+        // the banner standing still may scroll away
+        // (`docs/mascot-animation.md`). The frame's closing paint re-poses
+        // it where it lands, if it is still on screen.
+        if repin.scroll_up > 0 {
+            self.settle_anchor()?;
+        }
         // A tool-permission prompt grows by this same rule — the chat above
         // it scrolls into the terminal's **real** scrollback, so the user can
         // scroll up and read while it asks (`docs/permissions.md`; the
@@ -646,6 +731,10 @@ impl InlineViewport {
         // `set_view_height` re-syncs it between paints for the flush plan)
         // and the next frame's stale-row clear above.
         self.painted_bottom = bottom;
+        // The anchored block's pose, in place above the region — after every
+        // scroll of the frame and before the cursor is seated, so it lands
+        // in the same synchronized update and the cursor never rests there.
+        self.paint_anchor()?;
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
         // Re-show the cursor at its final prompt seat, undoing the frame-start
@@ -693,8 +782,76 @@ impl InlineViewport {
         if self.pending.is_empty() {
             return Ok(());
         }
+        // The flush scrolls whatever does not fit: the anchored block goes
+        // back to its rest rows before any of it can leave the screen
+        // (`docs/mascot-animation.md`).
+        self.settle_anchor()?;
         let lines = std::mem::take(&mut self.pending);
-        self.write_above(lines)
+        let rows = lines.len();
+        self.write_above(lines)?;
+        if let Some(anchor) = &mut self.anchor {
+            anchor.flushed(rows);
+        }
+        Ok(())
+    }
+
+    /// Repaint the anchored block's rows on screen with `lines` — the cells
+    /// that differ from what they show, through the same emitter every other
+    /// paint uses — and record it. Nothing is written for a block that is
+    /// not (or no longer) wholly on screen, or that already shows `lines`.
+    fn repaint_anchor(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
+        let Some(anchor) = &self.anchor else {
+            return Ok(());
+        };
+        let Some(top) = anchor.top(self.view.y) else {
+            return Ok(());
+        };
+        if self.screen.width == 0 || anchor.shown() == lines.as_slice() {
+            return Ok(());
+        }
+        let was = anchor::block_buffer(anchor.shown(), self.screen.width, top);
+        let now = anchor::block_buffer(&lines, self.screen.width, top);
+        self.draw_cells(was.diff(&now).into_iter())?;
+        if let Some(anchor) = &mut self.anchor {
+            anchor.painted(lines);
+        }
+        Ok(())
+    }
+
+    /// Put the anchored block back to the rows it was committed as, where it
+    /// sits now — called before anything moves the screen (a flush, a
+    /// growing region's scroll, the quit), so what scrolls into the
+    /// terminal's scrollback is always the banner standing still.
+    fn settle_anchor(&mut self) -> io::Result<()> {
+        let rest = self
+            .anchor
+            .as_ref()
+            .and_then(|anchor| anchor.unsettled().map(<[Line<'static>]>::to_vec));
+        match rest {
+            Some(rest) => self.repaint_anchor(rest),
+            None => Ok(()),
+        }
+    }
+
+    /// A frame's share of the anchored block: repaint it in the pose the
+    /// loop asked for, if the screen does not already show it — or, for a
+    /// block the loop released or one a scroll has carried (even partly)
+    /// off the top, forget it. Both leave it at its rest rows: a released
+    /// block is repainted to them here, and one that scrolled was settled
+    /// before the scroll.
+    fn paint_anchor(&mut self) -> io::Result<()> {
+        let Some(anchor) = &self.anchor else {
+            return Ok(());
+        };
+        let gone = anchor.written() && anchor.top(self.view.y).is_none();
+        let last = anchor.released() || gone;
+        if let Some(lines) = anchor.due().map(<[Line<'static>]>::to_vec) {
+            self.repaint_anchor(lines)?;
+        }
+        if last {
+            self.anchor = None;
+        }
+        Ok(())
     }
 
     /// Commit `lines` into scrollback directly above the viewport, pushing the
@@ -849,6 +1006,11 @@ impl InlineViewport {
         // re-records the real one).
         self.painted_bottom = self.painted_bottom.min(height);
         self.prev = None; // geometry moved under us; repaint in full next draw
+        // The emulator moved the rows above the region too — the anchored
+        // block is no longer where the note says, so the note goes; the
+        // purge rebuild every resize gets writes the banner again and the
+        // loop declares it again (`docs/mascot-animation.md`).
+        self.anchor = None;
         // …and the alt screen the emulator just reflowed under us. The area
         // check in `overlay_paint` is NOT enough on its own: a resize burst can
         // coalesce into one frame (`on_resize` asks for a frame, but the
@@ -897,6 +1059,10 @@ impl InlineViewport {
         // queue thousands of rows), while the flush path's `mem::take` already
         // releases it — the rebuild drops the stale queue the same way.
         drop(std::mem::take(&mut self.pending));
+        // The purge takes the anchored block's rows with everything else;
+        // the caller declares the banner this rebuild writes, when it still
+        // stands over an empty conversation (`docs/mascot-animation.md`).
+        self.anchor = None;
         // A modal open right now takes its seat by this rebuild's real write —
         // note it (`modal_scrolled`): the close must purge-rebuild or its
         // collapse strands the box above the rows it vacates. Recording this
@@ -1151,8 +1317,13 @@ impl InlineViewport {
         // the old box's rows shifted and torn where the region now sits —
         // blank them, which is what `write_above`'s own clear did for this
         // one path before commits repainted in place (`docs/slow-stream.md`).
+        // A quit mid-blink must not leave the banner's eyes shut on the dead
+        // screen: back to its rest rows, then let it go
+        // (`docs/mascot-animation.md`).
+        self.settle_anchor()?;
         let flushed = !self.pending.is_empty();
         self.flush_pending()?;
+        self.anchor = None;
         if flushed {
             self.backend
                 .set_cursor_position(Position::new(0, self.view.y))?;

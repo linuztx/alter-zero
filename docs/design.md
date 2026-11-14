@@ -777,6 +777,19 @@ which Ctrl+V reads the clipboard from.
   walk's cursor moves only when a tip is actually seen and persists per user
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
+- **The banner mascot moves while the conversation is empty**
+  (`docs/mascot-animation.md`): a light sweeps it as the app opens, it shows
+  its own move (the crest flares its frill, the sprout unfurls a leaf, the
+  gem twinkles) and blinks, then blinks and glances on a rhythm drawn by lot
+  — at rest nine tenths of the time, never still for more than about eight
+  seconds. The committed banner's rows are repainted **in place**, only the
+  cells that changed (a blink is two), one frame per change of pose, so an
+  idle session still sleeps between them. The first cell committed under
+  the banner stills it for good — put back to its rest art in the same
+  frame — as do a scroll that would carry it off the screen and the quit;
+  `/clear` brings the empty conversation, and the motion, back. The
+  `/mascot` picker's preview moves the same way. Off with the `/settings`
+  **Animate mascot** row or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 - **Waiting for a lost connection** (`docs/offline.md`): a request no
   connection can be made for — the name won't resolve, the connect is refused
   or times out, the proxy is gone — is re-sent every few seconds for as long
@@ -1473,7 +1486,18 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
 `term.rs` is, like `src/tui/`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`,
 and its own pure corners — the `visible_cells` wide-glyph emitter, the
-`keyboard_enhancement_disabled` predicate — are unit-tested in place.
+`keyboard_enhancement_disabled` predicate, the anchored block's bookkeeping
+(`term::anchor`) — are unit-tested in place.
+
+One block of committed rows is repainted after it is written: the startup
+banner, **while the conversation under it is empty**, so its mascot can
+blink (`docs/mascot-animation.md`). It is not an exception to "scrollback is
+immutable" so much as its fine print: a row above the live region is a
+screen row until a scroll carries it off the top, and the viewport repaints
+the banner only while every one of its rows is still on screen
+(`InlineViewport::anchor_above`), putting it back to the rows it was
+committed as before anything scrolls. What reaches scrollback is always the
+banner standing still.
 
 ### The smoke suite defines its own environment
 
@@ -1496,10 +1520,12 @@ a phase run on its own is as hermetic as one run by the suite):
   would report its turns to the developer's real multiplexer —
   `docs/herdr.md`) before its first launch, then spells out per launch the ones
   it wants —
-  exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
-  `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
+  exporting four switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
+  `ALTER_ZERO_UPDATE_CHECK`, `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three
-  seconds; the phases that test each feature turn it back on for themselves). Each
+  seconds, and `ALTER_ZERO_MASCOT_ANIMATION`, whose blinks would put whatever
+  pose the lot fell on in a capture of a fresh screen; the phases that test
+  each feature turn it back on for themselves). Each
   is load-bearing: a resolvable key reaches a live provider instead of the
   dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
   assertion (the `/theme` banner accent, the focused shell indicator, the
