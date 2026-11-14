@@ -32,7 +32,7 @@ use super::super::{AgentCallDone, AgentSpec, CancelToken, StreamEvent};
 use super::scenario::AgentStage;
 use super::script::{chunks, handoff, reply_parts};
 use super::turns::ScriptedCall;
-use super::{CHUNK_DELAY, THINK_CHUNK_DELAY, TOOL_DELAY, nap};
+use super::{CHUNK_DELAY, Pace, THINK_CHUNK_DELAY, TOOL_DELAY, nap};
 
 /// The subagent's task label — the roster row and the session view's rule.
 const DEMO_DESCRIPTION: &str = "Stream a comparison table";
@@ -102,7 +102,7 @@ const DEMO_NARRATION: &str = concat!(
 /// — the same contract the live backend's launches have.
 pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     let (first, second) = reply_parts(DEMO_NARRATION);
-    if !say(&first, stage.tx, stage.cancel) {
+    if !say(&first, stage.tx, stage.cancel, stage.pace) {
         return;
     }
     let (id, agent_cancel) =
@@ -124,7 +124,7 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     if announced.is_err() {
         return;
     }
-    spawn_agent_session(stage.agents.clone(), id.clone(), agent_cancel);
+    spawn_agent_session(stage.agents.clone(), id.clone(), agent_cancel, stage.pace);
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
         background: true,
         agents: vec![AgentCallDone {
@@ -138,7 +138,7 @@ pub(in crate::stream) fn agent_stream_turn(stage: &AgentStage<'_>) {
     if resolved.is_err() {
         return;
     }
-    if say(&second, stage.tx, stage.cancel) {
+    if say(&second, stage.tx, stage.cancel, stage.pace) {
         let _ = stage.tx.send(StreamEvent::StreamDone);
     }
 }
@@ -166,9 +166,9 @@ pub(in crate::stream) fn settle_scripted_run(
 /// Its own thread and its own cancel token, because that is what a subagent
 /// is — it outlives the turn that launched it, and the roster's `x` stops it
 /// through the token the registry handed out.
-fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken) {
+fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken, pace: Pace) {
     thread::spawn(move || {
-        nap(DEMO_PRE_ROLL, &cancel);
+        pace.nap(DEMO_PRE_ROLL, &cancel);
         let send = |event: StreamEvent, pause: Duration| -> bool {
             if cancel.is_cancelled() {
                 return false;
@@ -177,7 +177,7 @@ fn spawn_agent_session(registry: AgentRegistry, id: String, cancel: CancelToken)
                 id: id.clone(),
                 event,
             });
-            nap(pause, &cancel);
+            pace.nap(pause, &cancel);
             !cancel.is_cancelled()
         };
         if !send(StreamEvent::ThinkingStart, THINK_CHUNK_DELAY) {
@@ -247,9 +247,14 @@ conversation, and this reply is its next turn.";
 /// exactly as [`spawn_agent_session`] plays the first one. The offline half of
 /// `LlmBackend::spawn_agent_chat`'s continuation path, so the agent session
 /// view's chat is drivable with no network (`docs/queue.md`).
-pub(super) fn spawn_chat_continuation(registry: AgentRegistry, id: String, cancel: CancelToken) {
+pub(super) fn spawn_chat_continuation(
+    registry: AgentRegistry,
+    id: String,
+    cancel: CancelToken,
+    pace: Pace,
+) {
     thread::spawn(move || {
-        nap(CHUNK_DELAY, &cancel);
+        pace.nap(CHUNK_DELAY, &cancel);
         for piece in chunks(DEMO_CONTINUATION) {
             if cancel.is_cancelled() {
                 return;
@@ -258,7 +263,7 @@ pub(super) fn spawn_chat_continuation(registry: AgentRegistry, id: String, cance
                 id: id.clone(),
                 event: StreamEvent::Chunk(piece),
             });
-            nap(CHUNK_DELAY, &cancel);
+            pace.nap(CHUNK_DELAY, &cancel);
         }
         if cancel.is_cancelled() {
             return;
@@ -274,12 +279,13 @@ fn say(
     text: &str,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
+    pace: Pace,
 ) -> bool {
     for piece in chunks(text) {
         if cancel.is_cancelled() || tx.send(StreamEvent::Chunk(piece)).is_err() {
             return false;
         }
-        nap(CHUNK_DELAY, cancel);
+        pace.nap(CHUNK_DELAY, cancel);
     }
     !cancel.is_cancelled()
 }
@@ -350,7 +356,7 @@ const GATED_NARRATION: &str = concat!(
 /// on an Esc), then resolve the group and close.
 pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     let (first, second) = reply_parts(GATED_NARRATION);
-    if !say(&first, stage.tx, stage.cancel) {
+    if !say(&first, stage.tx, stage.cancel, stage.pace) {
         return;
     }
     let (id, agent_cancel) =
@@ -377,9 +383,12 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
         stage.gate.cloned(),
         id.clone(),
         agent_cancel,
+        stage.pace,
     );
     // The foreground wait loop, one level down: poll until the agent settles,
-    // and an Esc on the *launching* turn kills it (`docs/agent-tool.md`).
+    // and an Esc on the *launching* turn kills it (`docs/agent-tool.md`). A
+    // poll waits on the agent's thread rather than pacing the demo, so it
+    // naps unpaced too.
     while !stage.agents.is_done(&id) {
         if stage.cancel.is_cancelled() {
             let _ = stage.agents.kill(&id);
@@ -399,7 +408,7 @@ pub(in crate::stream) fn agent_permission_turn(stage: &AgentStage<'_>) {
     if resolved.is_err() {
         return;
     }
-    if say(&second, stage.tx, stage.cancel) {
+    if say(&second, stage.tx, stage.cancel, stage.pace) {
         let _ = stage.tx.send(StreamEvent::StreamDone);
     }
 }
@@ -415,9 +424,10 @@ fn spawn_gated_agent_session(
     gate: Option<PermissionGate>,
     id: String,
     cancel: CancelToken,
+    pace: Pace,
 ) {
     thread::spawn(move || {
-        let outcome = gated_agent_round(&registry, gate.as_ref(), &id, &cancel);
+        let outcome = gated_agent_round(&registry, gate.as_ref(), &id, &cancel, pace);
         // **Always** close the slot, on every path out — the real
         // `spawn_subagent_run` does, and a *foreground* launcher polls
         // `is_done` to resolve its group. An early return that skipped this
@@ -435,9 +445,10 @@ fn gated_agent_round(
     gate: Option<&PermissionGate>,
     id: &str,
     cancel: &CancelToken,
+    pace: Pace,
 ) -> Result<String, String> {
     const STOPPED: &str = "stopped by the user";
-    nap(GATED_PRE_ROLL, cancel);
+    pace.nap(GATED_PRE_ROLL, cancel);
     let send = |event: StreamEvent, pause: Duration| -> bool {
         if cancel.is_cancelled() {
             return false;
@@ -446,7 +457,7 @@ fn gated_agent_round(
             id: id.to_string(),
             event,
         });
-        nap(pause, cancel);
+        pace.nap(pause, cancel);
         !cancel.is_cancelled()
     };
     let calls: Vec<ScriptedCall> = GATED_COMMANDS
@@ -619,7 +630,7 @@ const FOLLOW_UP_NARRATION: &str = concat!(
 /// Play the follow-up demo (see the section comment).
 pub(in crate::stream) fn agent_follow_up_turn(stage: &AgentStage<'_>) {
     let (first, second) = reply_parts(FOLLOW_UP_NARRATION);
-    if !say(&first, stage.tx, stage.cancel) {
+    if !say(&first, stage.tx, stage.cancel, stage.pace) {
         return;
     }
     let (id, agent_cancel) =
@@ -641,7 +652,13 @@ pub(in crate::stream) fn agent_follow_up_turn(stage: &AgentStage<'_>) {
     if announced.is_err() {
         return;
     }
-    spawn_follow_up_run(stage.agents.clone(), id.clone(), agent_cancel, true);
+    spawn_follow_up_run(
+        stage.agents.clone(),
+        id.clone(),
+        agent_cancel,
+        true,
+        stage.pace,
+    );
     let resolved = stage.tx.send(StreamEvent::AgentGroupDone {
         background: true,
         agents: vec![AgentCallDone {
@@ -668,7 +685,7 @@ pub(in crate::stream) fn agent_follow_up_turn(stage: &AgentStage<'_>) {
             return;
         }
     }
-    if say(&second, stage.tx, stage.cancel) {
+    if say(&second, stage.tx, stage.cancel, stage.pace) {
         let _ = stage.tx.send(StreamEvent::StreamDone);
     }
 }
@@ -698,12 +715,14 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
         return false;
     }
     let registry = stage.agents.clone();
+    let pace = stage.pace;
     let resume = move |continuation: crate::llm::agent_tools::Continuation| {
         spawn_follow_up_run(
             registry.clone(),
             continuation.id,
             continuation.cancel,
             false,
+            pace,
         );
     };
     let ctx = crate::llm::agent_tools::AgentToolContext {
@@ -734,7 +753,7 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
         truncated: false,
         run: crate::stream::ToolRun::default(),
     });
-    nap(TOOL_DELAY, stage.cancel);
+    stage.pace.nap(TOOL_DELAY, stage.cancel);
     ended.is_ok() && !stage.cancel.is_cancelled()
 }
 
@@ -748,7 +767,13 @@ fn lead_call(stage: &AgentStage<'_>, name: &str, arguments: &str) -> bool {
 /// Every event goes through a [`RunRecorder`], the live forwarder's own
 /// bookkeeping, so the calls and progress updates the reports list are
 /// recorded exactly as a real run's are (`docs/agent-progress.md`).
-fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken, launch: bool) {
+fn spawn_follow_up_run(
+    registry: AgentRegistry,
+    id: String,
+    cancel: CancelToken,
+    launch: bool,
+    pace: Pace,
+) {
     thread::spawn(move || {
         let mut recorder = RunRecorder::new(registry.clone(), id.clone());
         let mut send = |event: StreamEvent, pause: Duration| -> bool {
@@ -760,10 +785,10 @@ fn spawn_follow_up_run(registry: AgentRegistry, id: String, cancel: CancelToken,
                 id: id.clone(),
                 event,
             });
-            nap(pause, &cancel);
+            pace.nap(pause, &cancel);
             !cancel.is_cancelled()
         };
-        nap(
+        pace.nap(
             if launch {
                 FOLLOW_UP_PRE_ROLL
             } else {

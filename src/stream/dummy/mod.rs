@@ -106,6 +106,9 @@ pub struct DummyAi {
     /// `ALTER_ZERO_CHUNK_DELAY_MS`, which is how the offline backend mimics
     /// a model streaming a few tokens a second (`docs/slow-stream.md`).
     chunk_delay: Duration,
+    /// Whether the demos take their pauses: always in the app, while a test
+    /// that asserts what a demo does plays it unpaced ([`Pace`]).
+    pace: Pace,
     /// The shared tool-permission gate, when the app attached one — lets the
     /// **offline** dummy drive the whole approval round trip for a prompt
     /// mentioning "permission" (`docs/permissions.md`, `smoke.sh` Phase 55).
@@ -143,6 +146,7 @@ impl Default for DummyAi {
         Self {
             startup_delay: STARTUP_DELAY,
             chunk_delay: CHUNK_DELAY,
+            pace: Pace::WATCHED,
             permissions: None,
             ask: None,
             agents: None,
@@ -177,6 +181,16 @@ impl DummyAi {
     #[must_use]
     pub fn with_chunk_delay(mut self, chunk_delay: Duration) -> Self {
         self.chunk_delay = chunk_delay;
+        self
+    }
+
+    /// The same dummy with every demo's pauses taken out ([`Pace`]) — for a
+    /// test that asserts what a demo *does*, so its outcome never waits on
+    /// how loaded the machine running it is.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn unpaced(mut self) -> Self {
+        self.pace = Pace::UNPACED;
         self
     }
 
@@ -263,6 +277,7 @@ impl ReplySource for DummyAi {
     ) -> JoinHandle<()> {
         let startup_delay = self.startup_delay;
         let chunk_delay = self.chunk_delay;
+        let pace = self.pace;
         // The dummy can't read the files, only acknowledge how many arrived.
         let image_count = images.len();
         let permissions = self.permissions.clone();
@@ -276,7 +291,7 @@ impl ReplySource for DummyAi {
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
-            nap(startup_delay, &cancel);
+            pace.nap(startup_delay, &cancel);
             if cancel.is_cancelled() {
                 return;
             }
@@ -294,8 +309,16 @@ impl ReplySource for DummyAi {
                         gate,
                         tx: &tx,
                         cancel: &cancel,
+                        pace,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
+                    None => replay(
+                        turns::tools_turn(&cue),
+                        &tx,
+                        &cancel,
+                        &inputs,
+                        chunk_delay,
+                        pace,
+                    ),
                 },
                 // The ask demo raises the question modal and blocks on the
                 // ask gate the same way (`docs/ask.md`).
@@ -304,8 +327,16 @@ impl ReplySource for DummyAi {
                         gate,
                         tx: &tx,
                         cancel: &cancel,
+                        pace,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
+                    None => replay(
+                        turns::tools_turn(&cue),
+                        &tx,
+                        &cancel,
+                        &inputs,
+                        chunk_delay,
+                        pace,
+                    ),
                 },
                 // The subagent demo streams on the agent channel too, from
                 // the launched agent's own thread (docs/agent-view-streaming.md).
@@ -318,10 +349,20 @@ impl ReplySource for DummyAi {
                         // main turn's does; `None` when permissions are off
                         // (docs/permissions.md).
                         gate: permissions.as_ref(),
+                        pace,
                     }),
-                    None => replay(turns::tools_turn(&cue), &tx, &cancel, &inputs, chunk_delay),
+                    None => replay(
+                        turns::tools_turn(&cue),
+                        &tx,
+                        &cancel,
+                        &inputs,
+                        chunk_delay,
+                        pace,
+                    ),
                 },
-                Play::Script(script) => replay(script(&cue), &tx, &cancel, &inputs, chunk_delay),
+                Play::Script(script) => {
+                    replay(script(&cue), &tx, &cancel, &inputs, chunk_delay, pace)
+                }
             }
         })
     }
@@ -347,7 +388,7 @@ impl ReplySource for DummyAi {
             return super::AgentChatDelivery::Declined;
         };
         registry.note_user_message(id, text);
-        agent::spawn_chat_continuation(registry.clone(), id.to_string(), cancel);
+        agent::spawn_chat_continuation(registry.clone(), id.to_string(), cancel, self.pace);
         super::AgentChatDelivery::Started
     }
 
@@ -414,6 +455,7 @@ fn replay(
     cancel: &CancelToken,
     inputs: &Inputs,
     chunk_delay: Duration,
+    pacing: Pace,
 ) {
     // The announced batch's calls still to resolve.
     let mut unresolved = 0usize;
@@ -442,7 +484,7 @@ fn replay(
             }
         }
         if let Some(pause) = pause {
-            nap(pause, cancel);
+            pacing.nap(pause, cancel);
         }
     }
 }
@@ -479,6 +521,35 @@ fn pace(event: &StreamEvent, chunk_delay: Duration) -> Option<Duration> {
         | StreamEvent::ThinkingChunk(_)
         | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),
         _ => None,
+    }
+}
+
+/// How a demo plays its pauses. Every demo is paced for a person — a pause
+/// after each word, a tool that "runs" for [`TOOL_DELAY`], a subagent that
+/// waits for the user to reach its session view — and a test that asserts
+/// what a demo *does* takes those pauses out, so its outcome never waits on
+/// how loaded the machine is: a loaded macOS runner once stretched a
+/// twelve-second demo past a sixty-second watchdog. A wait on another
+/// thread is not a pause, and stays a [`nap`] either way.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::stream) struct Pace {
+    paced: bool,
+}
+
+impl Pace {
+    /// The pauses the demos were written with: what a person watches.
+    pub(in crate::stream) const WATCHED: Pace = Pace { paced: true };
+
+    /// No pauses at all.
+    #[cfg(test)]
+    pub(in crate::stream) const UNPACED: Pace = Pace { paced: false };
+
+    /// Pause for `dur` as part of how the demo looks — or, unpaced, not at
+    /// all.
+    pub(in crate::stream) fn nap(self, dur: Duration, cancel: &CancelToken) {
+        if self.paced {
+            nap(dur, cancel);
+        }
     }
 }
 

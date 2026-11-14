@@ -53,7 +53,7 @@ subtree inside it:
 
 | Module | Holds |
 |--------|-------|
-| `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing (`with_startup_delay` / `with_chunk_delay`, the two knobs `ALTER_ZERO_STARTUP_DELAY_MS` / `ALTER_ZERO_CHUNK_DELAY_MS` set). |
+| `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing (`with_startup_delay` / `with_chunk_delay`, the two knobs `ALTER_ZERO_STARTUP_DELAY_MS` / `ALTER_ZERO_CHUNK_DELAY_MS` set, and `Pace`, which every demo pause goes through: a test that asserts what a demo does plays it with `unpaced()`, so its outcome never waits on how loaded the machine is). |
 | `dummy/scenario.rs` | **The registry**: `Cue`, `Scenario`, `SCENARIOS`, `select`. |
 | `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `tokens` — the token-sized split the slow-stream stress demo streams by (`docs/slow-stream.md`), `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |

@@ -480,7 +480,9 @@ fn an_unattended_gate_refuses_the_demos_calls_without_asking() {
     // are refused the way the real approve seam refuses them: no request
     // raised, each refusal kept for the run's `permission_denials`.
     let gate = unattended_gate();
-    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO)
+        .unpaced()
+        .with_permissions(gate.clone());
     let (tx, mut rx) = unbounded_channel();
     let handle = dummy.spawn(
         "parallel permission demo".to_string(),
@@ -526,19 +528,22 @@ fn an_unattended_gate_refuses_the_demo_subagents_call_too() {
     let (agent_tx, mut agent_rx) = unbounded_channel();
     let registry = AgentRegistry::new(agent_tx);
     let dummy = DummyAi::with_startup_delay(Duration::ZERO)
+        .unpaced()
         .with_permissions(gate.clone())
         .with_agents(registry);
     let (tx, mut rx) = unbounded_channel();
-    // The demo is paced for a person — its narration, the agent's pre-roll,
-    // then the rest of the narration once the agent is done: some fifteen
-    // seconds, so the watchdog only stands in for a hang. At ten it cut the
-    // demo short every time, and on a loaded machine before the agent asked.
+    // Played at a person's pace, the demo — its narration, the agent's
+    // 3.5 s pre-roll, the rest of the narration once the agent is done —
+    // takes some twelve seconds, and a loaded macOS runner stretched that
+    // past a 60 s watchdog. Its pauses say nothing about the refusals, so
+    // the test plays it unpaced: this watchdog is a bound only an unpaced
+    // run can meet, and a pause that creeps back into the path breaks it.
     let handle = dummy.spawn(
         "launch a subagent that needs permission".to_string(),
         vec![],
         vec![],
         tx,
-        watchdog(Duration::from_secs(60)),
+        watchdog(Duration::from_secs(10)),
     );
     let mut done = false;
     while let Some(event) = rx.blocking_recv() {
