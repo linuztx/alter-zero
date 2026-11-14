@@ -186,7 +186,11 @@ impl Session<'_> {
             }
             Action::SetPermissionMode(mode) => self.set_permission_mode(mode),
             Action::OpenModelPicker => self.open_model_picker(),
-            Action::CloseModelPicker => self.close_model_picker(),
+            Action::RefreshModels => self.refresh_model_picker(),
+            // The picker is already closed. Its fetches run on: what they
+            // read is kept when they land, and a reopen waits on them
+            // (docs/model-cache.md).
+            Action::CloseModelPicker => {}
             Action::SelectModel {
                 provider,
                 id,

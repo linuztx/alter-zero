@@ -12,6 +12,28 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/model` opens on the lists it already has, and Ctrl+R refreshes
+  them.** The picker used to ask every configured provider for its model
+  list on every open, so each one began on `Loading models…`, for a second
+  or more with a few providers configured. Each provider's list is now kept
+  in `~/.alter-zero/model-cache/` and shown at once. A list under an hour
+  old is used as it is, with no request at all. An older list is still
+  shown at once while it is fetched again behind the rows (`refreshing…`).
+  A server you run yourself (Ollama, LM Studio) is always asked again, so a
+  model you just pulled still appears. Ctrl+R in the picker asks every
+  provider again (not a plain `r`, which still types into the search, as in
+  `deepseek-r1`). The counter says how old the lists on screen are
+  (`updated 2h ago`), keeping itself current while the picker sits open,
+  and a refresh that fails keeps the rows it could not refresh, noted in
+  amber as `not refreshed` rather than `unavailable`. A list still arriving
+  when you close the picker is kept when it lands, and reopening the picker
+  meanwhile waits for it rather than asking again. Saving a key or signing
+  in again through `/login` drops that provider's kept list, and any list
+  still being fetched with the old key, since another account can list
+  other models (`docs/model-cache.md`).
+
 ### Changed
 
 - **Auto mode's safety check answers in JSON, and a reply that is not

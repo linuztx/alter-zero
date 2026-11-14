@@ -78,7 +78,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
+use self::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -263,8 +263,8 @@ pub(crate) struct Session<'t> {
     /// The probe's sender is kept because a probe is spawned more than
     /// once: at bootstrap, and by a resume whose recorded model has facts
     /// this session never learned (`docs/session-model.md`).
-    probe_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
-    probe_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    probe_tx: tokio::sync::mpsc::UnboundedSender<ProbeFetch>,
+    probe_rx: tokio::sync::mpsc::UnboundedReceiver<ProbeFetch>,
     /// Background shells (`docs/background.md`) and subagents
     /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
     bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,

@@ -28,6 +28,7 @@ use alter_zero::app::{
 };
 use alter_zero::checkpoint;
 use alter_zero::llm::config::Provider;
+use alter_zero::llm::model_cache::{self, CachedListing};
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
     Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
@@ -453,6 +454,75 @@ pub(crate) fn load_env_file(path: &Path) -> EnvFile {
 /// `docs/llm.md`.
 pub(crate) fn settings_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("config.json"))
+}
+
+/// Where the `/model` picker keeps each provider's listing
+/// (`{config_home}/model-cache/`), or `None` when there's no config home —
+/// the picker then fetches every list on every open, as it did before the
+/// cache. See `docs/model-cache.md`.
+pub(crate) fn model_cache_dir() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("model-cache"))
+}
+
+/// The listing kept for `provider`, if one was and it reads: an absent,
+/// unreadable, oversized-past-[`model_cache::CACHE_FILE_MAX_BYTES`] or
+/// corrupt file — or one of another format version — is no cache at all
+/// (the `load_settings` posture: never in the way). Read through a buffer,
+/// never into one string first (`docs/memory.md`).
+pub(crate) fn load_model_listing(dir: &Path, provider: &str) -> Option<CachedListing> {
+    let file = std::fs::File::open(dir.join(model_cache::file_name(provider))).ok()?;
+    let reader = io::BufReader::new(io::Read::take(file, model_cache::CACHE_FILE_MAX_BYTES));
+    CachedListing::read_from(reader, provider)
+}
+
+/// Keep `listing` as `provider`'s, replacing what was kept — written beside
+/// the file then renamed over it, so another instance reading at that moment
+/// reads the old listing or the new one, never half of either. Best-effort
+/// like every write here: a cache that could not be written is a list
+/// fetched again next time, never an error the user sees.
+pub(crate) fn store_model_listing(dir: &Path, provider: &str, listing: &CachedListing) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let path = dir.join(model_cache::file_name(provider));
+    let temp = dir.join(format!(
+        ".{}.{}.tmp",
+        model_cache::file_name(provider),
+        std::process::id()
+    ));
+    let written = std::fs::File::create(&temp).ok().is_some_and(|file| {
+        let mut out = io::BufWriter::new(file);
+        listing.write_to(&mut out).is_ok() && io::Write::flush(&mut out).is_ok()
+    });
+    if !written || std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+/// Drop what was kept for each of `providers` — a `/login` save just
+/// changed what they sign in with or where they point, so their kept lists
+/// may be another account's or another server's. Best-effort.
+pub(crate) fn forget_model_listings(dir: &Path, providers: &[String]) {
+    for provider in providers {
+        let _ = std::fs::remove_file(dir.join(model_cache::file_name(provider)));
+    }
+}
+
+/// Every provider that `var` configures — its key (or token) is stored
+/// under it, or its address is read from it. What a `/login` save of `var`
+/// changes, and so whose kept lists it makes stale (`docs/model-cache.md`).
+pub(crate) fn providers_reading(providers: &ProvidersFile, var: &str) -> Vec<String> {
+    providers
+        .ids()
+        .into_iter()
+        .filter(|id| {
+            key_env_name(providers, id) == var
+                || providers
+                    .get(id)
+                    .and_then(|p| p.api_base_env.as_deref())
+                    .is_some_and(|base| base == var)
+        })
+        .collect()
 }
 
 /// The persisted per-project permissions path
@@ -1548,4 +1618,104 @@ pub(crate) fn mcp_tool_timeout() -> std::time::Duration {
         "ALTER_ZERO_MCP_TOOL_TIMEOUT_MS",
         alter_zero::llm::mcp::DEFAULT_TOOL_TIMEOUT,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        forget_model_listings, load_model_listing, providers_reading, store_model_listing,
+    };
+    use alter_zero::llm::model_cache::CachedListing;
+    use alter_zero::llm::{ModelEntry, ProvidersFile};
+
+    #[test]
+    fn a_saved_variable_names_every_provider_it_configures() {
+        // A `/login` save drops the kept lists of the providers the saved
+        // variable configures (docs/model-cache.md) — by key, or by address.
+        let shipped = ProvidersFile::builtin();
+        assert_eq!(
+            providers_reading(&shipped, "OPENROUTER_API_KEY"),
+            ["openrouter"]
+        );
+        assert_eq!(providers_reading(&shipped, "OLLAMA_HOST"), ["ollama"]);
+        assert_eq!(providers_reading(&shipped, "LMSTUDIO_HOST"), ["lmstudio"]);
+        // The two Ollama providers read two variables: a pasted cloud key
+        // says nothing about the local server's list.
+        assert_eq!(
+            providers_reading(&shipped, "OLLAMA_API_KEY"),
+            ["ollama_cloud"]
+        );
+        assert!(providers_reading(&shipped, "NOT_A_PROVIDER_KEY").is_empty());
+    }
+
+    fn listing(id: &str, at: i64) -> CachedListing {
+        CachedListing {
+            fetched_at: at,
+            app_version: "1.0.0".into(),
+            source: "sha256:s".into(),
+            models: vec![ModelEntry {
+                id: id.into(),
+                provider: "openrouter".into(),
+                display_name: id.into(),
+                reasoning: None,
+                vision: None,
+                context: Some(128_000),
+                service_tiers: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_kept_listing_reads_back_and_is_replaced_whole() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let cache = dir.path().join("model-cache");
+        assert_eq!(
+            load_model_listing(&cache, "openrouter"),
+            None,
+            "nothing kept yet"
+        );
+        store_model_listing(&cache, "openrouter", &listing("a/x", 1));
+        assert_eq!(
+            load_model_listing(&cache, "openrouter"),
+            Some(listing("a/x", 1))
+        );
+        store_model_listing(&cache, "openrouter", &listing("b/y", 2));
+        assert_eq!(
+            load_model_listing(&cache, "openrouter"),
+            Some(listing("b/y", 2))
+        );
+        // The write went beside the file and was renamed over it: nothing
+        // but the one file is left in the directory.
+        let names: Vec<String> = std::fs::read_dir(&cache)
+            .expect("the cache directory")
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, ["openrouter.json"]);
+    }
+
+    #[test]
+    fn a_corrupt_listing_is_no_listing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        std::fs::write(dir.path().join("openrouter.json"), "{\"version\":1,").expect("a file");
+        assert_eq!(load_model_listing(dir.path(), "openrouter"), None);
+    }
+
+    #[test]
+    fn a_forgotten_listing_is_gone_and_the_others_stay() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        store_model_listing(dir.path(), "openrouter", &listing("a/x", 1));
+        store_model_listing(dir.path(), "ollama", &listing("llama", 1));
+        forget_model_listings(
+            dir.path(),
+            &["openrouter".to_string(), "never_kept".to_string()],
+        );
+        assert_eq!(load_model_listing(dir.path(), "openrouter"), None);
+        assert!(load_model_listing(dir.path(), "ollama").is_some());
+    }
 }

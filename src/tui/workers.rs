@@ -11,8 +11,10 @@
 //! - [`spawn_file_search_worker`] — the `@` picker's walk + rank
 //!   (`docs/file-search.md`), fed by [`dispatch_file_search`].
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
-//! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
-//!   picker and the startup capability probe (`docs/llm.md`).
+//! - [`spawn_model_fetch`] — one provider's model list for the `/model`
+//!   picker, outliving the picker that asked (`docs/llm.md`,
+//!   `docs/model-cache.md`); [`spawn_probe_fetch`] — the active provider's,
+//!   for the startup capability probe.
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
 //!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
@@ -39,11 +41,62 @@ use alter_zero::stream::CancelToken;
 
 use super::Session;
 
-/// A finished `/model` fetch from one provider: its human label (for a failure
-/// note) and either the provider's models or a one-line error. The picker
-/// fetches every configured provider in parallel and merges these as they land.
-/// Carried on the model-fetch worker's channel. See `docs/llm.md`.
-pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
+/// A finished `/model` fetch from one provider, carried on the model-fetch
+/// worker's channel: the provider's id, the ledger ticket it answers (the
+/// loop drops it unless that is still the provider's live fetch), when it
+/// was listed — the date the cache keeps it under — and the provider's
+/// models or a one-line error. The picker fetches every configured provider
+/// in parallel and merges these as they land. See `docs/llm.md`,
+/// `docs/model-cache.md`.
+#[derive(Debug)]
+pub(crate) struct ModelFetch {
+    pub(crate) provider: String,
+    pub(crate) ticket: u64,
+    pub(crate) listed_at: i64,
+    pub(crate) result: Result<Vec<ModelEntry>, String>,
+}
+
+/// One provider's fetch in a `/model` round, as the boundary plans it
+/// (`ModelSession::model_round`): the ledger ticket its answer names, the
+/// config it is fetched with, and its own cancel flag — raised when a newer
+/// fetch supersedes it, a `/login` save retires it, or the app quits.
+pub(crate) struct ModelFetchJob {
+    pub(crate) provider: String,
+    pub(crate) ticket: u64,
+    pub(crate) cfg: Option<ModelConfig>,
+    pub(crate) cancel: CancelToken,
+}
+
+/// What a fetch that panicked answers: a fetch that never reports would
+/// leave its provider waiting until the ledger gives up on it
+/// (`FETCH_GIVE_UP_SECS`), so a worker unwinding still sends this.
+pub(crate) const MODEL_FETCH_CRASHED: &str = "the model list fetch stopped unexpectedly";
+
+/// Sends [`MODEL_FETCH_CRASHED`] for its fetch if the worker unwinds before
+/// it reports — a panic in a listing's parse is the case it exists for. It
+/// sends nothing on an ordinary exit: there the worker reports itself.
+struct AnswerOnPanic {
+    provider: String,
+    ticket: u64,
+    tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
+}
+
+impl Drop for AnswerOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = self.tx.send(ModelFetch {
+                provider: std::mem::take(&mut self.provider),
+                ticket: self.ticket,
+                listed_at: super::host::unix_secs_signed(),
+                result: Err(MODEL_FETCH_CRASHED.to_string()),
+            });
+        }
+    }
+}
+
+/// The startup capability probe's answer: the provider it fetched and
+/// either its models or a one-line error (`docs/reasoning.md`).
+pub(crate) type ProbeFetch = (String, Result<Vec<ModelEntry>, String>);
 
 /// What the `/login` workers report back. A sign-in sends two messages, in
 /// order — the code to show, then the flow's verdict (`docs/copilot.md`); a
@@ -635,25 +688,58 @@ pub(crate) fn spawn_image_paste(
     });
 }
 
-/// Fetch one provider's `/models` list on a background thread (the image-paste
-/// pattern), sending the labelled result to the loop. One of these is spawned
-/// per configured provider so they fetch in parallel; a cancelled fetch (the
-/// picker closed) is dropped. See `docs/llm.md`.
+/// One provider's `/models` list, fetched with `cfg` — or why not.
+fn fetch_list(cfg: Option<&ModelConfig>, cancel: &CancelToken) -> Result<Vec<ModelEntry>, String> {
+    match cfg {
+        Some(cfg) => llm::models::fetch_models(cfg, cancel).map_err(|e| e.to_string()),
+        None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
+    }
+}
+
+/// Fetch one provider's `/models` list on a background thread (the
+/// image-paste pattern) and send it to the loop, which keeps it and shows it
+/// if it is still the provider's live fetch when it lands
+/// (`Session::on_model_fetch`). One of these is spawned per provider a round
+/// starts, so they fetch in parallel, and each **outlives** the picker that
+/// started it: what it reads is no less true for the picker having closed,
+/// and a reopen waits on it rather than asking again. A cancelled fetch —
+/// superseded, retired by a `/login` save, or the app quitting — sends
+/// nothing; one that panics still answers ([`AnswerOnPanic`]). See
+/// `docs/llm.md`, `docs/model-cache.md`.
 pub(crate) fn spawn_model_fetch(
-    label: String,
-    cfg: Option<ModelConfig>,
-    cancel: CancelToken,
+    job: ModelFetchJob,
     tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
 ) {
     std::thread::spawn(move || {
-        let result: Result<Vec<ModelEntry>, String> = match cfg {
-            Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
-            None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
+        let _answer = AnswerOnPanic {
+            provider: job.provider.clone(),
+            ticket: job.ticket,
+            tx: tx.clone(),
         };
-        // Don't deliver a result the picker no longer wants.
-        if !cancel.is_cancelled() {
-            let _ = tx.send((label, result));
+        let result = fetch_list(job.cfg.as_ref(), &job.cancel);
+        if job.cancel.is_cancelled() {
+            return;
         }
+        let _ = tx.send(ModelFetch {
+            provider: job.provider,
+            ticket: job.ticket,
+            listed_at: super::host::unix_secs_signed(),
+            result,
+        });
+    });
+}
+
+/// Fetch the active provider's `/models` list for the startup capability
+/// probe on a background thread, sending the answer to the loop
+/// (`docs/reasoning.md`).
+pub(crate) fn spawn_probe_fetch(
+    provider: String,
+    cfg: Option<ModelConfig>,
+    tx: tokio::sync::mpsc::UnboundedSender<ProbeFetch>,
+) {
+    std::thread::spawn(move || {
+        let result = fetch_list(cfg.as_ref(), &CancelToken::new());
+        let _ = tx.send((provider, result));
     });
 }
 
@@ -752,7 +838,42 @@ pub(crate) fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::walk_files;
+    use super::{AnswerOnPanic, MODEL_FETCH_CRASHED, ModelFetch, walk_files};
+
+    #[test]
+    fn a_model_fetch_that_panics_still_answers() {
+        // A worker that dies mid-fetch must not leave its provider waiting
+        // on an answer that never comes: the guard answers as it unwinds
+        // (docs/model-cache.md).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = std::thread::spawn(move || {
+            let _answer = AnswerOnPanic {
+                provider: "openrouter".into(),
+                ticket: 7,
+                tx,
+            };
+            panic!("a listing's parse fell over");
+        });
+        assert!(worker.join().is_err(), "the worker panicked");
+        let fetch: ModelFetch = rx.try_recv().expect("the guard answered");
+        assert_eq!(fetch.provider, "openrouter");
+        assert_eq!(fetch.ticket, 7);
+        assert_eq!(fetch.result.unwrap_err(), MODEL_FETCH_CRASHED);
+    }
+
+    #[test]
+    fn a_model_fetch_that_ends_normally_leaves_the_answer_to_the_worker() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        drop(AnswerOnPanic {
+            provider: "openrouter".into(),
+            ticket: 7,
+            tx,
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing is sent on an ordinary exit"
+        );
+    }
 
     /// A temp tree of four listable entries — two files at the top, a
     /// directory holding a third — beside a hidden file and a denylisted

@@ -3717,7 +3717,40 @@ region hid exactly the turn the picker was opened beside — the reported bug,
 which the band had first (`docs/llm.md`, `docs/background.md`,
 `docs/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
 while a picker is open, the permission-prompt rule, since the picker owns
-every key).
+every key). **`/model` opens on the lists it kept** (`docs/model-cache.md`):
+each provider's listing is written to `{config_home}/model-cache/{id}.json`
+(temp file + rename, one file per provider so the parallel fetches never
+share one) and an open shows it at once — nothing fetched under an hour old
+(`llm::model_cache::MODEL_CACHE_TTL_SECS`), shown **and** fetched again
+behind its rows once older, kept by another app version, or a self-hosted
+server's (`auth = "optional_key"`: the kind of provider, not its address —
+a loopback rule caught the smoke stub), and another server's listing
+(`listing_source`, a SHA-256 of the wire, auth, bases and headers, never
+the key) not shown at all. A fetch belongs to the **session**, not the
+picker: `ModelSession`'s `model_cache::FetchLedger` keeps one live ticket
+per provider, each with its own cancel token, and only the live ticket's
+answer is kept or shown — written by the **loop** as it settles, the thread
+a `/login` save runs on, so the verdict and the write are one step; closing
+the picker cancels nothing (the answer is kept when it lands), a reopen
+waits on a fetch still out from the same source rather than asking again
+(`model_cache::plan` → `Await`) and retires one it will not wait on —
+another source's, or one out past `FETCH_GIVE_UP_SECS`
+(`FetchLedger::await_or_retire`) — so no answer lands over a list kept
+since, a
+`/login` save retires the fetch out for every provider the saved variable
+configures (`tui::config::providers_reading`) and drops their kept lists,
+quitting cancels them all, and a worker that panics still answers its
+ticket (`tui::workers`' `AnswerOnPanic`). Every open and every **Ctrl+R**
+(never a plain `r`, which types into the search; ignored while a fetch is
+out) lays a round over the picker (`App::begin_model_round`), which takes
+an answer only for a provider it waits on (`App::finish_model_fetch`) and
+keeps a provider's rows through a refresh only when they were read from
+the same source; a listing **replaces** its provider's rows, a failure
+keeps them as an amber `not refreshed`, the counter says `updated 2h ago`
+/ `refreshing…` and offers `ctrl+r to refresh` only when pressing it would
+change something, and an open picker redraws every ten seconds with no key
+pressed (`tui::view`'s `MODEL_PICKER_TICK_INTERVAL`) so a list that passes
+a minute while it is read says so; `smoke.sh` Phase 155.
 **`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
 (`docs/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as
