@@ -437,7 +437,10 @@ servers are children, so dying on the default action would orphan them —
 then prints the result (`error_interrupted`, a tool call still open
 completed `failed` ahead of it) and exits `128 + signal`. The handlers are
 installed before bootstrap starts any server, and the shutdown is bounded
-(`SessionEnd` has its two seconds), so nothing outlives the run.
+(`SessionEnd` has its two seconds), so nothing outlives the run. They are
+also why a headless run's runtime is `#[tokio::main]`'s, every driver
+started — tokio delivers a signal through its I/O driver — where the
+interface's has timers only (`tui::runtime`, `docs/memory.md` *Startup*).
 
 ## Not in headless mode, on purpose
 

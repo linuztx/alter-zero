@@ -63,8 +63,14 @@ async fn headless_main(startup: Startup) -> i32 {
     tui::headless::run(startup).await
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn tui_main(startup: Startup) -> io::Result<()> {
+/// The interface on a runtime of its own making: timers and nothing else
+/// (`tui::runtime`, `docs/memory.md` *Startup*) — `#[tokio::main]` would start
+/// tokio's I/O and signal drivers too, which only the headless run uses.
+fn tui_main(startup: Startup) -> io::Result<()> {
+    tui::runtime::interface()?.block_on(tui_run(startup))
+}
+
+async fn tui_run(startup: Startup) -> io::Result<()> {
     // No terminal behind us (cron, CI, a pipe), or one that never answered
     // the cursor query: say so and name print mode rather than end on the
     // io::Error's Debug form. init unwinds the modes it set before it fails.

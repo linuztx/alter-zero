@@ -45,6 +45,7 @@
 //! | [`headless`] | `alter-zero -p`: the same session with no screen — its loop, its streams, its exit status (`docs/headless.md`). |
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
+//! | [`runtime`] | The tokio runtime the interface's loop runs on: timers, no I/O driver (`docs/memory.md` *Startup*). |
 //! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
 //! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/telemetry.md`). |
 //! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
@@ -105,6 +106,7 @@ pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod recorder;
 pub(crate) mod resume;
+pub(crate) mod runtime;
 pub(crate) mod secrets;
 pub(crate) mod settings;
 pub(crate) mod shell;

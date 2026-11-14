@@ -33,6 +33,17 @@ release heading when a version is cut.
   been blocked, and some routes reject the parameter outright
   (`docs/permissions.md`).
 
+- **The interface starts lighter.** Headless mode (`-p`) catches signals,
+  and since it arrived every launch of the interface started tokio's signal
+  handling too, beside an I/O reactor the interface has never used: six
+  file descriptors and some memory held for nothing. The interface's runtime
+  now starts timers and nothing else. Most of what a memory reading of a
+  fresh start shows is the binary's own code, mapped from disk, and that
+  part moves by megabytes for the same binary with how its file sits in the
+  page cache — a just-installed binary reads higher than one that has been
+  on disk a while — so compare two builds with `scripts/startup_mem.sh`
+  rather than by eye (`docs/memory.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**

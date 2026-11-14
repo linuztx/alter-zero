@@ -59,6 +59,7 @@ multi-minute full rebuild — don't, unless the user asks.
 | `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed (on a Mac, `cargo build` first: the terminal tests run through the built binary) |
 | `src/mcp/`, `src/llm/mcp/`, the `mcp` CLI | `cargo test --lib mcp::` (the filter matches both modules) + `cargo test --test mcp_cli` for the CLI |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`ls tests/*_memory.rs`) |
+| what runs before the first frame, the tokio runtime, a dependency's features | `cargo build --release && scripts/startup_mem.sh` on both builds — compare RSS only between copies the script wrote, never against a number from another session (`docs/memory.md` *Startup*) |
 | `providers.toml`, `src/llm/config.rs` | `cargo test --lib llm::config` — it pins the shipped provider set and the `snake_case` spellings |
 | `scripts/smoke/lib.sh`, `scripts/smoke.sh` (the phase readers or the selector) | `bash scripts/smoke/selftest.sh` — under a second, no app, no tmux |
 | `scripts/smoke/phases/`, screen behaviour | `cargo build && scripts/smoke.sh <ids>` — by **id**, and widen only if you must |

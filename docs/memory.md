@@ -5,7 +5,9 @@ resident set is a feature: it sits idle between turns and whatever it holds it
 holds for the whole session. Startup is **~16 MB**. Opening `/model` once used
 to take that to **25 MB** and leave it there — climbing past 26 MB on repeat
 opens — because the picker's model list was parsed in a way that cost ten
-times the body it read, and none of it came back.
+times the body it read, and none of it came back. What an idle start itself
+holds — mostly the binary's own code, mapped, which no allocation fix
+reaches — is *Startup* below.
 
 ## The measurement
 
@@ -642,6 +644,150 @@ particular live model. Fixed costs such as the grammar database and
 HTTP/TLS state remain, and raw conversation history still grows as work
 is recorded. A single item's temporary expanded rows and the allocator's
 retained pages can also affect RSS, so the reduction varies with the session.
+
+## Startup: what an idle start holds
+
+The report was "the headless merge (`c2b89a6`) took startup from 18 MB to
+19 MB". What a start holds turned out to be mostly not memory the process
+allocated at all, and the number moves by more than that megabyte for the
+same binary.
+
+`scripts/startup_mem.sh` launches the real binary in tmux — hermetic, the
+offline backend, no key, so no connection is opened — waits for the banner
+and for the startup workers to go quiet, and splits `/proc/PID/smaps`. A
+release build at `800a4cd` with the runtime below, x86_64 Linux, eighteen
+launches:
+
+| | MB | what it is |
+|---|---|---|
+| the binary's code | ~8.3 | its pages mapped as the startup code runs through them |
+| the binary's read-only data | ~1.7 | tables, strings, the relocation records the loader reads |
+| shared libraries | ~2.1 | libc, libm, libgcc_s and the loader — shared with every process |
+| anonymous | ~1.05 | the heap ~0.2, the stacks ~0.15, the binary's relocated data ~0.6 |
+| **total** | **~13.2** | |
+
+Only the last row is what the process wrote. Everything above it is a
+clean page of a file, shared with the page cache and dropped under memory
+pressure — but `ps` and `htop` count it all as resident.
+
+### Why so much code
+
+From exec to an idle first frame the app runs ~1,460 functions: ~0.9 MB of
+function bodies, on ~700 distinct 4 KiB pages scattered across the ~14 MB of
+code. On a read fault the kernel also maps the cached pages around the
+faulting one — `fault_around_bytes`, 64 KiB by default — so ~700 pages in
+use become ~125 windows mapped, ~7.8 MB of the ~8.3 measured. The count is
+deterministic once the binary is traced (callgrind, then the executed
+addresses folded into 64 KiB windows and averaged over the 16 page offsets
+ASLR can seat the binary at); a single launch lands a few windows either
+side of it, and the trace, run under valgrind, misses a little of what a
+native start reaches.
+
+It also makes the number move with **layout**. Where a function lands
+decides which windows the startup code touches, and every change to the
+code moves the functions linked after it, so two builds a few lines apart
+read up to ~0.2 MB apart in code pages with nothing different running.
+
+### The page cache moves the number by megabytes
+
+Fault-around maps only pages already in the page cache, so the file-backed
+rows depend on how the binary's file got there. The same bytes, ten
+launches each:
+
+| the binary's file in the page cache | RSS | anonymous |
+|---|---|---|
+| faulted in by its own launches, after an eviction | 11.40 MB | 1.05 MB |
+| freshly written — what an install or `alter-zero update` leaves | 12.97 MB | 1.06 MB |
+| read in whole (`cp`, `cat`, a backup, a scanner) | 14.77 MB | 1.05 MB |
+
+A 3.4 MB spread with no code changed, and only the file-backed half moves.
+So "18 MB before the update, 19 after" can be a binary that had sat on disk
+against one just written, and say little about the code. The state does not
+even hold still: the machine these were measured on dropped its page cache
+on its own between runs, and a copy written ten minutes earlier read like
+one faulted in. `startup_mem.sh` therefore runs every launch from a copy it
+writes just before it, beside the binary (on a tmpfs the copy's pages would
+count as shared memory), and two builds compare only that way;
+`STARTUP_MEM_CACHE=keep` measures the file as it lies. The anonymous column
+is the one to trust across sessions.
+
+### What the headless merge cost
+
+Its parent (`f4f23d6`) against the merge, eighteen launches each, in three
+alternating rounds:
+
+| | RSS | anonymous | code | startup code pages | 64 KiB windows | descriptors |
+|---|---|---|---|---|---|---|
+| before | 12.66 MB | 1.06 MB | 7.80 MB | 682 | 116.9 | 10 |
+| after | 13.06 MB | 1.09 MB | 8.15 MB | 692 | 121.8 | 13 |
+
+Two things, neither of them headless code running in the interface:
+
+- **tokio's signal driver.** Headless catches `SIGINT`/`SIGTERM`, so the
+  merge turned on tokio's `signal` feature. `#[tokio::main]` builds its
+  runtime with `enable_all`, and what "all" starts is decided by the whole
+  build's tokio features, not by what the code asks for — so the interface
+  started a signal driver too: a socket pair and a duplicate (three
+  descriptors) and a watch channel for each of the platform's 64 signal
+  numbers (+0.03 MB anonymous). Nothing in the interface ever waits on a
+  signal. The I/O driver under it was already running before the merge,
+  because `reqwest` turns on tokio's `net`, and the interface never used that
+  either: its keys come from crossterm's own reader thread and everything
+  else arrives on channels.
+- **Layout.** The merge added ~145 KB of code, and the startup functions
+  linked after it moved: the same startup code now touches ~5 more 64 KiB
+  windows, +0.3 MB mapped (+0.35 MB of code measured). That cost is where
+  the code landed, not anything that runs.
+
+### The interface's runtime starts timers and nothing else
+
+`tui::runtime::interface()` builds the interface's current-thread runtime
+with `enable_time` alone; the headless run keeps `#[tokio::main]`, since a
+signal reaches tokio through the I/O driver. At `800a4cd`, eighteen launches
+each:
+
+| | RSS | anonymous | code | startup code pages | 64 KiB windows | descriptors |
+|---|---|---|---|---|---|---|
+| `#[tokio::main]` | 12.99 MB | 1.07 MB | 8.14 MB | 694 | 124.6 | 13 |
+| timers only | 13.18 MB | 1.05 MB | 8.34 MB | 696 | 124.6 | 7 |
+
+What it saves is the drivers' own: six descriptors (an epoll instance and
+its duplicate, an eventfd, the signal driver's three sockets — below the
+pre-merge build's ten) and their few tens of kilobytes of heap. It is not a
+saving in RSS: the drivers' code shared its windows with tokio code that
+runs anyway, and the 0.2 MB more code this build reads is the layout shift
+above — the same change made on the merge commit read 0.24 MB lower, in a
+smaller run. Two tests
+in `tui::runtime` hold the runtime to it: one that it serves what the loop
+selects over (a timer in a spawned task, a channel a plain thread sends
+on), one that it starts no I/O or signal driver.
+
+### Measured, not adopted: the startup code laid out together
+
+The lever that is megabytes is the scatter. A prototype relinked the
+timers-only build with the ~1,460 functions the startup trace ran placed
+first (`-Wl,--symbol-ordering-file`, lld):
+
+| link order | startup code pages | 64 KiB windows | code | RSS |
+|---|---|---|---|---|
+| as linked today | 696 | 124.6 | 8.34 MB | 13.18 MB |
+| startup functions first, exact names | 240 | 17.7 | 1.72 MB | 6.54 MB |
+| startup functions first, names up to their hash (a linker script) | — | — | 3.76 MB | 8.59 MB |
+
+Half the process, from link order alone. It is not in the build because
+of what keeping it costs. An ordering file names symbols exactly, and a
+Rust symbol carries a hash that changes with the crate's version and the
+toolchain, so the file would go stale at every release; matching names up
+to the hash instead (a linker-script fragment, `*(.text.{name}17h*
+.text.unlikely.{name}17h*)`) survives that but pulls in every instance of a
+generic function — legacy mangling tells instances apart only by the hash —
+which is the 2 MB between the two rows. The exact-names file is lld's
+(`--symbol-ordering-file`): the aarch64 release links with GNU `ld`, which
+takes the linker script but no such file, and macOS's linker takes its own
+`-order_file`. And the order covers startup only: the code a
+first turn runs is as scattered as ever. A two-pass release build (link,
+trace, relink) or a committed list regenerated before each release are the
+two ways in; the numbers are here so that choice can be made on them.
 
 ## The rule
 

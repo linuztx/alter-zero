@@ -36,6 +36,7 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+scripts/startup_mem.sh [BIN] [N]            # an idle start's RSS by kind — anon, the binary's code, the libraries — over a copy written before each launch (docs/memory.md)
 PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
@@ -271,7 +272,7 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `headless`, `runtime`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
@@ -312,8 +313,9 @@ peeks — see `docs/dummy-backend.md`. The three library `mod.rs`es re-export th
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
 every `crate::app::X` / `ui::y(…)` / `stream::Z` path is what it always was; `src/tui/` needs
 no facade (nothing outside the binary can name it — `main.rs` reaches exactly
-`tui::startup::resolve_cli`, then `tui::event_loop::run` or, for `-p`,
-`tui::headless::run` — **headless mode**, the same `Session` over
+`tui::startup::resolve_cli`, then `tui::event_loop::run` on the timers-only
+runtime `tui::runtime::interface` builds (`docs/memory.md` *Startup*) or, for
+`-p`, `tui::headless::run` — **headless mode**, the same `Session` over
 `InlineViewport::headless` with no `EventStream`, nothing asked (an
 unattended permission gate, no `AskUserQuestion`), the answer on stdout,
 problems on stderr and the step log there too with `--verbose`,

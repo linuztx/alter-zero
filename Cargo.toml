@@ -28,10 +28,15 @@ unicode-width = "0.2"
 # deletes by grapheme (so emoji-ZWJ sequences / combining marks count as one), and
 # wrapping hard-breaks long words on grapheme boundaries.
 unicode-segmentation = "1"
-# Async runtime for the codex-style event loop (current-thread, minimal feature
-# set — no tokio I/O; crossterm's EventStream owns stdin via its own reactor).
+# Async runtime for the codex-style event loop (current-thread). The
+# interface's runtime starts timers and nothing else (`tui::runtime`): no tokio
+# I/O — crossterm's EventStream owns stdin via its own reactor. Features unify
+# across the build (reqwest turns on `net`), so that runtime names the drivers
+# it starts rather than asking for all of them (docs/memory.md *Startup*).
 # `signal`: a headless run (`-p`) catches SIGINT/SIGTERM to shut its shells,
-# agents and MCP servers down rather than orphan them (docs/headless.md).
+# agents and MCP servers down rather than orphan them (docs/headless.md) —
+# that run's runtime starts every driver, since tokio delivers a signal
+# through its I/O driver.
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "signal"] }
 # `StreamExt::next` for crossterm's async `EventStream`.
 tokio-stream = "0.1"

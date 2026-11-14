@@ -896,7 +896,8 @@ rotation share `EnvFile::update` for serialized, atomic credential-file updates.
 
 ### Data flow
 
-The loop is **async** (tokio, single-threaded `current_thread` runtime), built as a
+The loop is **async** (tokio, single-threaded `current_thread` runtime with
+timers only — `tui::runtime`, `docs/memory.md` *Startup*), built as a
 `select!` over five sources — exactly how openai/codex drives its TUI. Terminal
 input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
 channel, **draw ticks** come from the frame scheduler, the **`@` file-search
