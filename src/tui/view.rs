@@ -51,6 +51,11 @@ pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duratio
 /// `mm:ss` countdown that is its only moving part. See `docs/copilot.md`.
 const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How often an open `/model` picker redraws with no other event — its
+/// counter's `updated 3m ago` moves by the minute, so a frame every half
+/// minute keeps it true (`docs/model-cache.md`).
+const MODEL_PICKER_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
 /// rewind) re-renders into scrollback. A purge drops the terminal's own
 /// scrollback, so the whole conversation is rebuilt from history — capped here
@@ -97,6 +102,12 @@ impl Session<'_> {
         // (docs/usage.md).
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
+        }
+        // …and so does the `/model` counter's `updated 2h ago`
+        // (docs/model-cache.md).
+        if self.app.model_picker.is_some() {
+            self.app
+                .set_model_picker_now(super::host::unix_secs_signed());
         }
         // How long a `/login` device code has left, when one is on screen
         // (docs/copilot.md).
@@ -806,6 +817,12 @@ impl Session<'_> {
         // shimmer over the page (`docs/copilot.md`).
         if self.app.device_login_active() {
             self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
+        }
+        // An open `/model` picker keeps a slower one still, for the age its
+        // counter names: that moves by the minute, so a frame every half
+        // minute is plenty (docs/model-cache.md).
+        if self.app.model_picker.is_some() {
+            self.frame.schedule_frame_in(MODEL_PICKER_TICK_INTERVAL);
         }
         Ok(())
     }

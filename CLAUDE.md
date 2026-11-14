@@ -617,6 +617,15 @@ page; Ctrl+O/Ctrl+D passing through over it, `/context`'s rule; the family's
 ladder on a short terminal, folding every section but the highlighted one to
 its fullest limit, then the header into one title row, ending on one folded
 row per subscription; `smoke.sh` Phase 145) in `docs/usage.md`; the
+**`/model` picker's kept lists** (each provider's list kept in
+`model-cache.json` and shown at once on the next open — fetched again behind
+its rows past an hour, a local model server's on every open, all of them on
+**Ctrl+R** — the counter saying `updated 2h ago · ctrl+r to refresh`; the
+pure `llm::models_cache` decides per provider what to show, fetch or wait
+on, a fetch outliving the picker so what it brings back is kept, and its
+`FetchLedger` ticket the guard that a list read with a credential `/login`
+has since replaced is never kept or shown; `smoke.sh` Phase 155) in
+`docs/model-cache.md`; the
 **`/login` sign-in fork** (the
 flow's root now asks *how* you sign in — under a `Select login method` title
 and no filter, three rows being a question — **Sign in with an account**,

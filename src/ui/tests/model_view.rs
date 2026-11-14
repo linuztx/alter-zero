@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::ui::theme::{
-    MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, error_color, model_selected_color,
+    MODEL_ERROR_MAX_ROWS, MODEL_MENU_MAX_ROWS, error_color, model_selected_color, model_stale_color,
 };
 
 /// The page row the `❯` search line sits on on the whole page at a width
@@ -35,7 +35,7 @@ fn the_whole_page_is_titled_and_lists_seven_models_under_the_search_prompt() {
     // highlighted model's name hanging under the ids.
     use crate::ui::model_view::model_view_lines;
     let mut picker = model_picker(twelve_stub_models(), 0, "stub/model-00");
-    picker.pending = 1;
+    picker.fetching.push(fetch_target("still-loading"));
     let texts: Vec<String> = model_view_lines(&picker, 90, 200)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
@@ -284,7 +284,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     // placeholder stays `Loading models…` until the count settles at zero.
     let mut picker = model_picker(three_models(), 0, "x");
     picker.query = "chatgpt".into();
-    picker.pending = 1;
+    picker.fetching.push(fetch_target("still-loading"));
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
     let loading = row(&buf, MODEL_FIRST_ROW, 60);
@@ -292,7 +292,7 @@ fn model_picker_waits_for_every_provider_before_showing_no_match() {
     assert!(!loading.contains("No matching models"), "{loading:?}");
 
     // Every provider has answered: the query genuinely matches nothing now.
-    picker.pending = 0;
+    picker.fetching.clear();
     let mut buf = buffer(60, 20);
     render_model_picker(buf.area, &mut buf, &picker);
     let settled = row(&buf, MODEL_FIRST_ROW, 60);
@@ -1029,4 +1029,137 @@ fn a_tiny_terminal_keeps_the_model_search_line_over_a_placeholder() {
             );
         }
     }
+}
+
+// --- the kept lists' status beside the counter (docs/model-cache.md) ---
+
+const NOW: i64 = 1_763_110_000;
+
+/// The twelve stub models as a picker whose list was fetched `age` seconds
+/// before the injected clock.
+fn kept_picker(age: i64) -> ModelPicker {
+    let mut picker = model_picker(twelve_stub_models(), 0, "stub/model-00");
+    picker.fetched_at.insert("stub".into(), NOW - age);
+    picker.now = NOW;
+    picker
+}
+
+/// The counter row on the whole page, trimmed.
+fn counter_row(picker: &ModelPicker) -> String {
+    use crate::ui::model_view::model_view_lines;
+    model_view_lines(picker, 100, TALL)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .find(|l| l.trim_start().starts_with('('))
+        .expect("the counter row")
+}
+
+/// The style of the counter row's span that contains `needle`.
+fn counter_span_fg(picker: &ModelPicker, needle: &str) -> Option<Color> {
+    use crate::ui::model_view::model_view_lines;
+    model_view_lines(picker, 100, TALL)
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains(needle))
+        .and_then(|s| s.style.fg)
+}
+
+#[test]
+fn a_settled_list_says_how_old_it_is_and_how_to_refresh() {
+    assert_eq!(
+        counter_row(&kept_picker(2 * 3_600)),
+        "    (1/12)   ·   updated 2h ago   ·   ctrl+r to refresh"
+    );
+    assert_eq!(
+        counter_row(&kept_picker(5)),
+        "    (1/12)   ·   updated just now   ·   ctrl+r to refresh"
+    );
+}
+
+#[test]
+fn the_age_said_is_the_oldest_lists() {
+    // "updated 2h ago" has to hold for every row on screen.
+    let mut picker = kept_picker(60);
+    picker.fetched_at.insert("other".into(), NOW - 3 * 86_400);
+    assert!(
+        counter_row(&picker).contains("updated 3d ago"),
+        "{}",
+        counter_row(&picker)
+    );
+}
+
+#[test]
+fn a_refresh_behind_the_rows_says_refreshing_and_offers_no_key() {
+    let mut picker = kept_picker(2 * 3_600);
+    picker.fetching.push(fetch_target("stub"));
+    assert_eq!(counter_row(&picker), "    (1/12)   ·   refreshing…");
+}
+
+#[test]
+fn a_provider_with_nothing_on_screen_still_says_loading_more() {
+    // `loading more…` outranks `refreshing…`: a list is still missing.
+    let mut picker = kept_picker(2 * 3_600);
+    picker.fetching.push(fetch_target("stub"));
+    picker.fetching.push(fetch_target("still-loading"));
+    assert_eq!(counter_row(&picker), "    (1/12)   ·   loading more…");
+}
+
+#[test]
+fn a_failed_refresh_is_noted_in_amber_beside_the_kept_rows() {
+    let mut picker = kept_picker(2 * 3_600);
+    picker.stale.push(ModelFetchError {
+        provider: "Stub".into(),
+        message: "HTTP 503: try again later".into(),
+    });
+    assert_eq!(
+        counter_row(&picker),
+        "    (1/12)   ·   couldn't refresh Stub   ·   ctrl+r to refresh"
+    );
+    assert_eq!(
+        counter_span_fg(&picker, "couldn't refresh"),
+        Some(model_stale_color())
+    );
+    // …and why, under the list, in the same amber.
+    assert_eq!(
+        counter_span_fg(&picker, "try again later"),
+        Some(model_stale_color()),
+        "the reason row"
+    );
+}
+
+#[test]
+fn several_failed_refreshes_are_counted() {
+    let mut picker = kept_picker(60);
+    for name in ["Stub", "Other"] {
+        picker.stale.push(ModelFetchError {
+            provider: name.into(),
+            message: "boom".into(),
+        });
+    }
+    assert!(
+        counter_row(&picker).contains("couldn't refresh 2 providers"),
+        "{}",
+        counter_row(&picker)
+    );
+}
+
+#[test]
+fn an_unavailable_provider_offers_the_key_to_try_again() {
+    let mut picker = kept_picker(60);
+    picker.errors.push(ModelFetchError {
+        provider: "Agent Zero API".into(),
+        message: "HTTP 401".into(),
+    });
+    assert_eq!(
+        counter_row(&picker),
+        "    (1/12)   ·   Agent Zero API unavailable   ·   ctrl+r to refresh"
+    );
+    assert_eq!(counter_span_fg(&picker, "unavailable"), Some(error_color()));
+}
+
+#[test]
+fn a_list_with_no_fetch_on_record_says_nothing_beside_its_counter() {
+    // The age needs a stamp to count from; a list installed whole has none.
+    let picker = model_picker(twelve_stub_models(), 0, "stub/model-00");
+    assert_eq!(counter_row(&picker), "    (1/12)");
 }

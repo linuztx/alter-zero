@@ -11,8 +11,10 @@
 //! - [`spawn_file_search_worker`] — the `@` picker's walk + rank
 //!   (`docs/file-search.md`), fed by [`dispatch_file_search`].
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
-//! - [`spawn_model_fetch`] — one provider's model list, for the `/model`
-//!   picker and the startup capability probe (`docs/llm.md`).
+//! - [`spawn_model_list`] — one provider's model list for the `/model`
+//!   picker, kept once it lands (`docs/model-cache.md`), and
+//!   [`spawn_model_fetch`], the same fetch for the startup capability probe
+//!   (`docs/llm.md`).
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
 //!   `docs/chatgpt.md`, `docs/claude.md`, `docs/cline.md`), chosen by the
 //!   row's auth scheme — the one worker that runs for **minutes** rather than
@@ -39,11 +41,24 @@ use alter_zero::stream::CancelToken;
 
 use super::Session;
 
-/// A finished `/model` fetch from one provider: its human label (for a failure
-/// note) and either the provider's models or a one-line error. The picker
-/// fetches every configured provider in parallel and merges these as they land.
-/// Carried on the model-fetch worker's channel. See `docs/llm.md`.
+/// A finished capability-probe fetch: the provider id and either its models or
+/// a one-line error. Carried on the probe's own channel (`docs/reasoning.md`).
 pub(crate) type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
+
+/// A finished `/model` fetch from one provider: whose list it read, the ledger
+/// ticket its spawn was issued — a list is kept and shown only when it answers
+/// the provider's live ticket (`docs/model-cache.md`) — and the models or a
+/// one-line error. The picker fetches every provider that needs it in
+/// parallel and merges these as they land.
+#[derive(Debug)]
+pub(crate) struct ModelListed {
+    /// The provider id.
+    pub(crate) provider: String,
+    /// The ticket `FetchLedger::issue` gave the fetch.
+    pub(crate) ticket: u64,
+    /// The list, or why there is none.
+    pub(crate) result: Result<Vec<ModelEntry>, String>,
+}
 
 /// What the `/login` workers report back. A sign-in sends two messages, in
 /// order — the code to show, then the flow's verdict (`docs/copilot.md`); a
@@ -635,10 +650,17 @@ pub(crate) fn spawn_image_paste(
     });
 }
 
-/// Fetch one provider's `/models` list on a background thread (the image-paste
-/// pattern), sending the labelled result to the loop. One of these is spawned
-/// per configured provider so they fetch in parallel; a cancelled fetch (the
-/// picker closed) is dropped. See `docs/llm.md`.
+/// One provider's `/models` list, or a one-line reason there is none.
+fn list_models(cfg: Option<&ModelConfig>, cancel: &CancelToken) -> Result<Vec<ModelEntry>, String> {
+    match cfg {
+        Some(cfg) => llm::models::fetch_models(cfg, cancel).map_err(|e| e.to_string()),
+        None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
+    }
+}
+
+/// Fetch one provider's `/models` list for the capability probe on a
+/// background thread (the image-paste pattern), sending the labelled result
+/// to the loop; a cancelled fetch is dropped. See `docs/reasoning.md`.
 pub(crate) fn spawn_model_fetch(
     label: String,
     cfg: Option<ModelConfig>,
@@ -646,13 +668,34 @@ pub(crate) fn spawn_model_fetch(
     tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
 ) {
     std::thread::spawn(move || {
-        let result: Result<Vec<ModelEntry>, String> = match cfg {
-            Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
-            None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
-        };
-        // Don't deliver a result the picker no longer wants.
+        let result = list_models(cfg.as_ref(), &cancel);
         if !cancel.is_cancelled() {
             let _ = tx.send((label, result));
+        }
+    });
+}
+
+/// Fetch one provider's `/models` list for the `/model` picker on a
+/// background thread, sending it to the loop under its ledger `ticket`. One
+/// is spawned per provider that needs it, so they fetch in parallel. It runs
+/// to its end whatever the picker does — what it brings back is kept
+/// (`docs/model-cache.md`) — and only quitting, which cancels the session's
+/// token, drops it. See `docs/llm.md`.
+pub(crate) fn spawn_model_list(
+    provider: String,
+    ticket: u64,
+    cfg: Option<ModelConfig>,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<ModelListed>,
+) {
+    std::thread::spawn(move || {
+        let result = list_models(cfg.as_ref(), &cancel);
+        if !cancel.is_cancelled() {
+            let _ = tx.send(ModelListed {
+                provider,
+                ticket,
+                result,
+            });
         }
     });
 }

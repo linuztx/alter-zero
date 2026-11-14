@@ -41,9 +41,11 @@ use std::time::Duration;
 
 use alter_zero::agents::AgentRegistry;
 use alter_zero::app::{
-    LocalChoice, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind, UsageTarget,
+    LocalChoice, ModelFetchTarget, ProviderChoice, ServerTest, SubscriptionChoice, ToastKind,
+    UsageTarget,
 };
 use alter_zero::background::BackgroundRegistry;
+use alter_zero::llm::models_cache::{self, CachedListing, Fetch, FetchLedger, PlanProvider};
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, LlmBackend, ModelConfig, ModelEntry, ModelSelection, ProvidersFile,
     ReasoningSupport, STANDARD_LABEL, ServiceTier, SpeedSettings, SpeedState, ThinkingMode,
@@ -53,7 +55,7 @@ use alter_zero::settings::SessionSettings;
 use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource};
 use alter_zero::ui;
 
-use super::workers::{ModelFetch, spawn_model_fetch};
+use super::workers::{ModelListed, spawn_model_fetch, spawn_model_list};
 use super::{Session, config};
 
 /// A model's capabilities as the loop tracks them: its reasoning support (and
@@ -217,8 +219,16 @@ pub(crate) struct ModelSession {
     /// [`Self::release_session_start`], so a hook trusted on the review's
     /// first page still hears the `startup` it was configured for.
     session_start_held: bool,
-    /// The `/model` picker's in-flight fetch, so closing the picker cancels it.
-    fetch_cancel: Option<CancelToken>,
+    /// The token every `/model` fetch polls — the session's, cancelled only
+    /// when it quits: a fetch outlives the picker that started it, since what
+    /// it brings back is kept (`docs/model-cache.md`).
+    fetch_cancel: CancelToken,
+    /// The `/model` fetches still out, one live ticket per provider — which
+    /// fetch a landed list must answer to be kept and shown.
+    fetch_ledger: FetchLedger,
+    /// `model-cache.json`, where each provider's list is kept; `None` (no
+    /// config home) keeps nothing.
+    model_cache_path: Option<std::path::PathBuf>,
     /// Whether the startup capability probe is still outstanding — the gate on
     /// its `select!` branch. Cleared by the first result, or by a `/model`
     /// switch that learned the same facts first-hand.
@@ -579,7 +589,9 @@ impl ModelSession {
                 .unwrap_or_default(),
             mcp: mcp.cloned(),
             hooks,
-            fetch_cancel: None,
+            fetch_cancel: CancelToken::new(),
+            fetch_ledger: FetchLedger::default(),
+            model_cache_path: config::model_cache_path(),
             probe_pending: probe.is_some(),
             session_start_held: false,
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
@@ -1533,36 +1545,122 @@ impl ModelSession {
 
     // ----- the `/model` fetch and the `/login` key write -----
 
-    /// Start the `/model` picker's fetch: cancel any in-flight one, then GET
-    /// **every** configured provider's list off-thread in parallel (the picker
-    /// shows each as it lands and merges them). Returns how many providers are
-    /// being fetched — `0` means none is configured, and the caller points the
-    /// user at `/login` instead.
+    /// Start a `/model` load (`docs/model-cache.md`) — the picker opening, or
+    /// Ctrl+R (`force`). For every provider with a resolving credential (a
+    /// pasted key *or* a subscription's stored token): the list kept for it,
+    /// read from `model-cache.json` on an open (a refresh skips the read: its
+    /// rows are on screen already), and whether its list is fetched — off
+    /// thread, in parallel, started here, or already out and waited on. What
+    /// the picker shows at once, and the providers it waits on; `None` when
+    /// no provider is configured, and the caller points the user at `/login`
+    /// instead.
     pub(crate) fn begin_model_fetch(
         &mut self,
-        tx: &tokio::sync::mpsc::UnboundedSender<ModelFetch>,
-    ) -> usize {
-        self.cancel_model_fetch();
-        // Every provider with a resolving credential — a pasted key *or* a
-        // subscription's stored token. `provider_choices` answers a different
-        // question (which providers `/login` offers a key field for), and
-        // fetching from that list would leave a signed-in GitHub Copilot with
-        // no models in the picker at all (`docs/copilot.md`).
+        tx: &tokio::sync::mpsc::UnboundedSender<ModelListed>,
+        now: i64,
+        force: bool,
+    ) -> Option<(Vec<CachedListing>, Vec<ModelFetchTarget>)> {
+        // `provider_choices` answers a different question (which providers
+        // `/login` offers a key field for), and fetching from that list would
+        // leave a signed-in GitHub Copilot with no models in the picker at
+        // all (`docs/copilot.md`).
         let configured: Vec<ProviderChoice> =
             config::all_provider_choices(&self.providers, &self.env_file)
                 .into_iter()
                 .filter(|c| c.configured)
                 .collect();
         if configured.is_empty() {
-            return 0;
+            return None;
         }
-        let cancel = CancelToken::new();
-        self.fetch_cancel = Some(cancel.clone());
-        for choice in &configured {
+        let kept = if force {
+            models_cache::ModelCache::default()
+        } else {
+            config::load_model_cache(self.model_cache_path.as_deref())
+        };
+        let mut cached = Vec::new();
+        let mut waiting = Vec::new();
+        for choice in configured {
             let cfg = self.config_for(&choice.id, &self.active_model, None, None, None, None);
-            spawn_model_fetch(choice.name.clone(), cfg, cancel.clone(), tx.clone());
+            let source = cfg
+                .as_ref()
+                .map(models_cache::source_of)
+                .unwrap_or_default();
+            // A local model server's list moves the moment a model is pulled
+            // or loaded, and reading it costs next to nothing: never fresh.
+            let always_refresh = cfg.as_ref().is_some_and(|cfg| cfg.auth.key_optional());
+            let provider = PlanProvider {
+                provider: choice.id.clone(),
+                source,
+                always_refresh,
+            };
+            let decided = models_cache::plan(&provider, &kept, &self.fetch_ledger, now, force);
+            cached.extend(decided.cached);
+            if decided.fetch == Fetch::No {
+                continue;
+            }
+            if decided.fetch == Fetch::Start {
+                let ticket = self
+                    .fetch_ledger
+                    .issue(&provider.provider, &provider.source);
+                spawn_model_list(
+                    provider.provider,
+                    ticket,
+                    cfg,
+                    self.fetch_cancel.clone(),
+                    tx.clone(),
+                );
+            }
+            waiting.push(ModelFetchTarget {
+                provider: choice.id,
+                name: choice.name,
+            });
         }
-        configured.len()
+        Some((cached, waiting))
+    }
+
+    /// A `/model` fetch landed: whether it answers its provider's live
+    /// ticket — only then is it shown — keeping its list, when it brought
+    /// one, in `model-cache.json` under the source it was read from
+    /// (`docs/model-cache.md`).
+    pub(crate) fn settle_model_fetch(&mut self, listed: &ModelListed, now: i64) -> bool {
+        let Some(source) = self.fetch_ledger.settle(&listed.provider, listed.ticket) else {
+            return false;
+        };
+        if let Ok(models) = &listed.result {
+            config::update_model_cache(self.model_cache_path.as_deref(), |cache| {
+                cache.store(&listed.provider, &source, now, models);
+            });
+        }
+        true
+    }
+
+    /// Drop the list kept for every provider that reads `env_var` — its key
+    /// or its server's address — and retire any fetch still out for one, so
+    /// a list read with the credential just replaced is neither kept nor
+    /// shown: a different account can be a different catalog
+    /// (`docs/model-cache.md`).
+    fn forget_kept_lists(&mut self, env_var: &str) {
+        let readers: Vec<String> = self
+            .providers
+            .ids()
+            .into_iter()
+            .filter(|id| {
+                self.providers
+                    .get(id)
+                    .is_some_and(|p| p.reads_env(id, env_var))
+            })
+            .collect();
+        if readers.is_empty() {
+            return;
+        }
+        for id in &readers {
+            self.fetch_ledger.retire(id);
+        }
+        config::update_model_cache(self.model_cache_path.as_deref(), |cache| {
+            for id in &readers {
+                cache.forget(id);
+            }
+        });
     }
 
     /// The signed-in subscriptions the `/usage` page reads (`docs/usage.md`):
@@ -1595,12 +1693,10 @@ impl ModelSession {
         targets
     }
 
-    /// Cancel an in-flight `/model` fetch — the picker closed, a row was
-    /// picked, or the app is quitting. Its detached worker exits on the cancel.
-    pub(crate) fn cancel_model_fetch(&mut self) {
-        if let Some(cancel) = self.fetch_cancel.take() {
-            cancel.cancel();
-        }
+    /// Cancel every `/model` fetch still out — the app is quitting. Each
+    /// detached worker exits on the cancel, and nothing it read is kept.
+    pub(crate) fn cancel_model_fetches(&mut self) {
+        self.fetch_cancel.cancel();
     }
 
     /// Clear the capability-probe gate: its answer arrived (or is now moot).
@@ -1616,6 +1712,7 @@ impl ModelSession {
         match EnvFile::update(&self.env_file_path, env_var, key) {
             Ok(updated) => {
                 self.env_file = EnvFile::parse(&updated);
+                self.forget_kept_lists(env_var);
                 Ok(())
             }
             Err(e) => Err(format!(
@@ -2015,11 +2112,13 @@ impl Session<'_> {
     }
 
     /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it
-    /// replaces the composer — no alternate screen) and fetch every configured
-    /// provider's list off-thread in parallel; the picker shows each as it lands
-    /// and merges them into one list. With none configured, skip the fetch and
-    /// point the user at `/login` instead. The provider file is re-read first,
-    /// so a provider added since startup is fetched too.
+    /// replaces the composer — no alternate screen) on every configured
+    /// provider's kept list at once, and fetch the ones that need it off-thread
+    /// in parallel — a provider with nothing kept, a list past its hour, a
+    /// local model server's — merging each as it lands (`docs/model-cache.md`).
+    /// With none configured, skip it all and point the user at `/login`
+    /// instead. The provider file is re-read first, so a provider added since
+    /// startup is listed too.
     pub(crate) fn open_model_picker(&mut self) {
         self.reload_providers();
         let current = self.models.active_model().to_string();
@@ -2027,22 +2126,34 @@ impl Session<'_> {
         if let Some(provider) = self.models.active_provider() {
             self.app.set_active_provider(provider);
         }
-        match self.models.begin_model_fetch(&self.model_tx) {
-            0 => self.app.set_models_needs_login(),
-            providers => self.app.begin_model_load(providers),
+        let now = super::host::unix_secs_signed();
+        self.app.set_model_picker_now(now);
+        match self.models.begin_model_fetch(&self.model_tx, now, false) {
+            None => self.app.set_models_needs_login(),
+            Some((cached, waiting)) => self.app.begin_model_load(cached, waiting),
         }
     }
 
-    /// Esc/Ctrl+C dismissed the inline picker: cancel a pending fetch and let the
-    /// region collapse back to the composer on the next draw.
-    pub(crate) fn close_model_picker(&mut self) {
-        self.models.cancel_model_fetch();
+    /// Ctrl+R in the picker (`docs/model-cache.md`): fetch every configured
+    /// provider's list again, whatever its age, behind the rows on screen. The
+    /// provider file is re-read first, as on open, so a provider added since
+    /// is fetched and a removed one leaves the list.
+    pub(crate) fn refresh_model_picker(&mut self) {
+        self.reload_providers();
+        let now = super::host::unix_secs_signed();
+        self.app.set_model_picker_now(now);
+        match self.models.begin_model_fetch(&self.model_tx, now, true) {
+            None => self.app.set_models_needs_login(),
+            Some((_, waiting)) => self.app.begin_model_refresh(waiting),
+        }
+        self.frame.schedule_frame();
     }
 
     /// Enter on a picker row: rebuild the backend for the chosen provider/model
-    /// (`docs/llm.md`). The picker is already closed (`on_key` did it); cancel any
-    /// pending fetch, then switch if the config is usable (has a key), else keep
-    /// the current backend. The outcome is a transient toast — a mid-turn switch
+    /// (`docs/llm.md`). The picker is already closed (`on_key` did it) — the
+    /// fetches it started run on and keep their lists (`docs/model-cache.md`)
+    /// — then switch if the config is usable (has a key), else keep the
+    /// current backend. The outcome is a transient toast — a mid-turn switch
     /// must not split the streaming reply in scrollback (`docs/toast.md`).
     pub(crate) fn select_model(
         &mut self,
@@ -2053,7 +2164,6 @@ impl Session<'_> {
         context: Option<u64>,
         service_tiers: Vec<ServiceTier>,
     ) {
-        self.models.cancel_model_fetch();
         // The picked entry's reasoning support seeds the Ctrl+T cycle at its
         // default mode (medium where offered) — docs/reasoning.md.
         let thinking = reasoning.map(|support| {
@@ -2263,19 +2373,20 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
-    /// A finished `/model` fetch from one provider's worker thread: merge its
-    /// models into the open picker, or record the failure beside the providers
-    /// that did load. Both are no-ops if the picker was already dismissed. See
+    /// A finished `/model` fetch from one provider's worker thread
+    /// (`docs/model-cache.md`): one that answers its provider's live ticket is
+    /// kept in `model-cache.json` and handed to the picker, which merges the
+    /// list or records the failure beside the providers that did load — a
+    /// no-op if it was already dismissed, the list kept all the same. One
+    /// superseded or retired since it started is dropped whole. See
     /// `docs/llm.md`.
-    pub(crate) fn on_model_fetch(
-        &mut self,
-        label: String,
-        result: Result<Vec<ModelEntry>, String>,
-    ) {
-        match result {
-            Ok(models) => self.app.add_models(models),
-            Err(reason) => self.app.add_model_error(label, reason),
+    pub(crate) fn on_model_fetch(&mut self, listed: ModelListed) {
+        let now = super::host::unix_secs_signed();
+        if !self.models.settle_model_fetch(&listed, now) {
+            return;
         }
+        self.app
+            .finish_model_fetch(&listed.provider, listed.result, now);
         self.frame.schedule_frame();
     }
 }

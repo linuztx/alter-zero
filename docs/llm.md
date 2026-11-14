@@ -37,6 +37,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does a Cline sign-in's: the ClinePass plan's published list, each model's facts borrowed from Cline's catalog — `docs/cline.md`) | split |
+| `llm/models_cache.rs` | the `/model` picker's **kept lists** (`docs/model-cache.md`): the `model-cache.json` format, freshness (an hour), the fingerprint of where a list was read from, the per-provider `plan` an open or a Ctrl+R makes (show, fetch, or wait on a fetch already out), and the `FetchLedger` of fetches still out | **pure** |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/cloud_code.rs` | Google's **Cloud Code Assist** wire format (`wire_api = "cloud_code"`): the `{project, model, request}` envelope around Gemini's `generateContent` body, the per-family tool schemas (`parametersJsonSchema` for Gemini, the bridge's six keywords for Claude/GPT-OSS), thinking per family, the SSE fold, and the process-wide memo of the thought signatures (and Claude thinking) a later request must hand back (`docs/antigravity.md`) | mostly |
 | `llm/antigravity.rs` | the Google Antigravity sign-in: the PKCE URLs and grants, the agy CLI `User-Agent`, `loadCodeAssist`/`onboardUser`'s shapes, the catalog's curation and level grouping, the explained refusals (pure); the flow, the token cache, the project lookup and the catalog fetch (`docs/antigravity.md`) | split |
@@ -208,8 +209,8 @@ scripted tool calls its assertions depend on are untouched.
 The app keeps its per-user state under a **config home** — `ALTER_ZERO_CONFIG_DIR`,
 else `~/.alter-zero` (the same base `providers.toml` and the sessions dir already
 use), else `None` when there's no `HOME` (persistence then disabled, falling back
-to `./.env`). It holds two files, both written best-effort (a failure is swallowed
-so it can never kill the TUI) and created on first write:
+to `./.env`). It holds three files this page is about, all written best-effort (a
+failure is swallowed so it can never kill the TUI) and created on first write:
 
 - **`.env`** — the API-key store the `/login` flow writes (`tui::config::env_file_path`,
   overridable with `ALTER_ZERO_ENV_FILE`). Git-ignored so keys are never committed.
@@ -219,6 +220,9 @@ so it can never kill the TUI) and created on first write:
   file's own shape). A directory you launch in for the first time takes the
   last selection and pins it as its own, so a switch made here stays here
   (`docs/per-directory-state.md`).
+- **`model-cache.json`** — the `/model` picker's kept lists, one per provider
+  (`llm::models_cache::ModelCache`), which the next open shows at once
+  (`docs/model-cache.md`). A cache: deleting it costs one fetch.
 
 Beside them sits one file the app reads and never writes: **`providers.toml`**,
 the user's own providers, laid over the shipped ones and re-read whenever
@@ -326,15 +330,23 @@ Enter does to the session and to the directory (`docs/session-model.md`,
   skips the fetch and the list area shows a cyan
   `No provider set up yet — run /login to add one` (`ModelLoad::NeedsLogin`)
   instead of offering models the user can't use.
-- Otherwise the boundary fetches **every configured provider in parallel** — one
-  worker thread each (the image-paste pattern), all sharing one cancel token —
-  and merges the results into a single provider-tagged list as they land
-  (`App::begin_model_load` up front, then `App::add_models` / `App::add_model_error`
-  per result on a dedicated channel). The picker shows `Loading models…` until the
-  **first** provider answers, then the list — growing and re-sorting (by id, then
-  provider; exact `(provider, id)` dupes dropped) as the rest arrive. The
-  highlight rides the same model across each merge, or re-seats on the active
-  model once its provider lands (unless the user has already moved/filtered).
+- Otherwise the picker opens on **every configured provider's kept list at
+  once** (updated 2026-11-14 — it used to fetch them all and show
+  `Loading models…` on every open), and the boundary fetches in parallel —
+  one worker thread each (the image-paste pattern) — the lists that need it:
+  a provider with nothing kept, a list kept more than an hour ago, and a
+  local model server's on every open; Ctrl+R fetches all of them. Each list
+  is kept in `model-cache.json` as it lands, and a fetch runs on after the
+  picker closes, since what it brings back is kept. `docs/model-cache.md`
+  has the whole rule. Results merge into a single provider-tagged list as
+  they land (`App::begin_model_load` up front, then `App::finish_model_fetch`
+  per result on a dedicated channel), a provider's list **replacing** its
+  rows. Where nothing was kept the picker shows `Loading models…` until the
+  **first** provider answers, then the list — growing and re-sorting (by id,
+  then provider; exact `(provider, id)` dupes dropped) as the rest arrive.
+  The highlight rides the same model across each merge, or re-seats on the
+  active model once its provider lands (unless the user has already
+  moved/filtered).
   A **search that matches nothing in the partial list keeps saying
   `Loading models…`** until every provider has answered: a list that is still
   arriving cannot prove a query has no match, and `No matching models` shown
@@ -343,11 +355,16 @@ Enter does to the session and to the directory (`docs/session-model.md`,
   "that model does not exist"). Only at `pending == 0` can the placeholder
   truthfully settle to `No matching models`.
 - **Partial results are surfaced, not fatal.** While providers are still fetching
-  the counter carries a dim `· loading more…`; a provider whose fetch fails is
+  the counter carries a dim `· loading more…` (`· refreshing…` when every fetch
+  out is behind a kept list on screen); a provider whose fetch fails is
   recorded (`ModelPicker::errors`) and noted beside the counter as a red
   `· {provider} unavailable` / `· N providers unavailable`, the successful lists
-  staying put. Only when **every** provider fails (no models at all) does the
-  picker go to `ModelLoad::Error`, showing one red `{provider}: {reason}` row each.
+  staying put — and a failed **refresh** keeps the kept rows under an amber
+  `· couldn't refresh {provider}` (`ModelPicker::stale`). With nothing out and
+  nothing failed the counter says how old the oldest list is, `· updated 2h
+  ago`, and closes on `· ctrl+r to refresh` whenever no fetch is out. Only
+  when **every** provider fails (no models at all) does the picker go to
+  `ModelLoad::Error`, showing one red `{provider}: {reason}` row each.
 - **The fetch is memory-bounded** (`docs/memory.md` has the full story and
   the measured numbers; `examples/mem_probe.rs` measures it,
   `tests/model_parse_memory.rs` gates it): `parse_models` holds each record
@@ -364,7 +381,8 @@ Enter does to the session and to the directory (`docs/session-model.md`,
 - Type to filter (case-insensitive substring over `id`, provider, and name),
   `↑/↓` move wrapping at the ends, PgUp/PgDn/Home/End jump, `Enter` selects →
   `Action::SelectModel { provider, id }`, `Esc` clears the query then closes,
-  `Ctrl+C` closes. A **bracketed paste** extends the filter too
+  `Ctrl+C` closes, `Ctrl+R` fetches every list again (`Action::RefreshModels`,
+  ignored while a fetch is out — `docs/model-cache.md`). A **bracketed paste** extends the filter too
   (`App::paste_into_model_filter`, routed from the loop's `Event::Paste` arm):
   a model id is copied from a provider's dashboard far more often than it is
   typed. It was previously swallowed outright — dropped to keep it out of the
@@ -632,8 +650,12 @@ Retheme there.
   are replayed to the model on later turns in the provider-native
   `tool_calls`/`tool` format — the same protocol the live loop streams — see
   `docs/context.md`.)
-- The picker fetches models when opened (no cache); a slow provider shows
-  `Loading models…` until the response lands.
+- ~~The picker fetches models when opened (no cache); a slow provider shows
+  `Loading models…` until the response lands.~~ **Fixed**: each provider's
+  list is kept in `model-cache.json` and shown at once on the next open, a
+  list past its hour is fetched behind its rows, and Ctrl+R fetches them all
+  again — `docs/model-cache.md`. Only a provider with nothing kept still shows
+  `Loading models…` until it answers.
 - **A dead-silent connection takes up to `NET_OP_TIMEOUT` (120 s) to fail.**
   The per-operation timeout is a stall detector sized for the slow-but-alive
   cases (a vision request's multi-megabyte upload, a provider sitting on the

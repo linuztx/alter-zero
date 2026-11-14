@@ -55,7 +55,7 @@ fn counter_notes_more_providers_still_loading() {
     // A partial list (one provider in, another still fetching) shows the
     // list now with a dim "loading more…" hint beside the counter.
     let mut picker = model_picker(three_models(), 0, "x");
-    picker.pending = 1;
+    picker.fetching.push(fetch_target("still-loading"));
     let mut buf = buffer(60, 13);
     render_model_picker(buf.area, &mut buf, &picker);
     let counter = row(&buf, 9, 60);

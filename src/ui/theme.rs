@@ -1154,6 +1154,14 @@ pub(super) fn model_active_color() -> Color {
     tool_ok_color()
 }
 
+/// Amber — a refresh that failed while the provider's kept list stayed on
+/// screen: `couldn't refresh {provider}` and its reason. The caution tone,
+/// not the error red, because nothing is missing — the rows are only older
+/// than they might be (`docs/model-cache.md`).
+pub(super) fn model_stale_color() -> Color {
+    palette().warning
+}
+
 /// The mark appended to the active model's row.
 pub(super) const MODEL_ACTIVE_MARK: &str = " ✓";
 
@@ -1188,6 +1196,23 @@ pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
 /// The counter's dim suffix while other providers are still being fetched (the
 /// list shows what's landed so far and keeps growing). See `docs/llm.md`.
 pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
+
+/// The counter's dim suffix while every fetch still out refreshes a list
+/// already on screen — the kept rows stay until it lands
+/// (`docs/model-cache.md`).
+pub(super) const MODEL_REFRESHING: &str = "refreshing…";
+
+/// What opens the counter's note on how old the oldest list on screen is:
+/// `updated 2h ago`.
+pub(super) const MODEL_UPDATED_PREFIX: &str = "updated ";
+
+/// What opens the counter's amber note for a refresh that failed while the
+/// kept list stayed on screen: `couldn't refresh OpenRouter`.
+pub(super) const MODEL_STALE_PREFIX: &str = "couldn't refresh ";
+
+/// The counter's closing note whenever no fetch is out: the key that fetches
+/// every list again, which after a failure is how to try again.
+pub(super) const MODEL_REFRESH_HINT: &str = "ctrl+r to refresh";
 
 /// The most display rows a failed provider's *reason* block may take under the
 /// list. The collapsed `{provider} unavailable` note names the provider and

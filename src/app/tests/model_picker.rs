@@ -1,6 +1,7 @@
 //! The inline `/model` picker and its multi-provider load (`docs/llm.md`).
 
 use super::*;
+use crate::llm::models_cache::CachedListing;
 
 #[test]
 fn backtab_with_the_model_picker_open_is_inert() {
@@ -205,70 +206,130 @@ fn set_models_needs_login_clears_the_list_and_points_at_login() {
     assert_eq!(picker.selected, 0);
 }
 
-// --- Multi-provider parallel `/model` load (docs/llm.md). ---
+// --- Multi-provider parallel `/model` load (docs/llm.md), and the kept
+// lists behind it (docs/model-cache.md). ---
+
+/// A provider the picker waits on.
+fn target(provider: &str, name: &str) -> ModelFetchTarget {
+    ModelFetchTarget {
+        provider: provider.into(),
+        name: name.into(),
+    }
+}
+
+/// A kept list read back from `model-cache.json`.
+fn kept(provider: &str, fetched_at: i64, models: Vec<ModelEntry>) -> CachedListing {
+    CachedListing {
+        provider: provider.into(),
+        fetched_at,
+        models,
+    }
+}
+
+const NOW: i64 = 1_763_110_000;
+
+fn ids(app: &App) -> Vec<String> {
+    app.model_picker
+        .as_ref()
+        .unwrap()
+        .models
+        .iter()
+        .map(|m| format!("{}@{}", m.id, m.provider))
+        .collect()
+}
 
 #[test]
-fn add_models_shows_the_first_provider_and_merges_the_rest() {
+fn a_landed_list_shows_at_once_and_merges_with_the_rest() {
     let mut app = App::new();
     app.open_model_picker("x");
-    app.begin_model_load(2);
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "Agent Zero API"),
+        ],
+    );
     assert_eq!(
         app.model_picker.as_ref().unwrap().status,
         ModelLoad::Loading
     );
     // OpenRouter lands first — its list shows immediately, one fetch still out.
-    app.add_models(vec![
-        model("c/z", "openrouter", "C Z"),
-        model("a/x", "openrouter", "A X"),
-    ]);
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![
+            model("c/z", "openrouter", "C Z"),
+            model("a/x", "openrouter", "A X"),
+        ]),
+        NOW,
+    );
     let picker = app.model_picker.as_ref().unwrap();
     assert_eq!(
         picker.status,
         ModelLoad::Ready,
         "shown before the rest arrive"
     );
-    assert_eq!(picker.pending, 1);
+    assert_eq!(picker.pending(), 1);
     assert_eq!(picker.models.len(), 2);
     // Agent Zero lands second — merged into one sorted list, no fetches left.
-    app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
-    let picker = app.model_picker.as_ref().unwrap();
-    assert_eq!(picker.pending, 0);
-    let ids: Vec<&str> = picker.models.iter().map(|m| m.id.as_str()).collect();
+    app.finish_model_fetch("a0_venice", Ok(vec![model("b/y", "a0_venice", "B Y")]), NOW);
+    assert_eq!(app.model_picker.as_ref().unwrap().pending(), 0);
     assert_eq!(
-        ids,
-        ["a/x", "b/y", "c/z"],
+        ids(&app),
+        ["a/x@openrouter", "b/y@a0_venice", "c/z@openrouter"],
         "merged + sorted across providers"
     );
 }
 
 #[test]
-fn add_model_error_keeps_a_partial_list_and_notes_the_failure() {
+fn a_failed_provider_keeps_a_partial_list_and_notes_the_failure_by_name() {
     let mut app = App::new();
     app.open_model_picker("x");
-    app.begin_model_load(2);
-    app.add_models(vec![model("a/x", "openrouter", "A X")]);
-    app.add_model_error("Agent Zero API", "HTTP 401: unauthorized");
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "Agent Zero API"),
+        ],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("a/x", "openrouter", "A X")]),
+        NOW,
+    );
+    app.finish_model_fetch("a0_venice", Err("HTTP 401: unauthorized".into()), NOW);
     let picker = app.model_picker.as_ref().unwrap();
     // The good provider's list stays; the failure is recorded, not fatal.
     assert_eq!(picker.status, ModelLoad::Ready);
-    assert_eq!(picker.pending, 0);
+    assert_eq!(picker.pending(), 0);
     assert_eq!(picker.models.len(), 1);
-    assert_eq!(picker.errors.len(), 1);
-    assert_eq!(picker.errors[0].provider, "Agent Zero API");
+    assert_eq!(
+        picker.errors,
+        [ModelFetchError {
+            provider: "Agent Zero API".into(),
+            message: "HTTP 401: unauthorized".into(),
+        }]
+    );
+    assert!(picker.stale.is_empty(), "nothing was on screen to keep");
 }
 
 #[test]
 fn all_providers_failing_settles_into_an_error() {
     let mut app = App::new();
     app.open_model_picker("x");
-    app.begin_model_load(2);
-    app.add_model_error("OpenRouter", "HTTP 500");
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "Agent Zero API"),
+        ],
+    );
+    app.finish_model_fetch("openrouter", Err("HTTP 500".into()), NOW);
     // Still loading — one fetch outstanding, nothing to show yet.
     assert_eq!(
         app.model_picker.as_ref().unwrap().status,
         ModelLoad::Loading
     );
-    app.add_model_error("Agent Zero API", "HTTP 401");
+    app.finish_model_fetch("a0_venice", Err("HTTP 401".into()), NOW);
     let picker = app.model_picker.as_ref().unwrap();
     assert!(matches!(picker.status, ModelLoad::Error(_)));
     assert!(picker.models.is_empty());
@@ -276,14 +337,24 @@ fn all_providers_failing_settles_into_an_error() {
 }
 
 #[test]
-fn add_models_reseats_on_the_active_model_once_its_provider_lands() {
+fn a_landed_list_reseats_on_the_active_model_once_its_provider_lands() {
     let mut app = App::new();
     app.open_model_picker("b/y"); // active lives in the second provider
-    app.begin_model_load(2);
-    app.add_models(vec![model("a/x", "openrouter", "A X")]);
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "A0"),
+        ],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("a/x", "openrouter", "A X")]),
+        NOW,
+    );
     // Active isn't here yet — seated on top.
     assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
-    app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+    app.finish_model_fetch("a0_venice", Ok(vec![model("b/y", "a0_venice", "B Y")]), NOW);
     // Its provider landed and the user hadn't moved — jump to the active row.
     let picker = app.model_picker.as_ref().unwrap();
     assert_eq!(picker.highlighted().unwrap().id, "b/y");
@@ -296,9 +367,23 @@ fn active_mark_matches_the_provider_not_just_the_id() {
     let mut app = App::new();
     app.open_model_picker("shared/id");
     app.set_active_provider("a0_venice");
-    app.begin_model_load(2);
-    app.add_models(vec![model("shared/id", "openrouter", "OR")]);
-    app.add_models(vec![model("shared/id", "a0_venice", "A0")]);
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "A0"),
+        ],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("shared/id", "openrouter", "OR")]),
+        NOW,
+    );
+    app.finish_model_fetch(
+        "a0_venice",
+        Ok(vec![model("shared/id", "a0_venice", "A0")]),
+        NOW,
+    );
     let picker = app.model_picker.as_ref().unwrap();
     let or = picker
         .models
@@ -315,28 +400,338 @@ fn active_mark_matches_the_provider_not_just_the_id() {
         "same id, other provider is not active"
     );
     assert!(picker.is_active(a0), "the active provider's row is marked");
+    assert_eq!(
+        picker.highlighted(),
+        Some(a0),
+        "the highlight seats on the active provider's row, not the first id"
+    );
 }
 
 #[test]
-fn add_models_preserves_the_highlight_after_the_user_navigates() {
+fn a_landed_list_preserves_the_highlight_after_the_user_navigates() {
     let mut app = App::new();
     app.open_model_picker("x");
-    app.begin_model_load(2);
-    app.add_models(vec![
-        model("a/x", "openrouter", "A X"),
-        model("c/z", "openrouter", "C Z"),
-    ]);
+    app.begin_model_load(
+        Vec::new(),
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "A0"),
+        ],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![
+            model("a/x", "openrouter", "A X"),
+            model("c/z", "openrouter", "C Z"),
+        ]),
+        NOW,
+    );
     app.on_key(key(KeyCode::Down)); // highlight c/z (index 1)
     assert_eq!(
         app.model_picker.as_ref().unwrap().highlighted().unwrap().id,
         "c/z"
     );
     // A merge pushes a row in between — the highlight rides c/z, not the index.
-    app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+    app.finish_model_fetch("a0_venice", Ok(vec![model("b/y", "a0_venice", "B Y")]), NOW);
     assert_eq!(
         app.model_picker.as_ref().unwrap().highlighted().unwrap().id,
         "c/z"
     );
+}
+
+#[test]
+fn kept_lists_show_at_once_seated_on_the_active_model() {
+    // The point of the cache (docs/model-cache.md): no `Loading models…` for
+    // a list read before — the rows are there the moment the picker opens.
+    let mut app = App::new();
+    app.open_model_picker("b/y");
+    app.begin_model_load(
+        vec![
+            kept(
+                "openrouter",
+                NOW - 60,
+                vec![
+                    model("a/x", "openrouter", "A X"),
+                    model("c/z", "openrouter", "C Z"),
+                ],
+            ),
+            kept(
+                "a0_venice",
+                NOW - 120,
+                vec![model("b/y", "a0_venice", "B Y")],
+            ),
+        ],
+        Vec::new(),
+    );
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.status, ModelLoad::Ready);
+    assert_eq!(picker.pending(), 0);
+    assert_eq!(picker.highlighted().unwrap().id, "b/y");
+    assert_eq!(
+        ids(&app),
+        ["a/x@openrouter", "b/y@a0_venice", "c/z@openrouter"]
+    );
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.fetched_at.get("openrouter"), Some(&(NOW - 60)));
+    assert_eq!(picker.oldest_fetch(), Some(NOW - 120), "the oldest list's");
+}
+
+#[test]
+fn a_refresh_replaces_its_providers_rows() {
+    // Models the provider no longer lists go, new ones appear — a merge
+    // that only appended would keep a model the provider has dropped.
+    let mut app = App::new();
+    app.open_model_picker("a/x");
+    app.begin_model_load(
+        vec![kept(
+            "openrouter",
+            NOW - 7_200,
+            vec![
+                model("a/x", "openrouter", "A X"),
+                model("gone/m", "openrouter", "Gone"),
+            ],
+        )],
+        vec![target("openrouter", "OpenRouter")],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![
+            model("a/x", "openrouter", "A X"),
+            model("new/m", "openrouter", "New"),
+        ]),
+        NOW,
+    );
+    assert_eq!(ids(&app), ["a/x@openrouter", "new/m@openrouter"]);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(
+        picker.fetched_at.get("openrouter"),
+        Some(&NOW),
+        "stamped now"
+    );
+    assert_eq!(picker.pending(), 0);
+}
+
+#[test]
+fn a_refresh_leaves_the_other_providers_rows_alone() {
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.begin_model_load(
+        vec![
+            kept(
+                "openrouter",
+                NOW - 7_200,
+                vec![model("a/x", "openrouter", "A X")],
+            ),
+            kept(
+                "a0_venice",
+                NOW - 60,
+                vec![model("b/y", "a0_venice", "B Y")],
+            ),
+        ],
+        vec![target("openrouter", "OpenRouter")],
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("c/z", "openrouter", "C Z")]),
+        NOW,
+    );
+    assert_eq!(ids(&app), ["b/y@a0_venice", "c/z@openrouter"]);
+    assert_eq!(
+        app.model_picker
+            .as_ref()
+            .unwrap()
+            .fetched_at
+            .get("a0_venice"),
+        Some(&(NOW - 60)),
+        "an untouched list keeps its age"
+    );
+}
+
+#[test]
+fn a_failed_refresh_keeps_the_kept_rows_and_is_noted_apart() {
+    // A list an hour old beats no list: the rows stay, and the failure is
+    // recorded as a refresh that didn't happen, not a provider that is down.
+    let mut app = App::new();
+    app.open_model_picker("a/x");
+    app.begin_model_load(
+        vec![kept(
+            "openrouter",
+            NOW - 7_200,
+            vec![model("a/x", "openrouter", "A X")],
+        )],
+        vec![target("openrouter", "OpenRouter")],
+    );
+    app.finish_model_fetch("openrouter", Err("HTTP 503".into()), NOW);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.status, ModelLoad::Ready);
+    assert_eq!(ids(&app), ["a/x@openrouter"]);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert!(picker.errors.is_empty(), "{:?}", picker.errors);
+    assert_eq!(
+        picker.stale,
+        [ModelFetchError {
+            provider: "OpenRouter".into(),
+            message: "HTTP 503".into(),
+        }]
+    );
+    assert_eq!(
+        picker.fetched_at.get("openrouter"),
+        Some(&(NOW - 7_200)),
+        "a failed fetch doesn't make the old list new"
+    );
+}
+
+#[test]
+fn a_list_the_picker_is_not_waiting_on_changes_nothing() {
+    let mut app = App::new();
+    app.open_model_picker("a/x");
+    app.begin_model_load(
+        vec![kept(
+            "openrouter",
+            NOW - 60,
+            vec![model("a/x", "openrouter", "A X")],
+        )],
+        Vec::new(),
+    );
+    let before = app.model_picker.clone();
+    app.finish_model_fetch("openrouter", Ok(vec![model("z/z", "openrouter", "Z")]), NOW);
+    app.finish_model_fetch("elsewhere", Err("boom".into()), NOW);
+    assert_eq!(app.model_picker, before);
+}
+
+#[test]
+fn a_finished_fetch_is_a_noop_when_the_picker_is_closed() {
+    let mut app = App::new();
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("a/x", "openrouter", "A X")]),
+        NOW,
+    );
+    assert!(app.model_picker.is_none());
+}
+
+#[test]
+fn loading_new_tells_a_first_load_from_a_refresh() {
+    // `loading more…` while a provider with nothing on screen is fetched;
+    // `refreshing…` once every fetch out is behind rows already shown.
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.begin_model_load(
+        vec![kept(
+            "openrouter",
+            NOW - 7_200,
+            vec![model("a/x", "openrouter", "A X")],
+        )],
+        vec![
+            target("openrouter", "OpenRouter"),
+            target("a0_venice", "A0"),
+        ],
+    );
+    assert!(app.model_picker.as_ref().unwrap().loading_new());
+    app.finish_model_fetch("a0_venice", Ok(vec![model("b/y", "a0_venice", "B Y")]), NOW);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.pending(), 1);
+    assert!(!picker.loading_new(), "only a refresh is out now");
+}
+
+#[test]
+fn ctrl_r_refreshes_the_lists_without_typing_into_the_search() {
+    let mut app = model_app(&sample_models());
+    type_chars(&mut app, "kim");
+    assert_eq!(app.on_key(ctrl('r')), Action::RefreshModels);
+    let picker = app.model_picker.as_ref().expect("the picker stays open");
+    assert_eq!(picker.query, "kim", "Ctrl+R is not a search character");
+}
+
+#[test]
+fn ctrl_r_does_nothing_while_a_fetch_is_out() {
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.begin_model_load(Vec::new(), vec![target("openrouter", "OpenRouter")]);
+    assert_eq!(app.on_key(ctrl('r')), Action::None);
+}
+
+#[test]
+fn a_refresh_keeps_the_rows_and_waits_on_every_provider() {
+    let mut app = App::new();
+    app.open_model_picker("a/x");
+    app.begin_model_load(
+        vec![kept(
+            "openrouter",
+            NOW - 60,
+            vec![model("a/x", "openrouter", "A X")],
+        )],
+        vec![target("a0_venice", "A0")],
+    );
+    app.finish_model_fetch("a0_venice", Err("HTTP 401".into()), NOW);
+    app.begin_model_refresh(vec![
+        target("openrouter", "OpenRouter"),
+        target("a0_venice", "A0"),
+    ]);
+    let picker = app.model_picker.as_ref().unwrap();
+    assert_eq!(picker.pending(), 2);
+    assert_eq!(ids(&app), ["a/x@openrouter"], "the rows stay meanwhile");
+    let picker = app.model_picker.as_ref().unwrap();
+    assert!(picker.errors.is_empty(), "a retry clears the last failure");
+    assert_eq!(picker.highlighted().unwrap().id, "a/x");
+}
+
+#[test]
+fn a_refresh_drops_the_rows_of_a_provider_no_longer_configured() {
+    let mut app = App::new();
+    app.open_model_picker("a/x");
+    app.begin_model_load(
+        vec![
+            kept(
+                "openrouter",
+                NOW - 60,
+                vec![model("a/x", "openrouter", "A X")],
+            ),
+            kept(
+                "a0_venice",
+                NOW - 60,
+                vec![model("b/y", "a0_venice", "B Y")],
+            ),
+        ],
+        Vec::new(),
+    );
+    app.begin_model_refresh(vec![target("openrouter", "OpenRouter")]);
+    assert_eq!(ids(&app), ["a/x@openrouter"]);
+    assert!(
+        !app.model_picker
+            .as_ref()
+            .unwrap()
+            .fetched_at
+            .contains_key("a0_venice")
+    );
+}
+
+#[test]
+fn a_refresh_after_the_login_hint_loads_the_lists() {
+    // A provider file fixed while the picker was open: Ctrl+R finds it.
+    let mut app = App::new();
+    app.open_model_picker("x");
+    app.set_models_needs_login();
+    app.begin_model_refresh(vec![target("openrouter", "OpenRouter")]);
+    assert_eq!(
+        app.model_picker.as_ref().unwrap().status,
+        ModelLoad::Loading
+    );
+    app.finish_model_fetch(
+        "openrouter",
+        Ok(vec![model("a/x", "openrouter", "A X")]),
+        NOW,
+    );
+    assert_eq!(app.model_picker.as_ref().unwrap().status, ModelLoad::Ready);
+}
+
+#[test]
+fn the_wall_clock_reaches_the_open_picker() {
+    let mut app = App::new();
+    app.set_model_picker_now(NOW); // closed: a no-op
+    app.open_model_picker("x");
+    app.set_model_picker_now(NOW);
+    assert_eq!(app.model_picker.as_ref().unwrap().now, NOW);
 }
 
 #[test]

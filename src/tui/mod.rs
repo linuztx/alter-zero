@@ -78,7 +78,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{DeviceEvent, FileSearchResult, ModelFetch};
+use self::workers::{DeviceEvent, FileSearchResult, ModelFetch, ModelListed};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -249,11 +249,12 @@ pub(crate) struct Session<'t> {
     device_rx: tokio::sync::mpsc::UnboundedReceiver<DeviceEvent>,
     device_cancel: Option<CancelToken>,
     device_expires: Option<Instant>,
-    /// The `/model` picker's fetch results (`docs/llm.md`), and the startup
-    /// capability probe's own channel — separate so a concurrently-open picker
-    /// can't confuse the results (`docs/reasoning.md`).
-    model_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
-    model_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    /// The `/model` picker's fetch results (`docs/llm.md`,
+    /// `docs/model-cache.md`), and the startup capability probe's own channel
+    /// — separate so a concurrently-open picker can't confuse the results
+    /// (`docs/reasoning.md`).
+    model_tx: tokio::sync::mpsc::UnboundedSender<ModelListed>,
+    model_rx: tokio::sync::mpsc::UnboundedReceiver<ModelListed>,
     /// The `/usage` page's reads (`docs/usage.md`): one worker per signed-in
     /// subscription reports here, and the token a closed page or a newer
     /// round cancels them with.

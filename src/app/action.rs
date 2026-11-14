@@ -129,6 +129,10 @@ pub enum Action {
     /// [`App::model_picker`] is already cleared; the loop just repaints the
     /// collapsed region.
     CloseModelPicker,
+    /// Ctrl+R in the model picker, with no fetch out: fetch every configured
+    /// provider's list again, whatever its age, behind the rows on screen.
+    /// See `docs/model-cache.md`.
+    RefreshModels,
     /// Enter in the model picker: switch the active backend to this
     /// provider/model. The loop rebuilds the backend, updates the footer
     /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.

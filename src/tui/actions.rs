@@ -186,7 +186,13 @@ impl Session<'_> {
             }
             Action::SetPermissionMode(mode) => self.set_permission_mode(mode),
             Action::OpenModelPicker => self.open_model_picker(),
-            Action::CloseModelPicker => self.close_model_picker(),
+            Action::CloseModelPicker => {
+                // Esc/Ctrl+C dismissed the picker: nothing to reap — the
+                // fetches it started run on and keep their lists
+                // (docs/model-cache.md); the region collapses back to the
+                // composer on the next draw.
+            }
+            Action::RefreshModels => self.refresh_model_picker(),
             Action::SelectModel {
                 provider,
                 id,

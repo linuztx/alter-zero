@@ -128,6 +128,12 @@ three ~0.4 MB parses. The startup capability probe (`ModelSession::resolve`'s
 `probe`) runs the same parse before the first frame paints for an env-selected
 model, so it gets the same saving.
 
+The kept lists (`docs/model-cache.md`) follow the same rule. `model-cache.json`
+decodes into typed rows, never a `Value` tree, and only when `/model` opens or
+a fetch lands. Nothing of it stays resident between opens: the picker's rows
+are the only copy, and they go when it closes. An open that finds every list
+fresh sends no request at all, so it skips the listing's parse altogether.
+
 ## What the remaining `/model` cost is, and why it stays
 
 The ~+2.9 MB that the first `/model` still costs is not JSON:

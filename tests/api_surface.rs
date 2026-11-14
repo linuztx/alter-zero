@@ -75,6 +75,7 @@ use alter_zero::app::{
     McpServerAction,
     Message,
     ModelFetchError,
+    ModelFetchTarget,
     ModelLoad,
     ModelPicker,
     OfflineInfo,

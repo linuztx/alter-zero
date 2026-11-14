@@ -12,6 +12,20 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Added
+
+- **`/model` opens on the models it listed last time.** It used to fetch
+  every provider's list each time it opened and show `Loading models…` until
+  they answered, so picking a model meant waiting for the slowest provider.
+  Each provider's list is now kept in `~/.alter-zero/model-cache.json` and
+  shown the moment the picker opens. A list older than an hour is fetched
+  again behind the rows on screen, and a local model server's (Ollama,
+  LM Studio) on every open. The counter says how old the list is, as in
+  `updated 2h ago · ctrl+r to refresh`, and **Ctrl+R** fetches every list
+  again. A refresh that fails keeps the old rows and says so, and saving a
+  key or signing in again through `/login` drops that provider's kept list
+  (`docs/model-cache.md`).
+
 ### Changed
 
 - **Auto mode's safety check answers in JSON, and a reply that is not

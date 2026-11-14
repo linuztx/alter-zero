@@ -9,8 +9,8 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, LocalChoice, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
-    SubscriptionChoice,
+    FileSearch, LocalChoice, Message, ModelFetchError, ModelFetchTarget, ProviderChoice, RetryInfo,
+    SigninKind, SubscriptionChoice,
 };
 
 mod agent;
@@ -378,6 +378,14 @@ pub(super) fn model_entry(id: &str, provider: &str, name: &str) -> ModelEntry {
 }
 
 /// A ready picker over the given models, with `selected`/`active` set.
+/// A provider the picker waits on, under its own id as its name.
+pub(super) fn fetch_target(provider: &str) -> ModelFetchTarget {
+    ModelFetchTarget {
+        provider: provider.into(),
+        name: provider.into(),
+    }
+}
+
 pub(super) fn model_picker(models: Vec<ModelEntry>, selected: usize, active: &str) -> ModelPicker {
     ModelPicker {
         models,

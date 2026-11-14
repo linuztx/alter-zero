@@ -1182,6 +1182,48 @@ pub(crate) fn update_check_forbidden_by_env() -> bool {
     alter_zero::update::enabled_by_env(value.as_deref()) == Some(false)
 }
 
+/// The `/model` picker's kept lists — `{config_home}/model-cache.json`, a
+/// per-user cache (`docs/model-cache.md`). `None` without a config home, when
+/// nothing is kept and every open fetches, as it always did.
+pub(crate) fn model_cache_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join(alter_zero::llm::models_cache::MODEL_CACHE_FILE_NAME))
+}
+
+/// Read `model-cache.json`. Best-effort like [`load_update_file`]: an absent,
+/// unreadable or corrupt file — or one past `MODEL_CACHE_MAX_BYTES`, which
+/// no real set of catalogs reaches — reads as empty, and the next fetch
+/// writes it again.
+pub(crate) fn load_model_cache(path: Option<&Path>) -> alter_zero::llm::models_cache::ModelCache {
+    use alter_zero::llm::models_cache::{MODEL_CACHE_MAX_BYTES, ModelCache};
+    path.filter(|p| std::fs::metadata(p).is_ok_and(|meta| meta.len() <= MODEL_CACHE_MAX_BYTES))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| ModelCache::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Change `model-cache.json` through `edit`, as a **read-modify-write** over
+/// the file itself — [`update_tips_file`]'s posture — so two sessions keeping
+/// different providers' lists don't drop each other's. A failed write is
+/// swallowed (a cache that can't be written is only a slower `/model`), an
+/// unchanged file is not rewritten, and a `None` path edits nothing.
+pub(crate) fn update_model_cache(
+    path: Option<&Path>,
+    edit: impl FnOnce(&mut alter_zero::llm::models_cache::ModelCache),
+) {
+    let Some(path) = path else {
+        return;
+    };
+    let before = load_model_cache(Some(path));
+    let mut cache = before.clone();
+    edit(&mut cache);
+    if cache != before {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, cache.to_json());
+    }
+}
+
 /// The spinner-tips file — `{config_home}/tips.json`, its own per-user file
 /// like `update.json`: the **Show tips** switch and where the walk through
 /// the catalog left off (`docs/tips.md`).

@@ -300,6 +300,14 @@ impl Provider {
             .unwrap_or_else(|| default_key_env(id))
     }
 
+    /// Whether this provider reads the variable `var` — for its key or for
+    /// its server's address. What `/login` saving `var` reaches, so the list
+    /// kept for it is dropped (`docs/model-cache.md`).
+    #[must_use]
+    pub fn reads_env(&self, id: &str, var: &str) -> bool {
+        self.key_env(id) == var || self.api_base_env.as_deref() == Some(var)
+    }
+
     /// Where the picker lists models from: `api_model_base` if set — resolved
     /// against the chat base when it is relative (`../api/v1`, `./x`, `/x`)
     /// — else the chat `api_base`. Trailing slash trimmed.
@@ -1018,6 +1026,24 @@ api_base = "https://x/v1"
 "#;
         let file = ProvidersFile::parse(text).unwrap();
         assert_eq!(file.get("custom").unwrap().key_env("custom"), "MY_SECRET");
+    }
+
+    #[test]
+    fn a_provider_reads_its_key_variable_and_its_address_variable() {
+        // What `/login` saving a variable reaches: every provider that reads
+        // it, whether for its key or for where its server is — so the list
+        // kept for it is dropped (docs/model-cache.md).
+        let file = ProvidersFile::builtin();
+        let ollama = file.get("ollama").unwrap();
+        assert!(ollama.reads_env("ollama", "OLLAMA_HOST"), "its address");
+        assert!(
+            ollama.reads_env("ollama", &ollama.key_env("ollama")),
+            "its key"
+        );
+        assert!(!ollama.reads_env("ollama", "OPENROUTER_API_KEY"));
+        let openrouter = file.get("openrouter").unwrap();
+        assert!(openrouter.reads_env("openrouter", "OPENROUTER_API_KEY"));
+        assert!(!openrouter.reads_env("openrouter", "OLLAMA_HOST"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub mod local;
 mod loopback;
 pub mod mcp;
 pub mod models;
+pub mod models_cache;
 pub mod ollama;
 pub mod openai;
 pub mod reasoning;

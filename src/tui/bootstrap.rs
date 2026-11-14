@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, spawn_file_search_worker};
+use super::workers::{ModelFetch, ModelListed, spawn_file_search_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -466,7 +466,7 @@ impl<'t> Session<'t> {
         let (img_tx, img_rx) = tokio::sync::mpsc::unbounded_channel();
         let (diff_tx, diff_rx) = tokio::sync::mpsc::unbounded_channel();
         let (device_tx, device_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (model_tx, model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        let (model_tx, model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelListed>();
         // The `/usage` page's reads, one worker per subscription
         // (docs/usage.md).
         let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1045,9 +1045,10 @@ impl<'t> Session<'t> {
                 }
             }
         }
-        // Cancel a dangling /model fetch (its detached worker exits on the
-        // cancel), and the /usage page's reads likewise.
-        self.models.cancel_model_fetch();
+        // Cancel the /model fetches still out (their detached workers exit on
+        // the cancel, keeping nothing — docs/model-cache.md), and the /usage
+        // page's reads likewise.
+        self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`
