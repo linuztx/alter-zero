@@ -119,8 +119,9 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
 - the sanitized environment (`smoke_sanitize_env`: every `*_API_KEY`, every
   `ALTER_ZERO_*`, `OLLAMA_HOST`, `NO_COLOR`, the display variables unset;
   telemetry, the update check, the spinner tips, the banner mascot's
-  animation (whose blinks, drawn by lot, would put a different pose in every
-  capture of a fresh screen and a frame in every byte count of an idle one —
+  animation (whose moves, dealt afresh every session, would put a different
+  pose in every capture of a fresh screen and a frame in every byte count of
+  an idle one —
   Phase 154 turns it back on, `docs/mascot-animation.md`) and the project's
   `AGENTS.md` exported off; the permission mode exported `manual`, since a session starts
   in auto, where the dummy's writes never ask, and the prompt phases are

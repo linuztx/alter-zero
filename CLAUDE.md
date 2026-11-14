@@ -373,21 +373,47 @@ the banner at once) in `docs/mascot.md`, and the **mascot's idle animation**
 launch, the moment after `/clear` — the banner's mascot moves: a light
 sweeps it as the screen opens, it shows its own move (the crest flares its
 frill, the bloom flutters, the sprout sways or unfurls a leaf, the twin
-flicks an ear, the skiter skitters, the gem glints) and blinks, then blinks
-and glances on a rhythm drawn by lot, at rest nine tenths of the time and
-never still past about eight seconds; the gem, which has no eyes, twinkles
-where the others blink. A frame is the rest art with **one part moved** —
-one row differs, three rows kept, never wider than the art — so the
-metadata column and the composer never shift; the eyes are negative space,
-so a blink fills them (through a `▆` eyelid where the hole is a cell's
-upper half, in one frame where it is the lower and the font-safe glyphs
-have none) and a glance narrows both to one side. The **timeline is a pure
+flicks an ear, the skiter skitters, the gem glints) and blinks, then works
+through a **repertoire** of twenty moves or more (the gem fourteen) — the
+looks its eyes give (blink, glance, look around, shifty eyes, a wink of
+either eye, crossed eyes, and for the three with lidded eyes a startled
+stare, a squint and one of each), its **whole body moved half a cell** (a
+bounce, a happy bounce with the eyes shut, a wiggle, a dance, a peek to one
+side), three or four moves of its own (the crest's frill ripples and ducks,
+the bloom seesaws and puffs up, the sprout spreads both leaves, sinks to a
+bud and waves, the twin's ears wiggle, sway and droop, a wave runs down the
+skiter's legs, the gem's facet turns and gleams and sparks open at all four
+corners), a sweep of light, and for the four that can a **doze** — at rest
+five sixths of the time and never still past about eight seconds; the gem,
+which has no eyes, twinkles where the others blink and never shuts its
+facet. A frame is the rest art with **one part moved** (one row differs) or
+**the whole mascot moved half a cell** — the art sits on a half-cell grid
+and every mascot leaves a half-row free under its feet or a half-column at
+its sides, so it can be redrawn a dip or a lean away inside the same block;
+moved back it is the rest art with one part moved at most, which is the
+rule a test folds every frame through — three rows kept, never wider than
+the art, so the metadata column and the composer never shift; the eyes are
+negative space, so a blink fills them (through a `▆` eyelid where the hole
+is a cell's upper half, in one frame where it is the lower and the
+font-safe glyphs have none), a glance narrows both to one side, and the lid's
+own eighth-block ramp draws the wide eye (`▂`). The **timeline is a pure
 function of a seed and a clock** — `Mascot::pose(seed, clock)` and
 `pose_holds`, `app/mascot_motion.rs`: a scripted greeting, then three-second
-beats each drawing a clip by `SplitMix64` lot over the seed *and the
-mascot* (so no two mascots play one sequence), no two
-still beats in a row — no state, no thread, the pose three hours in costing
-what the pose three seconds in does; the seed is `App::seed_mascot_motion`'s
+beats, at most one clip to a beat — and what a beat plays is **dealt, not
+rolled** (the first version rolled, and three beats in five were a blink):
+the repertoire is a deck of cards with copies (`Card`), shuffled afresh for
+every **round** of some thirty beats by `Motions::dealt(seed, round, beat)`
+over the seed *and the mascot* (so no two mascots play one sequence), which
+keeps three promises a shuffle alone would not — a round plays everything
+exactly as often as the deck holds it, **never the same card twice running**
+(not across a rest, not across a round's two ends; a card's left and right,
+or its variants, take turns), and **never two rests in a row** — by drawing
+the round's last move first (so the next round knows what to differ from
+without either being dealt), dealing each move from every card left but the
+kind just played, a kind grown to more than half of what is left going at
+once, and slipping each rest in ahead of a move of its own; the doze is held
+back from the first round — no state, no thread, the pose three hours in
+costing what the pose three seconds in does; the seed is `App::seed_mascot_motion`'s
 (an unseeded `App`, every unit test's, never moves) and the clock
 `App::set_mascot_clock`'s, running from the frame that showed a fresh
 banner — the launch, `/clear` and a `/mascot` switch each restart it

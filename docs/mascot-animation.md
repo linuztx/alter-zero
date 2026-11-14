@@ -2,16 +2,17 @@
 
 While the conversation is empty — a fresh launch, or the moment after
 `/clear` — the banner's mascot is alive: a light sweeps it as the screen
-opens, it shows the one move its catalog line promises, it blinks, and from
-then on it blinks and glances on a rhythm drawn by lot. The first cell
-committed under the banner ends it: from there the banner is scrollback, and
-scrollback does not move.
+opens, it shows the one move its catalog line promises, it blinks — and from
+then on it works through everything it knows, a move every few seconds. It
+bounces, wiggles, peeks to one side, winks, stares, taps its feet, and after
+a while alone it nods off. The first cell committed under the banner ends
+it: from there the banner is scrollback, and scrollback does not move.
 
 ```
- ▙▄▙▄▟▄▟   Alter Zero (v0.19.0)        ▙▄▙▄▟▄▟        ▙▙▙▄▟▟▟
-▝▜▄███▄▛▘  ~/alter-zero               ▝▜█████▛▘      ▝▜▄███▄▛▘
-  ▘▘ ▝▝    / commands  @ files          ▘▘ ▝▝          ▘▘ ▝▝
- at rest                               a blink        the frill flared
+ ▙▄▙▄▟▄▟   Alter Zero (v0.19.0)      ▙▄▙▄▟▄▟      ▙▙▙▄▟▟▟      ▖ ▖ ▗ ▗     ▐▄▟▄▄▙▄▌
+▝▜▄███▄▛▘  ~/alter-zero             ▝▜█████▛▘    ▝▜▄███▄▛▘    ▗█▀███▀█▖    ▀▙███▙█▀
+  ▘▘ ▝▝    / commands  @ files        ▘▘ ▝▝        ▘▘ ▝▝       ▝▛▛▀▜▜▘      ▝▝  ▘▘
+ at rest                             a blink      frill flared   a bounce   a peek left
 ```
 
 See `docs/header.md` for the banner and `docs/mascot.md` for the catalog and
@@ -20,24 +21,55 @@ greeting as the highlight lands on it.
 
 ## What each mascot does
 
-The eyes do most of the work. Every mascot that has them **blinks** every
-few seconds (sometimes twice) and now and then **glances** to one side or
-looks around; the gem, which has none, **twinkles** where the others blink.
-And each has one move of its own — the thing its description says it does:
+Each mascot has a **repertoire** of twenty moves or more (the gem, with no
+eyes to make faces with, fourteen). The first version had six, and three
+beats in five were a blink; "it's always just blinking" was a fair review.
+The moves come in five families:
 
-| mascot | its eyes | its own move |
+- **Looks** — what a pair of eyes does: a **blink** (and a double), a
+  **glance** to either side, a **look around**, a **shifty** dart from side
+  to side, a **wink** of either eye, and a **cross-eyed** moment. The three
+  whose eyes have a lid add a **startled** wide stare, a contented
+  **squint**, and one eye of each — the look of something that is not so
+  sure.
+- **The whole body, half a cell** — a **bounce** (it dips and is up again,
+  twice), a **happy bounce** (three, eyes squeezed shut on every landing), a
+  **wiggle** from side to side, a little **dance** (down to the left, down
+  to the right), and a **peek**: the eyes go to one side and the mascot
+  leans after them.
+- **Its own moves** — the thing its catalog description says it does, and
+  three or four more (the table below).
+- **Light** — the sweep that opens the greeting comes back once a round.
+- **A doze** — for the four that can (below).
+
+| mascot | its own moves | its whole body |
 |---|---|---|
-| `crest` | blink through an eyelid, glance | **flares its frill**: the spikes pull in for an instant, fan out to six, and settle |
-| `bloom` | blink through an eyelid, glance | **flutters**: the petals at its sides drop and lift, three times |
-| `sprout` | blink at once, glance | its shoot **sways** in a draught, or **unfurls its first leaf** |
-| `twin` | blink through an eyelid, glance | **flicks an ear**: it folds flat and springs back, twice — now the right, now the left |
-| `skiter` | blink at once, glance | **skitters**: six legs scuttling on the spot |
-| `gem` | — | a **spark** opens beside it (high on the right, low on the left), and now and then a **glint** crosses the whole stone |
+| `crest` | **flares its frill** (the spikes pull in, fan out to six, settle); a **ripple** runs along it, each spike dropping in turn, there and back; it **ducks** — frill flat — and springs up flared; it **taps its feet** | bounces, wiggles, dances, peeks |
+| `bloom` | **flutters** its petals (down and up, three times); **seesaws** them; **puffs up** its head to its full width; **tucks** them in, shy; taps its feet | bounces — it fills its block from edge to edge, so it never leans |
+| `sprout` | its shoot **sways**; it **unfurls a leaf** to either side, or **spreads both**; it **sinks to a bud and pushes up again**; it throws its **arms up**, three times; it **waves** one | wiggles and peeks — its feet stand on the block's last half-row, so it never bounces |
+| `twin` | **flicks an ear** (either one, twice); **wiggles** both out and in; **sways** them; they **droop** and spring up pricked; it taps its feet | bounces, wiggles, dances, peeks |
+| `skiter` | **skitters**; a **wave** runs down its six legs, twice; it **stretches** them — drawn in, then spread wide | bounces, wiggles, dances, peeks |
+| `gem` | a **spark** opens at any of its four corners, at two in turn, or **all round**; its **facet slides** from side to side as the stone turns, stands tall when it **gleams**, **pulses**; a **glint** crosses the whole of it | bounces, wiggles, dances, and rocks slowly from side to side |
 
-A frame is the rest art with **one part moved** — the eyes, a crest, a leaf,
-an ear, the legs, a spark — so it differs from the rest art on exactly one
-row, keeps its three rows, and is never wider than the art: the banner's
-metadata column and the composer under it never shift for a blink.
+### One part moved, or the whole mascot
+
+A frame is one of two things, and the tests hold every frame to it:
+
+- **the rest art with one part moved** — the eyes, a crest, a leaf, an ear,
+  a foot, a spark — so it differs from the rest art on exactly one row; or
+- **the whole mascot moved half a cell.** The art is drawn on a half-cell
+  grid (a quadrant glyph is four quarters of a cell), and every mascot
+  leaves a half-row free under its feet, a half-column free at each side,
+  or both. So the same figure can be drawn half a cell lower, or to a side,
+  inside the same three rows and nine columns: every row is redrawn and
+  nothing has changed. Moved back, it is the rest art again — with one part
+  moved at most, since a happy bounce shuts the eyes as it dips and a peek
+  leans with the eyes already turned.
+
+Either way a frame keeps the art's three rows and is never wider than the
+art: the banner's metadata column and the composer under it never shift.
+Nothing moves up — no mascot has a free half-row above it — so a bounce is
+a dip and a recovery, which is what a bounce looks like from the landing.
 
 ### Eyes
 
@@ -60,7 +92,21 @@ tall, punched in the body. That decides how they can move:
   the whole eye a subcell was tried first and read better on paper — but on
   four of the five it either opened the eye onto the outside or detached
   the arm beside it. The narrowed pair keeps every silhouette whole and
-  still says *where* it is looking.
+  still says *where* it is looking. **Shifty eyes** are the same two looks
+  at a sixth of a second each, left-right-left-right.
+- **A wink** shuts one eye for a third of a second — twice a blink, so it
+  reads as meant.
+- **Crossed** eyes are each narrowed toward the other. Narrowed *apart* is
+  the one pairing never drawn: it reads as two creatures.
+- **Wide and squinting** come from the same eighth-block ramp as the lid:
+  `▂` leaves three quarters of the cell open, a startled stare; the lid
+  held for most of a second is a squint; `▂` beside `▆` is one of each.
+  Only the three upper-eyed mascots have the ramp, so only they pull these.
+- **What eyes cannot do** is look down (the upper-eyed) or up (the
+  lower-eyed): the hole would open onto the legs, or cut through the
+  forehead. Both were drawn, looked at, and thrown out — as was an eye
+  rolled through its four quarters, which passes through the same two
+  broken frames.
 
 ### The sweep of light
 
@@ -75,43 +121,90 @@ so the light arrives and leaves by degrees and no cell pops. Under
 a theme whose colours are the terminal's own (`ansi`), where there is
 nothing to mix, the band's core simply flips to the highlight.
 
-Every mascot gets one sweep as the app opens. Only the gem — *a cut gem
-catching the terminal light* — glints again afterwards; its sparks are drawn
-in that same highlight, since a spark is light, not gem.
+Every mascot gets one sweep as the screen opens, and one more a round. The
+gem — *a cut gem catching the terminal light* — **glints** instead: the
+sweep, with a spark opening as the light passes it. Its sparks are drawn in
+that same highlight, since a spark is light, not gem; and its facet is
+never shut, since a facet that closes and opens is an eye.
+
+### The doze
+
+A mascot left alone for a round — a minute and a half — nods off: its lids
+grow heavy, close, its head dips half a cell and stays down for most of a
+second, it stirs, and it starts awake wide-eyed. Once a round from then on,
+and never in the first: a mascot that fell asleep as the app opened would
+be saying something about the app. The skiter has no lid to lower — its
+eyes close, it sinks, it is up again. The sprout cannot dip and the gem has
+no eyes; neither dozes.
 
 ## When it moves
 
-Mostly, it doesn't. The timeline is stillness with short clips in it:
+Mostly, it doesn't. The timeline is stillness with short clips in it — a
+move about every three and a half seconds, and the mascot at rest five
+sixths of the time:
 
 1. **The greeting**, scripted, the same in every session: 0.4 s after the
    banner appears the light sweeps it; at 1.5 s the mascot shows its own
-   move; at 2.6 s it blinks. (The gem: a glint, then its two twinkles.)
-2. **Beats** of three seconds from 3.6 s on. Each beat draws by lot whether
-   a clip plays in it, which one, and where in the beat it starts:
+   move; at 2.6 s it blinks. (The gem: a glint, then two twinkles.)
+2. **Beats** of three seconds from 3.6 s on, at most one clip to a beat,
+   started wherever a drawn offset puts it — anywhere that leaves the clip
+   whole inside its beat with 200 ms of stillness to spare, so two clips
+   never run together and the gaps between them never repeat.
 
-   | | eyed mascots | gem |
-   |---|---|---|
-   | blink / twinkle | 48 % | 28 % high, 22 % low |
-   | double blink / both sparks | 12 % | 8 % |
-   | glance left, right, look around | 6 %, 6 %, 4 % | — |
-   | its own move | 9 % | 10 % (the glint) |
-   | still | 15 % | 32 % |
+### Dealt, not rolled
 
-   That is a move about every three and a half seconds and a blink about
-   every five — and the mascot is at rest nine tenths of the time.
+What a beat plays used to be a roll against a table of weights. Reweighting
+the table would have cured the blinking and nothing else: dice have no
+memory, so a fair table still plays one move twice running and leaves
+another unseen for minutes. The repertoire is a **deck** instead:
 
-Three rules shape the lots:
+- every move is a **card**, with as many copies as a round should play it —
+  the blink three, the mascot's signature two, most moves one — and four
+  **rests**;
+- a **round** is the deck, shuffled: thirty-odd beats, a minute and a half
+  (the gem's twenty-one, a minute). In it the mascot does everything it
+  knows exactly as often as the deck holds it, so any two minutes show
+  fifteen different moves or more;
+- **never the same move twice running** — not across a rest, and not from
+  the end of one round into the start of the next. A card with a left and
+  a right (a glance, a wink, a peek) or a set of variants (the three
+  stares and the crossed eyes; a bounce and a happy one) plays each in
+  turn, in an order the round draws, and it is the *card* that may not
+  repeat: never a wink after a wink, never a blink after a double blink;
+- **never two rests in a row**, so however the cards fall it is never still
+  for more than about eight and a half seconds;
+- **the doze is held back from the first round**.
 
-- **A clip stays inside its beat**, with 200 ms of stillness to spare at the
-  end, so two clips never run together.
-- **Never two still beats in a row.** A beat that draws stillness right
-  after one that did plays the mascot's everyday move instead. However the
-  lots fall, it is never still for more than about eight and a half
-  seconds.
-- **Each mascot keeps its own time.** The lot is drawn over the seed *and*
+For the crest that is three blinks in twenty-seven moves — one in nine,
+where it was three in five — seven of the whole body, five of its frill and
+feet, a sweep, and from the second round a doze.
+
+A round is dealt by `Motions::dealt(seed, round, beat)`, and three things
+make it a function rather than a shuffle that has to be remembered:
+
+- **The round's last move is drawn first**, from the cards it holds one
+  copy of. Knowing how a round ends without dealing it is what lets the
+  next round promise to open on something else — otherwise each round would
+  need the one before it, back to the first.
+- **The moves are dealt one at a time**, each drawn from every card left
+  but the kind just played. A kind that has come to make up more than half
+  of what is left goes at once: the one order that can still keep its
+  copies apart. That rule is the difference between a deal that usually
+  works and one that always does, and a test deals sixty rounds of every
+  mascot under six seeds to say so.
+- **Each rest is slipped in ahead of a move of its own**, chosen among the
+  moves still to come — so two rests never meet and no round ends on one.
+
+Two more rules shape the timeline:
+
+- **A clip never pauses as long as a breath.** Inside a clip — between two
+  bounces, the two halves of a double blink — the mascot stands still for
+  160 ms at most, less than the 200 ms that parts two clips, so one move
+  never reads as two.
+- **Each mascot keeps its own time.** The deal is drawn over the seed *and*
   the mascot, so no two mascots play one sequence: walking the `/mascot`
-  list, each goes on from its greeting in a rhythm of its own rather than
-  repeating the last one's blink for blink. (Under one seed alone they did
+  list, each goes on from its greeting in an order of its own rather than
+  repeating the last one's move for move. (Under one seed alone they did
   — 30 clips of 32 on the same millisecond — until a test said so.)
 
 The seed is the session's (the boundary's entropy, `App::seed_mascot_motion`),
@@ -137,10 +230,11 @@ let pose  = mascot.pose(seed, clock);        // the art's rows + the sweep's pro
 let sleep = mascot.pose_holds(seed, clock);  // until the pose next changes
 ```
 
-The beat a clock falls in is a division; its lot is one SplitMix64 hash; the
-clip and its step are a table walk. The pose three hours in costs what the
-pose three seconds in does, a loop that was busy (or behind an overlay) for
-a minute simply asks again and gets the right answer, and the whole thing is
+The beat a clock falls in is a division; its card is the deal of its round
+— some thirty draws of a SplitMix64 hash, a microsecond's work; the clip and
+its step are a table walk. The pose three hours in costs what the pose three
+seconds in does, a loop that was busy (or behind an overlay) for a minute
+simply asks again and gets the right answer, and the whole thing is
 unit-tested with nothing but numbers.
 
 ## Where it can be drawn
@@ -178,7 +272,10 @@ region's top they sit (the one row it tracks; rows committed under the
 block since are counted), and what they show now. Each frame the loop hands
 it the banner in its current pose (`pose_anchor`) and `draw` writes the
 cells that differ, in the same synchronized update as the live region,
-before the cursor is seated. A blink is two cells — 95 bytes on the wire.
+before the cursor is seated. A blink is two cells — 95 bytes on the wire;
+a frame that moves the whole mascot redraws its three rows, some 550 bytes;
+and a round of everything a mascot knows, a minute and a half of idling,
+comes to about 40 kB.
 
 Three rules keep the note honest:
 
@@ -209,9 +306,9 @@ seconds at a time, so it keeps no chain at all. After every draw the loop
 asks `App::mascot_frame_in` when the pose next changes and schedules **one**
 frame for exactly then:
 
-- a blink is four frames (lid, shut, lid, open), then the loop sleeps until
-  the next clip;
-- the sweep is nineteen frames, 40 ms apart, once at launch;
+- a blink is four frames (lid, shut, lid, open), a bounce four, a dance
+  eight — then the loop sleeps until the next clip;
+- the sweep is nineteen frames, 40 ms apart, at launch and once a round;
 - the greeting — sweep, move, blink — is under thirty frames in all, where a
   32 ms chain would have written a hundred in the same three seconds.
 
@@ -240,10 +337,10 @@ the frame that first shows a mascot under the highlight is the one its
 timeline counts from, so every mascot the highlight lands on **greets** —
 the light, its own move, a blink, inside three seconds — however the
 highlight got there, a key or a search, and one already seen greets again.
-On the session's clock it would have stood in whichever beat that clock was
-in, and the one move that tells two mascots apart is drawn in about one
-beat in eleven: half a minute's wait, on the page whose whole job is the
-comparison.
+On the session's clock it would have stood wherever that clock's round had
+got to — a rest, a blink, a move every mascot shares — on the page whose
+whole job is telling the six apart. Left on a mascot, the preview goes on
+through its deck like the banner does.
 
 Still nothing advances frame by frame. `App::set_mascot_clock` — the
 reading every draw already injects — remembers which mascot is highlighted
@@ -286,7 +383,7 @@ seeded — every unit test's — never moves.
 
 | | |
 |---|---|
-| The frames, the clips, the timeline, the session's side (`banner_is_live`, `banner_pose`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
+| The frames, the clips, the decks and their deal (`Card`, `Motions::dealt`), the timeline, the session's side (`banner_is_live`, `banner_pose`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
 | The posed banner and the sweep's light (`header_lines_posed`, `banner_frame_lines`, `banner_block_lines`, `banner_shows_art`) | `src/ui/header.rs`; the look (`MASCOT_SHINE_*`) in `src/ui/theme.rs` |
 | The picker's moving preview | `src/ui/mascot_view.rs` |
 | The anchored block's bookkeeping and cell diff | `src/term/anchor.rs` |
@@ -297,22 +394,44 @@ seeded — every unit test's — never moves.
 ## Tests
 
 - `app/tests/mascot_motion.rs` — the frames (the rest art's rows, never
-  wider, single-width glyphs in the art's own alphabet, one part moved at a
-  time, none trailing a blank); the timeline (opens at rest; a pose holds
-  exactly as long as it says, checked a millisecond at a time; the same seed
-  the same timeline, another seed another; two mascots on one seed out of
-  step); the greeting (the same for every seed: a sweep, the mascot's own
-  move, a blink; one sweep from edge to edge); the rhythm (at rest far more
-  than moving, a move every few seconds, never still past nine; a clip never
-  runs into the next; every frame reaches the screen); the moves (eyes shut
-  through a lid where the glyphs have one; a blink quick and slower to open;
-  both eyes glance one way; the gem twinkles and never shuts its facet); and
-  the session's side (unseeded never animates; only an empty conversation's
+  wider, single-width glyphs in the art's own alphabet, none trailing a
+  blank, and each one row redrawn or the whole mascot moved half a cell —
+  checked by folding the art onto its half-cell grid and moving it back);
+  the timeline (opens at rest; a pose holds exactly as long as it says,
+  checked a millisecond at a time; the same seed the same timeline, another
+  seed another; two mascots on one seed out of step); the greeting (the same
+  for every seed: a sweep, the mascot's own move, a blink; one sweep from
+  edge to edge); the rhythm (at rest far more than moving, a move every few
+  seconds, never still past nine; a clip never runs into the next; every
+  frame reaches the screen); the repertoire (never the same move twice
+  running; blinks under fifteen moves in a hundred, where they were seventy;
+  any two minutes show fifteen different moves or more and none of them
+  more than six times; every mascot moves its whole body at least three
+  times in any two hundred seconds; a doze comes to the four that can, and
+  never in the first eighty seconds); the moves (eyes shut through a lid
+  where the glyphs have one; a blink quick and slower to open; both eyes
+  glance one way, cross, and never part; a wink shuts one eye; only lidded
+  eyes widen and squint; no look but the ones eyes are known to give; the
+  gem sparks at four corners, turns its facet and never shuts it); and the
+  session's side (unseeded never animates; only an empty conversation's
   banner is posed; a turn in flight stills it; the row turns it off and on;
   no frame for a banner off screen or behind an overlay; the picker's
   preview runs on its own clock — a mascot greets as the highlight lands on
   it, by a key or a search, again when the picker is reopened, and starts
   over with a session clock that does — while the banner keeps its own).
+- `app/mascot_motion.rs` (in place, on the cards rather than the poses) —
+  a round deals every card it holds and every rest; no move is dealt twice
+  running and no two rests meet, across sixty rounds and both ends of each;
+  a card's moves take turns, from a different one round by round; a late
+  card stays out of the first round; a deck's first card is the move its
+  greeting closes on, which the first round never opens with; every clip
+  fits a beat with a breath to spare and never pauses as long as one; no
+  card crowds its round; every round has several moves it can close on; no
+  two cards play the same move; every round is shuffled afresh; every
+  mascot knows a score of moves. Six ways of breaking the dealer — a move
+  allowed to follow itself, no crowding rule, a round forgetting how the
+  last one closed, rests falling anywhere, the doze dealt at once, a card
+  always leading with its first move — each fail these.
 - `ui/tests/header.rs` — the committed banner wears the rest pose whatever
   the clock says; the live banner draws the pose beside unmoved metadata
   (a blink: two cells); no pose moves the metadata or the banner's shape; a
@@ -327,7 +446,9 @@ seeded — every unit test's — never moves.
   after it are; a block with a row off the top has no seat; a still block
   has nothing due; a pose is due until painted; settling keeps the pose; a
   released block wants its rest rows; a blink rewrites the eyes' two cells
-  and nothing else.
+  and nothing else; a move of the whole mascot redraws its art — rows
+  longer and shorter than the ones they replace — and not a cell of the
+  title beside it, and is put back cell for cell.
 - `settings/tests.rs` — the row: on by default and off the wire, cycles,
   sits after the picture rows, found by what it does, recorded per
   directory.

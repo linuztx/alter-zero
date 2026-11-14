@@ -159,19 +159,124 @@ fn every_frame_moves_something_and_no_row_trails_a_blank() {
     }
 }
 
-#[test]
-fn a_frame_changes_one_part_of_the_mascot_at_a_time() {
-    // Eyes, a crest, a leaf, an ear, the legs, a spark: each lives on one
-    // row, and a frame that moves it leaves the other two rows as drawn —
-    // the bloom's petals alone span a single row too (its arms sit beside
-    // its eyes).
-    for mascot in Mascot::ALL {
-        let rest = mascot.art();
-        for frame in mascot.motion_frames() {
-            let moved = frame.iter().zip(rest).filter(|(a, b)| a != b).count();
-            assert_eq!(moved, 1, "{}: {frame:?}", mascot.name());
+/// The sixteen quadrant glyphs by the quarters of a cell they fill: bit 0
+/// the upper left, bit 1 the upper right, bit 2 the lower left, bit 3 the
+/// lower right.
+const QUADRANTS: [char; 16] = [
+    ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
+];
+
+/// `art` on the half-cell grid it is drawn on — one `bool` a quarter cell,
+/// two rows of them to a row of glyphs, two to a column — or `None` when a
+/// glyph of it is not a quadrant (an eyelid, a spark).
+fn quarters(art: &[&str], width: usize) -> Option<Vec<Vec<bool>>> {
+    let mut grid = vec![vec![false; width * 2]; art.len() * 2];
+    for (r, row) in art.iter().enumerate() {
+        for (c, glyph) in row.chars().enumerate() {
+            let bits = QUADRANTS.iter().position(|&quad| quad == glyph)?;
+            for (bit, (dy, dx)) in [(0, 0), (0, 1), (1, 0), (1, 1)].into_iter().enumerate() {
+                grid[r * 2 + dy][c * 2 + dx] = bits & (1 << bit) != 0;
+            }
         }
     }
+    Some(grid)
+}
+
+/// The rows of glyphs a half-cell `grid` folds back into, right-trimmed
+/// like the art.
+fn glyphs(grid: &[Vec<bool>]) -> Vec<String> {
+    grid.chunks(2)
+        .map(|pair| {
+            let row: String = (0..pair[0].len() / 2)
+                .map(|c| {
+                    let bit = |dy: usize, dx: usize| usize::from(pair[dy][c * 2 + dx]);
+                    QUADRANTS[bit(0, 0) | bit(0, 1) << 1 | bit(1, 0) << 2 | bit(1, 1) << 3]
+                })
+                .collect();
+            row.trim_end().to_string()
+        })
+        .collect()
+}
+
+/// `grid` moved `dx` quarter-columns and `dy` quarter-rows, or `None` when
+/// that would carry ink off it.
+fn moved(grid: &[Vec<bool>], dx: isize, dy: isize) -> Option<Vec<Vec<bool>>> {
+    let mut out = vec![vec![false; grid[0].len()]; grid.len()];
+    for (y, row) in grid.iter().enumerate() {
+        for (x, _) in row.iter().enumerate().filter(|(_, ink)| **ink) {
+            let to_y = usize::try_from(y as isize + dy).ok()?;
+            let to_x = usize::try_from(x as isize + dx).ok()?;
+            *out.get_mut(to_y)?.get_mut(to_x)? = true;
+        }
+    }
+    Some(out)
+}
+
+/// How many rows of `art` differ from `rest`.
+fn rows_redrawn(art: &[String], rest: &[&str]) -> usize {
+    art.iter().zip(rest).filter(|(a, b)| a != b).count()
+}
+
+/// The half-cell steps a whole mascot is ever moved by: a dip, a lean to
+/// either side, and the two at once.
+const HALF_CELL_MOVES: [(isize, isize); 5] = [(0, 1), (-1, 0), (1, 0), (-1, 1), (1, 1)];
+
+/// Whether `frame` is `mascot`'s rest art — with at most one row of it
+/// redrawn — moved half a cell.
+fn is_moved_half_a_cell(mascot: Mascot, frame: &[&str]) -> bool {
+    let Some(grid) = quarters(frame, mascot.art_width()) else {
+        return false;
+    };
+    HALF_CELL_MOVES.into_iter().any(|(dx, dy)| {
+        moved(&grid, -dx, -dy).is_some_and(|back| rows_redrawn(&glyphs(&back), mascot.art()) <= 1)
+    })
+}
+
+#[test]
+fn a_frame_redraws_one_part_of_the_mascot_or_moves_all_of_it_half_a_cell() {
+    // Eyes, a crest, a leaf, an ear, the legs, a spark: each lives on one
+    // row, and a frame that moves it leaves the other two rows as drawn.
+    // The one other thing a frame may do is move the whole mascot half a
+    // cell — a dip, a lean — which redraws every row and changes nothing:
+    // moved back, it is the rest art again, with one part moved at most.
+    for mascot in Mascot::ALL {
+        let rest = mascot.art();
+        let mut whole = 0;
+        for frame in mascot.motion_frames() {
+            let redrawn = frame.iter().zip(rest).filter(|(a, b)| a != b).count();
+            if redrawn == 1 {
+                continue;
+            }
+            assert!(
+                is_moved_half_a_cell(mascot, frame),
+                "{}: {frame:?} is neither one row redrawn nor the mascot moved half a cell",
+                mascot.name()
+            );
+            whole += 1;
+        }
+        assert!(whole >= 2, "{}: never moves as a whole", mascot.name());
+    }
+}
+
+#[test]
+fn the_half_cell_grid_folds_back_into_the_art_it_came_from() {
+    // The helper the rule above stands on.
+    for mascot in Mascot::ALL {
+        let grid = quarters(mascot.art(), mascot.art_width()).expect("quadrant glyphs");
+        assert_eq!(glyphs(&grid), mascot.art(), "{}", mascot.name());
+        let dipped = moved(&grid, 0, 1);
+        if let Some(dipped) = dipped {
+            assert_eq!(
+                glyphs(&moved(&dipped, 0, -1).expect("and back")),
+                mascot.art(),
+                "{}",
+                mascot.name()
+            );
+        }
+    }
+    // A sprout cannot dip: its feet stand on the last quarter-row.
+    let sprout = quarters(Mascot::Sprout.art(), Mascot::Sprout.art_width()).unwrap();
+    assert!(moved(&sprout, 0, 1).is_none());
 }
 
 // ===== the pose and how long it holds =====
@@ -390,7 +495,7 @@ fn a_mascot_rests_far_more_than_it_moves_and_never_for_long() {
             let clips = clips(mascot, seed, MASCOT_GREETING_MS, window);
             let moving: u64 = clips.iter().map(|clip| clip.1 - clip.0).sum();
             assert!(
-                moving * 100 < (window - MASCOT_GREETING_MS) * 15,
+                moving * 100 < (window - MASCOT_GREETING_MS) * 25,
                 "{} moves {}% of the time",
                 mascot.name(),
                 moving * 100 / window
@@ -415,7 +520,7 @@ fn a_mascot_rests_far_more_than_it_moves_and_never_for_long() {
 fn a_clip_never_runs_into_the_next() {
     // Each returns to rest before another starts, with a breath between —
     // so no stillness falls between a clip's own pause and a breath, and no
-    // clip is as long as two.
+    // clip outlasts the beat it plays in.
     for mascot in Mascot::ALL {
         let rest = MascotPose::rest(mascot);
         for span in spans(mascot, SEED, 0, 300_000) {
@@ -429,12 +534,186 @@ fn a_clip_never_runs_into_the_next() {
         }
         for (from, to, _) in clips(mascot, SEED, 0, 300_000) {
             assert!(
-                to - from <= 1_100,
+                to - from <= 2_800,
                 "{}: a {}ms clip",
                 mascot.name(),
                 to - from
             );
         }
+    }
+}
+
+// ===== the repertoire =====
+
+/// What a clip showed, with its timing left out: what tells one move from
+/// another on a timeline that names none.
+fn shown(clip: &(u64, u64, Vec<MascotPose>)) -> Vec<Vec<&'static str>> {
+    clip.2.iter().map(|pose| pose.art.to_vec()).collect()
+}
+
+/// Whether a clip is a blink (or two): nothing but the eyes closing and
+/// opening, through a lid where the glyphs have one.
+fn is_blink(mascot: Mascot, clip: &(u64, u64, Vec<MascotPose>)) -> bool {
+    let rest = mascot.art();
+    let (open, _) = eyes(mascot, rest);
+    let eye_row = usize::from(mascot != Mascot::Skiter);
+    clip.2.iter().all(|pose| {
+        let elsewhere = (0..rest.len()).all(|row| row == eye_row || pose.art[row] == rest[row]);
+        let look = eyes(mascot, pose.art);
+        elsewhere && [(open, open), ('▆', '▆'), ('█', '█')].contains(&look)
+    }) && clip
+        .2
+        .iter()
+        .any(|pose| eyes(mascot, pose.art) == ('█', '█'))
+        && clip.1 - clip.0 < 600
+}
+
+/// The seeds the repertoire is checked under.
+const SEEDS: [u64; 6] = [SEED, 0, 1, 0xDEAD_BEEF, 0x0123_4567_89AB_CDEF, u64::MAX];
+
+#[test]
+fn a_mascot_never_makes_the_same_move_twice_running() {
+    for mascot in Mascot::ALL {
+        for seed in SEEDS {
+            let clips = clips(mascot, seed, 0, 900_000);
+            for pair in clips.windows(2) {
+                assert_ne!(
+                    shown(&pair[0]),
+                    shown(&pair[1]),
+                    "{} (seed {seed:#x}): the same move at {} and {}",
+                    mascot.name(),
+                    pair[0].0,
+                    pair[1].0
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn blinking_is_a_small_part_of_what_a_mascot_does() {
+    // It blinks the way anything with eyes does — and that is nearly all
+    // the first version did: seven moves in ten. A blink is one move in
+    // nine now.
+    for mascot in EYED {
+        for seed in SEEDS {
+            let clips = clips(mascot, seed, MASCOT_GREETING_MS, 600_000);
+            let blinks = clips.iter().filter(|clip| is_blink(mascot, clip)).count();
+            assert!(
+                blinks >= 10,
+                "{}: {blinks} blinks in ten minutes",
+                mascot.name()
+            );
+            assert!(
+                blinks * 100 <= clips.len() * 15,
+                "{} (seed {seed:#x}): {blinks} of {} moves are blinks",
+                mascot.name(),
+                clips.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn two_minutes_show_nearly_everything_a_mascot_knows() {
+    // The moves are dealt like a deck, not drawn like dice: whatever two
+    // minutes one looks at — they need not be a round's own — the mascot
+    // does fifteen different things or more in them (the gem, which has no
+    // eyes to make faces with, ten), and none of them more than a handful
+    // of times.
+    for mascot in Mascot::ALL {
+        let wanted = if mascot == Mascot::Gem { 10 } else { 15 };
+        for seed in SEEDS {
+            let clips = clips(mascot, seed, MASCOT_GREETING_MS, 900_000);
+            for from in (MASCOT_GREETING_MS..780_000).step_by(30_000) {
+                let window: Vec<_> = clips
+                    .iter()
+                    .filter(|clip| clip.0 >= from && clip.1 < from + 120_000)
+                    .collect();
+                let kinds: BTreeSet<_> = window.iter().map(|clip| shown(clip)).collect();
+                assert!(
+                    kinds.len() >= wanted,
+                    "{} (seed {seed:#x}): {} different moves in the two minutes from {from}",
+                    mascot.name(),
+                    kinds.len()
+                );
+                for kind in &kinds {
+                    let times = window.iter().filter(|clip| &shown(clip) == kind).count();
+                    assert!(
+                        times <= 6,
+                        "{} (seed {seed:#x}): one move {times} times in two minutes",
+                        mascot.name()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_mascot_moves_its_whole_body_as_well_as_its_parts() {
+    // Not only an eye or a leaf: every one of them bounces, leans or
+    // wiggles — the whole creature, half a cell — four times a round or
+    // more, so whatever two hundred seconds one looks at (long enough to
+    // hold a whole round) show it at least three times.
+    for mascot in Mascot::ALL {
+        for seed in SEEDS {
+            let clips = clips(mascot, seed, MASCOT_GREETING_MS, 700_000);
+            for from in (MASCOT_GREETING_MS..480_000).step_by(30_000) {
+                let whole = clips
+                    .iter()
+                    .filter(|clip| clip.0 >= from && clip.1 < from + 200_000)
+                    .filter(|clip| {
+                        clip.2
+                            .iter()
+                            .any(|pose| is_moved_half_a_cell(mascot, pose.art))
+                    })
+                    .count();
+                assert!(
+                    whole >= 3,
+                    "{} (seed {seed:#x}): {whole} whole-body moves in the 200s from {from}",
+                    mascot.name()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_doze_comes_only_to_a_mascot_left_alone() {
+    // The four that can nod off — eyes shut, head dipping — do it now and
+    // then, and never in the first minute: a mascot that fell asleep as the
+    // app opened would be saying something about the app.
+    for mascot in [Mascot::Crest, Mascot::Bloom, Mascot::Twin, Mascot::Skiter] {
+        for seed in SEEDS {
+            let dozes: Vec<u64> = clips(mascot, seed, 0, 600_000)
+                .iter()
+                .filter(|clip| clip.1 - clip.0 >= 1_400)
+                .map(|clip| clip.0)
+                .collect();
+            assert!(
+                dozes.len() >= 3,
+                "{} (seed {seed:#x}): {} dozes in ten minutes",
+                mascot.name(),
+                dozes.len()
+            );
+            assert!(
+                dozes[0] >= 80_000,
+                "{} (seed {seed:#x}): dozed off {}ms in",
+                mascot.name(),
+                dozes[0]
+            );
+        }
+    }
+    // The seedling and the gem never do.
+    for mascot in [Mascot::Sprout, Mascot::Gem] {
+        assert!(
+            clips(mascot, SEED, 0, 600_000)
+                .iter()
+                .all(|clip| clip.1 - clip.0 < 1_400),
+            "{}",
+            mascot.name()
+        );
     }
 }
 
@@ -463,12 +742,12 @@ fn eyes_close_and_open_through_a_lid_where_the_glyphs_have_one() {
         let (open, _) = eyes(mascot, mascot.art());
         let lidded = open == '▄';
         let mut blinks = 0;
-        for (_, _, poses) in clips(mascot, SEED, 0, 300_000) {
-            let looks: Vec<(char, char)> = poses.iter().map(|p| eyes(mascot, p.art)).collect();
-            if !looks.contains(&('█', '█')) {
+        for clip in clips(mascot, SEED, 0, 600_000) {
+            if !is_blink(mascot, &clip) {
                 continue;
             }
             blinks += 1;
+            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, p.art)).collect();
             for (i, look) in looks.iter().enumerate() {
                 if *look != ('█', '█') {
                     continue;
@@ -481,8 +760,8 @@ fn eyes_close_and_open_through_a_lid_where_the_glyphs_have_one() {
             }
         }
         assert!(
-            blinks >= 30,
-            "{}: {blinks} blinks in five minutes",
+            blinks >= 10,
+            "{}: {blinks} blinks in ten minutes",
             mascot.name()
         );
     }
@@ -507,21 +786,35 @@ fn a_blink_is_quick_and_opens_slower_than_it_closes() {
     }
 }
 
+/// Every look `mascot`'s eyes take over ten minutes, standing where it
+/// stands — the frames that move the whole mascot leave them as they were.
+fn looks(mascot: Mascot) -> BTreeSet<(char, char)> {
+    let rest = mascot.art();
+    let eye_row = usize::from(mascot != Mascot::Skiter);
+    spans(mascot, SEED, 0, 600_000)
+        .iter()
+        .filter(|span| (0..rest.len()).all(|row| row == eye_row || span.pose.art[row] == rest[row]))
+        .map(|span| eyes(mascot, span.pose.art))
+        .collect()
+}
+
+/// The glyphs an eye narrowed to its left and to its right is drawn with.
+fn narrowed(mascot: Mascot) -> (char, char) {
+    if eyes(mascot, mascot.art()).0 == '▄' {
+        ('▟', '▙')
+    } else {
+        ('▜', '▛')
+    }
+}
+
 #[test]
 fn eyes_glance_to_one_side_together() {
     // A glance narrows both eyes to the same side, so the pair reads as
-    // looking somewhere rather than crossing.
+    // looking somewhere. Narrowed towards each other they cross — the one
+    // other way they are ever drawn — and never apart.
     for mascot in EYED {
-        let (open, _) = eyes(mascot, mascot.art());
-        let (left, right) = if open == '▄' {
-            ('▟', '▙')
-        } else {
-            ('▜', '▛')
-        };
-        let seen: BTreeSet<(char, char)> = spans(mascot, SEED, 0, 600_000)
-            .iter()
-            .map(|span| eyes(mascot, span.pose.art))
-            .collect();
+        let (left, right) = narrowed(mascot);
+        let seen = looks(mascot);
         assert!(
             seen.contains(&(left, left)),
             "{}: never looks left",
@@ -532,27 +825,112 @@ fn eyes_glance_to_one_side_together() {
             "{}: never looks right",
             mascot.name()
         );
-        for look in seen {
-            assert_eq!(look.0, look.1, "{}: {look:?}", mascot.name());
+        assert!(
+            seen.contains(&(right, left)),
+            "{}: never crosses its eyes",
+            mascot.name()
+        );
+        assert!(
+            !seen.contains(&(left, right)),
+            "{}: eyes apart",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn a_wink_shuts_one_eye_and_leaves_the_other_open() {
+    for mascot in EYED {
+        let (open, _) = eyes(mascot, mascot.art());
+        let seen = looks(mascot);
+        assert!(
+            seen.contains(&('█', open)),
+            "{}: never winks its left eye",
+            mascot.name()
+        );
+        assert!(
+            seen.contains(&(open, '█')),
+            "{}: never winks its right eye",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn only_eyes_with_a_lid_widen_and_squint() {
+    // The eighth-block ramp that draws a lid also draws an eye opened wide
+    // (`▂`) — for the three whose eyes sit in a cell's upper half. Wide,
+    // squinting, and one of each: the looks the other two cannot give.
+    for mascot in EYED {
+        let seen = looks(mascot);
+        let ramp = |look: &(char, char)| "▂▆".contains(look.0) || "▂▆".contains(look.1);
+        if eyes(mascot, mascot.art()).0 == '▄' {
+            for look in [('▂', '▂'), ('▆', '▆'), ('▂', '▆')] {
+                assert!(seen.contains(&look), "{}: never {look:?}", mascot.name());
+            }
+        } else {
+            assert!(!seen.iter().any(ramp), "{}: {seen:?}", mascot.name());
         }
     }
 }
 
 #[test]
-fn the_gem_twinkles_and_never_shuts_its_facet() {
-    // A cut gem has no eyes to blink: a spark opens beside it instead, and
-    // the notch in its middle stays cut.
-    let rest = Mascot::Gem.art();
-    for frame in Mascot::Gem.motion_frames() {
-        assert_eq!(frame[1], rest[1], "the gem's girdle row");
-        let sparks: Vec<char> = frame
-            .iter()
-            .flat_map(|row| row.chars())
-            .filter(|glyph| "·✢✶".contains(*glyph))
-            .collect();
-        assert_eq!(sparks.len(), 1, "{frame:?}");
+fn every_look_is_one_the_eyes_are_known_to_give() {
+    for mascot in EYED {
+        let (open, _) = eyes(mascot, mascot.art());
+        let (left, right) = narrowed(mascot);
+        let mut known = vec![
+            (open, open),
+            ('█', '█'),
+            (left, left),
+            (right, right),
+            (right, left),
+            ('█', open),
+            (open, '█'),
+        ];
+        if open == '▄' {
+            known.extend([('▆', '▆'), ('▂', '▂'), ('▂', '▆')]);
+        }
+        for look in looks(mascot) {
+            assert!(known.contains(&look), "{}: {look:?}", mascot.name());
+        }
     }
-    // …and no other mascot carries one.
+}
+
+#[test]
+fn the_gem_twinkles_and_turns_and_never_shuts_its_facet() {
+    // A cut gem has no eyes to blink: sparks open around it instead, and
+    // the notch in its middle — its one facet — slides and gleams as the
+    // stone turns, and is never closed.
+    let gem = Mascot::Gem;
+    let rest = gem.art();
+    let mut corners = BTreeSet::new();
+    let mut facets = BTreeSet::new();
+    for frame in gem.motion_frames() {
+        let sparks: Vec<(usize, usize)> = frame
+            .iter()
+            .enumerate()
+            .flat_map(|(r, row)| {
+                row.chars()
+                    .enumerate()
+                    .filter(|(_, glyph)| "·✢✶".contains(*glyph))
+                    .map(move |(c, _)| (r, c))
+            })
+            .collect();
+        assert!(sparks.len() <= 1, "{frame:?}");
+        corners.extend(sparks.iter().copied());
+        if frame[0] == rest[0] && frame[2] == rest[2] && frame[1] != rest[1] {
+            assert_ne!(frame[1], "▝▀█████▀▘", "the facet shut");
+            assert!(
+                frame[1].starts_with("▝▀") && frame[1].ends_with("▀▘"),
+                "{frame:?}"
+            );
+            facets.insert(frame[1]);
+        }
+    }
+    assert_eq!(corners.len(), 4, "a spark at each corner: {corners:?}");
+    assert!(facets.len() >= 5, "the facet turns: {facets:?}");
+    // …and no other mascot carries a spark.
     for mascot in EYED {
         for frame in mascot.motion_frames() {
             assert!(

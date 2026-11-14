@@ -342,6 +342,39 @@ mod tests {
     }
 
     #[test]
+    fn a_move_of_the_whole_mascot_redraws_its_art_and_nothing_beside_it() {
+        // A bounce or a lean redraws every row of the art — with rows longer
+        // or shorter than the ones they replace — and still not one cell of
+        // the title beside it; back at rest, every cell it touched is as it
+        // was, the ones it had filled in blank again.
+        let mut app = App::new();
+        app.set_session_info("model", "~/project");
+        app.seed_mascot_motion(7);
+        let crest = Mascot::Crest;
+        let whole = (MASCOT_GREETING_MS..600_000)
+            .find(|&at| {
+                let art = crest.pose(7, Duration::from_millis(at)).art;
+                art.iter().zip(crest.art()).all(|(now, rest)| now != rest)
+            })
+            .expect("the crest moves as a whole within ten minutes");
+        let rest = ui::banner_block_lines(&app, 80);
+        app.set_mascot_clock(Duration::from_millis(whole));
+        let moved = ui::banner_frame_lines(&app, 80);
+        let (was, now) = (block_buffer(&rest, 80, 5), block_buffer(&moved, 80, 5));
+        let there = was.diff(&now);
+        assert!(there.len() > 6, "{} cells redrawn", there.len());
+        let art_width = u16::try_from(crest.art_width()).expect("a narrow art");
+        for (x, y, _) in &there {
+            assert!(*x < art_width && (5..8).contains(y), "cell ({x}, {y})");
+        }
+        let back = now.diff(&was);
+        assert_eq!(back.len(), there.len());
+        for (x, y, cell) in back {
+            assert_eq!(cell.symbol(), was[(x, y)].symbol(), "cell ({x}, {y})");
+        }
+    }
+
+    #[test]
     fn the_block_is_rendered_where_it_was_committed() {
         let buffer = block_buffer(&block(), 12, 7);
         assert_eq!(buffer.area, Rect::new(0, 7, 12, 4));

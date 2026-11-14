@@ -780,11 +780,16 @@ which Ctrl+V reads the clipboard from.
 - **The banner mascot moves while the conversation is empty**
   (`docs/mascot-animation.md`): a light sweeps it as the screen opens, it
   shows its own move (the crest flares its frill, the sprout unfurls a leaf, the
-  gem twinkles) and blinks, then blinks and glances on a rhythm drawn by lot
-  — at rest nine tenths of the time, never still for more than about eight
-  seconds. The committed banner's rows are repainted **in place**, only the
-  cells that changed (a blink is two), one frame per change of pose, so an
-  idle session still sleeps between them. The first cell committed under
+  gem twinkles) and blinks, then works through a **repertoire** of twenty
+  moves or more — looks (a wink, a stare, crossed eyes), its whole body
+  moved half a cell (a bounce, a wiggle, a dance, a peek), three or four
+  moves of its own, a sweep of light, and for four of them a doze — **dealt
+  like a deck** rather than rolled, so a minute and a half shows everything
+  it knows, never the same move twice running; at rest five sixths of the
+  time, never still for more than about eight seconds. The committed
+  banner's rows are repainted **in place**, only the cells that changed (a
+  blink is two), one frame per change of pose, so an idle session still
+  sleeps between them. The first cell committed under
   the banner stills it for good — put back to its rest art in the same
   frame — as do a scroll that would carry it off the screen and the quit;
   `/clear` brings the empty conversation back and the mascot greets it

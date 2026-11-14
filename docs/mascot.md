@@ -28,13 +28,16 @@ own accent → link gradient (`header_gradient_start()` →
 `header_gradient_end()` — the theme's, `docs/theme.md`), keyed by display
 column across the art block's width.
 
-Each mascot also **moves** — it blinks, glances, and has one move of its
-own (the crest flares its frill, the sprout unfurls a leaf, the gem
-twinkles) — while the conversation under the banner is empty, and in the
+Each mascot also **moves** — a repertoire of twenty moves or more: it
+blinks, glances, winks and stares, bounces and wiggles and peeks, and has
+moves of its own (the crest flares its frill, the sprout unfurls a leaf, the
+gem twinkles) — while the conversation under the banner is empty, and in the
 picker's preview. The frames live beside the art (`app/mascot_motion.rs`),
-each the rest art with one part moved, held to the same rules: the art's
-three rows, never wider than it, single-width glyphs. The whole design is
-`docs/mascot-animation.md`.
+each the rest art with one part moved, or the whole of it moved half a
+cell, held to the same rules: the art's three rows, never wider than it,
+single-width glyphs. A new mascot's art should leave a half-row free under
+it or a half-column at its sides, or it will have nothing to bounce or lean
+into. The whole design is `docs/mascot-animation.md`.
 
 ## The `/mascot` picker
 
