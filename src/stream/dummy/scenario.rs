@@ -27,7 +27,7 @@ use crate::ask::AskGate;
 use crate::permission::PermissionGate;
 
 use super::super::{CancelToken, StreamEvent};
-use super::{agent, gated, turns};
+use super::{Pace, agent, gated, turns};
 
 /// The turn's inputs as a scenario reads them: the prompt, its lowercased
 /// form (cue matching is case-insensitive) and how many Ctrl+V images rode
@@ -96,6 +96,8 @@ pub(in crate::stream) struct Stage<'a> {
     pub(in crate::stream) gate: &'a PermissionGate,
     pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
     pub(in crate::stream) cancel: &'a CancelToken,
+    /// Whether the demo takes its pauses ([`Pace`]).
+    pub(in crate::stream) pace: Pace,
 }
 
 /// What an **asked** scenario streams through — the [`Stage`] twin for the
@@ -105,6 +107,8 @@ pub(in crate::stream) struct AskStage<'a> {
     pub(in crate::stream) gate: &'a AskGate,
     pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
     pub(in crate::stream) cancel: &'a CancelToken,
+    /// Whether the demo takes its pauses ([`Pace`]).
+    pub(in crate::stream) pace: Pace,
 }
 
 /// What an **agent** scenario streams through — the [`Stage`] twin for the
@@ -121,6 +125,8 @@ pub(in crate::stream) struct AgentStage<'a> {
     /// (`docs/permissions.md`). `None` runs the demo unasked, which is what
     /// `ALTER_ZERO_PERMISSIONS=0` means.
     pub(in crate::stream) gate: Option<&'a PermissionGate>,
+    /// Whether the demo takes its pauses ([`Pace`]).
+    pub(in crate::stream) pace: Pace,
 }
 
 /// How a selected scenario produces its events.

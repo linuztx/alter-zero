@@ -14,9 +14,9 @@
 use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 
 use super::super::{StreamEvent, ToolCallSummary};
+use super::CHUNK_DELAY;
 use super::scenario::{AskStage, Stage};
 use super::script::{chunks, handoff};
-use super::{CHUNK_DELAY, nap};
 use crate::llm::tools::write_report as created;
 
 /// How a gated call resolved: `Ok(output)` ran, `Err((display, result))` was
@@ -219,7 +219,7 @@ impl Stage<'_> {
             if self.tx.send(StreamEvent::Chunk(chunk)).is_err() {
                 return;
             }
-            nap(CHUNK_DELAY, self.cancel);
+            self.pace.nap(CHUNK_DELAY, self.cancel);
         }
         let _ = self.tx.send(StreamEvent::StreamDone);
     }
@@ -301,7 +301,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
         if stage.tx.send(StreamEvent::Chunk(chunk)).is_err() {
             return;
         }
-        nap(CHUNK_DELAY, stage.cancel);
+        stage.pace.nap(CHUNK_DELAY, stage.cancel);
     }
     let call = crate::llm::tools::ToolCallRequest {
         id: "ask_demo".to_string(),
@@ -395,7 +395,7 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
         if stage.tx.send(StreamEvent::Chunk(chunk)).is_err() {
             return;
         }
-        nap(CHUNK_DELAY, stage.cancel);
+        stage.pace.nap(CHUNK_DELAY, stage.cancel);
     }
     let _ = stage.tx.send(StreamEvent::StreamDone);
 }

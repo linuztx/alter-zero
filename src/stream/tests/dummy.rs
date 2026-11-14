@@ -15,6 +15,24 @@ fn dummy_ai_reports_its_model_name() {
 }
 
 #[test]
+fn an_unpaced_demo_takes_none_of_its_pauses() {
+    // A test that asserts what a demo does plays it unpaced, so its outcome
+    // never waits on how loaded the machine is: a pause is not taken at all,
+    // however long the demo would hold it. A paced one still is.
+    use crate::stream::dummy::Pace;
+    let cancel = CancelToken::new();
+    let started = std::time::Instant::now();
+    Pace::UNPACED.nap(Duration::from_secs(600), &cancel);
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "an unpaced pause slept"
+    );
+    let started = std::time::Instant::now();
+    Pace::WATCHED.nap(Duration::from_millis(40), &cancel);
+    assert!(started.elapsed() >= Duration::from_millis(40));
+}
+
+#[test]
 fn dummy_ai_waits_the_startup_delay_before_the_first_chunk() {
     // The dummy pauses before streaming so the status indicator (spinner,
     // ticking timer, `↑ N tokens` for the just-sent input) is visible
@@ -355,7 +373,9 @@ fn the_dummys_chat_continuation_ends_as_its_settle_naming_its_run() {
         vec![crate::llm::ChatMessage::user("p")],
         None,
     );
-    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_agents(registry.clone());
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO)
+        .unpaced()
+        .with_agents(registry.clone());
     assert_eq!(
         dummy.spawn_agent_chat(&id, "and the docs"),
         crate::stream::AgentChatDelivery::Started
