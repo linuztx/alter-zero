@@ -776,13 +776,15 @@ fn a_tiny_terminal_keeps_the_mascot_search_line() {
 
 // --- the preview in motion (docs/mascot-animation.md) ---
 
-/// The picker open over mascots that animate, `at` milliseconds into their
-/// timeline, with the highlight on `selected`.
+/// The picker open over mascots that animate, with the highlight on
+/// `selected` and that mascot's preview `at` milliseconds into its
+/// timeline — which starts with the frame that first shows it.
 fn moving_app(at: u64, selected: usize) -> App {
     let mut app = open_app();
     app.seed_mascot_motion(0x5EED);
-    app.set_mascot_clock(Duration::from_millis(at));
     select(&mut app, selected);
+    app.set_mascot_clock(Duration::ZERO);
+    app.set_mascot_clock(Duration::from_millis(at));
     app
 }
 

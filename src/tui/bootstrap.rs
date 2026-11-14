@@ -993,7 +993,7 @@ impl<'t> Session<'t> {
         if self.app.banner_is_live() {
             self.term.anchor_above(banner);
         }
-        self.clocks.banner_start = Some(std::time::Instant::now());
+        self.greet_from_banner();
         // A --continue/--resume load commits the loaded conversation under the
         // banner through the same pipeline (docs/cli.md) — insert_before, never a
         // Purge: a fresh launch must not wipe the user's terminal scrollback (the

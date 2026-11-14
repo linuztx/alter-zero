@@ -102,9 +102,11 @@ so what the picker shows and what Enter produces can never disagree — the
 cwd, the version, the hint and the gradient all preview exactly. And it
 **moves**: the preview is the banner in the pose the highlighted mascot's
 animation is in now (`header_lines_posed` over `App::mascot_pose_for`), so
-a mascot can be chosen for how it behaves, not only how it stands — each on
-its own rhythm, never in step with the banner above it
-(`docs/mascot-animation.md`). A frame changes cells inside the art block and
+a mascot can be chosen for how it behaves, not only how it stands. It runs
+on a clock of its own, started by the frame that first shows a mascot
+under the highlight, so each one **greets** as the highlight lands on it —
+a light, the move its description names, a blink — and never moves in step
+with the banner above it (`docs/mascot-animation.md`). A frame changes cells inside the art block and
 nothing else, so the page holds still around it. Over it
 sits `/theme`'s caption: the mascot's name as a bold title (`Crest`) over
 its description in the frame's dim.

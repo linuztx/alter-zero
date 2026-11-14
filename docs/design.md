@@ -778,8 +778,8 @@ which Ctrl+V reads the clipboard from.
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
 - **The banner mascot moves while the conversation is empty**
-  (`docs/mascot-animation.md`): a light sweeps it as the app opens, it shows
-  its own move (the crest flares its frill, the sprout unfurls a leaf, the
+  (`docs/mascot-animation.md`): a light sweeps it as the screen opens, it
+  shows its own move (the crest flares its frill, the sprout unfurls a leaf, the
   gem twinkles) and blinks, then blinks and glances on a rhythm drawn by lot
   — at rest nine tenths of the time, never still for more than about eight
   seconds. The committed banner's rows are repainted **in place**, only the
@@ -787,8 +787,10 @@ which Ctrl+V reads the clipboard from.
   idle session still sleeps between them. The first cell committed under
   the banner stills it for good — put back to its rest art in the same
   frame — as do a scroll that would carry it off the screen and the quit;
-  `/clear` brings the empty conversation, and the motion, back. The
-  `/mascot` picker's preview moves the same way. Off with the `/settings`
+  `/clear` brings the empty conversation back and the mascot greets it
+  again, as does a mascot just chosen in `/mascot`. The `/mascot` picker's
+  preview moves too, on a clock of its own: each mascot greets as the
+  highlight lands on it. Off with the `/settings`
   **Animate mascot** row or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 - **Waiting for a lost connection** (`docs/offline.md`): a request no
   connection can be made for — the name won't resolve, the connect is refused

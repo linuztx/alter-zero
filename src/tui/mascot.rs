@@ -28,8 +28,8 @@ impl Session<'_> {
     ///
     /// And the mascot just chosen **greets**: its animation's clock starts
     /// over, so on an empty conversation the new banner opens on the sweep
-    /// of light, the mascot's own move and a blink — the one time that
-    /// clock is ever restarted (`docs/mascot-animation.md`). Under a
+    /// of light, the mascot's own move and a blink — as a banner does at
+    /// launch and after `/clear` (`docs/mascot-animation.md`). Under a
     /// conversation the banner is history and nothing moves.
     pub(crate) fn select_mascot(&mut self, mascot: Mascot) -> io::Result<()> {
         config::save_look(
@@ -38,7 +38,7 @@ impl Session<'_> {
             mascot,
         );
         self.toast(format!("Mascot: {}", mascot.name()), ToastKind::Info);
-        self.clocks.banner_start = Some(std::time::Instant::now());
+        self.greet_from_banner();
         self.repaint_active_view()
     }
 }

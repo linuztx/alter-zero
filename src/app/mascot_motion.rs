@@ -552,9 +552,9 @@ impl Mascot {
     /// millisecond it starts at — `None` for a beat the mascot stands still.
     ///
     /// The greeting's three slots are scripted. A beat draws its clip by
-    /// [`lot`] — over the seed **and the mascot**, so two mascots on one
-    /// seed and one clock (the banner and the `/mascot` picker's preview of
-    /// another) each keep their own time instead of blinking as one — and
+    /// [`lot`] — over the seed **and the mascot**, so no two mascots play
+    /// one sequence (walking the `/mascot` list, each goes on from its
+    /// greeting in a rhythm of its own) — and
     /// starts it anywhere that leaves it whole inside the beat with
     /// [`BEAT_BREATH_MS`] to spare. A still beat that follows a still
     /// beat plays the mascot's everyday move instead, so the stillness is
@@ -635,10 +635,23 @@ impl App {
     }
 
     /// Inject the animation's clock before a draw (the
-    /// [`set_pulse`](App::set_pulse) pattern): time since the banner first
-    /// reached the screen, so the greeting plays once, as the app opens.
-    pub const fn set_mascot_clock(&mut self, clock: Duration) {
+    /// [`set_pulse`](App::set_pulse) pattern): time since a fresh banner
+    /// reached the screen, so the greeting plays as the screen opens.
+    ///
+    /// The same reading starts the `/mascot` picker's preview: the frame
+    /// that first shows a mascot under the highlight is the one its preview
+    /// counts from, so each mascot **greets** as the highlight lands on it
+    /// — however it got there, a key or a search — and one already seen
+    /// greets again. A reading older than the one a preview counts from
+    /// (the clock started over) starts the preview over with it.
+    pub fn set_mascot_clock(&mut self, clock: Duration) {
         self.mascot_clock = clock;
+        self.mascot_preview = self
+            .highlighted_mascot()
+            .map(|mascot| match self.mascot_preview {
+                Some((shown, since)) if shown == mascot && since <= clock => (shown, since),
+                _ => (mascot, clock),
+            });
     }
 
     /// The animation's seed, when the mascot animates at all in this
@@ -674,21 +687,33 @@ impl App {
     /// live and the mascot animates — the rest pose otherwise.
     #[must_use]
     pub fn banner_pose(&self) -> MascotPose {
-        if self.banner_is_live() {
-            self.mascot_pose_for(self.mascot)
-        } else {
-            MascotPose::rest(self.mascot)
+        match self.mascot_seed() {
+            Some(seed) if self.banner_is_live() => self.mascot.pose(seed, self.mascot_clock),
+            _ => MascotPose::rest(self.mascot),
         }
     }
 
-    /// `mascot`'s pose now — the `/mascot` picker's preview, which shows
-    /// each mascot moving so one can be chosen for how it behaves. The rest
-    /// pose when the mascot does not animate.
+    /// How far into its own timeline the `/mascot` picker's preview of
+    /// `mascot` is: time since the frame that first showed it under the
+    /// highlight. Zero — the top of its greeting — for a mascot no frame has
+    /// shown yet.
+    fn preview_clock(&self, mascot: Mascot) -> Duration {
+        match self.mascot_preview {
+            Some((shown, since)) if shown == mascot => self.mascot_clock.saturating_sub(since),
+            _ => Duration::ZERO,
+        }
+    }
+
+    /// `mascot`'s pose in the `/mascot` picker's preview, which shows each
+    /// mascot moving so one can be chosen for how it behaves — on a clock
+    /// of its own, so the mascot under the highlight opens on its greeting
+    /// whatever the banner is doing. The rest pose when the mascot does not
+    /// animate.
     #[must_use]
     pub fn mascot_pose_for(&self, mascot: Mascot) -> MascotPose {
         self.mascot_seed().map_or_else(
             || MascotPose::rest(mascot),
-            |seed| mascot.pose(seed, self.mascot_clock),
+            |seed| mascot.pose(seed, self.preview_clock(mascot)),
         )
     }
 
@@ -698,7 +723,8 @@ impl App {
     ///
     /// Two things can be moving: the banner (`banner_on_screen` — the
     /// boundary's word that it is still above the composer where it can be
-    /// repainted) and the open `/mascot` picker's preview. Neither is on
+    /// repainted) and the open `/mascot` picker's preview, each on its own
+    /// clock. Neither is on
     /// screen behind an alternate-screen overlay, and a frame there would
     /// wake the loop to repaint nothing.
     #[must_use]
@@ -707,9 +733,11 @@ impl App {
         if self.view.is_overlay() {
             return None;
         }
-        let holds = |mascot: Mascot| mascot.pose_holds(seed, self.mascot_clock);
-        let banner = (banner_on_screen && self.banner_is_live()).then(|| holds(self.mascot));
-        let preview = self.highlighted_mascot().map(holds);
+        let banner = (banner_on_screen && self.banner_is_live())
+            .then(|| self.mascot.pose_holds(seed, self.mascot_clock));
+        let preview = self
+            .highlighted_mascot()
+            .map(|mascot| mascot.pose_holds(seed, self.preview_clock(mascot)));
         match (banner, preview) {
             (Some(banner), Some(preview)) => Some(banner.min(preview)),
             (banner, preview) => banner.or(preview),

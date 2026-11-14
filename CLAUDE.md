@@ -371,7 +371,7 @@ choice persisted **per working directory** in `mascot.json` (`docs/per-directory
 the banner at once) in `docs/mascot.md`, and the **mascot's idle animation**
 (`docs/mascot-animation.md`: while the conversation is empty — a fresh
 launch, the moment after `/clear` — the banner's mascot moves: a light
-sweeps it as the app opens, it shows its own move (the crest flares its
+sweeps it as the screen opens, it shows its own move (the crest flares its
 frill, the bloom flutters, the sprout sways or unfurls a leaf, the twin
 flicks an ear, the skiter skitters, the gem glints) and blinks, then blinks
 and glances on a rhythm drawn by lot, at rest nine tenths of the time and
@@ -385,13 +385,15 @@ have none) and a glance narrows both to one side. The **timeline is a pure
 function of a seed and a clock** — `Mascot::pose(seed, clock)` and
 `pose_holds`, `app/mascot_motion.rs`: a scripted greeting, then three-second
 beats each drawing a clip by `SplitMix64` lot over the seed *and the
-mascot* (so the banner and a `/mascot` preview never blink as one), no two
+mascot* (so no two mascots play one sequence), no two
 still beats in a row — no state, no thread, the pose three hours in costing
 what the pose three seconds in does; the seed is `App::seed_mascot_motion`'s
 (an unseeded `App`, every unit test's, never moves) and the clock
-`App::set_mascot_clock`'s, running from the frame that first showed the
-banner and restarted only by a `/mascot` switch, so the mascot just chosen
-greets. The banner is **committed scrollback**, so the mechanism is the
+`App::set_mascot_clock`'s, running from the frame that showed a fresh
+banner — the launch, `/clear` and a `/mascot` switch each restart it
+(`Session::greet_from_banner`), so a cleared screen and the mascot just
+chosen greet, while a resize or a rewind only redraws the banner and picks
+the animation up where it is. The banner is **committed scrollback**, so the mechanism is the
 viewport's one **anchored block** (`term::anchor`,
 `InlineViewport::anchor_above`): a row above the live region is a screen
 row until a scroll carries it off the top, so the boundary declares the
@@ -414,8 +416,11 @@ a blink is four frames and the loop sleeps between clips, nothing is
 scheduled for a banner off screen, behind an overlay or in the narrow text
 badge, and `ui::header_lines` — everything committed, the Ctrl+O
 transcript, an export — is always the rest pose. The `/mascot` picker's
-preview moves the same way (`App::mascot_pose_for`), its page signing the
-selection rather than its rows. Gated by the `/settings` **Animate mascot**
+preview moves the same way (`App::mascot_pose_for`) on **a clock of its
+own** — `App::set_mascot_clock` remembers the highlighted mascot and the
+reading of the first frame that showed it, derived from the highlight, never
+tracked through the keys — so each mascot greets as the highlight lands on
+it, its page signing the selection rather than its rows. Gated by the `/settings` **Animate mascot**
 row and `ALTER_ZERO_MASCOT_ANIMATION`, which the smoke suite exports `0`;
 `smoke.sh` Phase 154 reads the raw byte stream), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,

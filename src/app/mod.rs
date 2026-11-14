@@ -577,11 +577,19 @@ pub struct App {
     ///
     /// [`seed_mascot_motion`]: App::seed_mascot_motion
     mascot_motion: Option<u64>,
-    /// How far into its timeline the mascot's animation is — time since the
-    /// banner first reached the screen, injected before every draw
+    /// How far into its timeline the mascot's animation is — time since a
+    /// fresh banner reached the screen, injected before every draw
     /// ([`set_mascot_clock`](App::set_mascot_clock), the
     /// [`set_pulse`](App::set_pulse) pattern).
     mascot_clock: Duration,
+    /// The mascot the open `/mascot` picker is previewing and the
+    /// [`mascot_clock`](Self::mascot_clock) reading of the first frame that
+    /// showed it — the epoch of the preview's own timeline, so a mascot
+    /// greets as the highlight lands on it. Kept by
+    /// [`set_mascot_clock`](App::set_mascot_clock) from whichever mascot is
+    /// highlighted; `None` with no picker open. See
+    /// `docs/mascot-animation.md`.
+    mascot_preview: Option<(Mascot, Duration)>,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row

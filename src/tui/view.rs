@@ -296,6 +296,17 @@ impl Session<'_> {
         self.app.mascot_frame_in(banner)
     }
 
+    /// Start the mascot's animation over, so the banner about to be shown
+    /// **greets** — the sweep of light, the mascot's own move, a blink
+    /// (`docs/mascot-animation.md`). The three things that open a fresh
+    /// banner call it: the first frame, `/clear`, and a `/mascot` choice. A
+    /// rebuild that only redraws the banner already there — a resize, a
+    /// rewind to an empty conversation — never does, so a dragged window
+    /// edge does not greet on every step.
+    pub(crate) fn greet_from_banner(&mut self) {
+        self.clocks.banner_start = Some(std::time::Instant::now());
+    }
+
     /// Render the full-screen tool-output overlay. Clamps the scroll to the
     /// current screen first (so the last line can reach the bottom but not
     /// scroll past it), then paints the view onto the alternate screen.

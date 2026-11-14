@@ -252,9 +252,9 @@ fn the_same_seed_plays_the_same_timeline_and_another_seed_another() {
 
 #[test]
 fn two_mascots_under_one_seed_keep_their_own_rhythms() {
-    // The `/mascot` picker shows the highlighted mascot's preview under the
-    // session's own banner, on one seed and one clock: were the rhythm the
-    // seed's alone, the two would blink in unison, like one machine.
+    // Were the rhythm the seed's alone, every mascot would play one
+    // sequence: walking the `/mascot` list, each would go on from its
+    // greeting blink for blink like the one before it, like one machine.
     let starts = |mascot: Mascot| -> Vec<u64> {
         clips(mascot, SEED, MASCOT_GREETING_MS, 120_000)
             .iter()
@@ -675,30 +675,146 @@ fn no_frame_is_due_for_a_banner_that_is_not_on_screen() {
     assert_eq!(app.mascot_frame_in(true), None);
 }
 
+/// The `/mascot` picker open over an app whose own clock reads
+/// `banner_at`, the highlight on `mascot`, and that mascot's preview
+/// `preview_at` into its timeline — the frame that first shows a mascot's
+/// preview is the one its clock starts from.
+fn previewing(mascot: Mascot, banner_at: u64, preview_at: u64) -> App {
+    let mut app = animated(banner_at);
+    app.open_mascot_picker();
+    let steps = Mascot::ALL.iter().position(|&m| m == mascot).unwrap();
+    for _ in 0..steps {
+        app.on_key(key(KeyCode::Down));
+    }
+    assert_eq!(app.highlighted_mascot(), Some(mascot));
+    app.set_mascot_clock(ms(banner_at));
+    app.set_mascot_clock(ms(banner_at + preview_at));
+    app
+}
+
 #[test]
 fn the_open_picker_previews_the_highlighted_mascot_in_motion() {
     // The `/mascot` picker shows the banner each mascot would give — moves
-    // included, so a mascot can be chosen for how it behaves.
-    let at = moving_at(Mascot::Bloom);
-    let mut app = animated(at);
-    app.open_mascot_picker();
-    app.on_key(key(KeyCode::Down));
-    assert_eq!(app.highlighted_mascot(), Some(Mascot::Bloom));
+    // included, so a mascot can be chosen for how it behaves. The preview
+    // keeps a clock of its own: the banner may be a minute into its rhythm
+    // while the mascot under the highlight is a second and a half into its
+    // greeting, showing its own move.
+    let banner_at = 60_000;
+    let own_move = moving_at(Mascot::Bloom);
+    let app = previewing(Mascot::Bloom, banner_at, own_move);
     assert_eq!(
         app.mascot_pose_for(Mascot::Bloom),
-        Mascot::Bloom.pose(SEED, ms(at))
+        Mascot::Bloom.pose(SEED, ms(own_move))
+    );
+    assert_ne!(
+        app.mascot_pose_for(Mascot::Bloom),
+        MascotPose::rest(Mascot::Bloom)
+    );
+    // The banner is where the session's clock says it is.
+    assert_eq!(
+        app.banner_pose(),
+        Mascot::Crest.pose(SEED, ms(banner_at + own_move))
     );
     // A frame is due for the preview even with the banner itself off
-    // screen, at the highlighted mascot's own pace.
+    // screen, at the previewed mascot's own pace.
     assert_eq!(
         app.mascot_frame_in(false),
-        Some(Mascot::Bloom.pose_holds(SEED, ms(at)))
+        Some(Mascot::Bloom.pose_holds(SEED, ms(own_move)))
     );
     // …and with the banner on screen too, whichever changes first.
     let both = Mascot::Bloom
-        .pose_holds(SEED, ms(at))
-        .min(Mascot::Crest.pose_holds(SEED, ms(at)));
+        .pose_holds(SEED, ms(own_move))
+        .min(Mascot::Crest.pose_holds(SEED, ms(banner_at + own_move)));
     assert_eq!(app.mascot_frame_in(true), Some(both));
+}
+
+#[test]
+fn a_mascot_greets_as_the_highlight_lands_on_it() {
+    // Walking the list shows what each mascot does: every one the highlight
+    // lands on starts over — a light, its own move, a blink — instead of
+    // standing in whichever beat the session's clock happens to be in.
+    let mut app = previewing(Mascot::Crest, 60_000, 2_000);
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.highlighted_mascot(), Some(Mascot::Bloom));
+    // Until a frame has shown it, it stands at the top of its greeting…
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Bloom),
+        MascotPose::rest(Mascot::Bloom)
+    );
+    assert_eq!(
+        app.mascot_frame_in(false),
+        Some(Mascot::Bloom.pose_holds(SEED, ms(0)))
+    );
+    // …which the frame that shows it starts.
+    app.set_mascot_clock(ms(70_000));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Bloom),
+        Mascot::Bloom.pose(SEED, ms(0))
+    );
+    let sweep = 600;
+    app.set_mascot_clock(ms(70_000 + sweep));
+    let pose = app.mascot_pose_for(Mascot::Bloom);
+    assert_eq!(pose, Mascot::Bloom.pose(SEED, ms(sweep)));
+    assert!(pose.shine.is_some(), "the light is crossing it");
+    // Back on a mascot it has already shown, the greeting plays again.
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.highlighted_mascot(), Some(Mascot::Crest));
+    app.set_mascot_clock(ms(80_000));
+    app.set_mascot_clock(ms(80_000 + sweep));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Crest),
+        Mascot::Crest.pose(SEED, ms(sweep))
+    );
+}
+
+#[test]
+fn a_search_that_lands_on_another_mascot_starts_its_greeting() {
+    // The preview's clock follows the mascot under the highlight, however
+    // the highlight got there.
+    let mut app = previewing(Mascot::Crest, 60_000, 2_000);
+    for c in "gem".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert_eq!(app.highlighted_mascot(), Some(Mascot::Gem));
+    app.set_mascot_clock(ms(70_000));
+    app.set_mascot_clock(ms(70_500));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Gem),
+        Mascot::Gem.pose(SEED, ms(500))
+    );
+}
+
+#[test]
+fn a_picker_opened_again_greets_again() {
+    let mut app = previewing(Mascot::Crest, 60_000, 2_000);
+    app.close_mascot_picker();
+    app.set_mascot_clock(ms(63_000));
+    assert_eq!(app.mascot_frame_in(false), None);
+    app.open_mascot_picker();
+    app.set_mascot_clock(ms(64_000));
+    app.set_mascot_clock(ms(64_600));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Crest),
+        Mascot::Crest.pose(SEED, ms(600))
+    );
+}
+
+#[test]
+fn a_preview_starts_over_with_a_clock_that_does() {
+    // The session's clock starts over when a fresh banner opens. A preview
+    // counted from a reading that is now in the future starts over with it
+    // rather than standing still until the clock catches up.
+    let mut app = previewing(Mascot::Crest, 60_000, 2_000);
+    app.set_mascot_clock(ms(1_000));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Crest),
+        Mascot::Crest.pose(SEED, ms(0))
+    );
+    app.set_mascot_clock(ms(1_600));
+    assert_eq!(
+        app.mascot_pose_for(Mascot::Crest),
+        Mascot::Crest.pose(SEED, ms(600))
+    );
 }
 
 #[test]

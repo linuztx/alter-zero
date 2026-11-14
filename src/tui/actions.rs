@@ -537,7 +537,9 @@ impl Session<'_> {
         }
         // Purge scrollback + clear the screen (codex's /clear), not just blank
         // the visible screen — the old conversation must be gone from scrollback
-        // too, so scrolling up shows nothing.
+        // too, so scrolling up shows nothing. The screen it leaves is a fresh
+        // one, so the mascot on its banner greets it (docs/mascot-animation.md).
+        self.greet_from_banner();
         self.repaint_conversation()
     }
 

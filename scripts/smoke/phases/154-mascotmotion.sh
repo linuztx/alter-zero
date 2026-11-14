@@ -16,9 +16,10 @@ smoke_begin
 # re-committed nor left off its rest pose; frames are written only when the
 # pose changes (no clock chain turning at idle); with the row off an idle
 # session writes NOTHING; the first cell puts the banner back to rest for
-# good — sent mid-move, and again when the app quits mid-move — `/clear`
-# brings the empty conversation, and the motion, back; and a mascot just
-# chosen in `/mascot` greets.
+# good — sent mid-move, and again when the app quits mid-move — the two
+# things that open a fresh banner greet from it again: `/clear`, and a
+# mascot just chosen in `/mascot`; and the picker's preview greets as the
+# highlight lands on a mascot.
 #
 # The suite pins the animation off (lib.sh); these launches turn it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘`, its frill
@@ -37,6 +38,20 @@ mm_record() {
 }
 # mm_banners SESSION — banners on the screen and in its scrollback.
 mm_banners() { pane "$1" -S -80 | grep -c 'Alter Zero (v'; }
+# mm_frame GLYPHS — the first recorded frame (0-based) whose cells hold
+# GLYPHS, -1 when none does. Every cell is written under its own colour, so
+# the stream is read frame by frame with the escapes taken out.
+mm_frame() {
+	python3 - "$MM_LOG" "$1" <<'PY'
+import re, sys
+data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+frames = re.findall(r"\x1b\[\?2026h(.*?)\x1b\[\?2026l", data, flags=re.S)
+text = [re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame) for frame in frames]
+print(next((i for i, t in enumerate(text) if sys.argv[2] in t), -1))
+PY
+}
+# mm_frames — how many frames were recorded.
+mm_frames() { grep -ao $'\x1b\\[?2026h' "$MM_LOG" | wc -l; }
 
 # --- the greeting, on the wire -------------------------------------------
 tmux new-session -d -s "$S154" -x 80 -y 24 "$MM_APP"
@@ -49,21 +64,9 @@ fi
 if ! wait_file 10 "$MM_LOG" -aF '▆'; then
 	fail "the greeting never blinked (no eyelid cell was written)"
 fi
-# Every cell is written under its own colour, so the stream is read frame by
-# frame with the escapes taken out: which frame flared the frill, which one
-# first dropped an eyelid.
-mm_greeting="$(
-	python3 - "$MM_LOG" <<'PY'
-import re, sys
-data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
-frames = re.findall(r"\x1b\[\?2026h(.*?)\x1b\[\?2026l", data, flags=re.S)
-text = [re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", frame) for frame in frames]
-find = lambda glyphs: next((i for i, t in enumerate(text) if glyphs in t), -1)
-print(find("▙▙▙"), find("▆"))
-PY
-)"
-mm_flare="${mm_greeting%% *}"
-mm_blink="${mm_greeting##* }"
+# Which frame flared the frill, and which one first dropped an eyelid.
+mm_flare="$(mm_frame '▙▙▙')"
+mm_blink="$(mm_frame '▆')"
 note "the frill flared in frame $mm_flare, the first eyelid dropped in frame $mm_blink"
 if [ "${mm_flare:--1}" -lt 0 ]; then
 	fail "the greeting never flared the crest's frill"
@@ -124,17 +127,33 @@ mm_after="$(wc -c <"$MM_LOG")"
 note "bytes written over 4s of idle after the first turn: $mm_after"
 expect_eq "$mm_after" "0" "the banner (or something) kept repainting after the conversation started"
 
-# --- /clear: the empty conversation, and the motion, come back -------------
+# --- /clear: the empty conversation comes back, and the mascot greets it ---
+# A cleared screen opens on a fresh banner, so the animation's clock starts
+# over: the sweep, the frill, a blink — about thirty frames in the three
+# seconds after the clear, where a mascot merely carrying on its rhythm would
+# write one clip's handful, or nothing.
 submit "$S154" "/clear"
-mm_cleared="$(wait_settled 6 "$S154" -E '^❯ *$')"
-expect_lacks "$mm_cleared" -F "❯ hi" "/clear did not empty the conversation"
-mm_record "$S154"
-# The mascot is never still for more than about eight seconds, so a move is
-# due inside this wait however the lots fall: an eyelid, a glance, the frill.
-if ! wait_file 14 "$MM_LOG" -aE '▆|▟|▙'; then
-	fail "the banner did not start moving again after /clear"
+mm_is_cleared() { ! pane_has "$S154" -F "❯ hi"; }
+if ! poll 6 mm_is_cleared; then
+	fail "/clear did not empty the conversation"
 fi
+mm_record "$S154"
+sleep 3
 tmux pipe-pane -t "$S154"
+mm_regreet="$(mm_frames)"
+mm_reflare="$(mm_frame '▙▙▙')"
+note "frames in the 3s after /clear: $mm_regreet (the frill flared in frame $mm_reflare)"
+if [ "$mm_regreet" -lt 12 ]; then
+	fail "the mascot did not greet the cleared screen ($mm_regreet frames in 3s, expected about thirty)"
+fi
+if [ "${mm_reflare:--1}" -lt 0 ]; then
+	fail "the greeting after /clear never flared the crest's frill"
+fi
+mm_fresh="$(wait_pane 6 "$S154" -F "$MM_REST_EYES")"
+dump "after /clear's greeting" "$mm_fresh"
+expect_has "$mm_fresh" -F "$MM_REST_TOP" "the banner did not come back to its rest art after /clear's greeting"
+expect_eq "$(mm_banners "$S154")" "1" "/clear left more than one banner behind"
+expect_eq "$(count_bare_prompts "$mm_fresh")" "1" "/clear's greeting disturbed the composer"
 tmux kill-session -t "$S154" 2>/dev/null
 
 # --- quitting mid-move leaves the banner at rest ---------------------------
@@ -151,14 +170,11 @@ expect_has "$mm_dead" -F "$MM_REST_TOP" "the app quit with its mascot off its re
 expect_lacks "$mm_dead" -F "$MM_FLARE" "the app quit mid-move and left the pose on the dead screen"
 tmux kill-session -t "$S154" 2>/dev/null
 
-# --- a mascot just chosen greets -------------------------------------------
+# --- the picker's preview greets, and so does the mascot just chosen -------
 # (Last, since the choice is saved for this directory and every launch after
 # it would open on the twin.)
-# Choosing a mascot restarts the animation's clock, so the banner that
-# confirms the choice opens on the sweep, the mascot's own move and a blink.
 # Let the launch's greeting pass first (its blink is the last of it), so the
-# frames counted below are the new mascot's: about thirty in two and a half
-# seconds, where a mascot merely carrying on would write a blink's four.
+# frames counted below are not the banner's own.
 launch "$S154" 80 24 "$MM_APP"
 mm_record "$S154"
 wait_file 10 "$MM_LOG" -aF '▆' || fail "the launch's greeting never blinked"
@@ -167,8 +183,24 @@ submit "$S154" "/mascot"
 if ! wait_for 5 "$S154" -F "Enter to choose"; then
 	fail "the /mascot picker did not open"
 fi
+# The preview keeps a clock of its own, started by the frame that first
+# shows the mascot under the highlight. Searching onto the twin plays its
+# greeting there — the sweep, an ear, a blink: about thirty frames, where a
+# preview merely carrying on would write a clip's handful beside the four
+# the typing costs.
+mm_record "$S154"
 type_text "$S154" "twin"
-sleep "$SMOKE_TYPE_SETTLE"
+sleep 2.5
+tmux pipe-pane -t "$S154"
+mm_preview="$(mm_frames)"
+note "frames in the 2.5s after the highlight landed on the twin: $mm_preview"
+if [ "$mm_preview" -lt 16 ]; then
+	fail "the /mascot preview did not greet as the highlight landed on a mascot ($mm_preview frames in 2.5s, expected about thirty)"
+fi
+# Choosing a mascot restarts the animation's clock, so the banner that
+# confirms the choice opens on the sweep, the mascot's own move and a blink:
+# about thirty frames again, where a mascot merely carrying on would write a
+# blink's four.
 keys "$S154" Enter
 if ! wait_for 5 "$S154" -F " ██▄▄▄██   Alter Zero"; then
 	fail "the banner was not redrawn with the mascot just chosen"
@@ -176,7 +208,7 @@ fi
 mm_record "$S154"
 sleep 2.5
 tmux pipe-pane -t "$S154"
-mm_greet="$(grep -ao $'\x1b\\[?2026h' "$MM_LOG" | wc -l)"
+mm_greet="$(mm_frames)"
 note "frames in the 2.5s after choosing a mascot: $mm_greet"
 if [ "$mm_greet" -lt 12 ]; then
 	fail "the mascot just chosen did not greet ($mm_greet frames in 2.5s, expected about thirty)"
