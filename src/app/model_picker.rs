@@ -62,9 +62,6 @@ pub struct ModelPicker {
     /// `… unavailable`, `… not refreshed`), and with no rows and nothing
     /// out, whether the page settles on the all-failed error.
     pub lists: Vec<ProviderList>,
-    /// The round of fetches in flight, or the last one: a fetch's answer is
-    /// merged only when it names it ([`App::finish_model_fetch`]).
-    pub round: u64,
     /// The wall clock, in Unix seconds — injected by the boundary every draw
     /// ([`App::set_model_picker_now`]), so the page says how old its lists
     /// are and reads no clock of its own.
@@ -83,6 +80,10 @@ pub struct ProviderList {
     pub id: String,
     /// Its name, for the notes about it (`OpenRouter unavailable`).
     pub name: String,
+    /// What the rows on screen were read from — the boundary's fingerprint
+    /// of the provider's endpoint (`llm::model_cache::listing_source`), so
+    /// a refresh after the provider moved never keeps another server's rows.
+    pub source: String,
     /// When the rows on screen were listed, in Unix seconds — the cache's
     /// date for kept rows, the fetch's for fresh ones; `None` while nothing
     /// of the provider's has been listed.
@@ -102,12 +103,15 @@ pub struct ProviderLoad {
     pub id: String,
     /// Its name.
     pub name: String,
+    /// What its list is read from now (`llm::model_cache::listing_source`).
+    pub source: String,
     /// When the kept rows were listed, in Unix seconds — `None` when nothing
     /// was kept.
     pub listed_at: Option<i64>,
     /// The kept rows, empty when nothing was kept.
     pub models: Vec<ModelEntry>,
-    /// Whether this round fetches it.
+    /// Whether this round waits on a fetch of it — one it starts, or one
+    /// already out (`llm::model_cache::FetchPlan`).
     pub fetch: bool,
 }
 
@@ -290,23 +294,28 @@ impl App {
     }
 
     /// Lay a round of fetches over the open picker — on open, and on every
-    /// Ctrl+R — returning the round every result must name, or `None` when
-    /// the picker is closed. `loads` is every configured provider, in the
-    /// order the boundary found them (`docs/model-cache.md`):
+    /// Ctrl+R. No-op when the picker is closed. `loads` is every configured
+    /// provider, in the order the boundary found them
+    /// (`docs/model-cache.md`):
     ///
-    /// - a provider the picker already shows keeps the rows on screen, and
-    ///   their date, through the round — a refresh never blanks a list it
-    ///   is about to replace;
-    /// - any other shows the rows the boundary kept for it, at once;
+    /// - a provider the picker already shows, from the source it reads now,
+    ///   keeps the rows on screen and their date through the round — a
+    ///   refresh never blanks a list it is about to replace;
+    /// - any other shows the rows the boundary kept for it, at once — so a
+    ///   provider that moved to another server since its rows were read
+    ///   does not keep them;
     /// - a provider the picker shows that is not in `loads` any more (its
     ///   key went, its block left `providers.toml`) leaves with its rows.
     ///
-    /// A provider the round fetches starts clean of its last failure. The
-    /// highlight follows [`ModelPicker::touched`]'s rule.
-    pub fn begin_model_round(&mut self, loads: Vec<ProviderLoad>) -> Option<u64> {
-        let picker = self.model_picker.as_mut()?;
-        self.model_rounds += 1;
-        picker.round = self.model_rounds;
+    /// A provider the round waits on starts clean of its last failure. The
+    /// highlight follows [`ModelPicker::touched`]'s rule. Which answers
+    /// count is the boundary's to say (`llm::model_cache::FetchLedger`): it
+    /// hands over a provider's live fetch only, and the picker takes it
+    /// when it waits on that provider ([`App::finish_model_fetch`]).
+    pub fn begin_model_round(&mut self, loads: Vec<ProviderLoad>) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
         let keep = picker.highlighted_key();
         let previous = std::mem::take(&mut picker.lists);
         let mut shown = std::mem::take(&mut picker.models);
@@ -314,7 +323,7 @@ impl App {
         for load in loads {
             let on_screen = previous
                 .iter()
-                .find(|list| list.id == load.id)
+                .find(|list| list.id == load.id && list.source == load.source)
                 .and_then(|list| list.listed_at);
             let listed_at = if let Some(at) = on_screen {
                 let (own, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut shown)
@@ -330,6 +339,7 @@ impl App {
             picker.lists.push(ProviderList {
                 id: load.id,
                 name: load.name,
+                source: load.source,
                 listed_at,
                 fetching: load.fetch,
                 error: None,
@@ -339,28 +349,23 @@ impl App {
         picker.sort_rows();
         picker.recompute_status();
         picker.reseat(keep);
-        Some(picker.round)
     }
 
-    /// One provider's fetch landed. Dropped when the picker has closed, or
-    /// when `round` is not the picker's own — an earlier round's answer, or
-    /// a closed picker's. A listing **replaces** the provider's rows (a
-    /// model it no longer lists goes) and dates them `listed_at`, the time
-    /// the boundary kept them at; a failure keeps whatever rows the
-    /// provider showed beside the reason — kept rows stay usable, and the
-    /// page says they could not be refreshed.
+    /// A provider's live fetch landed (the boundary's ledger has already
+    /// dropped a superseded or retired one). Taken only when the open picker
+    /// waits on that provider — a picker reopened while the fetch was out
+    /// waits on it too, so it lands there; with no picker open it changes
+    /// nothing here. A listing **replaces** the provider's rows (a model it
+    /// no longer lists goes) and dates them `listed_at`, when it was read; a
+    /// failure keeps whatever rows the provider showed beside the reason —
+    /// kept rows stay usable, and the page says they could not be refreshed.
     pub fn finish_model_fetch(
         &mut self,
-        round: u64,
         provider: &str,
         result: Result<Vec<ModelEntry>, String>,
         listed_at: i64,
     ) {
-        let Some(picker) = self
-            .model_picker
-            .as_mut()
-            .filter(|picker| picker.round == round)
-        else {
+        let Some(picker) = self.model_picker.as_mut() else {
             return;
         };
         let keep = picker.highlighted_key();
@@ -464,7 +469,7 @@ impl App {
         };
         // Ctrl+R asks every provider again (`docs/model-cache.md`) — not a
         // plain `r`, which has to keep typing into the search
-        // (`deepseek-r1`). Not while a round is still out: it already
+        // (`deepseek-r1`). Not while a fetch is still out: it already
         // answers the question, the `/usage` page's `r` rule.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
             return if picker.fetching() {
@@ -475,9 +480,24 @@ impl App {
         }
         let len = picker.matches().len();
         let last = len.saturating_sub(1);
-        // Every key but Enter, Esc on an empty search and the ones that do
-        // nothing is the user taking the highlight over.
-        if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+        // A key that moves the highlight or edits the search is the user
+        // taking the highlight over; Enter closes, and the rest do nothing.
+        let typed = matches!(key.code, KeyCode::Char(_))
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if typed
+            || matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Backspace
+            )
+        {
             picker.touched = true;
         }
         match key.code {

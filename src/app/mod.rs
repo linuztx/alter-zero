@@ -613,9 +613,6 @@ pub struct App {
     /// page, so a result from a page closed and reopened since can never
     /// name the new page's round.
     usage_rounds: u64,
-    /// The last `/model` round handed out — kept here rather than on the
-    /// picker for the same reason ([`App::begin_model_round`]).
-    model_rounds: u64,
     /// How the local clock reads an instant (its UTC offset there), injected
     /// once at the I/O boundary ([`App::set_local_offset`]) — the `/usage`
     /// page's reset times. `None` in unit tests: UTC.

@@ -1045,9 +1045,10 @@ impl<'t> Session<'t> {
                 }
             }
         }
-        // Cancel a dangling /model fetch (its detached worker exits on the
-        // cancel), and the /usage page's reads likewise.
-        self.models.cancel_model_fetch();
+        // Cancel every /model fetch still out (each detached worker exits on
+        // its cancel, and nothing it read is kept), and the /usage page's
+        // reads likewise.
+        self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`

@@ -25,11 +25,14 @@ release heading when a version is cut.
   model you just pulled still appears. Ctrl+R in the picker asks every
   provider again (not a plain `r`, which still types into the search, as in
   `deepseek-r1`). The counter says how old the lists on screen are
-  (`updated 2h ago`), and a refresh that fails keeps the rows it could not
-  refresh, noted in amber as `not refreshed` rather than `unavailable`.
-  Saving a key or signing in again through `/login` drops that provider's
-  kept list, since another account can list other models
-  (`docs/model-cache.md`).
+  (`updated 2h ago`), keeping itself current while the picker sits open,
+  and a refresh that fails keeps the rows it could not refresh, noted in
+  amber as `not refreshed` rather than `unavailable`. A list still arriving
+  when you close the picker is kept when it lands, and reopening the picker
+  meanwhile waits for it rather than asking again. Saving a key or signing
+  in again through `/login` drops that provider's kept list, and any list
+  still being fetched with the old key, since another account can list
+  other models (`docs/model-cache.md`).
 
 ### Changed
 

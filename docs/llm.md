@@ -37,7 +37,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary). The request is a typed `ChatRequest` written from the messages by reference; `build_payload` is the JSON-tree view the tests read | split |
 | `llm/body.rs` | how a request leaves the process (`docs/memory.md`): `BodySource`, the trait each wire's owned request implements by writing its typed, borrowed form; `streamed_request`, which serializes it on its own thread into a bounded pipe of 64 KB chunks the transport pumps, with `Content-Length` from a counting pass — so a body carrying a picture is never held whole | **pure** |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`; records decode one at a time off borrowed `RawValue` slices, never a whole-list tree — `docs/memory.md`; the Ollama wire's `/api/tags` + `/api/show` walk lives here too, as does a Cline sign-in's: the ClinePass plan's published list, each model's facts borrowed from Cline's catalog — `docs/cline.md`) | split |
-| `llm/model_cache.rs` | the `/model` picker's list cache — the kept listing's file format (`CachedListing`), what a kept list is worth when the picker opens (`freshness`: fresh, stale and shown while fetched again, or another server's), the fingerprint of what a listing is fetched through, and the file a provider's listing lives in (`docs/model-cache.md`) | **pure** |
+| `llm/model_cache.rs` | the `/model` picker's list cache — the kept listing's file format (`CachedListing`), what a kept list is worth when the picker opens (`freshness`: fresh, stale and shown while fetched again, or another server's), the fingerprint of what a listing is fetched through, the file a provider's listing lives in, and the fetches still out (`FetchLedger`: one live ticket per provider, superseded by a newer fetch, waited on by a reopen, retired by a `/login` save or by an open that will not wait on it) with what an open does about each provider (`plan`) (`docs/model-cache.md`) | **pure** |
 | `llm/ollama.rs` | Ollama's **native** wire format (`wire_api = "ollama"`): the `OLLAMA_HOST` grammar, the `/api/chat` body (`options.num_ctx` — the reason it exists beside Ollama's `/v1`), the NDJSON fold, the catalog parse with the context-window rule, and the explained refusals (`docs/ollama.md`) | **pure** |
 | `llm/cloud_code.rs` | Google's **Cloud Code Assist** wire format (`wire_api = "cloud_code"`): the `{project, model, request}` envelope around Gemini's `generateContent` body, the per-family tool schemas (`parametersJsonSchema` for Gemini, the bridge's six keywords for Claude/GPT-OSS), thinking per family, the SSE fold, and the process-wide memo of the thought signatures (and Claude thinking) a later request must hand back (`docs/antigravity.md`) | mostly |
 | `llm/antigravity.rs` | the Google Antigravity sign-in: the PKCE URLs and grants, the agy CLI `User-Agent`, `loadCodeAssist`/`onboardUser`'s shapes, the catalog's curation and level grouping, the explained refusals (pure); the flow, the token cache, the project lookup and the catalog fetch (`docs/antigravity.md`) | split |
@@ -338,19 +338,25 @@ Enter does to the session and to the directory (`docs/session-model.md`,
   fetched; an older one — or a self-hosted server's, at any age — is shown
   **and** fetched again behind it, the counter saying `refreshing…`; a
   provider with nothing kept is fetched as before. The fetches run **in
-  parallel** — one worker thread each (the image-paste pattern), all sharing
-  one cancel token, each writing its provider's listing to the cache as it
-  lands — and merge into a single provider-tagged list (`App::begin_model_round`
-  up front, then `App::finish_model_fetch` per result on a dedicated channel,
-  each result naming its **round** so an earlier round's or a closed picker's
-  is dropped). A listing **replaces** its provider's rows. The picker shows
+  parallel** — one worker thread each (the image-paste pattern), each with
+  its own cancel token and a ticket in the session's ledger
+  (`model_cache::FetchLedger`) — and **outlive the picker**: an answer that
+  is still its provider's live fetch is written to the cache by the loop as
+  it lands, a reopen waits on a fetch still out rather than asking again,
+  and a `/login` save retires the fetch its credential replaced. They merge
+  into a single provider-tagged list (`App::begin_model_round` up front,
+  then `App::finish_model_fetch` per answer on a dedicated channel, taken
+  only for a provider the open picker is waiting on). A listing **replaces**
+  its provider's rows. The picker shows
   `Loading models…` until the **first** provider has rows, then the list —
   growing and re-sorting (by id, then provider; exact `(provider, id)` dupes
   dropped) as the rest arrive. The highlight re-seats on the active model as
   lists land until the user moves or types (`ModelPicker::touched`), then
   rides the row it is on. **Ctrl+R** asks every provider again whatever the
   cache says (not a plain `r`, which has to keep typing into the search), the
-  rows on screen staying put until each answer replaces its own.
+  rows on screen staying put until each answer replaces its own, and an open
+  picker redraws every ten seconds with no key pressed, so a list that ages
+  past a minute while it is read says so (`updated 1m ago`).
   A **search that matches nothing in the partial list keeps saying
   `Loading models…`** until every provider has answered: a list that is still
   arriving cannot prove a query has no match, and `No matching models` shown

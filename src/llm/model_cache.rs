@@ -7,6 +7,7 @@
 //! ([`listing_source`]) and the file it lives in ([`file_name`]). The reads
 //! and the writes are the boundary's (`tui::config`), and so is the clock.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize, Serializer};
@@ -15,6 +16,7 @@ use super::config::ModelConfig;
 use super::models::ModelEntry;
 use super::reasoning::{ReasoningEffort, ReasoningSupport};
 use super::service_tier::ServiceTier;
+use crate::stream::CancelToken;
 
 /// The cache file's format version. A file of any other version is no cache
 /// at all: its provider is fetched as though nothing had been kept.
@@ -125,11 +127,10 @@ pub fn freshness(
     if listing.source != source {
         return Freshness::Unusable;
     }
-    let age = now - listing.fetched_at;
-    if self_hosted
-        || listing.app_version != app_version
-        || !(0..MODEL_CACHE_TTL_SECS).contains(&age)
-    {
+    let young = now
+        .checked_sub(listing.fetched_at)
+        .is_some_and(|age| (0..MODEL_CACHE_TTL_SECS).contains(&age));
+    if self_hosted || listing.app_version != app_version || !young {
         Freshness::Stale
     } else {
         Freshness::Fresh
@@ -190,6 +191,143 @@ pub fn file_name(provider: &str) -> String {
     } else {
         let digest = crate::trust::fingerprint(provider.as_bytes());
         format!("{}.json", digest.trim_start_matches("sha256:"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The fetches still out
+// ---------------------------------------------------------------------------
+
+/// How long, in seconds, a list fetch may stay out before an open stops
+/// waiting on it and asks again. A listing is one request (a few, for
+/// Ollama's `/api/show` walk) and answers in seconds; one that has not in a
+/// minute is a worker that will never report, and it must not hold its
+/// provider for the rest of the session.
+pub const FETCH_GIVE_UP_SECS: i64 = 60;
+
+/// What an open (or a Ctrl+R) does about one provider's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchPlan {
+    /// Nothing: the kept list is fresh.
+    Keep,
+    /// Wait on the fetch already out for it — the picker shows the kept rows
+    /// meanwhile, and asking again would only be a second request for the
+    /// same answer.
+    Await,
+    /// Start a fetch.
+    Start,
+}
+
+/// What to do about one provider's list (`docs/model-cache.md`): wait on a
+/// fetch already `out` for it from the same source, whatever else holds;
+/// else keep a `Fresh` kept list as it is, unless `force` (Ctrl+R) says ask
+/// anyway; else start a fetch. `kept` is what its kept listing is worth,
+/// `None` when nothing was kept.
+#[must_use]
+pub fn plan(kept: Option<Freshness>, out: bool, force: bool) -> FetchPlan {
+    if out {
+        FetchPlan::Await
+    } else if !force && kept == Some(Freshness::Fresh) {
+        FetchPlan::Keep
+    } else {
+        FetchPlan::Start
+    }
+}
+
+/// The list fetches still out: one live **ticket** per provider
+/// (`docs/model-cache.md`). A fetch outlives the picker that started it —
+/// what it reads is no less true for the picker having closed — so whether
+/// its answer is kept and shown is decided when it lands, by whether its
+/// ticket is still the provider's live one. A newer fetch for the provider
+/// supersedes it, and a `/login` save of the provider's credential, or an
+/// open that will not wait on it, retires it: either way it is cancelled,
+/// and whatever it brings is neither kept nor shown.
+#[derive(Debug, Default)]
+pub struct FetchLedger {
+    next: u64,
+    live: BTreeMap<String, LiveFetch>,
+}
+
+/// One provider's fetch still out.
+#[derive(Debug)]
+struct LiveFetch {
+    ticket: u64,
+    /// What it reads from ([`listing_source`]).
+    source: String,
+    /// When it started, in Unix seconds.
+    started_at: i64,
+    /// Its own cancel flag, raised when it is superseded or retired.
+    cancel: CancelToken,
+}
+
+impl FetchLedger {
+    /// Open a ticket for a fetch of `provider`'s list from `source`, started
+    /// at `now`, superseding — and cancelling — any fetch still out for it.
+    /// The ticket names the fetch's answer; the token is the fetch's own.
+    pub fn issue(&mut self, provider: &str, source: &str, now: i64) -> (u64, CancelToken) {
+        self.next += 1;
+        let cancel = CancelToken::new();
+        let fetch = LiveFetch {
+            ticket: self.next,
+            source: source.to_string(),
+            started_at: now,
+            cancel: cancel.clone(),
+        };
+        if let Some(superseded) = self.live.insert(provider.to_string(), fetch) {
+            superseded.cancel.cancel();
+        }
+        (self.next, cancel)
+    }
+
+    /// Whether a fetch of `provider`'s list from `source` is out and young
+    /// enough at `now` to be waited on — under [`FETCH_GIVE_UP_SECS`] old,
+    /// by a clock that has not moved back past its start.
+    #[must_use]
+    pub fn awaits(&self, provider: &str, source: &str, now: i64) -> bool {
+        self.live.get(provider).is_some_and(|fetch| {
+            fetch.source == source
+                && now
+                    .checked_sub(fetch.started_at)
+                    .is_some_and(|age| (0..FETCH_GIVE_UP_SECS).contains(&age))
+        })
+    }
+
+    /// What an open does about the fetch out for `provider`: waits on it —
+    /// `true` — when [`awaits`](Self::awaits) says it may, and otherwise
+    /// retires it. An answer nobody waits on could only land over the list
+    /// the open kept instead: one from where the provider no longer points,
+    /// or one given up on.
+    pub fn await_or_retire(&mut self, provider: &str, source: &str, now: i64) -> bool {
+        let waits = self.awaits(provider, source, now);
+        if !waits {
+            self.retire(provider);
+        }
+        waits
+    }
+
+    /// A fetch of `provider`'s list landed with `ticket`: the source it read
+    /// when the ticket is the provider's live one, which closes — `None` for
+    /// a superseded, retired or unknown ticket, whose answer nobody wants.
+    pub fn settle(&mut self, provider: &str, ticket: u64) -> Option<String> {
+        if self.live.get(provider)?.ticket != ticket {
+            return None;
+        }
+        self.live.remove(provider).map(|fetch| fetch.source)
+    }
+
+    /// Retire the fetch out for `provider`, if any: it is cancelled, and
+    /// whatever it brings is neither kept nor shown.
+    pub fn retire(&mut self, provider: &str) {
+        if let Some(fetch) = self.live.remove(provider) {
+            fetch.cancel.cancel();
+        }
+    }
+
+    /// Cancel every fetch still out — the app is quitting.
+    pub fn cancel_all(&mut self) {
+        for fetch in std::mem::take(&mut self.live).into_values() {
+            fetch.cancel.cancel();
+        }
     }
 }
 
@@ -557,6 +695,181 @@ mod tests {
             freshness(&kept, "sha256:elsewhere", VERSION, NOW, true),
             Freshness::Unusable
         );
+    }
+
+    #[test]
+    fn a_listing_dated_at_the_edge_of_time_is_stale_not_a_panic() {
+        // A hand-edited file can hold anything an i64 can; the age is
+        // checked arithmetic, never a debug-build overflow.
+        let mut kept = listing(Vec::new());
+        for at in [i64::MIN, i64::MAX] {
+            kept.fetched_at = at;
+            assert_eq!(
+                freshness(&kept, "sha256:source", VERSION, NOW, false),
+                Freshness::Stale,
+                "{at}"
+            );
+        }
+    }
+
+    // --- the fetches still out ---
+
+    const SOURCE: &str = "sha256:source";
+
+    #[test]
+    fn a_fetch_answers_its_live_ticket_once() {
+        let mut ledger = FetchLedger::default();
+        let (ticket, cancel) = ledger.issue("openrouter", SOURCE, NOW);
+        assert!(!cancel.is_cancelled());
+        assert_eq!(ledger.settle("openrouter", ticket).as_deref(), Some(SOURCE));
+        assert_eq!(
+            ledger.settle("openrouter", ticket),
+            None,
+            "a ticket closes when it settles"
+        );
+    }
+
+    #[test]
+    fn a_newer_fetch_supersedes_and_cancels_the_one_out() {
+        let mut ledger = FetchLedger::default();
+        let (old, old_cancel) = ledger.issue("openrouter", SOURCE, NOW);
+        let (new, new_cancel) = ledger.issue("openrouter", SOURCE, NOW + 1);
+        assert_ne!(old, new);
+        assert!(old_cancel.is_cancelled(), "the superseded fetch stops");
+        assert!(!new_cancel.is_cancelled());
+        assert_eq!(
+            ledger.settle("openrouter", old),
+            None,
+            "its answer is nobody's"
+        );
+        assert_eq!(ledger.settle("openrouter", new).as_deref(), Some(SOURCE));
+    }
+
+    #[test]
+    fn a_retired_fetch_is_cancelled_and_its_answer_dropped() {
+        // A `/login` save retires the fetch out for every provider the saved
+        // variable configures: what it brings was read with the old key.
+        let mut ledger = FetchLedger::default();
+        let (ticket, cancel) = ledger.issue("openrouter", SOURCE, NOW);
+        ledger.retire("openrouter");
+        assert!(cancel.is_cancelled());
+        assert_eq!(ledger.settle("openrouter", ticket), None);
+        ledger.retire("never_issued");
+    }
+
+    #[test]
+    fn tickets_belong_to_their_provider() {
+        let mut ledger = FetchLedger::default();
+        let (a, a_cancel) = ledger.issue("openrouter", SOURCE, NOW);
+        let (b, _) = ledger.issue("chatgpt_codex", SOURCE, NOW);
+        assert!(
+            !a_cancel.is_cancelled(),
+            "another provider's fetch supersedes nothing"
+        );
+        assert_eq!(ledger.settle("chatgpt_codex", a), None);
+        assert!(ledger.settle("openrouter", a).is_some());
+        assert!(ledger.settle("chatgpt_codex", b).is_some());
+    }
+
+    #[test]
+    fn an_open_waits_on_a_young_fetch_from_the_same_source() {
+        let mut ledger = FetchLedger::default();
+        ledger.issue("openrouter", SOURCE, NOW);
+        assert!(ledger.awaits("openrouter", SOURCE, NOW));
+        assert!(ledger.awaits("openrouter", SOURCE, NOW + FETCH_GIVE_UP_SECS - 1));
+        assert!(
+            !ledger.awaits("openrouter", "sha256:elsewhere", NOW),
+            "another server's fetch is not this list"
+        );
+        assert!(!ledger.awaits("chatgpt_codex", SOURCE, NOW));
+    }
+
+    #[test]
+    fn a_fetch_out_too_long_is_given_up_on() {
+        // A worker that never answers must not hold its provider for the
+        // rest of the session: past the limit an open asks again.
+        let mut ledger = FetchLedger::default();
+        ledger.issue("openrouter", SOURCE, NOW);
+        assert!(!ledger.awaits("openrouter", SOURCE, NOW + FETCH_GIVE_UP_SECS));
+        assert!(
+            !ledger.awaits("openrouter", SOURCE, NOW - 5),
+            "a clock moved back cannot vouch for it either"
+        );
+    }
+
+    #[test]
+    fn an_open_retires_a_fetch_it_will_not_wait_on() {
+        // An open that does not wait on the fetch out may keep its list
+        // instead (a fresh one), and an answer nobody waits on could then
+        // only land over it: a list from where the provider no longer
+        // points, or one given up on.
+        let mut ledger = FetchLedger::default();
+        let (moved, moved_cancel) = ledger.issue("openrouter", "sha256:elsewhere", NOW);
+        assert!(!ledger.await_or_retire("openrouter", SOURCE, NOW));
+        assert!(moved_cancel.is_cancelled());
+        assert_eq!(ledger.settle("openrouter", moved), None);
+
+        let (old, old_cancel) = ledger.issue("chatgpt_codex", SOURCE, NOW);
+        assert!(!ledger.await_or_retire("chatgpt_codex", SOURCE, NOW + FETCH_GIVE_UP_SECS));
+        assert!(old_cancel.is_cancelled());
+        assert_eq!(ledger.settle("chatgpt_codex", old), None);
+    }
+
+    #[test]
+    fn an_open_keeps_the_fetch_it_waits_on() {
+        let mut ledger = FetchLedger::default();
+        let (ticket, cancel) = ledger.issue("openrouter", SOURCE, NOW);
+        assert!(ledger.await_or_retire("openrouter", SOURCE, NOW + 1));
+        assert!(!cancel.is_cancelled());
+        assert_eq!(
+            ledger.settle("openrouter", ticket),
+            Some(SOURCE.to_string())
+        );
+        assert!(
+            !ledger.await_or_retire("openrouter", SOURCE, NOW + 2),
+            "nothing is out once it settled"
+        );
+    }
+
+    #[test]
+    fn quitting_cancels_every_fetch_out() {
+        let mut ledger = FetchLedger::default();
+        let (_, a) = ledger.issue("openrouter", SOURCE, NOW);
+        let (_, b) = ledger.issue("chatgpt_codex", SOURCE, NOW);
+        ledger.cancel_all();
+        assert!(a.is_cancelled() && b.is_cancelled());
+    }
+
+    // --- what an open does about each provider ---
+
+    #[test]
+    fn a_fresh_list_is_kept_without_a_fetch() {
+        assert_eq!(plan(Some(Freshness::Fresh), false, false), FetchPlan::Keep);
+    }
+
+    #[test]
+    fn anything_but_a_fresh_list_starts_a_fetch() {
+        for kept in [None, Some(Freshness::Stale), Some(Freshness::Unusable)] {
+            assert_eq!(plan(kept, false, false), FetchPlan::Start, "{kept:?}");
+        }
+        assert_eq!(
+            plan(Some(Freshness::Fresh), false, true),
+            FetchPlan::Start,
+            "Ctrl+R asks whatever the cache says"
+        );
+    }
+
+    #[test]
+    fn a_fetch_already_out_is_waited_on_rather_than_asked_again() {
+        for kept in [None, Some(Freshness::Fresh), Some(Freshness::Stale)] {
+            for force in [false, true] {
+                assert_eq!(
+                    plan(kept, true, force),
+                    FetchPlan::Await,
+                    "{kept:?} force={force}"
+                );
+            }
+        }
     }
 
     // --- what a listing is fetched from ---

@@ -27,6 +27,7 @@ fn provider_list(
     ProviderList {
         id: name.to_lowercase().replace(' ', "_"),
         name: name.into(),
+        source: String::new(),
         listed_at,
         fetching,
         error: error.map(str::to_string),
@@ -1229,4 +1230,14 @@ fn a_page_where_every_provider_failed_offers_to_try_again() {
         .position(|t| t == "  OpenRouter: HTTP 500")
         .expect("the reason row");
     assert_eq!(texts[at + 1], "  ctrl+r to try again", "{texts:#?}");
+}
+
+#[test]
+fn a_list_dated_at_the_edge_of_time_names_no_age() {
+    // A hand-edited cache can date a list anywhere an i64 reaches: the age
+    // is checked arithmetic, never a debug-build overflow, and a list whose
+    // age cannot be told names none.
+    let mut picker = kept_picker(0, false, None);
+    picker.lists[0].listed_at = Some(i64::MIN);
+    assert_eq!(counter_row(&picker, 90), "    (1/3)");
 }

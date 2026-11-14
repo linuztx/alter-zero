@@ -487,18 +487,17 @@ fn all_failed_picker_height_covers_each_error_row() {
     let load = |id: &str, name: &str| crate::app::ProviderLoad {
         id: id.into(),
         name: name.into(),
+        source: String::new(),
         listed_at: None,
         models: Vec::new(),
         fetch: true,
     };
-    let round = app
-        .begin_model_round(vec![
-            load("openrouter", "OpenRouter"),
-            load("a0_venice", "Agent Zero API"),
-        ])
-        .unwrap();
-    app.finish_model_fetch(round, "openrouter", Err("HTTP 500".into()), 0);
-    app.finish_model_fetch(round, "a0_venice", Err("HTTP 401".into()), 0);
+    app.begin_model_round(vec![
+        load("openrouter", "OpenRouter"),
+        load("a0_venice", "Agent Zero API"),
+    ]);
+    app.finish_model_fetch("openrouter", Err("HTTP 500".into()), 0);
+    app.finish_model_fetch("a0_venice", Err("HTTP 401".into()), 0);
     // The placeholder page's chrome — rule, title, subtitle, gap, search,
     // gap, rule (7) — + 2 error rows + the `ctrl+r to try again` row = 10.
     assert_eq!(model_picker_height(&app, 74, 40), Some(10));

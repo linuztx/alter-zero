@@ -816,9 +816,11 @@ fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
 /// And last, whether the page offers Ctrl+R — nothing is out, and the lists
 /// are old enough to be worth asking for again or a provider failed.
 fn list_notes(picker: &ModelPicker, progress: bool) -> (Vec<(String, Color)>, bool) {
+    // Checked: a hand-edited cache can date a list anywhere an i64 reaches,
+    // and an age that cannot be told is not shown.
     let age = picker
         .listed_at()
-        .map(|at| picker.now - at)
+        .and_then(|at| picker.now.checked_sub(at))
         .filter(|age| *age >= MODEL_AGE_SHOWN_SECS);
     let mut notes = Vec::new();
     if let Some(age) = age {

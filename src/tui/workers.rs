@@ -12,7 +12,7 @@
 //!   (`docs/file-search.md`), fed by [`dispatch_file_search`].
 //! - [`spawn_image_paste`] — one Ctrl+V clipboard read (`docs/image-paste.md`).
 //! - [`spawn_model_fetch`] — one provider's model list for the `/model`
-//!   picker, kept in the cache as it lands (`docs/llm.md`,
+//!   picker, outliving the picker that asked (`docs/llm.md`,
 //!   `docs/model-cache.md`); [`spawn_probe_fetch`] — the active provider's,
 //!   for the startup capability probe.
 //! - [`spawn_signin`] — the `/login` subscription sign-in (`docs/copilot.md`,
@@ -42,33 +42,56 @@ use alter_zero::stream::CancelToken;
 use super::Session;
 
 /// A finished `/model` fetch from one provider, carried on the model-fetch
-/// worker's channel: the round it answers (the picker drops another
-/// round's), the provider's id, when it was listed — the date the cache
-/// keeps it under — and the provider's models or a one-line error. The
-/// picker fetches every configured provider in parallel and merges these as
-/// they land. See `docs/llm.md`, `docs/model-cache.md`.
+/// worker's channel: the provider's id, the ledger ticket it answers (the
+/// loop drops it unless that is still the provider's live fetch), when it
+/// was listed — the date the cache keeps it under — and the provider's
+/// models or a one-line error. The picker fetches every configured provider
+/// in parallel and merges these as they land. See `docs/llm.md`,
+/// `docs/model-cache.md`.
 #[derive(Debug)]
 pub(crate) struct ModelFetch {
-    pub(crate) round: u64,
     pub(crate) provider: String,
+    pub(crate) ticket: u64,
     pub(crate) listed_at: i64,
     pub(crate) result: Result<Vec<ModelEntry>, String>,
 }
 
 /// One provider's fetch in a `/model` round, as the boundary plans it
-/// (`ModelSession::model_round`): the config it is fetched with, and where
-/// its listing is kept once it lands — `None` with no config home.
+/// (`ModelSession::model_round`): the ledger ticket its answer names, the
+/// config it is fetched with, and its own cancel flag — raised when a newer
+/// fetch supersedes it, a `/login` save retires it, or the app quits.
 pub(crate) struct ModelFetchJob {
     pub(crate) provider: String,
+    pub(crate) ticket: u64,
     pub(crate) cfg: Option<ModelConfig>,
-    pub(crate) cache: Option<CacheTarget>,
+    pub(crate) cancel: CancelToken,
 }
 
-/// Where a fetched listing is kept, and what it was fetched from
-/// (`llm::model_cache::listing_source`).
-pub(crate) struct CacheTarget {
-    pub(crate) dir: PathBuf,
-    pub(crate) source: String,
+/// What a fetch that panicked answers: a fetch that never reports would
+/// leave its provider waiting until the ledger gives up on it
+/// (`FETCH_GIVE_UP_SECS`), so a worker unwinding still sends this.
+pub(crate) const MODEL_FETCH_CRASHED: &str = "the model list fetch stopped unexpectedly";
+
+/// Sends [`MODEL_FETCH_CRASHED`] for its fetch if the worker unwinds before
+/// it reports — a panic in a listing's parse is the case it exists for. It
+/// sends nothing on an ordinary exit: there the worker reports itself.
+struct AnswerOnPanic {
+    provider: String,
+    ticket: u64,
+    tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
+}
+
+impl Drop for AnswerOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = self.tx.send(ModelFetch {
+                provider: std::mem::take(&mut self.provider),
+                ticket: self.ticket,
+                listed_at: super::host::unix_secs_signed(),
+                result: Err(MODEL_FETCH_CRASHED.to_string()),
+            });
+        }
+    }
 }
 
 /// The startup capability probe's answer: the provider it fetched and
@@ -673,45 +696,34 @@ fn fetch_list(cfg: Option<&ModelConfig>, cancel: &CancelToken) -> Result<Vec<Mod
     }
 }
 
-/// Fetch one provider's `/models` list for the `/model` picker's `round` on
-/// a background thread (the image-paste pattern), keep it in the cache, and
-/// send it to the loop. One of these is spawned per provider the round
-/// fetches, so they fetch in parallel. The cache is written here, off the
-/// loop, one file per provider, so the parallel workers never write the
-/// same file. A fetch cancelled before it lands — the picker closed, a
-/// newer round began — keeps **nothing** and sends nothing: closing the
-/// picker may be the start of a `/login` save that drops the provider's
-/// kept list, and a listing read with the credential that save replaced,
-/// written after it, would pass for fresh for an hour. See `docs/llm.md`,
-/// `docs/model-cache.md`.
+/// Fetch one provider's `/models` list on a background thread (the
+/// image-paste pattern) and send it to the loop, which keeps it and shows it
+/// if it is still the provider's live fetch when it lands
+/// (`Session::on_model_fetch`). One of these is spawned per provider a round
+/// starts, so they fetch in parallel, and each **outlives** the picker that
+/// started it: what it reads is no less true for the picker having closed,
+/// and a reopen waits on it rather than asking again. A cancelled fetch —
+/// superseded, retired by a `/login` save, or the app quitting — sends
+/// nothing; one that panics still answers ([`AnswerOnPanic`]). See
+/// `docs/llm.md`, `docs/model-cache.md`.
 pub(crate) fn spawn_model_fetch(
-    round: u64,
     job: ModelFetchJob,
-    cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
 ) {
     std::thread::spawn(move || {
-        let mut result = fetch_list(job.cfg.as_ref(), &cancel);
-        // `fetch_models` stops at the headers when cancelled, but a body
-        // still arriving then is read to its end — so ask again here.
-        if cancel.is_cancelled() {
+        let _answer = AnswerOnPanic {
+            provider: job.provider.clone(),
+            ticket: job.ticket,
+            tx: tx.clone(),
+        };
+        let result = fetch_list(job.cfg.as_ref(), &job.cancel);
+        if job.cancel.is_cancelled() {
             return;
         }
-        let listed_at = super::host::unix_secs_signed();
-        if let (Ok(models), Some(cache)) = (result.as_mut(), job.cache) {
-            let listing = llm::model_cache::CachedListing {
-                fetched_at: listed_at,
-                app_version: env!("CARGO_PKG_VERSION").to_string(),
-                source: cache.source,
-                models: std::mem::take(models),
-            };
-            super::config::store_model_listing(&cache.dir, &job.provider, &listing);
-            *models = listing.models;
-        }
         let _ = tx.send(ModelFetch {
-            round,
             provider: job.provider,
-            listed_at,
+            ticket: job.ticket,
+            listed_at: super::host::unix_secs_signed(),
             result,
         });
     });
@@ -826,7 +838,42 @@ pub(crate) fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
 
 #[cfg(test)]
 mod tests {
-    use super::walk_files;
+    use super::{AnswerOnPanic, MODEL_FETCH_CRASHED, ModelFetch, walk_files};
+
+    #[test]
+    fn a_model_fetch_that_panics_still_answers() {
+        // A worker that dies mid-fetch must not leave its provider waiting
+        // on an answer that never comes: the guard answers as it unwinds
+        // (docs/model-cache.md).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = std::thread::spawn(move || {
+            let _answer = AnswerOnPanic {
+                provider: "openrouter".into(),
+                ticket: 7,
+                tx,
+            };
+            panic!("a listing's parse fell over");
+        });
+        assert!(worker.join().is_err(), "the worker panicked");
+        let fetch: ModelFetch = rx.try_recv().expect("the guard answered");
+        assert_eq!(fetch.provider, "openrouter");
+        assert_eq!(fetch.ticket, 7);
+        assert_eq!(fetch.result.unwrap_err(), MODEL_FETCH_CRASHED);
+    }
+
+    #[test]
+    fn a_model_fetch_that_ends_normally_leaves_the_answer_to_the_worker() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        drop(AnswerOnPanic {
+            provider: "openrouter".into(),
+            ticket: 7,
+            tx,
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing is sent on an ordinary exit"
+        );
+    }
 
     /// A temp tree of four listable entries — two files at the top, a
     /// directory holding a third — beside a hidden file and a denylisted

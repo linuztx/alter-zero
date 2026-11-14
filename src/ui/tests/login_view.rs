@@ -58,6 +58,7 @@ fn counter_notes_more_providers_still_loading() {
     picker.lists.push(ProviderList {
         id: "a0_venice".into(),
         name: "Agent Zero API".into(),
+        source: String::new(),
         listed_at: None,
         fetching: true,
         error: None,
@@ -75,6 +76,7 @@ fn counter_notes_a_provider_that_failed() {
     picker.lists.push(ProviderList {
         id: "a0_venice".into(),
         name: "Agent Zero API".into(),
+        source: String::new(),
         listed_at: None,
         fetching: false,
         error: Some("HTTP 401".into()),
@@ -105,6 +107,7 @@ fn all_failed_picker_shows_one_red_row_per_provider() {
     .map(|(id, name, error)| ProviderList {
         id: id.into(),
         name: name.into(),
+        source: String::new(),
         listed_at: None,
         fetching: false,
         error: Some(error.into()),
