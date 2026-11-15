@@ -604,3 +604,109 @@ fn an_idle_conversation_asks_for_no_animation_frames() {
     assert!(!app.turn_active());
     assert!(!app.wants_animation_frames());
 }
+
+// --- ←/→ in the Ctrl+O transcript (docs/transcript-navigation.md) ---
+
+#[test]
+fn left_and_right_queue_a_step_between_transcript_entries() {
+    // Ctrl+D's step, in the transcript pager: the key records only the
+    // direction, since where the neighbouring entry starts is a fact about
+    // the transcript as built — its width, its wrapping — so the draw
+    // resolves it.
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
+    assert_eq!(app.tool_jump, Some(EntryJump::Previous));
+    assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
+    assert_eq!(
+        app.tool_jump,
+        Some(EntryJump::Next),
+        "the newest press wins"
+    );
+}
+
+#[test]
+fn a_backtrack_preview_keeps_left_and_right_for_its_own_steps() {
+    // While a preview highlights a user message, ← and → step the highlight
+    // (docs/backtrack.md); they queue no transcript step there.
+    let mut app = App::new();
+    exchange(&mut app, "first", "a");
+    exchange(&mut app, "second", "b");
+    app.on_key(ctrl('o'));
+    app.on_key(key(KeyCode::Esc)); // idle with a target: begins the preview
+    assert_eq!(app.backtrack.selected, Some(1));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(app.backtrack.selected, Some(0), "← steps the highlight");
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.backtrack.selected, Some(1), "→ steps it back");
+    assert_eq!(app.tool_jump, None, "no transcript step was queued");
+}
+
+#[test]
+fn a_transcript_step_lands_on_the_neighbouring_entrys_first_row() {
+    // The resolve rule is Ctrl+D's: ← goes to the entry start above the
+    // window's top row — the entry being read, else the one before it — and
+    // → to the next start below it; a step unpins the tail.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.settle_tool_scroll(40); // tail-following: the top row is 40
+    app.on_key(key(KeyCode::Left));
+    app.resolve_tool_jump(&rows, 40);
+    assert_eq!(app.tool_scroll, 30, "the last entry's first row");
+    assert!(!app.tool_follow, "a step unpins the tail");
+    assert_eq!(app.tool_jump, None, "the step is spent");
+    app.on_key(key(KeyCode::Left));
+    app.resolve_tool_jump(&rows, 40);
+    assert_eq!(app.tool_scroll, 14);
+    // In the middle of an entry, ← goes back to its own first row first.
+    app.tool_scroll = 9;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_tool_jump(&rows, 40);
+    assert_eq!(app.tool_scroll, 6);
+    app.on_key(key(KeyCode::Right));
+    app.resolve_tool_jump(&rows, 40);
+    assert_eq!(app.tool_scroll, 14);
+}
+
+#[test]
+fn a_transcript_step_past_either_end_stops_at_the_page_edge() {
+    let rows = [2, 10, 25];
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.tool_follow = false;
+    app.tool_scroll = 1;
+    app.on_key(key(KeyCode::Left));
+    app.resolve_tool_jump(&rows, 20);
+    assert_eq!(app.tool_scroll, 0, "nothing above: the top");
+    // A start the window cannot put at its top lands on the end, and the
+    // end re-engages tail-follow as End does.
+    app.tool_scroll = 10;
+    app.on_key(key(KeyCode::Right));
+    app.resolve_tool_jump(&rows, 20);
+    app.settle_tool_scroll(20);
+    assert_eq!(app.tool_scroll, 20);
+    assert!(app.tool_follow, "the end re-engages tail-follow");
+}
+
+#[test]
+fn nothing_pending_resolves_no_transcript_step() {
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.tool_follow = false;
+    app.tool_scroll = 7;
+    app.resolve_tool_jump(&[0, 3], 20);
+    assert_eq!(app.tool_scroll, 7);
+    assert!(!app.tool_follow);
+}
+
+#[test]
+fn a_pending_transcript_step_never_outlives_the_view() {
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.on_key(key(KeyCode::Right));
+    app.on_key(ctrl('o')); // close
+    assert_eq!(app.tool_jump, None, "a close drops it");
+    app.on_key(ctrl('o')); // reopen
+    assert_eq!(app.tool_jump, None, "and the reopen starts clean");
+}

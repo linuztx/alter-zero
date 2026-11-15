@@ -187,10 +187,18 @@ pub fn hook_report_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> 
 /// text it added and an error row without the name the line above gives
 /// ([`crate::hooks::RanHook::row_under`]); then the configuration's
 /// problems. Never folded.
-pub(super) fn hook_report_full_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> {
+///
+/// Returned with how many of its rows are the `● Ran {n} {event} hooks`
+/// header — what the transcript pins over a window opening inside the cell
+/// (`docs/transcript-navigation.md`).
+pub(super) fn hook_report_full_cell(
+    report: &HookReport,
+    width: u16,
+) -> (Vec<Line<'static>>, usize) {
     let wrap = body_width(width);
     let dim = Some(tool_dim_color());
     let mut lines = header_lines(report, width, false);
+    let header = lines.len();
     for hook in &report.hooks {
         let ran = format!("{} ({})", hook.command, hook_duration(hook.millis));
         let mut rows = wrap_output(&expand_code_tabs(&ran), wrap);
@@ -216,7 +224,14 @@ pub(super) fn hook_report_full_lines(report: &HookReport, width: u16) -> Vec<Lin
     for warning in &report.warnings {
         lines.extend(Row::warning(warning).lines(wrap));
     }
-    lines
+    (lines, header)
+}
+
+/// [`hook_report_full_cell`]'s rows alone. Test-only: the transcript takes
+/// the header's height with them.
+#[cfg(test)]
+pub(super) fn hook_report_full_lines(report: &HookReport, width: u16) -> Vec<Line<'static>> {
+    hook_report_full_cell(report, width).0
 }
 
 /// How long a hook ran, in the unit that reads: `412ms` under a second,

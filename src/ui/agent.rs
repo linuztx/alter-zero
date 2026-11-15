@@ -620,25 +620,30 @@ pub(super) fn agent_cell_lines(
 }
 
 /// A committed [`crate::app::AgentGroup`]'s Ctrl+O expansion: one
-/// [`agent_cell_lines`] cell per entry, blank-separated.
-pub(super) fn agent_group_full_lines(
+/// [`agent_cell_lines`] cell per entry, in order — the transcript sets them
+/// blank-separated, each its own entry under its `● Agent(…)` header
+/// ([`AGENT_CELL_HEADER_ROWS`], `docs/transcript-navigation.md`).
+pub(super) fn agent_group_full_cells(
     group: &crate::app::AgentGroup,
     width: u16,
     paths: &PathDisplay,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for (i, entry) in group.agents.iter().enumerate() {
-        if i > 0 {
-            lines.push(Line::default());
-        }
-        lines.extend(agent_cell_lines(
-            &AgentCellView::of_entry(entry, group.background),
-            width,
-            paths,
-        ));
-    }
-    lines
+) -> Vec<Vec<Line<'static>>> {
+    group
+        .agents
+        .iter()
+        .map(|entry| {
+            agent_cell_lines(
+                &AgentCellView::of_entry(entry, group.background),
+                width,
+                paths,
+            )
+        })
+        .collect()
 }
+
+/// The rows of an [`agent_cell_lines`] cell's header: the one
+/// `● Agent({description}) · {id}` row, never wrapped.
+pub(super) const AGENT_CELL_HEADER_ROWS: usize = 1;
 
 /// How many rows the footer's agent roster occupies: 0 with no visible
 /// agents, else a blank spacer + the `● main` row + one row per agent.

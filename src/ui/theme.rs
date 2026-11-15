@@ -819,9 +819,25 @@ pub(super) const TOOL_VIEW_TITLE_ROWS: u16 = 1;
 /// percentage, two key-hint rows, and the final blank row (codex's pager).
 pub(super) const TOOL_VIEW_FOOTER_ROWS: u16 = 4;
 
-/// First key-hint row under the separator (codex's pager hints, all dim).
+/// First key-hint row under the separator (codex's pager hints, all dim),
+/// with Ctrl+D's entry step: ←/→ open the previous or next entry — a
+/// message, a tool call, a thought — at the window's top
+/// (`docs/transcript-navigation.md`).
 pub(super) const TOOL_VIEW_HINT_KEYS: &str =
+    " ↑/↓ to scroll   ←/→ prev/next entry   pgup/pgdn to page   home/end to jump";
+
+/// The first key-hint row while a backtrack preview highlights a user
+/// message: ← and → step the highlight then ([`TOOL_VIEW_HINT_BACKTRACK`]
+/// says so on the row under it), so this one names only the scroll keys.
+pub(super) const TOOL_VIEW_HINT_SCROLL_KEYS: &str =
     " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump";
+
+/// The most header rows the transcript pins over a window that opens inside
+/// a cell — the inline cell's own ceiling ([`TOOL_HEADER_MAX_ROWS`]), so a
+/// wrapped command pins as the two rows the conversation showed it in, and a
+/// taller header pins its first two, the second ending on
+/// [`TOOL_HEADER_ELLIPSIS`] (`docs/transcript-navigation.md`).
+pub(super) const TRANSCRIPT_PIN_MAX_ROWS: usize = TOOL_HEADER_MAX_ROWS;
 
 /// Second key-hint row: every key that closes the overlay.
 pub(super) const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
@@ -866,9 +882,10 @@ pub(super) const CONTEXT_VIEW_AGENT_SEPARATOR: &str = " · ";
 /// See [`CONTEXT_VIEW_AGENT_SEPARATOR`].
 pub(super) const CONTEXT_VIEW_AGENT_SUFFIX: &str = " agent";
 
-/// First key-hint row — the pager's ([`TOOL_VIEW_HINT_KEYS`]) with the
-/// message step added, since a window of a few dozen entries is thousands
-/// of rows and ←/→ open the previous or next one at the top.
+/// First key-hint row — the transcript pager's ([`TOOL_VIEW_HINT_KEYS`]),
+/// its step naming what every entry here is: a window of a few dozen
+/// messages is thousands of rows, and ←/→ open the previous or next one at
+/// the top.
 pub(super) const CONTEXT_VIEW_HINT_KEYS: &str =
     " ↑/↓ to scroll   ←/→ prev/next message   pgup/pgdn to page   home/end to jump";
 

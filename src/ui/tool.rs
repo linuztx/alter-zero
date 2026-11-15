@@ -69,7 +69,7 @@ fn running_blink(status: ToolStatus, pulse: Option<Duration>) -> Option<Duration
 /// the normal reply white ([`tool_args_color`]) so a `bash` command reads
 /// clearly, the framing `(`/`)` left a dim [`tool_dim_color`] delimiter. Shared
 /// by the inline collapsed view ([`tool_lines`]) and the full-screen transcript
-/// ([`tool_full_lines`]).
+/// ([`tool_full_cell`]).
 ///
 /// When the header overflows `width` the args **wrap** across continuation
 /// rows, each indented to align **under the opening `(`** (the width of
@@ -820,7 +820,7 @@ pub(super) fn live_tool_lines(
 /// — a parallel run's aggregated line never carried the note either, and in
 /// auto mode every server call resolves noted, so the row doubled each cell
 /// into pure noise). The record survives where the full story lives — the
-/// Ctrl+O transcript ([`tool_full_lines`]), the rollout, a `/resume` — and a
+/// Ctrl+O transcript ([`tool_full_cell`]), the rollout, a `/resume` — and a
 /// *failed* MCP call keeps the note on its loud generic cell, where it still
 /// explains why the call ran at all.
 fn tool_cell_lines(
@@ -1511,22 +1511,39 @@ fn result_peek_block(
 /// above it); a backend tool keeps its coloured `● name(args)` header over the
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
+///
+/// Returned with how many of its rows are the cell's **header** — the
+/// `● name(args)` rows (an answered question's one headline row), none for a
+/// `!` command, whose header is the message above it. The transcript pins
+/// those rows over a window that opens inside the output
+/// (`docs/transcript-navigation.md`).
+pub(super) fn tool_full_cell(
+    tool: &ToolCall,
+    width: u16,
+    paths: &PathDisplay,
+) -> (Vec<Line<'static>>, usize) {
+    let (mut lines, header) = tool_full_body(tool, width, paths);
+    lines.extend(session_state_row(tool));
+    // The classifier's provenance row closes the expanded cell too
+    // (docs/permissions.md).
+    lines.extend(approval_note_row(tool));
+    (lines, header)
+}
+
+/// [`tool_full_cell`]'s rows alone. Test-only: the transcript takes the
+/// header's height with them.
+#[cfg(test)]
 pub(super) fn tool_full_lines(
     tool: &ToolCall,
     width: u16,
     paths: &PathDisplay,
 ) -> Vec<Line<'static>> {
-    let mut lines = tool_full_body(tool, width, paths);
-    lines.extend(session_state_row(tool));
-    // The classifier's provenance row closes the expanded cell too
-    // (docs/permissions.md).
-    lines.extend(approval_note_row(tool));
-    lines
+    tool_full_cell(tool, width, paths).0
 }
 
-/// [`tool_full_lines`] minus the trailing provenance note (the
+/// [`tool_full_cell`] minus the trailing provenance note (the
 /// [`tool_cell_body`] split).
-fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<'static>> {
+fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> (Vec<Line<'static>>, usize) {
     // At rest: the transcript is a pager over a cached, incrementally-built
     // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
     // on a signature that has no clock in it. Animating here would either not
@@ -1536,7 +1553,7 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // The resolved ask cell keeps its headline header in the transcript too,
     // with the answer rows uncapped (`docs/ask.md`).
     if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ false) {
-        return lines;
+        return (lines, 1);
     }
     // A backgrounded call shows its fixed row in the transcript too — the
     // live output belongs to the ↓ manager, and the final output arrives as
@@ -1544,11 +1561,12 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     if tool.status == ToolStatus::Backgrounded {
         let row = result_row(0, TOOL_BACKGROUNDED.to_string());
         if tool.shell {
-            return vec![row];
+            return (vec![row], 0);
         }
         let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
+        let header = lines.len();
         lines.push(row);
-        return lines;
+        return (lines, header);
     }
     // A numbered `write`/`edit` cell renders wholesale (numbers, tints,
     // syntax colour — [`file_cell_lines`], uncapped here); everything else
@@ -1556,11 +1574,12 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     if let Some(body) = file_cell_lines(tool, width, false) {
         // The Ctrl+O transcript view never truncates the header (`None`).
         let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
+        let header = lines.len();
         lines.extend(body);
         if tool.truncated {
             lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
         }
-        return lines;
+        return (lines, header);
     }
     // The body hangs under the `⎿` gutter, so it wraps to the width left of it
     // (like [`result_row`]'s continuation indent) — for a backend tool too, so
@@ -1617,11 +1636,12 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> Vec<Line<
     // a backend tool keeps its coloured `● name(args)` header (wrapped when long)
     // over the gutter.
     if tool.shell {
-        result.collect()
+        (result.collect(), 0)
     } else {
         // The Ctrl+O transcript view shows the whole command (`None`).
         let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
+        let header = lines.len();
         lines.extend(result);
-        lines
+        (lines, header)
     }
 }

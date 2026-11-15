@@ -264,21 +264,28 @@ impl Session<'_> {
         )
     }
 
-    /// Render the full-screen tool-output overlay. Clamps the scroll to the
-    /// current screen first (so the last line can reach the bottom but not
-    /// scroll past it), then paints the view onto the alternate screen.
+    /// Render the full-screen tool-output overlay. Resolves a pending ←/→
+    /// step against the transcript as built and clamps the scroll to the
+    /// current screen (so the last line can reach the bottom but not scroll
+    /// past it), then paints the view onto the alternate screen — the header
+    /// of the cell the window opens inside pinned over its top
+    /// (`docs/transcript-navigation.md`).
     pub(crate) fn draw_tool_view(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
         // An agent session view's Ctrl+O shows the *viewed agent's* transcript —
         // a fresh, bounded build (docs/agent-tool.md); the main cache below is
         // untouched, so the ordinary open stays warm.
-        if let Some(lines) = ui::agent_transcript_lines(&self.app, screen.width) {
-            let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+        if let Some(page) = ui::agent_transcript(&self.app, screen.width) {
+            let max = ui::tool_view_max_scroll_for(page.lines.len(), screen.height);
+            if self.app.tool_jump.is_some() {
+                let starts: Vec<usize> = page.entries.iter().map(|entry| entry.start).collect();
+                self.app.resolve_tool_jump(&starts, max);
+            }
             self.app.settle_tool_scroll(max);
             let app = &self.app;
             return self
                 .term
-                .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &lines));
+                .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &page));
         }
         // A backtrack preview open/step requested a scroll to its highlighted
         // message (docs/backtrack.md): apply the pure decision once — consumed,
@@ -299,6 +306,17 @@ impl Session<'_> {
             self.transcript.line_count(&self.app, screen.width),
             screen.height,
         );
+        // A ←/→ press lands against the transcript as built — its width, its
+        // wrapping — before the settle clamps it; the same cached build.
+        if self.app.tool_jump.is_some() {
+            let starts: Vec<usize> = self
+                .transcript
+                .entries(&self.app, screen.width)
+                .iter()
+                .map(|entry| entry.start)
+                .collect();
+            self.app.resolve_tool_jump(&starts, max);
+        }
         self.app.settle_tool_scroll(max);
         let app = &self.app;
         let transcript = &mut self.transcript;

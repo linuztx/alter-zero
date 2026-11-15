@@ -351,14 +351,18 @@ row each entry's header sits on, built beside the rows:
   lands within the last screenful re-engages the tail-follow, as End does.
   Tab and a close drop a step still pending, so it never lands on a page it
   was not pressed on. They are the keys the transcript pager's backtrack
-  uses for the previous and next message, meaning the same thing here.
+  uses for the previous and next message, meaning the same thing here — and
+  outside a backtrack preview the transcript pager steps between its own
+  entries with them, by this same rule (`app::views::step_target`, shared;
+  `docs/transcript-navigation.md`).
 - **The entry the window opens inside is pinned** over the top row while its
   own header is scrolled off (`pinned_header`): deep in a long system prompt
   or tool result the top row still says whose text it is. Not on the header
   row itself (it is already on top), not once only the entry's spacer would
   sit under the pin (a header stacked on the next one), and not in a body
   shorter than `CONTEXT_PIN_MIN_ROWS`, where the pin would cost the text it
-  names.
+  names. The transcript pager pins its cells' headers by the same rule,
+  extended to headers that wrap (`docs/transcript-navigation.md`).
 - **The bottom rule counts the window**: `5 messages · ≈1.2k tokens` set into
   its left end (`transcript::labeled_separator`), the percentage keeping its
   place — left out whole when the rule cannot hold both.

@@ -3,17 +3,25 @@
 //! [`TranscriptCache`] keeps a frozen prefix of per-item rendered rows so
 //! opening the overlay on a long session is O(viewport), not O(history).
 //! See `docs/tool-view-performance.md`.
+//!
+//! Every build also records the page's [`TranscriptEntry`]s — where each
+//! cell opens and where its header ends — which is what ←/→ step between
+//! and what the pager pins over a window that opens inside a cell, so deep
+//! in a long output the top row still names the command that printed it
+//! (`docs/transcript-navigation.md`).
 
-use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
+use super::agent::{
+    AGENT_CELL_HEADER_ROWS, AgentCellView, agent_cell_lines, agent_group_full_cells,
+};
 use super::cached_lines::CachedLines;
 use super::conversation::is_shell_header;
-use super::file_cell::draft_cell_lines;
-use super::hook_cell::hook_report_full_lines;
+use super::file_cell::draft_cell;
+use super::hook_cell::hook_report_full_cell;
 use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
-use super::tool::tool_full_lines;
-use super::wrap::cols;
+use super::tool::tool_full_cell;
+use super::wrap::{cols, truncate_cols};
 use super::*;
 
 /// Build the full conversation transcript shown in the tool-output view: the
@@ -32,7 +40,176 @@ use super::*;
 /// `docs/timestamps.md`).
 #[must_use]
 pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    transcript_build(app, width).0
+    let cache = transcript_build(app, width);
+    cache.rows.owned_range(0..cache.rows.len())
+}
+
+/// One entry of the Ctrl+O transcript — a message, a tool call, a `!`
+/// command with its output, one agent of a group, a thought — as the pager
+/// navigates it: ←/→ open the previous or next entry at the window's top,
+/// and while the window opens inside an entry whose header has scrolled off,
+/// that header is pinned over the top (`pinned_rows`). A turn's receipt
+/// (`Done for 3s`) is no entry: it is a fact about the turn, not a cell to
+/// step to. See `docs/transcript-navigation.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptEntry {
+    /// The row the entry opens on — its header's first row, or its first row
+    /// when it has no header.
+    pub start: usize,
+    /// The first row past its header — `start` for an entry with none (a
+    /// message), which never pins.
+    pub body: usize,
+    /// One past its last row; the blank spacer after it is not part of it.
+    pub end: usize,
+}
+
+/// A built transcript: its rows and the [`TranscriptEntry`]s on them — what
+/// [`render_tool_view`] pages through.
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptPage {
+    /// The rows, top to bottom.
+    pub lines: Vec<Line<'static>>,
+    /// The entries, in order, each starting below the last.
+    pub entries: Vec<TranscriptEntry>,
+}
+
+/// [`transcript_lines`] with its entries — the main transcript as one page,
+/// built from scratch (the draw loop pages through its long-lived
+/// [`TranscriptCache`] instead).
+#[must_use]
+pub fn transcript_page(app: &App, width: u16) -> TranscriptPage {
+    let cache = transcript_build(app, width);
+    TranscriptPage {
+        lines: cache.rows.owned_range(0..cache.rows.len()),
+        entries: cache.entries,
+    }
+}
+
+/// The header rows pinned over the top of the pager's window
+/// ([`pinned_rows`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Pin {
+    /// The page's rows pinned — the first rows of the entry's header.
+    pub(super) header: Range<usize>,
+    /// Whether the header goes on past them, which the last pinned row then
+    /// says with [`TOOL_HEADER_ELLIPSIS`] ([`ellipsized`]).
+    pub(super) cut: bool,
+}
+
+/// The header to **pin** over the top of a window opening at `scroll`,
+/// `rows` tall, onto a page whose entries are `entries`: the entry the window
+/// opens inside, once its header has scrolled off above — so deep in a long
+/// output the top row still names the command that printed it. Ctrl+D's
+/// rule (`docs/context.md`), for headers that can wrap:
+///
+/// - the pin is the header's first rows — at most [`TRANSCRIPT_PIN_MAX_ROWS`],
+///   the inline cell's own ceiling, and never more than leaves two rows of
+///   the window for what it names — `cut` when the header goes on past them;
+/// - nothing while the window starts on the header's first row (it is
+///   already on top), nor while the header's own later rows would still show
+///   under the pin (the header twice, with a gap in it);
+/// - fewer rows as the entry's last row comes up, and none once a pinned row
+///   would cover it — past that, the pin would stack on the next cell's
+///   header;
+/// - never for an entry with no header (a message), and never in a window
+///   shorter than [`CONTEXT_PIN_MIN_ROWS`].
+pub(super) fn pinned_rows(entries: &[TranscriptEntry], scroll: usize, rows: usize) -> Option<Pin> {
+    if rows < CONTEXT_PIN_MIN_ROWS {
+        return None;
+    }
+    let inside = entries.partition_point(|entry| entry.start <= scroll);
+    let entry = entries[..inside].last()?;
+    let header = entry.body.saturating_sub(entry.start);
+    if header == 0 || entry.start >= scroll || scroll >= entry.end {
+        return None;
+    }
+    let shown = header
+        .min(TRANSCRIPT_PIN_MAX_ROWS)
+        .min(rows + 1 - CONTEXT_PIN_MIN_ROWS)
+        .min(entry.end - scroll - 1);
+    (shown > 0 && entry.body <= scroll + shown).then(|| Pin {
+        header: entry.start..entry.start + shown,
+        cut: shown < header,
+    })
+}
+
+/// `line` closed by [`TOOL_HEADER_ELLIPSIS`] — the last row of a pinned
+/// header that goes on past the pin. The mark sits right after the row's
+/// text: a padded row (a `!` command's dark header) keeps its width, the
+/// mark taking a column of the padding, and a row too wide for it is cut
+/// first by display columns. The mark wears the text's colour and weight,
+/// never its link carrier — it is not part of the path it follows.
+pub(super) fn ellipsized(line: Line<'_>, width: u16) -> Line<'_> {
+    let width = usize::from(width);
+    let mark = cols(TOOL_HEADER_ELLIPSIS);
+    let total: usize = line.spans.iter().map(|span| cols(&span.content)).sum();
+    let blank = trailing_blank_cols(&line.spans);
+    let keep = (total - blank).min(width.saturating_sub(mark));
+    let ink = line
+        .spans
+        .iter()
+        .rev()
+        .find(|span| !span.content.trim().is_empty())
+        .map_or_else(Style::default, |span| Style {
+            underline_color: None,
+            ..span.style
+        });
+    let pad_style = line.spans.last().map(|span| span.style);
+    let mut spans = Vec::with_capacity(line.spans.len() + 2);
+    let mut used = 0;
+    for span in line.spans {
+        let w = cols(&span.content);
+        if used + w <= keep {
+            used += w;
+            spans.push(span);
+            continue;
+        }
+        let cut = truncate_cols(&span.content, keep - used);
+        if !cut.is_empty() {
+            used += cols(&cut);
+            spans.push(Span::styled(cut, span.style));
+        }
+        break;
+    }
+    spans.push(Span::styled(TOOL_HEADER_ELLIPSIS, ink));
+    // Only a padded row keeps its padding; a row cut for width just ends.
+    let pad = if blank > 0 {
+        total.min(width).saturating_sub(used + mark)
+    } else {
+        0
+    };
+    if let (true, Some(style)) = (pad > 0, pad_style) {
+        spans.push(Span::styled(" ".repeat(pad), style));
+    }
+    Line { spans, ..line }
+}
+
+/// The display columns of blank text closing `spans` — a padded row's
+/// padding.
+fn trailing_blank_cols(spans: &[Span<'_>]) -> usize {
+    let mut blank = 0;
+    for span in spans.iter().rev() {
+        let trimmed = span.content.trim_end();
+        blank += cols(&span.content) - cols(trimmed);
+        if !trimmed.is_empty() {
+            break;
+        }
+    }
+    blank
+}
+
+/// `visible` — a window's rows — with `pinned`, the header rows of the
+/// entry the window opens inside, over its top ([`pinned_rows`]): the last
+/// one [`ellipsized`] when the header goes on past them.
+fn pin_over<'a>(visible: &mut [Line<'a>], pinned: Vec<Line<'a>>, cut: bool, width: u16) {
+    let last = pinned.len().saturating_sub(1);
+    for ((at, row), slot) in pinned.into_iter().enumerate().zip(visible.iter_mut()) {
+        *slot = if cut && at == last {
+            ellipsized(row, width)
+        } else {
+            row
+        };
+    }
 }
 
 /// The line range the backtrack preview's highlighted user message occupies
@@ -42,18 +219,51 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// never drift. See `docs/backtrack.md`.
 #[must_use]
 pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
-    transcript_build(app, width).1
+    transcript_build(app, width).selection
 }
 
-/// The single transcript walk behind [`transcript_lines`] and
-/// [`transcript_selection`]: a fresh [`TranscriptCache`] refreshed once — the
-/// incremental build *is* the only transcript implementation (one code path,
-/// so the cached and from-scratch renders can never drift apart; the draw loop
-/// reuses a long-lived cache instead of paying this full build).
-fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<usize>>) {
+/// The single transcript walk behind [`transcript_lines`],
+/// [`transcript_page`] and [`transcript_selection`]: a fresh
+/// [`TranscriptCache`] refreshed once — the incremental build *is* the only
+/// transcript implementation (one code path, so the cached and from-scratch
+/// renders can never drift apart; the draw loop reuses a long-lived cache
+/// instead of paying this full build).
+fn transcript_build(app: &App, width: u16) -> TranscriptCache {
     let mut cache = TranscriptCache::new();
     cache.refresh(app, width);
-    (cache.rows.owned_range(0..cache.rows.len()), cache.selection)
+    cache
+}
+
+/// One history item's transcript rows ([`transcript_item_lines`]): the rows,
+/// the backtrack span, and what the rows hold as entries.
+struct ItemRows {
+    /// The rows, the trailing spacer included.
+    lines: Vec<Line<'static>>,
+    /// `Some(message-row count)` for a **user** message — the span the Esc-Esc
+    /// backtrack preview reverses (its timestamp line below stays normal; see
+    /// `docs/backtrack.md`) — `None` for everything else.
+    user_rows: Option<usize>,
+    /// The rows before the spacer.
+    content: usize,
+    /// The entries on the rows.
+    cells: ItemCells,
+}
+
+/// What a history item's rows hold, as [`TranscriptEntry`]s.
+enum ItemCells {
+    /// No entry — a turn's receipt, a fact about the turn rather than a cell.
+    None,
+    /// One cell, every row but the spacer, its first `header` rows its
+    /// header (0 for a message, which has none).
+    One { header: usize },
+    /// A `!` command's header: one cell with the output under it
+    /// ([`EntryWalk::shell_header`]).
+    ShellHeader,
+    /// A `!` command's output: the rest of that cell.
+    ShellOutput,
+    /// A group's agents, one cell each under its one-row header, as
+    /// `(first row, rows)` from the item's top.
+    Agents(Vec<(usize, usize)>),
 }
 
 /// One history item's transcript rows — the message (or the tool's *expanded*
@@ -63,18 +273,10 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
 /// command's header ([`is_shell_header`]): its tool's `⎿` output sits flush
 /// below it, whether that tool is already in history or still the running
 /// live tail, so the overlay renders the same exec cell as the inline view.
-///
-/// The second value is `Some(message-row count)` for a **user** message — the
-/// span the Esc-Esc backtrack preview reverses (its timestamp line below stays
-/// normal; see `docs/backtrack.md`) — `None` for everything else.
-fn transcript_item_lines(
-    item: &HistoryItem,
-    width: u16,
-    paths: &PathDisplay,
-) -> (Vec<Line<'static>>, Option<usize>) {
+fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) -> ItemRows {
     let mut lines = Vec::new();
     let mut user_rows = None;
-    match item {
+    let cells = match item {
         HistoryItem::Message(m) => {
             let message = message_lines(m.role, &m.text, width);
             if m.role == Role::User {
@@ -84,78 +286,281 @@ fn transcript_item_lines(
             if m.role == Role::User {
                 lines.extend(user_stamp_lines(&m.timestamp, width));
             }
+            if m.role == Role::Shell {
+                ItemCells::ShellHeader
+            } else {
+                ItemCells::One { header: 0 }
+            }
         }
-        HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width, paths)),
+        HistoryItem::Tool(t) => {
+            let (cell, header) = tool_full_cell(t, width, paths);
+            lines.extend(cell);
+            if t.shell {
+                ItemCells::ShellOutput
+            } else {
+                ItemCells::One { header }
+            }
+        }
         // A task call is invisible inline but the transcript is the full
         // record: expand it as an ordinary tool cell —
         // `● TaskCreate(subject)` over its `⎿` result (docs/task-tools.md).
-        HistoryItem::TaskCall(t) => lines.extend(tool_full_lines(&t.as_tool_call(), width, paths)),
-        HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
-        HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+        HistoryItem::TaskCall(t) => {
+            let (cell, header) = tool_full_cell(&t.as_tool_call(), width, paths);
+            lines.extend(cell);
+            ItemCells::One { header }
+        }
+        HistoryItem::Summary(s) => {
+            lines.extend(summary_lines(s, width));
+            ItemCells::None
+        }
+        HistoryItem::Background(n) => {
+            lines.extend(background_notice_lines(n, width));
+            ItemCells::One { header: 0 }
+        }
         // The transcript expands the group into one `● Agent({description})`
         // cell per subagent — prompt, nested tool headers, response, and the
         // Done/Interrupted footer (docs/agent-tool.md); the inline view shows
-        // the collapsed tree cell.
-        HistoryItem::AgentGroup(g) => lines.extend(agent_group_full_lines(g, width, paths)),
-        HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
+        // the collapsed tree cell. A blank row divides the agents.
+        HistoryItem::AgentGroup(g) => {
+            let mut agents = Vec::new();
+            for (i, cell) in agent_group_full_cells(g, width, paths)
+                .into_iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    lines.push(Line::default());
+                }
+                agents.push((lines.len(), cell.len()));
+                lines.extend(cell);
+            }
+            ItemCells::Agents(agents)
+        }
+        HistoryItem::AgentNotice(n) => {
+            lines.extend(agent_notice_lines(n, width));
+            ItemCells::One { header: 0 }
+        }
         // The transcript expands the marker with its summary body — the
         // inline view keeps it collapsed (docs/compact.md).
-        HistoryItem::Compaction(c) => lines.extend(compaction_full_lines(c, width)),
+        HistoryItem::Compaction(c) => {
+            lines.extend(compaction_full_lines(c, width));
+            ItemCells::One { header: 1 }
+        }
         // The transcript is where a thought's whole chain-of-thought lives —
         // inline it is the one collapsed line (docs/thinking-stream.md).
-        HistoryItem::Reasoning(r) => lines.extend(reasoning_full_lines(r, width)),
+        HistoryItem::Reasoning(r) => {
+            lines.extend(reasoning_full_lines(r, width));
+            ItemCells::One { header: 1 }
+        }
         // What the hooks said, expanded — each hook that ran and what it
         // said (docs/hooks.md *The hook-run cell*); a note without a report
         // keeps its label over the text the model read.
         HistoryItem::HookNote(n) => match &n.report {
-            Some(report) => lines.extend(hook_report_full_lines(report, width)),
-            None => lines.extend(hook_note_lines(n, width)),
+            Some(report) => {
+                let (cell, header) = hook_report_full_cell(report, width);
+                lines.extend(cell);
+                ItemCells::One { header }
+            }
+            None => {
+                lines.extend(hook_note_lines(n, width));
+                ItemCells::One { header: 1 }
+            }
         },
-    }
+    };
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them
     // exactly as scrollback's does (`docs/images.md`).
     lines.extend(super::image::image_block_lines(item, width));
+    let content = lines.len();
     if !is_shell_header(item) {
         lines.push(Line::default());
     }
-    (lines, user_rows)
+    ItemRows {
+        lines,
+        user_rows,
+        content,
+        cells,
+    }
+}
+
+/// Records a page's [`TranscriptEntry`]s as its cells are appended — the
+/// one walk the cache's frozen prefix, its live tail and an agent's page all
+/// go through, so the three can never disagree about where a cell starts.
+///
+/// A `!` command is two things on a page — its dark `! cmd` header, a history
+/// item of its own, and its `⎿` output flush under it, the next item or the
+/// live tail — but one exec cell, whose header is the command. So the walk
+/// holds the header back until it sees what follows: the output joins it,
+/// and anything else leaves it an entry of its own.
+#[derive(Debug, Clone, Default)]
+struct EntryWalk {
+    /// A `!` command header's rows, held for the output under it.
+    held: Option<Range<usize>>,
+}
+
+impl EntryWalk {
+    /// Record `item`'s entries, its rows starting at `at`.
+    fn item(&mut self, entries: &mut Vec<TranscriptEntry>, at: usize, item: &ItemRows) {
+        match &item.cells {
+            ItemCells::None => {}
+            ItemCells::One { header } => self.cell(entries, at, *header, item.content),
+            ItemCells::ShellHeader => self.shell_header(entries, at, item.content),
+            ItemCells::ShellOutput => self.shell_output(entries, at, item.content),
+            ItemCells::Agents(agents) => {
+                for &(first, rows) in agents {
+                    self.cell(entries, at + first, AGENT_CELL_HEADER_ROWS, rows);
+                }
+            }
+        }
+    }
+
+    /// A cell of `rows` rows at `at`, its first `header` rows its header.
+    fn cell(&mut self, entries: &mut Vec<TranscriptEntry>, at: usize, header: usize, rows: usize) {
+        self.flush(entries);
+        entries.push(TranscriptEntry {
+            start: at,
+            body: at + header.min(rows),
+            end: at + rows,
+        });
+    }
+
+    /// A `!` command's header, `rows` rows at `at`: held for its output.
+    fn shell_header(&mut self, entries: &mut Vec<TranscriptEntry>, at: usize, rows: usize) {
+        self.flush(entries);
+        self.held = Some(at..at + rows);
+    }
+
+    /// A `!` command's output, `rows` rows at `at`: one entry with the header
+    /// held right above it, else a headerless cell of its own.
+    fn shell_output(&mut self, entries: &mut Vec<TranscriptEntry>, at: usize, rows: usize) {
+        match self.held.take() {
+            Some(header) if header.end == at => entries.push(TranscriptEntry {
+                start: header.start,
+                body: at,
+                end: at + rows,
+            }),
+            held => {
+                self.held = held;
+                self.cell(entries, at, 0, rows);
+            }
+        }
+    }
+
+    /// Record a header still held — the page ends, or what came next was not
+    /// its output — as an entry of its own, a message's: nothing to pin.
+    fn flush(&mut self, entries: &mut Vec<TranscriptEntry>) {
+        if let Some(header) = self.held.take() {
+            entries.push(TranscriptEntry {
+                start: header.start,
+                body: header.start,
+                end: header.end,
+            });
+        }
+    }
+}
+
+/// Where a transcript's rows go — the cache's compact rows or an agent
+/// page's plain ones — so [`CellWriter`] serves both.
+trait RowSink {
+    /// How many rows are down so far.
+    fn row_count(&self) -> usize;
+    /// Append `lines`.
+    fn push_rows(&mut self, lines: Vec<Line<'static>>);
+}
+
+impl RowSink for CachedLines {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn push_rows(&mut self, lines: Vec<Line<'static>>) {
+        self.extend(lines);
+    }
+}
+
+impl RowSink for Vec<Line<'static>> {
+    fn row_count(&self) -> usize {
+        self.len()
+    }
+
+    fn push_rows(&mut self, lines: Vec<Line<'static>>) {
+        self.extend(lines);
+    }
+}
+
+/// Appends a live tail's cells — each one's rows, the blank row after it,
+/// and its entry through an [`EntryWalk`] — to a page.
+struct CellWriter<'a, R: RowSink> {
+    rows: &'a mut R,
+    entries: &'a mut Vec<TranscriptEntry>,
+    walk: EntryWalk,
+}
+
+impl<R: RowSink> CellWriter<'_, R> {
+    /// A cell, its first `header` rows its header (0: none).
+    fn cell(&mut self, lines: Vec<Line<'static>>, header: usize) {
+        let (at, rows) = (self.rows.row_count(), lines.len());
+        self.rows.push_rows(lines);
+        self.walk.cell(self.entries, at, header, rows);
+        self.rows.push_rows(vec![Line::default()]);
+    }
+
+    /// A `!` command's live output, joining the header committed above it.
+    fn shell_output(&mut self, lines: Vec<Line<'static>>) {
+        let (at, rows) = (self.rows.row_count(), lines.len());
+        self.rows.push_rows(lines);
+        self.walk.shell_output(self.entries, at, rows);
+        self.rows.push_rows(vec![Line::default()]);
+    }
+
+    /// Done appending: a header still held is an entry of its own.
+    fn finish(mut self) {
+        self.walk.flush(self.entries);
+    }
 }
 
 /// The Ctrl+O transcript of the **viewed agent's** session
-/// (`docs/agent-tool.md`), or `None` when no agent view is up (the caller
-/// falls back to the main [`TranscriptCache`]). The banner over the agent's
-/// items (tools expanded, exactly like the main walk) and its live tail —
-/// the in-progress reply and the live tool queue. Built fresh per draw: an
-/// agent transcript is bounded by one task's work, so the incremental cache
-/// isn't warranted.
+/// (`docs/agent-tool.md`) with its entries, or `None` when no agent view is
+/// up (the caller falls back to the main [`TranscriptCache`]). The banner
+/// over the agent's items (tools expanded, exactly like the main walk) and
+/// its live tail — the in-progress reply and the live tool queue. Built fresh
+/// per draw: an agent transcript is bounded by one task's work, so the
+/// incremental cache isn't warranted.
 #[must_use]
-pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
+pub fn agent_transcript(app: &App, width: u16) -> Option<TranscriptPage> {
     let run = app.viewed_agent()?;
-    let mut lines = header_lines(app, width);
-    lines.push(Line::default());
-    let chrome_rows = lines.len();
+    let mut page = TranscriptPage {
+        lines: header_lines(app, width),
+        entries: Vec::new(),
+    };
+    page.lines.push(Line::default());
+    let chrome_rows = page.lines.len();
+    let mut walk = EntryWalk::default();
     for item in &run.history {
-        let (rows, _) = transcript_item_lines(item, width, app.path_display());
-        lines.extend(rows);
+        let rows = transcript_item_lines(item, width, app.path_display());
+        walk.item(&mut page.entries, page.lines.len(), &rows);
+        page.lines.extend(rows.lines);
     }
+    let mut out = CellWriter {
+        rows: &mut page.lines,
+        entries: &mut page.entries,
+        walk,
+    };
     if let Some(text) = run.streaming.as_deref().filter(|text| !text.is_empty()) {
-        lines.extend(message_lines(Role::Assistant, text, width));
-        lines.push(Line::default());
+        out.cell(message_lines(Role::Assistant, text, width), 0);
     }
     // The agent's open thinking phase, whole — the main tail's order and its
     // reason: the pager has no row budget, unlike the strip's windowed block
     // (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
     if let Some(text) = run.reasoning() {
-        lines.extend(reasoning_live_full_lines(text, width));
-        lines.push(Line::default());
+        out.cell(reasoning_live_full_lines(text, width), 1);
     }
-    lines.extend(live_call_full_lines(
+    write_live_calls(
+        &mut out,
         &run.tool_queue,
         run.drafts(),
         width,
         app.path_display(),
-    ));
+    );
     // …and what the user typed into this agent while it works — the messages
     // waiting for its next round boundary **and** the Tab follow-up turns
     // waiting for it to settle. The main tail's rule (`docs/queue.md`): the
@@ -164,16 +569,23 @@ pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>
     // reads the viewed agent's own sets, so this is that agent's backlog, not
     // the session's.
     if !run.queued.is_empty() || !run.followups.is_empty() {
-        lines.extend(queued_lines(app, width));
-        lines.push(Line::default());
+        out.cell(queued_lines(app, width), 0);
     }
-    if lines.len() == chrome_rows {
-        lines.push(Line::from(Span::styled(
+    out.finish();
+    if page.lines.len() == chrome_rows {
+        page.lines.push(Line::from(Span::styled(
             TOOL_VIEW_EMPTY.to_string(),
             Style::new().fg(tool_dim_color()),
         )));
     }
-    Some(lines)
+    Some(page)
+}
+
+/// [`agent_transcript`]'s rows alone — what `/export` writes inside an agent
+/// session view (`docs/export.md`).
+#[must_use]
+pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
+    agent_transcript(app, width).map(|page| page.lines)
 }
 
 /// The pager's scrolling-body height: the screen less the title + footer chrome.
@@ -249,6 +661,17 @@ pub struct TranscriptCache {
     /// styling, so a selection step can undo exactly what it applied.
     reversed: Option<Range<usize>>,
     pub(super) selection: Option<Range<usize>>,
+    /// Every entry on `rows` — the frozen prefix's, then the live tail's —
+    /// what ←/→ step between and the pin is read from
+    /// (`docs/transcript-navigation.md`).
+    entries: Vec<TranscriptEntry>,
+    /// How many of `entries` belong to the frozen prefix; the tail's are
+    /// rebuilt above them with it.
+    frozen_entries: usize,
+    /// The frozen walk's state: a `!` command's header held at the end of
+    /// the prefix for an output that is still the live tail. The tail walks
+    /// on from a copy, so every refresh sees it again.
+    walk: EntryWalk,
     /// Test-only: how many refreshes did any rebuild work — so a test can
     /// prove a scroll (unchanged signature) is a cache hit, not a rebuild.
     #[cfg(test)]
@@ -426,26 +849,32 @@ impl TranscriptCache {
             self.frozen_rows = self.chrome_rows;
             self.items.clear();
             self.reversed = None;
+            self.entries.clear();
+            self.frozen_entries = 0;
+            self.walk = EntryWalk::default();
         } else if self.items.len() == app.history.len() {
             return false;
         } else {
             self.rows.truncate(self.frozen_rows);
+            self.entries.truncate(self.frozen_entries);
         }
         // Append the not-yet-rendered items (all of them after a reset). The
         // generation guarantees the cached prefix is a prefix of `history`.
         for item in app.history.get(self.items.len()..).unwrap_or(&[]) {
-            let (rows, user_rows) = transcript_item_lines(item, width, app.path_display());
+            let rows = transcript_item_lines(item, width, app.path_display());
+            self.walk.item(&mut self.entries, self.frozen_rows, &rows);
             self.items.push(RenderedItem {
-                rows: rows.len(),
-                user_rows,
+                rows: rows.lines.len(),
+                user_rows: rows.user_rows,
             });
-            self.frozen_rows += rows.len();
-            self.rows.extend(rows);
+            self.frozen_rows += rows.lines.len();
+            self.rows.extend(rows.lines);
             #[cfg(test)]
             {
                 self.item_renders += 1;
             }
         }
+        self.frozen_entries = self.entries.len();
         true
     }
 
@@ -486,20 +915,24 @@ impl TranscriptCache {
     /// shows the full live picture and a waiting call is never hidden under
     /// Ctrl+O (docs/parallel-tools.md) — then the still-queued backlog
     /// ([`queued_lines`]' inset rows, docs/queue.md), and the placeholder when
-    /// nothing at all follows the banner.
+    /// nothing at all follows the banner. Each records its entry, the walk
+    /// going on from the frozen prefix's — so a `!` command's running output
+    /// joins the header committed above it.
     fn build_tail(&mut self, app: &App, width: u16) {
+        let mut out = CellWriter {
+            rows: &mut self.rows,
+            entries: &mut self.entries,
+            walk: self.walk.clone(),
+        };
         if let Some(text) = app.streaming_text()
             && !text.is_empty()
         {
-            self.rows
-                .extend(message_lines(Role::Assistant, text, width));
-            self.rows.extend([Line::default()]);
+            out.cell(message_lines(Role::Assistant, text, width), 0);
         }
         // An open thinking phase, whole (the pager has no row budget, unlike
         // the strip's windowed block) — docs/thinking-stream.md.
         if let Some(text) = app.reasoning() {
-            self.rows.extend(reasoning_live_full_lines(text, width));
-            self.rows.extend([Line::default()]);
+            out.cell(reasoning_live_full_lines(text, width), 1);
         }
         // The live agent group's members expand as their own `● Agent(…)`
         // cells — activity live — before the tool queue, mirroring the strip's
@@ -507,25 +940,24 @@ impl TranscriptCache {
         if let Some(live) = app.agent_group() {
             for id in &live.ids {
                 if let Some(run) = app.agent(id) {
-                    self.rows.extend(agent_cell_lines(
-                        &AgentCellView::of_run(run),
-                        width,
-                        app.path_display(),
-                    ));
-                    self.rows.extend([Line::default()]);
+                    out.cell(
+                        agent_cell_lines(&AgentCellView::of_run(run), width, app.path_display()),
+                        AGENT_CELL_HEADER_ROWS,
+                    );
                 }
             }
         }
-        self.rows.extend(live_call_full_lines(
+        write_live_calls(
+            &mut out,
             app.tool_queue(),
             app.tool_drafts(),
             width,
             app.path_display(),
-        ));
+        );
         if !app.queued.is_empty() || !app.steered.is_empty() {
-            self.rows.extend(queued_lines(app, width));
-            self.rows.extend([Line::default()]);
+            out.cell(queued_lines(app, width), 0);
         }
+        out.finish();
         if self.rows.len() == self.chrome_rows {
             self.rows.extend([Line::from(Span::styled(
                 TOOL_VIEW_EMPTY.to_string(),
@@ -546,6 +978,7 @@ impl TranscriptCache {
         if !self.ensure_frozen(app, width) {
             // Only the volatile tail changed: drop it, keep the frozen prefix.
             self.rows.truncate(self.frozen_rows);
+            self.entries.truncate(self.frozen_entries);
         }
         self.restyle_selection(app);
         self.build_tail(app, width);
@@ -576,13 +1009,29 @@ impl TranscriptCache {
         let body_rows = tool_view_body_rows(area.height);
         let scroll = app.tool_scroll.min(count.saturating_sub(body_rows));
         let end = scroll.saturating_add(body_rows).min(count);
-        render_tool_view_window(area, buf, app, count, self.rows.range(scroll..end));
+        let mut visible = self.rows.range(scroll..end);
+        if let Some(pin) = pinned_rows(&self.entries, scroll, body_rows) {
+            pin_over(
+                &mut visible,
+                self.rows.range(pin.header),
+                pin.cut,
+                area.width,
+            );
+        }
+        render_tool_view_window(area, buf, app, count, visible);
     }
 
     /// The cached row count (for the scroll clamp) — no borrow held.
     pub fn line_count(&mut self, app: &App, width: u16) -> usize {
         self.refresh(app, width);
         self.rows.len()
+    }
+
+    /// The cached transcript's entries, rebuilding first only if stale — what
+    /// the draw resolves a ←/→ step against (`docs/transcript-navigation.md`).
+    pub fn entries(&mut self, app: &App, width: u16) -> &[TranscriptEntry] {
+        self.refresh(app, width);
+        &self.entries
     }
 
     /// The cached backtrack-preview selection range, rebuilding first if stale.
@@ -593,18 +1042,19 @@ impl TranscriptCache {
 }
 
 /// Every live call of a conversation, expanded for the pager, each over a
-/// blank row: the queue's cells in order — a queued previewed call with the
-/// whole file it streamed under its `Waiting…`/`Running…` corner — then each
-/// call still being generated, every line so far (`docs/write-streaming.md`).
-/// The one walk the main transcript's tail and an agent's share, so the two
-/// pagers show a streaming file alike.
-fn live_call_full_lines(
+/// blank row and recorded as an entry under its header: the queue's cells in
+/// order — a queued previewed call with the whole file it streamed under its
+/// `Waiting…`/`Running…` corner, a `!` command's output joining the header
+/// committed above it — then each call still being generated, every line so
+/// far (`docs/write-streaming.md`). The one walk the main transcript's tail
+/// and an agent's share, so the two pagers show a streaming file alike.
+fn write_live_calls<R: RowSink>(
+    out: &mut CellWriter<'_, R>,
     queue: &VecDeque<ToolCall>,
     drafts: &crate::app::ToolDrafts,
     width: u16,
     paths: &PathDisplay,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+) {
     let mut adopted = drafts.queued();
     for tool in queue {
         let draft = crate::app::previewed_display(&tool.name)
@@ -612,24 +1062,20 @@ fn live_call_full_lines(
             .flatten();
         match draft {
             Some(draft) if matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running) => {
-                lines.extend(draft_cell_lines(
-                    draft,
-                    Some(tool),
-                    None,
-                    width,
-                    paths,
-                    true,
-                ));
+                let (lines, header) = draft_cell(draft, Some(tool), None, width, paths, true);
+                out.cell(lines, header);
             }
-            _ => lines.extend(tool_full_lines(tool, width, paths)),
+            _ if tool.shell => out.shell_output(tool_full_cell(tool, width, paths).0),
+            _ => {
+                let (lines, header) = tool_full_cell(tool, width, paths);
+                out.cell(lines, header);
+            }
         }
-        lines.push(Line::default());
     }
     for draft in drafts.previews() {
-        lines.extend(draft_cell_lines(draft, None, None, width, paths, true));
-        lines.push(Line::default());
+        let (lines, header) = draft_cell(draft, None, None, width, paths, true);
+        out.cell(lines, header);
     }
-    lines
 }
 
 /// Where the transcript scroll must sit to show `target` in a `viewport`-row
@@ -678,16 +1124,29 @@ pub fn backtrack_scroll(app: &App, width: u16, screen_height: u16) -> Option<usi
     )
 }
 
-/// The pager's title row: `/ ` tiled across the width (a `/` on every even
-/// column) with the spaced-caps `/ T R A N S C R I P T` overlaid from the left
-/// edge, all dim — codex's transcript overlay header.
-fn tool_view_header(width: u16) -> Line<'static> {
-    overlay_header(TOOL_VIEW_TITLE, width)
+/// An overlay's title-row text: the page's spaced caps, then — inside an
+/// agent session view — whose page it is, the way the roster names an agent
+/// (`explore agent · Fetch the weather`). Nothing else on the page says it,
+/// and the lead's page and an agent's look alike: the transcript pager and
+/// both Ctrl+D pages wear it (`docs/context.md`,
+/// `docs/transcript-navigation.md`).
+pub(super) fn view_title(app: &App, title: &str) -> String {
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match app.viewed_agent() {
+        Some(run) => format!(
+            "{title}{CONTEXT_VIEW_AGENT_SEPARATOR}{}{CONTEXT_VIEW_AGENT_SUFFIX}\
+             {CONTEXT_VIEW_AGENT_SEPARATOR}{}",
+            flat(&run.agent_type),
+            flat(&run.description),
+        ),
+        None => title.to_string(),
+    }
 }
 
-/// A full-screen overlay's title row: the slash tiling with the spaced-caps
-/// `title` overlaid from the left edge, all dim — shared by the transcript
-/// pager, the `/resume` picker and both Ctrl+D pages.
+/// A full-screen overlay's title row: `/ ` tiled across the width (a `/` on
+/// every even column) with the spaced-caps `title` overlaid from the left
+/// edge, all dim — codex's transcript overlay header, shared by the
+/// transcript pager, the `/resume` picker and both Ctrl+D pages.
 pub(super) fn overlay_header(title: &str, width: u16) -> Line<'static> {
     // Cut by display columns, not characters: the Ctrl+D title can carry an
     // agent's description, whatever the model wrote — CJK included — and a
@@ -774,17 +1233,28 @@ fn rule_with_labels(width: u16, lead: Option<&str>, label: &str) -> Line<'static
 /// the slash-tiled title row, then the scrolling conversation transcript
 /// (messages + every tool call's full output), windowed by `App::tool_scroll`
 /// (clamped so it can't run past the end) with `~` filler on the body rows
-/// past its end, then the percentage separator and the dim key-hint rows.
-/// Pure — `term.rs` paints this onto the overlay.
-pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
+/// past its end, the header of the cell the window opens inside pinned over
+/// its top rows (`pinned_rows`), then the percentage separator and the dim
+/// key-hint rows. Pure — `term.rs` paints this onto the overlay.
+pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, page: &TranscriptPage) {
+    let lines = &page.lines;
     let body_rows = tool_view_body_rows(area.height);
     let scroll = app.tool_scroll.min(lines.len().saturating_sub(body_rows));
-    let visible = lines.iter().skip(scroll).take(body_rows).cloned().collect();
+    let mut visible: Vec<Line<'_>> = lines.iter().skip(scroll).take(body_rows).cloned().collect();
+    if let Some(pin) = pinned_rows(&page.entries, scroll, body_rows) {
+        pin_over(
+            &mut visible,
+            lines[pin.header].to_vec(),
+            pin.cut,
+            area.width,
+        );
+    }
     render_tool_view_window(area, buf, app, lines.len(), visible);
 }
 
 /// The shared pager chrome and body painter. The compact cache supplies a
-/// borrowed viewport; the standalone renderer supplies owned rows.
+/// borrowed viewport; the standalone renderer supplies owned rows — each
+/// with any header already pinned over it.
 fn render_tool_view_window(
     area: Rect,
     buf: &mut Buffer,
@@ -800,7 +1270,13 @@ fn render_tool_view_window(
     ])
     .areas(area);
 
-    Paragraph::new(tool_view_header(area.width)).render(title_area, buf);
+    // Inside an agent session view the title says whose transcript this is,
+    // Ctrl+D's way: the lead's and an agent's look alike.
+    Paragraph::new(overlay_header(
+        &view_title(app, TOOL_VIEW_TITLE),
+        area.width,
+    ))
+    .render(title_area, buf);
 
     // The caller builds rows at the full width, which this split preserves.
     let max = line_count.saturating_sub(body_area.height as usize);
@@ -829,8 +1305,15 @@ fn render_tool_view_window(
     } else {
         TOOL_VIEW_HINT_QUIT
     };
+    // ←/→ step between entries — except in a preview, where they step the
+    // highlighted message and the closing row says so.
+    let keys = if app.backtrack.selected.is_some() {
+        TOOL_VIEW_HINT_SCROLL_KEYS
+    } else {
+        TOOL_VIEW_HINT_KEYS
+    };
     Paragraph::new(vec![
-        Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
+        Line::from(Span::styled(keys.to_string(), dim)),
         Line::from(Span::styled(closing.to_string(), dim)),
     ])
     .render(hints_area, buf);

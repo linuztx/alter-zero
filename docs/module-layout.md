@@ -107,7 +107,7 @@ widened for the split.
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |
 | `usage_view.rs` | The read-only `/usage` page — a section per subscription, one bar length for the page's meters, `limit reached`, the reset countdowns and local times and what a narrow row gives up, the highlighted subscription's link, the freshness, and its shedding ladder (`docs/usage.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
-| `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
+| `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`: the transcript's entries, the header pinned over a window inside a cell, and the chrome both overlays share (`overlay_header`, `view_title`; `docs/transcript-navigation.md`). |
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |

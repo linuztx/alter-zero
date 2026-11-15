@@ -15,10 +15,33 @@ use super::*;
 /// How many lines PageUp/PageDown move the tool-output view.
 pub(super) const TOOL_VIEW_PAGE: usize = 10;
 
+/// Where a ←/→ step from a window whose top row is `top` lands, on a page
+/// whose entries start on `rows` (ascending): ← on the last start above the
+/// top — the entry being read, or the one before it when the window already
+/// starts there — and the page's top with none; → on the first start below
+/// it, and past the end with none, where the settle pins the scroll and
+/// re-engages tail-follow. The one rule both pagers step by — Ctrl+D's
+/// (`docs/context.md`) and Ctrl+O's (`docs/transcript-navigation.md`).
+fn step_target(jump: EntryJump, rows: &[usize], top: usize) -> usize {
+    match jump {
+        EntryJump::Previous => rows
+            .iter()
+            .rev()
+            .find(|&&row| row < top)
+            .map_or(0, |&row| row),
+        EntryJump::Next => rows
+            .iter()
+            .find(|&&row| row > top)
+            .map_or(usize::MAX, |&row| row),
+    }
+}
+
 impl App {
     /// Keys while the full-screen tool-output view is showing: it is a read-only
     /// scroller (codex's transcript pager), so typing is ignored; Esc and `q`
-    /// (like Ctrl+O) return to the chat, Home/End jump to the transcript's edges.
+    /// (like Ctrl+O) return to the chat, Home/End jump to the transcript's
+    /// edges, and ←/→ step between its entries outside a backtrack preview
+    /// (`docs/transcript-navigation.md`).
     pub(super) fn on_key_tool_view(&mut self, key: KeyEvent) -> Action {
         match key.code {
             // Backtrack preview keys (docs/backtrack.md): Esc/← step the
@@ -56,6 +79,18 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.toggle_tool_view(); // close the overlay, back to chat
                 Action::ToggleToolView
+            }
+            // Outside a preview, ←/→ step between the transcript's entries —
+            // Ctrl+D's step (`docs/transcript-navigation.md`). The key knows
+            // only the direction; the draw, which has the transcript as
+            // built, resolves where that is (`resolve_tool_jump`).
+            KeyCode::Left => {
+                self.tool_jump = Some(EntryJump::Previous);
+                Action::None
+            }
+            KeyCode::Right => {
+                self.tool_jump = Some(EntryJump::Next);
+                Action::None
             }
             KeyCode::Up => {
                 self.tool_follow = false; // reading back — stop tailing the bottom
@@ -157,6 +192,8 @@ impl App {
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
+        // A step pressed before a close never lands on the next open.
+        self.tool_jump = None;
     }
 
     /// Keys while the Ctrl+D context-debug view is showing: the transcript
@@ -304,6 +341,29 @@ impl App {
         };
     }
 
+    /// Resolve a pending ←/→ step ([`tool_jump`](Self::tool_jump)) in the
+    /// Ctrl+O transcript, against the rows its entries start on (`rows`,
+    /// ascending) and its scroll ceiling (`max`) — the draw's call, made with
+    /// the transcript as built and before [`settle_tool_scroll`]
+    /// (`docs/transcript-navigation.md`). Ctrl+D's rule
+    /// ([`resolve_debug_jump`](Self::resolve_debug_jump)): ← opens the start
+    /// of the entry being read, or the one before it when the window already
+    /// starts there; → the next one; past either end, the page's edge.
+    ///
+    /// [`settle_tool_scroll`]: Self::settle_tool_scroll
+    pub fn resolve_tool_jump(&mut self, rows: &[usize], max: usize) {
+        let Some(jump) = self.tool_jump.take() else {
+            return;
+        };
+        let top = if self.tool_follow {
+            max
+        } else {
+            self.tool_scroll.min(max)
+        };
+        self.tool_scroll = step_target(jump, rows, top);
+        self.tool_follow = false;
+    }
+
     /// Settle the context-debug scroll for a draw —
     /// [`settle_tool_scroll`](Self::settle_tool_scroll) for the Ctrl+D view.
     pub fn settle_debug_scroll(&mut self, max: usize) {
@@ -338,17 +398,7 @@ impl App {
         };
         let (scroll, follow) = self.debug_page_scroll();
         let top = if *follow { max } else { (*scroll).min(max) };
-        *scroll = match jump {
-            EntryJump::Previous => rows
-                .iter()
-                .rev()
-                .find(|&&row| row < top)
-                .map_or(0, |&row| row),
-            EntryJump::Next => rows
-                .iter()
-                .find(|&&row| row > top)
-                .map_or(usize::MAX, |&row| row),
-        };
+        *scroll = step_target(jump, rows, top);
         *follow = false;
     }
 

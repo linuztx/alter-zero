@@ -59,6 +59,7 @@ mod tips;
 mod tool;
 mod tool_group;
 mod transcript;
+mod transcript_navigation;
 mod usage_view;
 mod view_flow;
 mod wrap;
