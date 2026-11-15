@@ -41,6 +41,7 @@ mod settings;
 mod skill_picker;
 mod skills_menu;
 mod spinner;
+mod sponsor;
 mod tasks;
 mod theme;
 mod tips;

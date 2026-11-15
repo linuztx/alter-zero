@@ -78,6 +78,11 @@ impl App {
         if self.view == View::Conversation && self.donate_picker.is_some() {
             return self.on_key_donate_picker(key);
         }
+        // …and the read-only `/sponsor` page, its twin. See
+        // `docs/sponsor.md`.
+        if self.view == View::Conversation && self.sponsor_page.is_some() {
+            return self.on_key_sponsor_page(key);
+        }
         // …and the read-only `/export` page, the `/donate` page's sibling.
         // See `docs/export.md`.
         if self.view == View::Conversation && self.export_picker.is_some() {

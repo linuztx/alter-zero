@@ -266,6 +266,12 @@ impl Session<'_> {
                 // collapses back to the composer on the next draw.
             }
             Action::CopyDonationAddress(address) => self.copy_donation_address(address),
+            Action::OpenSponsorPage | Action::CloseSponsorPage => {
+                // The `/donate` page's rule: the pure open or close already
+                // happened and after_key schedules the frame
+                // (docs/sponsor.md).
+            }
+            Action::CopySponsorLink(link) => self.copy_sponsor_link(link),
             // The pure open already happened; the boundary reloads the file
             // so a secret another session saved is listed (docs/secrets.md).
             Action::OpenSecretsPage => self.open_secrets_page(),
@@ -609,6 +615,8 @@ impl Session<'_> {
             // …and the read-only `/donate` page has no field at all
             // (docs/donate.md)…
             View::Conversation if self.app.donate_picker.is_some() => {}
+            // …nor the `/sponsor` page, its twin (docs/sponsor.md)…
+            View::Conversation if self.app.sponsor_page.is_some() => {}
             // …nor does the `/export` page, its sibling (docs/export.md)…
             View::Conversation if self.app.export_picker.is_some() => {}
             // …nor the `/context` page (docs/context-usage.md).

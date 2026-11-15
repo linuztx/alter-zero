@@ -34,6 +34,10 @@ release heading when a version is cut.
   still being fetched with the old key, since another account can list
   other models (`docs/model-cache.md`).
 
+- **`/sponsor` shows where to sponsor the developer.** The page lists the
+  GitHub Sponsors link and a contact email, each in a box you can click
+  where your terminal follows links, or copy with Enter (`docs/sponsor.md`).
+
 ### Changed
 
 - **Auto mode's safety check answers in JSON, and a reply that is not

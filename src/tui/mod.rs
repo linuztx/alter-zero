@@ -109,6 +109,7 @@ pub(crate) mod secrets;
 pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod spinner;
+pub(crate) mod sponsor;
 pub(crate) mod startup;
 pub(crate) mod stream;
 pub(crate) mod telemetry;

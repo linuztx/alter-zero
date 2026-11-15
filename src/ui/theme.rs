@@ -1737,6 +1737,20 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
+// --- the read-only /sponsor page (docs/sponsor.md). The /donate page's
+// twin: its heart, gradient title, label rows and rounded boxes over the
+// const sponsor catalog. Only its own words live here. ---
+
+/// The title's verb; the app's name follows it: `Sponsor Alter Zero`.
+pub(super) const SPONSOR_TITLE_PREFIX: &str = "Sponsor ";
+
+/// The dim row under the title: who is being sponsored and what it buys.
+pub(super) const SPONSOR_BLURB: &str = "Alter Zero is built and maintained by one developer. \
+A sponsorship pays for the time that goes into it — thank you.";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const SPONSOR_HINT: &str = "↑↓ navigate  enter/c copy  esc close";
+
 // --- the /secrets page (docs/secrets.md). The /donate page's frame — the
 // family's indent, its `❯` marker, the dim meta ink, the banner-gradient
 // title — over the user's secrets, and a three-field form under the same
