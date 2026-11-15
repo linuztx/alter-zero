@@ -3100,6 +3100,15 @@ pub(super) const MASCOT_GLINT_HALF_WIDTH: f32 = 1.5;
 /// streak reads as light glancing off the mascot.
 pub(super) const MASCOT_GLINT_LEAN: f32 = 1.0;
 
+/// The share of the art's cells a glitter sets twinkling at its thickest —
+/// about one in three, so it reads as scattered sparkles rather than the
+/// whole mascot flashing.
+pub(super) const MASCOT_GLITTER_DENSITY: f32 = 0.32;
+
+/// How much of a twinkle's light a cell keeps for the step after it — the
+/// afterglow that lets a twinkle fade instead of snapping off.
+pub(super) const MASCOT_GLITTER_AFTERGLOW: f32 = 0.35;
+
 /// The crest's blend toward [`mascot_shine_color`] — a little under the
 /// verb's ([`SHIMMER_MAX_BLEND`]), since a solid block of near-white reads
 /// far louder than a letter of it.

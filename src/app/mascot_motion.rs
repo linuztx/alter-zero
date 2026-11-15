@@ -143,13 +143,31 @@ const PEEK_MS: u64 = 480;
 /// A foot off the ground, and both feet down between two taps.
 const TAP_MS: u64 = 110;
 const TAP_APART_MS: u64 = 80;
-/// A doze: the eyes grow heavy, close, the head nods and stays down, it
-/// stirs, and it starts awake.
+/// A doze: the eyes grow heavy, close, the head nods and stays down —
+/// settling, then snoring, a `z` that grows to a `Z` — it stirs, and it
+/// starts awake.
 const DROWSE_MS: u64 = 320;
 const NOD_OFF_MS: u64 = 480;
-const ASLEEP_MS: u64 = 880;
+const ASLEEP_MS: u64 = 200;
+const SNORE_MS: u64 = 340;
 const STIR_MS: u64 = 110;
 const WAKE_MS: u64 = 320;
+/// Hiding: a row down, out of sight, back up to the eyes, a look each way
+/// over the edge, and up.
+const SINK_MS: u64 = 90;
+const HIDDEN_MS: u64 = 380;
+const SURFACE_MS: u64 = 160;
+const PEEK_OVER_MS: u64 = 220;
+/// A flip: the crouch (or the lean) either side of it, and the instant
+/// upside down.
+const CROUCH_MS: u64 = 80;
+const UPSIDE_DOWN_MS: u64 = 150;
+/// Eyes lighting up: each size of the spark on its way to a star, and the
+/// star held.
+const STAR_STEP_MS: u64 = 80;
+const STAR_HELD_MS: u64 = 480;
+/// A glitter: [`MASCOT_GLITTER_STEPS`] scatters of 80 ms each.
+const GLITTER_MS: u64 = 80 * MASCOT_GLITTER_STEPS as u64;
 
 /// One still of a mascot — its rows, drawn verbatim like [`Mascot::art`].
 type Art = &'static [&'static str];
@@ -412,13 +430,62 @@ macro_rules! foot_taps {
     };
 }
 
+/// Hiding, for the four whose eyes are on the art's middle row: the mascot
+/// sinks a row below the floor of its block, then out of sight but for its
+/// top, comes back up to its eyes, looks both ways over the edge, and pops
+/// up. Every frame is the mascot as drawn, moved down whole rows.
+macro_rules! hide {
+    () => {
+        const SUNK: Art = &["", REST[0], REST[1]];
+        const HIDDEN: Art = &["", "", REST[0]];
+        const PEEKING_OVER_LEFT: Art = &["", REST[0], LOOK_LEFT[1]];
+        const PEEKING_OVER_RIGHT: Art = &["", REST[0], LOOK_RIGHT[1]];
+        const HIDE: Clip = clip![
+            SUNK for SINK_MS, HIDDEN for HIDDEN_MS, SUNK for SURFACE_MS,
+            PEEKING_OVER_LEFT for PEEK_OVER_MS, PEEKING_OVER_RIGHT for PEEK_OVER_MS,
+            SUNK for SINK_MS,
+        ];
+    };
+}
+
+/// A somersault: a crouch, an instant upside down — legs in the air — and
+/// the landing.
+macro_rules! somersault {
+    () => {
+        const SOMERSAULT: Clip = clip![
+            DIPPED for CROUCH_MS, UPSIDE_DOWN for UPSIDE_DOWN_MS, DIPPED for CROUCH_MS,
+        ];
+    };
+}
+
+/// A cartwheel: a lean to one side, upside down, and down on the other.
+macro_rules! cartwheel {
+    () => {
+        const CARTWHEEL: Clip = clip![
+            LEANT_LEFT for CROUCH_MS, UPSIDE_DOWN for UPSIDE_DOWN_MS, LEANT_RIGHT for CROUCH_MS,
+        ];
+    };
+}
+
+/// Eyes lighting up: a point of light opens in each, grows to a star, is
+/// held there, and closes the way it opened.
+macro_rules! starry {
+    () => {
+        const STARRY: Clip = clip![
+            EYES_LIT for STAR_STEP_MS, EYES_SPARK for STAR_STEP_MS, EYES_STAR for STAR_HELD_MS,
+            EYES_SPARK for STAR_STEP_MS, EYES_LIT for STAR_STEP_MS,
+        ];
+    };
+}
+
 /// A doze, for eyes with a lid: they grow heavy, close, the head nods and
-/// stays down — and it starts awake, wide-eyed, and blinks the sleep out of
-/// its eyes, twice.
+/// stays down, snoring — and it starts awake, wide-eyed, and blinks the
+/// sleep out of its eyes, twice.
 macro_rules! lidded_doze {
     () => {
         const DOZE: Clip = clip![
             LID for DROWSE_MS, SHUT for NOD_OFF_MS, DIPPED_SHUT for ASLEEP_MS,
+            SNORE for SNORE_MS, SNORE_LOUD for SNORE_MS,
             SHUT for STIR_MS, WIDE for WAKE_MS,
             REST for PHRASE_REST_MS, LID for LID_DOWN_MS, SHUT for SHUT_MS, LID for LID_UP_MS,
             REST for PHRASE_REST_MS, LID for LID_DOWN_MS, SHUT for SHUT_MS, LID for LID_UP_MS,
@@ -453,6 +520,14 @@ macro_rules! lights {
                 glow: 0,
             }],
             band: Some(ShineBand::GlintFromRight),
+        };
+        const GLITTER: Clip = Clip {
+            steps: &[Step {
+                art: REST,
+                ms: GLITTER_MS,
+                glow: 0,
+            }],
+            band: Some(ShineBand::Glitter),
         };
     };
 }
@@ -491,7 +566,7 @@ const fn late(moves: &'static [&'static Clip]) -> Card {
 
 /// The most kinds of card a deck holds — the size of the hand a deal works
 /// in.
-const DECK_KINDS: usize = 24;
+const DECK_KINDS: usize = 32;
 
 // What tells the three draws a round makes from one seed apart.
 const DEAL: u64 = 0xA076_1D64_78BD_642F;
@@ -669,6 +744,10 @@ mod crest {
     const WIDE: Art = &[" ▙▄▙▄▟▄▟", "▝▜▂███▂▛▘", "  ▘▘ ▝▝"];
     const ONE_WIDE: Art = &[" ▙▄▙▄▟▄▟", "▝▜▂███▆▛▘", "  ▘▘ ▝▝"];
     const CROSSED: Art = &[" ▙▄▙▄▟▄▟", "▝▜▙███▟▛▘", "  ▘▘ ▝▝"];
+    // Lit up: a point of light in each, a spark, a star.
+    const EYES_LIT: Art = &[" ▙▄▙▄▟▄▟", "▝▜·███·▛▘", "  ▘▘ ▝▝"];
+    const EYES_SPARK: Art = &[" ▙▄▙▄▟▄▟", "▝▜✢███✢▛▘", "  ▘▘ ▝▝"];
+    const EYES_STAR: Art = &[" ▙▄▙▄▟▄▟", "▝▜✶███✶▛▘", "  ▘▘ ▝▝"];
     // The frill: pulled in, flared, each spike dropped in turn, and flat.
     const RUFFLE: Art = &[" ▟▄▟▄▙▄▙", "▝▜▄███▄▛▘", "  ▘▘ ▝▝"];
     const FLARE: Art = &[" ▙▙▙▄▟▟▟", "▝▜▄███▄▛▘", "  ▘▘ ▝▝"];
@@ -692,12 +771,17 @@ mod crest {
     // The whole hatchling, half a cell off.
     const DIPPED: Art = &[" ▖ ▖ ▗ ▗", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
     const DIPPED_SHUT: Art = &[" ▖ ▖ ▗ ▗", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    // Asleep and snoring: a `z` in the block's top corner, then a `Z`.
+    const SNORE: Art = &[" ▖ ▖ ▗ ▗z", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    const SNORE_LOUD: Art = &[" ▖ ▖ ▗ ▗Z", "▗███████▖", " ▝▛▛▀▜▜▘"];
     const DIPPED_LEFT: Art = &["▗ ▗  ▖ ▖", "▟▛▜██▛▜▙", " ▜▜▀▀▛▛"];
     const DIPPED_RIGHT: Art = &[" ▗ ▗  ▖ ▖", " ▟▛▜██▛▜▙", "  ▜▜▀▀▛▛"];
     const LEANT_LEFT: Art = &["▐▄▟▄▄▙▄▌", "▀▙▟██▙▟▀", " ▝▝  ▘▘"];
     const LEANT_RIGHT: Art = &[" ▐▄▟▄▄▙▄▌", " ▀▙▟██▙▟▀", "  ▝▝  ▘▘"];
     const PEEKING_LEFT: Art = &["▐▄▟▄▄▙▄▌", "▀▙███▙█▀", " ▝▝  ▘▘"];
     const PEEKING_RIGHT: Art = &[" ▐▄▟▄▄▙▄▌", " ▀█▟███▟▀", "  ▝▝  ▘▘"];
+    // …and upside down, legs in the air.
+    const UPSIDE_DOWN: Art = &["  ▖▖ ▗▗", "▗▟▀███▀▙▖", " ▛▀▛▀▜▀▜"];
 
     blinks!(LID for LID_DOWN_MS, SHUT for SHUT_MS, LID for LID_UP_MS);
     looks!();
@@ -709,6 +793,10 @@ mod crest {
     wiggle!();
     peeks!();
     dance!();
+    hide!();
+    somersault!();
+    cartwheel!();
+    starry!();
     foot_taps!();
     patter!();
     lidded_doze!();
@@ -758,10 +846,14 @@ mod crest {
             card(1, &[&DANCE]),
             card(1, &[&RIPPLE]),
             card(1, &[&DUCK]),
+            card(1, &[&HIDE]),
+            card(2, &[&SOMERSAULT, &CARTWHEEL]),
+            card(1, &[&STARRY]),
             card(2, &[&TAP, &PATTER]),
             card(1, &[&SWEEP]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
             late(&[&DOZE]),
         ],
     };
@@ -787,6 +879,10 @@ mod bloom {
     const WIDE: Art = &[" ▄█████▄", "▀█▂███▂█▀", " ▝▝   ▘▘"];
     const ONE_WIDE: Art = &[" ▄█████▄", "▀█▂███▆█▀", " ▝▝   ▘▘"];
     const CROSSED: Art = &[" ▄█████▄", "▀█▙███▟█▀", " ▝▝   ▘▘"];
+    // Lit up: a point of light in each, a spark, a star.
+    const EYES_LIT: Art = &[" ▄█████▄", "▀█·███·█▀", " ▝▝   ▘▘"];
+    const EYES_SPARK: Art = &[" ▄█████▄", "▀█✢███✢█▀", " ▝▝   ▘▘"];
+    const EYES_STAR: Art = &[" ▄█████▄", "▀█✶███✶█▀", " ▝▝   ▘▘"];
     // The petals: both down, one down, tucked in — and both up at the head.
     const DOWN: Art = &[" ▄█████▄", "▄█▄███▄█▄", " ▝▝   ▘▘"];
     const LEFT_DOWN: Art = &[" ▄█████▄", "▄█▄███▄█▀", " ▝▝   ▘▘"];
@@ -809,6 +905,11 @@ mod bloom {
     // The whole creature, half a cell down.
     const DIPPED: Art = &["  ▄▄▄▄▄", "▄█▀███▀█▄", " ▜▜▀▀▀▛▛"];
     const DIPPED_SHUT: Art = &["  ▄▄▄▄▄", "▄███████▄", " ▜▜▀▀▀▛▛"];
+    // Asleep and snoring: a `z` in the block's top corner, then a `Z`.
+    const SNORE: Art = &["  ▄▄▄▄▄ z", "▄███████▄", " ▜▜▀▀▀▛▛"];
+    const SNORE_LOUD: Art = &["  ▄▄▄▄▄ Z", "▄███████▄", " ▜▜▀▀▀▛▛"];
+    // …and upside down, feet in the air.
+    const UPSIDE_DOWN: Art = &[" ▗▗   ▖▖", "▄█▀███▀█▄", " ▀█████▀"];
 
     blinks!(LID for LID_DOWN_MS, SHUT for SHUT_MS, LID for LID_UP_MS);
     looks!();
@@ -817,6 +918,9 @@ mod bloom {
     stares!();
     bob!();
     happy!();
+    hide!();
+    somersault!();
+    starry!();
     foot_taps!();
     patter!();
     lidded_doze!();
@@ -867,10 +971,14 @@ mod bloom {
             card(1, &[&LOOK_AROUND]),
             card(1, &[&SHIFTY]),
             card(1, &[&SHY]),
+            card(1, &[&HIDE]),
+            card(1, &[&SOMERSAULT]),
+            card(1, &[&STARRY]),
             card(2, &[&TAP, &PATTER]),
             card(1, &[&SWEEP]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
             late(&[&DOZE]),
         ],
     };
@@ -893,6 +1001,10 @@ mod sprout {
     const LEFT_SHUT: Art = &["    █", "▗▟████▀▙▖", " ▝▛▛▀▜▜▘"];
     const RIGHT_SHUT: Art = &["    █", "▗▟▀████▙▖", " ▝▛▛▀▜▜▘"];
     const CROSSED: Art = &["    █", "▗▟▛███▜▙▖", " ▝▛▛▀▜▜▘"];
+    // Lit up: a point of light in each, a spark, a star.
+    const EYES_LIT: Art = &["    █", "▗▟·███·▙▖", " ▝▛▛▀▜▜▘"];
+    const EYES_SPARK: Art = &["    █", "▗▟✢███✢▙▖", " ▝▛▛▀▜▜▘"];
+    const EYES_STAR: Art = &["    █", "▗▟✶███✶▙▖", " ▝▛▛▀▜▜▘"];
     // The shoot: its tip bent, a leaf out, both out — small, full, and
     // spread wide — and sunk to a bud.
     const TIP_RIGHT: Art = &["    ▟▘", "▗▟▀███▀▙▖", " ▝▛▛▀▜▜▘"];
@@ -915,6 +1027,8 @@ mod sprout {
     const LEANT_RIGHT: Art = &["    ▐▌", " ▄▛▜██▛▜▄", "  ▜▜▀▀▛▛"];
     const PEEKING_LEFT: Art = &["   ▐▌", "▄▛███▛█▄", " ▜▜▀▀▛▛"];
     const PEEKING_RIGHT: Art = &["    ▐▌", " ▄█▜███▜▄", "  ▜▜▀▀▛▛"];
+    // …and upside down, standing on its shoot.
+    const UPSIDE_DOWN: Art = &[" ▗▙▙▄▟▟▖", "▝▜▄███▄▛▘", "    █"];
 
     blinks!(SHUT for BLINK_MS);
     looks!();
@@ -922,6 +1036,9 @@ mod sprout {
     lights!();
     wiggle!();
     peeks!();
+    hide!();
+    cartwheel!();
+    starry!();
     patter!();
     const SWAY: Clip = clip![TIP_RIGHT for 170, REST for 110, TIP_LEFT for 170];
     const UNFURL: Clip = clip![TIP_RIGHT for 90, LEAF for 520, TIP_RIGHT for 90];
@@ -983,9 +1100,13 @@ mod sprout {
             card(1, &[&GROW]),
             card(1, &[&CHEER]),
             card(1, &[&PATTER]),
+            card(1, &[&HIDE]),
+            card(1, &[&CARTWHEEL]),
+            card(1, &[&STARRY]),
             card(1, &[&SWEEP]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
         ],
     };
 }
@@ -1009,6 +1130,10 @@ mod twin {
     const WIDE: Art = &[" ██▄▄▄██", "▝▜▂███▂▛▘", "  ▘▘ ▝▝"];
     const ONE_WIDE: Art = &[" ██▄▄▄██", "▝▜▂███▆▛▘", "  ▘▘ ▝▝"];
     const CROSSED: Art = &[" ██▄▄▄██", "▝▜▙███▟▛▘", "  ▘▘ ▝▝"];
+    // Lit up: a point of light in each, a spark, a star.
+    const EYES_LIT: Art = &[" ██▄▄▄██", "▝▜·███·▛▘", "  ▘▘ ▝▝"];
+    const EYES_SPARK: Art = &[" ██▄▄▄██", "▝▜✢███✢▛▘", "  ▘▘ ▝▝"];
+    const EYES_STAR: Art = &[" ██▄▄▄██", "▝▜✶███✶▛▘", "  ▘▘ ▝▝"];
     // The ears: one folding, both apart, together, to a side, flat, pricked,
     // and splayed out to the block's corners.
     const LEFT_HALF: Art = &[" █▄▄▄▄██", "▝▜▄███▄▛▘", "  ▘▘ ▝▝"];
@@ -1030,12 +1155,17 @@ mod twin {
     // The whole creature, half a cell off.
     const DIPPED: Art = &[" ▄▄   ▄▄", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
     const DIPPED_SHUT: Art = &[" ▄▄   ▄▄", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    // Asleep and snoring: a `z` in the block's top corner, then a `Z`.
+    const SNORE: Art = &[" ▄▄   ▄▄z", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    const SNORE_LOUD: Art = &[" ▄▄   ▄▄Z", "▗███████▖", " ▝▛▛▀▜▜▘"];
     const DIPPED_LEFT: Art = &["▗▄▖  ▗▄▖", "▟▛▜██▛▜▙", " ▜▜▀▀▛▛"];
     const DIPPED_RIGHT: Art = &[" ▗▄▖  ▗▄▖", " ▟▛▜██▛▜▙", "  ▜▜▀▀▛▛"];
     const LEANT_LEFT: Art = &["▐█▙▄▄▟█▌", "▀▙▟██▙▟▀", " ▝▝  ▘▘"];
     const LEANT_RIGHT: Art = &[" ▐█▙▄▄▟█▌", " ▀▙▟██▙▟▀", "  ▝▝  ▘▘"];
     const PEEKING_LEFT: Art = &["▐█▙▄▄▟█▌", "▀▙███▙█▀", " ▝▝  ▘▘"];
     const PEEKING_RIGHT: Art = &[" ▐█▙▄▄▟█▌", " ▀█▟███▟▀", "  ▝▝  ▘▘"];
+    // …and upside down, standing on its ears.
+    const UPSIDE_DOWN: Art = &["  ▖▖ ▗▗", "▗▟▀███▀▙▖", " ██▀▀▀██"];
 
     blinks!(LID for LID_DOWN_MS, SHUT for SHUT_MS, LID for LID_UP_MS);
     looks!();
@@ -1047,6 +1177,10 @@ mod twin {
     wiggle!();
     peeks!();
     dance!();
+    hide!();
+    somersault!();
+    cartwheel!();
+    starry!();
     foot_taps!();
     patter!();
     lidded_doze!();
@@ -1095,10 +1229,14 @@ mod twin {
             card(2, &[&EAR_WIGGLE, &SPLAY]),
             card(1, &[&EAR_SWAY]),
             card(1, &[&DROOP]),
+            card(1, &[&HIDE]),
+            card(2, &[&SOMERSAULT, &CARTWHEEL]),
+            card(1, &[&STARRY]),
             card(2, &[&TAP, &PATTER]),
             card(1, &[&SWEEP]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
             late(&[&DOZE]),
         ],
     };
@@ -1118,6 +1256,10 @@ mod skiter {
     const LEFT_SHUT: Art = &["▗▟████▀▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
     const RIGHT_SHUT: Art = &["▗▟▀████▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
     const CROSSED: Art = &["▗▟▛███▜▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
+    // Lit up: a point of light in each, a spark, a star.
+    const EYES_LIT: Art = &["▗▟·███·▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
+    const EYES_SPARK: Art = &["▗▟✢███✢▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
+    const EYES_STAR: Art = &["▗▟✶███✶▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝▝"];
     // The legs: a step to each side, each lifted in turn, drawn in, spread.
     const LEGS_RIGHT: Art = &["▗▟▀███▀▙▖", "▝▜█████▛▘", " ▝▝ ▘▝ ▘▘"];
     const LEGS_LEFT: Art = &["▗▟▀███▀▙▖", "▝▜█████▛▘", "▝▝ ▘▝ ▘▘"];
@@ -1134,12 +1276,24 @@ mod skiter {
     // The whole skitterer, half a cell off.
     const DIPPED: Art = &[" ▗▄▄▄▄▄▖", "▐█▄███▄█▌", " ▞▛▜▀▛▜▚"];
     const DIPPED_SHUT: Art = &[" ▗▄▄▄▄▄▖", "▐███████▌", " ▞▛▜▀▛▜▚"];
+    // Asleep and snoring: a `z` in the block's top corner, then a `Z`.
+    const SNORE: Art = &[" ▗▄▄▄▄▄▖z", "▐███████▌", " ▞▛▜▀▛▜▚"];
+    const SNORE_LOUD: Art = &[" ▗▄▄▄▄▄▖Z", "▐███████▌", " ▞▛▜▀▛▜▚"];
     const DIPPED_LEFT: Art = &[" ▄▄▄▄▄▄", "█▙▟██▙▟█", "▗▜▀▛▜▀▛▖"];
     const DIPPED_RIGHT: Art = &["  ▄▄▄▄▄▄", " █▙▟██▙▟█", " ▗▜▀▛▜▀▛▖"];
     const LEANT_LEFT: Art = &["▄▛▜██▛▜▄", "▀██████▀", "▝▝ ▘▝ ▘▘"];
     const LEANT_RIGHT: Art = &[" ▄▛▜██▛▜▄", " ▀██████▀", " ▝▝ ▘▝ ▘▘"];
     const PEEKING_LEFT: Art = &["▄▛███▛█▄", "▀██████▀", "▝▝ ▘▝ ▘▘"];
     const PEEKING_RIGHT: Art = &[" ▄█▜███▜▄", " ▀██████▀", " ▝▝ ▘▝ ▘▘"];
+    // …and upside down, on its back with its legs in the air.
+    const UPSIDE_DOWN: Art = &[" ▖▖▗ ▖▗▗", "▗▟█████▙▖", "▝▜▄███▄▛▘"];
+    // Sunk below the floor: its legs gone, then down to its eyes — which is
+    // as far as it hides, since its eyes are on its top row — looking each
+    // way from there.
+    const SUNK: Art = &["", REST[0], REST[1]];
+    const SUNK_TO_EYES: Art = &["", "", REST[0]];
+    const SUNK_LOOKING_LEFT: Art = &["", "", LOOK_LEFT[0]];
+    const SUNK_LOOKING_RIGHT: Art = &["", "", LOOK_RIGHT[0]];
 
     blinks!(SHUT for BLINK_MS);
     looks!();
@@ -1150,10 +1304,21 @@ mod skiter {
     wiggle!();
     peeks!();
     dance!();
+    somersault!();
+    cartwheel!();
+    starry!();
+    /// Hiding: it sinks until only its eyes show over the floor of its
+    /// block, looks both ways from there, and is up again.
+    const HIDE: Clip = clip![
+        SUNK for SINK_MS, SUNK_TO_EYES for HIDDEN_MS,
+        SUNK_LOOKING_LEFT for PEEK_OVER_MS, SUNK_LOOKING_RIGHT for PEEK_OVER_MS,
+        SUNK_TO_EYES for SURFACE_MS, SUNK for SINK_MS,
+    ];
     /// A doze without a lid to lower: the eyes close, the body sinks and
     /// stays down, and it is up again — and blinks the sleep away, twice.
     const DOZE: Clip = clip![
-        SHUT for NOD_OFF_MS, DIPPED_SHUT for ASLEEP_MS, SHUT for STIR_MS + 40,
+        SHUT for NOD_OFF_MS, DIPPED_SHUT for ASLEEP_MS,
+        SNORE for SNORE_MS, SNORE_LOUD for SNORE_MS, SHUT for STIR_MS + 40,
         REST for PHRASE_REST_MS, SHUT for BLINK_MS,
         REST for PHRASE_REST_MS, SHUT for BLINK_MS,
     ];
@@ -1203,9 +1368,13 @@ mod skiter {
             card(1, &[&CROSS_BLINK]),
             card(1, &[&DANCE]),
             card(1, &[&STRETCH]),
+            card(1, &[&HIDE]),
+            card(2, &[&SOMERSAULT, &CARTWHEEL]),
+            card(1, &[&STARRY]),
             card(1, &[&SWEEP]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
             late(&[&DOZE]),
         ],
     };
@@ -1251,6 +1420,10 @@ mod gem {
     const NARROW: Art = &["  ▗▟█▙▖", " ▝▜█▄█▛▘", "   ▝▀▘"];
     const THIN: Art = &["   ▗█▖", "   ▜█▛", "    ▀"];
     const EDGE_ON: Art = &["    █", "    █", "    ▀"];
+    // The stone sunk below the floor of its block: half down, and down to
+    // its tip — a sun on the horizon.
+    const HALF_SET: Art = &["", REST[0], REST[1]];
+    const SET_LOW: Art = &["", "", REST[0]];
 
     /// A spark opening and closing through its three stills.
     macro_rules! twinkle {
@@ -1312,6 +1485,38 @@ mod gem {
     /// A float: it hangs half a cell low, rises, and hangs there again — a
     /// slow bob, the way a stone in the air would.
     const FLOAT: Clip = clip![DIPPED for 300, REST for PHRASE_REST_MS, DIPPED for 300];
+    /// It sets like a sun — half down, down to its tip — and rises glowing,
+    /// the glow fading once it is whole again.
+    const SET: Clip = Clip {
+        steps: &[
+            Step {
+                art: HALF_SET,
+                ms: 140,
+                glow: 0,
+            },
+            Step {
+                art: SET_LOW,
+                ms: 420,
+                glow: 0,
+            },
+            Step {
+                art: HALF_SET,
+                ms: 140,
+                glow: 30,
+            },
+            Step {
+                art: REST,
+                ms: 100,
+                glow: 44,
+            },
+            Step {
+                art: REST,
+                ms: 100,
+                glow: 22,
+            },
+        ],
+        band: None,
+    };
 
     pub(super) const MOTIONS: Motions = Motions {
         greeting: [&SWEEP_SPARK, &TWINKLE_LOW, &TWINKLE_HIGH],
@@ -1327,9 +1532,11 @@ mod gem {
             card(2, &[&TURN_FACET]),
             card(2, &[&BOB, &FLOAT]),
             card(1, &[&SPIN]),
+            card(1, &[&SET]),
             card(2, &[&SWEEP_SPARK]),
             card(1, &[&GLOW]),
             card(2, &[&GLINT_LEFT, &GLINT_RIGHT]),
+            card(1, &[&GLITTER]),
             card(1, &[&FLASH]),
             card(1, &[&GLEAM]),
             card(1, &[&PULSE]),
@@ -1401,7 +1608,15 @@ pub enum ShineBand {
     GlintFromLeft,
     /// A glint entering from the right.
     GlintFromRight,
+    /// Glitter: no band at all — scattered cells twinkle, a different
+    /// scatter at each of [`MASCOT_GLITTER_STEPS`] steps.
+    Glitter,
 }
+
+/// How many steps a glitter twinkles through, each a different scatter of
+/// lit cells — `progress` of the way through it is step
+/// `progress × MASCOT_GLITTER_STEPS`.
+pub const MASCOT_GLITTER_STEPS: u32 = 9;
 
 /// A band of light partway across the mascot. How it falls on each cell is
 /// `ui::header`'s to draw.
@@ -2222,7 +2437,7 @@ mod tests {
     #[test]
     fn every_mascot_knows_a_score_of_moves() {
         // The repertoire the timeline is dealt from: the gem, with no eyes
-        // to make faces with, a score; the rest nearly thirty.
+        // to make faces with, a score; the rest thirty and more.
         for mascot in Mascot::ALL {
             let mut known: Vec<&Clip> = Vec::new();
             for clip in mascot.motions().deck.iter().flat_map(|card| card.moves) {
@@ -2230,7 +2445,7 @@ mod tests {
                     known.push(clip);
                 }
             }
-            let wanted = if mascot == Mascot::Gem { 20 } else { 28 };
+            let wanted = if mascot == Mascot::Gem { 20 } else { 32 };
             assert!(
                 known.len() >= wanted,
                 "{} knows {} moves",

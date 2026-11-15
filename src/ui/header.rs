@@ -6,7 +6,7 @@ use super::theme::*;
 use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
 use super::*;
 
-use crate::app::{Mascot, MascotPose, MascotShine, ShineBand};
+use crate::app::{MASCOT_GLITTER_STEPS, Mascot, MascotPose, MascotShine, ShineBand};
 
 /// `text` as spans coloured cell by cell — `color_at(glyph, column)` for each
 /// glyph at its display column — with equal-colour runs coalesced.
@@ -57,6 +57,7 @@ pub(super) fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
 /// the art unlit and the light arrives and leaves by degrees: no cell pops.
 fn shine_at(col: usize, row: usize, rows: usize, total: usize, shine: MascotShine) -> f32 {
     let (half, slant, progress) = match shine.band {
+        ShineBand::Glitter => return glitter_at(col, row, shine.progress),
         ShineBand::Sweep => (MASCOT_SHINE_HALF_WIDTH, MASCOT_SHINE_LEAN, shine.progress),
         ShineBand::GlintFromLeft => (MASCOT_GLINT_HALF_WIDTH, MASCOT_GLINT_LEAN, shine.progress),
         ShineBand::GlintFromRight => (
@@ -74,6 +75,46 @@ fn shine_at(col: usize, row: usize, rows: usize, total: usize, shine: MascotShin
     }
     let lift = 0.5 * (1.0 + (std::f32::consts::PI * off / half).cos());
     MASCOT_SHINE_MAX_BLEND * lift
+}
+
+/// How far a **glitter** lifts the art cell at (`col`, `row`), `progress`
+/// of the way through it (`docs/mascot-animation.md`).
+///
+/// No band crosses the mascot: at each of [`MASCOT_GLITTER_STEPS`] steps a
+/// different scatter of its cells twinkles at full strength, and the cells
+/// that twinkled a step ago keep a faint afterglow
+/// ([`MASCOT_GLITTER_AFTERGLOW`]), so a twinkle fades rather than snaps
+/// off. Which cells is a lot drawn from the cell and the step — a hash, so
+/// this is a pure function like every other light and the same glitter
+/// every time. The scatter is thickest at the middle step
+/// ([`MASCOT_GLITTER_DENSITY`]) and thins to either end, so the glitter
+/// arrives and leaves by degrees.
+fn glitter_at(col: usize, row: usize, progress: f32) -> f32 {
+    let steps = MASCOT_GLITTER_STEPS;
+    // The epsilon keeps a step's first frame on its own side of f32's
+    // rounding.
+    let step = ((progress * steps as f32 + 1e-3) as u32).min(steps.saturating_sub(1));
+    let twinkles = |step: u32| {
+        let middle = steps.saturating_sub(1) as f32 / 2.0;
+        let off = (step as f32 - middle) / (middle + 1.0);
+        let density = MASCOT_GLITTER_DENSITY * (1.0 - off * off);
+        let mut lot = (col as u32).wrapping_mul(0x9E37_79B1)
+            ^ (row as u32).wrapping_mul(0x85EB_CA77)
+            ^ step.wrapping_mul(0xC2B2_AE3D);
+        lot ^= lot >> 15;
+        lot = lot.wrapping_mul(0x2C1B_3C6D);
+        lot ^= lot >> 12;
+        lot = lot.wrapping_mul(0x297A_2D39);
+        lot ^= lot >> 15;
+        (lot % 1000) as f32 / 1000.0 < density
+    };
+    if twinkles(step) {
+        MASCOT_SHINE_MAX_BLEND
+    } else if step > 0 && twinkles(step - 1) {
+        MASCOT_SHINE_MAX_BLEND * MASCOT_GLITTER_AFTERGLOW
+    } else {
+        0.0
+    }
 }
 
 /// Whether `glyph` is a **spark** — a twinkle beside the art rather than

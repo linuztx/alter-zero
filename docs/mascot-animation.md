@@ -5,7 +5,9 @@ While the conversation is empty — a fresh launch, or the moment after
 opens, it shows the one move its catalog line promises, it blinks — and from
 then on it works through everything it knows, a move every few seconds. It
 bounces, wiggles, peeks to one side, waves and winks, cheers, stares, taps
-its feet, catches the light, daydreams, and after a while alone it nods off.
+its feet, catches the light, daydreams, ducks out of sight and peeks back
+over the edge, turns a somersault, lights up with stars in its eyes — and
+after a while alone it nods off, snoring.
 And while the first message is typed it **watches**: its eyes follow the
 caret across the composer, reading along. The first cell committed under the
 banner ends it all: from there the banner is scrollback, and scrollback does
@@ -24,20 +26,21 @@ greeting as the highlight lands on it.
 
 ## What each mascot does
 
-Each mascot has a **repertoire** of nearly thirty moves (the gem, with no
+Each mascot has a **repertoire** of thirty moves and more (the gem, with no
 eyes to make faces with, a score). The first version had six, and three
 beats in five were a blink; "it's always just blinking" was a fair review.
-The second gave each a score, and the third — ported in part from another
-branch's take on the same feature — added limbs, phrases and light. The
-moves come in six families:
+The second gave each a score; the third — ported in part from another
+branch's take on the same feature — added limbs, phrases and light; the
+fourth, tricks. The moves come in seven families:
 
 - **Looks** — what a pair of eyes does: a **blink** (and a double), a
   **glance** to either side, a **look around**, a **shifty** dart from side
   to side, a **wink** of either eye, a **cross-eyed** moment, and a
   **daydream** — the eyes gone to one side and staying there, blinking
-  while they are away. The three whose eyes have a lid add a **startled**
-  wide stare, a contented **squint**, and one eye of each — the look of
-  something that is not so sure.
+  while they are away — and **starry eyes**: a point of light opens in
+  each, grows to a star, and is held there. The three whose eyes have a lid
+  add a **startled** wide stare, a contented **squint**, and one eye of
+  each — the look of something that is not so sure.
 - **Phrases** — two moves that belong together, the second the first's
   punctuation: a **wave** and a wink of the eye beside the arm (a hello), a
   **cheer** — a spring with the arms (petals, ears, claws) thrown up, twice
@@ -50,25 +53,32 @@ moves come in six families:
   **wiggle** from side to side, a little **dance** (down to the left, down
   to the right), and a **peek**: the eyes go to one side and the mascot
   leans after them.
+- **Tricks** — the whole mascot somewhere it does not usually go. It
+  **hides**: sinks below the floor of its block until only its top shows,
+  comes back up to its eyes, looks both ways over the edge, and pops up.
+  And it **flips**: a **somersault** — a crouch, an instant upside down
+  with its legs in the air, the landing — or a **cartwheel**, a lean to one
+  side, upside down, and down on the other.
 - **Its own moves** — the thing its catalog description says it does, and
   three or four more (the table below).
 - **Light** — the sweep that opens the greeting comes back once a round; a
-  **glint**, a narrow catch of the light, crosses from either side; and a
-  **glow** swells through the whole mascot and fades, a breath of light.
-- **A doze** — for the four that can (below).
+  **glint**, a narrow catch of the light, crosses from either side; a
+  **glow** swells through the whole mascot and fades, a breath of light;
+  and it **glitters**, a scatter of its cells twinkling.
+- **A doze** — for the four that can, snoring (below).
 
 | mascot | its own moves | its whole body |
 |---|---|---|
-| `crest` | **flares its frill** (the spikes pull in, fan out to six, settle); a **ripple** runs along it, each spike dropping in turn, there and back; it **ducks** — frill flat — and springs up flared; it **waves** an arm from the shoulder and winks; it **cheers**, both arms high; it **taps** or **patters** its feet | bounces, wiggles, dances, peeks |
-| `bloom` | **flutters** its petals (down and up, three times) or **flaps** them (up to the head, down to the hem); **seesaws** them; **puffs up** its head, or **swells** it out to the block's edges; its crown **wobbles** from side to side; **tucks** its petals in, shy; **cheers** with them up; taps or patters its feet | bounces — it fills its block from edge to edge, so it never leans |
-| `sprout` | its shoot **sways**; it **unfurls a leaf** to either side, or **spreads both**, or **blossoms** — two leaves opening as wide as they go; it **sinks to a bud and pushes up again**; it throws its **arms up**, three times, and blinks; it **waves** one, and sometimes winks after; it **patters** its feet | wiggles and peeks — its feet stand on the block's last half-row, so it never bounces |
-| `twin` | **flicks an ear** (either one, twice); **wiggles** both out and in, or **splays** them to the corners; **sways** them; they **droop** and spring up pricked; it **cheers** with them splayed; it taps or patters its feet | bounces, wiggles, dances, peeks |
-| `skiter` | **skitters**; a **wave** runs down its six legs, twice; it **stretches** them — drawn in, then spread wide; it **raises its claws**, and **cheers** with them up | bounces, wiggles, **scuttles** (half a cell each way, stopping between), dances, peeks |
-| `gem` | a **spark** opens at any of its four corners, at two in turn, or **all round**; its **facet slides** from side to side as the stone turns, stands tall when it **gleams**, **pulses**; it **spins** — narrower, thin, edge-on and back; a sweep crosses it with a spark; it **flashes** — to full strength, dark, and again | bounces, **floats** (a slow bob), wiggles, dances, and rocks slowly from side to side |
+| `crest` | **flares its frill** (the spikes pull in, fan out to six, settle); a **ripple** runs along it, each spike dropping in turn, there and back; it **ducks** — frill flat — and springs up flared; it **waves** an arm from the shoulder and winks; it **cheers**, both arms high; it **taps** or **patters** its feet | bounces, wiggles, dances, peeks, hides, somersaults, cartwheels |
+| `bloom` | **flutters** its petals (down and up, three times) or **flaps** them (up to the head, down to the hem); **seesaws** them; **puffs up** its head, or **swells** it out to the block's edges; its crown **wobbles** from side to side; **tucks** its petals in, shy; **cheers** with them up; taps or patters its feet | bounces, hides, somersaults — it fills its block from edge to edge, so it never leans, and never cartwheels |
+| `sprout` | its shoot **sways**; it **unfurls a leaf** to either side, or **spreads both**, or **blossoms** — two leaves opening as wide as they go; it **sinks to a bud and pushes up again**; it throws its **arms up**, three times, and blinks; it **waves** one, and sometimes winks after; it **patters** its feet | wiggles, peeks, hides, cartwheels — its feet stand on the block's last half-row, so it never bounces, and never somersaults |
+| `twin` | **flicks an ear** (either one, twice); **wiggles** both out and in, or **splays** them to the corners; **sways** them; they **droop** and spring up pricked; it **cheers** with them splayed; it taps or patters its feet | bounces, wiggles, dances, peeks, hides, somersaults, cartwheels |
+| `skiter` | **skitters**; a **wave** runs down its six legs, twice; it **stretches** them — drawn in, then spread wide; it **raises its claws**, and **cheers** with them up | bounces, wiggles, **scuttles** (half a cell each way, stopping between), dances, peeks, somersaults, cartwheels, and hides as far as its eyes — they are on its top row, so that is as deep as it goes |
+| `gem` | a **spark** opens at any of its four corners, at two in turn, or **all round**; its **facet slides** from side to side as the stone turns, stands tall when it **gleams**, **pulses**; it **spins** — narrower, thin, edge-on and back; a sweep crosses it with a spark; it **flashes** — to full strength, dark, and again | bounces, **floats** (a slow bob), wiggles, dances, rocks slowly from side to side, and **sets like a sun** — half down, down to its tip — to rise glowing. Upside down it is itself, so it never flips |
 
 ### One part moved, or the whole mascot
 
-A frame is one of four things, and the tests hold every frame to it:
+A frame is one of six things, and the tests hold every frame to it:
 
 - **the rest art with one part moved** — the eyes, a crest, a leaf, an ear,
   a foot, a spark — so it differs from the rest art on exactly one row;
@@ -78,7 +88,13 @@ A frame is one of four things, and the tests hold every frame to it:
   nothing in them but the art's two edge columns;
 - **the stone turned** — the gem's spin: every half-row of it as wide as the
   rest art's or narrower, about the same middle, down to a single column
-  edge-on; or
+  edge-on;
+- **the mascot sunk below the floor** — the rest art moved down one or two
+  whole rows, the rows above it blank and its feet (then its body) out of
+  sight under the block's last row; what still shows is as drawn, but for
+  the eyes turned to one side as it looks over the edge;
+- **the mascot upside down** — the rest art turned top to bottom on its
+  half-cell grid: exactly the same creature, legs in the air; or
 - **the whole mascot moved half a cell.** The art is drawn on a half-cell
   grid (a quadrant glyph is four quarters of a cell), and every mascot
   leaves a half-row free under its feet, a half-column free at each side,
@@ -91,7 +107,9 @@ A frame is one of four things, and the tests hold every frame to it:
 Either way a frame keeps the art's three rows and is never wider than the
 art: the banner's metadata column and the composer under it never shift.
 Nothing moves up — no mascot has a free half-row above it — so a bounce is
-a dip and a recovery, which is what a bounce looks like from the landing.
+a dip and a recovery, which is what a bounce looks like from the landing,
+and a hide goes *down*, behind the floor, which costs nothing: a sunk row
+is simply not drawn.
 
 ### Eyes
 
@@ -127,6 +145,12 @@ tall, punched in the body. That decides how they can move:
   `▂` leaves three quarters of the cell open, a startled stare; the lid
   held for most of a second is a squint; `▂` beside `▆` is one of each.
   Only the three upper-eyed mascots have the ramp, so only they pull these.
+- **Starry eyes** put a glyph *in* the hole: `·`, then `✢`, then `✶` —
+  the gem's three sparks — held a moment as a star and closed the way it
+  opened. The eye's cell is given over to it whole, so the socket is a full
+  cell tall for the length of the move, which is what makes the eyes read
+  as wide with delight. A spark is light, not mascot, and is drawn in the
+  highlight like the gem's. Every eyed mascot can do it: it needs no lid.
 - **What eyes cannot do** is look down (the upper-eyed) or up (the
   lower-eyed): the hole would open onto the legs, or cut through the
   forehead. Both were drawn, looked at, and thrown out — as was an eye
@@ -136,7 +160,7 @@ tall, punched in the body. That decides how they can move:
 ### Light
 
 Light is colour only — never a glyph — and falls on ink: a blank cell keeps
-its colour, so the wire carries no repaint of empty cells. Four kinds:
+its colour, so the wire carries no repaint of empty cells. Five kinds:
 
 - **The sweep**, the greeting's: a broad band, below.
 - **A glint**: the sweep's narrow, quick sibling — a raised-cosine band one
@@ -150,6 +174,15 @@ its colour, so the wire carries no repaint of empty cells. Four kinds:
   a round.
 - **A flash**, the gem's own: to full strength, dark, and full again — a cut
   stone catching the light.
+- **Glitter**: no band at all — a scatter of the mascot's cells twinkles at
+  full strength, a different scatter at each of nine steps 80 ms apart
+  (`ShineBand::Glitter`, `MASCOT_GLITTER_STEPS`), each twinkle keeping a
+  faint afterglow for the step after it so it fades rather than snaps off.
+  The scatter is thickest in the middle — about one cell in three — and
+  thins to either end, so the glitter arrives and leaves by degrees. Which
+  cells is a hash of the cell and the step (`ui::header::glitter_at`): a
+  pure function like every other light, and the same glitter every time.
+  One a round.
 
 A pose carries the band (`MascotPose::shine`, its kind and progress) and the
 glow (`MascotPose::glow`, in percent); `ui::header::art_spans` lifts each
@@ -169,15 +202,20 @@ nothing to mix, the band's core simply flips to the highlight.
 Every mascot gets one sweep as the screen opens, and one more a round. The
 gem — *a cut gem catching the terminal light* — **glints** instead: the
 sweep, with a spark opening as the light passes it. Its sparks are drawn in
-that same highlight, since a spark is light, not gem; and its facet is
-never shut, since a facet that closes and opens is an eye.
+that same highlight, since a spark is light, not gem — as are the stars in
+a mascot's eyes and the `z` of a snore, anything in a frame that is not a
+block glyph; and its facet is never shut, since a facet that closes and
+opens is an eye.
 
 ### The doze
 
-A mascot left alone for a round — about two minutes — nods off: its lids
-grow heavy, close, its head dips half a cell and stays down for most of a
-second, it stirs, it starts awake wide-eyed, and it blinks the sleep out of
-its eyes, twice. Once a round from then on,
+A mascot left alone for a round — a little over two minutes — nods off: its
+lids grow heavy, close, its head dips half a cell and stays down for most of
+a second — **snoring**, a `z` rising in the block's top corner and growing
+to a `Z` — it stirs, it starts awake wide-eyed, and it blinks the sleep out
+of its eyes, twice. (The `z` is the one letter the animation draws: plain
+ASCII, so no font lacks it, and what a sleeping thing has said in every
+comic strip since comic strips.) Once a round from then on,
 and never in the first: a mascot that fell asleep as the app opened would
 be saying something about the app. The skiter has no lid to lower — its
 eyes close, it sinks, it is up again. The sprout cannot dip and the gem has
@@ -207,8 +245,8 @@ another unseen for minutes. The repertoire is a **deck** instead:
 - every move is a **card**, with as many copies as a round should play it —
   the blink three, the mascot's signature two, most moves one — and four
   **rests**;
-- a **round** is the deck, shuffled: some forty beats, two minutes (the
-  gem's twenty-six, under a minute and a half). In it the mascot does everything it
+- a **round** is the deck, shuffled: some forty-four beats, a little over
+  two minutes (the gem's twenty-eight, under a minute and a half). In it the mascot does everything it
   knows exactly as often as the deck holds it, so any two minutes show
   fifteen different moves or more;
 - **never the same move twice running** — not across a rest, and not from
@@ -221,9 +259,11 @@ another unseen for minutes. The repertoire is a **deck** instead:
   for more than about eight and a half seconds;
 - **the doze is held back from the first round**.
 
-For the crest that is three blinks in thirty-five moves — one in twelve,
-where it was three in five — seven of the whole body, a cheer and two waves,
-six of its frill and feet, four of light, and from the second round a doze.
+For the crest that is three blinks in forty moves — one in thirteen, where
+it was three in five — seven of the whole body, three tricks (a hide, a
+somersault, a cartwheel), a cheer and two waves, six of its frill and feet,
+five of light, starry eyes among its looks, and from the second round a
+doze.
 
 A round is dealt by `Motions::dealt(seed, round, beat)`, and three things
 make it a function rather than a shuffle that has to be remembered:
@@ -395,7 +435,8 @@ frame for exactly then:
 - a blink is four frames (lid, shut, lid, open), a bounce four, a dance
   eight — then the loop sleeps until the next clip;
 - the sweep is nineteen frames, 40 ms apart, at launch and once a round; a
-  glint twelve; a glow eleven, one for each of its levels;
+  glint twelve; a glow eleven, one for each of its levels; a glitter nine
+  scatters (a frame that finds the scatter unchanged writes nothing);
 - while the user types, a keystroke brings its frame with it — the mascot
   adds only its blinks and the frame that looks away;
 - the greeting — sweep, move, blink — is under thirty frames in all, where a
@@ -473,7 +514,7 @@ seeded — every unit test's — never moves.
 | | |
 |---|---|
 | The frames, the clips, the decks and their deal (`Card`, `Motions::dealt`), the timeline, the watch (`Gaze`, `Watch`, `watched_pose`, `pose_after`), the session's side (`banner_is_live`, `banner_pose_watching`, `watch_the_composer`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
-| The posed banner and its light (`header_lines_posed`, `banner_frame_lines`, `banner_block_lines`, `banner_shows_art`, `shine_at`, `art_spans`) | `src/ui/header.rs`; the look (`MASCOT_SHINE_*`, `MASCOT_GLINT_*`) in `src/ui/theme.rs` |
+| The posed banner and its light (`header_lines_posed`, `banner_frame_lines`, `banner_block_lines`, `banner_shows_art`, `shine_at`, `glitter_at`, `art_spans`) | `src/ui/header.rs`; the look (`MASCOT_SHINE_*`, `MASCOT_GLINT_*`, `MASCOT_GLITTER_*`) in `src/ui/theme.rs` |
 | Where the caret is (`caret_gaze`) | `src/ui/layout.rs` |
 | The picker's moving preview | `src/ui/mascot_view.rs` |
 | The anchored block's bookkeeping and cell diff | `src/term/anchor.rs` |
@@ -486,7 +527,8 @@ seeded — every unit test's — never moves.
 - `app/tests/mascot_motion.rs` — the frames (the rest art's rows, never
   wider, single-width glyphs in the art's own alphabet, none trailing a
   blank, and each one row redrawn, a limb raised across two rows at the
-  art's edges, the stone turned about its middle, or the whole mascot moved
+  art's edges, the stone turned about its middle, the mascot sunk whole
+  rows below the floor, the mascot upside down, or the whole mascot moved
   half a cell — checked by folding the art onto its half-cell grid and
   moving it back; the mascots with limbs at their sides raise them; the gem
   spins edge-on and back the way it went);
@@ -496,7 +538,8 @@ seeded — every unit test's — never moves.
   for every seed: a sweep, the mascot's own move, a blink; one sweep from
   edge to edge); the light (every mascot glows and fades by degrees, never
   as bright as a flash; a glint crosses from either side, quicker than the
-  sweep; the gem flashes twice, dark between, and nothing else flashes);
+  sweep; the gem flashes twice, dark between, and nothing else flashes;
+  every mascot glitters);
   the rhythm (at rest far more than moving, a move every few
   seconds, never still past nine; a clip never runs into the next; every
   frame reaches the screen); the repertoire (never the same move twice
@@ -517,7 +560,14 @@ seeded — every unit test's — never moves.
   its own moves when the typing stops, never joining a move half way; a
   frame is due at every change while it watches, and none for nothing; an
   emptied composer ends the watch at once; a launch watches nothing; a clock
-  that starts over forgets the watch); and the session's side (unseeded never animates; only an empty conversation's
+  that starts over forgets the watch); the tricks (a mascot ducks out of
+  sight — down to its deepest and back up the way it went — and looks both
+  ways over the edge; the gem sets like a sun and rises glowing; a mascot
+  flips head over heels, upside down between a crouch and a landing or a
+  lean and a lean, the bloom never cartwheeling and the seedling never
+  somersaulting; eyes light up into stars and nothing else moves; a dozing
+  mascot snores `z` then `Z` in the block's top corner, and nothing snores
+  but a doze); and the session's side (unseeded never animates; only an empty conversation's
   banner is posed; a turn in flight stills it; the row turns it off and on;
   no frame for a banner off screen or behind an overlay; the picker's
   preview runs on its own clock — a mascot greets as the highlight lands on
@@ -542,7 +592,10 @@ seeded — every unit test's — never moves.
   banner with nothing moving *is* the committed banner; a sweep lights the
   art under its band and nothing else, leans, and enters and leaves without
   a jump; a glow lifts every cell of the art alike; a glint lights a narrow
-  band from its own side; the live banner follows the caret across the
+  band from its own side; glitter twinkles a scatter of the art's cells —
+  never a blank one, never most of the mascot, a different scatter each
+  step, an afterglow behind it, thinner at its ends; stars in the eyes and
+  a snore are drawn in the light; the live banner follows the caret across the
   composer; a spark is drawn in the sweep's light; the narrow badge has no
   art to move.
 - `ui/tests/mascot_view.rs` — the preview shows the highlighted mascot

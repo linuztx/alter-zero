@@ -780,13 +780,20 @@ which Ctrl+V reads the clipboard from.
 - **The banner mascot moves while the conversation is empty**
   (`docs/mascot-animation.md`): a light sweeps it as the screen opens, it
   shows its own move (the crest flares its frill, the sprout unfurls a leaf, the
-  gem twinkles) and blinks, then works through a **repertoire** of twenty
-  moves or more — looks (a wink, a stare, crossed eyes), its whole body
-  moved half a cell (a bounce, a wiggle, a dance, a peek), three or four
-  moves of its own, a sweep of light, and for four of them a doze — **dealt
-  like a deck** rather than rolled, so a minute and a half shows everything
-  it knows, never the same move twice running; at rest five sixths of the
-  time, never still for more than about eight seconds. The committed
+  gem twinkles) and blinks, then works through a **repertoire** of thirty
+  moves and more — looks (a wink, a stare, crossed eyes, a daydream, eyes
+  that light up into stars), its whole body moved half a cell (a bounce, a
+  wiggle, a dance, a peek), phrases that close on a blink or a wink (a
+  wave, a cheer), tricks (it ducks below the floor of its block and peeks
+  back over; it turns a somersault or a cartwheel, upside down for an
+  instant), moves of its own, light (a sweep, a glint from either side, a
+  glow, a glitter of twinkling cells), and for four of them a doze, snoring
+  — **dealt like a deck** rather than rolled, so two minutes show
+  everything it knows, never the same move twice running; at rest about
+  four fifths of the time, never still for more than about eight seconds.
+  While the first message is typed it **watches**: its eyes follow the
+  caret across the composer, and a few seconds after the last keystroke it
+  goes back to its own moves. The committed
   banner's rows are repainted **in place**, only the cells that changed (a
   blink is two), one frame per change of pose, so an idle session still
   sleeps between them. The first cell committed under

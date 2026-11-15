@@ -980,6 +980,135 @@ fn the_live_banner_follows_the_caret_across_the_composer() {
 }
 
 #[test]
+fn glitter_twinkles_scattered_cells_of_the_art() {
+    // Glitter is light and nothing else: at each step a scatter of the
+    // art's cells twinkles — never a blank cell, never the metadata, never
+    // most of the mascot at once — a different scatter the step after, and
+    // thinner at its ends than through its middle.
+    use crate::app::MASCOT_GLITTER_STEPS;
+    use crate::ui::theme::header_gradient_at;
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let rest = header_lines(&app, 90);
+        let width = mascot.art_width();
+        let text = |lines: &[Line]| lines.iter().map(plain).collect::<Vec<_>>();
+        // The cells step `step` lights, each with how far it is lifted.
+        let lit_at = |step: u32| -> Vec<((usize, usize), u32)> {
+            let pose = MascotPose {
+                shine: Some(MascotShine {
+                    band: ShineBand::Glitter,
+                    progress: (step as f32 + 0.5) / MASCOT_GLITTER_STEPS as f32,
+                }),
+                ..MascotPose::rest(mascot)
+            };
+            let lines = header_lines_posed(&app, mascot, &pose, 90);
+            assert_eq!(text(&lines), text(&rest), "{}: light only", mascot.name());
+            let mut lit = Vec::new();
+            for (row, (line, was)) in lines.iter().zip(&rest).enumerate() {
+                let (now, was) = (cells(line), cells(was));
+                assert_eq!(
+                    &now[width.min(now.len())..],
+                    &was[width.min(was.len())..],
+                    "{}: the metadata",
+                    mascot.name()
+                );
+                for (col, (glyph, color)) in now.iter().enumerate().take(width) {
+                    // The padding past a short row carries no colour.
+                    if color.is_none() {
+                        continue;
+                    }
+                    let lift = distance(*color, header_gradient_at(col, width));
+                    if lift > 0 {
+                        assert_ne!(glyph, " ", "{}: light on a blank cell", mascot.name());
+                        lit.push(((row, col), lift));
+                    }
+                }
+            }
+            lit
+        };
+        let total = |lit: &[((usize, usize), u32)]| lit.iter().map(|(_, lift)| lift).sum::<u32>();
+        let inked: usize = rest
+            .iter()
+            .map(|line| {
+                cells(line)
+                    .iter()
+                    .take(width)
+                    .filter(|(glyph, _)| glyph != " ")
+                    .count()
+            })
+            .sum();
+        let middle = MASCOT_GLITTER_STEPS / 2;
+        let scatter = lit_at(middle);
+        assert!(
+            scatter.len() >= 2 && scatter.len() < inked,
+            "{}: {} of {inked} cells lit",
+            mascot.name(),
+            scatter.len()
+        );
+        // The twinkles themselves — the cells at full strength, not the
+        // afterglow of the step before — are the lesser part of the mascot.
+        let brightest = scatter.iter().map(|(_, lift)| *lift).max().unwrap();
+        let twinkles = scatter
+            .iter()
+            .filter(|(_, lift)| lift * 2 > brightest)
+            .count();
+        assert!(
+            twinkles >= 1 && twinkles * 2 <= inked,
+            "{}: {twinkles} of {inked} cells twinkle at once",
+            mascot.name()
+        );
+        assert!(
+            scatter.iter().any(|(_, lift)| lift * 2 <= brightest),
+            "{}: no afterglow of the step before",
+            mascot.name()
+        );
+        let cells_of = |lit: &[((usize, usize), u32)]| -> Vec<(usize, usize)> {
+            lit.iter().map(|(cell, _)| *cell).collect()
+        };
+        assert_ne!(
+            cells_of(&scatter),
+            cells_of(&lit_at(middle + 1)),
+            "{}: the same scatter twice",
+            mascot.name()
+        );
+        let ends = total(&lit_at(0)) + total(&lit_at(MASCOT_GLITTER_STEPS - 1));
+        let through = total(&lit_at(middle - 1)) + total(&scatter) + total(&lit_at(middle + 1));
+        assert!(
+            ends * 3 < through * 2,
+            "{}: as bright at its ends ({ends}) as through its middle ({through})",
+            mascot.name()
+        );
+    }
+}
+
+#[test]
+fn stars_in_the_eyes_and_a_snore_are_drawn_in_the_light() {
+    // A star in an eye and the `z` of a snore are light, not mascot: both
+    // wear the highlight, like the gem's sparks.
+    use crate::ui::theme::shimmer_highlight;
+    let mascot = Mascot::Crest;
+    let mut app = with_session();
+    app.set_mascot(mascot);
+    let mut seen = std::collections::BTreeSet::new();
+    for art in mascot.motion_frames() {
+        let pose = MascotPose {
+            art,
+            ..MascotPose::rest(mascot)
+        };
+        for line in header_lines_posed(&app, mascot, &pose, 90) {
+            for (glyph, color) in cells(&line).into_iter().take(mascot.art_width()) {
+                if "·✢✶zZ".contains(glyph.as_str()) {
+                    assert_eq!(color, Some(shimmer_highlight()), "{glyph}");
+                    seen.insert(glyph);
+                }
+            }
+        }
+    }
+    assert_eq!(seen.len(), 5, "{seen:?}");
+}
+
+#[test]
 fn a_spark_is_drawn_in_the_sweeps_light() {
     // The gem's twinkle is light, not gem: its spark wears the highlight the
     // sweep lifts the art toward, whatever column it opens in.

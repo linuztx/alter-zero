@@ -374,22 +374,29 @@ launch, the moment after `/clear` — the banner's mascot moves: a light
 sweeps it as the screen opens, it shows its own move (the crest flares its
 frill, the bloom flutters, the sprout sways or unfurls a leaf, the twin
 flicks an ear, the skiter skitters, the gem glints) and blinks, then works
-through a **repertoire** of nearly thirty moves (the gem a score) — the
+through a **repertoire** of thirty moves and more (the gem a score) — the
 looks its eyes give (blink, glance, look around, shifty eyes, a wink of
 either eye — through its lid where it has one — crossed eyes, a daydream
-that blinks while looking away, and for the three with lidded eyes a
+that blinks while looking away, **starry eyes** — a `·`, a `✢`, a `✶` in
+each socket, drawn in the light — and for the three with lidded eyes a
 startled stare, a squint and one of each), its **whole body moved half a
 cell** (a bounce, a happy bounce with the eyes shut, a wiggle, a dance, a
 peek to one side), **phrases** that close on a blink or a wink (a wave and a
 wink of the eye beside the arm, a cheer with the arms — petals, ears, claws
-— thrown up), moves of its own (the crest's frill ripples and ducks, the
+— thrown up), **tricks** (it **hides** — sinks whole rows below the floor
+of its block, comes back up to its eyes, looks both ways over the edge and
+pops up, the gem setting like a sun and rising glowing — and it **flips**,
+a somersault between two crouches or a cartwheel between two leans, the
+rest art upside down for an instant), moves of its own (the crest's frill ripples and ducks, the
 bloom swells and wobbles, the sprout blossoms and sinks to a bud, the twin's
 ears splay, sway and droop, a wave runs down the skiter's legs, the gem
 spins edge-on, its facet turns and gleams and sparks open at all four
 corners), pattering feet, **light** — the greeting's sweep, a narrow glint
-from either side, a glow that swells through it and fades, the gem's
-flash, colour only (`MascotPose::shine`/`glow`, `ShineBand`) — and for the
-four that can a **doze** — at rest about four fifths of the time and never
+from either side, a glow that swells through it and fades, a **glitter**
+of scattered cells twinkling through nine hashed steps
+(`ui::header::glitter_at`), the gem's flash, colour only
+(`MascotPose::shine`/`glow`, `ShineBand`) — and for the four that can a
+**doze**, snoring a `z` then a `Z` in the block's top corner — at rest about four fifths of the time and never
 still past about eight seconds; the gem, which has no eyes, twinkles where
 the others blink and never shuts its facet. And while the first message is
 typed it **watches** (`docs/mascot-animation.md` *Watching the user type*):
@@ -402,7 +409,8 @@ an emptied composer — the timeline resuming without joining a move begun
 meanwhile (`Mascot::pose_after`). A frame is the rest art with **one part
 moved** (one row differs, or a limb raised from the body's side across two
 rows at the art's edges), the stone **turned** about its middle (the gem's
-spin), or **the whole mascot moved half a cell** — the art sits on a half-cell grid
+spin), the mascot **sunk** whole rows below the floor, the mascot **upside
+down**, or **the whole mascot moved half a cell** — the art sits on a half-cell grid
 and every mascot leaves a half-row free under its feet or a half-column at
 its sides, so it can be redrawn a dip or a lean away inside the same block;
 moved back it is the rest art with one part moved at most, which is the
@@ -417,7 +425,7 @@ function of a seed and a clock** — `Mascot::pose(seed, clock)` and
 beats, at most one clip to a beat — and what a beat plays is **dealt, not
 rolled** (the first version rolled, and three beats in five were a blink):
 the repertoire is a deck of cards with copies (`Card`), shuffled afresh for
-every **round** of some forty beats by `Motions::dealt(seed, round, beat)`
+every **round** of some forty-four beats by `Motions::dealt(seed, round, beat)`
 over the seed *and the mascot* (so no two mascots play one sequence), which
 keeps three promises a shuffle alone would not — a round plays everything
 exactly as often as the deck holds it, **never the same card twice running**
