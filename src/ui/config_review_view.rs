@@ -381,18 +381,30 @@ fn action_rows(page: &ReviewPage, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The key hint, wrapped rather than cut — it is where the page says what
-/// Esc does, which differs between the two pages — except on the last rung,
-/// which has nothing else left to shed.
+/// Esc does, which differs between the two pages — and broken between its
+/// entries rather than inside one, except on the last rung, which has
+/// nothing else left to shed.
 fn hint_lines(page: &ReviewPage, whole: bool, width: u16) -> Vec<Line<'static>> {
     let hint = match page.kind {
         ReviewKind::Hooks => REVIEW_HOOKS_HINT,
         ReviewKind::McpServers => REVIEW_MCP_HINT,
     };
     let style = Style::new().fg(model_meta_color());
-    if whole {
-        return wrapped(hint, style, width);
-    }
     let room = usize::from(width).saturating_sub(cols(MODEL_INDENT)).max(1);
+    if whole {
+        let mut rows: Vec<String> = Vec::new();
+        for entry in hint.split(REVIEW_HINT_SEPARATOR) {
+            match rows.last_mut() {
+                Some(row) if cols(row) + cols(REVIEW_HINT_SEPARATOR) + cols(entry) <= room => {
+                    row.push_str(REVIEW_HINT_SEPARATOR);
+                    row.push_str(entry);
+                }
+                _ => rows.push(entry.to_string()),
+            }
+        }
+        // An entry wider than the row still word-wraps within it.
+        return wrapped(&rows.join("\n"), style, width);
+    }
     vec![Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(ellipsize(hint, room), style),
