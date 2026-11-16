@@ -73,9 +73,10 @@ fn link_dress(style: Style) -> Style {
 ///   (`docs/links.md` *The decoration parens*).
 ///
 /// Two links read the same in both, since the target after the label would
-/// add nothing: one with **no label to see** — empty, or only spaces or
-/// zero-width characters — is its target, in the link dress; and one whose
-/// label **is** its web address ([`is_own_target`]) is written once.
+/// add nothing: one with **no label to see** — empty, or only spaces and
+/// characters that never reach the screen ([`is_seen`]) — is its target, in
+/// the link dress; and one whose label **is** its web address
+/// ([`is_own_target`]) is written once.
 ///
 /// Either way every run carries the target, stamped from one
 /// [`links::Carrier`] rather than interned again per run.
@@ -83,7 +84,10 @@ fn link_spans(text: &[markdown::Inline], url: &str, base: Style, out: &mut Vec<(
     let carrier = links::carrier(url);
     let mark = |style: Style| carrier.map_or(style, |carrier| carrier.stamp(style));
     let label = inline_spans(text, base);
-    if !label.iter().any(|(text, _)| cols(text.trim()) > 0) {
+    if !label
+        .iter()
+        .any(|(text, _)| text.chars().any(|c| !c.is_whitespace() && is_seen(c)))
+    {
         out.push((url.to_string(), mark(link_dress(base))));
         return;
     }
@@ -136,26 +140,38 @@ pub(super) fn hides_target(
 /// either alone can be written around:
 ///
 /// - off the label's text **as the reader sees it** — its runs joined into
-///   one string, with every character that takes no column left out. A
-///   label can spell `https://bank.example` with the scheme split by
-///   emphasis or a code span, in an image's alt text, or around a
-///   zero-width space: no single run holds an address then, and on screen
-///   the label reads as one all the same;
+///   one string, with every character that never reaches the screen left
+///   out ([`is_seen`]). A label can spell `https://bank.example` with the
+///   scheme split by emphasis or a code span, in an image's alt text, or
+///   around a zero-width space or a control character: no single run holds
+///   an address then, and on screen the label reads as one all the same;
 /// - off the **carriers** its runs already wear — an autolinked address
 ///   (`<me@bank.example>`, a `mailto:`) is no `http(s)://` text to find, but
 ///   it was marked with its own target as the label rendered.
 fn shows_another_address(label: &[(String, Style)], url: &str) -> bool {
-    let seen: String = label
-        .iter()
-        .flat_map(|(text, _)| text.chars())
-        .filter(|c| cols(c.encode_utf8(&mut [0; 4])) > 0)
-        .collect();
-    links::find_urls(&seen)
-        .into_iter()
-        .any(|address| !same_page(&seen[address], url))
+    // An address needs the `:` of its scheme, and most labels have none:
+    // those are told apart before any text is put together.
+    let spelled = label.iter().any(|(text, _)| text.contains(':')) && {
+        let seen: String = label
+            .iter()
+            .flat_map(|(text, _)| text.chars())
+            .filter(|c| is_seen(*c))
+            .collect();
+        links::find_urls(&seen)
+            .into_iter()
+            .any(|address| !same_page(&seen[address], url))
+    };
+    spelled
         || label
             .iter()
             .any(|(_, style)| links::style_link(style).is_some_and(|shown| !same_page(&shown, url)))
+}
+
+/// Whether `c` reaches the screen as something to read: it takes a column,
+/// and it is no control character — a terminal acts on one or drops it, and
+/// draws neither. What a label is judged by is what its reader is shown.
+fn is_seen(c: char) -> bool {
+    matches!(c, ' '..='~') || (!c.is_control() && cols(c.encode_utf8(&mut [0; 4])) > 0)
 }
 
 /// Whether `label` is, whole, the web address it links to —

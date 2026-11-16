@@ -548,6 +548,7 @@ fn a_link_with_nothing_to_click_is_its_target() {
         "see [](https://x.com/e) ok",
         "see [ ](https://x.com/e) ok",
         "see [\u{200d}](https://x.com/e) ok",
+        "see [\u{1}](https://x.com/e) ok",
         "see [![](https://img.example/b.png)](https://x.com/e) ok",
     ] {
         let shown = inline_spans(&parse_inline(source), Style::default());
@@ -738,6 +739,10 @@ fn an_address_spelled_across_a_labels_runs_still_keeps_the_real_one_on_screen() 
         "![https://bank.example](https://img.example/b.png)",
         "h\u{200b}ttps://bank.example",
         "https:/\u{200d}/bank.example",
+        // A control character is never painted, so it hides nothing either.
+        "ht\u{1}tps://bank.example",
+        "https:\u{7f}//bank.example",
+        "https://bank\u{85}.example",
     ] {
         let source = format!("[{label}]({target})");
         let shown = inline_spans(&parse_inline(&source), Style::default());

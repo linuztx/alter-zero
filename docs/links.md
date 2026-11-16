@@ -142,12 +142,16 @@ it would cost the reader something:
   pages. The address is read two ways (`shows_another_address`), because
   either alone can be written around:
   - off the label's text **as the reader sees it** — its runs joined into
-    one string, every character that takes no column left out. A label can
-    spell an address with the scheme split by emphasis or a code span
+    one string, every character that never reaches the screen left out
+    (`is_seen`: one that takes no column, and a control character, which a
+    terminal acts on or drops and draws neither). A label can spell an
+    address with the scheme split by emphasis or a code span
     (`` ht`tps://bank.example` ``, which the link dress then paints as one
-    unbroken address), in an image's alt text, or around a zero-width space:
-    no single run holds an address then, and the reader sees one all the
-    same;
+    unbroken address), in an image's alt text, or around a zero-width space
+    or a control character: no single run holds an address then, and the
+    reader sees one all the same. An address needs the `:` of its scheme,
+    so a label without one — nearly every label — is told apart before any
+    text is put together;
   - off the **carriers** its runs already wear: an autolinked address
     (`<me@bank.example>`) is no `http(s)://` text to find, but it was marked
     with its own target as the label rendered.
@@ -159,10 +163,11 @@ it would cost the reader something:
 Two links read alike in both presentations, because the target written
 after the label would add nothing:
 
-- **A link with no label to see** — `[](url)`, a label of spaces or
-  zero-width characters, an image with no alt text — is its target, in the
-  link dress. It used to print ` (url)`: a parenthesis around the only thing
-  on screen.
+- **A link with no label to see** — `[](url)`, a label of spaces or of
+  characters that never reach the screen (zero-width ones, control
+  characters), an image with no alt text — is its target, in the link
+  dress. It used to print ` (url)`: a parenthesis around the only thing on
+  screen.
 - **A label that is its own web address** — `[https://x.com](https://x.com/)`,
   give or take the closing `/`, which is how a model often writes a link —
   is written once. It used to print the address and then the same address
@@ -482,8 +487,8 @@ inside one; edge spaces and two links to one target left alone; each case
 that keeps the address — a target that is no web address or is past the
 length a hyperlink carries, a label showing another address (whole, split
 across emphasis or a code span, in an image's alt text, around a zero-width
-character), an unmarked link — as *equal to* the other presentation,
-segment for segment; and the
+or control character), an unmarked link — as *equal to* the other
+presentation, segment for segment; and the
 two links that read alike in both, a label-less one as its target and a
 self-labelled one written once.
 `ui/tests/assistant.rs` runs the label through a paragraph, a list item, a
@@ -549,6 +554,10 @@ now instead of one per word.
   terminal whether it opens them, and nothing here can see a transport that
   drops the escape on its way there (mosh): `=show` is the answer to that
   too.
+- A label is compared with its target as text. A look-alike domain (a
+  letter borrowed from another alphabet) or a label naming a site without
+  a scheme (`bank.example` over a link elsewhere) is a label like any
+  other: what a click opens is what the terminal shows on hover.
 - A hidden address is read by hovering or clicking — a mouse selection of
   the row copies the label, as it does in a browser. `/copy` and `/export`
   carry the address.
