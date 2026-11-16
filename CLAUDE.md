@@ -377,9 +377,10 @@ flicks an ear, the skiter skitters, the gem glints) and blinks, then works
 through a **repertoire** of thirty moves and more (the gem a score) — the
 looks its eyes give (blink, glance, look around, shifty eyes, a wink of
 either eye — through its lid where it has one — crossed eyes, a daydream
-that blinks while looking away, **starry eyes** — a `·`, a `✢`, a `✶` in
-each socket, drawn in the light — and for the three with lidded eyes a
-startled stare, a squint and one of each), its **whole body moved half a
+that blinks while looking away — and for the three with lidded eyes a
+startled stare, a squint and one of each; never a glyph in a socket, which
+reads as an eye put out: the *starry eyes* that once did it were taken out,
+and a test holds every frame to it), its **whole body moved half a
 cell** (a bounce, a happy bounce with the eyes shut, a wiggle, a dance, a
 peek to one side), **phrases** that close on a blink or a wink (a wave and a
 wink of the eye beside the arm, a cheer with the arms — petals, ears, claws
@@ -391,26 +392,58 @@ rest art upside down for an instant), moves of its own (the crest's frill ripple
 bloom swells and wobbles, the sprout blossoms and sinks to a bud, the twin's
 ears splay, sway and droop, a wave runs down the skiter's legs, the gem
 spins edge-on, its facet turns and gleams and sparks open at all four
-corners), pattering feet, **light** — the greeting's sweep, a narrow glint
+corners; and every eyed one **pumps** its limbs, one side and then the
+other — arms, petals, ears, claws), pattering feet, **light** — the greeting's sweep, a narrow glint
 from either side, a glow that swells through it and fades, a **glitter**
 of scattered cells twinkling through nine hashed steps
 (`ui::header::glitter_at`), the gem's flash, colour only
-(`MascotPose::shine`/`glow`, `ShineBand`) — and for the four that can a
-**doze**, snoring a `z` then a `Z` in the block's top corner — at rest about four fifths of the time and never
+(`MascotPose::shine`/`glow`, `ShineBand`) — at rest about four fifths of the time and never
 still past about eight seconds; the gem, which has no eyes, twinkles where
-the others blink and never shuts its facet. And while the first message is
+the others blink and never shuts its facet. And it keeps the user
+**company** (`Company`: the watch, the last sign of the user, when one last
+woke it — three numbers `App::set_mascot_clock` → `keep_company` derives
+from what each frame finds: the draft, its caret, and `App::keys_taken`, a
+count bumped at the top of `App::on_key`/`on_paste`, never what the key
+was). While the first message is
 typed it **watches** (`docs/mascot-animation.md` *Watching the user type*):
 its eyes follow the caret's third of the composer (`ui::layout::caret_gaze`
 → `Gaze` → `App::banner_pose_watching`), blinking now and then, the gem's
-facet turning to it; `App::set_mascot_clock` derives the watch from the
-draft and caret changing between frames, never through the keys, and a
+facet turning to it, and a
 watch ends `MASCOT_WATCH_LINGER` (4 s) after the last keystroke — at once on
 an emptied composer — the timeline resuming without joining a move begun
-meanwhile (`Mascot::pose_after`). A frame is the rest art with **one part
+meanwhile (`Mascot::pose_between`). Left alone it **naps**
+(`docs/mascot-animation.md` *The nap*; `Nap`, `Mascot::nap`/`idle`/`sleeping`):
+three quarters of a minute to a minute after the last sign of anyone
+(`Mascot::left_since`) every one of the six nods off — eyes heavy, open,
+shut, the head down (the gem dips and settles) — and **sleeps where it
+stands, all of it on screen**: eyes shut, a breath every 3.4 s, on its feet
+on the breath in and half a cell lower on the breath out with a `z` in the
+block's top right corner that grows to a `Z` (the seedling, which cannot
+dip, droops its shoot; the gem, settled low, breathes with its light) — a
+sleeper drawn lying down, its feet below the floor, was built and taken
+out: three rows are too few to lie in and it read as half a mascot;
+nine to thirteen breaths and it wakes by itself — an eye half open, a
+stretch of its own, two blinks, the gem rising in a glow — one nap to each
+two-minute stretch
+of idleness (so which nap an instant falls in is a division, and asleep an
+hour in costs what asleep a minute in does), and **the third has no end**:
+five minutes left alone and it sleeps until someone is back. A nap never
+cuts a move in two (`Mascot::plays`). And **any key or paste that finds it
+asleep wakes it with a start** (`Mascot::asleep` → `Company::woke`, the
+`jolt` clip): it flinches, its eyes open, a `!` in the corner where the
+snore was, and is up a moment later — wide-eyed, arms or claws
+thrown up, the gem in a flash — three fifths of a second in all, the same
+start whichever way the breath was going, and then the watch if
+something is being typed; one already stirring is not surprised, and the
+next nap is counted from the wake. `Mascot::pose` itself is the mascot
+**kept awake** — its moves alone, which the `/mascot` preview shows. A frame is the rest art with **one part
 moved** (one row differs, or a limb raised from the body's side across two
 rows at the art's edges), the stone **turned** about its middle (the gem's
 spin), the mascot **sunk** whole rows below the floor, the mascot **upside
-down**, or **the whole mascot moved half a cell** — the art sits on a half-cell grid
+down**, or **the whole mascot moved half a cell** — a sleeper's eyes shut
+over any of them — with, beside any of
+them, a **mark** in the block's top right corner and nowhere else (the `z`/`Z` of a
+snore, the `!` of a start: light, drawn in the highlight) — the art sits on a half-cell grid
 and every mascot leaves a half-row free under its feet or a half-column at
 its sides, so it can be redrawn a dip or a lean away inside the same block;
 moved back it is the rest art with one part moved at most, which is the
@@ -434,8 +467,7 @@ or its variants, take turns), and **never two rests in a row** — by drawing
 the round's last move first (so the next round knows what to differ from
 without either being dealt), dealing each move from every card left but the
 kind just played, a kind grown to more than half of what is left going at
-once, and slipping each rest in ahead of a move of its own; the doze is held
-back from the first round — no state, no thread, the pose three hours in
+once, and slipping each rest in ahead of a move of its own — no state, no thread, the pose three hours in
 costing what the pose three seconds in does; the seed is `App::seed_mascot_motion`'s
 (an unseeded `App`, every unit test's, never moves) and the clock
 `App::set_mascot_clock`'s, running from the frame that showed a fresh
@@ -461,7 +493,8 @@ would have changed the region's geometry in the state every other feature
 starts from, and a notice card committed under a live banner would have
 landed above it. **Frames are scheduled per change of pose, never on a
 chain** (`App::mascot_frame_in` after each draw → one `schedule_frame_in`):
-a blink is four frames and the loop sleeps between clips, nothing is
+a blink is four frames and the loop sleeps between clips, a sleeper's
+breath is five (twenty seconds asleep measured 28 frames and 10 ms of CPU), nothing is
 scheduled for a banner off screen, behind an overlay or in the narrow text
 badge, and `ui::header_lines` — everything committed, the Ctrl+O
 transcript, an export — is always the rest pose. The `/mascot` picker's
@@ -471,7 +504,8 @@ reading of the first frame that showed it, derived from the highlight, never
 tracked through the keys — so each mascot greets as the highlight lands on
 it, its page signing the selection rather than its rows. Gated by the `/settings` **Animate mascot**
 row and `ALTER_ZERO_MASCOT_ANIMATION`, which the smoke suite exports `0`;
-`smoke.sh` Phase 154 reads the raw byte stream), and the **`/spinner` picker** that
+`smoke.sh` Phase 154 reads the raw byte stream, and Phase 155 waits out the
+minute for the nap and wakes it), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
 like `/mascot`, over a nine-style catalog — `comet` (the list's first row, and the status line's
 look before there was a catalog), the braille-track `gravity`

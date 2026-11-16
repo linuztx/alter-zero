@@ -6,8 +6,9 @@ product name + version, the working directory, and a one-line hint naming
 the composer's keys. It is the first thing the user sees, and it scrolls up
 into history naturally as the conversation grows — exactly like Claude
 Code's welcome banner. Until then — while no cell has been committed under
-it — its mascot **moves**: it blinks, glances and plays its own move, the
-committed rows repainted in place (`docs/mascot-animation.md`).
+it — its mascot **moves**: it blinks, glances and plays its own move,
+watches what is typed, naps when it is left alone and starts awake at a
+key, the committed rows repainted in place (`docs/mascot-animation.md`).
 
 ## What it shows
 

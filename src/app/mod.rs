@@ -593,15 +593,23 @@ pub struct App {
     /// highlighted; `None` with no picker open. See
     /// `docs/mascot-animation.md`.
     mascot_preview: Option<(Mascot, Duration)>,
-    /// The run of typing the banner mascot is watching — its eyes on the
-    /// composer while the user types the first message — kept by
+    /// What the banner mascot has seen of the user — the run of typing it
+    /// is watching, when someone was last at the keyboard, and when they
+    /// last woke it — kept by
     /// [`set_mascot_clock`](App::set_mascot_clock) from what each frame
-    /// finds in the composer. See `docs/mascot-animation.md`.
-    mascot_watch: Option<mascot_motion::Watch>,
-    /// The composer's draft and caret as the last frame saw them, hashed:
-    /// what tells [`set_mascot_clock`](App::set_mascot_clock) a key was
-    /// pressed. `None` until the first frame has looked.
-    mascot_draft: Option<u64>,
+    /// finds. See `docs/mascot-animation.md`.
+    mascot_company: mascot_motion::Company,
+    /// The composer's draft, its caret and [`keys_taken`](Self::keys_taken)
+    /// as the last frame saw them, hashed: what tells
+    /// [`set_mascot_clock`](App::set_mascot_clock) the user did something.
+    /// `None` until the first frame has looked.
+    mascot_seen: Option<u64>,
+    /// How many key presses and pastes this app has taken
+    /// ([`on_key`](App::on_key), [`on_paste`](App::on_paste)), wrapping —
+    /// a count, never what they were. It is how the banner mascot knows
+    /// someone is at the keyboard when a key changes nothing it could see
+    /// (`docs/mascot-animation.md` *The nap*).
+    keys_taken: u64,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row

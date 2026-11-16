@@ -11,6 +11,9 @@ use super::*;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // Someone is at the keyboard — all the banner mascot asks of a key
+        // (docs/mascot-animation.md *The nap*).
+        self.keys_taken = self.keys_taken.wrapping_add(1);
         if self.view == View::DiffReview {
             return self.on_key_diff_review(key);
         }

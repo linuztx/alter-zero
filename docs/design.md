@@ -781,19 +781,26 @@ which Ctrl+V reads the clipboard from.
   (`docs/mascot-animation.md`): a light sweeps it as the screen opens, it
   shows its own move (the crest flares its frill, the sprout unfurls a leaf, the
   gem twinkles) and blinks, then works through a **repertoire** of thirty
-  moves and more — looks (a wink, a stare, crossed eyes, a daydream, eyes
-  that light up into stars), its whole body moved half a cell (a bounce, a
-  wiggle, a dance, a peek), phrases that close on a blink or a wink (a
-  wave, a cheer), tricks (it ducks below the floor of its block and peeks
-  back over; it turns a somersault or a cartwheel, upside down for an
-  instant), moves of its own, light (a sweep, a glint from either side, a
-  glow, a glitter of twinkling cells), and for four of them a doze, snoring
+  moves and more — looks (a wink, a stare, crossed eyes, a daydream), its
+  whole body moved half a cell (a bounce, a wiggle, a dance, a peek),
+  phrases that close on a blink or a wink (a wave, a cheer), tricks (it
+  ducks below the floor of its block and peeks back over; it turns a
+  somersault or a cartwheel, upside down for an instant), moves of its own
+  (a pump of its limbs, one side and then the other, among them), and light
+  (a sweep, a glint from either side, a glow, a glitter of twinkling cells)
   — **dealt like a deck** rather than rolled, so two minutes show
   everything it knows, never the same move twice running; at rest about
   four fifths of the time, never still for more than about eight seconds.
-  While the first message is typed it **watches**: its eyes follow the
-  caret across the composer, and a few seconds after the last keystroke it
-  goes back to its own moves. The committed
+  And it keeps the user **company**. While the first message is typed it
+  **watches**: its eyes follow the caret across the composer, and a few
+  seconds after the last keystroke it goes back to its own moves. Left
+  alone for three quarters of a minute it **naps** — nods off and sleeps
+  where it stands, all of it on screen, its eyes shut, its head down with
+  each breath out and a `z` that grows to a `Z` in the corner of its block
+  — for the better part of a minute, twice, and the third time, five
+  minutes into being left, until someone is back. **Any key wakes it with
+  a start**: a `!` where the snore was, wide awake inside half a second,
+  and then its eyes on what is being typed. The committed
   banner's rows are repainted **in place**, only the cells that changed (a
   blink is two), one frame per change of pose, so an idle session still
   sleeps between them. The first cell committed under

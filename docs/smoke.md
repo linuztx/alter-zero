@@ -122,7 +122,7 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   animation (whose moves, dealt afresh every session, would put a different
   pose in every capture of a fresh screen and a frame in every byte count of
   an idle one —
-  Phase 154 turns it back on, `docs/mascot-animation.md`) and the project's
+  Phases 154 and 155 turn it back on, `docs/mascot-animation.md`) and the project's
   `AGENTS.md` exported off; the permission mode exported `manual`, since a session starts
   in auto, where the dummy's writes never ask, and the prompt phases are
   about the prompt — Phase 64 unsets it to cover the default; and

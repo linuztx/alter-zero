@@ -19,10 +19,10 @@ release heading when a version is cut.
   light sweeps it as the screen opens, it shows its own move, and it
   blinks; from there it does something every few seconds, in an order that
   differs every session. Each of the six knows thirty moves and more: it
-  blinks, glances, winks, stares, crosses its eyes and daydreams, and its
-  eyes light up into stars; it bounces, wiggles, dances and peeks to one
-  side, the whole creature moving half a cell; it waves and winks, and
-  cheers with its arms (petals, ears, claws) thrown up; it does tricks —
+  blinks, glances, winks, stares, crosses its eyes and daydreams; it
+  bounces, wiggles, dances and peeks to one side, the whole creature moving
+  half a cell; it waves and winks, cheers with its arms (petals, ears,
+  claws) thrown up, and pumps them one after the other; it does tricks —
   ducks out of sight below its block and peeks back over the edge, turns a
   somersault or a cartwheel; it catches the light — a glint from either
   side, a glow that swells through it and fades, a glitter of twinkling
@@ -31,13 +31,18 @@ release heading when a version is cut.
   wobbles, the sprout sways and unfurls its leaves, the twin flicks, splays
   and droops its ears, the skiter skitters, stretches and raises its claws,
   and the gem, which has no eyes, sparkles at every corner, turns its facet,
-  spins edge-on, flashes, and sets like a sun to rise glowing. Left alone
-  for two minutes, four of them nod off, snoring. The moves are dealt like
-  a deck rather than rolled, so the mascot
+  spins edge-on, flashes, and sets like a sun to rise glowing. The moves
+  are dealt like a deck rather than rolled, so the mascot
   gets through everything it knows before it repeats itself and never does
   the same thing twice running. While the first message is typed it
   **watches**: its eyes follow the caret across the composer, reading along,
   and a few seconds after the last keystroke it goes back to its own moves.
+  Leave it alone for three quarters of a minute and it **naps**: its eyes
+  grow heavy and it sleeps where it stands, its head down with each breath
+  out and a `z`, then a `Z`, beside it. It wakes by itself after the better
+  part of a minute, stretches, and plays again — and after five minutes
+  alone it sleeps until you are back. **Any key wakes it with a start** — a
+  `!`, and it is wide awake — before it turns to what you are typing.
   It stops the moment the first message is
   sent: the banner above a conversation always stands still, and so does
   the one in the Ctrl+O transcript and in an export. The `/mascot` picker's

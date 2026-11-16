@@ -974,7 +974,7 @@ fn the_animate_mascot_description_says_when_it_moves() {
     // The search matches descriptions, so the row is found by what it does —
     // and its description stays clear of the words other rows are found by.
     let description = SettingKey::AnimateMascot.description().to_lowercase();
-    for word in ["banner", "blink", "empty"] {
+    for word in ["banner", "blink", "nap", "empty"] {
         assert!(description.contains(word), "{word:?} in {description:?}");
     }
     for taken in [

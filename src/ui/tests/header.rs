@@ -1083,8 +1083,8 @@ fn glitter_twinkles_scattered_cells_of_the_art() {
 }
 
 #[test]
-fn stars_in_the_eyes_and_a_snore_are_drawn_in_the_light() {
-    // A star in an eye and the `z` of a snore are light, not mascot: both
+fn a_mark_beside_the_mascot_is_drawn_in_the_light() {
+    // The `z` of a snore and the `!` of a start are light, not mascot: they
     // wear the highlight, like the gem's sparks.
     use crate::ui::theme::shimmer_highlight;
     let mascot = Mascot::Crest;
@@ -1098,14 +1098,19 @@ fn stars_in_the_eyes_and_a_snore_are_drawn_in_the_light() {
         };
         for line in header_lines_posed(&app, mascot, &pose, 90) {
             for (glyph, color) in cells(&line).into_iter().take(mascot.art_width()) {
-                if "·✢✶zZ".contains(glyph.as_str()) {
+                if !glyph.trim().is_empty()
+                    && !glyph
+                        .chars()
+                        .all(|c| ('\u{2580}'..='\u{259F}').contains(&c))
+                {
                     assert_eq!(color, Some(shimmer_highlight()), "{glyph}");
                     seen.insert(glyph);
                 }
             }
         }
     }
-    assert_eq!(seen.len(), 5, "{seen:?}");
+    let seen: String = seen.into_iter().collect();
+    assert_eq!(seen, "!Zz");
 }
 
 #[test]
