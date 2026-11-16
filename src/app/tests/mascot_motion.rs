@@ -133,8 +133,9 @@ fn every_frame_keeps_the_rest_arts_rows_and_never_outgrows_its_width() {
 fn every_frame_is_drawn_in_single_width_glyphs_the_art_already_uses() {
     // The rest art's rule (docs/table-streaming.md "Wide glyphs"), and its
     // alphabet: the Block Elements the catalog is drawn in, plus the three
-    // sparks the `sparkle` spinner already puts on screen and the marks
-    // that ride beside a sleeper: the `z` of a snore, the `!` of a start.
+    // sparks the `sparkle` spinner already puts on screen, the marks that
+    // ride beside a sleeper — the `z` of a snore, the `!` of a start — and
+    // the two lines a sleeper's closed eyes are drawn with.
     for mascot in Mascot::ALL {
         for frame in mascot.motion_frames() {
             for row in frame {
@@ -144,7 +145,8 @@ fn every_frame_is_drawn_in_single_width_glyphs_the_art_already_uses() {
                         glyph == ' '
                             || ('\u{2580}'..='\u{259F}').contains(&glyph)
                             || "·✢✶".contains(glyph)
-                            || MARKS.contains(&glyph),
+                            || MARKS.contains(&glyph)
+                            || MASCOT_LIDS.contains(&glyph),
                         "{}: {glyph:?} in {row:?}",
                         mascot.name()
                     );
@@ -262,12 +264,27 @@ const HALF_CELL_MOVES: [(isize, isize); 5] = [(0, 1), (-1, 0), (1, 0), (-1, 1), 
 /// mascot — no part of the body the frame rules hold.
 const MARKS: [char; 3] = ['z', 'Z', '!'];
 
-/// `frame` with its marks taken off: the body alone.
+/// `frame` with its marks taken off: the body alone — a sleeper's lids
+/// filled in, so its closed eyes are the shut eyes the frame rules know.
 fn unmarked(frame: &[&str]) -> Vec<String> {
     frame
         .iter()
-        .map(|row| row.replace(MARKS, " ").trim_end().to_string())
+        .map(|row| {
+            row.replace(MARKS, " ")
+                .replace(MASCOT_LIDS, "█")
+                .trim_end()
+                .to_string()
+        })
         .collect()
+}
+
+/// How many lids `frame` draws — two on a sleeper, none on anything else.
+fn lids(frame: &[&str]) -> usize {
+    frame
+        .iter()
+        .flat_map(|row| row.chars())
+        .filter(|glyph| MASCOT_LIDS.contains(glyph))
+        .count()
 }
 
 /// `frame` with its marks taken off, leaked into the `&str` rows the eye
@@ -1980,23 +1997,91 @@ fn every_eyed_mascot_pumps_its_limbs_one_after_the_other() {
 }
 
 #[test]
-fn no_glyph_is_ever_put_in_an_eye() {
-    // An eye is a hole in the body: negative space. A spark drawn in it
-    // fills the socket with the highlight — the eye reads as put out.
+fn no_light_is_ever_put_in_an_eye() {
+    // An eye is a hole in the body: negative space. A spark or a mark drawn
+    // in it fills the socket with the highlight — the eye reads as put out.
+    // The one thing an eye may hold besides the body's own blocks is its
+    // lid: the line of a closed eye, which is cut out of the ink like the
+    // eye itself.
     for mascot in EYED {
         for frame in mascot.motion_frames() {
-            // A mark in the row above a sleeper is beside it, not in it.
-            let body = unmarked(frame);
-            let body: Vec<&str> = body.iter().map(String::as_str).collect();
-            let (left, right) = eyes(mascot, &body);
+            let (left, right) = eyes(mascot, frame);
             for eye in [left, right] {
                 assert!(
-                    eye == ' ' || ('\u{2580}'..='\u{259F}').contains(&eye),
+                    eye == ' '
+                        || ('\u{2580}'..='\u{259F}').contains(&eye)
+                        || MASCOT_LIDS.contains(&eye),
                     "{}: {eye:?} in an eye of {frame:?}",
                     mascot.name()
                 );
             }
         }
+    }
+}
+
+/// `mascot`'s rest art as it stands in the pose `frame` is drawn in: half a
+/// cell lower where the frame is the mascot dipped, as drawn otherwise.
+fn awake_in_the_pose_of(mascot: Mascot, frame: &[&str]) -> Vec<String> {
+    let rest = mascot.art();
+    if !is_moved_half_a_cell(mascot, frame) {
+        return rest.iter().map(|row| (*row).to_string()).collect();
+    }
+    let grid = quarters(rest, mascot.art_width()).expect("quadrant glyphs");
+    glyphs(&moved(&grid, 0, 1).expect("room to dip"))
+}
+
+#[test]
+fn a_lid_is_the_line_along_the_bottom_of_its_socket() {
+    // A closed eye is drawn where the eye was, and nowhere else: a thin
+    // line along the bottom of the socket, where a lid comes to rest. A
+    // socket is half a cell — the upper half of its cell or the lower — so
+    // the line runs through the middle of the cell or along its bottom, and
+    // it moves with the mascot when it dips.
+    let mut seen = BTreeSet::new();
+    for mascot in Mascot::ALL {
+        for frame in mascot.motion_frames() {
+            if lids(frame) == 0 {
+                continue;
+            }
+            assert_ne!(mascot, Mascot::Gem, "the gem has no eyes to close");
+            assert_eq!(lids(frame), 2, "{}: {frame:?}", mascot.name());
+            let awake = awake_in_the_pose_of(mascot, frame);
+            for (row, text) in frame.iter().enumerate() {
+                for (col, glyph) in text.chars().enumerate() {
+                    if !MASCOT_LIDS.contains(&glyph) {
+                        continue;
+                    }
+                    let eye = awake[row].chars().nth(col);
+                    let want = match eye {
+                        // The socket is the cell's upper half.
+                        Some('▄') => '━',
+                        // …or its lower half.
+                        Some('▀') => '▁',
+                        _ => panic!(
+                            "{}: a lid at row {row}, column {col} of {frame:?}, where it has no eye",
+                            mascot.name()
+                        ),
+                    };
+                    assert!(
+                        col == 2 || col == 6,
+                        "{}: a lid in column {col} of {frame:?}",
+                        mascot.name()
+                    );
+                    assert_eq!(glyph, want, "{}: {frame:?}", mascot.name());
+                    seen.insert((mascot.name(), glyph));
+                }
+            }
+        }
+    }
+    // Every eyed mascot closes its eyes standing and with its head down —
+    // but the seedling, which droops its shoot and stands where it is.
+    for mascot in EYED {
+        let both = MASCOT_LIDS
+            .iter()
+            .filter(|lid| seen.contains(&(mascot.name(), **lid)))
+            .count();
+        let want = if mascot == Mascot::Sprout { 1 } else { 2 };
+        assert_eq!(both, want, "{}: {seen:?}", mascot.name());
     }
 }
 
@@ -2170,16 +2255,18 @@ fn eyes_grow_heavy_before_they_close() {
             .take(5)
             .map(|pose| eyes(mascot, pose.art))
             .collect();
-        let heavy = if open == '▄' {
-            ('▆', '▆')
+        // Closed, an eye shows its lid: a line, never a blank.
+        let closed = |look: &(char, char)| look.0 == look.1 && MASCOT_LIDS.contains(&look.0);
+        if open == '▄' {
+            assert_eq!(looks[0], ('▆', '▆'), "{}", mascot.name());
+            assert_eq!(looks[2], ('▆', '▆'), "{}", mascot.name());
         } else {
-            ('█', '█')
-        };
-        assert_eq!(looks[0], heavy, "{}", mascot.name());
+            assert!(closed(&looks[0]), "{}: {looks:?}", mascot.name());
+            assert!(closed(&looks[2]), "{}: {looks:?}", mascot.name());
+        }
         assert_eq!(looks[1], (open, open), "{}: it fights it", mascot.name());
-        assert_eq!(looks[2], heavy, "{}", mascot.name());
         assert!(
-            looks[3..].iter().all(|look| *look == ('█', '█')),
+            looks.len() > 3 && looks[3..].iter().all(closed),
             "{}: {looks:?}",
             mascot.name()
         );
@@ -2279,6 +2366,56 @@ fn asleep_it_is_whole_and_breathes_and_snores() {
                 mascot.name()
             );
         }
+    }
+}
+
+#[test]
+fn asleep_its_eyes_are_closed_not_gone() {
+    // A sleeper's eyes filled in solid leave it no face at all. Closed,
+    // each shows its lid — from the moment they close for the nap to the
+    // moment it stirs, standing and with its head down alike.
+    for mascot in EYED {
+        let mut app = left_alone(mascot, SEED);
+        let nap = naps(&mut app, 0, 120_000).remove(0);
+        let mut slept = 0;
+        for span in banner_spans(&mut app, nap.0, nap.1 - 4_000) {
+            let art = span.pose.art;
+            if !asleep(mascot, art) {
+                assert_eq!(
+                    lids(art),
+                    0,
+                    "{}: a lid on open eyes in {art:?}",
+                    mascot.name()
+                );
+                continue;
+            }
+            assert_eq!(
+                lids(art),
+                2,
+                "{}: its eyes are blank in {art:?} at {}",
+                mascot.name(),
+                span.from
+            );
+            slept += span.to - span.from;
+        }
+        assert!(slept >= 20_000, "{}: asleep for {slept}ms", mascot.name());
+    }
+    // Awake, an eye that shuts is a blink: too quick to need a lid, and
+    // drawn as it always was. No move of the repertoire draws one.
+    for mascot in Mascot::ALL {
+        for span in spans(mascot, SEED, 0, 300_000) {
+            assert_eq!(
+                lids(span.pose.art),
+                0,
+                "{}: {:?}",
+                mascot.name(),
+                span.pose.art
+            );
+        }
+    }
+    // The stone has no eyes to close.
+    for frame in Mascot::Gem.motion_frames() {
+        assert_eq!(lids(frame), 0, "{frame:?}");
     }
 }
 
@@ -3076,16 +3213,35 @@ fn linger() -> u64 {
 }
 
 #[test]
-fn a_caret_is_read_by_the_third_of_the_composer_it_sits_in() {
-    assert_eq!(Gaze::of_caret(0, 90), Gaze::Left);
-    assert_eq!(Gaze::of_caret(29, 90), Gaze::Left);
-    assert_eq!(Gaze::of_caret(30, 90), Gaze::Ahead);
-    assert_eq!(Gaze::of_caret(59, 90), Gaze::Ahead);
-    assert_eq!(Gaze::of_caret(60, 90), Gaze::Right);
-    // The caret's own column past a row the text fills.
-    assert_eq!(Gaze::of_caret(90, 90), Gaze::Right);
-    // A field with no width is no reason to panic.
-    let _ = Gaze::of_caret(3, 0);
+fn a_caret_is_read_from_where_the_mascot_stands() {
+    // The banner's mascot stands at the screen's left edge, over the first
+    // columns of the composer. A caret still under its near half has it
+    // looking straight ahead; one past its middle — where the line is
+    // heading, and where the rest of the screen is — has it looking right.
+    let stands = 0..9;
+    for caret in 0..=4 {
+        assert_eq!(
+            Gaze::toward(caret, stands.clone()),
+            Gaze::Ahead,
+            "a caret at {caret}"
+        );
+    }
+    for caret in [5, 8, 9, 40, 200] {
+        assert_eq!(
+            Gaze::toward(caret, stands.clone()),
+            Gaze::Right,
+            "a caret at {caret}"
+        );
+    }
+    // It looks left only at a caret that is off to its left — which, at the
+    // edge of the screen, no caret is.
+    assert_eq!(Gaze::toward(3, 10..19), Gaze::Left);
+    assert_eq!(Gaze::toward(9, 10..19), Gaze::Left);
+    assert_eq!(Gaze::toward(10, 10..19), Gaze::Ahead);
+    assert_eq!(Gaze::toward(14, 10..19), Gaze::Ahead);
+    assert_eq!(Gaze::toward(15, 10..19), Gaze::Right);
+    // A mascot with no columns to stand over is no reason to panic.
+    let _ = Gaze::toward(3, 0..0);
 }
 
 #[test]

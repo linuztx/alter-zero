@@ -99,8 +99,8 @@ pub use self::login::{
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
 pub use self::mascot_motion::{
-    Gaze, MASCOT_GLITTER_STEPS, MASCOT_GREETING_MS, MASCOT_SHINE_FRAME, MASCOT_WATCH_LINGER,
-    MascotPose, MascotShine, ShineBand,
+    Gaze, MASCOT_GLITTER_STEPS, MASCOT_GREETING_MS, MASCOT_LIDS, MASCOT_SHINE_FRAME,
+    MASCOT_WATCH_LINGER, MascotPose, MascotShine, ShineBand,
 };
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};

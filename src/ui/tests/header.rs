@@ -964,19 +964,55 @@ fn a_glint_lights_a_narrow_band_from_its_own_side() {
 }
 
 #[test]
-fn the_live_banner_follows_the_caret_across_the_composer() {
-    // Typing the first message, the mascot reads along: a caret in the
-    // composer's right third has its eyes to the right, one at the start of
-    // the line to the left.
-    let mut app = animated(Mascot::Crest, 20_000);
-    app.input.insert_str(&"word ".repeat(14));
-    app.set_mascot_clock(Duration::from_millis(20_050));
-    let row = plain(&banner_frame_lines(&app, 90)[1]);
-    assert!(row.starts_with("▝▜▙███▙▛▘"), "{row:?}");
+fn the_live_banner_looks_toward_the_text_being_typed() {
+    // Typing the first message, the mascot turns to it. It stands at the
+    // screen's left edge, so a line runs off to its right: its eyes go
+    // right as soon as the caret is past it, however short the message.
+    let watching = |draft: &str| {
+        let mut app = animated(Mascot::Crest, 20_000);
+        app.input.insert_str(draft);
+        app.set_mascot_clock(Duration::from_millis(20_050));
+        (app, 20_050)
+    };
+    let eyes = |app: &App| {
+        let row = plain(&banner_frame_lines(app, 90)[1]);
+        row.chars().take(9).collect::<String>()
+    };
+    let (ahead, right, left) = ("▝▜▄███▄▛▘", "▝▜▙███▙▛▘", "▝▜▟███▟▛▘");
+    // The first two characters are still under it: it looks straight ahead.
+    assert_eq!(eyes(&watching("h").0), ahead);
+    assert_eq!(eyes(&watching("hi").0), ahead);
+    // From the third on the caret is past its middle.
+    assert_eq!(eyes(&watching("hey").0), right);
+    assert_eq!(eyes(&watching("hello there").0), right);
+    assert_eq!(eyes(&watching(&"word ".repeat(14)).0), right);
+    // It never looks left, at the edge of the screen, where there is
+    // nothing: not along a line, not along a wrapped one, not at the
+    // start of either.
+    let (mut app, mut at) = watching(&"word ".repeat(40));
+    loop {
+        at += 1;
+        app.set_mascot_clock(Duration::from_millis(at));
+        let look = eyes(&app);
+        // A blink aside, its eyes are ahead or to the right.
+        if look.contains('▟') {
+            assert_ne!(
+                look,
+                left,
+                "it looked left with the caret at {:?}",
+                app.input.cursor()
+            );
+        }
+        if app.input.cursor() == 0 {
+            break;
+        }
+        app.input.move_left();
+    }
+    // Back at the start of the line the caret is under it again.
+    let (mut app, at) = watching("hello there");
     app.input.move_home();
-    app.set_mascot_clock(Duration::from_millis(20_100));
-    let row = plain(&banner_frame_lines(&app, 90)[1]);
-    assert!(row.starts_with("▝▜▟███▟▛▘"), "{row:?}");
+    app.set_mascot_clock(Duration::from_millis(at + 50));
+    assert_eq!(eyes(&app), ahead);
 }
 
 #[test]
@@ -1086,6 +1122,7 @@ fn glitter_twinkles_scattered_cells_of_the_art() {
 fn a_mark_beside_the_mascot_is_drawn_in_the_light() {
     // The `z` of a snore and the `!` of a start are light, not mascot: they
     // wear the highlight, like the gem's sparks.
+    use crate::app::MASCOT_LIDS;
     use crate::ui::theme::shimmer_highlight;
     let mascot = Mascot::Crest;
     let mut app = with_session();
@@ -1098,10 +1135,11 @@ fn a_mark_beside_the_mascot_is_drawn_in_the_light() {
         };
         for line in header_lines_posed(&app, mascot, &pose, 90) {
             for (glyph, color) in cells(&line).into_iter().take(mascot.art_width()) {
+                // A sleeper's lid is part of the mascot, not a mark beside it.
                 if !glyph.trim().is_empty()
                     && !glyph
                         .chars()
-                        .all(|c| ('\u{2580}'..='\u{259F}').contains(&c))
+                        .all(|c| ('\u{2580}'..='\u{259F}').contains(&c) || MASCOT_LIDS.contains(&c))
                 {
                     assert_eq!(color, Some(shimmer_highlight()), "{glyph}");
                     seen.insert(glyph);
@@ -1111,6 +1149,83 @@ fn a_mark_beside_the_mascot_is_drawn_in_the_light() {
     }
     let seen: String = seen.into_iter().collect();
     assert_eq!(seen, "!Zz");
+}
+
+#[test]
+fn a_sleepers_lid_is_cut_out_of_the_ink() {
+    // A closed eye is a thin line where the eye was — and, like the eye, it
+    // is a gap in the body, not a mark on it: its cell is inked whole in
+    // the colour the body wears at that column, and the line is left in the
+    // ground's. So a lid is drawn in reverse; nothing else of the art is.
+    use crate::app::MASCOT_LIDS;
+    use crate::ui::theme::shimmer_highlight;
+    let styled = |line: &Line| -> Vec<(String, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|span| {
+                span.content
+                    .graphemes(true)
+                    .map(|g| (g.to_string(), span.style))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let mut lids = 0;
+        for art in mascot.motion_frames() {
+            // The same frame, lit: a lid takes the light the body takes.
+            for glow in [0, 60] {
+                let pose = MascotPose {
+                    art,
+                    glow,
+                    ..MascotPose::rest(mascot)
+                };
+                // …and what the body would wear there, were the eye shut.
+                let shut: Vec<String> = art
+                    .iter()
+                    .map(|row| row.replace(MASCOT_LIDS, "█"))
+                    .collect();
+                let shut: Vec<&str> = shut.iter().map(String::as_str).collect();
+                let shut: &'static [&'static str] = Box::leak(
+                    shut.iter()
+                        .map(|row| &*Box::leak(row.to_string().into_boxed_str()))
+                        .collect::<Vec<&'static str>>()
+                        .into_boxed_slice(),
+                );
+                let filled = MascotPose { art: shut, ..pose };
+                let lines = header_lines_posed(&app, mascot, &pose, 90);
+                let inked = header_lines_posed(&app, mascot, &filled, 90);
+                for (line, ink) in lines.iter().zip(&inked) {
+                    let width = mascot.art_width();
+                    for ((glyph, style), (_, body)) in
+                        styled(line).into_iter().zip(styled(ink)).take(width)
+                    {
+                        let lid = glyph.chars().all(|c| MASCOT_LIDS.contains(&c));
+                        assert_eq!(
+                            style.add_modifier.contains(Modifier::REVERSED),
+                            lid,
+                            "{}: {glyph:?} in {art:?}",
+                            mascot.name()
+                        );
+                        if lid {
+                            assert_eq!(style.fg, body.fg, "{}: {art:?}", mascot.name());
+                            assert_ne!(style.fg, Some(shimmer_highlight()), "{}", mascot.name());
+                            lids += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Every mascot with eyes closes them; the stone has none.
+        assert_eq!(
+            lids > 0,
+            mascot != Mascot::Gem,
+            "{}: {lids} lids",
+            mascot.name()
+        );
+    }
 }
 
 #[test]

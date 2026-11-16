@@ -7,14 +7,16 @@ smoke_begin
 # the banner mascot naps when it is left alone, and a keystroke wakes it
 # (docs/mascot-animation.md *The nap*). Nobody at the keyboard for three
 # quarters of a minute and the mascot over an empty conversation nods off:
-# it sleeps where it stands, ALL of it on screen — its eyes shut, its head
-# down with each breath out, a `z` in the top corner of its block that grows
-# to a `Z`. The first key wakes it with a start: a `!` where the snore was,
-# and it is wide awake — and then, since something is being typed, its eyes
-# go to the caret like any other time. What this pins: it does not doze the
-# moment the app opens; asleep the whole mascot is on screen and it is
-# repainted IN PLACE, one frame per stage of a breath and nothing between
-# (no clock chain turning under a sleeper);
+# it sleeps where it stands, ALL of it on screen — its eyes closed, each a
+# thin lid line where the eye was, never a blank — its head down with each
+# breath out, a `z` in the top corner of its block that grows to a `Z`. The
+# first key wakes it with a start: a `!` where the snore was, and it is
+# wide awake — and then, since something is being typed, its eyes go to the
+# text, to its right, like any other time. What this pins: it does not doze
+# the moment the app opens; asleep the whole mascot is on screen, its lids
+# drawn in reverse (cut out of the body's colour), and it is repainted IN
+# PLACE, one frame per stage of a breath and nothing between (no clock
+# chain turning under a sleeper);
 # the start is on the wire and no snore follows it; the banner the woken
 # mascot's message commits is the rest art — nothing of the sleeper, the
 # start or the watch left in scrollback — and scrollback then stays still.
@@ -24,14 +26,22 @@ smoke_begin
 #
 # The suite pins the animation off (lib.sh); this launch turns it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘` over
-# `  ▘▘ ▝▝`; asleep its eyes are shut (`▝▜█████▛▘`) and, breathing out, it
-# is half a cell lower — the frill's tips ` ▖ ▖ ▗ ▗` over `▗███████▖` over
-# ` ▝▛▛▀▜▜▘` — with the snore in the ninth column of the top row.
+# `  ▘▘ ▝▝`; asleep its eyes are closed — a lid through the middle of each
+# eye cell, `▝▜━███━▛▘` — and, breathing out, it is half a cell lower — the
+# frill's tips ` ▖ ▖ ▗ ▗` over `▗█▁███▁█▖` (the lids along the bottom of
+# their cells) over ` ▝▛▛▀▜▜▘` — with the snore in the ninth column of the
+# top row.
 S155="${S}_mascotnap"
 MN_APP="env $CFG_ENV_NOHIST ALTER_ZERO_MASCOT_ANIMATION=1 ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 MN_REST_TOP=' ▙▄▙▄▟▄▟   Alter Zero'
 MN_REST_EYES='▝▜▄███▄▛▘'
-MN_WATCH_LEFT='▝▜▟███▟▛▘'
+MN_WATCH_RIGHT='▝▜▙███▙▛▘'
+# Asleep: the eye row on the breath in, and on the breath out — each eye a
+# lid — and the same rows with the eyes filled in solid, which is the blank
+# face a sleeper must not show. (Spelled out glyph by glyph: this grep
+# reads a bracket of block glyphs byte by byte.)
+MN_LIDS='▝▜━███━▛▘|▗█▁███▁█▖'
+MN_BLANK='▝▜█████▛▘|▗███████▖'
 # The snore beside the sleeper's head: a `z`, then a `Z`, in the corner of
 # its block — the cell after the frill's tips, on the title's row.
 MN_SNORE='^ ▖ ▖ ▗ ▗[zZ] +Alter Zero'
@@ -69,10 +79,12 @@ fi
 mn_asleep="$(pane "$S155")"
 dump "asleep" "$mn_asleep"
 # Asleep where it stands, the whole of it on screen: its frill on the
-# title's row (whole, or its tips on the breath out), its eyes shut on the
-# row under it, and its feet on the third.
+# title's row (whole, or its tips on the breath out), its eyes closed on
+# the row under it — a lid where each was, not a blank — and its feet on
+# the third.
 expect_has "$mn_asleep" -E '^ (▙▄▙▄▟▄▟|▖ ▖ ▗ ▗)[zZ ] +Alter Zero' "the sleeping mascot's head is not on its block's top row"
-expect_has "$mn_asleep" -E '^(▗███████▖|▝▜█████▛▘) ' "the sleeping mascot's eyes are not shut"
+expect_has "$mn_asleep" -E "^($MN_LIDS) " "the sleeping mascot's closed eyes show no lid"
+expect_lacks "$mn_asleep" -E "$MN_BLANK" "the sleeping mascot's eyes are filled in: a blank face"
 expect_lacks "$mn_asleep" -F "$MN_REST_EYES" "the sleeping mascot's eyes are open"
 expect_has "$mn_asleep" -E '^( ▝▛▛▀▜▜▘|  ▘▘ ▝▝) ' "the sleeping mascot's feet are not on screen"
 expect_eq "$(printf '%s\n' "$mn_asleep" | grep -c 'Alter Zero (v')" "1" "the nap left more than one banner behind"
@@ -89,26 +101,60 @@ note "frames in 7s asleep: $mn_breathing"
 if [ "$mn_breathing" -lt 6 ] || [ "$mn_breathing" -gt 40 ]; then
 	fail "a sleeping mascot wrote $mn_breathing frames in 7s (expected about ten: one per stage of a breath)"
 fi
-if ! mn_frames | grep -q 'z'; then
+# (Captured first and matched with `has`: piped into `grep -q` the writer
+# can die of the closed pipe and, under pipefail, turn a match into a miss.)
+mn_slept="$(mn_frames)"
+if ! has "$mn_slept" 'z'; then
 	fail "seven seconds asleep and not one snore was written"
+fi
+# A lid is cut out of the ink: every one written in those seconds is written
+# in reverse video — the body's colour filling the cell, the line left in
+# the ground's — and at least a breath's worth of them was.
+mn_lids="$(python3 - "$MN_LOG" <<'PY'
+import re, sys
+data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
+reverse, lids, cut = False, 0, 0
+for found in re.finditer(r"\x1b\[([0-9;]*)m|([▁━])", data):
+    if found.group(2):
+        lids += 1
+        cut += reverse
+        continue
+    params = found.group(1).split(";")
+    i = 0
+    while i < len(params):
+        if params[i] in ("38", "48", "58"):
+            # an extended colour: skip its operands, any of which may be 7
+            i += 5 if params[i + 1 : i + 2] == ["2"] else 3
+            continue
+        if params[i] == "7":
+            reverse = True
+        elif params[i] in ("", "0", "27"):
+            reverse = False
+        i += 1
+print(lids, cut)
+PY
+)"
+note "lids written in 7s asleep, and how many of them in reverse: $mn_lids"
+if [ "${mn_lids% *}" -lt 4 ] || [ "${mn_lids% *}" != "${mn_lids#* }" ]; then
+	fail "a sleeper's lids were not all drawn in reverse: wrote ${mn_lids% *}, ${mn_lids#* } in reverse"
 fi
 
 # --- a keystroke wakes it with a start -------------------------------------
 mn_record "$S155"
-type_text "$S155" "hi"
-# Its eyes on the caret, in the composer's left third: the start is over and
-# it is watching.
-if ! wait_for 4 "$S155" -F "$MN_WATCH_LEFT"; then
+type_text "$S155" "hello"
+# Its eyes on the text, to its right: the start is over and it is watching.
+if ! wait_for 4 "$S155" -F "$MN_WATCH_RIGHT"; then
 	fail "the woken mascot did not turn its eyes to what was being typed"
 fi
 sleep 1.5
 tmux pipe-pane -t "$S155"
-mn_bang="$(mn_frames | grep -n '!' | head -1 | cut -d: -f1)"
+mn_woke="$(mn_frames)"
+mn_bang="$(grep -n -m1 '!' <<<"$mn_woke" | cut -d: -f1)"
 note "the start was written in frame ${mn_bang:-none} after the key"
 if [ -z "$mn_bang" ]; then
 	fail "the keystroke woke no start: no \`!\` was written beside the mascot"
 fi
-if [ -n "$mn_bang" ] && mn_frames | tail -n "+$((mn_bang + 1))" | grep -q '[zZ]'; then
+if [ -n "$mn_bang" ] && has "$(tail -n "+$((mn_bang + 1))" <<<"$mn_woke")" '[zZ]'; then
 	fail "the mascot went on snoring after it was woken"
 fi
 mn_woken="$(pane "$S155")"
@@ -122,8 +168,8 @@ mn_turn="$(wait_summaries 60 "$S155" 1 -S -80)"
 dump "after the first turn" "$mn_turn"
 expect_has "$mn_turn" -F "$MN_REST_TOP" "the banner over the conversation is not at its rest art"
 expect_has "$mn_turn" -F "$MN_REST_EYES" "the banner over the conversation has its eyes off rest"
-expect_lacks "$mn_turn" -F "$MN_WATCH_LEFT" "the eyes that watched the draft were left turned in the scrollback"
-expect_lacks "$mn_turn" -E '[▟▗][zZ!] +Alter Zero|^ ▖ ▖ ▗ ▗|▗███████▖|▝▜█████▛▘' "a snore, a start or a sleeper was left in the scrollback above the conversation"
+expect_lacks "$mn_turn" -F "$MN_WATCH_RIGHT" "the eyes that watched the draft were left turned in the scrollback"
+expect_lacks "$mn_turn" -E "[▟▗][zZ!] +Alter Zero|^ ▖ ▖ ▗ ▗|$MN_LIDS|$MN_BLANK" "a snore, a start or a sleeper was left in the scrollback above the conversation"
 expect_eq "$(printf '%s\n' "$mn_turn" | grep -c 'Alter Zero (v')" "1" "the first cell doubled the banner"
 sleep 0.5
 mn_record "$S155"

@@ -20,9 +20,9 @@ smoke_begin
 # things that open a fresh banner greet from it again: `/clear`, and a
 # mascot just chosen in `/mascot`; the picker's preview greets as the
 # highlight lands on a mascot; and while the first message is typed the
-# mascot watches it, its eyes on the caret's third of the composer, looking
-# away a few seconds after the last keystroke — and at once when the draft
-# is cleared.
+# mascot watches it — its eyes turned toward the text, to its right, never
+# to the screen's left edge — looking away a few seconds after the last
+# keystroke, and at once when the draft is cleared.
 #
 # The suite pins the animation off (lib.sh); these launches turn it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘`, its frill
@@ -32,9 +32,11 @@ MM_APP="env $CFG_ENV_NOHIST ALTER_ZERO_MASCOT_ANIMATION=1 ALTER_ZERO_STARTUP_DEL
 MM_REST_TOP=' ▙▄▙▄▟▄▟   Alter Zero'
 MM_REST_EYES='▝▜▄███▄▛▘'
 MM_FLARE=' ▙▙▙▄▟▟▟   Alter Zero'
-# The crest watching the composer: its eyes turned to the left, to the right.
-MM_WATCH_LEFT='▝▜▟███▟▛▘'
+# The crest watching the composer: its eyes turned to the right, toward the
+# text — and turned to the left, at the edge of the screen, which a watch
+# must never show.
 MM_WATCH_RIGHT='▝▜▙███▙▛▘'
+MM_WATCH_LEFT='▝▜▟███▟▛▘'
 MM_LOG="$SMOKE_TMP/mascot.stream"
 
 # mm_record SESSION — start recording every byte the app writes to the pane.
@@ -111,18 +113,18 @@ tmux kill-session -t "$S154" 2>/dev/null
 
 # --- the first cell stills it, mid-move ------------------------------------
 launch "$S154" 80 24 "$MM_APP"
-type_text "$S154" "hi"
-# The mascot watches the draft — its eyes turned to the caret, a pose off
+type_text "$S154" "hello"
+# The mascot watches the draft — its eyes turned to the text, a pose off
 # rest: send the message while they are. (If the poll misses it the message
 # is sent at rest, and every check below still has to hold.)
-wait_for 6 "$S154" -F "$MM_WATCH_LEFT" || note "the watching eyes were not caught on screen; submitting at rest"
+wait_for 6 "$S154" -F "$MM_WATCH_RIGHT" || note "the watching eyes were not caught on screen; submitting at rest"
 keys "$S154" Enter
 mm_turn="$(wait_summaries 60 "$S154" 1 -S -80)"
 dump "after the first turn" "$mm_turn"
 expect_has "$mm_turn" -F "$MM_REST_TOP" "the banner over the conversation is not at its rest art"
 expect_has "$mm_turn" -F "$MM_REST_EYES" "the banner over the conversation has its eyes off rest"
 expect_lacks "$mm_turn" -F "$MM_FLARE" "a pose was left in the scrollback above the conversation"
-expect_lacks "$mm_turn" -F "$MM_WATCH_LEFT" "the eyes that watched the draft were left turned in the scrollback"
+expect_lacks "$mm_turn" -F "$MM_WATCH_RIGHT" "the eyes that watched the draft were left turned in the scrollback"
 expect_eq "$(printf '%s\n' "$mm_turn" | grep -c 'Alter Zero (v')" "1" "the first cell doubled the banner"
 # Scrollback does not move: with a conversation under it the banner is
 # never written again.
@@ -164,24 +166,42 @@ expect_eq "$(count_bare_prompts "$mm_fresh")" "1" "/clear's greeting disturbed t
 tmux kill-session -t "$S154" 2>/dev/null
 
 # --- watching the user type ------------------------------------------------
-# While the first message is typed the mascot reads along: its eyes go to the
-# caret's third of the composer — the left while the line is short, the right
-# once it reaches the composer's last third — and a few seconds after the
-# last keystroke (MASCOT_WATCH_LINGER, 4s) it looks away and goes back to its
-# own moves. A watch shows no rest eyes (a blink shows a lid), so the first
-# rest eyes after the typing stops are the look away.
+# While the first message is typed the mascot turns to it. It stands at the
+# screen's left edge, over the composer's first columns, so the text runs
+# off to its RIGHT: its eyes go right as soon as the caret is past it — a
+# line of three characters is — and straight ahead while the caret is still
+# under it. They never go left: left of the mascot is the edge of the
+# screen, and it used to stare at it through every short message. A few
+# seconds after the last keystroke (MASCOT_WATCH_LINGER, 4s) it looks away
+# and goes back to its own moves. With the caret to its right a watch shows
+# no rest eyes (a blink shows a lid), so the first rest eyes after the
+# typing stops are the look away.
 launch "$S154" 80 24 "$MM_APP"
 mm_record "$S154"
 wait_file 10 "$MM_LOG" -aF '▆' || fail "the launch's greeting never blinked"
 tmux pipe-pane -t "$S154"
 sleep 1
 type_text "$S154" "hello"
-if ! wait_for 3 "$S154" -F "$MM_WATCH_LEFT"; then
-	fail "the mascot did not turn its eyes to a caret in the composer's left third"
-fi
-type_text "$S154" " the quick brown fox jumps over the lazy dog and runs on"
 if ! wait_for 3 "$S154" -F "$MM_WATCH_RIGHT"; then
-	fail "the mascot did not follow the caret into the composer's right third"
+	fail "the mascot did not turn its eyes toward a short line of text"
+fi
+expect_lacks "$(pane "$S154")" -F "$MM_WATCH_LEFT" "the mascot looked at the screen's left edge while a short line was typed"
+type_text "$S154" " the quick brown fox jumps over the lazy dog and runs on"
+sleep 0.4
+mm_long="$(pane "$S154")"
+expect_has "$mm_long" -F "$MM_WATCH_RIGHT" "the mascot did not keep its eyes on a long line of text"
+expect_lacks "$mm_long" -F "$MM_WATCH_LEFT" "the mascot looked at the screen's left edge while a long line was typed"
+# The caret brought back to the start of the line is under the mascot
+# again: it looks straight ahead — at once, not when the watch runs out —
+# and right again when the caret goes back to the end.
+keys "$S154" Home
+if ! wait_for 1.5 "$S154" -F "$MM_REST_EYES"; then
+	fail "the mascot did not look straight ahead with the caret back under it"
+fi
+expect_lacks "$(pane "$S154")" -F "$MM_WATCH_LEFT" "the mascot looked left at a caret at the start of the line"
+keys "$S154" End
+if ! wait_for 1.5 "$S154" -F "$MM_WATCH_RIGHT"; then
+	fail "the mascot did not look right again when the caret went back to the end of the line"
 fi
 mm_typed_at="$(date +%s.%N)"
 if ! wait_for 9 "$S154" -F "$MM_REST_EYES"; then

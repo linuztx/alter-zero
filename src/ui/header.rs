@@ -6,31 +6,37 @@ use super::theme::*;
 use super::wrap::{clamp_spans, cols, lerp_color, wrap_text};
 use super::*;
 
-use crate::app::{MASCOT_GLITTER_STEPS, Mascot, MascotPose, MascotShine, ShineBand};
+use crate::app::{MASCOT_GLITTER_STEPS, MASCOT_LIDS, Mascot, MascotPose, MascotShine, ShineBand};
 
-/// `text` as spans coloured cell by cell — `color_at(glyph, column)` for each
-/// glyph at its display column — with equal-colour runs coalesced.
-fn colored_spans(text: &str, color_at: impl Fn(&str, usize) -> Color) -> Vec<Span<'static>> {
+/// `text` as spans styled cell by cell — `style_at(glyph, column)` for each
+/// glyph at its display column — with equal-style runs coalesced.
+fn styled_spans(text: &str, style_at: impl Fn(&str, usize) -> Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;
-    let mut run: Option<(Color, String)> = None;
+    let mut run: Option<(Style, String)> = None;
     for g in text.graphemes(true) {
-        let color = color_at(g, col);
+        let style = style_at(g, col);
         match &mut run {
-            Some((c, s)) if *c == color => s.push_str(g),
+            Some((st, s)) if *st == style => s.push_str(g),
             _ => {
-                if let Some((c, s)) = run.take() {
-                    spans.push(Span::styled(s, Style::new().fg(c)));
+                if let Some((st, s)) = run.take() {
+                    spans.push(Span::styled(s, st));
                 }
-                run = Some((color, g.to_string()));
+                run = Some((style, g.to_string()));
             }
         }
         col += cols(g);
     }
-    if let Some((c, s)) = run {
-        spans.push(Span::styled(s, Style::new().fg(c)));
+    if let Some((st, s)) = run {
+        spans.push(Span::styled(s, st));
     }
     spans
+}
+
+/// `text` as spans coloured cell by cell — `color_at(glyph, column)` for each
+/// glyph at its display column — with equal-colour runs coalesced.
+fn colored_spans(text: &str, color_at: impl Fn(&str, usize) -> Color) -> Vec<Span<'static>> {
+    styled_spans(text, |glyph, col| Style::new().fg(color_at(glyph, col)))
 }
 
 /// Colour `text` with a left-to-right [`header_gradient_start`] →
@@ -117,14 +123,25 @@ fn glitter_at(col: usize, row: usize, progress: f32) -> f32 {
     }
 }
 
-/// Whether `glyph` is a **spark** — a twinkle beside the art rather than
-/// part of it. The mascots are drawn in the Block Elements; anything else a
-/// frame holds is light, and is drawn in the sweep's own colour.
-fn is_spark(glyph: &str) -> bool {
+/// Whether `glyph` is a **lid** — the thin line of a sleeper's closed eye
+/// ([`MASCOT_LIDS`]).
+fn is_lid(glyph: &str) -> bool {
     glyph
         .chars()
         .next()
-        .is_some_and(|c| c != ' ' && !('\u{2580}'..='\u{259F}').contains(&c))
+        .is_some_and(|c| MASCOT_LIDS.contains(&c))
+}
+
+/// Whether `glyph` is a **spark** — a twinkle beside the art rather than
+/// part of it. The mascots are drawn in the Block Elements; anything else a
+/// frame holds is light, and is drawn in the sweep's own colour — but for a
+/// [lid](is_lid), which is part of the mascot.
+fn is_spark(glyph: &str) -> bool {
+    !is_lid(glyph)
+        && glyph
+            .chars()
+            .next()
+            .is_some_and(|c| c != ' ' && !('\u{2580}'..='\u{259F}').contains(&c))
 }
 
 /// One row of a mascot's art in the banner gradient, as `pose` lights it:
@@ -135,6 +152,12 @@ fn is_spark(glyph: &str) -> bool {
 /// that colour outright. Light falls on ink, so a blank cell keeps its
 /// colour. At rest this is [`gradient_spans`] exactly, so the banner
 /// scrollback holds is the one it always held.
+///
+/// A sleeper's **lid** is the one cell drawn in reverse: the body's colour
+/// at that column fills the cell and the lid's line is left in the
+/// ground's. A closed eye is a gap in the body, as an open one is — the
+/// block glyphs just have none that leaves a line along the bottom of a
+/// cell or through its middle, so the gap is cut out of a filled one.
 fn art_spans(
     text: &str,
     row: usize,
@@ -143,22 +166,27 @@ fn art_spans(
     pose: &MascotPose,
 ) -> Vec<Span<'static>> {
     let glow = f32::from(pose.glow) / 100.0 * MASCOT_SHINE_MAX_BLEND;
-    colored_spans(text, |glyph, col| {
+    styled_spans(text, |glyph, col| {
         if is_spark(glyph) {
-            return mascot_shine_color();
+            return Style::new().fg(mascot_shine_color());
         }
         let color = header_gradient_at(col, total);
         if glyph == " " {
-            return color;
+            return Style::new().fg(color);
         }
         let band = pose
             .shine
             .map_or(0.0, |shine| shine_at(col, row, rows, total, shine));
         let lift = band.max(glow);
-        if lift > 0.0 {
+        let ink = if lift > 0.0 {
             lerp_color(color, mascot_shine_color(), lift)
         } else {
             color
+        };
+        if is_lid(glyph) {
+            Style::new().fg(ink).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new().fg(ink)
         }
     })
 }

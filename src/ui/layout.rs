@@ -283,14 +283,18 @@ fn field_width(width: u16) -> u16 {
     text_field_width(width.saturating_sub(BULLET_WIDTH))
 }
 
-/// Which third of the composer the caret sits in at `width` — what the
-/// banner mascot's eyes follow while the user types the first message
-/// (`docs/mascot-animation.md`). The caret's column on its own wrapped row,
-/// so a draft that wraps sends the eyes back to the left with it.
+/// Which way the banner mascot looks to see the caret at `width` — what its
+/// eyes do while the user types the first message
+/// (`docs/mascot-animation.md` *Watching the user type*). The caret's
+/// screen column on its own wrapped row — the composer's inset plus its
+/// column in the field — read from where the mascot stands: the banner's
+/// art sits at the screen's left edge, over the composer's first columns,
+/// so nearly every caret is to its right and a row that wraps brings its
+/// eyes back ahead with it.
 pub(super) fn caret_gaze(app: &App, width: u16) -> crate::app::Gaze {
-    let field = field_width(width);
-    let (_, col) = app.input.cursor_row_col(field);
-    crate::app::Gaze::of_caret(col, usize::from(field))
+    let (_, col) = app.input.cursor_row_col(field_width(width));
+    let caret = usize::from(BULLET_WIDTH) + col;
+    crate::app::Gaze::toward(caret, 0..app.mascot().art_width())
 }
 
 /// The text width of a field painted into `cells` columns: one less, kept for

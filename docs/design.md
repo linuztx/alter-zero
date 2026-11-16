@@ -792,10 +792,12 @@ which Ctrl+V reads the clipboard from.
   everything it knows, never the same move twice running; at rest about
   four fifths of the time, never still for more than about eight seconds.
   And it keeps the user **company**. While the first message is typed it
-  **watches**: its eyes follow the caret across the composer, and a few
+  **watches**: its eyes turn to the text — right, where the line runs and
+  the rest of the screen is, read from where the mascot stands — and a few
   seconds after the last keystroke it goes back to its own moves. Left
   alone for three quarters of a minute it **naps** — nods off and sleeps
-  where it stands, all of it on screen, its eyes shut, its head down with
+  where it stands, all of it on screen, its eyes closed to thin lid lines
+  (a cell drawn in reverse, the line cut out of the body), its head down with
   each breath out and a `z` that grows to a `Z` in the corner of its block
   — for the better part of a minute, twice, and the third time, five
   minutes into being left, until someone is back. **Any key wakes it with

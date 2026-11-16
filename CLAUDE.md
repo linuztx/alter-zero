@@ -378,7 +378,7 @@ through a **repertoire** of thirty moves and more (the gem a score) — the
 looks its eyes give (blink, glance, look around, shifty eyes, a wink of
 either eye — through its lid where it has one — crossed eyes, a daydream
 that blinks while looking away — and for the three with lidded eyes a
-startled stare, a squint and one of each; never a glyph in a socket, which
+startled stare, a squint and one of each; never a light in a socket, which
 reads as an eye put out: the *starry eyes* that once did it were taken out,
 and a test holds every frame to it), its **whole body moved half a
 cell** (a bounce, a happy bounce with the eyes shut, a wiggle, a dance, a
@@ -406,9 +406,15 @@ from what each frame finds: the draft, its caret, and `App::keys_taken`, a
 count bumped at the top of `App::on_key`/`on_paste`, never what the key
 was). While the first message is
 typed it **watches** (`docs/mascot-animation.md` *Watching the user type*):
-its eyes follow the caret's third of the composer (`ui::layout::caret_gaze`
-→ `Gaze` → `App::banner_pose_watching`), blinking now and then, the gem's
-facet turning to it, and a
+its eyes turn to the text, read **from where it stands**
+(`ui::layout::caret_gaze` → `Gaze::toward` → `App::banner_pose_watching`):
+the banner is at the screen's left edge, over the composer's first columns,
+so a caret past the mascot's middle — a line's third character — has it
+looking **right**, where the line runs and the rest of the screen is, one
+still under it has it looking straight ahead, and it never looks left (it
+first read the caret by the third of the composer it sat in, and stared at
+the screen's edge through every short message), blinking now and then, the
+gem's facet turning the same way, and a
 watch ends `MASCOT_WATCH_LINGER` (4 s) after the last keystroke — at once on
 an emptied composer — the timeline resuming without joining a move begun
 meanwhile (`Mascot::pose_between`). Left alone it **naps**
@@ -416,7 +422,16 @@ meanwhile (`Mascot::pose_between`). Left alone it **naps**
 three quarters of a minute to a minute after the last sign of anyone
 (`Mascot::left_since`) every one of the six nods off — eyes heavy, open,
 shut, the head down (the gem dips and settles) — and **sleeps where it
-stands, all of it on screen**: eyes shut, a breath every 3.4 s, on its feet
+stands, all of it on screen**: eyes **closed, not gone** — each a **lid**,
+a thin line along the bottom of its socket (`MASCOT_LIDS`: `━` through the
+middle of the eye's cell or `▁` along its bottom, whichever half of the
+cell the socket is, the two swapping when the head goes down), the one
+cell the banner draws **in reverse** (`ui::header::art_spans`: the body's
+colour fills it and the line is left in the ground's, so a closed eye is a
+gap in the body like an open one — no block glyph leaves a dark line
+there), since eyes filled in solid for most of a minute left a sleeper no
+face, and only the nap's frames have them, a blink staying a blink — a
+breath every 3.4 s, on its feet
 on the breath in and half a cell lower on the breath out with a `z` in the
 block's top right corner that grows to a `Z` (the seedling, which cannot
 dip, droops its shoot; the gem, settled low, breathes with its light) — a
@@ -494,7 +509,7 @@ starts from, and a notice card committed under a live banner would have
 landed above it. **Frames are scheduled per change of pose, never on a
 chain** (`App::mascot_frame_in` after each draw → one `schedule_frame_in`):
 a blink is four frames and the loop sleeps between clips, a sleeper's
-breath is five (twenty seconds asleep measured 28 frames and 10 ms of CPU), nothing is
+breath is five (twenty seconds asleep measured 28 frames and 20 ms of CPU), nothing is
 scheduled for a banner off screen, behind an overlay or in the narrow text
 badge, and `ui::header_lines` — everything committed, the Ctrl+O
 transcript, an export — is always the rest pose. The `/mascot` picker's

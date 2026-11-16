@@ -9,9 +9,10 @@ its feet, pumps its arms, catches the light, daydreams, ducks out of sight
 and peeks back over the edge, turns a somersault.
 
 And it keeps the user **company**. While the first message is typed it
-**watches**: its eyes follow the caret across the composer, reading along.
-Left alone for three quarters of a minute it **naps** — nods off and sleeps
-where it stands, its eyes shut, its head down with each breath out and a
+**watches**: its eyes turn to the text — to its right, where the line runs
+and the rest of the screen is. Left alone for three quarters of a minute it
+**naps** — nods off and sleeps where it stands, its eyes closed, each a
+thin lid line where the eye was, its head down with each breath out and a
 `z` in the corner of its block. And the first key that finds it asleep
 **wakes it with a start**: a `!`, it is wide awake, and it turns to what is
 being typed. The first cell committed under the banner
@@ -109,10 +110,11 @@ A frame is one of six things, and the tests hold every frame to it:
   moved at most, since a happy bounce shuts the eyes as it dips and a peek
   leans with the eyes already turned.
 
-A **sleeper's eyes are shut** over whichever of these its frame is — the
+A **sleeper's eyes are closed** over whichever of these its frame is — the
 seedling asleep droops its shoot *and* has its eyes closed, two rows of it
-redrawn — so a frame with both eyes shut is held to the rule as the frame
-it would be awake.
+redrawn — so a frame with both eyes closed is held to the rule as the frame
+it would be awake. Closed for sleep, each eye is its **lid** (*Eyes*,
+below): a line in the eye's own cell, so the eyes still redraw one row.
 
 Beside any of these a **mark** may ride in the block's top right corner —
 the `z` and `Z` of a snore, the `!` of a start: light, not mascot, in the
@@ -139,9 +141,10 @@ tall, punched in the body. That decides how they can move:
   sprout, skiter) the matching glyphs live in *Symbols for Legacy
   Computing*, which many fonts lack and some draw double-width; those two
   blink in one 120 ms frame instead. Reverse video over a lower-eighth
-  block would have drawn the missing lid, but it paints the hole in the
-  terminal's opaque background colour, which is not the background of a
-  translucent terminal.
+  block would draw the missing lid — it is how a sleeper's is drawn, below
+  — but it paints its gap in the terminal's opaque background colour, a
+  shade off the background of a translucent terminal, and a frame 35 ms
+  long is not worth even that.
 - **A glance** narrows both holes to the same side (`▟▟` left, `▙▙` right;
   `▜▜`/`▛▛` for the lower-eyed) for about two thirds of a second. Shifting
   the whole eye a subcell was tried first and read better on paper — but on
@@ -166,12 +169,42 @@ tall, punched in the body. That decides how they can move:
   rolled through its four quarters, which passes through the same two
   broken frames (drawn a second time when the stars went, and thrown out a
   second time).
-- **And they never hold a glyph.** *Starry eyes* — `·`, `✢`, `✶` opening in
+- **Closed for sleep, an eye keeps its lid.** A blink can fill the holes
+  for a tenth of a second; a sleeper whose eyes are filled in for most of a
+  minute has no face left — the first thing said of the nap was that its
+  eyes were *empty*. So an eye closed for sleep is a thin line where the
+  eye was: a **lid**, along the bottom of its socket, where a lid comes to
+  rest.
+
+  ```
+   ▙▄▙▄▟▄▟      ▙▄▙▄▟▄▟      ▖ ▖ ▗ ▗z
+  ▝▜▄███▄▛▘    ▝▜━███━▛▘    ▗█▁███▁█▖
+    ▘▘ ▝▝        ▘▘ ▝▝       ▝▛▛▀▜▜▘
+   awake        asleep       …and breathing out
+  ```
+
+  A socket is the upper half of its cell or the lower, so the line runs
+  through the middle of the cell (`━`) or along its bottom (`▁`) — and half
+  a cell lower when the sleeper's head goes down, which swaps the two. No
+  block glyph leaves either line *dark*: the eighth-block ramp fills a cell
+  from the bottom up, and its mirror image is in the Legacy Computing
+  blocks. So a lid's cell is drawn **in reverse** (`MASCOT_LIDS`, the one
+  cell `ui::header::art_spans` reverses): the body's colour at that column
+  fills it — lit like the body when the body is lit — and the line is left
+  in the ground's. A closed eye is then what an open one is, a gap in the
+  body, and never a mark on it. It costs what reverse video always costs —
+  the line is the terminal's *opaque* background colour — and for a line
+  two pixels tall, inside the body, that is nothing. Slits a quarter of a
+  cell tall were drawn too, and read as small open eyes; a line along the
+  *top* of the socket read as a pair of eyebrows. Only the nap's frames
+  have lids: awake, a shut eye is a blink, and drawn as it always was.
+- **And they never hold a light.** *Starry eyes* — `·`, `✢`, `✶` opening in
   each socket — shipped once, as delight. On a contact sheet they read as
   eyes lit up; in a terminal the spark is a thin text glyph in the
   highlight on the terminal's own background, and a socket filled with it
-  reads as an eye put out. An eye is a hole, and a test holds every frame
-  to it. The pump took the move's place in every deck.
+  reads as an eye put out. An eye is a hole — open, or closed to a lid —
+  and a test holds every frame to it. The pump took the move's place in
+  every deck.
 
 ### Light
 
@@ -333,10 +366,12 @@ unit-tested with nothing but numbers.
 
 The banner is live for exactly as long as the first message is being
 written, so that is when the mascot pays attention to it: while a draft is
-typed its eyes **follow the caret** across the composer — to the left while
-the caret is in the composer's left third, straight ahead in the middle, to
-the right in the right third — reading along. The gem, which has no eyes,
-turns its facet toward the caret's side. It blinks now and then while it
+typed its eyes **turn to the text**, read from where the mascot stands. It
+stands at the screen's left edge, over the composer's first columns, so a
+line runs off to its **right** — and so does everything else on screen: its
+eyes go right as soon as the caret is past its middle, which the third
+character of a line is, and stay straight ahead while the caret is still
+under it. The gem, which has no eyes, turns its facet the same way. It blinks now and then while it
 watches (once in every 3.2 s, at an offset the seed draws, never in the
 first 0.9 s, so the eyes turning is what a watch opens on). Typing takes it
 from whatever it was doing — a nap included, with a start (*The nap*,
@@ -344,12 +379,21 @@ below).
 
 ```
  ▙▄▙▄▟▄▟   Alter Zero (v0.19.0)       ▙▄▙▄▟▄▟   Alter Zero (v0.19.0)
-▝▜▟███▟▛▘  ~/alter-zero              ▝▜▙███▙▛▘  ~/alter-zero
+▝▜▄███▄▛▘  ~/alter-zero              ▝▜▙███▙▛▘  ~/alter-zero
   ▘▘ ▝▝    / commands  @ files          ▘▘ ▝▝    / commands  @ files
 
-❯ hello                              ❯ hello the quick brown fox jumps over the lazy dog
- the caret in the left third          …and in the right third
+❯ hi                                 ❯ hello there
+ the caret still under it             …and past it: it looks toward the text
 ```
+
+It first read the caret by the **third of the composer** it sat in — left,
+ahead, right, as if reading along the line. But the mascot is not above the
+middle of the composer; it is at its left end. A short message never leaves
+the left third, so through nearly everything anyone typed it stared at the
+left edge of the screen, where there is nothing. `Gaze::toward` reads the
+caret's screen column against the columns the mascot stands over instead:
+past its middle is right, short of its columns is left — which at the
+screen's edge no caret is — and the rest is under it.
 
 Four seconds after the last keystroke (`MASCOT_WATCH_LINGER`) — long enough
 to wait out a pause to think — it looks away and goes back to its own moves,
@@ -366,8 +410,8 @@ a paste, a recalled message, the caret moved — and over a draft it starts
 the watch or carries it on. The first frame only looks, and what was seen
 before the clock started over (`/clear`, a `/mascot` choice) is forgotten,
 so the fresh banner greets. *Where* the caret is is `ui`'s to measure
-(`layout::caret_gaze` — its column on its own wrapped row, so a draft that
-wraps sends the eyes back to the left with it) and the pose is
+(`layout::caret_gaze` — its screen column on its own wrapped row, so a
+draft that wraps brings the eyes back ahead with it) and the pose is
 `App::banner_pose_watching(gaze)`, a pure function of the seed, the clock,
 the company kept and the gaze. A keystroke brings a frame of its own, so
 the loop schedules only the watch's blinks and its end
@@ -380,7 +424,7 @@ quarters of a minute of it — every one of the six — it **naps**:
 
 ```
  ▙▄▙▄▟▄▟       ▖ ▖ ▗ ▗       ▖ ▖ ▗ ▗z      ▖ ▖ ▗ ▗Z      ▖ ▖ ▗ ▗!      ▙▄▙▄▟▄▟!
-▝▜█████▛▘     ▗███████▖     ▗███████▖     ▗███████▖     ▗█▀███▀█▖     ▝▜▂███▂▛▘
+▝▜━███━▛▘     ▗█▁███▁█▖     ▗█▁███▁█▖     ▗█▁███▁█▖     ▗█▀███▀█▖     ▝▜▂███▂▛▘
   ▘▘ ▝▝        ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘        ▘▘ ▝▝
  a breath in   …and out      a snore       louder        a key!       up, wide awake
 ```
@@ -392,7 +436,8 @@ quarters of a minute of it — every one of the six — it **naps**:
   open and close for good, and its **shoot droops** to a bud; the
   skitterer's close and its body sinks; the gem, with no eyes at all, dips,
   rises, and settles.
-- **It sleeps where it stands**, all of it on screen, its eyes shut. And it
+- **It sleeps where it stands**, all of it on screen, its eyes closed —
+  each a lid, a thin line where the eye was, not a blank (*Eyes*). And it
   **breathes**, a breath every 3.4 s: in, on its feet; and out, half a cell
   lower, with a `z` in the top corner of its block that grows to a `Z` and
   is gone. The seedling's shoot droops with the breath out instead. The
@@ -567,7 +612,7 @@ frame for exactly then:
   adds only its blinks and the frame that looks away;
 - asleep, a breath is five frames (nine for the gem, whose light breathes)
   — three and a half seconds of them — and nothing between: twenty seconds
-  of a sleeping mascot measured 28 frames, 6.9 kB and 10 ms of CPU, less
+  of a sleeping mascot measured 28 frames, 7.6 kB and 20 ms of CPU, less
   than the same twenty seconds awake;
 - a start is three frames, on top of the one the key itself asked for;
 - the greeting — sweep, move, blink — is under thirty frames in all, where a
@@ -666,9 +711,12 @@ seeded — every unit test's — never moves.
   below the floor, the mascot upside down, or the whole mascot moved half a
   cell — checked by folding the art onto its half-cell grid and moving it
   back, a sleeper's shut eyes opened first; a mark rides in the block's top
-  right corner and nowhere else, and every mascot has all three; no glyph is
-  ever put in an eye; the mascots with limbs at their sides raise them; the
-  gem spins edge-on and back the way it went);
+  right corner and nowhere else, and every mascot has all three; no light is
+  ever put in an eye — it holds the body's blocks or its own lid; a lid is
+  the line along the bottom of its socket, two to a frame, in an eye's cell
+  and nowhere else, on its feet and with its head down; the mascots with
+  limbs at their sides raise them; the gem spins edge-on and back the way
+  it went);
   the timeline (opens at rest; a pose holds exactly as long as it says,
   checked a millisecond at a time; the same seed the same timeline, another
   seed another; two mascots on one seed out of step); the greeting (the same
@@ -690,9 +738,10 @@ seeded — every unit test's — never moves.
   close on a blink; a wave closes on a wink of the eye beside the arm; feet
   patter on the spot; eyes wander off and blink where they went; no look but
   the ones eyes are known to give; the gem sparks at four corners, turns its
-  facet and never shuts it); watching the user type (a caret is read by the
-  third of the composer it sits in; the eyes follow it, the gem's facet
-  turns to it; a watching mascot still blinks now and then; it goes back to
+  facet and never shuts it); watching the user type (a caret is read from
+  where the mascot stands — ahead while it is under it, right once it is
+  past its middle, left only when it is off to its left; the eyes turn to
+  it, and the gem's facet; a watching mascot still blinks now and then; it goes back to
   its own moves when the typing stops, never joining a move half way; a
   frame is due at every change while it watches, and none for nothing; an
   emptied composer ends the watch at once; a launch watches nothing; a clock
@@ -706,7 +755,9 @@ seeded — every unit test's — never moves.
   three quarters of a minute to a minute in — all six, under six seeds —
   and is itself move for move until then, and all of it is on screen from
   the first nod to the last blink; its eyes grow heavy, open, and close
-  before its head goes down; asleep it is whole, its eyes shut, a `z` and
+  before its head goes down; asleep its eyes are closed, not gone — two
+  lids from the moment they close to the moment it stirs, none on open
+  eyes and none in any move of the repertoire; asleep it is whole, a `z` and
   then a `Z` out with each breath, over and over, a breath every three or
   four seconds, nothing still past a second and a half, its body — or the
   gem's light — moving with the breath and no snore on the breath in; the
@@ -777,8 +828,12 @@ seeded — every unit test's — never moves.
   band from its own side; glitter twinkles a scatter of the art's cells —
   never a blank one, never most of the mascot, a different scatter each
   step, an afterglow behind it, thinner at its ends; a mark beside the
-  mascot — a snore, a start — is drawn in the light; the live banner follows the caret across the
-  composer; a spark is drawn in the sweep's light; the narrow badge has no
+  mascot — a snore, a start — is drawn in the light; a sleeper's lid is cut
+  out of the ink — its cell drawn in reverse in the colour the body wears
+  at that column, lit as the body is lit, and nothing else of the art
+  reversed; the live banner looks toward the text being typed — ahead for
+  a caret still under it, right from a line's third character, never left
+  along a line or a wrapped one; a spark is drawn in the sweep's light; the narrow badge has no
   art to move.
 - `ui/tests/mascot_view.rs` — the preview shows the highlighted mascot
   moving; a moving preview never moves the page.
@@ -799,7 +854,9 @@ seeded — every unit test's — never moves.
   banner at rest over one composer; with the row off an idle session writes
   nothing; a first message sent while the eyes watch the draft leaves the
   rest art above the conversation and nothing is written afterwards; the
-  eyes follow the caret into the composer's left and right thirds, look away
+  eyes turn right toward a short line and a long one and never to the
+  screen's left edge, go straight ahead when the caret is brought back
+  under the mascot and right again when it leaves, look away
   about four seconds after the last keystroke, and at once when Ctrl+U
   empties the draft; `/clear`
   greets again (about thirty frames in the three seconds after it, the
@@ -811,10 +868,11 @@ seeded — every unit test's — never moves.
 - `scripts/smoke.sh` Phase 155 — the nap, on the screen and the raw byte
   stream: left untouched the mascot is snoring no sooner than 44 s after
   the app opens and inside 80, the whole of it on screen — its frill on the
-  title's row, its eyes shut under it, its feet on the third — over one
-  banner and one composer; asleep it writes a frame a stage of a breath
-  (about ten in seven seconds, where a clock chain would write two
-  hundred), a snore among them; a keystroke puts the `!` on the wire with
+  title's row, its eyes closed to lids under it and never filled in, its
+  feet on the third — over one banner and one composer; asleep it writes a
+  frame a stage of a breath (about ten in seven seconds, where a clock
+  chain would write two hundred), a snore among them, and every lid among
+  them in reverse video; a keystroke puts the `!` on the wire with
   no snore after it, the mascot back on its feet with its eyes on the
   draft; and the message it woke for commits the rest art above the
   conversation — no snore, no start, no shut or turned eyes left in

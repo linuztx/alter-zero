@@ -193,6 +193,16 @@ const PUMP_MS: u64 = 120;
 /// A glitter: [`MASCOT_GLITTER_STEPS`] scatters of 80 ms each.
 const GLITTER_MS: u64 = 80 * MASCOT_GLITTER_STEPS as u64;
 
+/// The **lids** of a sleeper's closed eyes: the thin line each eye is drawn
+/// as while it sleeps, where a face with its eyes filled in solid had none
+/// (`docs/mascot-animation.md` *Eyes*). A lid runs along the bottom of its
+/// socket — along the bottom of its cell (`▁`) where the socket is the
+/// cell's lower half, through its middle (`━`) where it is the upper — and
+/// it is **cut out of the ink**: the banner draws a lid's cell in reverse,
+/// the body's colour filling it and the line left in the ground's, so a
+/// closed eye is a gap in the body like an open one and never a mark on it.
+pub const MASCOT_LIDS: [char; 2] = ['▁', '━'];
+
 /// One still of a mascot — its rows, drawn verbatim like [`Mascot::art`].
 type Art = &'static [&'static str];
 
@@ -515,10 +525,11 @@ macro_rules! pump {
 }
 
 /// One **breath** of a mascot asleep, from its own stills: in — on its
-/// feet, its eyes shut (`$inhale`) — and out, its head down (`$exhale`),
-/// with a `z` in the top corner of its block (`$snore`) that grows to a
-/// `Z` (`$snore_loud`). All of it stays on screen: it sleeps where it
-/// stands. A nap plays this over and over.
+/// feet (`$inhale`) — and out, its head down (`$exhale`), with a `z` in the
+/// top corner of its block (`$snore`) that grows to a `Z` (`$snore_loud`).
+/// All of it stays on screen: it sleeps where it stands, and its eyes are
+/// closed, not gone — each a lid ([`MASCOT_LIDS`]) where the eye was. A nap
+/// plays this over and over.
 macro_rules! breath {
     ($inhale:ident, $exhale:ident, $snore:ident, $snore_loud:ident) => {
         const BREATH: Clip = clip![
@@ -530,8 +541,8 @@ macro_rules! breath {
 }
 
 /// A nap for eyes with a lid: they grow heavy, open, grow heavy again and
-/// close; the head nods, comes up, nods — and it is asleep where it stands
-/// ([`breath`]). It wakes by itself the way it went: an eye half open,
+/// close (`ASLEEP`); the head nods (`ASLEEP_LOW`), comes up, nods — and it
+/// is asleep where it stands ([`breath`]). It wakes by itself the way it went: an eye half open,
 /// open, a stretch (`$stretch`, the mascot's own), and two blinks to clear
 /// the sleep away. Woken by a key it **starts**: it flinches, its eyes
 /// open, a `!` where the snore was (`$flinch`), and it is on its feet
@@ -539,11 +550,11 @@ macro_rules! breath {
 /// off.
 macro_rules! lidded_nap {
     ($stretch:ident, $flinch:ident, $startled:ident) => {
-        breath!(SHUT, DIPPED_SHUT, SNORE, SNORE_LOUD);
+        breath!(ASLEEP, ASLEEP_LOW, SNORE, SNORE_LOUD);
         const NOD_OFF: Clip = clip![
             LID for DROWSE_MS, REST for DROWSE_APART_MS, LID for DROWSE_MS,
-            SHUT for EYES_CLOSE_MS,
-            DIPPED_SHUT for NOD_MS, SHUT for NOD_APART_MS, DIPPED_SHUT for NOD_MS,
+            ASLEEP for EYES_CLOSE_MS,
+            ASLEEP_LOW for NOD_MS, ASLEEP for NOD_APART_MS, ASLEEP_LOW for NOD_MS,
         ];
         const WAKE_UP: Clip = clip![
             LID for STIR_MS, REST for RISE_MS, $stretch for STRETCH_MS,
@@ -862,10 +873,13 @@ mod crest {
     pump!(LEFT_ARM_HIGH, RIGHT_ARM_HIGH);
     foot_taps!();
     patter!();
-    // Asleep and snoring: its head down, a `z` in the block's top corner,
-    // then a `Z`.
-    const SNORE: Art = &[" ▖ ▖ ▗ ▗z", "▗███████▖", " ▝▛▛▀▜▜▘"];
-    const SNORE_LOUD: Art = &[" ▖ ▖ ▗ ▗Z", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    // Asleep: its eyes closed — a lid along the bottom of each socket — on
+    // its feet and with its head down; and snoring, a `z` in the block's
+    // top corner, then a `Z`.
+    const ASLEEP: Art = &[SHUT[0], "▝▜━███━▛▘", SHUT[2]];
+    const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▗█▁███▁█▖", DIPPED_SHUT[2]];
+    const SNORE: Art = &[" ▖ ▖ ▗ ▗z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
+    const SNORE_LOUD: Art = &[" ▖ ▖ ▗ ▗Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
     // beside its head.
     const FLINCH: Art = &[" ▖ ▖ ▗ ▗!", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
@@ -989,10 +1003,13 @@ mod bloom {
     pump!(LEFT_PETAL_UP, RIGHT_PETAL_UP);
     foot_taps!();
     patter!();
-    // Asleep and snoring: its head down, a `z` in the block's top corner,
-    // then a `Z`.
-    const SNORE: Art = &["  ▄▄▄▄▄ z", "▄███████▄", " ▜▜▀▀▀▛▛"];
-    const SNORE_LOUD: Art = &["  ▄▄▄▄▄ Z", "▄███████▄", " ▜▜▀▀▀▛▛"];
+    // Asleep: its eyes closed — a lid along the bottom of each socket — on
+    // its feet and with its head down; and snoring, a `z` in the block's
+    // top corner, then a `Z`.
+    const ASLEEP: Art = &[SHUT[0], "▀█━███━█▀", SHUT[2]];
+    const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▄█▁███▁█▄", DIPPED_SHUT[2]];
+    const SNORE: Art = &["  ▄▄▄▄▄ z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
+    const SNORE_LOUD: Art = &["  ▄▄▄▄▄ Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
     // beside its head.
     const FLINCH: Art = &["  ▄▄▄▄▄ !", "▄█▀███▀█▄", " ▜▜▀▀▀▛▛"];
@@ -1110,17 +1127,19 @@ mod sprout {
     cartwheel!();
     pump!(LEFT_ARM_UP, RIGHT_ARM_UP);
     patter!();
-    // Asleep: it has no room to dip, so its shoot droops to a bud with each
-    // breath out — a `z` in the block's top corner, then a `Z`.
-    const DROOPED: Art = &["    ▄", SHUT[1], SHUT[2]];
-    const SNORE: Art = &["    ▄   z", SHUT[1], SHUT[2]];
-    const SNORE_LOUD: Art = &["    ▄   Z", SHUT[1], SHUT[2]];
-    breath!(SHUT, DROOPED, SNORE, SNORE_LOUD);
+    // Asleep: its eyes closed — a lid along the bottom of each socket. It
+    // has no room to dip, so its shoot droops to a bud with each breath out
+    // — a `z` in the block's top corner, then a `Z`.
+    const ASLEEP: Art = &[SHUT[0], "▗▟▁███▁▙▖", SHUT[2]];
+    const DROOPED: Art = &["    ▄", ASLEEP[1], ASLEEP[2]];
+    const SNORE: Art = &["    ▄   z", ASLEEP[1], ASLEEP[2]];
+    const SNORE_LOUD: Art = &["    ▄   Z", ASLEEP[1], ASLEEP[2]];
+    breath!(ASLEEP, DROOPED, SNORE, SNORE_LOUD);
     /// Nodding off with no lid to lower: its eyes close, open, and close
     /// for good, and its shoot droops, comes up, and droops.
     const NOD_OFF: Clip = clip![
-        SHUT for DROWSE_MS, REST for DROWSE_APART_MS, SHUT for EYES_CLOSE_MS,
-        DROOPED for NOD_MS, SHUT for NOD_APART_MS, DROOPED for NOD_MS,
+        ASLEEP for DROWSE_MS, REST for DROWSE_APART_MS, ASLEEP for EYES_CLOSE_MS,
+        DROOPED for NOD_MS, ASLEEP for NOD_APART_MS, DROOPED for NOD_MS,
     ];
     /// Woken with a start: its eyes open, a `!` beside its drooped shoot,
     /// and it is up with both arms thrown in the air.
@@ -1279,10 +1298,13 @@ mod twin {
     pump!(LEFT_FLAT, RIGHT_FLAT);
     foot_taps!();
     patter!();
-    // Asleep and snoring: its head down, a `z` in the block's top corner,
-    // then a `Z`.
-    const SNORE: Art = &[" ▄▄   ▄▄z", "▗███████▖", " ▝▛▛▀▜▜▘"];
-    const SNORE_LOUD: Art = &[" ▄▄   ▄▄Z", "▗███████▖", " ▝▛▛▀▜▜▘"];
+    // Asleep: its eyes closed — a lid along the bottom of each socket — on
+    // its feet and with its head down; and snoring, a `z` in the block's
+    // top corner, then a `Z`.
+    const ASLEEP: Art = &[SHUT[0], "▝▜━███━▛▘", SHUT[2]];
+    const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▗█▁███▁█▖", DIPPED_SHUT[2]];
+    const SNORE: Art = &[" ▄▄   ▄▄z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
+    const SNORE_LOUD: Art = &[" ▄▄   ▄▄Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
     // beside its head.
     const FLINCH: Art = &[" ▄▄   ▄▄!", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
@@ -1414,16 +1436,19 @@ mod skiter {
         SUNK_LOOKING_LEFT for PEEK_OVER_MS, SUNK_LOOKING_RIGHT for PEEK_OVER_MS,
         SUNK_TO_EYES for SURFACE_MS, SUNK for SINK_MS,
     ];
-    // Asleep and snoring: its body down, a `z` in the block's top corner,
-    // then a `Z`.
-    const SNORE: Art = &[" ▗▄▄▄▄▄▖z", "▐███████▌", " ▞▛▜▀▛▜▚"];
-    const SNORE_LOUD: Art = &[" ▗▄▄▄▄▄▖Z", "▐███████▌", " ▞▛▜▀▛▜▚"];
-    breath!(SHUT, DIPPED_SHUT, SNORE, SNORE_LOUD);
+    // Asleep: its eyes closed — a lid along the bottom of each socket — on
+    // its feet and with its body down; and snoring, a `z` in the block's
+    // top corner, then a `Z`.
+    const ASLEEP: Art = &["▗▟▁███▁▙▖", SHUT[1], SHUT[2]];
+    const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▐█━███━█▌", DIPPED_SHUT[2]];
+    const SNORE: Art = &[" ▗▄▄▄▄▄▖z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
+    const SNORE_LOUD: Art = &[" ▗▄▄▄▄▄▖Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
+    breath!(ASLEEP, ASLEEP_LOW, SNORE, SNORE_LOUD);
     /// Nodding off without a lid to lower: its eyes close, open, and close
     /// for good, and its body sinks, comes up, and sinks.
     const NOD_OFF: Clip = clip![
-        SHUT for DROWSE_MS, REST for DROWSE_APART_MS, SHUT for EYES_CLOSE_MS,
-        DIPPED_SHUT for NOD_MS, SHUT for NOD_APART_MS, DIPPED_SHUT for NOD_MS,
+        ASLEEP for DROWSE_MS, REST for DROWSE_APART_MS, ASLEEP for EYES_CLOSE_MS,
+        ASLEEP_LOW for NOD_MS, ASLEEP for NOD_APART_MS, ASLEEP_LOW for NOD_MS,
     ];
     /// Woken with a start: its eyes open and it freezes in its crouch, a
     /// `!` over it — on its feet its top row leaves the `!` no room — and
@@ -1769,27 +1794,41 @@ enum Idle {
     Asleep(Sleep),
 }
 
-/// Where the caret sits across the composer — what the banner mascot's
-/// eyes follow while the user types (`docs/mascot-animation.md`).
+/// Which way the banner mascot looks to see what the user is typing — where
+/// the caret is **from where the mascot stands** (`docs/mascot-animation.md`
+/// *Watching the user type*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gaze {
-    /// The caret is in the composer's left third.
+    /// The caret is off to its left.
     Left,
-    /// In its middle third — the eyes straight ahead.
+    /// The caret is under it — the eyes straight ahead.
     Ahead,
-    /// In its right third.
+    /// The caret is past it, to its right: where a line runs, and where the
+    /// rest of the screen is.
     Right,
 }
 
 impl Gaze {
-    /// The gaze for a caret `col` display columns into a field `width`
-    /// columns wide: the third of it the caret sits in.
+    /// The gaze of a mascot standing over the screen columns `stands`
+    /// toward a caret in screen column `caret`.
+    ///
+    /// A line is typed left to right, so a caret past the mascot's middle
+    /// has the text's growing end — and, for a mascot at the screen's left
+    /// edge, everything else on screen — to its **right**. A caret that has
+    /// not reached its middle is still under it: it looks straight
+    /// **ahead**. It looks **left** only at a caret short of the columns it
+    /// stands over, which a mascot at the screen's edge never sees: reading
+    /// the caret by the third of the composer it sat in had it staring at
+    /// that edge, at nothing, through every short message.
     #[must_use]
-    pub fn of_caret(col: usize, width: usize) -> Self {
-        match col.saturating_mul(3) / width.max(1) {
-            0 => Self::Left,
-            1 => Self::Ahead,
-            _ => Self::Right,
+    pub fn toward(caret: usize, stands: std::ops::Range<usize>) -> Self {
+        let middle = stands.start + stands.end.saturating_sub(stands.start) / 2;
+        if caret < stands.start {
+            Self::Left
+        } else if caret > middle {
+            Self::Right
+        } else {
+            Self::Ahead
         }
     }
 }

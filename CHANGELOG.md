@@ -35,11 +35,13 @@ release heading when a version is cut.
   are dealt like a deck rather than rolled, so the mascot
   gets through everything it knows before it repeats itself and never does
   the same thing twice running. While the first message is typed it
-  **watches**: its eyes follow the caret across the composer, reading along,
+  **watches**: its eyes turn to the text — to its right, where the line
+  runs, never to the screen's left edge —
   and a few seconds after the last keystroke it goes back to its own moves.
   Leave it alone for three quarters of a minute and it **naps**: its eyes
-  grow heavy and it sleeps where it stands, its head down with each breath
-  out and a `z`, then a `Z`, beside it. It wakes by itself after the better
+  grow heavy and it sleeps where it stands, its eyes closed to two thin
+  lines, its head down with each breath out and a `z`, then a `Z`, beside
+  it. It wakes by itself after the better
   part of a minute, stretches, and plays again — and after five minutes
   alone it sleeps until you are back. **Any key wakes it with a start** — a
   `!`, and it is wide awake — before it turns to what you are typing.
