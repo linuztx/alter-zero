@@ -151,7 +151,8 @@ first, then the project's MCP servers.
     Trust selected and continue
     Continue without trusting
 
-  Space to select · Enter to confirm · Esc to continue without trusting
+  ↑/↓ to navigate · Space to select · Enter to confirm
+  Esc to continue without trusting
 ──────────────────────────────────────────────────────────────────────────
 ```
 
@@ -172,7 +173,7 @@ first, then the project's MCP servers.
     Enable selected
     Disable all
 
-  Space to select · Enter to confirm · Esc to disable all
+  ↑/↓ to navigate · Space to select · Enter to confirm · Esc to disable all
 ──────────────────────────────────────────────────────────────────────────
 ```
 
@@ -239,7 +240,9 @@ at startup would wipe the terminal's own scrollback above the launch
 5. the highlighted item's detail cut to three rows, then to one;
 6. the title.
 
-The two action rows and the hint stay on every rung.
+The two action rows and the hint stay on every rung. A hint too wide for one
+row breaks between its keys rather than inside one, so what Esc does reads
+whole; only the last rung, with nothing else left to shed, cuts it to one row.
 
 ## After startup
 

@@ -327,6 +327,43 @@ fn a_long_command_wraps_whole_and_its_tail_is_never_cut() {
 }
 
 #[test]
+fn the_hint_leads_with_the_keys_that_move_the_highlight() {
+    // Space and Enter act on the highlighted row, so the hint first names
+    // the keys that move it, as `/mcp`'s and `/theme`'s hints do.
+    let mut app = review_app(vec![hooks_page(), servers_page()]);
+    let texts = texts(&app, 100, TALL);
+    let hint = find(&texts, "Esc to continue without trusting");
+    assert_eq!(
+        texts[hint].trim(),
+        "↑/↓ to navigate · Space to select · Enter to confirm · Esc to continue without trusting"
+    );
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let texts = self::texts(&app, 100, TALL);
+    let hint = find(&texts, "Esc to disable all");
+    assert_eq!(
+        texts[hint].trim(),
+        "↑/↓ to navigate · Space to select · Enter to confirm · Esc to disable all"
+    );
+}
+
+#[test]
+fn a_hint_too_wide_for_one_row_breaks_between_its_keys() {
+    // What Esc does is what differs between the two pages, so the hint
+    // never splits an entry across rows where a break between two fits.
+    let app = review_app(vec![hooks_page()]);
+    let texts = texts(&app, 80, TALL);
+    let esc = find(&texts, "Esc to continue without trusting");
+    assert_eq!(texts[esc].trim(), "Esc to continue without trusting");
+    assert_eq!(
+        texts[esc - 1].trim(),
+        "↑/↓ to navigate · Space to select · Enter to confirm"
+    );
+    // An entry wider than the row still wraps rather than overflowing it.
+    let narrow = config_review_lines(&app, 30, TALL);
+    assert!(narrow.iter().all(|line| line.width() <= 30), "{narrow:#?}");
+}
+
+#[test]
 fn an_unselected_item_shows_an_empty_box() {
     let mut app = review_app(vec![servers_page()]);
     app.on_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));

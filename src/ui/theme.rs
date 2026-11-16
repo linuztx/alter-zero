@@ -2272,10 +2272,15 @@ pub(super) const REVIEW_SKIP_LABEL: &str = "Continue without trusting";
 pub(super) const REVIEW_ENABLE_LABEL: &str = "Enable selected";
 pub(super) const REVIEW_DISABLE_LABEL: &str = "Disable all";
 
-/// The key hints, saying what Esc means on each page.
+/// The key hints, led by the navigation the `/mcp` list's hint leads with,
+/// and saying what Esc means on each page.
 pub(super) const REVIEW_HOOKS_HINT: &str =
-    "Space to select · Enter to confirm · Esc to continue without trusting";
-pub(super) const REVIEW_MCP_HINT: &str = "Space to select · Enter to confirm · Esc to disable all";
+    "↑/↓ to navigate · Space to select · Enter to confirm · Esc to continue without trusting";
+pub(super) const REVIEW_MCP_HINT: &str =
+    "↑/↓ to navigate · Space to select · Enter to confirm · Esc to disable all";
+
+/// Between a key hint's entries — where a hint too wide for one row breaks.
+pub(super) const REVIEW_HINT_SEPARATOR: &str = " · ";
 
 /// A changed item's amber badge, and the line saying what it was: a hook's
 /// old command, or what changed in a server's entry.

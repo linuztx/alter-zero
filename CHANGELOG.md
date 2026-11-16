@@ -73,6 +73,13 @@ release heading when a version is cut.
   been blocked, and some routes reject the parameter outright
   (`docs/permissions.md`).
 
+- **The startup review's hint names the arrow keys.** The page that asks
+  you to trust new or changed hooks, and which of a project's MCP servers
+  to enable, now starts its hint with `↑/↓ to navigate`, as `/mcp` and
+  `/theme` do, since Space and Enter act on the highlighted row. On a
+  terminal too narrow for the hint on one row, it now breaks between keys
+  rather than in the middle of one (`docs/config-review.md`).
+
 - **A link in a reply is shown as its label, with the address behind it.**
   A reply that cites its sources used to print every address in full —
   `Source: FIDE (https://www.fide.com/geneva-to-host-…/)` — which spent a
