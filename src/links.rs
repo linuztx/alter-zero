@@ -181,6 +181,13 @@ fn next_scheme(text: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut i = from;
     while i < bytes.len() {
+        // Both schemes open on an `h`, and almost no byte of prose is one:
+        // go straight to the next, rather than hold every byte up against
+        // both schemes — this scan runs over every prose and code line the
+        // renderer sees, linked or not.
+        i += bytes[i..]
+            .iter()
+            .position(|byte| matches!(byte, b'h' | b'H'))?;
         let scheme = [&b"https://"[..], &b"http://"[..]]
             .into_iter()
             .find(|s| bytes[i..].len() >= s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s))
