@@ -252,6 +252,25 @@ terminal, so what an outer terminal without kitty graphics shows is herdr's
 call; `terminal.kitty_graphics = false` in herdr's config, or
 `ALTER_ZERO_IMAGE_PROTOCOL=halfblocks` in the pane, keeps half-blocks there.
 
+## Links in a pane
+
+Also separate from the reports, and also needing no setup: in a herdr pane a
+reply's `[label](url)` is shown as its label alone, the address behind it as
+a hyperlink (`docs/links.md` *Labelled links*). That presentation is used
+only where something is known to open the hyperlink, and the pane's own
+`TERM_PROGRAM=herdr` is what says so here — herdr's emulator keeps an OSC 8
+link clickable after it renders the pane (herdr 0.5.6), and Ctrl-click opens
+it (0.6.3), provided the outer terminal passes that click on to herdr. The
+variable is the pane's, not a leftover: it outranks whatever the terminal
+herdr itself was started from left in the environment.
+
+Where the click does not arrive — an outer terminal that keeps Ctrl-click
+for itself, a herdr older than those releases — the address is behind a link
+nothing opens. `ALTER_ZERO_LINK_TARGETS=show` in the pane puts it back on
+screen, as it is everywhere the app cannot vouch for the terminal; `/copy`
+and `/export` carry the address either way. `ALTER_ZERO_HERDR` does not
+touch any of this.
+
 ## Turning it off
 
 `ALTER_ZERO_HERDR=0` (`false`/`no`/`off`, the usual grammar) turns it off for

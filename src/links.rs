@@ -1,5 +1,6 @@
 //! Clickable links: bare-URL detection, the URL interner, the per-cell link
-//! carrier, and the OSC 8 escape framing (see `docs/links.md`).
+//! carrier, the OSC 8 escape framing, and how a labelled link shows its
+//! target (see `docs/links.md`).
 //!
 //! A URL wider than its row hard-breaks across display rows, and the
 //! terminal's own URL detection works on visible row text — so clicking a
@@ -13,10 +14,12 @@
 //! [`osc8_open`]/[`OSC8_CLOSE`] hyperlink escape so clicking **any** fragment
 //! opens the **full** URL.
 //!
-//! Everything here is pure except the interner — a process-global,
-//! append-only cache (the `highlight` grammar-singleton precedent): render
-//! state, not app state, so a reflow re-rendering from history hands the same
-//! URL the same id.
+//! Everything here is pure except two pieces of render state, neither of
+//! them app state: the interner — a process-global, append-only cache (the
+//! `highlight` grammar-singleton precedent), so a reflow re-rendering from
+//! history hands the same URL the same id — and the per-thread
+//! [`TargetDisplay`] the boundary sets once at startup (the active theme's
+//! arrangement).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -313,9 +316,32 @@ pub fn link_url(id: u32) -> Option<Arc<str>> {
 /// when the interner is full.
 #[must_use]
 pub fn linked(style: Style, url: &str) -> Style {
-    match intern(url) {
-        Some(id) => style.underline_color(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8)),
+    match carrier(url) {
+        Some(carrier) => carrier.stamp(style),
         None => style,
+    }
+}
+
+/// One interned link target, ready to mark any number of styles —
+/// [`linked`] in two steps, for a link whose label is several styled runs:
+/// the URL is looked up once and each run then takes a copy of the id,
+/// where a [`linked`] per run hashes the whole URL again for every one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Carrier(u32);
+
+/// The [`Carrier`] of `url`. `None` only when the interner is full
+/// ([`linked`]'s case: the text then goes unmarked).
+#[must_use]
+pub fn carrier(url: &str) -> Option<Carrier> {
+    intern(url).map(Carrier)
+}
+
+impl Carrier {
+    /// `style` carrying this target — what [`linked`] returns for its URL.
+    #[must_use]
+    pub fn stamp(self, style: Style) -> Style {
+        let id = self.0;
+        style.underline_color(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
     }
 }
 
@@ -375,6 +401,22 @@ pub fn osc8_open(id: u32, url: &str) -> String {
     }
     out.push_str("\x1b\\");
     out
+}
+
+/// The longest target a hyperlink is sure to carry, in bytes as written
+/// ([`osc8_uri_len`]): VTE and iTerm2 drop an OSC 8 whose URI is longer,
+/// and print its text unlinked. A longer target is still marked — a
+/// terminal with no such cap opens it — but it must not be the only place
+/// the address is (`docs/links.md` *What is never hidden*).
+pub const HYPERLINK_URI_MAX_BYTES: usize = 2083;
+
+/// The bytes `url` takes in the escape [`osc8_open`] writes: one for each
+/// byte it passes through, three for each it percent-encodes.
+#[must_use]
+pub fn osc8_uri_len(url: &str) -> usize {
+    url.bytes()
+        .map(|byte| if (0x21..=0x7e).contains(&byte) { 1 } else { 3 })
+        .sum()
 }
 
 // --- `file://` targets ---
@@ -464,6 +506,197 @@ pub fn hyperlinks_disabled(value: Option<&str>) -> bool {
     matches!(
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("0" | "false" | "no" | "off")
+    )
+}
+
+// --- How a labelled link shows its target ---
+
+/// How a markdown link — `[label](https://…)` — shows where it goes
+/// (`docs/links.md` *Labelled links*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TargetDisplay {
+    /// The target printed after the label: `label (https://…)`. The default,
+    /// because it is the one that cannot lose anything: a caller that never
+    /// learned the terminal opens hyperlinks never hides the only usable URL.
+    #[default]
+    Shown,
+    /// The label alone, dressed as a link, the target behind it as the
+    /// hyperlink a click opens — for a terminal known to open one.
+    Hidden,
+}
+
+thread_local! {
+    /// How the renderers on this thread show a labelled link's target. The
+    /// event loop draws on one thread, so one cell is the whole of the
+    /// session's choice; each test thread has its own, at the default — the
+    /// active theme's arrangement (`ui::activate_theme`), for its reasons.
+    static TARGET_DISPLAY: std::cell::Cell<TargetDisplay> =
+        const { std::cell::Cell::new(TargetDisplay::Shown) };
+}
+
+/// How a labelled link's target is shown on this thread, right now.
+#[must_use]
+pub fn target_display() -> TargetDisplay {
+    TARGET_DISPLAY.with(std::cell::Cell::get)
+}
+
+/// Show labelled links' targets as `display` on this thread from now on —
+/// the boundary's call, once, before the first row is rendered
+/// ([`target_display_from_env`] is what it passes).
+pub fn set_target_display(display: TargetDisplay) {
+    TARGET_DISPLAY.with(|cell| cell.set(display));
+}
+
+/// Run `f` with labelled links' targets shown as `display`, then put back
+/// whatever was in force — for a render that goes somewhere a hyperlink
+/// cannot follow (the `/export` text keeps every URL), and for tests.
+pub fn with_target_display<T>(display: TargetDisplay, f: impl FnOnce() -> T) -> T {
+    struct Restore(TargetDisplay);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_target_display(self.0);
+        }
+    }
+    let _restore = Restore(target_display());
+    set_target_display(display);
+    f()
+}
+
+/// Environment override for [`TargetDisplay`]: `hide` shows a labelled link
+/// as its label alone, `show` keeps `label (url)`, and anything else — unset
+/// included — leaves it to the terminal ([`target_display_from_env`]).
+pub const LINK_TARGETS_ENV: &str = "ALTER_ZERO_LINK_TARGETS";
+
+/// The [`TargetDisplay`] this environment calls for; `var` reads one
+/// variable. Pure, so every rule is unit-tested while the read stays at the
+/// boundary.
+///
+/// A target is hidden only where something is known to open it, since hidden
+/// anywhere else it is simply gone:
+///
+/// 1. With [`HYPERLINKS_ENV`] off no hyperlink is written at all, so the
+///    target is shown — whatever the override says.
+/// 2. [`LINK_TARGETS_ENV`] decides when it says `hide` or `show`: a tmux
+///    configured to forward hyperlinks, or a terminal not named below, is
+///    the user's to speak for.
+/// 3. Under a multiplexer the target is shown. tmux forwards a hyperlink
+///    only to a terminal its own `terminal-features` list says takes one,
+///    screen never does, and the variables naming the terminal the session
+///    was *started* from say nothing of the one attached now.
+/// 4. The innermost thing drawing is the one that counts, and the variables
+///    an outer terminal exported are still in the environment of whatever
+///    was started inside it. So an editor's own terminal (`NVIM`,
+///    `VIM_TERMINAL`, `INSIDE_EMACS`, `TERMINAL_EMULATOR`) is unknown
+///    whatever surrounds it, and a terminal that names itself in
+///    `TERM_PROGRAM` is judged by that name alone.
+/// 5. Otherwise the variables and `TERM` values the terminals known to open
+///    hyperlinks set for their own children decide; with none of them, the
+///    target is shown.
+#[must_use]
+pub fn target_display_from_env(var: impl Fn(&str) -> Option<String>) -> TargetDisplay {
+    if hyperlinks_disabled(var(HYPERLINKS_ENV).as_deref()) {
+        return TargetDisplay::Shown;
+    }
+    match var(LINK_TARGETS_ENV)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("hide") => return TargetDisplay::Hidden,
+        Some("show") => return TargetDisplay::Shown,
+        _ => {}
+    }
+    if opens_hyperlinks(&var) {
+        TargetDisplay::Hidden
+    } else {
+        TargetDisplay::Shown
+    }
+}
+
+/// The variables an editor sets for the terminal it embeds — Neovim's and
+/// Vim's `:terminal`, an Emacs terminal buffer, a JetBrains IDE's. Such a
+/// terminal draws for itself and may open no hyperlink at all, while its
+/// environment still carries every variable of the terminal the editor was
+/// started from; it sets no `TERM_PROGRAM` of its own to be judged by.
+const EDITOR_TERMINAL_VARS: [&str; 4] =
+    ["NVIM", "VIM_TERMINAL", "INSIDE_EMACS", "TERMINAL_EMULATOR"];
+
+/// Whether the environment names a terminal known to open an OSC 8
+/// hyperlink — rules 3 to 5 of [`target_display_from_env`].
+fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>) -> bool {
+    let term = var("TERM").unwrap_or_default();
+    let sessions = crate::images::MULTIPLEXER_SESSION_VARS.map(var);
+    if crate::images::under_multiplexer(
+        Some(term.as_str()),
+        &sessions.each_ref().map(Option::as_deref),
+    ) || term == "dumb"
+        || term.starts_with("linux")
+    {
+        return false;
+    }
+    let set = |name: &str| var(name).is_some_and(|value| !value.is_empty());
+    if EDITOR_TERMINAL_VARS.into_iter().any(set) {
+        return false;
+    }
+    if let Some(program) =
+        var("TERM_PROGRAM").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("tmux"))
+    {
+        return names_a_linking_terminal(&program);
+    }
+    // VTE reads the escape from 0.50 on; its version is `major * 10000 +
+    // minor * 100 + micro`.
+    let vte = var("VTE_VERSION")
+        .and_then(|version| version.trim().parse::<u32>().ok())
+        .is_some_and(|version| version >= 5000);
+    term.contains("kitty")
+        || term.contains("ghostty")
+        || term.starts_with("wezterm")
+        || term.starts_with("alacritty")
+        || term.starts_with("foot")
+        || vte
+        || [
+            "KITTY_WINDOW_ID",
+            "GHOSTTY_RESOURCES_DIR",
+            "WEZTERM_VERSION",
+            "ITERM_SESSION_ID",
+            "ALACRITTY_WINDOW_ID",
+            "ALACRITTY_SOCKET",
+            "GNOME_TERMINAL_SCREEN",
+            "WT_SESSION",
+        ]
+        .into_iter()
+        .any(set)
+}
+
+/// Whether a `TERM_PROGRAM` value is the name of a terminal known to open
+/// hyperlinks. The spelling is each terminal's own — `iTerm.app`, `WezTerm`,
+/// `vscode` — so it is compared with its case, spaces, dots, dashes and
+/// underscores taken out.
+///
+/// Left off on purpose: Apple's Terminal, which does not read the escape;
+/// Konsole, which reads it only once its profile allows it; and every name
+/// not listed, since a wrong yes hides a URL and a wrong no only keeps it on
+/// screen.
+fn names_a_linking_terminal(program: &str) -> bool {
+    let name: String = program
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_' | '.'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    matches!(
+        name.as_str(),
+        "ghostty"
+            | "iterm"
+            | "iterm2"
+            | "itermapp"
+            | "wezterm"
+            | "kitty"
+            | "vscode"
+            | "alacritty"
+            | "gnometerminal"
+            | "vte"
+            | "windowsterminal"
+            // A herdr pane (`docs/herdr.md` *Links in a pane*).
+            | "herdr"
     )
 }
 
@@ -748,6 +981,24 @@ mod tests {
     }
 
     #[test]
+    fn the_bytes_a_target_takes_in_the_escape_count_its_encoding() {
+        assert_eq!(osc8_uri_len("https://x.com/y"), "https://x.com/y".len());
+        // A space, a control and each byte of a non-ASCII character are
+        // written as three (`osc8_open`'s encoding); `%` passes through.
+        assert_eq!(osc8_uri_len("a b"), 5);
+        assert_eq!(osc8_uri_len("é"), 6);
+        assert_eq!(osc8_uri_len("%20"), 3);
+        for url in ["https://x.com/a b\u{1b}c\u{7f}日%20", "https://x.com/y"] {
+            let open = osc8_open(1, url);
+            let uri = open
+                .strip_prefix("\x1b]8;id=az1;")
+                .and_then(|rest| rest.strip_suffix("\x1b\\"))
+                .expect("the frame around the URI");
+            assert_eq!(osc8_uri_len(url), uri.len(), "{url:?}");
+        }
+    }
+
+    #[test]
     fn hyperlinks_are_on_by_default() {
         assert!(!hyperlinks_disabled(None));
         assert!(!hyperlinks_disabled(Some("")));
@@ -761,6 +1012,284 @@ mod tests {
         assert!(hyperlinks_disabled(Some("false")));
         assert!(hyperlinks_disabled(Some("No")));
         assert!(hyperlinks_disabled(Some(" OFF ")));
+    }
+
+    // --- How a labelled link shows its target (docs/links.md) ---
+
+    /// An environment of exactly `vars`, for [`target_display_from_env`].
+    fn display_in(vars: &[(&str, &str)]) -> TargetDisplay {
+        target_display_from_env(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        })
+    }
+
+    #[test]
+    fn a_terminal_known_to_open_hyperlinks_hides_the_target() {
+        // Each names itself in a variable it sets for its own children.
+        for vars in [
+            &[("TERM", "xterm-kitty")][..],
+            &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "3")],
+            &[("TERM", "xterm-ghostty")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("GHOSTTY_RESOURCES_DIR", "/usr/share/ghostty"),
+            ],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "ghostty")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
+            &[("TERM", "xterm-256color"), ("ITERM_SESSION_ID", "w0t0p0:1")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")],
+            &[("TERM", "xterm-256color"), ("WEZTERM_VERSION", "20240203")],
+            &[("TERM", "wezterm")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")],
+            &[("TERM", "alacritty")],
+            &[("TERM", "xterm-256color"), ("ALACRITTY_WINDOW_ID", "9")],
+            &[("TERM", "foot")],
+            &[("TERM", "foot-extra")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "7802")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("GNOME_TERMINAL_SCREEN", "/org/gnome/Terminal/screen/1"),
+            ],
+            &[("TERM", "xterm-256color"), ("WT_SESSION", "f1e2")],
+            // A herdr pane: its emulator keeps a hyperlink clickable
+            // (docs/herdr.md *Links in a pane*).
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "herdr")],
+        ] {
+            assert_eq!(display_in(vars), TargetDisplay::Hidden, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_that_cannot_be_named_keeps_the_target_on_screen() {
+        // Hiding the target where nothing opens it loses the URL outright, so
+        // every case that is not a known yes is a no.
+        for vars in [
+            &[][..],
+            &[("TERM", "xterm-256color")],
+            &[("TERM", "dumb")],
+            &[("TERM", "linux")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "Apple_Terminal"),
+            ],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WarpTerminal")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "zed")],
+            // A VTE from before it read the escape (0.50).
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "4803")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "soon")],
+            // Konsole reads the escape only once its profile allows it.
+            &[("TERM", "xterm-256color"), ("KONSOLE_VERSION", "230804")],
+            // An empty value names nothing.
+            &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "")],
+        ] {
+            assert_eq!(display_in(vars), TargetDisplay::Shown, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn a_multiplexer_keeps_the_target_whatever_terminal_started_it() {
+        // tmux forwards a hyperlink only to a terminal its own configuration
+        // says takes one, and screen never does — and the variables the outer
+        // terminal exported are still in the pane's environment.
+        for vars in [
+            &[
+                ("TERM", "tmux-256color"),
+                ("TMUX", "/tmp/tmux-0/default,1,0"),
+                ("KITTY_WINDOW_ID", "3"),
+            ][..],
+            &[("TERM", "xterm-kitty"), ("TMUX", "/tmp/tmux-0/default,1,0")],
+            &[("TERM", "screen-256color"), ("TERM_PROGRAM", "iTerm.app")],
+            &[("TERM", "xterm-kitty"), ("STY", "1234.pts-0.host")],
+            &[("TERM", "xterm-ghostty"), ("ZELLIJ", "0")],
+            &[
+                ("TERM", "tmux-256color"),
+                ("TERM_PROGRAM", "tmux"),
+                ("WEZTERM_VERSION", "20240203"),
+            ],
+        ] {
+            assert_eq!(display_in(vars), TargetDisplay::Shown, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_naming_itself_outranks_what_an_outer_one_left_behind() {
+        // A terminal started from inside another inherits that one's
+        // variables. `TERM_PROGRAM` is the name of the one actually drawing,
+        // so an unknown name is unknown however much kitty is still around.
+        assert_eq!(
+            display_in(&[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "SomeNewTerminal"),
+                ("KITTY_WINDOW_ID", "3"),
+            ]),
+            TargetDisplay::Shown
+        );
+        assert_eq!(
+            display_in(&[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "Apple_Terminal"),
+                ("VTE_VERSION", "7802"),
+            ]),
+            TargetDisplay::Shown
+        );
+        // And a known one decides the other way just as firmly.
+        assert_eq!(
+            display_in(&[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "vscode"),
+                ("KONSOLE_VERSION", "230804"),
+            ]),
+            TargetDisplay::Hidden
+        );
+        // Spelling is the terminal's own: case, dots, dashes and spaces vary.
+        for name in [
+            "iTerm.app",
+            "iterm2",
+            "WezTerm",
+            "wezterm",
+            "VSCode",
+            "Ghostty",
+        ] {
+            assert_eq!(
+                display_in(&[("TERM", "xterm-256color"), ("TERM_PROGRAM", name)]),
+                TargetDisplay::Hidden,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_editors_own_terminal_is_not_the_one_the_editor_was_started_from() {
+        // An editor started from kitty hands kitty's variables to the
+        // terminal it embeds — which draws for itself, names itself in no
+        // `TERM_PROGRAM`, and may open no hyperlink at all. It is the
+        // innermost thing drawing, so it outranks every name around it.
+        for marker in [
+            ("NVIM", "/run/user/1000/nvim.4242.0"),
+            ("VIM_TERMINAL", "901"),
+            ("INSIDE_EMACS", "29.4,vterm"),
+            ("TERMINAL_EMULATOR", "JetBrains-JediTerm"),
+        ] {
+            for outer in [
+                ("KITTY_WINDOW_ID", "3"),
+                ("TERM_PROGRAM", "vscode"),
+                ("VTE_VERSION", "7802"),
+                ("TERM_PROGRAM", "iTerm.app"),
+            ] {
+                assert_eq!(
+                    display_in(&[("TERM", "xterm-256color"), outer, marker]),
+                    TargetDisplay::Shown,
+                    "{marker:?} inside {outer:?}"
+                );
+            }
+            // The override is still the user's word.
+            assert_eq!(
+                display_in(&[
+                    ("TERM", "xterm-256color"),
+                    marker,
+                    (LINK_TARGETS_ENV, "hide"),
+                ]),
+                TargetDisplay::Hidden,
+                "{marker:?}"
+            );
+        }
+        // An empty marker marks nothing.
+        assert_eq!(
+            display_in(&[("TERM", "xterm-kitty"), ("NVIM", "")]),
+            TargetDisplay::Hidden
+        );
+    }
+
+    #[test]
+    fn the_override_decides_for_any_terminal() {
+        let kitty = ("TERM", "xterm-kitty");
+        let tmux = ("TMUX", "/tmp/tmux-0/default,1,0");
+        assert_eq!(
+            display_in(&[kitty, tmux, (LINK_TARGETS_ENV, "hide")]),
+            TargetDisplay::Hidden,
+            "a tmux configured to forward hyperlinks is the user's to say"
+        );
+        assert_eq!(
+            display_in(&[kitty, (LINK_TARGETS_ENV, "show")]),
+            TargetDisplay::Shown
+        );
+        assert_eq!(
+            display_in(&[("TERM", "xterm-256color"), (LINK_TARGETS_ENV, " Hide ")]),
+            TargetDisplay::Hidden,
+            "trimmed, any case"
+        );
+        // Anything else leaves the terminal to decide.
+        for value in ["", "auto", "1", "yes"] {
+            assert_eq!(
+                display_in(&[kitty, (LINK_TARGETS_ENV, value)]),
+                TargetDisplay::Hidden,
+                "{value:?}"
+            );
+            assert_eq!(
+                display_in(&[("TERM", "xterm-256color"), (LINK_TARGETS_ENV, value)]),
+                TargetDisplay::Shown,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_hides_behind_a_hyperlink_that_is_never_written() {
+        // `ALTER_ZERO_HYPERLINKS=0` writes no escape at all, so a hidden
+        // target would be a URL nobody can reach — the gate outranks even an
+        // explicit `hide`.
+        let kitty = ("TERM", "xterm-kitty");
+        assert_eq!(
+            display_in(&[kitty, (HYPERLINKS_ENV, "0")]),
+            TargetDisplay::Shown
+        );
+        assert_eq!(
+            display_in(&[kitty, (HYPERLINKS_ENV, "off"), (LINK_TARGETS_ENV, "hide")]),
+            TargetDisplay::Shown
+        );
+        assert_eq!(
+            display_in(&[kitty, (HYPERLINKS_ENV, "1")]),
+            TargetDisplay::Hidden
+        );
+    }
+
+    #[test]
+    fn the_target_is_shown_until_someone_says_the_terminal_opens_links() {
+        // The renderer's own default: a caller that never names a terminal —
+        // a test, the export, a headless run — never hides the only URL.
+        assert_eq!(target_display(), TargetDisplay::Shown);
+        assert_eq!(TargetDisplay::default(), TargetDisplay::Shown);
+    }
+
+    #[test]
+    fn a_scoped_target_display_ends_with_its_scope() {
+        let inside = with_target_display(TargetDisplay::Hidden, || {
+            // A scope inside a scope restores the outer one, not the default.
+            let nested = with_target_display(TargetDisplay::Shown, target_display);
+            (nested, target_display())
+        });
+        assert_eq!(inside, (TargetDisplay::Shown, TargetDisplay::Hidden));
+        assert_eq!(target_display(), TargetDisplay::Shown, "restored");
+        set_target_display(TargetDisplay::Hidden);
+        assert_eq!(target_display(), TargetDisplay::Hidden, "set until changed");
+        set_target_display(TargetDisplay::Shown);
+    }
+
+    #[test]
+    fn a_carrier_stamps_what_linked_stamps() {
+        let url = "https://carrier.example/one?two=3";
+        let style = Style::new().add_modifier(ratatui::style::Modifier::ITALIC);
+        let carrier = carrier(url).expect("an interned target");
+        assert_eq!(carrier.stamp(style), linked(style, url));
+        assert_eq!(style_link(&carrier.stamp(style)).as_deref(), Some(url));
+        // One carrier marks any number of styles with the same target.
+        let other = Style::new().add_modifier(ratatui::style::Modifier::BOLD);
+        assert_eq!(
+            carrier.stamp(other).underline_color,
+            carrier.stamp(style).underline_color
+        );
     }
 
     // --- `file://` targets for the file tool headers (docs/links.md) ---

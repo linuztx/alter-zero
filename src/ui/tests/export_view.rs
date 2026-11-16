@@ -436,6 +436,34 @@ fn export_text_wraps_at_the_width_it_is_asked_for() {
 }
 
 #[test]
+fn export_text_spells_out_the_address_a_label_hides_on_screen() {
+    // On screen a link may be its label alone, the address behind it as a
+    // hyperlink (`docs/links.md` *Labelled links*). A text file has nothing
+    // behind it, so the export keeps `label (url)` whatever the terminal
+    // shows — or the one record of a reply's sources would be a list of
+    // names.
+    let url = "https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/";
+    let mut app = App::new();
+    app.record_user_message("q");
+    app.begin_stream();
+    app.push_chunk(&format!("Source: [FIDE]({url})"));
+    app.finish_stream();
+    let (screen, text) =
+        crate::links::with_target_display(crate::links::TargetDisplay::Hidden, || {
+            let screen: Vec<String> = transcript_lines(&app, 200).iter().map(plain).collect();
+            (screen.join("\n"), export_text(&app, 200))
+        });
+    assert!(
+        screen.contains("Source: FIDE") && !screen.contains("https://"),
+        "the screen shows the label alone: {screen:?}"
+    );
+    assert!(
+        text.contains(&format!("Source: FIDE ({url})")),
+        "the export keeps the address: {text:?}"
+    );
+}
+
+#[test]
 fn export_text_inside_an_agent_view_is_that_agents_transcript() {
     // The export is of the conversation on screen: inside a subagent's
     // session view that is the agent's own transcript, not the lead's (the

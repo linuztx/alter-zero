@@ -36,6 +36,7 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo run --release --example link_probe    # what a link-heavy reply costs to render, both presentations (docs/links.md)
 PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
@@ -1079,7 +1080,31 @@ behind whatever short form the row shows, stamped before the wrap so any
 fragment opens the whole file, while the `(`/`)` and the `⎿ Wrote … to
 {path}` corner row beneath stay plain — the rule a `[text](url)` suffix's own
 ` (`/`)` follow too, keeping the prose dress rather than the target's blue +
-underline, so the styled run and the clickable run are one run: the pure
+underline, so the styled run and the clickable run are one run — **and where
+the terminal opens hyperlinks a labelled link is its label alone**
+(`docs/links.md` *Labelled links*: `Source: FIDE` in the link dress, the
+whole address behind it, where it read `Source: FIDE (https://www.fide.com/…)`;
+`links::TargetDisplay` is a per-thread cell like the active theme's,
+`Shown` by default so a test, a headless run and the export never hide the
+only URL, set once at bootstrap from `links::target_display_from_env` —
+pure over the environment: `Hidden` for the terminals known to open an OSC 8
+link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot, the VTE
+family, Windows Terminal, a herdr pane — never Apple's Terminal or Konsole),
+`Shown` under a multiplexer, in an editor's own terminal (`NVIM`,
+`VIM_TERMINAL`, `INSIDE_EMACS`, `TERMINAL_EMULATOR`), for a `TERM_PROGRAM`
+it does not know whatever an outer terminal left in the environment, and
+with `ALTER_ZERO_HYPERLINKS` off, with
+`ALTER_ZERO_LINK_TARGETS=hide`/`show` the user's override; `ui::inline`'s
+`hides_target` keeps the `label (url)` shape for a target that is no web
+address or is past the 2083 bytes a hyperlink carries, and for a label that
+shows another address than the one it opens, while a link with no label is
+its target and a label that is its own web address is written once on every
+terminal; `tokenize_words` hands each word the style of
+the space in front of it (`Word::joiner`), so a label of several words is
+one underlined, clickable run instead of a link per word; `ui::export_text`
+renders with the address spelled out; the `link_probe` example measures
+both presentations against a link-free control; `smoke.sh` Phase 158): the
+pure
 `links` module detects/interns
 and stamps the id into `Style::underline_color`, `ui::inline` marks prose and
 code (a code URL gaining only the invisible target, never the link dress),
@@ -3031,7 +3056,10 @@ pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
 to the reports: herdr's environment names no graphics protocol, so the
 startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
 terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
-a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
+a pane*), which `ALTER_ZERO_HERDR` does not touch. A pane's **links** owe
+nothing to them either: its own `TERM_PROGRAM=herdr` is on the list of
+terminals that open a hyperlink, so a labelled link is its label alone
+there (`docs/herdr.md` *Links in a pane*). `ALTER_ZERO_HERDR=0`
 turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
 socket (a failed turn through the real backend and a refusing stub provider)
 and the fixture unsets every `HERDR_*` variable.

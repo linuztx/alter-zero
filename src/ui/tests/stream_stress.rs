@@ -305,6 +305,46 @@ fn fuzz_stream_render_agrees_with_batch_on_hostile_soup() {
 }
 
 #[test]
+fn label_only_links_stream_exactly_as_they_render_whole() {
+    // Where the terminal opens hyperlinks a link is its label alone, the
+    // target behind it (`docs/links.md` *Labelled links*). Whether a target
+    // is hidden is decided by the finished link — its target, its label —
+    // and an unfinished one is withheld whole, so the three streaming
+    // invariants hold for this presentation as they do for the other: no
+    // committed row is restyled when the `)` lands, scrollback and the strip
+    // are the reply so far, and the commits reconstruct the batch render,
+    // carriers included.
+    crate::links::with_target_display(crate::links::TargetDisplay::Hidden, || {
+        let docs = [
+            "Source: [FIDE](https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/) today",
+            "read [the official documentation](https://example.com/docs/index.html) first, \
+             then [**the** `api` *notes*](https://example.com/api) and https://example.org/bare.",
+            "- one [more link](https://example.org/a) here\n- [](https://x.com/empty) and \
+             [the notes](docs/links.md)\n\n> quoted [source](https://x.com/q)",
+            "## A [heading link](https://x.com/h) here\n\n| Name | Source |\n| --- | --- |\n\
+             | chess | [FIDE](https://www.fide.com/x) |\n| notes | [the notes](AGENTS.md) |\n\ndone",
+            "[https://bank.example](https://evil.example/login) and \
+             [https://x.com/d](https://x.com/d) and [see https://x.com/d now](https://x.com/d)",
+        ];
+        for (i, doc) in docs.iter().enumerate() {
+            for width in [9u16, 14, 30, 80] {
+                assert_stream_matches_batch(doc, width, &format!("label-only doc {i}"));
+            }
+        }
+        // The hostile soup holds a link, an unclosed one, nested brackets and
+        // an image inside a link among its fragments: a smaller sweep of it
+        // under this presentation.
+        let mut rng = Rng(0x5EED_CAFE_F00D_0002);
+        for case in 0..80 {
+            let doc = hostile_doc(&mut rng);
+            for width in [3u16, 24] {
+                assert_stream_matches_batch(&doc, width, &format!("label-only soup {case}"));
+            }
+        }
+    });
+}
+
+#[test]
 fn a_streaming_url_never_commits_a_plain_styled_prefix() {
     // The minimal reproduction of the autolink instability the fuzz found: a
     // bare URL streams in char by char. Detection flips on only once enough

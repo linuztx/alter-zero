@@ -1163,6 +1163,110 @@ fn a_code_labelled_link_marks_only_the_two_names() {
     );
 }
 
+// --- Labelled links through the whole renderer (docs/links.md) ---
+
+/// `source` as an assistant message where the terminal opens hyperlinks.
+fn label_only_lines(source: &str, width: u16) -> Vec<Line<'static>> {
+    crate::links::with_target_display(crate::links::TargetDisplay::Hidden, || {
+        message_lines(Role::Assistant, source, width)
+    })
+}
+
+#[test]
+fn a_sourced_reply_shows_the_label_wherever_prose_is_rendered() {
+    // One funnel renders a paragraph, a list item, a quote, a heading and a
+    // table cell, so the label-only link is the same in all of them: the
+    // address off the screen, the label in the link dress, the whole address
+    // behind it.
+    let url = "https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/";
+    for source in [
+        format!("Source: [FIDE]({url})"),
+        format!("- Source: [FIDE]({url})"),
+        format!("1. Source: [FIDE]({url})"),
+        format!("> Source: [FIDE]({url})"),
+        format!("## Source: [FIDE]({url})"),
+        format!("| Source |\n| --- |\n| [FIDE]({url}) |"),
+    ] {
+        for width in [24, 80] {
+            let lines = label_only_lines(&source, width);
+            let text: Vec<String> = lines.iter().map(plain).collect();
+            assert!(
+                !text.iter().any(|row| row.contains("https://")),
+                "{source:?} at {width}: {text:?}"
+            );
+            let mut label = String::new();
+            for span in lines.iter().flat_map(|line| &line.spans) {
+                if let Some(target) = crate::links::style_link(&span.style) {
+                    assert_eq!(target.as_ref(), url, "{source:?} at {width}");
+                    assert_eq!(
+                        span.style.fg,
+                        Some(crate::ui::theme::link_url_color()),
+                        "{source:?} at {width}: {span:?}"
+                    );
+                    assert!(
+                        span.style.add_modifier.contains(Modifier::UNDERLINED),
+                        "{source:?} at {width}: {span:?}"
+                    );
+                    label.push_str(&span.content);
+                }
+            }
+            assert_eq!(label, "FIDE", "{source:?} at {width}: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn a_table_column_is_sized_to_the_label_not_the_hidden_address() {
+    // A table sizes its columns from the rendered cells, so a column of
+    // sources is as wide as its labels — the address that used to set the
+    // width (and push the table into its stacked form) is no longer in it.
+    let source = "| Name | Source |\n| --- | --- |\n| chess | [FIDE](https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/) |";
+    let widest = |lines: &[Line<'static>]| {
+        lines
+            .iter()
+            .map(|line| crate::ui::wrap::cols(&plain(line)))
+            .max()
+            .unwrap_or(0)
+    };
+    let shown = message_lines(Role::Assistant, source, 120);
+    let hidden = label_only_lines(source, 120);
+    assert!(
+        widest(&hidden) < widest(&shown),
+        "the table narrows to its labels: {} vs {}",
+        widest(&hidden),
+        widest(&shown)
+    );
+    // Still a grid: every row of it is one width, the label cell padded out.
+    let grid: Vec<String> = hidden
+        .iter()
+        .map(plain)
+        .filter(|row| row.contains('│') || row.contains('─'))
+        .collect();
+    assert!(grid.len() >= 4, "a bordered table: {grid:?}");
+    assert!(
+        grid.iter()
+            .all(|row| crate::ui::wrap::cols(row) == crate::ui::wrap::cols(&grid[0])),
+        "{grid:?}"
+    );
+    assert!(
+        grid.iter().any(|row| row.contains("│ FIDE")),
+        "the label sits in its cell: {grid:?}"
+    );
+}
+
+#[test]
+fn a_heading_link_is_one_unbroken_run_across_its_words() {
+    let url = "https://example.com/guide";
+    let lines = label_only_lines(&format!("## See [the full guide]({url}) first"), 80);
+    let runs: Vec<String> = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter(|span| crate::links::style_link(&span.style).is_some())
+        .map(|span| span.content.to_string())
+        .collect();
+    assert_eq!(runs, ["the full guide"], "{lines:?}");
+}
+
 /// The texts the head and tail differentials wrap, each as one segment and
 /// split into alternating styles every seven characters, so a cut can land
 /// inside a segment: wide glyphs can end a row a column short, a combining

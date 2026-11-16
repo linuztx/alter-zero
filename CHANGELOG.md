@@ -73,6 +73,26 @@ release heading when a version is cut.
   been blocked, and some routes reject the parameter outright
   (`docs/permissions.md`).
 
+- **A link in a reply is shown as its label, with the address behind it.**
+  A reply that cites its sources used to print every address in full —
+  `Source: FIDE (https://www.fide.com/geneva-to-host-…/)` — which spent a
+  row or more per link and stretched a table to the width of its URLs.
+  Where your terminal opens hyperlinks (kitty, Ghostty, WezTerm, iTerm2, VS
+  Code, Alacritty, foot, GNOME Terminal and the other VTE terminals, Windows
+  Terminal, a herdr pane) the label is now the link: underlined in the link
+  colour, and a click opens the address. Under tmux or screen, inside an
+  editor's terminal, and in a terminal the app cannot name, the address
+  stays on screen as before, since hidden there it would be lost;
+  `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides for any terminal. A
+  link to a file or an anchor always shows its target, and so does a label
+  that spells a different address than the one it opens. On every terminal
+  a link written as its own address, `[https://x.com](https://x.com)`, is
+  no longer printed twice, and a label of several words is one link rather
+  than one per word. `/export` keeps every address in the text it writes,
+  and nothing renders slower: a reply full of links draws in about a third
+  less time as labels, and one with no link in it in slightly less than
+  before (`docs/links.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
