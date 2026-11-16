@@ -280,7 +280,14 @@ then the cursor report.
 That name has a second reader. The viewport keeps it
 (`InlineViewport::terminal_name`), and it is what lets a reply's link hide
 its address over `ssh`, where no variable names the terminal
-(`docs/links.md` *The terminal's own answer*).
+(`docs/links.md` *The terminal's own answer*). The links ask for it on their
+own account too, wherever the answer could decide how a link reads
+(`links::wants_terminal_name`) — `XTVERSION` alone then, with no kitty
+query and so no title bracket. That is how the name is asked where the
+pictures ask nothing: a pinned protocol, pictures switched off, or an
+environment that names a protocol but no terminal the links know — `ssh`
+from iTerm2, whose `LC_TERMINAL` names iTerm2's protocol here. What the
+pictures do is decided as before, since a name alone upgrades nothing.
 
 The read takes in whatever arrived before the cursor report, which includes
 keys typed while it waited — type-ahead sent before the TUI was up. Those are

@@ -5,8 +5,10 @@
 //! Invariant 1 allows one stdin reader, and before the loop's `EventStream`
 //! exists the cursor query's read is it — so that one synchronous read is
 //! where any other question for the terminal has to go. The kitty graphics
-//! query and `XTVERSION` ride in the same write, *ahead of* the cursor query,
-//! and a terminal answers in order: the cursor report is always the last
+//! query and `XTVERSION` ride in the same write, *ahead of* the cursor query
+//! — `XTVERSION` alone where only a link's presentation turns on the answer
+//! (`docs/links.md` *The terminal's own answer*) — and a terminal answers in
+//! order: the cursor report is always the last
 //! answer, so the read stops the moment it completes. A terminal that does
 //! not know a question says nothing, which is its answer — and costs no
 //! wait, since the cursor report still closes the read.
@@ -65,12 +67,15 @@ const BEL: u8 = 0x07;
 const SEQUENCE_MAX_BYTES: usize = 256;
 
 /// The bytes the startup read writes: the graphics questions when `graphics`
-/// (see [`crate::images::graphics_query_wanted`]), and always the cursor
-/// query, last.
+/// (see [`crate::images::graphics_query_wanted`]), which ask the terminal's
+/// name too; the name alone when only `name` (see
+/// [`crate::links::wants_terminal_name`]); and always the cursor query, last.
 #[must_use]
-pub fn startup_query(graphics: bool) -> String {
+pub fn startup_query(graphics: bool, name: bool) -> String {
     if graphics {
         format!("{PUSH_TITLE}{KITTY_GRAPHICS_QUERY}{POP_TITLE}{VERSION_QUERY}{CURSOR_QUERY}")
+    } else if name {
+        format!("{VERSION_QUERY}{CURSOR_QUERY}")
     } else {
         CURSOR_QUERY.to_string()
     }
@@ -82,7 +87,8 @@ pub struct StartupReplies {
     /// Where the cursor was, 0-based — what crossterm's own `position()`
     /// returned before this read replaced it.
     pub cursor: Position,
-    /// The answers to the graphics questions, empty when none was asked.
+    /// The answers to the graphics questions and to the name question —
+    /// the name alone when only it was asked, empty when nothing was.
     pub graphics: GraphicsReply,
     /// The bytes typed while the read waited, in order, as the terminal sent
     /// them — [`typed_events`] turns them into keys.
@@ -437,15 +443,29 @@ mod tests {
 
     #[test]
     fn the_cursor_query_closes_every_question_so_its_answer_ends_the_read() {
-        assert_eq!(startup_query(false), CURSOR_QUERY);
+        assert_eq!(startup_query(false, false), CURSOR_QUERY);
         // The kitty query sits inside a pushed and popped title: tmux files
         // an APC string it does not know as the pane's title, and a session
         // that hides tmux from the environment would otherwise wear
         // `Gi=31,s=1,…` as its title for good.
         assert_eq!(
-            startup_query(true),
+            startup_query(true, false),
             format!("{PUSH_TITLE}{KITTY_GRAPHICS_QUERY}{POP_TITLE}{VERSION_QUERY}{CURSOR_QUERY}")
         );
+    }
+
+    #[test]
+    fn the_terminals_name_can_be_asked_on_its_own() {
+        // How a link shows its target can turn on the name alone
+        // (`docs/links.md` *The terminal's own answer*): no graphics
+        // question, so no title bracket either — that is for the APC string
+        // a hidden tmux would keep as a title.
+        assert_eq!(
+            startup_query(false, true),
+            format!("{VERSION_QUERY}{CURSOR_QUERY}")
+        );
+        // The graphics questions ask the name already, and once.
+        assert_eq!(startup_query(true, true), startup_query(true, false));
     }
 
     // ===== the answer =====
@@ -460,7 +480,7 @@ mod tests {
 
     #[test]
     fn a_kitty_terminal_answers_ok_and_names_itself_before_the_cursor() {
-        // herdr 0.9.3's answer to `startup_query(true)`, byte for byte, as
+        // herdr 0.9.3's answer to `startup_query(true, _)`, byte for byte, as
         // recorded from a real pane: its emulator is libghostty, which keeps
         // the answers in the order the questions were asked.
         let replies = answered(b"\x1b_Gi=31;OK\x1b\\\x1bP>|libghostty\x1b\\\x1b[2;1R");

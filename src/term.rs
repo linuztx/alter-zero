@@ -193,12 +193,15 @@ pub struct InlineViewport {
     images: ImageStore,
     /// The name the terminal gave for itself when [`init`]'s startup read
     /// asked it (`XTVERSION`, `term::query`): `WezTerm 20240203-…`,
-    /// `kitty(0.36.4)`. `None` when the read did not ask — the environment
-    /// already named the terminal's graphics, a multiplexer or a console is
-    /// in between, pictures are off — or the terminal gave none. It is the
-    /// one statement about the terminal that is the terminal's own, which
-    /// is what lets a link hide its address over `ssh`
-    /// ([`links::detect_target_display`], `docs/links.md`).
+    /// `kitty(0.36.4)`. The read asks for the pictures' sake where the
+    /// environment names no graphics protocol, and for the links' where it
+    /// leaves open whether a label can stand alone
+    /// ([`links::wants_terminal_name`]). `None` when it asked neither — a
+    /// multiplexer or a console is in between, or the environment settled
+    /// both — or the terminal gave no name. It is the one statement about
+    /// the terminal that is the terminal's own, which is what lets a link
+    /// hide its address over `ssh` ([`links::detect_target_display`],
+    /// `docs/links.md`).
     ///
     /// [`init`]: InlineViewport::init
     terminal_name: Option<String>,
@@ -303,10 +306,16 @@ impl InlineViewport {
         let detection =
             (!images::images_disabled(std::env::var(images::IMAGES_ENV).ok().as_deref()))
                 .then(images::Detection::from_env);
+        // The terminal's name is asked on the links' own account too, where
+        // the environment leaves open whether a link's label can stand
+        // alone (`links::wants_terminal_name`, `docs/links.md` *The
+        // terminal's own answer*) — over `ssh` from iTerm2, say, where the
+        // picture detection has named iTerm2's protocol and asks nothing.
         let replies = startup_read(
             detection
                 .as_ref()
                 .is_some_and(images::Detection::wants_query),
+            links::wants_terminal_name(|name| std::env::var(name).ok()),
         )?;
         let cursor = replies.cursor;
         // Turn on bracketed paste so a real paste arrives as one `Event::Paste`
@@ -1584,13 +1593,13 @@ impl AsFd for TtyInput {
 /// Write the startup query and read the terminal's answer — the one stdin
 /// read before the loop's `EventStream` exists (invariant 1), in raw mode.
 /// `graphics` adds the kitty graphics query and `XTVERSION` ahead of the
-/// cursor query (`term::query`).
+/// cursor query, and `name` `XTVERSION` alone (`term::query`).
 ///
 /// It reads **one byte at a time** so it stops on the cursor report's last
 /// byte: whatever the user types after that is still unread, and the
 /// `EventStream` gets it with crossterm's whole parser. What was typed
 /// *before* it is in the answer's `typed`, for the loop to replay.
-fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
+fn startup_read(graphics: bool, name: bool) -> io::Result<query::StartupReplies> {
     let tty = TtyInput::open()?;
     // Raw mode's reads block until a byte arrives (VMIN 1, VTIME 0). Give
     // each read a tenth of a second instead, so the deadline is checked while
@@ -1602,7 +1611,7 @@ fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
     timed.special_codes[SpecialCodeIndex::VMIN] = 0;
     timed.special_codes[SpecialCodeIndex::VTIME] = 1;
     rustix::termios::tcsetattr(&tty, OptionalActions::Now, &timed)?;
-    let replies = read_replies(&tty, graphics);
+    let replies = read_replies(&tty, graphics, name);
     // Back to raw mode's own reads however the read went.
     let restored = rustix::termios::tcsetattr(&tty, OptionalActions::Now, &raw);
     let replies = replies?;
@@ -1611,9 +1620,9 @@ fn startup_read(graphics: bool) -> io::Result<query::StartupReplies> {
 }
 
 /// [`startup_read`]'s write and read loop.
-fn read_replies(tty: &TtyInput, graphics: bool) -> io::Result<query::StartupReplies> {
+fn read_replies(tty: &TtyInput, graphics: bool, name: bool) -> io::Result<query::StartupReplies> {
     let mut stdout = io::stdout();
-    stdout.write_all(query::startup_query(graphics).as_bytes())?;
+    stdout.write_all(query::startup_query(graphics, name).as_bytes())?;
     stdout.flush()?;
     let deadline = Instant::now() + STARTUP_REPLY_TIMEOUT;
     let mut scanner = query::ReplyScanner::new();

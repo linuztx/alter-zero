@@ -1089,7 +1089,11 @@ whole address behind it, where it read `Source: FIDE (https://www.fide.com/…)`
 only URL, set once at bootstrap from `links::detect_target_display` —
 pure over the environment and the name the terminal answered the startup
 read with (`InlineViewport::terminal_name`, the XTVERSION answer
-`term::query` already takes in): `Hidden` for the terminals known to open
+`term::query` takes in — asked for the pictures' sake, and on the links'
+own account wherever it could decide, `links::wants_terminal_name`, which
+is what reaches iTerm2 over `ssh`, where the pictures' `LC_TERMINAL` sniff
+asks nothing; `LC_TERMINAL` itself never hides, since it reaches a mosh
+session too): `Hidden` for the terminals known to open
 an OSC 8 link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot,
 the VTE family, Windows Terminal, a herdr pane — never Apple's Terminal or
 Konsole), by the variables they set or — what names one over `ssh`, where

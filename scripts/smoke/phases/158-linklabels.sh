@@ -110,7 +110,16 @@ tmux kill-session -t "$S158C" 2>/dev/null
 #   5. a terminal that says nothing: the address spelled out;
 #   6. a terminal the ENVIRONMENT names (`TERM=xterm-kitty`), which is not
 #      asked at all: the label alone;
-#   7. an editor's own terminal, whatever answers: the address spelled out.
+#   7. an editor's own terminal, whatever answers: the address spelled out;
+#   8. `ssh` from iTerm2: `LC_TERMINAL=iTerm2` is all that crosses, and it
+#      makes the picture detection name iTerm2's protocol and ask nothing
+#      about graphics — so the name is asked on its own (no kitty query, no
+#      title bracket), iTerm2 answers, and the label stands alone;
+#   9. the same environment with nothing answering — a mosh in between,
+#      which passes on neither the question nor a hyperlink: the address
+#      stays;
+#  10. pictures switched off (`ALTER_ZERO_IMAGES=0`), so no graphics
+#      question at all: the name is still asked for the links' sake.
 LT_URL="https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/"
 LT_TERM="$SMOKE_TMP/terminal.py"
 cat >"$LT_TERM" <<'PY'
@@ -222,6 +231,9 @@ lt_run named --version "WezTerm 20240203-110809-5046fc22" &
 lt_run silent &
 lt_run envkitty -- TERM=xterm-kitty &
 lt_run editor --version "kitty(0.36.4)" -- NVIM=/run/user/1000/nvim.4242.0 &
+lt_run iterm --version "iTerm2 3.5.11" -- LC_TERMINAL=iTerm2 &
+lt_run mosh -- LC_TERMINAL=iTerm2 &
+lt_run noimages --version "WezTerm 20240203-110809-5046fc22" -- ALTER_ZERO_IMAGES=0 &
 wait
 
 lt_asked() { sed -n "s/^asked=//p" "$SMOKE_TMP/$1.report" 2>/dev/null; }
@@ -256,3 +268,15 @@ expect_eq "$(lt_asked envkitty)" "cursor" "a terminal the environment names was 
 lt_expect_label envkitty
 # 7. An editor's terminal keeps the address whatever answered.
 lt_expect_address editor
+# 8. ssh from iTerm2: the name asked on its own, believed.
+expect_eq "$(lt_asked iterm)" "version,cursor" "the name was not asked on its own over ssh from iTerm2"
+if grep -aqF $'\x1b_G' "$SMOKE_TMP/iterm.raw" || grep -aqF $'\x1b[22;0t' "$SMOKE_TMP/iterm.raw"; then
+	fail "iterm: the name-only question carried the graphics query or its title bracket"
+fi
+lt_expect_label iterm
+# 9. Nothing answers (a mosh in between): LC_TERMINAL alone hides nothing.
+expect_eq "$(lt_asked mosh)" "version,cursor" "the name was not asked in the mosh-like session"
+lt_expect_address mosh
+# 10. Pictures off: the links still ask, and the answer still counts.
+expect_eq "$(lt_asked noimages)" "version,cursor" "with pictures off the name was not asked"
+lt_expect_label noimages

@@ -122,8 +122,7 @@ often set down to `xterm-256color` because the remote host has no entry for
 `xterm-kitty` or `xterm-ghostty`. A session there is drawn by the same
 terminal and read as an unknown one.
 
-The terminal can speak for itself. The startup read already asks it its
-name where the environment could not say what graphics it draws
+The terminal can speak for itself. The startup read asks it its name
 (`XTVERSION`, riding ahead of the cursor query in the one read —
 `term::query`, `docs/images.md` *Asking the terminal*), and the answer comes
 down the very line a hyperlink goes up, so it is this terminal's and nobody
@@ -148,19 +147,28 @@ And it ranks below rules 1 to 4: no hyperlink written, the user's own word,
 a multiplexer in between and an editor's terminal each keep the address for
 a reason the terminal's name does not answer.
 
-It is also why `LC_TERMINAL=iTerm2` is **not** read, though `ssh` carries
-it (sshd accepts `LC_*` wherever it accepts a locale). A variable that
-crosses `ssh` crosses into a mosh session too, and mosh keeps its own
-picture of the screen and passes no hyperlink on to the terminal: every
-label there would hide an address nothing opens. The answer cannot make that
-mistake — mosh does not pass the question on either, so no name comes back
-and the address stays — and over a plain `ssh` iTerm2 answers for itself,
-so the variable would add nothing but that risk.
+The read asks for two reasons, and either is enough. The pictures ask
+where the environment names no graphics protocol. The links ask, on their
+own account, wherever the answer could decide (`links::wants_terminal_name`:
+without one the address would stay, and a linking terminal's name would hide
+it) — the name alone then, `XTVERSION` with no kitty query and no title
+bracket. Neither asks under a multiplexer or on a console, and the links do
+not ask where something ahead of the answer has decided (no hyperlink
+written, the override, an editor's terminal) or where the environment has
+already named a terminal that opens hyperlinks.
 
-The read asks only where it asks about graphics — not under a multiplexer,
-not on a console, not with pictures switched off or their protocol pinned,
-and not where the environment already names the terminal's graphics, which
-is exactly where the variables name the terminal too.
+The links' own question is what reaches iTerm2 over `ssh`. `LC_TERMINAL`
+is the one variable of a terminal's that crosses (sshd accepts `LC_*`
+wherever it accepts a locale), iTerm2 sets it to `iTerm2`, and the picture
+detection reads it to name iTerm2's image protocol — after which it has
+nothing to ask about graphics. The name is asked all the same, iTerm2
+answers `iTerm2 3.5.11`, and the label stands alone.
+
+`LC_TERMINAL` itself is **not** read. A variable that crosses `ssh` crosses
+into a mosh session too, and mosh keeps its own picture of the screen and
+passes no hyperlink on to the terminal: every label there would hide an
+address nothing opens. The answer cannot make that mistake — mosh does not
+pass the question on either, so no name comes back and the address stays.
 
 The choice is a per-thread cell the boundary sets before the first row is
 rendered (`links::set_target_display`, the active theme's arrangement), and
@@ -343,7 +351,9 @@ survives the trip.
      (`target_display`, `set_target_display`, `with_target_display`), with
      `detect_target_display`, the pure decision *Labelled links* lists —
      over the environment and the name the terminal answered the startup
-     read with (`InlineViewport::terminal_name`).
+     read with (`InlineViewport::terminal_name`) — and
+     `wants_terminal_name`, whether that answer could decide, which is what
+     makes the read ask it when the pictures would not.
 2. **`src/ui/inline.rs` — the marking.** `inline_spans` is the one funnel all
    assistant prose runs through (plain lines, list items, blockquotes, *and*
    table cells), so marking there covers every surface that can wrap a URL:
@@ -557,8 +567,13 @@ answer — each real answer hiding the address in an environment that names
 nothing, a name it does not know (or one that only opens on a known one)
 leaving the environment to decide, the answer outranking an inherited
 `TERM_PROGRAM` and outranked by the gate, the override, a multiplexer and
-an editor's terminal — the override both ways, the hyperlink gate
-outranking the override, and the scoped cell restoring what it found.
+an editor's terminal — when the answer is worth asking for (`ssh` from
+iTerm2 and an unnamed terminal yes; a named one, a multiplexer, a console,
+an editor's terminal, the switch and the override no), `LC_TERMINAL` alone
+never hiding the address, the override both ways, the hyperlink gate
+outranking the override, and the scoped cell restoring what it found;
+`term/query.rs` the name asked on its own, with no graphics query and no
+title bracket.
 `ui/tests/inline.rs` holds the render: the reported `Source: [FIDE](…)` as
 `Source: FIDE` with the whole address behind exactly that word; emphasis
 kept under the dress and a code span's colour given up; a label of several
@@ -600,8 +615,11 @@ reported link in an environment naming nothing: a terminal that answers
 the startup read `WezTerm 20240203-…` gets `Source: FIDE` with the address
 only inside the hyperlink; one that says nothing gets the address spelled
 out; one the environment names (`TERM=xterm-kitty`) is not asked at all and
-gets the label; and an editor's terminal keeps the address whatever
-answered.
+gets the label; an editor's terminal keeps the address whatever answered;
+and with `LC_TERMINAL=iTerm2` — `ssh` from iTerm2 — the name is asked on
+its own, `XTVERSION` with no kitty query and no title bracket: an
+`iTerm2 3.5.11` answer gets the label, silence (a mosh in between) the
+address, and with pictures switched off the name is still asked.
 
 ## Cost
 
@@ -655,11 +673,6 @@ now instead of one per word.
   opens — `ALTER_ZERO_LINK_TARGETS=show` is the answer. (`TERM` is still
   read because it is how the commonest `ssh` session names its terminal,
   and a terminal the environment names is not asked for its own name.)
-- The terminal is asked its name only where the startup read asks about
-  graphics (*The terminal's own answer*). With pictures switched off
-  (`ALTER_ZERO_IMAGES=0`) or their protocol pinned, a session over `ssh`
-  whose `TERM` is plain is read from its variables alone, and keeps the
-  address.
 - A label is compared with its target as text. A look-alike domain (a
   letter borrowed from another alphabet) or a label naming a site without
   a scheme (`bank.example` over a link elsewhere) is a label like any

@@ -624,6 +624,29 @@ pub fn detect_target_display(
     }
 }
 
+/// Whether asking the terminal its name could change what
+/// [`detect_target_display`] decides in this environment: without an answer
+/// the target stays on screen, and an answer naming a terminal that opens
+/// hyperlinks would hide it. Nothing ahead of the answer has decided (the
+/// hyperlink switch, the override, a multiplexer, a console, an editor's
+/// terminal), and the environment has not already named a terminal that
+/// opens hyperlinks. Pure; the boundary passes `std::env::var`.
+///
+/// The startup read asks the name on this account even where it asks
+/// nothing about graphics (`term::query`). That matters over `ssh` from
+/// iTerm2: `LC_TERMINAL=iTerm2` is the one variable of the terminal's that
+/// crosses, and it is what makes the picture detection name iTerm2's
+/// protocol and skip its own question. `LC_TERMINAL` itself is not read,
+/// since it reaches a mosh session too, where no hyperlink gets through; a
+/// mosh in between passes on no answer either, so there the target stays.
+#[must_use]
+pub fn wants_terminal_name(var: impl Fn(&str) -> Option<String>) -> bool {
+    /// Any answer [`answers_as_a_linking_terminal`] accepts will do.
+    const LINKING_ANSWER: &str = "kitty";
+    detect_target_display(&var, None) == TargetDisplay::Shown
+        && detect_target_display(&var, Some(LINKING_ANSWER)) == TargetDisplay::Hidden
+}
+
 /// The variables an editor sets for the terminal it embeds — Neovim's and
 /// Vim's `:terminal`, an Emacs terminal buffer, a JetBrains IDE's. Such a
 /// terminal draws for itself and may open no hyperlink at all, while its
@@ -1240,6 +1263,73 @@ mod tests {
                 "{vars:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_terminal_is_asked_its_name_where_the_answer_could_decide() {
+        // `ssh` from iTerm2 carries `LC_TERMINAL` and nothing else of the
+        // terminal's, and that variable is what makes the picture detection
+        // name iTerm2's protocol and skip its own question. So the name is
+        // asked on the links' own account wherever the answer could decide:
+        // iTerm2 at the other end of the `ssh` says who it is, and a mosh in
+        // between, which passes on no hyperlink, passes on no answer either.
+        let asks = |vars: &[(&str, &str)]| {
+            wants_terminal_name(|name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_string())
+            })
+        };
+        for vars in [
+            &[("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")][..],
+            &[("TERM", "xterm-256color")],
+            &[],
+            // The answer outranks a name the environment does not know.
+            &[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "SomeNewTerminal"),
+            ],
+        ] {
+            assert!(asks(vars), "{vars:?}");
+        }
+        // Nothing to ask where the environment has already named a terminal
+        // that opens hyperlinks, or where something ahead of the answer keeps
+        // the target on screen whatever it says.
+        for vars in [
+            &[("TERM", "xterm-kitty")][..],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
+            &[("TERM", "xterm-256color"), ("WEZTERM_PANE", "0")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "herdr")],
+            &[
+                ("TERM", "tmux-256color"),
+                ("TMUX", "/tmp/tmux-0/default,1,0"),
+                ("LC_TERMINAL", "iTerm2"),
+            ],
+            &[("TERM", "xterm-256color"), ("STY", "1234.pts-0.host")],
+            &[("TERM", "linux")],
+            &[("TERM", "dumb")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("NVIM", "/run/user/1000/nvim.4242.0"),
+            ],
+            &[("TERM", "xterm-256color"), (HYPERLINKS_ENV, "0")],
+            &[("TERM", "xterm-256color"), (LINK_TARGETS_ENV, "show")],
+            &[("TERM", "xterm-256color"), (LINK_TARGETS_ENV, "hide")],
+        ] {
+            assert!(!asks(vars), "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn lc_terminal_alone_never_hides_the_target() {
+        // `LC_TERMINAL` crosses `ssh` and so reaches a mosh session too,
+        // where no hyperlink gets through. The answer decides instead.
+        let lc = [("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")];
+        assert_eq!(display_in(&lc), TargetDisplay::Shown);
+        assert_eq!(
+            display_answering(&lc, Some("iTerm2 3.5.11")),
+            TargetDisplay::Hidden
+        );
     }
 
     #[test]
