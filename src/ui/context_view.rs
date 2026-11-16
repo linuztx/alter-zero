@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use super::assistant::expand_code_tabs;
 use super::file_cell::gutter_row_spans;
 use super::theme::*;
-use super::transcript::{labeled_separator, overlay_header};
+use super::transcript::{labeled_separator, overlay_header, view_title};
 use super::wrap::{clamp_spans, cols, spans_cols, wrap_output, wrap_output_hanging, wrap_verbatim};
 use super::*;
 use crate::context::{ContextRole, ContextToolCall};
@@ -581,23 +581,6 @@ fn pinned_header(headers: &[usize], total: usize, scroll: usize, rows: usize) ->
     // The row before the next entry (or the page's end) is this one's spacer.
     let end = headers.get(next).copied().unwrap_or(total);
     (current < scroll && scroll + 2 < end).then_some(current)
-}
-
-/// The title row's text: the page's spaced caps, then — inside an agent
-/// session view — whose window it is, the way the roster names an agent
-/// (`explore agent · Fetch the weather`). Nothing else on the page says it,
-/// and the lead's window and an agent's look alike.
-fn view_title(app: &App, title: &str) -> String {
-    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match app.viewed_agent() {
-        Some(run) => format!(
-            "{title}{CONTEXT_VIEW_AGENT_SEPARATOR}{}{CONTEXT_VIEW_AGENT_SUFFIX}\
-             {CONTEXT_VIEW_AGENT_SEPARATOR}{}",
-            flat(&run.agent_type),
-            flat(&run.description),
-        ),
-        None => title.to_string(),
-    }
 }
 
 /// Render the full-screen Ctrl+D view — the transcript pager's chrome over

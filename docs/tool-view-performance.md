@@ -90,6 +90,12 @@ incremental build (the `StreamRender` pattern, applied to the overlay):
   rows live *inside* the frozen prefix; stepping the selection un-reverses the
   old span and reverses the new one in place (tracked per-item row offsets),
   byte-identical to what a from-scratch build styles — never a re-render.
+- **Entries ride the same split.** The transcript's entries — where each
+  cell opens and where its header ends, what ←/→ step between and the pin
+  reads (`docs/transcript-navigation.md`) — are recorded by the walk that
+  renders the rows: the frozen prefix's once per item, the tail's rebuilt
+  with it (truncated to `frozen_entries` beside the rows), so a scroll
+  touches neither.
 - **Retained across closes.** The overlay exit no longer frees the cache: the
   frozen prefix is exactly what makes the next open instant. Memory is the
   compact rendered transcript of the current conversation (the same order as

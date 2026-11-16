@@ -459,7 +459,7 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
                     // mirror the Ctrl+O overlay
                     let screen = Rect::new(0, 0, w, h);
                     let mut overlay = Buffer::empty(screen);
-                    render_tool_view(screen, &mut overlay, app, &transcript_lines(app, w));
+                    render_tool_view(screen, &mut overlay, app, &transcript_page(app, w));
                     let _ = tool_view_max_scroll(app, w, h);
                 }));
                 assert!(
@@ -1161,8 +1161,8 @@ fn the_transcript_overlay_seats_the_cursor_after_its_quit_hint() {
     let app = App::new();
     let area = Rect::new(0, 0, 60, 12);
     let mut buf = Buffer::empty(area);
-    let lines = transcript_lines(&app, 60);
-    render_tool_view(area, &mut buf, &app, &lines);
+    let page = transcript_page(&app, 60);
+    render_tool_view(area, &mut buf, &app, &page);
     let (x, y) = overlay_cursor_seat(&buf);
     let hint = " q/esc/ctrl+o to quit";
     assert!(

@@ -760,6 +760,20 @@ pub(super) fn draft_cell_lines(
     paths: &PathDisplay,
     whole: bool,
 ) -> Vec<Line<'static>> {
+    draft_cell(draft, queued, pulse, width, paths, whole).0
+}
+
+/// [`draft_cell_lines`] with how many of its rows are the `● Write({path})`
+/// header — what the transcript pins over a window opening inside the file
+/// it streams (`docs/transcript-navigation.md`).
+pub(super) fn draft_cell(
+    draft: &crate::app::ToolDraft,
+    queued: Option<&ToolCall>,
+    pulse: Option<Duration>,
+    width: u16,
+    paths: &PathDisplay,
+    whole: bool,
+) -> (Vec<Line<'static>>, usize) {
     let generating;
     let tool = match queued {
         Some(tool) => tool,
@@ -791,6 +805,7 @@ pub(super) fn draft_cell_lines(
         DraftWindow::Tail
     };
     let mut lines = tool_header_lines(tool, width, !whole, pulse, paths);
+    let header = lines.len();
     let lang = draft.path().and_then(file_cell_lang);
     let code = super::palette::palette().code;
     // The peek walks below take at most FILE_PEEK_LINES source lines from
@@ -867,5 +882,5 @@ pub(super) fn draft_cell_lines(
             lines.extend(window.into_iter().rev().flatten());
         }
     }
-    lines
+    (lines, header)
 }

@@ -3465,13 +3465,23 @@ of bug:
    screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
    vi-style `~` filler past its end, a `─` separator carrying the scroll
-   percentage right-aligned, and two dim key-hint rows (↑/↓, pgup/pgdn,
+   percentage right-aligned, and two dim key-hint rows (↑/↓, ←/→ to the
+   previous or next entry — Ctrl+D's step, resolved at the draw against the
+   build it paints, `App::resolve_tool_jump` — pgup/pgdn,
    home/end jump; q/esc/ctrl+o close — though Esc when idle with a previous
    user message instead *begins the backtrack preview* in place, the closing
    hint row saying so honestly (`q/ctrl+o to quit   esc to edit prev`, the
    key arm and the row sharing `App::overlay_esc_backtracks`), and while one
-   highlights a message the second hint row swaps to the backtrack keys;
-   `docs/backtrack.md`) — showing the **full conversation
+   highlights a message the second hint row swaps to the backtrack keys,
+   ← and → stepping the highlight and the first row dropping the entry
+   step; `docs/backtrack.md`) — with the header of the cell the window opens
+   inside **pinned over the body's top rows** while it is scrolled off (a
+   command's `● Bash(…)` over the middle of its output, a `!` command's
+   `! cmd`, an agent's `● Agent(…)`; at most two rows, the last ending on
+   `…` when the header goes on — the pure `transcript::pinned_rows` over the
+   `ui::TranscriptEntry`s every build records beside its rows, applied at
+   paint time only; an agent session view's title naming the agent;
+   `docs/transcript-navigation.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
    (in-progress reply / the running tool **and any `⎿ Waiting…` batch siblings**,

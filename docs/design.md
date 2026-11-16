@@ -199,7 +199,12 @@ which Ctrl+V reads the clipboard from.
   happened, plus the live tail (in-progress reply / running tool) **plus the
   still-queued backlog** (the inline strip's inset `  ❯ …` rows, so a queued
   message is never hidden — `docs/queue.md`), scrollable (↑/↓ PgUp/PgDn,
-  Home/End jump). It **opens
+  Home/End jump, ←/→ to the previous or next entry). While the window opens
+  inside a cell whose header has scrolled off, **that header is pinned over
+  the body's top rows** — a command's `● Bash(…)`, a `!` command's `! cmd`,
+  an agent's `● Agent(…)` — so the output on screen always says what printed
+  it, Ctrl+D's pinned entry extended to headers that wrap
+  (`docs/transcript-navigation.md`). It **opens
   pinned to the bottom** and tail-follows new content as it streams in (scroll up
   to read back; scrolling to the bottom re-engages following). Committed rows
   stay pre-warmed in compact storage: one text slab, interned styles and

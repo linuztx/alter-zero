@@ -38,6 +38,20 @@ release heading when a version is cut.
   GitHub Sponsors link and a contact email, each in a box you can click
   where your terminal follows links, or copy with Enter (`docs/sponsor.md`).
 
+- **Ctrl+O keeps the command you are reading on screen.** The transcript
+  shows every tool call's whole output, so one long `cargo test` or file
+  read runs to hundreds of rows, and halfway down nothing said which
+  command printed them. Scrolled into a cell, the transcript now pins that
+  cell's header over its top rows, the way Ctrl+D pins the message you are
+  reading: `● Bash(cargo test …)` above a test run, `! seq 1 500` above a
+  shell command's output, `● Agent(…)` above an agent's prompt and answer.
+  A command that wraps keeps both rows, and a longer one is cut with `…`.
+  While a command is still running, the pin names it above its live output.
+  ←/→ now step to the previous or next entry, opening it at the top, as in
+  Ctrl+D. During Esc-Esc's message preview they still step between your
+  messages. Inside an agent's session view the title names the agent
+  (`docs/transcript-navigation.md`).
+
 ### Changed
 
 - **Auto mode's safety check answers in JSON, and a reply that is not

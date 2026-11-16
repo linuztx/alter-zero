@@ -400,6 +400,15 @@ pub struct App {
     /// opens this way and re-streams keep the latest content in view, until you
     /// scroll up to read back (and re-engages when you scroll to the bottom).
     pub tool_follow: bool,
+    /// A ←/→ step between the Ctrl+O transcript's entries, waiting for the
+    /// draw to resolve it against the transcript as built
+    /// ([`resolve_tool_jump`](Self::resolve_tool_jump),
+    /// `docs/transcript-navigation.md`) — Ctrl+D's
+    /// [`debug_jump`](Self::debug_jump), in the pager. A backtrack preview
+    /// keeps ←/→ for its own steps, and both a close and the start of a
+    /// preview drop a pending one — resolved after the preview's scroll to
+    /// its highlight, it would push the highlight off the page.
+    pub tool_jump: Option<EntryJump>,
     /// The Ctrl+D context-debug view's vertical scroll offset, in lines from
     /// the top — its own state so flipping between overlays never clobbers the
     /// transcript pager's place. See `docs/context.md`.

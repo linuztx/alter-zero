@@ -131,7 +131,7 @@ pub(super) fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
 /// hard-broken on grapheme boundaries, measured in display columns (like
 /// [`wrap_segment`]'s hard break). `width == 0` disables wrapping. Used by the
 /// command/shell peek ([`result_peek_block`]), the running tail
-/// ([`running_command_lines`]), and the Ctrl+O output ([`tool_full_lines`]),
+/// ([`running_command_lines`]), and the Ctrl+O output ([`tool_full_cell`]),
 /// so the three wrap identically.
 pub(super) fn wrap_output(text: &str, width: u16) -> Vec<String> {
     WrapMode::Output.wrap(text, width)
