@@ -72,18 +72,24 @@ fn link_dress(style: Style) -> Style {
 ///   carrier, so what the eye reads as the link is exactly what a click opens
 ///   (`docs/links.md` *The decoration parens*).
 ///
-/// Two links read the same in both, since the target after the label would
+/// Three links read the same in both, since the target after the label would
 /// add nothing: one with **no label to see** — empty, or only spaces and
 /// characters that never reach the screen ([`is_seen`]) — is its target, in
-/// the link dress; and one whose label **is** its web address
-/// ([`is_own_target`]) is written once.
+/// the link dress; one whose label
+/// **is** its target ([`is_own_target`]) is written once, as the link; and
+/// one with **no target** is its label, as the prose it then is.
 ///
 /// Either way every run carries the target, stamped from one
 /// [`links::Carrier`] rather than interned again per run.
 fn link_spans(text: &[markdown::Inline], url: &str, base: Style, out: &mut Vec<(String, Style)>) {
+    let label = inline_spans(text, base);
+    if url.trim().is_empty() {
+        // Nothing to open and nothing to show after the label.
+        out.extend(label);
+        return;
+    }
     let carrier = links::carrier(url);
     let mark = |style: Style| carrier.map_or(style, |carrier| carrier.stamp(style));
-    let label = inline_spans(text, base);
     if !label
         .iter()
         .any(|(text, _)| text.chars().any(|c| !c.is_whitespace() && is_seen(c)))
@@ -96,7 +102,7 @@ fn link_spans(text: &[markdown::Inline], url: &str, base: Style, out: &mut Vec<(
         return;
     }
     if is_own_target(&label, url) {
-        // The address is the label: it is the link, however it was written.
+        // The target is the label: it is the link, however it was written.
         out.extend(label.into_iter().map(|(t, s)| (t, mark(link_dress(s)))));
         return;
     }
@@ -174,26 +180,64 @@ fn is_seen(c: char) -> bool {
     matches!(c, ' '..='~') || (!c.is_control() && cols(c.encode_utf8(&mut [0; 4])) > 0)
 }
 
-/// Whether `label` is, whole, the web address it links to —
-/// `[https://x.com](https://x.com/)` — so that the target written after it
-/// would be the same address a second time. A label that only *holds* its
-/// target (`see https://x.com now`) is a label, and a target that is no web
-/// address keeps its `name (target)` shape whatever the name is.
+/// Whether `label` is, whole, the target it links to, so that the target
+/// written after it would be the same text a second time —
+/// `` [`src/links.rs`](src/links.rs) `` printing `src/links.rs (src/links.rs)`.
+/// Three ways to be it, each losing nothing by being written once:
+///
+/// - **character for character**, whatever the target is — a path, an
+///   anchor, any scheme;
+/// - a **web address** that is the same page as its target
+///   ([`same_page`]: a closing `/` and the case of the scheme and host
+///   aside);
+/// - a **mail address** linked under its own `mailto:`.
+///
+/// Letter case counts everywhere else — `agents.md` is another file than
+/// `AGENTS.md` where case does — and a label that only *holds* its target
+/// (`see https://x.com now`) is a label.
 fn is_own_target(label: &[(String, Style)], url: &str) -> bool {
-    // The two can differ by a closing `/` at most, so most labels are told
-    // apart by their length alone, before any text is put together.
+    // Most labels are told apart by their length alone, before any text is
+    // put together: the two differ by a closing `/` or by the `mailto:`.
     let len: usize = label.iter().map(|(text, _)| text.len()).sum();
-    if len.abs_diff(url.len()) > 1 || !links::is_whole_url(url) {
+    let mail = mail_address(url);
+    if len.abs_diff(url.len()) > 1 && mail.is_none_or(|address| address.len() != len) {
         return false;
     }
     let text: String = label.iter().map(|(text, _)| text.as_str()).collect();
-    same_page(&text, url)
+    text == url || (links::is_whole_url(url) && same_page(&text, url)) || mail == Some(&text)
 }
 
-/// Whether two addresses are one page as written: equal, or apart only by a
-/// closing `/` — `https://x.com` over a link to `https://x.com/`.
+/// The address a `mailto:` target names — the scheme in any case, as a URL's
+/// is — or `None` for any other target.
+fn mail_address(url: &str) -> Option<&str> {
+    const SCHEME: &str = "mailto:";
+    let (scheme, address) = url.split_at_checked(SCHEME.len())?;
+    scheme.eq_ignore_ascii_case(SCHEME).then_some(address)
+}
+
+/// Whether two addresses are one page as written, compared the way
+/// addresses are: a closing `/` given or taken (`https://x.com` over a link
+/// to `https://x.com/`), the scheme and host without their case
+/// (`https://GitHub.com/x` is `https://github.com/x`), and everything after
+/// the host exactly — a path's case is the server's to read, so
+/// `https://bit.ly/AbCd` and `https://bit.ly/aBcD` are two pages.
 fn same_page(a: &str, b: &str) -> bool {
-    a.trim_end_matches('/') == b.trim_end_matches('/')
+    let (a, b) = (a.trim_end_matches('/'), b.trim_end_matches('/'));
+    let host = host_end(a);
+    host == host_end(b) && a[..host].eq_ignore_ascii_case(&b[..host]) && a[host..] == b[host..]
+}
+
+/// Where the scheme and host of a web address end: at the first `/`, `?` or
+/// `#` past its `://`, else at its end. `0` for a text with no `://` — a
+/// path, a `mailto:` — which has no part to read without case.
+fn host_end(address: &str) -> usize {
+    let Some(scheme) = address.find("://") else {
+        return 0;
+    };
+    let start = scheme + "://".len();
+    address[start..]
+        .find(['/', '?', '#'])
+        .map_or(address.len(), |end| start + end)
 }
 
 /// Append a plain-text node's segments under `base`, autolinking bare URLs

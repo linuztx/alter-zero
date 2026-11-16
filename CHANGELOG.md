@@ -88,12 +88,14 @@ release heading when a version is cut.
   there it would be lost; `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides
   for any terminal. A link to a file or an anchor always shows its target,
   and so does a label that spells a different address than the one it
-  opens. On every terminal a link written as its own address,
-  `[https://x.com](https://x.com)`, is no longer printed twice, and a label
-  of several words is one link rather than one per word. `/export` keeps
-  every address in the text it writes, and nothing renders slower: a reply
-  full of links draws in about a third less time as labels, and one with no
-  link in it in slightly less than before (`docs/links.md`).
+  opens, however the label is written. On every terminal a link whose
+  label is its own target is no longer printed twice — a file named by its
+  path, `` [`src/links.rs`](src/links.rs) ``, or an address written out —
+  a link with no target is just its label, and a label of several words is
+  one link rather than one per word. `/export` keeps every address in the
+  text it writes, and nothing renders slower: a reply full of links draws
+  in about a third less time as labels, and one with no link in it in
+  slightly less than before (`docs/links.md`).
 
 ### Fixed
 

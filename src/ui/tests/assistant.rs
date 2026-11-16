@@ -1115,12 +1115,14 @@ fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
 
 #[test]
 fn a_code_labelled_link_marks_only_the_two_names() {
-    // The reported render: `` "[`AGENTS.md`](AGENTS.md)" `` shows
-    // `"AGENTS.md (AGENTS.md)"` — the label keeps its inline-code colour, the
-    // shown target the link dress, and the quotes and parens around them stay
-    // plain prose. Both names carry the verbatim target; nothing else does,
-    // at every width, the hard-breaking one included.
-    let source = "\"[`AGENTS.md`](AGENTS.md)\"";
+    // `` "[`the guide`](AGENTS.md)" `` shows `"the guide (AGENTS.md)"` — the
+    // label keeps its inline-code colour, the shown target the link dress,
+    // and the quotes and parens around them stay plain prose. Both names
+    // carry the verbatim target; nothing else does, at every width, the
+    // hard-breaking one included. (The report this came from had the file's
+    // own name as the label; that link is written once now — the test
+    // after this one.)
+    let source = "\"[`the guide`](AGENTS.md)\"";
     for width in [8, 26, 80] {
         let lines = message_lines(Role::Assistant, source, width);
         let spans: Vec<_> = lines.iter().flat_map(|line| &line.spans).collect();
@@ -1136,31 +1138,67 @@ fn a_code_labelled_link_marks_only_the_two_names() {
                 assert_eq!(span.style, Style::default(), "prose at {width}: {span:?}");
             }
         }
-        assert_eq!(linked, "AGENTS.mdAGENTS.md", "both names link at {width}");
+        let linked: String = linked.split_whitespace().collect();
+        assert_eq!(linked, "theguideAGENTS.md", "both names link at {width}");
         assert_eq!(parens, "()", "exactly one pair of parens at {width}");
         // The label keeps its own inline-code dress — a hard break splits it
         // into fragments, so read the colour off the run, not one span.
         let labelled: String = spans
             .iter()
             .filter(|s| s.style.fg == Some(inline_code_color()))
-            .map(|s| s.content.as_ref())
+            .flat_map(|s| s.content.split_whitespace())
             .collect();
-        assert_eq!(
-            labelled, "AGENTS.md",
-            "the code label at {width}: {spans:?}"
-        );
+        assert_eq!(labelled, "theguide", "the code label at {width}: {spans:?}");
     }
-    // Wide enough not to hard-break, the row reads exactly as before the
-    // parens lost the link dress — this fix moves no character.
+    // Wide enough not to hard-break, the row reads as it is written.
     let joined: String = message_lines(Role::Assistant, source, 80)
         .iter()
         .flat_map(|line| &line.spans)
         .map(|s| s.content.as_ref())
         .collect();
     assert!(
-        joined.ends_with("\"AGENTS.md (AGENTS.md)\""),
-        "visible text unchanged: {joined:?}"
+        joined.ends_with("\"the guide (AGENTS.md)\""),
+        "the label, then its target: {joined:?}"
     );
+}
+
+#[test]
+fn a_file_named_by_its_own_path_is_written_once() {
+    // How a reply points at a file: `` [`src/ui/inline.rs`](src/ui/inline.rs) ``.
+    // The path is the label and the target both, so it is written once — as
+    // the link, every fragment of it opening the whole path however narrow
+    // the row — where it used to read `src/ui/inline.rs (src/ui/inline.rs)`.
+    let source = "The rule lives in [`src/ui/inline.rs`](src/ui/inline.rs), tested beside it.";
+    for width in [9, 24, 80] {
+        for display in [
+            crate::links::TargetDisplay::Shown,
+            crate::links::TargetDisplay::Hidden,
+        ] {
+            let lines = crate::links::with_target_display(display, || {
+                message_lines(Role::Assistant, source, width)
+            });
+            let spans: Vec<_> = lines.iter().flat_map(|line| &line.spans).collect();
+            let linked: String = spans
+                .iter()
+                .filter(|span| {
+                    crate::links::style_link(&span.style).as_deref() == Some("src/ui/inline.rs")
+                })
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(linked, "src/ui/inline.rs", "at {width}, {display:?}");
+            // A narrow row breaks the path; read it with the breaks out.
+            let text: String = spans
+                .iter()
+                .flat_map(|span| span.content.split_whitespace())
+                .collect();
+            assert_eq!(
+                text.matches("inline.rs").count(),
+                1,
+                "the path is on screen once at {width}, {display:?}: {text:?}"
+            );
+            assert!(!text.contains('('), "no parenthesis at {width}: {text:?}");
+        }
+    }
 }
 
 // --- Labelled links through the whole renderer (docs/links.md) ---

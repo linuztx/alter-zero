@@ -345,6 +345,34 @@ fn label_only_links_stream_exactly_as_they_render_whole() {
 }
 
 #[test]
+fn links_written_once_stream_exactly_as_they_render_whole() {
+    // A label that is its own target is written once, and a link with no
+    // target is its label (`docs/links.md` *The same on every terminal*).
+    // Both are decided by the finished link, so a streamed reply holding
+    // them commits what the whole render shows, in either presentation.
+    let docs = [
+        "The rule lives in [`src/ui/inline.rs`](src/ui/inline.rs), beside \
+         [AGENTS.md](AGENTS.md) — write to [me@example.com](mailto:me@example.com).",
+        "an [empty target]() then [](#anchor), [#install](#install) and \
+         [agents.md](AGENTS.md) in a row, [x.com/d](https://x.com/d) last",
+        "| File | Mail |\n| --- | --- |\n| [docs/links.md](docs/links.md) | \
+         [me@example.com](mailto:me@example.com) |\n| [none]() | [the guide](AGENTS.md) |\n\ndone",
+    ];
+    for display in [
+        crate::links::TargetDisplay::Shown,
+        crate::links::TargetDisplay::Hidden,
+    ] {
+        crate::links::with_target_display(display, || {
+            for (i, doc) in docs.iter().enumerate() {
+                for width in [7u16, 14, 30, 80] {
+                    assert_stream_matches_batch(doc, width, &format!("{display:?} doc {i}"));
+                }
+            }
+        });
+    }
+}
+
+#[test]
 fn a_streaming_url_never_commits_a_plain_styled_prefix() {
     // The minimal reproduction of the autolink instability the fuzz found: a
     // bare URL streams in char by char. Detection flips on only once enough

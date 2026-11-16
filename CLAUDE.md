@@ -1105,8 +1105,10 @@ for a label that spells another address than the one it opens — read off
 the label's text as the reader sees it, its runs joined and what never
 reaches the screen left out (`shows_another_address`), so an address split
 by emphasis, a code span, a zero-width or a control character is still
-one — while a link with no label is its target and a label that is its own
-web address is written once on every terminal;
+one — while on every terminal a link with no label is its target, a label
+that is its own target is written once as the link (`is_own_target`: a
+file named by its path, a web address give or take a closing `/`, a mail
+address under its `mailto:`) and a link with no target is its label;
 `tokenize_words` hands each word the style of
 the space in front of it (`Word::joiner`), so a label of several words is
 one underlined, clickable run instead of a link per word; `ui::export_text`

@@ -190,10 +190,13 @@ it would cost the reader something:
   and the label is all there is to trust. A label reading
   `https://bank.example` over a link to `https://evil.example/login` keeps
   `https://bank.example (https://evil.example/login)` on screen. A label
-  that *is* its target, give or take a closing `/`, shows once; letter case
-  counts, since `https://bit.ly/AbCd` and `https://bit.ly/aBcD` are two
-  pages. The address is read two ways (`shows_another_address`), because
-  either alone can be written around:
+  that *is* its target shows once, and the two are compared the way
+  addresses are (`same_page`): a closing `/` given or taken, the scheme and
+  host without their case — `https://GitHub.com/x` is
+  `https://github.com/x` — and everything past the host exactly, since a
+  path's case is the server's to read and `https://bit.ly/AbCd` and
+  `https://bit.ly/aBcD` are two pages. The address is read two ways
+  (`shows_another_address`), because either alone can be written around:
   - off the label's text **as the reader sees it** — its runs joined into
     one string, every character that never reaches the screen left out
     (`is_seen`: one that takes no column, and a control character, which a
@@ -213,7 +216,7 @@ it would cost the reader something:
 
 ### The same on every terminal
 
-Two links read alike in both presentations, because the target written
+Three links read alike in both presentations, because the target written
 after the label would add nothing:
 
 - **A link with no label to see** — `[](url)`, a label of spaces or of
@@ -221,13 +224,29 @@ after the label would add nothing:
   characters), an image with no alt text — is its target, in the link
   dress. It used to print ` (url)`: a parenthesis around the only thing on
   screen.
-- **A label that is its own web address** — `[https://x.com](https://x.com/)`,
-  give or take the closing `/`, which is how a model often writes a link —
-  is written once. It used to print the address and then the same address
-  in parentheses. A label that only *holds* its target
-  (`see https://x.com now`) is still a label, and a target that is no web
-  address keeps its `name (target)` shape whatever the name is (*The
-  decoration parens*).
+- **A label that is its own target** is written once, as the link
+  (`is_own_target`). `` [`src/links.rs`](src/links.rs) `` is how a reply
+  points at a file, and it printed `src/links.rs (src/links.rs)`; a model
+  writing a link as `[https://x.com](https://x.com/)` printed the address
+  and then the same address in parentheses. Three ways to be it, each
+  losing nothing by being written once: **character for character**,
+  whatever the target is — a path, an anchor, any scheme; a **web address**
+  that is the same page as its target (`same_page`: a closing `/` and the
+  case of the scheme and host aside); and a **mail address** under its own
+  `mailto:`. Letter case counts everywhere else (`agents.md` is another
+  file than `AGENTS.md` where case does), a label that only *holds* its
+  target (`see https://x.com now`) is still a label, and a name that is not
+  the target keeps its `name (target)` shape (*The decoration parens*).
+
+  One near-miss is kept on purpose: `[x.com/d](https://x.com/d)` is
+  `x.com/d (https://x.com/d)` wherever the address is shown. That
+  presentation is for a terminal not known to open hyperlinks, where the
+  text is all there is to open the page with — and a terminal's own
+  detection finds `https://x.com/d`, not `x.com/d`. Where the terminal does
+  open them the label stands alone like any other.
+- **A link with no target** — `[text]()` — is its label, as the prose it
+  then is: no dress and no hyperlink promise a click. It used to print
+  `text ()`.
 
 ### The label's dress
 
@@ -269,11 +288,13 @@ prose happens to wrap in parens (`(see https://x.com/y)`) always read that
 way, since `find_urls` hands the `)` back under its unbalanced-closer rule,
 and a `● Read({path})` header's parens have always stayed plain.
 
-So `` [`AGENTS.md`](AGENTS.md) `` shows `AGENTS.md (AGENTS.md)` on every
+So `` [`the guide`](AGENTS.md) `` shows `the guide (AGENTS.md)` on every
 terminal — its target is no web address: the label in the inline-code
 colour, the shown target in link blue + underline, the parens (and any
 quotes around the whole thing) in the reply's own prose colour, and exactly
-those two names carrying the verbatim `AGENTS.md` target.
+those two names carrying the verbatim `AGENTS.md` target. (The report had
+the file's own name as the label; that link is written once now — *The same
+on every terminal*.)
 
 ## Where the pieces live
 
@@ -496,7 +517,7 @@ partial target commits. Quote-delimited code URLs, punctuation-ending
 literals, carrier-only diff repaints, and combining marks in painted
 headings have explicit regressions. The decoration parens have both halves
 too — the segments' own dress in `ui/tests/inline.rs`, and the whole
-`` "[`AGENTS.md`](AGENTS.md)" `` render through `message_lines` in
+`` "[`the guide`](AGENTS.md)" `` render through `message_lines` in
 `ui/tests/assistant.rs`, each over several widths, since the wrap
 re-coalesces a row's spans by style and a paren that kept the link dress
 would come back as its own underlined span.
@@ -547,16 +568,24 @@ that keeps the address — a target that is no web address or is past the
 length a hyperlink carries, a label showing another address (whole, split
 across emphasis or a code span, in an image's alt text, around a zero-width
 or control character), an unmarked link — as *equal to* the other
-presentation, segment for segment; and the
-two links that read alike in both, a label-less one as its target and a
-self-labelled one written once.
+presentation, segment for segment; and the three links that read alike in
+both: a label-less one as its target, one whose label is its target written
+once as the link (a path, a code-span path, an anchor, a `file://` URL, a
+mail address under `mailto:` in either case) beside the near-misses that
+keep `name (target)` (another case, an edge space, another mail address, a
+scheme-less web address), and one with no target as its label in plain
+prose; and the comparison itself — a host and a scheme in another case as
+the same page, a path, a query or a fragment in another case as another.
 `ui/tests/assistant.rs` runs the label through a paragraph, a list item, a
-quote, a heading and a table cell, and requires a table to narrow to its
-labels while staying a grid; `ui/tests/stream_stress.rs` drives the
+quote, a heading and a table cell, requires a table to narrow to its
+labels while staying a grid, and renders a file named by its own path once
+at widths that hard-break it, every fragment opening the whole path;
+`ui/tests/stream_stress.rs` drives the
 streaming differential — committed rows a stable prefix of the batch
 render, scrollback plus strip the reply so far, carriers compared — over
 link-heavy documents and a sweep of the hostile soup under this
-presentation; `ui/tests/export_view.rs` requires the export to spell the
+presentation, and over the links written once and the target-less one
+under both; `ui/tests/export_view.rs` requires the export to spell the
 address out while the screen shows the label. **Phase 158** plays the
 dummy's markdown tour three times in a tmux pane — which the app's own rule
 counts as a terminal that keeps the address: with

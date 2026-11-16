@@ -683,17 +683,165 @@ fn a_label_that_is_its_own_target_is_written_once_on_every_terminal() {
         assert!(wears_link_dress(&segs[0].1), "{source:?}");
         assert_eq!(label_only(source, Style::default()), segs, "{source:?}");
     }
-    // A label that only *holds* its target is still a label, and a target
-    // that is no web address is still spelled out after its name.
-    for (source, text) in [
+    // A label that only *holds* its target is still a label.
+    let source = "[see https://x.com/d now](https://x.com/d)";
+    let segs = inline_spans(&parse_inline(source), Style::default());
+    assert_eq!(text_of(&segs), "see https://x.com/d now (https://x.com/d)");
+}
+
+#[test]
+fn a_label_that_is_its_target_is_written_once_whatever_the_target() {
+    // `` [`src/links.rs`](src/links.rs) `` is how a reply points at a file,
+    // and it printed the path twice — `src/links.rs (src/links.rs)`. A label
+    // that is, character for character, the target it links to says
+    // everything the target would, so it is written once and is the link:
+    // on every terminal, since nothing is hidden. A mail address is its
+    // target without the `mailto:` in front.
+    for (source, text, target) in [
+        ("[AGENTS.md](AGENTS.md)", "AGENTS.md", "AGENTS.md"),
         (
-            "[see https://x.com/d now](https://x.com/d)",
-            "see https://x.com/d now (https://x.com/d)",
+            "[`src/links.rs`](src/links.rs)",
+            "src/links.rs",
+            "src/links.rs",
         ),
-        ("[AGENTS.md](AGENTS.md)", "AGENTS.md (AGENTS.md)"),
+        (
+            "[**docs/links.md**#testing](docs/links.md#testing)",
+            "docs/links.md#testing",
+            "docs/links.md#testing",
+        ),
+        ("[#install](#install)", "#install", "#install"),
+        (
+            "[file:///etc/hosts](file:///etc/hosts)",
+            "file:///etc/hosts",
+            "file:///etc/hosts",
+        ),
+        (
+            "[me@example.com](mailto:me@example.com)",
+            "me@example.com",
+            "mailto:me@example.com",
+        ),
+        (
+            "[me@example.com](MAILTO:me@example.com)",
+            "me@example.com",
+            "MAILTO:me@example.com",
+        ),
+    ] {
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(source), Style::default())
+            });
+            assert_eq!(text_of(&segs), text, "{source:?} {display:?}");
+            for (run, style) in &segs {
+                assert_eq!(
+                    style_link(style).as_deref(),
+                    Some(target),
+                    "{source:?} {display:?}: {run:?} opens the target"
+                );
+                assert!(wears_link_dress(style), "{source:?} {display:?}: {run:?}");
+            }
+        }
+    }
+    // Emphasis inside the label stays under the dress.
+    let bold = inline_spans(
+        &parse_inline("[**docs/links.md**#testing](docs/links.md#testing)"),
+        Style::default(),
+    );
+    assert!(bold[0].1.add_modifier.contains(Modifier::BOLD), "{bold:?}");
+}
+
+#[test]
+fn a_label_that_only_resembles_its_target_keeps_the_target_after_it() {
+    // Written once only when nothing is lost by it. A name that differs from
+    // the path by its case is another file where case counts; a mail address
+    // over another one is the spoof a hidden target would be; and where the
+    // terminal is not known to open hyperlinks the whole web address stays,
+    // scheme included, since the text is then all there is to open it with.
+    for (source, text) in [
+        ("[the guide](AGENTS.md)", "the guide (AGENTS.md)"),
+        ("[agents.md](AGENTS.md)", "agents.md (AGENTS.md)"),
+        ("[AGENTS](AGENTS.md)", "AGENTS (AGENTS.md)"),
+        ("[ AGENTS.md](AGENTS.md)", " AGENTS.md (AGENTS.md)"),
+        (
+            "[me@example.com](mailto:you@example.com)",
+            "me@example.com (mailto:you@example.com)",
+        ),
+        (
+            "[mailto:me@example.com](me@example.com)",
+            "mailto:me@example.com (me@example.com)",
+        ),
+        ("[x.com/d](https://x.com/d)", "x.com/d (https://x.com/d)"),
     ] {
         let segs = inline_spans(&parse_inline(source), Style::default());
         assert_eq!(text_of(&segs), text, "{source:?}");
+    }
+}
+
+#[test]
+fn an_address_is_compared_the_way_addresses_are() {
+    // A scheme and a host read the same in any case — `https://GitHub.com/x`
+    // is `https://github.com/x` — so a label apart from its target only
+    // there is still its own address: written once, with no other address
+    // to keep the target on screen for.
+    for (source, text) in [
+        (
+            "[https://GitHub.com/linuztx](https://github.com/linuztx)",
+            "https://GitHub.com/linuztx",
+        ),
+        ("[HTTPS://X.COM/d](https://x.com/d)", "HTTPS://X.COM/d"),
+        ("[https://X.com](https://x.com/)", "https://X.com"),
+    ] {
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(source), Style::default())
+            });
+            assert_eq!(text_of(&segs), text, "{source:?} {display:?}");
+        }
+    }
+    // Past the host, case is the server's to read: another path, query or
+    // fragment is another page, and both stay on screen.
+    for (label, target) in [
+        ("https://bit.ly/AbCd", "https://bit.ly/aBcD"),
+        ("https://x.com/Secret", "https://x.com/secret"),
+        ("https://x.com/a?Q=1", "https://x.com/a?q=1"),
+        ("https://x.com/a#Top", "https://x.com/a#top"),
+    ] {
+        let source = format!("[{label}]({target})");
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(&source), Style::default())
+            });
+            assert_eq!(
+                text_of(&segs),
+                format!("{label} ({target})"),
+                "{source:?} {display:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_link_with_no_target_is_its_label() {
+    // `[text]()` has nothing to open and nothing to show: it printed
+    // `text ()`, an empty pair of parentheses after the label. It is its
+    // label, as prose — no dress and no hyperlink promise a click.
+    for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+        let segs = with_target_display(display, || {
+            inline_spans(
+                &parse_inline("see [the **notes**]() here"),
+                Style::default(),
+            )
+        });
+        assert_eq!(text_of(&segs), "see the notes here", "{display:?}");
+        assert!(linked_segments(&segs).is_empty(), "{display:?}: {segs:?}");
+        assert!(
+            !segs.iter().any(|(_, style)| wears_link_dress(style)),
+            "{display:?}: {segs:?}"
+        );
+        // And with no label either there is nothing at all.
+        let bare = with_target_display(display, || {
+            inline_spans(&parse_inline("see []() here"), Style::default())
+        });
+        assert_eq!(text_of(&bare), "see  here", "{display:?}");
     }
 }
 

@@ -183,10 +183,12 @@ which Ctrl+V reads the clipboard from.
   VS Code, Alacritty, foot, the VTE family, Windows Terminal, a herdr pane;
   the answer is what names the terminal over `ssh`; never under a
   multiplexer or in an editor's own terminal, and
-  `ALTER_ZERO_LINK_TARGETS=hide` / `show` overrides it), and
-  only for a web address a hyperlink can carry whose label names no other
-  address. On every terminal a link with no label is its target and a label
-  that is its own address is written once. A label of several words is one
+  `ALTER_ZERO_LINK_TARGETS=hide` / `show` overrides it), and only for a web
+  address a hyperlink can carry whose label spells no other address. On
+  every terminal a link with no label is its target, a label that is its
+  own target — a file named by its path, an address written out — is
+  written once, and a link with no target is its label. A label of several
+  words is one
   underlined, clickable run, spaces included; `/export` spells the address
   out whatever the screen shows. The URL
   rides from the renderer (where it is still whole) to the paint boundary in
