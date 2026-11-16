@@ -5,6 +5,7 @@
 use super::*;
 use crate::app::{AgentGroup, AgentGroupEntry, Reasoning, View};
 use crate::ui::transcript::{Pin, ellipsized, pinned_rows};
+use crate::ui::wrap::cols;
 
 /// A page's rows, plain and right-trimmed.
 fn texts(page: &TranscriptPage) -> Vec<String> {
@@ -583,6 +584,147 @@ fn the_mark_wears_the_texts_ink_but_never_its_link() {
         crate::links::style_link(&cut.spans[1].style).is_some(),
         "the path keeps its own link"
     );
+}
+
+// --- the cache against a fresh build, and every width ---
+
+#[test]
+fn the_cached_pager_paints_a_fresh_page_through_a_session() {
+    // The cache walks its frozen prefix once and its live tail per refresh;
+    // whatever happens to the conversation, what it paints — pins and all —
+    // is what a from-scratch page paints, at every scroll. A command that
+    // wraps keeps a two-row header in play, so cut pins are compared too.
+    // (Adapted from the session-long check of the parallel implementation on
+    // feat/transcript-pinned-headers.)
+    let mut app = App::new();
+    let mut cache = TranscriptCache::new();
+    let mut check = |app: &mut App, what: &str| {
+        let page = transcript_page(app, 60);
+        assert_eq!(cache.entries(app, 60).to_vec(), page.entries, "{what}");
+        for scroll in 0..=page.lines.len() {
+            app.tool_scroll = scroll;
+            let mut expected = buffer(60, 12);
+            render_tool_view(expected.area, &mut expected, app, &page);
+            let mut actual = buffer(60, 12);
+            cache.render(actual.area, &mut actual, app);
+            assert_eq!(actual, expected, "{what}: scroll {scroll}");
+        }
+    };
+    let command = "seq 1 20 # a comment long enough to wrap this header onto a second row";
+    check(&mut app, "empty");
+    app.record_user_message("go");
+    check(&mut app, "a prompt");
+    app.begin_stream();
+    app.push_chunk("working on it");
+    check(&mut app, "a streaming reply");
+    app.flush_streaming_segment();
+    app.start_tool("Bash", command, None);
+    check(&mut app, "a running call");
+    app.push_tool_output(&format!("{}\n", numbered("", 20)));
+    check(&mut app, "its streamed output");
+    app.end_tool(&numbered("", 20), true);
+    check(&mut app, "the resolved call");
+    app.push_chunk("done");
+    app.finish_stream();
+    app.end_turn(2);
+    check(&mut app, "the settled turn");
+    app.begin_shell("seq 1 20");
+    check(&mut app, "a running shell command");
+    app.push_tool_output(&format!("{}\n", numbered("", 20)));
+    check(&mut app, "its live output");
+    app.end_tool(&numbered("", 20), true);
+    app.finish_stream();
+    check(&mut app, "the settled shell cell");
+    app.backtrack.selected = Some(0);
+    check(&mut app, "a backtrack highlight");
+    app.backtrack.selected = None;
+    app.queued.push_back(batch(&["later"]));
+    check(&mut app, "a queued message");
+    app.queued.clear();
+    app.load_session(vec![
+        msg(Role::User, "resumed"),
+        msg(Role::Assistant, "hello"),
+    ]);
+    check(&mut app, "a resumed session");
+}
+
+#[test]
+fn appending_to_the_transcript_never_rewalks_the_frozen_entries() {
+    // The entries are walked with the rows, so they share the rows'
+    // guarantee: a committed item is walked once
+    // (docs/tool-view-performance.md).
+    let mut app = command_app("ls -la", 30);
+    let mut cache = TranscriptCache::new();
+    let before = cache.entries(&app, 60).to_vec();
+    let rendered = cache.item_renders;
+    app.record_user_message("and again");
+    let after = cache.entries(&app, 60).to_vec();
+    assert_eq!(after[..before.len()], before[..]);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(cache.item_renders, rendered + 1);
+}
+
+#[test]
+fn pins_hold_at_every_width_down_to_one_column() {
+    // Down to a single column, whatever the cell — a command far wider than
+    // the row, a `!` command, an agent's description, CJK: something pins at
+    // every width, a cut pin's last row never runs past the terminal, and
+    // the cache paints exactly what a fresh page paints. (Adapted from the
+    // width sweep of the parallel implementation; there a pin is rebuilt to
+    // fit the width, here it is the cell's own rows, so only the row a cut
+    // closes is new.)
+    let mut shell = tool(
+        "echo 天气预报 && seq 1 40",
+        "",
+        ToolStatus::Ok,
+        &numbered("", 40),
+    );
+    shell.shell = true;
+    let mut app = App::new();
+    app.history = vec![
+        HistoryItem::Tool(tool(
+            "Bash",
+            &"curl https://example.com/天气/预报 ".repeat(8),
+            ToolStatus::Failed,
+            &numbered("", 40),
+        )),
+        msg(Role::Shell, "echo 天气预报 && seq 1 40"),
+        HistoryItem::Tool(shell),
+        HistoryItem::AgentGroup(AgentGroup {
+            background: false,
+            agents: vec![agent_entry("a1", &"查询华沙的天气 ".repeat(6))],
+            batch: None,
+            timestamp: String::new(),
+        }),
+    ];
+    let mut cache = TranscriptCache::new();
+    for width in 1..=50u16 {
+        let page = transcript_page(&app, width);
+        let mut pinned = 0;
+        for scroll in 0..page.lines.len() {
+            let Some(pin) = pinned_rows(&page.entries, scroll, 9) else {
+                continue;
+            };
+            pinned += 1;
+            if pin.cut {
+                let last = ellipsized(page.lines[pin.header.end - 1].clone(), width);
+                assert!(
+                    cols(&plain(&last)) <= usize::from(width),
+                    "{width} columns, scroll {scroll}: {:?}",
+                    plain(&last)
+                );
+            }
+        }
+        assert!(pinned > 0, "{width} columns: something pins");
+        for scroll in (0..page.lines.len()).step_by(3) {
+            app.tool_scroll = scroll;
+            let mut fresh = buffer(width, 14);
+            render_tool_view(fresh.area, &mut fresh, &app, &page);
+            let mut cached = buffer(width, 14);
+            cache.render(cached.area, &mut cached, &app);
+            assert_eq!(cached, fresh, "{width} columns, scroll {scroll}");
+        }
+    }
 }
 
 // --- the chrome ---

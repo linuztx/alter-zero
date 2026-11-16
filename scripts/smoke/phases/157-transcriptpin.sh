@@ -67,4 +67,128 @@ keys "$S157" q
 wait_for 5 "$S157" -F "dummy_model_name" ||
 	fail "q did not bring the conversation back"
 tmux kill-session -t "$S157" 2>/dev/null
+
+# ---- Part B: backend tool cells on a resumed session ----
+# A handcrafted rollout (the Phase 48 shape): a prompt, two `bash` calls
+# taller than the pane — the second's command wider than it, so its header
+# wraps onto two rows — and the replies between them.
+#   (a) Ctrl+O opens tail-following deep in the wide command's output: both
+#       rows of its header are pinned, the whole command on screen;
+#   (b) ← opens that cell at its own first row, ↓ scrolls its output under
+#       the two-row pin;
+#   (c) from the top, → walks entry by entry to the first call, and paging
+#       into its output pins `● Bash(seq 1 60)`;
+#   (d) → and Esc sent in ONE write — a laggy link batching two keys into one
+#       frame — still open the backtrack preview with its highlight on
+#       screen: a step pending when the preview begins is dropped, where it
+#       used to land after the preview's scroll and push the highlighted
+#       message off the top;
+#   (e) the preview's first hint row stops promising the entry step, since
+#       ←/→ step the highlight there, and q cancels it.
+S157B="${S}_transcriptpin_tools"
+TP_DIR="$(work_dir transcriptpin)"
+TP_SESSIONS="$(mktemp -d "$SMOKE_TMP/transcriptpin-sessions.XXXXXX")"
+mkdir -p "$TP_SESSIONS/2026/07/23"
+python3 - "$TP_SESSIONS/2026/07/23/rollout-2026-07-23T10-00-00-15715716.jsonl" "$TP_DIR" <<'PY'
+import json, sys
+
+path, cwd = sys.argv[1], sys.argv[2]
+stamp = "2026-07-23T10:00:00.000Z"
+wide = ("for n in $(seq 1 30); do printf 'row %s\\n' \"$n\"; done "
+        "# a deliberately long command line, wider than the pane, to wrap its header")
+
+
+def record(kind, payload):
+    return json.dumps({"timestamp": stamp, "type": kind, "payload": payload})
+
+
+def message(role, text):
+    return record("message", {"role": role, "text": text, "timestamp": "10:00 AM"})
+
+
+def bash(command, output):
+    return record("tool", {
+        "name": "Bash", "args": command, "ok": True,
+        "output": "Exit code: 0\n" + output,
+        "timestamp": "10:00 AM", "shell": False, "truncated": False,
+    })
+
+
+lines = [
+    record("session_meta", {
+        "id": "smoke-157b", "timestamp": stamp, "cwd": cwd,
+        "model": "dummy_model_name", "originator": "alter-zero", "version": "0.1.0",
+    }),
+    message("user", "count to sixty"),
+    message("assistant", "Counting with seq."),
+    bash("seq 1 60", "\n".join(str(n) for n in range(1, 61))),
+    message("assistant", "Counted to sixty."),
+    bash(wide, "\n".join(f"row {n}" for n in range(1, 31))),
+    message("assistant", "Both commands ran."),
+]
+with open(path, "w") as out:
+    out.write("\n".join(lines) + "\n")
+PY
+TP_APP="env $CFG_ENV_NOHIST ALTER_ZERO_SESSIONS_DIR=$TP_SESSIONS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS --continue"
+# tp_row N — pane row N (1-based: row 1 is the title, row 2 the body's top)
+tp_row() { pane "$S157B" | sed -n "${1}p" | sed 's/[[:space:]]*$//'; }
+TP_HEAD1="● Bash(for n in \$(seq 1 30); do printf 'row %s\\n' \"\$n\"; done # a deliberately"
+TP_HEAD2="      long command line, wider than the pane, to wrap its header)"
+launch -c "$TP_DIR" -w "Both commands ran" "$S157B" 80 24 "$TP_APP"
+wait_for 5 "$S157B" -F "dummy_model_name" || fail "the resumed session never reached its composer"
+
+# (a) opening deep in the wide command's output: its whole header pinned.
+keys "$S157B" C-o
+tp_open="$(wait_pane 5 "$S157B" -E '^ +row 30 *$')" || fail "Ctrl+O did not open on the end of the wide command's output"
+note "Part B (a): Ctrl+O tail-following inside the wide command — both header rows pinned"
+printf '%s\n' "$tp_open"
+expect_eq "$(tp_row 2)" "$TP_HEAD1" "the wide command's first header row is not pinned on the top row"
+expect_eq "$(tp_row 3)" "$TP_HEAD2" "the wrapped command's second row is not pinned under its first — the command is not on screen whole"
+
+# (b) ← opens the cell at its own first row; ↓ scrolls the output under the pin.
+keys "$S157B" Left
+wait_pane 5 "$S157B" -E '^  ⎿  row 1 *$' >/dev/null || fail "← did not open the wide command at its first row"
+expect_eq "$(tp_row 2)" "$TP_HEAD1" "← did not put the wide command's header on top"
+for _ in 1 2 3 4 5 6 7 8; do keys "$S157B" Down; done
+tp_scrolled="$(wait_pane 5 "$S157B" -E '^ +row 9 *$')"
+note "Part B (b): eight rows into the wide command's output, under its two-row pin"
+printf '%s\n' "$tp_scrolled"
+expect_eq "$(tp_row 2)" "$TP_HEAD1" "scrolled into the output, the header's first row is not pinned"
+expect_eq "$(tp_row 3)" "$TP_HEAD2" "scrolled into the output, the header's second row is not pinned"
+expect_eq "$(tp_row 4)" "     row 9" "the output does not carry on under the two-row pin"
+expect_lacks "$tp_scrolled" -E '⎿ +row 1 *$' "the output's first row is still on screen — nothing scrolled under the pin"
+
+# (c) → from the top walks entry by entry; paging into the first call pins it.
+keys "$S157B" Home
+# (`.*`, not `─+`: a repeat binds to the last byte of a multibyte glyph.)
+wait_for 5 "$S157B" -E '^─.* 0% ─$' || fail "Home did not reach the top of the transcript"
+keys "$S157B" Right
+wait_for 5 "$S157B" -E '^❯ count to sixty' || fail "→ from the top did not open the prompt"
+keys "$S157B" Right
+wait_for 5 "$S157B" -F "● Counting with seq." || fail "a second → did not open the reply"
+keys "$S157B" Right
+wait_pane 5 "$S157B" -E '^  ⎿  1 *$' >/dev/null || fail "a third → did not open the first bash cell"
+expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "a third → did not put the first bash cell on top"
+keys "$S157B" PageDown PageDown
+tp_paged="$(wait_pane 5 "$S157B" -E '^ +21 *$')"
+note "Part B (c): two pages into the first call's output"
+printf '%s\n' "$tp_paged"
+expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "deep in the first call's output its header is not pinned"
+expect_eq "$(tp_row 3)" "     21" "the first call's output does not carry on under its pin"
+
+# (d) → and Esc in one write: the preview opens with its highlight on screen.
+keys "$S157B" End
+wait_for 5 "$S157B" -E '^ +row 30 *$' || fail "End did not return to the tail"
+keys "$S157B" Right Escape
+tp_preview="$(wait_pane 5 "$S157B" -F "enter to edit message")" || fail "→ and Esc in one write did not open the backtrack preview"
+note "Part B (d): → and Esc in one write — the preview and its highlight"
+printf '%s\n' "$tp_preview"
+expect_has "$tp_preview" -E '^❯ count to sixty' "the preview's highlighted message is off screen — a pending step moved the page past it"
+
+# (e) the preview's hint rows; q cancels.
+expect_lacks "$tp_preview" -F "prev/next entry" "the preview's first hint row still promises the entry step — ←/→ step the highlight there"
+expect_has "$tp_preview" -F "to scroll" "the preview lost its scroll hints"
+keys "$S157B" q
+wait_for 5 "$S157B" -F "dummy_model_name" || fail "q did not cancel the backtrack preview"
+tmux kill-session -t "$S157B" 2>/dev/null
 smoke_finish

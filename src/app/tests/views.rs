@@ -710,3 +710,19 @@ fn a_pending_transcript_step_never_outlives_the_view() {
     app.on_key(ctrl('o')); // reopen
     assert_eq!(app.tool_jump, None, "and the reopen starts clean");
 }
+
+#[test]
+fn a_preview_begun_over_a_pending_transcript_step_drops_it() {
+    // → and Esc can land in one frame (a laggy link batches keys). The draw
+    // scrolls the preview's highlight into view and then resolved the step,
+    // which moved the page past the highlight — so the preview starts by
+    // dropping it, as a close does. (Ported from the parallel implementation
+    // on feat/transcript-pinned-headers.)
+    let mut app = App::new();
+    exchange(&mut app, "one", "a");
+    app.on_key(ctrl('o'));
+    app.on_key(key(KeyCode::Right)); // queued, not yet drawn
+    app.on_key(key(KeyCode::Esc)); // idle with a target: begins the preview
+    assert_eq!(app.backtrack.selected, Some(0));
+    assert_eq!(app.tool_jump, None, "the preview drops it");
+}

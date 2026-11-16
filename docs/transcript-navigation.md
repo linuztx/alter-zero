@@ -118,13 +118,17 @@ settle), by the rule Ctrl+D steps with (`app::views::step_target`, now shared):
 ← opens the start of the entry being read, or the one before it when the
 window already starts there; → the next one; past the first, the top, and
 past the last, the end, which re-engages tail-follow. A close drops a step
-still pending.
+still pending, and so does the start of a backtrack preview (below).
 
 **The backtrack preview keeps ←/→.** While Esc-Esc highlights a user message,
 ← and → step the highlight (`docs/backtrack.md`) and queue no entry step; the
 first hint row then names only the scroll keys
 (`TOOL_VIEW_HINT_SCROLL_KEYS`), since the row under it says what ← and → do
-there.
+there. **Beginning the preview drops a step still pending**
+(`App::begin_backtrack_preview`): a step resolves at the draw, after the
+preview's own scroll to its highlight, so a → that landed in the same frame
+as the Esc — a laggy link batching two keys into one read — used to move the
+page past the highlighted message and open the preview with it off screen.
 
 ## Considered and left out
 
@@ -146,11 +150,21 @@ there.
   entries against a from-scratch build at every step, the pin rule's every
   boundary, the pinned rows on a painted pager (a tool, a wrapped header, a
   cut one, a `!` command, a running command followed live), the cached pager
-  painting exactly what a fresh page paints, the hint rows, and an agent's
-  title and pins.
-- `app::tests::views` — the keys, the preview's own ←/→, and the step's
-  resolution at both ends.
-- `scripts/smoke.sh` Phase 157 — two long `!` commands on the real binary:
-  Ctrl+O opens with the second one's header pinned over its tail, ← opens each
-  command at its own first row, ↓ scrolls the output under the pinned header,
-  → steps on.
+  painting exactly what a fresh page paints — at every scroll through a whole
+  session too (a streaming reply, a wrapped call running and resolving, a `!`
+  command running and settling, a backtrack highlight, a queued message, a
+  resume) — appending that never re-walks the frozen entries, every width
+  from 1 to 50 columns with CJK content (something pins, a cut row fits, the
+  cache paints what a fresh page paints), the hint rows, and an agent's title
+  and pins. The session, append and width tests are adapted from the
+  parallel implementation on `feat/transcript-pinned-headers`.
+- `app::tests::views` — the keys, the preview's own ←/→, a preview begun over
+  a pending step dropping it, and the step's resolution at both ends.
+- `scripts/smoke.sh` Phase 157 — the real binary, in two parts. Two long `!`
+  commands: Ctrl+O opens with the second one's header pinned over its tail, ←
+  opens each command at its own first row, ↓ scrolls the output under the
+  pinned header, → steps on. Then a resumed session with backend `bash`
+  cells: a wrapped command's two header rows pinned over its output, paging
+  into a call's output under `● Bash(seq 1 60)`, → and Esc sent in one write
+  opening the preview with its highlight on screen (the check that failed
+  before the preview dropped a pending step), and the preview's hint rows.

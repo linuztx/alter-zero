@@ -24,8 +24,10 @@ idle, empty composer, a previous user message exists:
 
 Outside a preview, ← and → in the Ctrl+O view step between the transcript's
 entries instead (`docs/transcript-navigation.md`); a preview keeps them for
-the highlight, and while it is up the first hint row names only the scroll
-keys, since the row under it says what ← and → do there.
+the highlight, beginning one drops an entry step still waiting for its draw
+(which would otherwise land after the scroll to the highlight and push it off
+the page), and while it is up the first hint row names only the scroll keys,
+since the row under it says what ← and → do there.
 
 Priming is codex-faithful: **no timeout** (it persists until the second Esc or
 any other key), and **any other key un-primes** — the next keypress just does
