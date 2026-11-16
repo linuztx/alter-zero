@@ -1258,9 +1258,11 @@ upgrades the half-block fallback unless the answering terminal names itself
 WezTerm or Konsole (no unicode placeholders; the variables saying so are only
 the fallback, since herdr keeps them in panes its own libghostty answers for).
 That is what draws real pictures in a **herdr** pane, whose environment says
-`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. Never asked under a
-multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a `linux`/`dumb` console, or with the
-protocol pinned; falling to half-blocks;
+`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. The graphics
+question is never asked under a multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a
+`linux`/`dumb` console, or with the protocol pinned — the name alone may still
+be, for the links (`links::wants_terminal_name`, settled in advance by
+`ALTER_ZERO_LINK_TARGETS`); falling to half-blocks;
 `ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
 `ALTER_ZERO_IMAGES` gates it (`smoke.sh` Phase 107e plays the answering
 terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**

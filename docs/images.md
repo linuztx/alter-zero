@@ -254,10 +254,13 @@ then the cursor report.
 * **When it asks** (`images::graphics_query_wanted`): only when the
   environment left the half-block fallback and nothing pinned the protocol —
   never when it named one, never with `ALTER_ZERO_IMAGE_PROTOCOL` set
-  (`halfblocks` included, which is the way to turn the question off), never
-  with `ALTER_ZERO_IMAGES=0`, never under a multiplexer (which answers nothing
-  itself), and never on a `linux` or `dumb` console, which would print an
-  escape string it does not know.
+  (`halfblocks` included, which is the way to turn the graphics question
+  off), never with `ALTER_ZERO_IMAGES=0`, never under a multiplexer (which
+  answers nothing itself), and never on a `linux` or `dumb` console, which
+  would print an escape string it does not know. The terminal's **name** can
+  still be asked on its own for the links (below);
+  `ALTER_ZERO_LINK_TARGETS=show` or `hide` settles that question in advance,
+  and with both set nothing is asked but the cursor.
 * **The title push/pop** is for tmux. It files an APC string it does not know
   as the pane's title, so a session that *hides* tmux from the environment
   (`docker exec` without `-e TERM`, `ssh` from a tmux whose
