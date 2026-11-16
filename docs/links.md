@@ -135,13 +135,22 @@ it would cost the reader something:
   it must not be the only place the address is.
 - **The label shows another address.** A hidden target is taken on trust,
   and the label is all there is to trust. A label reading
-  `https://bank.example` over a link to `https://evil.example/login` — as a
-  bare URL, in a code span or as an autolink — keeps
+  `https://bank.example` over a link to `https://evil.example/login` keeps
   `https://bank.example (https://evil.example/login)` on screen. A label
-  that *is* its target, give or take a closing `/`, shows once. The check
-  costs nothing extra: a URL the label spells out was marked with itself as
-  the label rendered, so the carrier a run already wears is the address it
-  shows.
+  that *is* its target, give or take a closing `/`, shows once; letter case
+  counts, since `https://bit.ly/AbCd` and `https://bit.ly/aBcD` are two
+  pages. The address is read two ways (`shows_another_address`), because
+  either alone can be written around:
+  - off the label's text **as the reader sees it** — its runs joined into
+    one string, every character that takes no column left out. A label can
+    spell an address with the scheme split by emphasis or a code span
+    (`` ht`tps://bank.example` ``, which the link dress then paints as one
+    unbroken address), in an image's alt text, or around a zero-width space:
+    no single run holds an address then, and the reader sees one all the
+    same;
+  - off the **carriers** its runs already wear: an autolinked address
+    (`<me@bank.example>`) is no `http(s)://` text to find, but it was marked
+    with its own target as the label rendered.
 - **The link could not be marked.** The interner holds eight million
   targets; past that a label has no hyperlink behind it.
 
@@ -471,8 +480,10 @@ kept under the dress and a code span's colour given up; a label of several
 words as one run on its row, at widths that break it between words and
 inside one; edge spaces and two links to one target left alone; each case
 that keeps the address — a target that is no web address or is past the
-length a hyperlink carries, a label showing another address, an unmarked
-link — as *equal to* the other presentation, segment for segment; and the
+length a hyperlink carries, a label showing another address (whole, split
+across emphasis or a code span, in an image's alt text, around a zero-width
+character), an unmarked link — as *equal to* the other presentation,
+segment for segment; and the
 two links that read alike in both, a label-less one as its target and a
 self-labelled one written once.
 `ui/tests/assistant.rs` runs the label through a paragraph, a list item, a

@@ -91,11 +91,12 @@ fn link_spans(text: &[markdown::Inline], url: &str, base: Style, out: &mut Vec<(
         out.extend(label.into_iter().map(|(t, s)| (t, mark(link_dress(s)))));
         return;
     }
-    let repeats = is_own_target(&label, url);
-    out.extend(label.into_iter().map(|(t, s)| (t, mark(s))));
-    if repeats {
+    if is_own_target(&label, url) {
+        // The address is the label: it is the link, however it was written.
+        out.extend(label.into_iter().map(|(t, s)| (t, mark(link_dress(s)))));
         return;
     }
+    out.extend(label.into_iter().map(|(t, s)| (t, mark(s))));
     out.push((" (".to_string(), base));
     out.push((url.to_string(), mark(link_dress(base))));
     out.push((")".to_string(), base));
@@ -115,9 +116,10 @@ fn link_spans(text: &[markdown::Inline], url: &str, base: Style, out: &mut Vec<(
 /// - the target is one a hyperlink **can carry**
 ///   ([`links::HYPERLINK_URI_MAX_BYTES`]): a terminal that drops an
 ///   over-long hyperlink would leave the label with nothing behind it;
-/// - the label does not **show another address**: a hidden target is taken
-///   on trust, and a label reading `https://bank.example` over a link to
-///   somewhere else is the one place that trust is abused.
+/// - the label does not **show another address** ([`shows_another_address`]):
+///   a hidden target is taken on trust, and a label reading
+///   `https://bank.example` over a link to somewhere else is the one place
+///   that trust is abused.
 pub(super) fn hides_target(
     label: &[(String, Style)],
     url: &str,
@@ -127,12 +129,33 @@ pub(super) fn hides_target(
         && carrier.is_some()
         && links::is_whole_url(url)
         && links::osc8_uri_len(url) <= links::HYPERLINK_URI_MAX_BYTES
-        && !label.iter().any(|(_, style)| {
-            // A URL the label spells out was marked with itself as the label
-            // rendered, so the carrier a run already wears is the address it
-            // shows.
-            links::style_link(style).is_some_and(|shown| !same_page(&shown, url))
-        })
+        && !shows_another_address(label, url)
+}
+
+/// Whether `label` spells an address that is not `url`. Read two ways, since
+/// either alone can be written around:
+///
+/// - off the label's text **as the reader sees it** — its runs joined into
+///   one string, with every character that takes no column left out. A
+///   label can spell `https://bank.example` with the scheme split by
+///   emphasis or a code span, in an image's alt text, or around a
+///   zero-width space: no single run holds an address then, and on screen
+///   the label reads as one all the same;
+/// - off the **carriers** its runs already wear — an autolinked address
+///   (`<me@bank.example>`, a `mailto:`) is no `http(s)://` text to find, but
+///   it was marked with its own target as the label rendered.
+fn shows_another_address(label: &[(String, Style)], url: &str) -> bool {
+    let seen: String = label
+        .iter()
+        .flat_map(|(text, _)| text.chars())
+        .filter(|c| cols(c.encode_utf8(&mut [0; 4])) > 0)
+        .collect();
+    links::find_urls(&seen)
+        .into_iter()
+        .any(|address| !same_page(&seen[address], url))
+        || label
+            .iter()
+            .any(|(_, style)| links::style_link(style).is_some_and(|shown| !same_page(&shown, url)))
 }
 
 /// Whether `label` is, whole, the web address it links to —

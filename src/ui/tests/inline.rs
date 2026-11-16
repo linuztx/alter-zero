@@ -718,3 +718,49 @@ fn a_target_too_long_for_a_hyperlink_stays_on_screen() {
         assert_eq!(text_of(&shown), format!("the signed link ({url}) here"));
     }
 }
+
+#[test]
+fn an_address_spelled_across_a_labels_runs_still_keeps_the_real_one_on_screen() {
+    // What the reader sees is the label's text as one string, whatever runs
+    // it was written in. A label could spell `https://bank.example` with the
+    // scheme split by emphasis or a code span, or carry it as an image's alt
+    // text: no single run holds an address, so none was marked — and the
+    // real target went behind a label naming somewhere else. The same for a
+    // character that takes no column: a zero-width space inside `https://`
+    // is invisible on screen, so it cannot hide the address from the check.
+    let target = "https://evil.example/login";
+    for label in [
+        "ht**tps://bank.example**",
+        "ht`tps://bank.example`",
+        "https://*bank.example*/login",
+        "https&#58;//bank.example",
+        "https\\://bank.example",
+        "![https://bank.example](https://img.example/b.png)",
+        "h\u{200b}ttps://bank.example",
+        "https:/\u{200d}/bank.example",
+    ] {
+        let source = format!("[{label}]({target})");
+        let shown = inline_spans(&parse_inline(&source), Style::default());
+        let hidden = label_only(&source, Style::default());
+        assert_eq!(hidden, shown, "{source:?}");
+        assert!(
+            text_of(&hidden).ends_with(&format!(" ({target})")),
+            "{source:?}: {hidden:?}"
+        );
+    }
+    // Split the same way, a label that spells its own target still stands
+    // alone — and reads as the link whichever way it was written.
+    for display in [TargetDisplay::Hidden, TargetDisplay::Shown] {
+        let segs = with_target_display(display, || {
+            inline_spans(
+                &parse_inline("[ht**tps://x.com/d**](https://x.com/d)"),
+                Style::default(),
+            )
+        });
+        assert_eq!(text_of(&segs), "https://x.com/d", "{display:?}");
+        for (text, style) in &segs {
+            assert!(wears_link_dress(style), "{display:?}: {text:?}");
+            assert_eq!(style_link(style).as_deref(), Some("https://x.com/d"));
+        }
+    }
+}
