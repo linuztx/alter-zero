@@ -542,7 +542,7 @@ pub fn target_display() -> TargetDisplay {
 
 /// Show labelled links' targets as `display` on this thread from now on —
 /// the boundary's call, once, before the first row is rendered
-/// ([`target_display_from_env`] is what it passes).
+/// ([`detect_target_display`] is what it passes).
 pub fn set_target_display(display: TargetDisplay) {
     TARGET_DISPLAY.with(|cell| cell.set(display));
 }
@@ -564,12 +564,14 @@ pub fn with_target_display<T>(display: TargetDisplay, f: impl FnOnce() -> T) -> 
 
 /// Environment override for [`TargetDisplay`]: `hide` shows a labelled link
 /// as its label alone, `show` keeps `label (url)`, and anything else — unset
-/// included — leaves it to the terminal ([`target_display_from_env`]).
+/// included — leaves it to the terminal ([`detect_target_display`]).
 pub const LINK_TARGETS_ENV: &str = "ALTER_ZERO_LINK_TARGETS";
 
-/// The [`TargetDisplay`] this environment calls for; `var` reads one
-/// variable. Pure, so every rule is unit-tested while the read stays at the
-/// boundary.
+/// The [`TargetDisplay`] this session calls for. `var` reads one environment
+/// variable; `answered` is the name the terminal gave for itself when the
+/// startup read asked it (`XTVERSION`, `term::query`) — `None` when the read
+/// did not ask or heard nothing. Pure, so every rule is unit-tested while
+/// both reads stay at the boundary.
 ///
 /// A target is hidden only where something is known to open it, since hidden
 /// anywhere else it is simply gone:
@@ -587,13 +589,23 @@ pub const LINK_TARGETS_ENV: &str = "ALTER_ZERO_LINK_TARGETS";
 ///    an outer terminal exported are still in the environment of whatever
 ///    was started inside it. So an editor's own terminal (`NVIM`,
 ///    `VIM_TERMINAL`, `INSIDE_EMACS`, `TERMINAL_EMULATOR`) is unknown
-///    whatever surrounds it, and a terminal that names itself in
-///    `TERM_PROGRAM` is judged by that name alone.
-/// 5. Otherwise the variables and `TERM` values the terminals known to open
-///    hyperlinks set for their own children decide; with none of them, the
-///    target is shown.
+///    whatever surrounds it.
+/// 5. A terminal that **answered** with the name of one known to open
+///    hyperlinks is that terminal: the answer came down the line a hyperlink
+///    goes up, which no variable can say of itself. It is what names the
+///    terminal over `ssh`, where the variables it set for its own children
+///    stay behind and `TERM` is often set down to one the remote host has an
+///    entry for. An answer only ever adds a yes — any other name, or none,
+///    leaves the environment to decide.
+/// 6. A terminal that names itself in `TERM_PROGRAM` is judged by that name
+///    alone, rule 4's reason again.
+/// 7. Otherwise the variables and `TERM` values the terminals known to open
+///    hyperlinks set decide; with none of them, the target is shown.
 #[must_use]
-pub fn target_display_from_env(var: impl Fn(&str) -> Option<String>) -> TargetDisplay {
+pub fn detect_target_display(
+    var: impl Fn(&str) -> Option<String>,
+    answered: Option<&str>,
+) -> TargetDisplay {
     if hyperlinks_disabled(var(HYPERLINKS_ENV).as_deref()) {
         return TargetDisplay::Shown;
     }
@@ -605,7 +617,7 @@ pub fn target_display_from_env(var: impl Fn(&str) -> Option<String>) -> TargetDi
         Some("show") => return TargetDisplay::Shown,
         _ => {}
     }
-    if opens_hyperlinks(&var) {
+    if opens_hyperlinks(&var, answered) {
         TargetDisplay::Hidden
     } else {
         TargetDisplay::Shown
@@ -620,9 +632,9 @@ pub fn target_display_from_env(var: impl Fn(&str) -> Option<String>) -> TargetDi
 const EDITOR_TERMINAL_VARS: [&str; 4] =
     ["NVIM", "VIM_TERMINAL", "INSIDE_EMACS", "TERMINAL_EMULATOR"];
 
-/// Whether the environment names a terminal known to open an OSC 8
-/// hyperlink — rules 3 to 5 of [`target_display_from_env`].
-fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>) -> bool {
+/// Whether this is a terminal known to open an OSC 8 hyperlink — rules 3 to
+/// 7 of [`detect_target_display`].
+fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>, answered: Option<&str>) -> bool {
     let term = var("TERM").unwrap_or_default();
     let sessions = crate::images::MULTIPLEXER_SESSION_VARS.map(var);
     if crate::images::under_multiplexer(
@@ -636,6 +648,9 @@ fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>) -> bool {
     let set = |name: &str| var(name).is_some_and(|value| !value.is_empty());
     if EDITOR_TERMINAL_VARS.into_iter().any(set) {
         return false;
+    }
+    if answered.is_some_and(answers_as_a_linking_terminal) {
+        return true;
     }
     if let Some(program) =
         var("TERM_PROGRAM").filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case("tmux"))
@@ -656,7 +671,8 @@ fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>) -> bool {
         || [
             "KITTY_WINDOW_ID",
             "GHOSTTY_RESOURCES_DIR",
-            "WEZTERM_VERSION",
+            "WEZTERM_PANE",
+            "WEZTERM_EXECUTABLE",
             "ITERM_SESSION_ID",
             "ALACRITTY_WINDOW_ID",
             "ALACRITTY_SOCKET",
@@ -665,6 +681,26 @@ fn opens_hyperlinks(var: &impl Fn(&str) -> Option<String>) -> bool {
         ]
         .into_iter()
         .any(set)
+}
+
+/// Whether the name a terminal answered with (`XTVERSION`) is one known to
+/// open hyperlinks: `kitty(0.36.4)`, `ghostty 1.1.0`,
+/// `WezTerm 20240203-…`, `foot(1.20.2)`, `iTerm2 3.5.11` — a name, then its
+/// version, so the name is the answer's first word: whatever follows it is
+/// no letter or digit of a longer name.
+///
+/// The list is the terminals whose answer is known to read this way. Left
+/// off on purpose: `libghostty`, which is whatever program embeds it (a
+/// herdr pane names itself in `TERM_PROGRAM` instead), `XTerm(…)`, which
+/// reads no hyperlink, and `tmux …`, a multiplexer answering for itself.
+fn answers_as_a_linking_terminal(answer: &str) -> bool {
+    let name = answer.trim_start().to_ascii_lowercase();
+    ["kitty", "ghostty", "wezterm", "foot", "iterm2"]
+        .into_iter()
+        .any(|known| {
+            name.strip_prefix(known)
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric()))
+        })
 }
 
 /// Whether a `TERM_PROGRAM` value is the name of a terminal known to open
@@ -1016,13 +1052,23 @@ mod tests {
 
     // --- How a labelled link shows its target (docs/links.md) ---
 
-    /// An environment of exactly `vars`, for [`target_display_from_env`].
+    /// [`detect_target_display`] in an environment of exactly `vars`, on a
+    /// terminal the startup read heard nothing from.
     fn display_in(vars: &[(&str, &str)]) -> TargetDisplay {
-        target_display_from_env(|name| {
-            vars.iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| (*value).to_string())
-        })
+        display_answering(vars, None)
+    }
+
+    /// [`detect_target_display`] in an environment of exactly `vars`, on a
+    /// terminal that gave the startup read `answered` as its own name.
+    fn display_answering(vars: &[(&str, &str)], answered: Option<&str>) -> TargetDisplay {
+        detect_target_display(
+            |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_string())
+            },
+            answered,
+        )
     }
 
     #[test]
@@ -1040,7 +1086,11 @@ mod tests {
             &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
             &[("TERM", "xterm-256color"), ("ITERM_SESSION_ID", "w0t0p0:1")],
             &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")],
-            &[("TERM", "xterm-256color"), ("WEZTERM_VERSION", "20240203")],
+            &[("TERM", "xterm-256color"), ("WEZTERM_PANE", "0")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("WEZTERM_EXECUTABLE", "/usr/bin/wezterm-gui"),
+            ],
             &[("TERM", "wezterm")],
             &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")],
             &[("TERM", "alacritty")],
@@ -1083,8 +1133,112 @@ mod tests {
             &[("TERM", "xterm-256color"), ("KONSOLE_VERSION", "230804")],
             // An empty value names nothing.
             &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "")],
+            // `LC_TERMINAL` is the one variable of iTerm2's that `ssh`
+            // carries — and so the one that reaches a mosh session too,
+            // which drops every hyperlink on its way to the terminal. It is
+            // not read: over a plain `ssh` iTerm2 answers for itself.
+            &[("TERM", "xterm-256color"), ("LC_TERMINAL", "iTerm2")],
+            // A variable no terminal sets.
+            &[("TERM", "xterm-256color"), ("WEZTERM_VERSION", "20240203")],
         ] {
             assert_eq!(display_in(vars), TargetDisplay::Shown, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_that_names_itself_at_startup_hides_the_target() {
+        // Over ssh the variables a terminal sets for its own children stay
+        // behind, and `TERM` is often set down to one the remote host has an
+        // entry for. The name the terminal answers the startup read with
+        // comes down the very line a hyperlink goes up, so it is this
+        // terminal's — each of these is a real answer.
+        for name in [
+            "kitty(0.36.4)",
+            "ghostty 1.1.0",
+            "WezTerm 20240203-110809-5046fc22",
+            "foot(1.20.2)",
+            "iTerm2 3.5.11",
+            "  kitty(0.36.4)\n",
+        ] {
+            assert_eq!(
+                display_answering(&[("TERM", "xterm-256color")], Some(name)),
+                TargetDisplay::Hidden,
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_naming_no_linking_terminal_leaves_it_to_the_environment() {
+        // xterm reads no hyperlink; tmux forwards one only where its
+        // configuration says so; `libghostty` is whatever embeds it. An
+        // answer can only add a yes — a no stays the environment's to give.
+        for name in [
+            "XTerm(390)",
+            "tmux 3.4",
+            "libghostty",
+            "Konsole 23.08.5",
+            // A name that only opens on a known one is another name.
+            "footage(1.0)",
+            "kittycat 2",
+            "",
+            "   ",
+        ] {
+            assert_eq!(
+                display_answering(&[("TERM", "xterm-256color")], Some(name)),
+                TargetDisplay::Shown,
+                "{name:?}"
+            );
+            assert_eq!(
+                display_answering(
+                    &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")],
+                    Some(name)
+                ),
+                TargetDisplay::Hidden,
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminals_answer_outranks_a_name_an_outer_one_left_behind() {
+        // `TERM_PROGRAM` is inherited by whatever is started inside a
+        // terminal; the answer is given by the one drawing now.
+        assert_eq!(
+            display_answering(
+                &[
+                    ("TERM", "xterm-256color"),
+                    ("TERM_PROGRAM", "Apple_Terminal"),
+                ],
+                Some("WezTerm 20240203-110809-5046fc22")
+            ),
+            TargetDisplay::Hidden
+        );
+    }
+
+    #[test]
+    fn the_terminals_answer_does_not_outrank_what_keeps_the_target() {
+        // Everything that keeps the target for a reason the terminal's name
+        // does not answer still does: no hyperlink written, the user's own
+        // word, a multiplexer in between, an editor's terminal.
+        let kitty = Some("kitty(0.36.4)");
+        let term = ("TERM", "xterm-256color");
+        for vars in [
+            &[term, (HYPERLINKS_ENV, "0")][..],
+            &[term, (LINK_TARGETS_ENV, "show")],
+            &[term, ("TMUX", "/tmp/tmux-0/default,1,0")],
+            &[("TERM", "screen-256color")],
+            &[term, ("STY", "1234.pts-0.host")],
+            &[("TERM", "linux")],
+            &[("TERM", "dumb")],
+            &[term, ("NVIM", "/run/user/1000/nvim.4242.0")],
+            &[term, ("TERMINAL_EMULATOR", "JetBrains-JediTerm")],
+        ] {
+            assert_eq!(
+                display_answering(vars, kitty),
+                TargetDisplay::Shown,
+                "{vars:?}"
+            );
         }
     }
 
@@ -1106,7 +1260,7 @@ mod tests {
             &[
                 ("TERM", "tmux-256color"),
                 ("TERM_PROGRAM", "tmux"),
-                ("WEZTERM_VERSION", "20240203"),
+                ("WEZTERM_PANE", "0"),
             ],
         ] {
             assert_eq!(display_in(vars), TargetDisplay::Shown, "{vars:?}");

@@ -80,18 +80,20 @@ release heading when a version is cut.
   Where your terminal opens hyperlinks (kitty, Ghostty, WezTerm, iTerm2, VS
   Code, Alacritty, foot, GNOME Terminal and the other VTE terminals, Windows
   Terminal, a herdr pane) the label is now the link: underlined in the link
-  colour, and a click opens the address. Under tmux or screen, inside an
-  editor's terminal, and in a terminal the app cannot name, the address
-  stays on screen as before, since hidden there it would be lost;
-  `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides for any terminal. A
-  link to a file or an anchor always shows its target, and so does a label
-  that spells a different address than the one it opens. On every terminal
-  a link written as its own address, `[https://x.com](https://x.com)`, is
-  no longer printed twice, and a label of several words is one link rather
-  than one per word. `/export` keeps every address in the text it writes,
-  and nothing renders slower: a reply full of links draws in about a third
-  less time as labels, and one with no link in it in slightly less than
-  before (`docs/links.md`).
+  colour, and a click opens the address. The terminal is recognised by the
+  variables it sets, and over `ssh`, where those stay behind, by the name
+  it gives when asked at startup (kitty, Ghostty, WezTerm, foot, iTerm2).
+  Under tmux or screen, inside an editor's terminal, and in a terminal the
+  app cannot name, the address stays on screen as before, since hidden
+  there it would be lost; `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides
+  for any terminal. A link to a file or an anchor always shows its target,
+  and so does a label that spells a different address than the one it
+  opens. On every terminal a link written as its own address,
+  `[https://x.com](https://x.com)`, is no longer printed twice, and a label
+  of several words is one link rather than one per word. `/export` keeps
+  every address in the text it writes, and nothing renders slower: a reply
+  full of links draws in about a third less time as labels, and one with no
+  link in it in slightly less than before (`docs/links.md`).
 
 ### Fixed
 

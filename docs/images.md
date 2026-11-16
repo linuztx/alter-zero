@@ -277,6 +277,11 @@ then the cursor report.
   `libghostty`) and falls back to the variables only when the terminal gave
   no name.
 
+That name has a second reader. The viewport keeps it
+(`InlineViewport::terminal_name`), and it is what lets a reply's link hide
+its address over `ssh`, where no variable names the terminal
+(`docs/links.md` *The terminal's own answer*).
+
 The read takes in whatever arrived before the cursor report, which includes
 keys typed while it waited — type-ahead sent before the TUI was up. Those are
 kept aside byte for byte and replayed through the ordinary key handler before

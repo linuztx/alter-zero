@@ -191,6 +191,17 @@ pub struct InlineViewport {
     ///
     /// [`init`]: InlineViewport::init
     images: ImageStore,
+    /// The name the terminal gave for itself when [`init`]'s startup read
+    /// asked it (`XTVERSION`, `term::query`): `WezTerm 20240203-…`,
+    /// `kitty(0.36.4)`. `None` when the read did not ask — the environment
+    /// already named the terminal's graphics, a multiplexer or a console is
+    /// in between, pictures are off — or the terminal gave none. It is the
+    /// one statement about the terminal that is the terminal's own, which
+    /// is what lets a link hide its address over `ssh`
+    /// ([`links::detect_target_display`], `docs/links.md`).
+    ///
+    /// [`init`]: InlineViewport::init
+    terminal_name: Option<String>,
     /// What [`init`]'s startup read took in that was not the terminal's
     /// answer: keys typed while it waited (`term::query`). The loop takes
     /// them once, through [`take_typeahead`], and replays them before its
@@ -346,6 +357,7 @@ impl InlineViewport {
                 std::env::var(links::HYPERLINKS_ENV).ok().as_deref(),
             ),
             images,
+            terminal_name: replies.graphics.version,
             typeahead: replies.typed,
             headless: false,
         })
@@ -374,6 +386,7 @@ impl InlineViewport {
             keyboard_enhanced: false,
             hyperlinks: false,
             images: ImageStore::disabled(),
+            terminal_name: None,
             typeahead: Vec::new(),
             headless: true,
         }
@@ -384,6 +397,14 @@ impl InlineViewport {
     #[must_use]
     pub const fn is_headless(&self) -> bool {
         self.headless
+    }
+
+    /// The name the terminal answered the startup read with, when the read
+    /// asked and it gave one — see the field. Always `None` on a headless
+    /// viewport, which has no terminal to ask.
+    #[must_use]
+    pub fn terminal_name(&self) -> Option<&str> {
+        self.terminal_name.as_deref()
     }
 
     /// The keys typed while [`init`]'s startup read waited on the terminal,

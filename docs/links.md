@@ -66,7 +66,8 @@ was sized to the URL.
 An address hidden where nothing opens it is simply gone — not on screen, not
 clickable, not recoverable. So the target is hidden only where something is
 *known* to open it, and every case that is not a known yes is a no.
-`links::target_display_from_env` decides, pure over the environment:
+`links::detect_target_display` decides, pure over the environment and the
+one thing the terminal says for itself:
 
 1. With `ALTER_ZERO_HYPERLINKS` off no hyperlink is written at all, so the
    address is shown — whatever the override below says.
@@ -80,18 +81,20 @@ clickable, not recoverable. So the target is hidden only where something is
    started inside a terminal inherits that terminal's variables. So an
    **editor's own terminal** — Neovim's and Vim's `:terminal` (`NVIM`,
    `VIM_TERMINAL`), an Emacs terminal buffer (`INSIDE_EMACS`), a JetBrains
-   IDE's (`TERMINAL_EMULATOR`) — is unknown whatever surrounds it, and a
-   terminal that names itself in `TERM_PROGRAM` is judged by that name
-   alone: an unknown name is unknown however much of kitty is still in the
-   environment.
-5. Otherwise the variables and `TERM` values the known terminals set for
-   their own children decide; with none of them, the address is shown.
+   IDE's (`TERMINAL_EMULATOR`) — is unknown whatever surrounds it.
+5. A terminal that **answered with its name** is that terminal (*The
+   terminal's own answer*, below).
+6. A terminal that names itself in `TERM_PROGRAM` is judged by that name
+   alone, rule 4's reason again: an unknown name is unknown however much of
+   kitty is still in the environment.
+7. Otherwise the variables and `TERM` values the known terminals set
+   decide; with none of them, the address is shown.
 
 | Hidden for | Named by |
 | --- | --- |
 | kitty | `TERM` holding `kitty`, `KITTY_WINDOW_ID`, `TERM_PROGRAM=kitty` |
 | Ghostty | `TERM` holding `ghostty`, `GHOSTTY_RESOURCES_DIR`, `TERM_PROGRAM=ghostty` |
-| WezTerm | `TERM=wezterm`, `WEZTERM_VERSION`, `TERM_PROGRAM=WezTerm` |
+| WezTerm | `TERM=wezterm`, `WEZTERM_PANE`, `WEZTERM_EXECUTABLE`, `TERM_PROGRAM=WezTerm` |
 | iTerm2 | `TERM_PROGRAM=iTerm.app`, `ITERM_SESSION_ID` |
 | VS Code's terminal | `TERM_PROGRAM=vscode` |
 | Alacritty | `TERM=alacritty`, `ALACRITTY_WINDOW_ID`, `ALACRITTY_SOCKET` |
@@ -108,6 +111,56 @@ terminal the list gets wrong either way — a tmux configured to forward
 hyperlinks, a terminal with hyperlinks switched off in its settings —
 `ALTER_ZERO_LINK_TARGETS=hide` or `=show` is the user's word, and it is
 final.
+
+#### The terminal's own answer
+
+Every variable above is hearsay: it says which terminal *started* the
+session, and it reaches only the programs that terminal launched itself.
+Over `ssh` almost none of it arrives — `TERM_PROGRAM`, `KITTY_WINDOW_ID`
+and `WEZTERM_PANE` stay on the machine the terminal runs on, and `TERM` is
+often set down to `xterm-256color` because the remote host has no entry for
+`xterm-kitty` or `xterm-ghostty`. A session there is drawn by the same
+terminal and read as an unknown one.
+
+The terminal can speak for itself. The startup read already asks it its
+name where the environment could not say what graphics it draws
+(`XTVERSION`, riding ahead of the cursor query in the one read —
+`term::query`, `docs/images.md` *Asking the terminal*), and the answer comes
+down the very line a hyperlink goes up, so it is this terminal's and nobody
+else's. `InlineViewport::terminal_name` keeps it, and an answer that opens
+on the name of a terminal known to open hyperlinks hides the address:
+
+| Answer | Terminal |
+| --- | --- |
+| `kitty(0.36.4)` | kitty |
+| `ghostty 1.1.0` | Ghostty |
+| `WezTerm 20240203-110809-5046fc22` | WezTerm |
+| `foot(1.20.2)` | foot |
+| `iTerm2 3.5.11` | iTerm2 |
+
+The name is the answer's first word — `footage(1.0)` is not foot — and
+`libghostty` is left off on purpose: it is whatever program embeds it (a
+herdr pane names itself in `TERM_PROGRAM` instead). An answer only ever
+**adds a yes**. Any other name, or none, leaves the environment to decide,
+because the list of names is short and a terminal the variables already
+vouch for must not lose its labels to an answer this does not recognise.
+And it ranks below rules 1 to 4: no hyperlink written, the user's own word,
+a multiplexer in between and an editor's terminal each keep the address for
+a reason the terminal's name does not answer.
+
+It is also why `LC_TERMINAL=iTerm2` is **not** read, though `ssh` carries
+it (sshd accepts `LC_*` wherever it accepts a locale). A variable that
+crosses `ssh` crosses into a mosh session too, and mosh keeps its own
+picture of the screen and passes no hyperlink on to the terminal: every
+label there would hide an address nothing opens. The answer cannot make that
+mistake — mosh does not pass the question on either, so no name comes back
+and the address stays — and over a plain `ssh` iTerm2 answers for itself,
+so the variable would add nothing but that risk.
+
+The read asks only where it asks about graphics — not under a multiplexer,
+not on a console, not with pictures switched off or their protocol pinned,
+and not where the environment already names the terminal's graphics, which
+is exactly where the variables name the terminal too.
 
 The choice is a per-thread cell the boundary sets before the first row is
 rendered (`links::set_target_display`, the active theme's arrangement), and
@@ -267,7 +320,9 @@ survives the trip.
      depth.
    - `TargetDisplay` (`Shown` / `Hidden`) and its per-thread cell
      (`target_display`, `set_target_display`, `with_target_display`), with
-     `target_display_from_env`, the pure decision *Labelled links* lists.
+     `detect_target_display`, the pure decision *Labelled links* lists —
+     over the environment and the name the terminal answered the startup
+     read with (`InlineViewport::terminal_name`).
 2. **`src/ui/inline.rs` — the marking.** `inline_spans` is the one funnel all
    assistant prose runs through (plain lines, list items, blockquotes, *and*
    table cells), so marking there covers every surface that can wrap a URL:
@@ -476,9 +531,13 @@ anywhere carrying a fragment of it.
 Labelled links have the same halves. `links.rs` holds the decision: every
 terminal on the list by each variable that names it, the ones kept off it,
 a multiplexer over any of them, an editor's own terminal and `TERM_PROGRAM`
-each outranking what an outer terminal left behind, the override both ways,
-the hyperlink gate outranking the override, and the scoped cell restoring
-what it found.
+each outranking what an outer terminal left behind, the terminal's own
+answer — each real answer hiding the address in an environment that names
+nothing, a name it does not know (or one that only opens on a known one)
+leaving the environment to decide, the answer outranking an inherited
+`TERM_PROGRAM` and outranked by the gate, the override, a multiplexer and
+an editor's terminal — the override both ways, the hyperlink gate
+outranking the override, and the scoped cell restoring what it found.
 `ui/tests/inline.rs` holds the render: the reported `Source: [FIDE](…)` as
 `Source: FIDE` with the whole address behind exactly that word; emphasis
 kept under the dress and a code span's colour given up; a label of several
@@ -506,6 +565,14 @@ the address nowhere on it, the label underlined, and the raw stream opening
 a hyperlink to the whole address around exactly that word; with nothing set
 the address is spelled out; and with `hide` beside
 `ALTER_ZERO_HYPERLINKS=0` it is spelled out again and no escape is written.
+The terminal the app works out for itself cannot be tmux, so the phase then
+plays it on a pty (Phase 107e's way), resuming a rollout that holds the
+reported link in an environment naming nothing: a terminal that answers
+the startup read `WezTerm 20240203-…` gets `Source: FIDE` with the address
+only inside the hyperlink; one that says nothing gets the address spelled
+out; one the environment names (`TERM=xterm-kitty`) is not asked at all and
+gets the label; and an editor's terminal keeps the address whatever
+answered.
 
 ## Cost
 
@@ -550,10 +617,20 @@ now instead of one per word.
 - The list of terminals that open hyperlinks is a list: a terminal not on
   it keeps the address on screen until `ALTER_ZERO_LINK_TARGETS=hide` says
   otherwise, and one on it with hyperlinks switched off in its own settings
-  hides an address nothing opens until `=show` does. Nothing can ask a
-  terminal whether it opens them, and nothing here can see a transport that
-  drops the escape on its way there (mosh): `=show` is the answer to that
-  too.
+  hides an address nothing opens until `=show` does. A terminal can be
+  asked its name, not whether it opens them.
+- Nothing here can see a transport that drops the escape on its way to the
+  terminal. mosh is the one that matters: it carries `TERM` through and no
+  hyperlink, so a session whose `TERM` names kitty, Ghostty, foot or
+  Alacritty is believed there and its addresses go behind links nothing
+  opens — `ALTER_ZERO_LINK_TARGETS=show` is the answer. (`TERM` is still
+  read because it is how the commonest `ssh` session names its terminal,
+  and a terminal the environment names is not asked for its own name.)
+- The terminal is asked its name only where the startup read asks about
+  graphics (*The terminal's own answer*). With pictures switched off
+  (`ALTER_ZERO_IMAGES=0`) or their protocol pinned, a session over `ssh`
+  whose `TERM` is plain is read from its variables alone, and keeps the
+  address.
 - A label is compared with its target as text. A look-alike domain (a
   letter borrowed from another alphabet) or a label naming a site without
   a scheme (`bank.example` over a link elsewhere) is a label like any

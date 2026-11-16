@@ -1086,23 +1086,28 @@ the terminal opens hyperlinks a labelled link is its label alone**
 whole address behind it, where it read `Source: FIDE (https://www.fide.com/…)`;
 `links::TargetDisplay` is a per-thread cell like the active theme's,
 `Shown` by default so a test, a headless run and the export never hide the
-only URL, set once at bootstrap from `links::target_display_from_env` —
-pure over the environment: `Hidden` for the terminals known to open an OSC 8
-link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot, the VTE
-family, Windows Terminal, a herdr pane — never Apple's Terminal or Konsole),
-`Shown` under a multiplexer, in an editor's own terminal (`NVIM`,
-`VIM_TERMINAL`, `INSIDE_EMACS`, `TERMINAL_EMULATOR`), for a `TERM_PROGRAM`
-it does not know whatever an outer terminal left in the environment, and
-with `ALTER_ZERO_HYPERLINKS` off, with
-`ALTER_ZERO_LINK_TARGETS=hide`/`show` the user's override; `ui::inline`'s
-`hides_target` keeps the `label (url)` shape for a target that is no web
-address or is past the 2083 bytes a hyperlink carries, and for a label that
-spells another address than the one it opens — read off the label's text as
-the reader sees it, its runs joined and what never reaches the screen left
-out (`shows_another_address`), so an address split by emphasis, a code span,
-a zero-width or a control character is still one — while a link with no
-label is its target and a label that is its own web address is written once
-on every terminal; `tokenize_words` hands each word the style of
+only URL, set once at bootstrap from `links::detect_target_display` —
+pure over the environment and the name the terminal answered the startup
+read with (`InlineViewport::terminal_name`, the XTVERSION answer
+`term::query` already takes in): `Hidden` for the terminals known to open
+an OSC 8 link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot,
+the VTE family, Windows Terminal, a herdr pane — never Apple's Terminal or
+Konsole), by the variables they set or — what names one over `ssh`, where
+those stay behind — by its own answer (kitty, Ghostty, WezTerm, foot,
+iTerm2; an answer only ever adds a yes), `Shown` under a multiplexer, in
+an editor's own terminal (`NVIM`, `VIM_TERMINAL`, `INSIDE_EMACS`,
+`TERMINAL_EMULATOR`), for a `TERM_PROGRAM` it does not know whatever an
+outer terminal left in the environment, and with `ALTER_ZERO_HYPERLINKS`
+off, with `ALTER_ZERO_LINK_TARGETS=hide`/`show` the user's override;
+`ui::inline`'s `hides_target` keeps the `label (url)` shape for a target
+that is no web address or is past the 2083 bytes a hyperlink carries, and
+for a label that spells another address than the one it opens — read off
+the label's text as the reader sees it, its runs joined and what never
+reaches the screen left out (`shows_another_address`), so an address split
+by emphasis, a code span, a zero-width or a control character is still
+one — while a link with no label is its target and a label that is its own
+web address is written once on every terminal;
+`tokenize_words` hands each word the style of
 the space in front of it (`Word::joiner`), so a label of several words is
 one underlined, clickable run instead of a link per word; `ui::export_text`
 renders with the address spelled out; the `link_probe` example measures
