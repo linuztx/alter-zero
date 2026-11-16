@@ -73,6 +73,13 @@ release heading when a version is cut.
   been blocked, and some routes reject the parameter outright
   (`docs/permissions.md`).
 
+- **The startup review's hint names the arrow keys.** The page that asks
+  you to trust new or changed hooks, and which of a project's MCP servers
+  to enable, now starts its hint with `↑/↓ to navigate`, as `/mcp` and
+  `/theme` do, since Space and Enter act on the highlighted row. On a
+  terminal too narrow for the hint on one row, it now breaks between keys
+  rather than in the middle of one (`docs/config-review.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
