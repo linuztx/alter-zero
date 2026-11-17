@@ -384,10 +384,13 @@ use alter_zero::tasks::{
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::ui::{
+    RenderedTranscriptItem,
     Repin,
     StreamRender,
+    TRANSCRIPT_WARM_WINDOW,
     TranscriptCache,
     TranscriptEntry,
+    TranscriptJob,
     TranscriptPage,
     ViewFlow,
     COMPACTED_NOTICE,

@@ -22,6 +22,10 @@ pub(super) struct CachedLines {
     /// styles without changing the ids of entries that are still in use.
     style_refs: Vec<usize>,
     style_ids: HashMap<Style, usize>,
+    /// Test-only: how many rows were ever put down — so a test can prove a
+    /// rebuild appended what changed, not everything again.
+    #[cfg(test)]
+    pub(super) appended: usize,
 }
 
 struct CachedLine {
@@ -39,7 +43,13 @@ impl CachedLines {
     }
 
     pub(super) fn clear(&mut self) {
+        #[cfg(test)]
+        let appended = self.appended;
         *self = Self::default();
+        #[cfg(test)]
+        {
+            self.appended = appended;
+        }
     }
 
     fn intern_style(&mut self, style: Style) -> usize {
@@ -82,6 +92,59 @@ impl CachedLines {
                 style,
                 alignment: line.alignment,
             });
+            #[cfg(test)]
+            {
+                self.appended += 1;
+            }
+        }
+    }
+
+    /// Append `other`'s rows — what [`extend`](Self::extend) would leave
+    /// behind for the rows `other` was built from, without expanding one of
+    /// them: the text is copied whole and each span's style is mapped onto
+    /// this store's own ids. What lets a transcript item be rendered **and**
+    /// compacted off the loop thread, the loop left only this splice
+    /// (`docs/input-latency.md`).
+    pub(super) fn append(&mut self, other: Self) {
+        // `other`'s style ids, as this store's: interned on first use, then
+        // only counted — a row of highlighted code is a dozen spans in three
+        // or four styles.
+        let mut ids: Vec<Option<usize>> = vec![None; other.styles.len()];
+        let mut mapped = |store: &mut Self, style: usize| match ids[style] {
+            Some(id) => {
+                store.style_refs[id] += 1;
+                id
+            }
+            None => {
+                let id = store.intern_style(other.styles[style]);
+                ids[style] = Some(id);
+                id
+            }
+        };
+        let text_base = self.text.len();
+        self.text.push_str(&other.text);
+        self.spans.reserve(other.spans.len());
+        self.rows.reserve(other.rows.len());
+        let mut cursor = 0;
+        for row in &other.rows {
+            while cursor < row.end {
+                let len = read_index(&other.spans, &mut cursor);
+                let style = read_index(&other.spans, &mut cursor);
+                let style = mapped(self, style);
+                write_index(&mut self.spans, len);
+                write_index(&mut self.spans, style);
+            }
+            let style = mapped(self, row.style);
+            self.rows.push(CachedLine {
+                end: self.spans.len(),
+                text_end: text_base + row.text_end,
+                style,
+                alignment: row.alignment,
+            });
+            #[cfg(test)]
+            {
+                self.appended += 1;
+            }
         }
     }
 
@@ -246,6 +309,70 @@ mod tests {
                 .iter()
                 .all(|span| matches!(span.content, Cow::Borrowed(_)))
         }));
+    }
+
+    fn second_fixture() -> Vec<Line<'static>> {
+        // One style the first fixture already holds, one it does not.
+        let shared = Style::new().fg(Color::Yellow);
+        let fresh = Style::new().bg(Color::Rgb(9, 9, 9));
+        vec![
+            Line::from(vec![Span::styled("x", fresh), Span::styled("你", shared)]),
+            Line::default(),
+            Line::from("plain").style(fresh).alignment(Alignment::Right),
+        ]
+    }
+
+    #[test]
+    fn appending_a_store_equals_extending_with_its_rows() {
+        let (first, second) = (fixture(), second_fixture());
+        let mut expected = CachedLines::default();
+        expected.extend(first.clone());
+        expected.extend(second.clone());
+
+        let mut chunk = CachedLines::default();
+        chunk.extend(second.clone());
+        let mut actual = CachedLines::default();
+        actual.extend(first.clone());
+        actual.append(chunk);
+
+        assert_eq!(actual.len(), first.len() + second.len());
+        assert_eq!(
+            actual.range(0..actual.len()),
+            expected.range(0..expected.len())
+        );
+        assert_eq!(actual.style_refs, expected.style_refs, "one count per use");
+    }
+
+    #[test]
+    fn an_appended_store_truncates_like_rows_it_was_extended_with() {
+        let (first, second) = (fixture(), second_fixture());
+        let mut chunk = CachedLines::default();
+        chunk.extend(second.clone());
+        let mut cache = CachedLines::default();
+        cache.extend(first.clone());
+        cache.append(chunk);
+
+        cache.truncate(first.len() + 1);
+        assert_eq!(cache.range(first.len()..cache.len()), second[..1]);
+        cache.truncate(first.len());
+        assert_eq!(cache.range(0..cache.len()), first);
+        cache.truncate(0);
+        assert!(
+            cache.styles.is_empty() && cache.style_ids.is_empty(),
+            "every style the rows held was released with them"
+        );
+    }
+
+    #[test]
+    fn appending_to_or_from_an_empty_store_is_the_other_store() {
+        let rows = fixture();
+        let mut chunk = CachedLines::default();
+        chunk.extend(rows.clone());
+        let mut cache = CachedLines::default();
+        cache.append(chunk);
+        assert_eq!(cache.range(0..cache.len()), rows);
+        cache.append(CachedLines::default());
+        assert_eq!(cache.range(0..cache.len()), rows);
     }
 
     #[test]

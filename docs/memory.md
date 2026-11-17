@@ -556,6 +556,27 @@ full-budget match test compare exact `DiffLine` output to the original
 algorithm. The isolated peak regression measured **8.5 MB before, 2.1 MB
 after** and requires a budget-sized diff to stay below 4 MiB.
 
+### Rendering it on another thread
+
+The transcript's rows are now rendered on a worker thread, so that the loop
+reads keys while a long reply or a 2000-line `read` goes through the grammar
+(`docs/input-latency.md`). A second thread is a second allocator arena, and
+the first version of it showed why that matters. Rendering an item built
+every row as owned lines — a `String` and a `Style` per highlighted token —
+and compacted them afterwards. On the loop thread that transient was a hole
+the next allocation reused. On the worker it was a heap of its own, with the
+grammar's lazily compiled regexes allocated in the middle of it, and it
+stayed: **+2.2 MB** resident after twenty 60 KB code replies, **+11 MB** after
+one 400 KB table.
+
+So no thread builds an item whole as lines any more. `transcript_item_into`
+writes rows straight into the compact store, and an assistant reply's are
+handed over one at a time as its lines render (`assistant_rows`). The
+worker's transient is a line. After the same two runs resident memory is the
+loop-thread baseline's or under it (35.3 MB against 34.4, and 50.3 against
+49.5), and the loop thread's own renders — an open pager's — lost the same
+transient.
+
 ### Share generated arguments across request snapshots
 
 A `write` tool call contains the complete generated file in its JSON arguments.
@@ -681,3 +702,8 @@ And a fourth for anything rendered as it streams: **keep what the view can
 show, not everything it has seen.** A cache sized to the input rather than to
 its window is a cache sized by the largest input the session ever met, for the
 rest of the session.
+
+And a fifth for work moved off the loop: **a new thread is a new arena.** A
+transient that was harmless on the loop thread, where the next allocation
+filled the hole it left, is a high-water mark of its own on a worker. Build
+the final form directly, in pieces the size of a line.

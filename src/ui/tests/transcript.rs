@@ -1149,3 +1149,343 @@ fn ctrl_o_shows_a_queued_writes_whole_file() {
         "every line, past the inline peek: {texts:#?}"
     );
 }
+
+// --- rendering off the loop thread (`docs/input-latency.md`) ---
+
+/// A history with every shape the entry walk tells apart: messages, a tool
+/// cell, a `!` command (header and output, one cell), a file cell, a
+/// receipt — and more items than one window of jobs.
+fn job_fixture() -> App {
+    let mut app = transcript_fixture();
+    app.begin_shell("ls -la");
+    app.end_tool("a\nb", true);
+    app.finish_stream();
+    for i in 0..TRANSCRIPT_WARM_WINDOW {
+        app.record_user_message(&format!("question {i}"));
+        app.begin_stream();
+        app.start_tool("Write", "tasks.rs", None);
+        let code = format!("fn task_{i}() -> u32 {{\n    {i}\n}}\n");
+        app.end_tool(&crate::llm::tools::write_report("tasks.rs", &code), true);
+        app.push_chunk("A [link](https://example.com) and `code`.");
+        app.finish_stream();
+    }
+    // A reply of every block kind, its rows put down one at a time: blank
+    // rows between blocks, a table that renders only once it closes, and a
+    // fence left open over blank lines — which are content there, where the
+    // blank rows a reply otherwise ends on are dropped.
+    for reply in [
+        crate::stream::MARKDOWN_TOUR,
+        "text\n\n| a | b |\n| - | - |\n| 1 | 2 |",
+        "ends on blank lines\n\n\n",
+        "```rust\nlet open = 1;\n\n\n",
+        "```\n```",
+    ] {
+        app.record_user_message("next");
+        app.begin_stream();
+        app.push_chunk(reply);
+        app.finish_stream();
+    }
+    app
+}
+
+/// Run the job pipeline to its end on this thread: hand out, render, accept.
+fn warm_through_jobs(cache: &mut TranscriptCache, app: &App, width: u16) -> usize {
+    let mut accepted = 0;
+    loop {
+        let jobs = cache.warm_jobs(app, width);
+        if jobs.is_empty() {
+            return accepted;
+        }
+        for job in jobs {
+            assert!(cache.accept(job.run()), "an in-order result is accepted");
+            accepted += 1;
+        }
+    }
+}
+
+#[test]
+fn a_job_renders_an_item_exactly_as_the_cache_would() {
+    // The loop's stall: every committed item was rendered — a whole file
+    // through the grammar — at the loop bottom, a keystroke waiting behind
+    // it. The same rows now come from jobs; the loop only splices them.
+    let app = job_fixture();
+    let mut cache = TranscriptCache::new();
+    let accepted = warm_through_jobs(&mut cache, &app, 80);
+    assert_eq!(accepted, app.history.len(), "every item, once");
+    assert_eq!(
+        cache.item_renders, 0,
+        "nothing was rendered on the cache's own thread"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    assert_eq!(
+        cache.entries(&app, 80),
+        transcript_page(&app, 80).entries.as_slice(),
+        "the entries a from-scratch build records"
+    );
+    assert_eq!(cache.item_renders, 0, "the open rendered no item either");
+}
+
+#[test]
+fn jobs_are_handed_out_once_a_window_at_a_time() {
+    let app = job_fixture();
+    assert!(app.history.len() > TRANSCRIPT_WARM_WINDOW + 2);
+    let mut cache = TranscriptCache::new();
+    let mut jobs = cache.warm_jobs(&app, 80);
+    assert_eq!(jobs.len(), TRANSCRIPT_WARM_WINDOW, "one window");
+    assert!(
+        cache.warm_jobs(&app, 80).is_empty(),
+        "nothing is handed out twice, and the window is full"
+    );
+    // Two come back: two more go out.
+    let rest = jobs.split_off(2);
+    for job in jobs {
+        assert!(cache.accept(job.run()));
+    }
+    assert_eq!(cache.warm_jobs(&app, 80).len(), 2);
+    drop(rest);
+}
+
+#[test]
+fn a_result_from_before_a_reset_is_refused() {
+    let mut app = job_fixture();
+    let mut cache = TranscriptCache::new();
+    let stale = cache.warm_jobs(&app, 80);
+    let epoch = cache.epoch();
+    assert!(stale.iter().all(|job| job.epoch() == epoch));
+
+    // A resize: the prefix is re-keyed at once, and the old width's rows
+    // must never be spliced into it.
+    let fresh = cache.warm_jobs(&app, 40);
+    assert!(cache.epoch() > epoch, "a reset is a new epoch");
+    assert_eq!(fresh.len(), TRANSCRIPT_WARM_WINDOW, "handed out again");
+    for job in stale {
+        assert!(!cache.accept(job.run()), "the old width's rows are refused");
+    }
+    for job in fresh {
+        assert!(cache.accept(job.run()));
+    }
+    warm_through_jobs(&mut cache, &app, 40);
+    assert_eq!(cache.lines(&app, 40), transcript_lines(&app, 40).as_slice());
+
+    // A rewound history is a reset too.
+    let stale = {
+        app.record_user_message("one more");
+        cache.warm_jobs(&app, 40)
+    };
+    assert_eq!(stale.len(), 1);
+    let loaded = transcript_fixture().history.clone();
+    app.load_session(loaded);
+    for job in stale {
+        // Even before the cache has looked at the new history.
+        let _ = cache.warm_jobs(&app, 40);
+        assert!(!cache.accept(job.run()));
+    }
+    warm_through_jobs(&mut cache, &app, 40);
+    assert_eq!(cache.lines(&app, 40), transcript_lines(&app, 40).as_slice());
+}
+
+#[test]
+fn a_result_for_an_item_a_draw_already_rendered_is_refused() {
+    // Ctrl+O pressed while jobs are out: the draw renders what is missing
+    // itself, and the worker's copies must not be spliced in a second time.
+    let app = job_fixture();
+    let mut cache = TranscriptCache::new();
+    let jobs = cache.warm_jobs(&app, 80);
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    for job in jobs {
+        assert!(!cache.accept(job.run()));
+    }
+    assert!(
+        cache.warm_jobs(&app, 80).is_empty(),
+        "nothing left to render"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn a_result_out_of_turn_is_refused_and_asked_for_again() {
+    let app = job_fixture();
+    let mut cache = TranscriptCache::new();
+    let mut jobs = cache.warm_jobs(&app, 80);
+    let first = jobs.remove(0);
+    for job in jobs {
+        assert!(!cache.accept(job.run()), "the prefix has no gaps");
+    }
+    assert!(cache.accept(first.run()));
+    // The refused ones are handed out again rather than waited on for ever.
+    assert_eq!(
+        warm_through_jobs(&mut cache, &app, 80),
+        app.history.len() - 1
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn a_job_carries_the_loop_threads_theme_and_link_display() {
+    // The active theme and the way a labelled link shows its target are
+    // per-thread cells: a worker thread has the defaults, so a job must
+    // bring the loop's own or its rows would be another theme's.
+    let app = job_fixture();
+    with_theme(Theme::Dracula, || {
+        crate::links::with_target_display(crate::links::TargetDisplay::Hidden, || {
+            let mut cache = TranscriptCache::new();
+            loop {
+                let jobs = cache.warm_jobs(&app, 80);
+                if jobs.is_empty() {
+                    break;
+                }
+                let done = std::thread::spawn(move || {
+                    jobs.into_iter().map(TranscriptJob::run).collect::<Vec<_>>()
+                })
+                .join()
+                .expect("the worker rendered");
+                for item in done {
+                    assert!(cache.accept(item));
+                }
+            }
+            assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        });
+    });
+}
+
+#[test]
+fn accepting_an_item_keeps_the_live_tail_and_the_selection() {
+    let mut app = job_fixture();
+    app.record_user_message("the last question");
+    app.begin_stream();
+    app.push_chunk("a reply still streaming");
+    app.backtrack.selected = Some(1);
+    let mut cache = TranscriptCache::new();
+    // The overlay is open and has drawn; then an item commits and its job
+    // comes back between two draws.
+    let _ = cache.lines(&app, 80);
+    app.flush_streaming_segment();
+    app.push_chunk("and more");
+    let jobs = cache.warm_jobs(&app, 80);
+    assert_eq!(jobs.len(), 1);
+    for job in jobs {
+        assert!(cache.accept(job.run()));
+    }
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    assert_eq!(cache.selection(&app, 80), transcript_selection(&app, 80));
+}
+
+#[test]
+fn a_streaming_reply_is_rendered_a_line_once_under_the_pager() {
+    // Ctrl+O over a reply still streaming rendered the WHOLE reply on every
+    // refresh — the grammar over every line so far, per frame — so a scroll
+    // key waited ~150 ms behind a 60 KB reply. Each line is rendered once
+    // now; a refresh costs the lines that completed since the last.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    let _ = cache.lines(&app, 80);
+    app.begin_stream();
+    app.push_chunk("```rust\n");
+    let before = crate::ui::assistant::fed_lines();
+    let lines = 200;
+    for i in 0..lines {
+        app.push_chunk(&format!("let value_{i} = compute({i});\n"));
+        let _ = cache.lines(&app, 80);
+    }
+    let fed = crate::ui::assistant::fed_lines() - before;
+    assert!(
+        fed <= 3 * lines,
+        "{fed} lines rendered for a {lines}-line reply: the pager is \
+         re-rendering the reply per refresh"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn a_streaming_replys_settled_rows_are_put_down_once_under_the_pager() {
+    // Rendering each line once was not the whole of it: the tail was still
+    // rebuilt from the reply's first row on every refresh, copying every
+    // row so far into the page again — 10 s of the loop's time over a 60 KB
+    // reply under an open pager. The rows of the lines that are finished
+    // stay where they are; a refresh puts down what follows them.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    let _ = cache.lines(&app, 80);
+    app.begin_stream();
+    app.push_chunk("Here it is:\n\n```rust\n");
+    let _ = cache.lines(&app, 80);
+    let before = cache.rows_appended();
+    let lines = 200;
+    for i in 0..lines {
+        app.push_chunk(&format!("let value_{i} = compute({i});\n"));
+        let _ = cache.lines(&app, 80);
+    }
+    let appended = cache.rows_appended() - before;
+    assert!(
+        appended <= 4 * lines,
+        "{appended} rows put down for a {lines}-line reply: the tail is \
+         rebuilt from the reply's first row per refresh"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn the_pagers_live_reply_is_a_fresh_build_at_every_step_of_a_stream() {
+    // The kept rows must be exactly the rows a from-scratch build renders —
+    // through blank lines that are trailing now and content later, a fence,
+    // a table that renders whole only once it closes, a tool call splitting
+    // the reply, an item's rows arriving from the worker mid-reply.
+    for width in [24u16, 80] {
+        let mut app = transcript_fixture();
+        let mut cache = TranscriptCache::new();
+        app.begin_stream();
+        let tour = crate::stream::MARKDOWN_TOUR;
+        let mut pushed = 0usize;
+        for (at, piece) in crate::stream::tokens(tour).into_iter().enumerate() {
+            app.push_chunk(&piece);
+            pushed += piece.len();
+            if at % 97 == 96 {
+                // A tool call splits the reply: the segment is history now.
+                app.flush_streaming_segment();
+                app.start_tool("Read", "f", None);
+                app.end_tool("L1\nL2", true);
+                if at % 2 == 0 {
+                    for job in cache.warm_jobs(&app, width) {
+                        assert!(cache.accept(job.run()));
+                    }
+                }
+            }
+            assert_eq!(
+                cache.lines(&app, width),
+                transcript_lines(&app, width).as_slice(),
+                "after {pushed} bytes of the tour (w={width})"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_pagers_live_reply_follows_a_buffer_that_was_replaced() {
+    // The reply's buffer is not append-only across a turn: a tool call
+    // finalises the segment and a new one starts, a failed attempt is
+    // withdrawn. Rows kept for the old text must never be shown for a new
+    // one — even one that is longer.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    app.begin_stream();
+    app.push_chunk("first segment\nwith two lines\n");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    app.flush_streaming_segment();
+    app.push_chunk("a second, longer segment\nof three\nlines in all\n");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+
+    // The same length of history, a different buffer: an attempt withdrawn.
+    app.track_attempt(&crate::stream::StreamEvent::Chunk("x".into()));
+    app.push_chunk("an attempt that failed\n\nhalf way\n");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    let _ = app.withdraw_attempt();
+    app.push_chunk("the attempt made again, differently\n\nand longer than before\n");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn a_job_can_cross_to_another_thread() {
+    fn sendable<T: Send + 'static>() {}
+    sendable::<TranscriptJob>();
+    sendable::<RenderedTranscriptItem>();
+}

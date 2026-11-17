@@ -165,7 +165,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `update_cli.rs` | The `alter-zero update` subcommand: the same check, then the one-line installer fetched to a temp file and run over this binary's own directory (`docs/update.md`). |
 | `herdr.rs` | Reporting the session's state to the herdr pane it runs in: the loop-bottom sync into the library's `herdr::Tracker` and `herdr::Reporter` worker, the failed-turn hold, the resume command's `PATH`-checked first word, the release on quit (`docs/herdr.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
-| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / usage / telemetry-ping / update-check jobs. |
+| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / usage / telemetry-ping / update-check jobs, and the Ctrl+O transcript's render worker. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
 
 ### `src/stream/` — the backend seam

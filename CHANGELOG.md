@@ -180,11 +180,23 @@ release heading when a version is cut.
   under a millisecond, as it is on an idle composer, where it used to take
   two (`docs/input-latency.md`).
 
+- **The app no longer stops reading keys when a long reply or a big file
+  read lands.** Every finished reply and tool call was rendered for the
+  Ctrl+O transcript on the spot, between two keystrokes: 200 ms for a
+  2000-line `read`, most of a second at the end of a long code reply, and
+  the whole history at once after `/resume`. That rendering now happens on a
+  thread of its own. Ctrl+O still opens at once, and now does so after a
+  resize too, where it used to rebuild the whole conversation first.
+
 - **Typing under a command that prints a lot is no longer sluggish.** While a
   command printed thousands of lines, each frame re-read all of them several
   times to choose the four on screen: a key took 40 ms to show and the app
   held most of a CPU core. It takes about a millisecond now, and a few
   percent of a core.
+
+- **Scrolling Ctrl+O while a reply streams is smooth.** The transcript
+  re-rendered the whole reply so far on every frame, so under a long code
+  reply each scroll key took about 150 ms. It renders each line once now.
 
 ### Security
 

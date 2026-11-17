@@ -53,7 +53,7 @@
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
-//! | [`workers`] | The off-thread file-search / clipboard / model-list / usage jobs. |
+//! | [`workers`] | The off-thread file-search / clipboard / model-list / usage / transcript-render jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
 use std::collections::HashMap;
@@ -78,7 +78,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
+use self::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch, TranscriptWorker};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -150,6 +150,12 @@ pub(crate) struct Session<'t> {
     /// closes and warmed at the loop bottom so it never opens cold
     /// (`docs/tool-view-performance.md`).
     transcript: ui::TranscriptCache,
+    /// The worker that renders each committed item's rows for it, and the
+    /// channel they come back on — off the loop thread, where a keystroke
+    /// used to wait behind them (`docs/input-latency.md`). No worker in a
+    /// headless run, which has no pager.
+    transcript_worker: Option<TranscriptWorker>,
+    transcript_rx: tokio::sync::mpsc::UnboundedReceiver<ui::RenderedTranscriptItem>,
     /// The Ctrl+D overlay's built context window, rebuilt only when its
     /// signature changes — per frame the O(conversation) derivation starved
     /// the scroll keys on a big context (`docs/context.md`).

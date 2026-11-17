@@ -151,6 +151,129 @@ to about one, and the loop from 90% of a core to 3%.
 `the_running_tail_counts_a_long_output_without_walking_its_lines` counts
 scans.
 
+## 6. A committed item was rendered for Ctrl+O between two keystrokes
+
+The Ctrl+O transcript is pre-rendered so the pager never opens cold
+(`docs/tool-view-performance.md`), and the pre-render ran at the loop bottom
+of the iteration that committed the item. Rendering an item is the grammar
+over all of it. A 2000-line `read` cost 216 ms there; a 200-line one, 26 ms;
+an `edit` of 600 lines, 43 ms; a 60 KB code reply about 100 ms and a 400 KB
+one 650 to 850 ms — each a stretch in which no key was read, at the exact
+moment a reply or a tool call lands and the user starts typing the next
+message. A resumed session paid for its whole history at once.
+
+The rendering now happens on a worker thread
+(`tui::workers::spawn_transcript_worker`). The cache hands out what it would
+have rendered as jobs and takes the rows back:
+
+- `TranscriptCache::warm_jobs` returns the history items not yet in the
+  frozen prefix as `TranscriptJob`s, each once, at most
+  `TRANSCRIPT_WARM_WINDOW` (8) out at a time. A job owns a copy of its item
+  and everything its rows depend on that another thread does not have: the
+  active theme and the way a labelled link shows its target are per-thread
+  cells, so the job carries the loop's and renders under them. The link
+  interner and the image registry are process-wide, so nothing else needs
+  carrying.
+- `TranscriptJob::run` renders the item straight into compact rows
+  (`CachedLines`), so what crosses back is a few buffers.
+- `TranscriptCache::accept` splices a result onto the prefix
+  (`CachedLines::append`: the text copied whole, each style mapped onto the
+  cache's own ids). It is refused unless it is the very next item of the
+  prefix as it stands. Every reset of the prefix — a rewound history, another
+  width, another theme — is a new **epoch**; a job is of the epoch it was
+  handed out in, so a result from before a reset can never be spliced into
+  what followed it, and the worker skips a job whose epoch is already over
+  without rendering it (a resize drag leaves dozens).
+
+The loop bottom calls `warm_jobs` where it called `warm`, and each result's
+arrival is a wake of the loop (`Wake::Transcript`) whose own loop bottom
+hands out the next window. An open pager is the exception: its draws render
+what they are missing themselves, there and then, exactly as before — the
+pager is where the rows are needed now — so no jobs go out while it is open,
+and a result for an item a draw already rendered is refused.
+
+Two things changed with it.
+
+A **resize** used to leave the cache at the old width until the next Ctrl+O,
+which then rebuilt the whole history on the loop thread: the synchronous
+`warm` skips a width-only mismatch, since a drag delivers dozens of resizes
+and each would have cost a full render. Jobs cost the loop nothing, so
+`warm_jobs` re-keys at once and the pager is warm at the new width too.
+
+A render that **panics** used to end the app. It still does: the worker holds
+the only sender of the result channel, so its thread ending closes the
+channel, which the loop reads as `Wake::Transcript(None)` and ends on — after
+the panic hook has printed why and put the terminal back.
+
+### Rows go straight onto the page
+
+A worker thread is a second allocator arena. Rendering an item used to build
+every row as owned lines — a `String` and a `Style` per highlighted token —
+and then compact them. On the loop thread that transient was a hole the next
+allocation reused; on a worker it was a heap of its own that stayed resident:
++2 MB after twenty 60 KB replies, +11 MB after one 400 KB table
+(`docs/memory.md` has the rule).
+
+So an item's rows are no longer built first and compacted after.
+`transcript_item_into` writes them onto the page in whatever form the page
+keeps (`RowSink`: the cache's compact rows, or plain lines for an agent's
+page), and an assistant reply's are handed out one at a time as its lines
+render (`assistant_rows`, the one implementation `assistant_lines` now
+collects). The worker's transient is a line. Resident memory after the same
+runs is the baseline's or under it.
+
+## 7. The pager rendered a streaming reply whole, per refresh
+
+The transcript's live tail — the reply still streaming — was
+`message_lines(text)` on every refresh: the grammar over the whole reply so
+far, per frame. A scroll key in Ctrl+O waited 145 ms behind a 60 KB code
+reply, and the loop spent 35.6 s of a 38 s run rebuilding it.
+
+The cache now keeps a `StreamRender` of its own for the live reply
+(`LiveReply`). `StreamRender::whole_after` renders only the lines that
+completed since the last call and says how many of the reply's leading rows
+are **settled** — the rows of finished lines, less a trailing run of blank
+ones, which are dropped while they end the reply and shown once content
+follows. The tail's rebuild cuts the page back to the settled rows it
+already holds and appends what follows them, so a refresh costs what
+changed.
+
+It is only as good as the claim that the buffer it is shown is the one it
+rendered, grown, and that does not hold across a turn: a tool call finalises
+the segment and another starts, a failed attempt is withdrawn and made
+again. So the text the rows came from is kept, and a buffer that does not
+start with it starts the render over. One comparison of bytes — a length or
+a counter could be fooled by a longer buffer.
+
+`the_reply_so_far_is_the_batch_render_at_every_prefix` holds `whole` to the
+batch render over the hostile corpus;
+`the_pagers_live_reply_is_a_fresh_build_at_every_step_of_a_stream` holds the
+cache to a from-scratch build through the markdown tour, with tool calls
+splitting the reply and jobs coming back in between.
+
+## What was measured and left alone
+
+- **One huge line.** A reply that is a single 60 KB line costs the loop 25%
+  of a core while it streams: the strip previews the uncommitted tail, and a
+  line with no newline in it is all tail. Keys stay under 9 ms at the 99th
+  percentile. The commit
+  path already amortizes its own share (`TAIL_EVAL_MIN`); doing the same to
+  the preview would show a stale frontier.
+- **A `write` call under a flood.** With a provider that never pauses, a key
+  under a streaming `write` is 8 ms at the median and 15 at the 90th
+  percentile: the preview shows the newest ten
+  lines coloured, and the grammar's state for those depends on every line
+  before them, so each frame highlights whatever arrived since the last. At a
+  model's pace that is a dozen bytes a frame.
+- **Rendering items on the loop in budgeted slices.** It needs no thread, but
+  an item is rendered whole or not at all, so the slice is as long as the
+  largest item.
+- **Handing the pager the rows the inline render already made.** A reply is
+  rendered twice, once for scrollback and once for the transcript, and the
+  second could be skipped by passing the first's rows across. It would tie
+  the cache to the two dozen places the inline render is reset; the worker
+  made the second render free to the loop instead.
+
 ## What guards it
 
 - `frame::tests` — the scheduler on a runtime with no timer, and both floors.
@@ -158,5 +281,11 @@ scans.
   siblings — one build a frame, one per width, nothing kept outside a frame.
 - `ui::tests::tool::the_running_tail_counts_a_long_output_without_walking_its_lines`,
   `ui::tests::wrap::a_line_no_longer_than_its_row_is_counted_without_a_scan`.
+- `ui::tests::transcript` — a job's rows are the cache's own; handed out
+  once, a window at a time; refused after a reset, out of turn, or once a
+  draw has rendered the item; a job on another thread carries the theme and
+  the link display; the live reply renders a line once and puts its settled
+  rows down once.
+- `ui::cached_lines::tests` — appending a store is extending with its rows.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.
