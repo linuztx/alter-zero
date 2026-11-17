@@ -198,6 +198,12 @@ release heading when a version is cut.
   re-rendered the whole reply so far on every frame, so under a long code
   reply each scroll key took about 150 ms. It renders each line once now.
 
+- **More than a kilobyte typed in one go all arrives.** Text pasted into a
+  terminal without bracketed paste, typed by a dictation tool, or delivered
+  in one piece by a connection that had stalled showed its first 1024 bytes;
+  the rest appeared a kilobyte per further key press. The terminal library
+  is patched to read all of it (`vendor/README.md`).
+
 ### Security
 
 - **A command and its description can no longer write lines of the question

@@ -226,9 +226,9 @@ opt-level = 3
 # first build ~10% slower, a larger `target/`, and nothing measurable at
 # runtime (`perf_probe`'s whole-render column stays within ±3% of the plain
 # build). It applies to this crate only — cargo never compiles registry
-# dependencies incrementally, and the one path dependency, the vendored
-# `syntect`, opts out below — so the dependency units are byte-for-byte what
-# they were. A build that wants the plain layout (CI, a package built once)
+# dependencies incrementally, and the two path dependencies, the vendored
+# `syntect` and `crossterm`, opt out below — so the dependency units are
+# byte-for-byte what they were. A build that wants the plain layout (CI, a package built once)
 # opts out on the command line:
 # `cargo build --release --config profile.release.incremental=false`.
 # The binary a release ships is built in the `dist` profile below instead.
@@ -243,6 +243,11 @@ incremental = true
 # release build compiles incrementally: 256 codegen units instead of 16, which
 # measured ~5% slower highlighting than the registry crate it stands in for.
 [profile.release.package.syntect]
+incremental = false
+
+# The same opt-out for the other vendored crate, so that it too is compiled
+# exactly as the registry crate it stands in for was.
+[profile.release.package.crossterm]
 incremental = false
 
 # The shipped binary: `scripts/release.sh build` compiles every release
@@ -277,5 +282,14 @@ codegen-units = 1
 # whose `parse_line` returns a different type. Drop this patch, `vendor/` and
 # the override above once a syntect release carries the fix
 # (`vendor/README.md`).
+#
+# crossterm 0.29.0 reads terminal input 1024 bytes at a time behind a
+# readiness poll that fires when input arrives, not while input remains, and
+# hands back the first key of each read without reading on — so the rest of a
+# typed burst longer than that waits, unread, for the next key.
+# `vendor/crossterm` is 0.29.0 with those bytes read before it waits again
+# (`vendor/README.md`, `docs/input-latency.md`). Drop it and its override
+# above once a crossterm release reads a burst whole.
 [patch.crates-io]
 syntect = { path = "vendor/syntect" }
+crossterm = { path = "vendor/crossterm" }

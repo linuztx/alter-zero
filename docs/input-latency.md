@@ -251,6 +251,30 @@ batch render over the hostile corpus;
 cache to a from-scratch build through the markdown tour, with tool calls
 splitting the reply and jobs coming back in between.
 
+## 8. A typed burst over 1 KB stopped at 1 KB
+
+Type — or paste into a terminal with no bracketed paste, or dictate — more
+than a kilobyte in one piece, and the composer showed the first 1024 bytes.
+The rest appeared 1024 bytes at a time, one batch per further key press.
+
+crossterm's unix event source reads the terminal 1024 bytes at a time behind
+mio's poll, which is edge-triggered: it reports the terminal readable when
+input *arrives*, not while input *remains*. The source returns the first
+event of a read without reading on, so once the events of one read were
+handed out it went back to a poll that had nothing new to report. A
+bracketed paste was never affected: the parser returns no event until the
+paste's end, so the read loop runs on.
+
+crossterm 0.29.0 is the latest release and its master is the same, so the
+crate is vendored with the fix (`vendor/crossterm`, `vendor/README.md`): a
+read that fills the buffer is noted, and before waiting again the source
+reads what is left — while `FIONREAD` says there is something to read, since
+the descriptor may be a blocking one and a read with nothing to return would
+wait there for the next key.
+
+`scripts/smoke.sh` Phase 159 types 3,200 bytes in one write and reads the
+composer's last words.
+
 ## What was measured and left alone
 
 - **One huge line.** A reply that is a single 60 KB line costs the loop 25%
@@ -287,5 +311,6 @@ splitting the reply and jobs coming back in between.
   the link display; the live reply renders a line once and puts its settled
   rows down once.
 - `ui::cached_lines::tests` — appending a store is extending with its rows.
+- `scripts/smoke.sh` Phase 159 — the typed burst.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.
