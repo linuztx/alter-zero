@@ -25,7 +25,9 @@
 //! Beyond the composer: `--overlay` times the Ctrl+O pager's scroll keys
 //! under the stream instead, `--warmup N` streams N turns first so the
 //! measured one has a history behind it, and `--draft N` (with the `idle`
-//! scenario) types into a composer already holding N characters. The `bash`
+//! scenario) types into a composer already holding N characters; the `burst`
+//! scenario types `--draft` characters in one write and times the frame that
+//! shows the last of them — or reports that none did. The `bash`
 //! scenario runs a command that prints `--bytes` of output at `--rate` lines
 //! a second, and `write` streams a file of that size into a `write` call.
 
@@ -48,6 +50,12 @@ const END_MARK: &str = "END-OF-PROBE-STREAM";
 /// The characters the probe types, in order. Neighbours always differ, so a
 /// two-character suffix names one keystroke and no earlier state.
 const KEYS: &str = "Q7Z3K9X5V1J8W4Y6";
+
+/// What a draft and a burst are made of.
+const FILLER: &str = "lorem ipsum dolor sit amet ";
+
+/// What a burst closes on — the frame that shows it has shown all of it.
+const BURST_END: &str = "ENDBURST";
 
 /// How long any one wait may take before the probe gives up on the run.
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -81,7 +89,7 @@ fn usage() -> ! {
         "usage: latency_probe [--bin PATH] [--scenario NAME[,NAME…]|all] [--rate N] \
          [--chars N] [--bytes N] [--key-every MS] [--rows N] [--cols N] [--draft N] \
          [--warmup TURNS] [--overlay] [--env K=V] [--json PATH] [--keep]\n\
-         scenarios: idle prose code table oneline mixed reasoning write bash"
+         scenarios: idle burst prose code table oneline mixed reasoning write bash"
     );
     std::process::exit(2);
 }
@@ -966,24 +974,55 @@ fn run(options: &Options, scenario: &str, state: &Arc<StubState>, port: u16) -> 
     state.frames_sent.store(0, Ordering::Relaxed);
 
     // A draft already in the composer, so each timed key edits a long one.
-    if options.draft > 0 {
+    // Typed a slice at a time: the point is the cost of a key over a long
+    // draft, and a burst is the `burst` scenario's to measure.
+    if options.draft > 0 && scenario != "burst" {
         if scenario != "idle" {
-            eprintln!("--draft is measured idle only; pass --scenario idle");
+            eprintln!("--draft is measured idle only; pass --scenario idle or burst");
             std::process::exit(2);
         }
-        let filler: String = "lorem ipsum dolor sit amet "
-            .chars()
-            .cycle()
-            .take(options.draft)
-            .collect();
-        terminal.send(filler.as_bytes());
+        let filler: Vec<u8> = FILLER.bytes().cycle().take(options.draft).collect();
+        for slice in filler.chunks(256) {
+            terminal.send(slice);
+            terminal.settle(Duration::from_millis(40));
+        }
         terminal.send(b"\n"); // Ctrl+J: the timed keys get a row of their own
         terminal.settle(Duration::from_millis(1500));
     }
 
     let cpu0 = (thread_cpu(pid, pid), process_cpu(pid));
     let (frames0, bytes0) = (terminal.frames, terminal.bytes);
-    if scenario == "idle" {
+    if scenario == "burst" {
+        // Everything at once — a paste the terminal did not bracket, a text
+        // expander, `tmux send-keys`: timed to the frame that shows its end.
+        let mut text: Vec<u8> = FILLER
+            .bytes()
+            .cycle()
+            .take(if options.draft > 0 {
+                options.draft
+            } else {
+                4000
+            })
+            .collect();
+        text.extend_from_slice(BURST_END.as_bytes());
+        let mut input = terminal.input.try_clone().expect("clone the terminal");
+        let sent = Instant::now();
+        // Written off this thread: a terminal's input queue is a few
+        // kilobytes, and the write waits on the app reading it.
+        std::thread::spawn(move || {
+            let _ = input.write_all(&text);
+        });
+        let shown = terminal.until(Duration::from_secs(8), |screen| {
+            !screen.cursor_hidden() && screen.holds_at_cursor(BURST_END)
+        });
+        match shown {
+            Some(at) => outcome
+                .latencies_us
+                .push(at.saturating_duration_since(sent).as_micros() as u64),
+            None => outcome.missed += 1,
+        }
+        outcome.stream_ms = sent.elapsed().as_secs_f64() * 1e3;
+    } else if scenario == "idle" {
         let began = Instant::now();
         type_keys(
             &mut terminal,
@@ -1122,6 +1161,21 @@ fn main() {
         row.insert(
             "max_ms".to_string(),
             serde_json::json!(sorted.last().map_or(0.0, |us| *us as f64 / 1000.0)),
+        );
+        // Which keys were the slow ones — their place in the run says what
+        // the app was doing (a reply ending, a tip appearing, a verb turning).
+        let mut slowest: Vec<(usize, u64)> =
+            outcome.latencies_us.iter().copied().enumerate().collect();
+        slowest.sort_unstable_by_key(|&(_, us)| std::cmp::Reverse(us));
+        slowest.truncate(5);
+        row.insert(
+            "slowest".to_string(),
+            serde_json::json!(
+                slowest
+                    .iter()
+                    .map(|&(at, us)| (at, us as f64 / 1000.0))
+                    .collect::<Vec<_>>()
+            ),
         );
         row.insert(
             "stream_ms".to_string(),
