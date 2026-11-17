@@ -26,8 +26,10 @@ already in this codebase; this change ports the rest.
   the earliest). A thin async `run_scheduler` task receives requested deadlines
   on an mpsc channel, coalesces + rate-limits them, sleeps until due, then sends
   one draw tick. `FrameRequester` is the cloneable send handle
-  (`schedule_frame` / `schedule_frame_in`). Pure parts are unit-tested; the
-  async task is covered by `smoke.sh`.
+  (`schedule_frame` / `schedule_frame_in`, and `schedule_input_frame` for a
+  key press or a paste, whose frame is not held to the floor —
+  `docs/input-latency.md`). Pure parts are unit-tested; the async task is
+  covered by `smoke.sh`.
 
 - **`paste.rs`** — `PasteBurst`, a pure state machine: characters arriving within
   `BURST_CHAR_INTERVAL` (8 ms) of each other are a *burst* once `BURST_MIN_CHARS`
@@ -87,5 +89,5 @@ The loop now polls **input first and the draw tick second** (`biased`), and
 only the remaining sources — the reply, the workers, the shells, the
 subagents — are chosen at random among themselves, by `next_wake`'s own
 `select!`. Neither of the first two can crowd the rest out: keys arrive at a
-person's pace and the scheduler emits at most one frame per floor. See
-`docs/input-latency.md`.
+person's pace, and the scheduler emits at most one frame per floor plus one
+per run of keys handled together. See `docs/input-latency.md`.

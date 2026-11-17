@@ -3610,9 +3610,10 @@ behind a dozen of its own events (`docs/input-latency.md`). Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`) — a frame
 already due emitted at once, never through the runtime's millisecond timer —
-while a **key press** asks for an input frame (`schedule_input_frame`), which
-waits only `MIN_INPUT_FRAME_INTERVAL` (2 ms) and never the rest of the floor a
-stream's frames keep. A paste/fast-type
+while a **key press** or a paste asks for an input frame
+(`schedule_input_frame`), which is drawn at once: it waits neither the rest
+of the floor a stream's frames keep nor one of its own, since any wait goes
+through that millisecond timer. A paste/fast-type
 run is caught by `paste::PasteBurst` so its characters request relaxed frames
 (`schedule_frame_in` — the rate-limit floor does the coalescing; the scheduler
 keeps the soonest pending deadline). **Nothing that takes long runs between

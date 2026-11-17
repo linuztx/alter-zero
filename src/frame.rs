@@ -1,9 +1,9 @@
 //! Frame scheduling — coalesce many redraw requests into rate-limited draws.
 //!
-//! Two floors: [`MIN_FRAME_INTERVAL`] paces the frames a stream, an animation
-//! or a worker's result asks for, and [`MIN_INPUT_FRAME_INTERVAL`] — much
-//! shorter — the frame that shows a key press, which is not made to wait out
-//! the first (`docs/input-latency.md`).
+//! One floor, [`MIN_FRAME_INTERVAL`], paces the frames a stream, an animation
+//! or a worker's result asks for. The frame that shows a key press is not
+//! held to it, nor to any floor of its own: it is drawn when it is asked for
+//! (`docs/input-latency.md`).
 //!
 //! Ported from openai/codex's `FrameRequester`/`FrameScheduler`. The pure parts
 //! ([`FrameRateLimiter`], [`soonest`]) are unit-tested with injected `Instant`s;
@@ -21,16 +21,8 @@ use tokio::time::sleep_until;
 /// requests can never produce frames closer together than this.
 pub const MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_334);
 
-/// The shortest gap between the last frame and one a **key press** asks for
-/// ([`FrameRequester::schedule_input_frame`]). A key is not paced by the
-/// floor that paces a stream's frames: typed just after one of those, it
-/// waited the rest of that floor — four milliseconds on average, eight at
-/// worst — to be shown, where on an idle composer it is shown at once
-/// (`docs/input-latency.md`). It keeps a floor of its own so that a run of
-/// keys no burst detector caught is still a bounded number of paints.
-pub const MIN_INPUT_FRAME_INTERVAL: Duration = Duration::from_millis(2);
-
-/// Rate-limits emitted frames to at most one per [`MIN_FRAME_INTERVAL`].
+/// Rate-limits emitted frames to at most one per [`MIN_FRAME_INTERVAL`] —
+/// all but the one a key press asks for ([`FrameRateLimiter::clamp`]).
 ///
 /// Pure: it makes decisions from injected `Instant`s and remembers only when the
 /// last frame was emitted, so it is testable with no clock or runtime.
@@ -58,22 +50,24 @@ impl FrameRateLimiter {
         }
     }
 
-    /// [`clamp_deadline`](Self::clamp_deadline) for a frame a key press asked
-    /// for: never sooner than [`MIN_INPUT_FRAME_INTERVAL`] after the previous
-    /// frame — its own short floor, not the stream's.
-    #[must_use]
-    pub fn clamp_input(&self, requested: Instant) -> Instant {
-        match self.last_emitted_at {
-            Some(last) => requested.max(last + MIN_INPUT_FRAME_INTERVAL),
-            None => requested,
-        }
-    }
-
-    /// The earliest `request` may be emitted — by the floor of its kind.
+    /// The earliest `request` may be emitted. A stream's, an animation's or a
+    /// worker's waits for its slot ([`clamp_deadline`](Self::clamp_deadline)),
+    /// so their requests coalesce into one draw a slot. A **key press**'s is
+    /// due when it was asked for: a key is not one of many events to
+    /// coalesce — a person types a few dozen a second — and typed just after
+    /// a stream's frame it waited the rest of that slot to be shown, four
+    /// milliseconds on average and eight at worst, where on an idle composer
+    /// it is shown at once. Nor does it keep a shorter floor of its own: any
+    /// wait at all goes through the runtime's timer, which counts in whole
+    /// milliseconds, so a key that owed a fraction of one paid one to two
+    /// (`docs/input-latency.md`). What bounds the paints is the loop, which
+    /// takes every key already waiting before it draws; and since the frame
+    /// a key draws counts as the last one ([`mark_emitted`](Self::mark_emitted)),
+    /// the stream's next waits a whole slot past it.
     #[must_use]
     pub fn clamp(&self, request: FrameRequest) -> Instant {
         if request.input {
-            self.clamp_input(request.at)
+            request.at
         } else {
             self.clamp_deadline(request.at)
         }
@@ -126,11 +120,11 @@ impl FrameRequester {
         });
     }
 
-    /// Request the redraw that shows a **key press** — as soon as
-    /// [`MIN_INPUT_FRAME_INTERVAL`] allows, whatever the frame floor says. A
-    /// stream's frames are paced by that floor because nothing is lost by
-    /// showing a token eight milliseconds late; a key typed while they run
-    /// is what the user is looking at.
+    /// Request the redraw that shows the user's own input — a **key press**,
+    /// a paste — at once, whatever the frame floor says
+    /// ([`FrameRateLimiter::clamp`]). A stream's frames are paced by that
+    /// floor because nothing is lost by showing a token eight milliseconds
+    /// late; a key typed while they run is what the user is looking at.
     pub fn schedule_input_frame(&self) {
         let _ = self.tx.send(FrameRequest {
             at: Instant::now(),
@@ -347,39 +341,48 @@ mod tests {
     }
 
     #[test]
-    fn a_keys_frame_waits_only_its_own_floor() {
+    fn a_keys_frame_skips_the_frame_floor() {
         let mut limiter = FrameRateLimiter::new();
         let base = Instant::now();
-        assert_eq!(limiter.clamp_input(base), base, "idle: draw when asked");
         limiter.mark_emitted(base);
-        // A key typed a millisecond after a stream's frame: shown two
-        // milliseconds after that frame, not eight.
-        let typed = base + Duration::from_millis(1);
-        assert_eq!(limiter.clamp_input(typed), base + MIN_INPUT_FRAME_INTERVAL);
-        assert_eq!(limiter.clamp_deadline(typed), base + MIN_FRAME_INTERVAL);
-        // …and one typed later than its floor, when it is typed.
-        let later = base + Duration::from_millis(5);
-        assert_eq!(limiter.clamp_input(later), later);
+        // A key typed right behind a stream's frame is due when it is typed:
+        // a floor of its own, however short, is a wait on the runtime's
+        // millisecond timer — one to two milliseconds for a key that asked
+        // for a tenth of one (`docs/input-latency.md`).
+        let typed = base + Duration::from_micros(100);
+        let key = FrameRequest {
+            at: typed,
+            input: true,
+        };
+        assert_eq!(limiter.clamp(key), typed, "a key's frame is not held");
+        // Everything else still waits for its slot…
+        let chunk = FrameRequest {
+            at: typed,
+            input: false,
+        };
+        assert_eq!(limiter.clamp(chunk), base + MIN_FRAME_INTERVAL);
+        // …and the frame a key draws counts as the last one, so typing adds
+        // at most its own rate to the frame rate.
+        limiter.mark_emitted(typed);
+        assert_eq!(limiter.clamp(chunk), typed + MIN_FRAME_INTERVAL);
     }
 
     #[test]
-    fn a_keys_frame_does_not_wait_out_a_streams_floor() {
+    fn a_keys_frame_right_behind_a_streams_needs_no_timer() {
         // A reply is streaming, its frames a floor apart, and a key is typed
-        // right behind one of them. Its frame is due once its own short
-        // floor has passed — on a runtime with no timer, which the wait for
-        // the stream's floor would have needed.
+        // right behind one of them. Its frame is drawn at once — on a runtime
+        // with no timer, which any wait at all would have needed.
         timerless().block_on(async {
             let (requester, req_rx) = channel();
             let (draw_tx, mut draw_rx) = unbounded_channel();
             let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
             requester.schedule_frame();
             assert_eq!(draw_rx.recv().await, Some(()));
-            std::thread::sleep(MIN_INPUT_FRAME_INTERVAL);
             requester.schedule_input_frame();
             assert_eq!(
                 draw_rx.recv().await,
                 Some(()),
-                "a key's frame behind a stream's is drawn without the stream's floor"
+                "a key's frame behind a stream's is drawn at once, with no timer"
             );
             drop(requester);
             scheduler
@@ -389,31 +392,27 @@ mod tests {
     }
 
     #[test]
-    fn a_keys_frame_right_behind_another_waits_out_its_own_floor() {
-        // The short floor is still a floor: keys no burst detector caught
-        // are not a paint each.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .expect("a runtime");
-        runtime.block_on(async {
+    fn keys_handled_together_are_one_frame() {
+        // With no floor of their own, what keeps a run of keys from being a
+        // paint each is that the loop takes every key already waiting before
+        // it draws (`tui::event_loop`): their requests reach the scheduler
+        // together, and are one frame.
+        timerless().block_on(async {
             let (requester, req_rx) = channel();
             let (draw_tx, mut draw_rx) = unbounded_channel();
+            requester.schedule_input_frame();
+            requester.schedule_input_frame();
+            requester.schedule_input_frame();
             let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
-            let asked = Instant::now();
-            requester.schedule_input_frame();
             assert_eq!(draw_rx.recv().await, Some(()));
-            requester.schedule_input_frame();
-            assert_eq!(draw_rx.recv().await, Some(()));
-            assert!(
-                asked.elapsed() >= MIN_INPUT_FRAME_INTERVAL,
-                "the second frame came {:?} after the first was asked for",
-                asked.elapsed()
-            );
             drop(requester);
             scheduler
                 .await
                 .expect("the scheduler ends when its requesters are gone");
+            assert!(
+                draw_rx.try_recv().is_err(),
+                "three keys handled together are one frame, not three"
+            );
         });
     }
 

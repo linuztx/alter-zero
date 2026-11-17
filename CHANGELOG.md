@@ -175,10 +175,10 @@ release heading when a version is cut.
 - **Typing stays instant while a reply streams.** A key typed under a
   streaming reply waited for the stream's next frame, 4 to 5 ms on average
   and up to 10, and behind a burst of the stream's own events on top of
-  that. A key press now gets a frame of its own, ahead of anything the
-  stream is doing: under a streaming reply a typed character is on screen in
-  under a millisecond, as it is on an idle composer, where it used to take
-  two (`docs/input-latency.md`).
+  that. A key press, and a paste, now gets a frame of its own, ahead of
+  anything the stream is doing: under a streaming reply a typed character is
+  on screen in under a millisecond, as it is on an idle composer, where it
+  used to take two (`docs/input-latency.md`).
 
 - **The app no longer stops reading keys when a long reply or a big file
   read lands.** Every finished reply and tool call was rendered for the

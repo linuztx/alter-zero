@@ -112,7 +112,8 @@ other source is chosen among the rest by `next_wake`'s own unbiased `select!`,
 so the sources that can each arrive in a flood — a reply, a subagent's
 stream, a shell's output — still cannot starve one another. A key cannot
 crowd anything out, since keys arrive at a person's pace, and neither can a
-frame, since the scheduler emits at most one per floor.
+frame, since the scheduler emits at most one per floor and one per run of
+keys handled together.
 
 Draining several reply events per wake was considered and not done: with the
 frame no longer behind them it measured nothing, and one event per iteration
@@ -126,16 +127,27 @@ paced by it because nothing is lost by showing a token eight milliseconds
 late. A key typed just after one of those frames waited the rest of the floor
 for the next.
 
-A key press now asks for an **input frame**
-(`FrameRequester::schedule_input_frame`), which waits only
-`MIN_INPUT_FRAME_INTERVAL` (2 ms) after the last frame. It still paints
-everything, so the stream loses nothing; the stream's next frame is simply a
-floor after it. The short floor is still a floor: a run of keys the paste
-burst detector did not catch is a bounded number of paints. A character
-inside a detected burst keeps asking for a relaxed frame, as before.
+A key press — and a paste — now asks for an **input frame**
+(`FrameRequester::schedule_input_frame`), which is due when it is asked for
+(`FrameRateLimiter::clamp`). It still paints everything, so the stream loses
+nothing; the stream's next frame is simply a floor after it, so typing adds
+at most its own rate to the frame rate. A character inside a detected paste
+burst keeps asking for a relaxed frame, as before.
+
+It first kept a short floor of its own, two milliseconds after the last
+frame, so that a run of keys no burst detector caught would be a bounded
+number of paints. That floor cost more than it read: any wait at all goes
+through the runtime's timer (cause 1), so a key that owed a tenth of a
+millisecond paid one to two, and under the offline demo's stream — a frame
+every 10 ms, keys every 50 — a tenth of the keys took 2.1 ms and one in a
+hundred 3.6, against 0.7 at the median. Nor was it what bounded the paints:
+the loop takes every key already waiting before it draws (cause 2), so keys
+that arrive together are one frame with no floor at all — 20,000 characters
+typed in one write are still one paint. Without it the same stream reads
+0.6 / 0.7 / 1.0 ms (median / p90 / p99).
 
 That is what took a key under a stream at a model's pace from 4.5 ms to
-under one.
+about half of one.
 
 ## 4. The strip's live cells were built nine times a frame
 
@@ -376,7 +388,8 @@ millisecond, and 7% of a core.
 
 ## What guards it
 
-- `frame::tests` — the scheduler on a runtime with no timer, and both floors.
+- `frame::tests` — the scheduler on a runtime with no timer: a due frame, a
+  key's frame right behind a stream's, and keys handled together as one.
 - `ui::tests::live::a_frame_builds_the_strips_live_cells_once` and its
   siblings — one build a frame, one per width, nothing kept outside a frame.
 - `ui::tests::tool::the_running_tail_counts_a_long_output_without_walking_its_lines`,
