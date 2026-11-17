@@ -219,6 +219,10 @@ pub(crate) struct Session<'t> {
     /// draw ticks coming back.
     frame: FrameRequester,
     draw_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    /// Which of those ticks only the banner's mascot asked for — the frames
+    /// that repaint its cells and nothing else
+    /// (`docs/mascot-animation.md` *A frame of its own*).
+    frames: alter_zero::frame::FrameLedger,
     /// The reply channel a turn streams on. Both ends are swapped wholesale by
     /// [`Session::abandon_inflight`] so a detached backend can't reach the next
     /// turn (`docs/interrupt.md`).

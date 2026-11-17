@@ -552,6 +552,17 @@ impl InlineViewport {
         }
     }
 
+    /// Ask that the anchored block stand as it was committed from the next
+    /// [`draw`] on — what a frame says of a banner whose mascot is not to
+    /// move. It costs nothing while the block stands there already.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    pub fn still_anchor(&mut self) {
+        if let Some(anchor) = &mut self.anchor {
+            anchor.stand_still();
+        }
+    }
+
     /// Let the anchored block go: the next [`draw`] puts it back to the rows
     /// it was committed as and forgets it. The loop calls this the moment
     /// the conversation stops being empty — from there the banner is
@@ -765,6 +776,12 @@ impl InlineViewport {
         // scroll of the frame and before the cursor is seated, so it lands
         // in the same synchronized update and the cursor never rests there.
         self.paint_anchor()?;
+        self.seat_cursor(app)
+    }
+
+    /// Close a frame's painting: put the hardware cursor on its seat in the
+    /// live region and show it again.
+    fn seat_cursor(&mut self, app: &App) -> io::Result<()> {
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
         // Re-show the cursor at its final prompt seat, undoing the frame-start
@@ -782,6 +799,44 @@ impl InlineViewport {
             queue!(self.backend, Show)?;
         }
         Ok(())
+    }
+
+    /// A frame of the anchored block **alone**: repaint it in the pose the
+    /// loop asked for and touch nothing else (`docs/mascot-animation.md`
+    /// *A frame of its own*). For the frames only the banner's mascot asked
+    /// for, where nothing else on screen can have changed: a [`draw`] would
+    /// render the whole live region into a buffer of its own to find that
+    /// out, and that buffer is the largest thing an idle screen allocates
+    /// (`docs/memory.md`).
+    ///
+    /// The cells go out as they do inside a [`draw`] — one synchronized
+    /// update, the cursor hidden while they are written and back on its
+    /// seat after — and a frame with no cell to write is **silence on the
+    /// wire**, not even a cursor move. Rows still queued for a flush wait
+    /// for the [`draw`] that writes them, and nothing is written while the
+    /// alternate screen is up.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    pub fn draw_anchor(&mut self, app: &App) -> io::Result<()> {
+        if self.headless || !self.pending.is_empty() || OVERLAY_ACTIVE.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let paints = self
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.paints(self.view.y));
+        if !paints {
+            // Nothing to write — but a block let go, or carried off the top,
+            // is still forgotten here.
+            return self.paint_anchor();
+        }
+        queue!(self.backend, BeginSynchronizedUpdate)?;
+        queue!(self.backend, Hide)?;
+        let painted = self.paint_anchor().and_then(|()| self.seat_cursor(app));
+        let ended = queue!(self.backend, EndSynchronizedUpdate);
+        painted?;
+        ended?;
+        Backend::flush(&mut self.backend)
     }
 
     /// Queue `lines` for scrollback directly above the viewport. No terminal
@@ -839,9 +894,8 @@ impl InlineViewport {
         if self.screen.width == 0 || anchor.shown() == lines.as_slice() {
             return Ok(());
         }
-        let was = anchor::block_buffer(anchor.shown(), self.screen.width, top);
-        let now = anchor::block_buffer(&lines, self.screen.width, top);
-        self.draw_cells(was.diff(&now).into_iter())?;
+        let cells = anchor::changed_cells(anchor.shown(), &lines, self.screen.width, top);
+        self.draw_cells(cells.iter().map(|(x, y, cell)| (*x, *y, cell)))?;
         if let Some(anchor) = &mut self.anchor {
             anchor.painted(lines);
         }
@@ -870,12 +924,12 @@ impl InlineViewport {
     /// block is repainted to them here, and one that scrolled was settled
     /// before the scroll.
     fn paint_anchor(&mut self) -> io::Result<()> {
-        let Some(anchor) = &self.anchor else {
+        let Some(anchor) = &mut self.anchor else {
             return Ok(());
         };
         let gone = anchor.written() && anchor.top(self.view.y).is_none();
         let last = anchor.released() || gone;
-        if let Some(lines) = anchor.due().map(<[Line<'static>]>::to_vec) {
+        if let Some(lines) = anchor.take_due() {
             self.repaint_anchor(lines)?;
         }
         if last {

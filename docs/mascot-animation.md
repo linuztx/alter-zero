@@ -333,7 +333,7 @@ it was three in five — seven of the whole body, three tricks (a hide, a
 somersault, a cartwheel), a cheer, two waves and a pump of its arms, six of
 its frill and feet, and five of light.
 
-A round is dealt by `Motions::dealt(seed, round, beat)`, and three things
+A round is dealt by `Deck::dealt(seed, round, beat)`, and three things
 make it a function rather than a shuffle that has to be remembered:
 
 - **The round's last move is drawn first**, from the cards it holds one
@@ -396,6 +396,38 @@ its step are a table walk. The pose three hours in costs what the pose three
 seconds in does, a loop that was busy (or behind an overlay) for a minute
 simply asks again and gets the right answer, and the whole thing is
 unit-tested with nothing but numbers.
+
+### Written as tables, kept as integers
+
+A mascot's moves are **written** the way they read best: a still is three
+rows of text, a clip a list of stills and how long each stays up, a card
+the clips its copies take turns at, a deck a list of cards (`Step`, `Clip`,
+`Card`, `Motions`). Those are tables of references — and a reference in a
+table is an address the loader has to fill in when the program starts,
+which makes the page it sits on the process's own from its first
+instruction, whether the animation is on or not. Read directly, the six
+mascots' tables came to 2,300 such addresses in 52 kB (*What it costs in
+memory*).
+
+So nothing reads them while the app runs. Each mascot's tables are folded
+**at compile time** into integers (`src/app/mascot_motion/packed.rs`:
+`build` and `Built::fit`, both `const fn`): the rows its stills are made
+of, each kept once, end to end in one run of bytes — a blink redraws one
+row of three, so most stills share two rows with the art at rest — and
+every step, clip and card as indices into it, in arrays cut to the size
+they come to. That `Packed` is the one thing the binary keeps. There is no
+address in it, so nothing to relocate: it is read-only data like any
+string, shared between every process running the binary and paged in only
+where it is read. The timeline reads it through a `Table` and plays a clip
+of it as a `Reel`; a pose's art is three `&str` cut from that run of bytes.
+
+A test holds every mascot's packed table, step for step, to the tables it
+was written as — every clip in the order it is listed, the deck and what
+each copy of each card plays over sixty rounds, the stills it watches
+with, its nap — so the moves stay something one edits as text, and the
+compiler does the rest. A table that outgrows what its indices can name
+(256 rows of art, 255 clips, a step held for over a minute) fails the
+build with a sentence saying which.
 
 ## Watching the user type
 
@@ -635,13 +667,31 @@ banner and its spacer — as the one block the viewport may still repaint
 (`src/term/anchor.rs`). It keeps a note: which rows, how far above the live
 region's top they sit (the one row it tracks; rows committed under the
 block since are counted), and what they show now. Each frame the loop hands
-it the banner in its current pose (`pose_anchor`) and `draw` writes the
-cells that differ, in the same synchronized update as the live region,
-before the cursor is seated. A blink is two cells — 95 bytes on the wire;
+it the banner in its current pose (`pose_anchor`) — or asks it to stand as
+it was committed (`still_anchor`) when nothing of it can move: the
+animation off, a terminal too narrow for the art — and the frame writes the
+cells that differ, inside one synchronized update, before the cursor is
+seated. A blink is two cells — 95 bytes on the wire;
 the skitterer's puff is the eight cells at its sides, 260 bytes;
 a frame that moves the whole mascot redraws its three rows, some 550 bytes;
 and a round of everything a mascot knows, a minute and a half of idling,
 comes to about 40 kB.
+
+**The cells are looked for where they can be, and nowhere else**
+(`changed_cells`). Only the rows whose text changed are rendered, and each
+only as far along as it can differ: a row is laid out from its first
+column, span after span, so where its two versions end on the same spans,
+starting in the same column — the title, the directory and the hint,
+beside a mascot that moved — nothing from there on can change, and the
+spans ahead of them are all that is rendered. For the banner that is the
+art and its gap: a dozen columns of one to three rows. It is still a
+commit's own renderer and ratatui's own diff, and a test holds the result,
+cell for cell, to rendering the whole block at the terminal's width and
+diffing that — every pose of every mascot, at five widths — which is what
+a repaint first did, and what made it the largest allocation an idle screen
+ever made (*What it costs in memory*). The rows a frame is handed are
+**moved** into the note as what the block now shows, never copied, and a
+block at rest keeps one copy of its rows.
 
 Three rules keep the note honest:
 
@@ -697,42 +747,89 @@ cursor-trail animation renders as a shimmer at thirty frames a second
 under it are rewritten (`docs/overlay-repaint.md`). A blink rewrites two
 cells of the banner's art and nothing else.
 
+### A frame of its own
+
+A frame the mascot asked for is a frame in which nothing else changed — and
+drawing it like any other meant rendering the whole live region into a
+buffer of its own to find that out. So the loop tells those frames apart,
+and draws them differently.
+
+Every request for a frame is counted but the banner's own
+(`FrameRequester::schedule_banner_frame_in`). The scheduler folds every
+pending request into one tick, so a tick does not say who wanted it; the
+count does (`FrameLedger`). Read as each frame begins, a count that has not
+moved since the frame before began means nothing asked in between but the
+banner. Whatever else moves by itself — a toast running out, a status
+line, a countdown — asks for its next frame while a frame is drawn, which
+moves the count: so a frame is the banner's alone only when nothing else is
+waiting either, and a frame anything else wanted is a whole one, as it
+always was. The `/mascot` picker's preview moves inside the live region, so
+with the picker open the mascot's frames are asked for the ordinary way.
+
+Such a frame (`Session::draw_banner_frame`) reads the mascot's clock, poses
+the banner and calls `InlineViewport::draw_anchor`: the cells of the block
+that differ, the cursor hidden while they are written and back on its seat
+after, in one synchronized update — and where there is no cell to write,
+**nothing at all**, not a cursor move. The live region is not rendered, no
+other clock is read, and rows still queued for a flush wait for the whole
+frame that is coming for them.
+
 ### What it costs in memory
 
-Measured on release builds of the same tree with and without the
-animation's commits, each idling in a 100 by 30 terminal, by reading
-`/proc/PID/status` once a second. The figures are `RssAnon`, the memory
-that is the process's own:
+Resident memory is a feature here (`docs/memory.md`): the app idles in a
+terminal all day, and an animation on its emptiest screen must not be what
+that costs. Measured on release builds of the tree with and without the
+animation, each in a 100 by 30 terminal, reading `/proc/PID/status` once a
+second for fifteen to forty minutes. The figures are `RssAnon`, the memory
+that is the process's own, where each run ended:
 
 | | without | with |
 |---|---|---|
-| a fresh screen, **Animate mascot** off | 1,116 kB | 1,172 kB |
-| a fresh screen, the mascot moving | 1,116 kB | 1,292 kB |
-| after the first reply | 3,676 kB | 3,726 kB |
+| a fresh screen, **Animate mascot** off | 1,112–1,116 kB | 1,112–1,116 kB |
+| a fresh screen, the mascot moving | 1,112–1,116 kB | 1,152–1,156 kB |
+| the same, typed at | 1,156 kB | 1,188 kB |
+| after the first reply | 3,676 kB | 3,668–3,680 kB |
 
-Two things make up the difference, and neither grows.
+With the row off, and from the first reply on, the animation costs nothing
+that can be measured: the binary's relocated data is within 800 bytes of
+what it was (`readelf -S`, `.data.rel.ro`), and the heap's peak is the same
+to a hundred bytes (valgrind's dhat: 191,187 against 191,082). While the
+mascot moves over an empty conversation the heap settles some 0.04 MB
+higher — residue, not anything kept: each frame builds the banner's rows in
+its pose, thirty small blocks, and frees them again, and that much churn
+leaves glibc's heap ten pages taller than one nothing ever touched.
 
-**The frames are tables of pointers.** A still is three `&str` rows, a clip
-a slice of stills, a deck a slice of clips: some 2,300 pointers the loader
-relocates at startup. That is 52 kB of `.data.rel.ro`, the process's own
-from its first instruction, whether the animation is on or not. A layout
-with no pointers in it — one string table and offsets — would give those
-pages back; it has not been worth the rewrite.
+As first written it cost 0.06 MB with the row off and 0.18 MB with the
+mascot moving. Three things made that up, and each is a rule now:
 
-**The first frames leave a high-water mark.** A repaint builds the block
-twice as a `Buffer` to diff it (`block_buffer`) — four rows of the
-terminal's width — and the allocator keeps what a process once used: about
-100 kB at 100 columns and 170 kB at 300, taken within the first second,
-and a few pages more as moves play for the first time. The conversation's
-own allocations reuse it, which is why the difference after a reply is the
-tables alone.
+- **The frames were tables of pointers** — 52 kB the loader relocated at
+  startup, the process's own whether the animation was on or not. They are
+  integers now (*Written as tables, kept as integers*).
+- **A repaint rendered the whole block twice at the terminal's width** to
+  diff it: two buffers of four rows, 0.4 kB a column — 38 kB at 100 columns
+  and 115 kB at 300, and the allocator keeps what a process once used. It
+  renders the rows that changed, as far as they can differ (*The anchored
+  block*).
+- **Every frame of the animation redrew the live region**, in a buffer
+  the region's size beside the one on screen — 19 kB at 100 columns, thirty
+  times through the greeting — and the small blocks allocated in between
+  split the one each frame freed, so the next took a new one. Those frames
+  draw the banner's cells and nothing else (*A frame of its own*).
 
-Nothing accumulates per frame. Fifteen minutes left alone, kept awake by an
-arrow key, typed at, cleared every three seconds and with the `/mascot`
-picker walked up and down each end where they stood after the first few
-minutes. And the pure half — the clock, the company, the pose, the banner's
-rows — played 3.6 million frames in a loop, days of screen time, and moved
-the heap by a page at most.
+Nothing accumulates per frame. Left alone, an animated screen is where it
+ends from its fifth minute to its fortieth, and typed at, from its fourth.
+The runs that keep whole frames coming settle later and a little higher,
+because a whole frame's buffer is what the small blocks of the frames
+between them split: kept awake by an arrow key every eighteen seconds,
+0.04–0.05 MB above the same run without the animation, its last page taken
+eleven to twenty-one minutes in; with the `/mascot` picker left open —
+whose preview moves inside the live region, so every frame of it is a
+whole one — 0.08 MB, flat from the ninth minute; and cleared every three
+seconds for forty minutes, eight hundred greetings over eight hundred
+rebuilt screens, 0.05–0.07 MB, a page every few minutes at the last. And
+the pure half — the clock, the company, the pose, the banner's rows —
+played 3.6 million frames in a loop, days of screen time, and moved the
+heap by a page at most.
 
 ### What always wears the rest pose
 
@@ -799,14 +896,16 @@ seeded — every unit test's — never moves.
 
 | | |
 |---|---|
-| The frames, the clips, the decks and their deal (`Card`, `Motions::dealt`), the timeline (`pose`, `pose_between`), the nap (`Nap`, `Sleep`, `Idle`, `nap`, `idle`, `sleeping`), the company kept (`Gaze`, `Watch`, `Woke`, `Company`, `Alone`, `alone`, `startled`, `start`, `moving`, `company_pose`, `company_holds`), the session's side (`banner_is_live`, `banner_pose_watching`, `keep_company`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
+| The frames, the clips and the decks as written (`Step`, `Clip`, `Card`, `Motions`), the deal (`Deck::dealt`, `turn`), the timeline (`pose`, `pose_between`), the nap (`Nap`, `Sleep`, `Idle`, `nap`, `idle`, `sleeping`), the company kept (`Gaze`, `Watch`, `Woke`, `Company`, `Alone`, `alone`, `startled`, `start`, `moving`, `company_pose`, `company_holds`), the session's side (`banner_is_live`, `banner_pose_watching`, `keep_company`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
+| The tables the binary keeps and how they are folded (`build`, `Built::fit`, `Packed`), read (`Table`) and played (`Reel`) | `src/app/mascot_motion/packed.rs` |
 | The count of keys and pastes taken (`keys_taken`) | `src/app/keys.rs` (`on_key`), `src/app/composer.rs` (`on_paste`) |
 | The posed banner and its light (`header_lines_posed`, `banner_frame_lines`, `banner_block_lines`, `banner_shows_art`, `shine_at`, `glitter_at`, `art_spans`) | `src/ui/header.rs`; the look (`MASCOT_SHINE_*`, `MASCOT_GLINT_*`, `MASCOT_GLITTER_*`) in `src/ui/theme.rs` |
 | Where the caret is (`caret_gaze`) | `src/ui/layout.rs` |
 | The picker's moving preview | `src/ui/mascot_view.rs` |
-| The anchored block's bookkeeping and cell diff | `src/term/anchor.rs` |
-| Declaring, posing, settling and releasing it | `src/term.rs` (`anchor_above`, `pose_anchor`, `release_anchor`, `paint_anchor`, `settle_anchor`) |
-| The seed, the clock, the frame scheduling, the release | `src/tui/bootstrap.rs`, `src/tui/view.rs` (`pose_banner`, `mascot_frame_due`) |
+| The anchored block's bookkeeping and cell diff (`changed_cells`, `changed_rows`) | `src/term/anchor.rs` |
+| Declaring, posing, settling and releasing it; the frame that paints it alone | `src/term.rs` (`anchor_above`, `pose_anchor`, `still_anchor`, `release_anchor`, `paint_anchor`, `settle_anchor`, `draw_anchor`) |
+| Which frames are the banner's alone (`FrameRequester::schedule_banner_frame_in`, `FrameLedger`) | `src/frame.rs` |
+| The seed, the clock, the frame scheduling, the release | `src/tui/bootstrap.rs`, `src/tui/view.rs` (`pose_banner`, `mascot_frame_due`, `schedule_mascot_frame`, `draw_banner_frame`) |
 | The row and its override | `src/settings.rs`, `src/tui/config.rs` |
 
 ## Tests
@@ -949,7 +1048,15 @@ seeded — every unit test's — never moves.
   and the moment it was left; a nap is three clips of a sleeper's pace, the
   same breath for all six — three stills of one body, no stage of it the
   rest art — the nod never ending on the sleeper's own still, and either
-  start three fifths of a second.
+  start three fifths of a second. And the tables the binary keeps are the
+  tables as written: every clip in the order it is listed, step for step —
+  its stills, their times, their glow, its band of light — the deck, what
+  each copy of each card plays over sixty rounds and six seeds, the stills
+  it watches with, the blink of its watch, its nap.
+- `app/mascot_motion/packed.rs` — a row of art is kept once however many
+  stills are made of it, and every row kept is drawn by some step; what a
+  table does not hold is blank and plays as the rest pose, never a panic;
+  a band of light reads back as it was written.
 - `ui/tests/header.rs` — the committed banner wears the rest pose whatever
   the clock says; the live banner draws the pose beside unmoved metadata
   (a blink: two cells); no pose moves the metadata or the banner's shape; a
@@ -975,7 +1082,31 @@ seeded — every unit test's — never moves.
   released block wants its rest rows; a blink rewrites the eyes' two cells
   and nothing else; a move of the whole mascot redraws its art — rows
   longer and shorter than the ones they replace — and not a cell of the
-  title beside it, and is put back cell for cell.
+  title beside it, and is put back cell for cell; a pose is handed to the
+  frame that paints it once; a block asked to stand still is due its rest
+  rows only when off them; a block paints only a pose the screen does not
+  show, where it is on screen to take it; the cells land on the rows the
+  block sits on; a repaint writes what the whole block rendered would —
+  every pose of every mascot against the one before it and against rest,
+  at five widths from narrower than the art to 240 columns — and so do
+  rows of any text: wide glyphs, rows cut by a narrow terminal, rows that
+  only change colour, centred and right-aligned rows, a changed head ahead
+  of a shared tail of every shape; and a repaint renders only the rows that
+  changed, only as far as they can differ — a blink beside a sixty-column
+  directory on a 300-column terminal renders one row, the art and its gap.
+- `frame.rs` — a frame asked for on the banner's account is not counted,
+  and reaches the scheduler all the same; a frame is the banner's alone
+  when nothing else has asked since the last one began, and the first frame
+  of all never is.
+  Twenty-five ways of breaking these three — cards numbered a clip late, a
+  step's time halved, a row's end a byte short, a glint read back from the
+  other side, the nap a clip late, one mascot reading another's table, a
+  card's copies no longer taking turns; a shared tail trusted wherever it
+  starts, a row's own style ignored, rows rendered at the screen's width
+  again, a centred row narrowed, a pose copied instead of handed over, a
+  block painting wherever it is; the banner's own request counted, every
+  frame after the first taken for the banner's — each fail a test, and
+  rows no longer shared fail the build with the sentence that says why.
 - `settings/tests.rs` — the row: on by default and off the wire, cycles,
   sits after the picture rows, found by what it does (a search for `nap`
   included), recorded per directory.
@@ -993,9 +1124,12 @@ seeded — every unit test's — never moves.
   greets again (about thirty frames in the three seconds after it, the
   flared frill among them, where a mascot carrying on would write a clip's
   handful) and leaves one banner at rest; quitting mid-move leaves the rest
-  art on the dead screen; the `/mascot` preview greets as a search lands
-  the highlight on a mascot; and the mascot just chosen greets from the
-  banner.
+  art on the dead screen; an idle session at 200 columns with the mascot
+  moving is within 64 kB of resident memory of the same session with it
+  still (16 kB measured, where a repaint at the terminal's width and a
+  redrawn live region cost 150 kB — Linux, read from `/proc`); the `/mascot`
+  preview greets as a search lands the highlight on a mascot; and the
+  mascot just chosen greets from the banner.
 - `scripts/smoke.sh` Phase 160 — the nap, on the screen and the raw byte
   stream: left untouched the mascot is snoring no sooner than 44 s after
   the app opens and inside 80, the whole of it on screen — its frill on the

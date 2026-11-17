@@ -55,7 +55,7 @@ widened for the split.
 | `login.rs` | The inline `/login` onboarding. |
 | `look.rs` | The per-directory persistence the two looks share: the `Look` trait and `LookFile<T>` — the `mascot.json`/`spinner.json` format, `config.json`'s last-and-pinned rule (`docs/per-directory-state.md`). |
 | `mascot.rs` | The banner-mascot catalog (with its `Look` impl, the `mascot` key), the `/mascot` picker's state (`docs/mascot.md`). |
-| `mascot_motion.rs` | The mascots' idle animation: each one's frames and clips, the timeline as a pure function of a seed and a clock (`Mascot::pose`, `pose_holds`), and the session's side — whether the banner is still an empty conversation's, its pose now, when the next frame is due (`docs/mascot-animation.md`). |
+| `mascot_motion.rs` | The mascots' idle animation: each one's frames and clips, the timeline as a pure function of a seed and a clock (`Mascot::pose`, `pose_holds`), and the session's side — whether the banner is still an empty conversation's, its pose now, when the next frame is due (`docs/mascot-animation.md`). Its one child, `mascot_motion/packed.rs`, is the frame tables as the binary keeps them: each mascot's moves, written as tables of references, folded at compile time into integers with no address in them (`build`, `Packed`), read through a `Table` and played as a `Reel`. |
 | `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |

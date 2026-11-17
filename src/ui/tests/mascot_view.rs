@@ -792,7 +792,7 @@ fn moving_app(at: u64, selected: usize) -> App {
 /// its rest art.
 fn moves_at(mascot: Mascot, wanted: impl Fn(&[&str]) -> bool) -> u64 {
     (0..crate::app::MASCOT_GREETING_MS)
-        .find(|&at| wanted(mascot.pose(0x5EED, Duration::from_millis(at)).art))
+        .find(|&at| wanted(&mascot.pose(0x5EED, Duration::from_millis(at)).art))
         .expect("the greeting shows it")
 }
 

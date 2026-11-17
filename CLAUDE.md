@@ -497,7 +497,7 @@ function of a seed and a clock** — `Mascot::pose(seed, clock)` and
 beats, at most one clip to a beat — and what a beat plays is **dealt, not
 rolled** (the first version rolled, and three beats in five were a blink):
 the repertoire is a deck of cards with copies (`Card`), shuffled afresh for
-every **round** of some forty-four beats by `Motions::dealt(seed, round, beat)`
+every **round** of some forty-four beats by `Deck::dealt(seed, round, beat)`
 over the seed *and the mascot* (so no two mascots play one sequence), which
 keeps three promises a shuffle alone would not — a round plays everything
 exactly as often as the deck holds it, **never the same card twice running**
@@ -518,9 +518,10 @@ viewport's one **anchored block** (`term::anchor`,
 `InlineViewport::anchor_above`): a row above the live region is a screen
 row until a scroll carries it off the top, so the boundary declares the
 banner it just committed — at launch and after any rebuild that wrote only
-the banner — hands it the pose before each draw (`pose_anchor`,
-`ui::banner_frame_lines`) and `draw` writes the cells that differ inside
-its own synchronized frame, a blink being two; **only the rest pose may
+the banner — hands it the pose before each frame (`pose_anchor`,
+`ui::banner_frame_lines`; `still_anchor` where nothing of it can move) and
+the frame writes the cells that differ inside one synchronized update, a
+blink being two; **only the rest pose may
 leave the screen** (the block is put back to the rows it was committed as
 before a flush, a growing region's scroll or the quit), a block with a row
 off the top is dropped, a resize or `reflow` drops it for the rebuild to
@@ -531,24 +532,45 @@ Moving the banner into the live region instead was weighed and refused: it
 would have changed the region's geometry in the state every other feature
 starts from, and a notice card committed under a live banner would have
 landed above it. **Frames are scheduled per change of pose, never on a
-chain** (`App::mascot_frame_in` after each draw → one `schedule_frame_in`):
+chain** (`App::mascot_frame_in` after each frame → one
+`schedule_banner_frame_in`, or `schedule_frame_in` while the `/mascot`
+picker's preview moves inside the live region):
 a blink is four frames and the loop sleeps between clips, a sleeper's
 breath is three, of one cell each (twenty seconds asleep measured 17 frames, 1.3 kB and 10 ms of CPU), nothing is
 scheduled for a banner off screen, behind an overlay or in the narrow text
 badge, and `ui::header_lines` — everything committed, the Ctrl+O
-transcript, an export — is always the rest pose. In **memory** it costs
-two fixed things and nothing per frame (*What it costs in memory*): the
-frame tables are pointers the loader relocates, 52 kB of the process's own
-whether the animation is on or not, and the first repaints leave about
-0.1 MB of heap the conversation then reuses — fifteen-minute runs and 3.6
-million frames in a loop both end flat. The `/mascot` picker's
+transcript, an export — is always the rest pose. In **memory** it is held
+to costing nothing with the row off and nothing from the first reply on —
+the same resident size as a build without it — and some 0.04 MB of heap
+residue while the mascot moves (*What it costs in memory*), by three rules
+it broke as first written, at 0.06 MB off and 0.18 MB moving. **The frame
+tables are written as references and kept as integers**
+(`app/mascot_motion/packed.rs`): `Step`/`Clip`/`Card`/`Motions` are read at
+compile time only, each mascot's folded by `const fn` (`build`,
+`Built::fit`) into a `Packed` of row bytes and indices with no address in
+it — read through a `Table`, played as a `Reel`, and held step for step to
+the tables as written by a test — since a table of `&'static` is addresses
+the loader relocates, the process's own pages whether the animation is on
+or not (2,300 of them, 52 kB). **A repaint renders only where the rows can
+differ** (`term::anchor::changed_cells`): the rows that changed, each as
+far as the spans ahead of the tail its two versions share — the art and
+its gap, a dozen columns — never the block at the terminal's width, which
+was two buffers of 0.4 kB a column a frame. And **a frame only the banner
+asked for draws only the banner** (`frame::FrameLedger` over
+`FrameRequester::asked`, which counts every request but
+`schedule_banner_frame_in`; `Session::draw_banner_frame` →
+`InlineViewport::draw_anchor`): no live region rendered, no buffer the
+region's size, and where no cell differs nothing written at all — while a
+frame anything else wanted is a whole one, as before. The `/mascot` picker's
 preview moves the same way (`App::mascot_pose_for`) on **a clock of its
 own** — `App::set_mascot_clock` remembers the highlighted mascot and the
 reading of the first frame that showed it, derived from the highlight, never
 tracked through the keys — so each mascot greets as the highlight lands on
 it, its page signing the selection rather than its rows. Gated by the `/settings` **Animate mascot**
 row and `ALTER_ZERO_MASCOT_ANIMATION`, which the smoke suite exports `0`;
-`smoke.sh` Phase 159 reads the raw byte stream, and Phase 160 waits out the
+`smoke.sh` Phase 159 reads the raw byte stream — and holds an idle session
+with the mascot moving to within 64 kB of resident memory of one with it
+still, at 200 columns — and Phase 160 waits out the
 minute for the nap, holds every frame of the sleeper to its snore's one
 cell, and wakes it), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
@@ -3777,8 +3799,13 @@ startup banner, while the conversation under it is empty, so its mascot can
 blink (`docs/mascot-animation.md`). It bends none of the four: a row above
 the live region is an ordinary screen row until a scroll carries it off the
 top, and `InlineViewport`'s **anchored block** (`term::anchor`) is repainted
-only while every one of its rows is still on screen, inside the frame the
-live region paints in. Three rules are the whole contract, and breaking one
+only while every one of its rows is still on screen — inside the frame the
+live region paints in, or, when nothing but its mascot asked for the frame,
+in **a frame of its own** that writes its cells and nothing else
+(`InlineViewport::draw_anchor`; which frames those are is
+`frame::FrameLedger`'s to say, and it says so only when no other request
+for a frame has been made since the last one began, so a frame anything
+else wanted is still a whole `draw`). Three rules are the whole contract, and breaking one
 puts a blink in scrollback for good: the block is **put back to the rows it
 was committed as before anything scrolls** (`flush_pending`, a `repin`
 scroll, `restore`); a block with a row off the top, and every resize or
@@ -3810,6 +3837,11 @@ pattern). `insert_before` only **queues** its lines: the draw tick writes them a
 repaints the live region in **one synchronized frame** (codex's pending-history
 pattern — no flushed state ever lacks the box, the flicker fix; `reflow` paints the
 same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md`).
+One kind of tick is not a whole frame: the banner mascot asks for its
+frames on its own account (`schedule_banner_frame_in`, the one request
+`FrameRequester::asked` does not count), and a tick before which nothing
+else asked (`frame::FrameLedger`) repaints the banner's cells alone —
+`docs/mascot-animation.md` *A frame of its own*.
 (See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
 
 ```

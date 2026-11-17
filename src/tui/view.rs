@@ -95,13 +95,7 @@ impl Session<'_> {
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         let now = self.clocks.loop_start.elapsed();
         self.app.set_pulse(now);
-        // The mascot's animation clock: time since the banner first reached
-        // the screen (docs/mascot-animation.md).
-        self.app.set_mascot_clock(
-            self.clocks
-                .banner_start
-                .map_or(std::time::Duration::ZERO, |start| start.elapsed()),
-        );
+        self.update_mascot_clock();
         // The open read/search group's `⎿` row steps through its calls on
         // the same clock, each value held long enough to read
         // (docs/tool-groups.md *The hint row*).
@@ -288,12 +282,62 @@ impl Session<'_> {
         if !self.term.has_anchor() {
             return;
         }
-        if self.app.banner_is_live() {
-            let width = self.term.screen().width;
+        let width = self.term.screen().width;
+        if !self.app.banner_is_live() {
+            self.term.release_anchor();
+        } else if self.app.mascot_animates() && ui::banner_shows_art(&self.app, width) {
             self.term
                 .pose_anchor(ui::banner_frame_lines(&self.app, width));
         } else {
-            self.term.release_anchor();
+            // Nothing of it moves — the animation is off, or the terminal
+            // too narrow for the art: the banner stands as it was
+            // committed, and no frame builds its rows to learn that.
+            self.term.still_anchor();
+        }
+    }
+
+    /// Write the mascot's animation clock onto `App`: time since the banner
+    /// first reached the screen (`docs/mascot-animation.md`).
+    fn update_mascot_clock(&mut self) {
+        self.app.set_mascot_clock(
+            self.clocks
+                .banner_start
+                .map_or(std::time::Duration::ZERO, |start| start.elapsed()),
+        );
+    }
+
+    /// A frame **only the banner's mascot asked for**
+    /// (`docs/mascot-animation.md` *A frame of its own*): its clock, its
+    /// pose, the cells of the banner that differ — and nothing else. No
+    /// other clock is read and the live region is not rendered, since
+    /// nothing in it can have changed: whatever else moves by itself asks
+    /// for its own frames, and this one would not be the banner's alone.
+    fn draw_banner_frame(&mut self) -> io::Result<()> {
+        self.update_mascot_clock();
+        self.pose_banner();
+        self.term.draw_anchor(&self.app)?;
+        self.schedule_mascot_frame();
+        Ok(())
+    }
+
+    /// Ask for the frame the mascot's next pose is due at, when one is
+    /// moving on screen. The banner keeps no chain at all: it stands still
+    /// for seconds at a time, so each frame asks when its pose next changes
+    /// and one frame is scheduled for exactly then — a blink costs four,
+    /// and an idle session sleeps between them (`docs/mascot-animation.md`).
+    ///
+    /// That frame is asked for **on the banner's account**
+    /// ([`draw_banner_frame`](Self::draw_banner_frame)) unless the `/mascot`
+    /// picker is open: its preview moves inside the live region, which only
+    /// a whole frame repaints.
+    fn schedule_mascot_frame(&self) {
+        let Some(wait) = self.mascot_frame_due() else {
+            return;
+        };
+        if self.app.highlighted_mascot().is_some() {
+            self.frame.schedule_frame_in(wait);
+        } else {
+            self.frame.schedule_banner_frame_in(wait);
         }
     }
 
@@ -870,6 +914,13 @@ impl Session<'_> {
     /// a thinking pause). The chain seeds from the Submit keypress and stops by
     /// itself on the first draw after the turn ends.
     pub(crate) fn on_draw_tick(&mut self) -> io::Result<()> {
+        // A frame nothing has asked for since the last one began but the
+        // banner's mascot is the banner's alone: its cells, and none of the
+        // work below (`docs/mascot-animation.md` *A frame of its own*).
+        let banner_alone = self.frames.banner_alone(self.frame.asked());
+        if banner_alone && self.app.view == View::Conversation {
+            return self.draw_banner_frame();
+        }
         self.update_status_times();
         // Inject each background shell's runtime (the boundary owns the started
         // clocks — docs/background.md), so the manager's details view ticks.
@@ -897,13 +948,7 @@ impl Session<'_> {
         if self.app.wants_animation_frames() {
             self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
         }
-        // The banner mascot keeps no chain at all: it stands still for
-        // seconds at a time, so each draw asks when its pose next changes
-        // and one frame is scheduled for exactly then — a blink costs four,
-        // and an idle session sleeps between them (docs/mascot-animation.md).
-        if let Some(wait) = self.mascot_frame_due() {
-            self.frame.schedule_frame_in(wait);
-        }
+        self.schedule_mascot_frame();
         // The `/login` device page keeps its own, much slower chain. Its only
         // moving part is an `mm:ss` countdown, so a frame a second is exactly
         // the rate its content changes at — and every frame costs a cursor

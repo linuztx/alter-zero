@@ -597,7 +597,10 @@ fn the_skitterer_puffs_up_where_the_others_throw_their_arms_up() {
     // Its own move: puffed up, let out, puffed up again.
     assert!(
         moves.iter().any(|clip| {
-            clip.2.len() == 3 && puffed(clip.2[0].art) && clip.2[1] == rest && puffed(clip.2[2].art)
+            clip.2.len() == 3
+                && puffed(&clip.2[0].art)
+                && clip.2[1] == rest
+                && puffed(&clip.2[2].art)
         }),
         "it never puffs up twice"
     );
@@ -605,8 +608,8 @@ fn the_skitterer_puffs_up_where_the_others_throw_their_arms_up() {
     assert!(
         moves.iter().any(|clip| {
             closes_on_a_blink(skiter, clip)
-                && is_moved_half_a_cell(skiter, clip.2[0].art)
-                && clip.2.iter().filter(|pose| puffed(pose.art)).count() == 2
+                && is_moved_half_a_cell(skiter, &clip.2[0].art)
+                && clip.2.iter().filter(|pose| puffed(&pose.art)).count() == 2
         }),
         "it never cheers puffed up"
     );
@@ -614,7 +617,7 @@ fn the_skitterer_puffs_up_where_the_others_throw_their_arms_up() {
     // flash: the whole silhouette changes, where a blink changes two cells.
     let held: Vec<u64> = spans(skiter, SEED, MASCOT_GREETING_MS, 900_000)
         .iter()
-        .filter(|span| puffed(span.pose.art))
+        .filter(|span| puffed(&span.pose.art))
         .map(|span| span.to - span.from)
         .collect();
     assert!(held.iter().all(|&ms| ms >= 150), "{held:?}");
@@ -624,9 +627,9 @@ fn the_skitterer_puffs_up_where_the_others_throw_their_arms_up() {
     let start = banner_spans(&mut app, at, at + 600);
     let up = start
         .iter()
-        .find(|span| on_its_feet(skiter, span.pose.art))
+        .find(|span| on_its_feet(skiter, &span.pose.art))
         .expect("it got up");
-    assert!(puffed(up.pose.art), "{:?}", up.pose.art);
+    assert!(puffed(&up.pose.art), "{:?}", up.pose.art);
     assert!(up.to - up.from >= 200, "up for {}ms", up.to - up.from);
 }
 
@@ -638,9 +641,9 @@ fn the_gem_spins_edge_on_and_back() {
     let edge_on = |art: &[&str]| art.iter().all(|row| row.trim().chars().count() <= 1);
     let spin = clips(gem, SEED, MASCOT_GREETING_MS, 900_000)
         .into_iter()
-        .find(|clip| clip.2.iter().any(|pose| edge_on(pose.art)))
+        .find(|clip| clip.2.iter().any(|pose| edge_on(&pose.art)))
         .expect("the gem spins");
-    let arts: Vec<&[&str]> = spin.2.iter().map(|pose| pose.art).collect();
+    let arts: Vec<[&str; 3]> = spin.2.iter().map(|pose| pose.art).collect();
     let mut back = arts.clone();
     back.reverse();
     assert_eq!(arts, back, "the way back retraces the way there");
@@ -818,7 +821,7 @@ fn the_greeting_shows_each_mascots_own_move_then_a_blink() {
             greeting[1]
                 .2
                 .iter()
-                .all(|pose| pose.shine.is_none() && eyes(mascot, pose.art).0 == open),
+                .all(|pose| pose.shine.is_none() && eyes(mascot, &pose.art).0 == open),
             "{}: {:?}",
             mascot.name(),
             greeting[1]
@@ -828,7 +831,7 @@ fn the_greeting_shows_each_mascots_own_move_then_a_blink() {
             greeting[2]
                 .2
                 .iter()
-                .any(|pose| eyes(mascot, pose.art) == ('█', '█')),
+                .any(|pose| eyes(mascot, &pose.art) == ('█', '█')),
             "{}: {:?}",
             mascot.name(),
             greeting[2]
@@ -1118,12 +1121,12 @@ fn is_blink(mascot: Mascot, clip: &(u64, u64, Vec<MascotPose>)) -> bool {
     let eye_row = usize::from(mascot != Mascot::Skiter);
     clip.2.iter().all(|pose| {
         let elsewhere = (0..rest.len()).all(|row| row == eye_row || pose.art[row] == rest[row]);
-        let look = eyes(mascot, pose.art);
+        let look = eyes(mascot, &pose.art);
         elsewhere && [(open, open), ('▆', '▆'), ('█', '█')].contains(&look)
     }) && clip
         .2
         .iter()
-        .any(|pose| eyes(mascot, pose.art) == ('█', '█'))
+        .any(|pose| eyes(mascot, &pose.art) == ('█', '█'))
         && clip.1 - clip.0 < 600
 }
 
@@ -1225,7 +1228,7 @@ fn every_mascot_moves_its_whole_body_as_well_as_its_parts() {
                     .filter(|clip| {
                         clip.2
                             .iter()
-                            .any(|pose| is_moved_half_a_cell(mascot, pose.art))
+                            .any(|pose| is_moved_half_a_cell(mascot, &pose.art))
                     })
                     .count();
                 assert!(
@@ -1282,7 +1285,7 @@ fn eyes_close_and_open_through_a_lid_where_the_glyphs_have_one() {
                 continue;
             }
             blinks += 1;
-            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, p.art)).collect();
+            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, &p.art)).collect();
             for (i, look) in looks.iter().enumerate() {
                 if *look != ('█', '█') {
                     continue;
@@ -1307,7 +1310,7 @@ fn a_blink_is_quick_and_opens_slower_than_it_closes() {
     for mascot in [Mascot::Crest, Mascot::Bloom, Mascot::Twin] {
         let blink = spans(mascot, SEED, 0, MASCOT_GREETING_MS)
             .into_iter()
-            .filter(|span| eyes(mascot, span.pose.art) != ('▄', '▄'))
+            .filter(|span| eyes(mascot, &span.pose.art) != ('▄', '▄'))
             .collect::<Vec<_>>();
         let lengths: Vec<u64> = blink.iter().map(|span| span.to - span.from).collect();
         assert_eq!(lengths.len(), 3, "{}: {blink:?}", mascot.name());
@@ -1329,7 +1332,7 @@ fn looks(mascot: Mascot) -> BTreeSet<(char, char)> {
     spans(mascot, SEED, 0, 600_000)
         .iter()
         .filter(|span| (0..rest.len()).all(|row| row == eye_row || span.pose.art[row] == rest[row]))
-        .map(|span| eyes(mascot, span.pose.art))
+        .map(|span| eyes(mascot, &span.pose.art))
         .collect()
 }
 
@@ -1423,7 +1426,7 @@ fn closes_on_a_blink(mascot: Mascot, clip: &(u64, u64, Vec<MascotPose>)) -> bool
         && poses[before + 1..]
             .iter()
             .zip(blink)
-            .all(|(pose, look)| eyes(mascot, pose.art) == *look)
+            .all(|(pose, look)| eyes(mascot, &pose.art) == *look)
         && poses[..before].iter().any(|pose| *pose != rest)
 }
 
@@ -1478,9 +1481,9 @@ fn a_wave_closes_on_a_wink_of_the_eye_beside_the_arm() {
             let arms: BTreeSet<char> = clip
                 .2
                 .iter()
-                .filter_map(|pose| arm_side(mascot, pose.art))
+                .filter_map(|pose| arm_side(mascot, &pose.art))
                 .collect();
-            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, p.art)).collect();
+            let looks: Vec<(char, char)> = clip.2.iter().map(|p| eyes(mascot, &p.art)).collect();
             let wink = match arms.iter().next() {
                 Some('L') if arms.len() == 1 => ('█', open),
                 Some('R') if arms.len() == 1 => (open, '█'),
@@ -1514,8 +1517,8 @@ fn feet_patter_on_the_spot() {
         let pattered = clips(mascot, SEED, MASCOT_GREETING_MS, 900_000)
             .iter()
             .any(|clip| {
-                let arts: Vec<&[&str]> = clip.2.iter().map(|pose| pose.art).collect();
-                let steps: BTreeSet<&[&str]> = arts.iter().copied().collect();
+                let arts: Vec<[&str; 3]> = clip.2.iter().map(|pose| pose.art).collect();
+                let steps: BTreeSet<[&str; 3]> = arts.iter().copied().collect();
                 arts.len() >= 6
                     && steps.len() == 2
                     && arts.windows(2).all(|pair| pair[0] != pair[1])
@@ -1538,7 +1541,7 @@ fn eyes_wander_off_and_blink_where_they_went() {
                 .iter()
                 .any(|clip| {
                     let looks: Vec<(char, char)> =
-                        clip.2.iter().map(|pose| eyes(mascot, pose.art)).collect();
+                        clip.2.iter().map(|pose| eyes(mascot, &pose.art)).collect();
                     looks.first() == Some(&(side, side))
                         && looks.last() == Some(&(side, side))
                         && looks.contains(&('█', '█'))
@@ -1927,12 +1930,12 @@ fn a_mascot_ducks_out_of_sight_and_peeks_back_over() {
         let (open, _) = eyes(mascot, mascot.art());
         let hide = clips(mascot, SEED, MASCOT_GREETING_MS, 900_000)
             .into_iter()
-            .find(|clip| clip.2.iter().all(|pose| sunk(mascot, pose.art).is_some()))
+            .find(|clip| clip.2.iter().all(|pose| sunk(mascot, &pose.art).is_some()))
             .unwrap_or_else(|| panic!("{} never hides", mascot.name()));
         let depths: Vec<usize> = hide
             .2
             .iter()
-            .filter_map(|pose| sunk(mascot, pose.art))
+            .filter_map(|pose| sunk(mascot, &pose.art))
             .collect();
         // Down to its deepest, and back up the way it went.
         let deepest = *depths.iter().max().unwrap();
@@ -1951,7 +1954,7 @@ fn a_mascot_ducks_out_of_sight_and_peeks_back_over() {
             mascot.name()
         );
         // Its eyes at the floor, it looks one way and then the other.
-        let looks: Vec<(char, char)> = hide.2.iter().map(|pose| floor_eyes(pose.art)).collect();
+        let looks: Vec<(char, char)> = hide.2.iter().map(|pose| floor_eyes(&pose.art)).collect();
         for look in [(open, open), (left, left), (right, right)] {
             assert!(
                 looks.contains(&look),
@@ -1973,12 +1976,12 @@ fn the_gem_sets_like_a_sun_and_rises_glowing() {
     let gem = Mascot::Gem;
     let set = clips(gem, SEED, MASCOT_GREETING_MS, 900_000)
         .into_iter()
-        .find(|clip| clip.2.iter().any(|pose| sunk(gem, pose.art).is_some()))
+        .find(|clip| clip.2.iter().any(|pose| sunk(gem, &pose.art).is_some()))
         .expect("the gem sets");
     let depths: Vec<usize> = set
         .2
         .iter()
-        .filter_map(|pose| sunk(gem, pose.art))
+        .filter_map(|pose| sunk(gem, &pose.art))
         .collect();
     assert_eq!(depths, [1, 2, 1], "half down, down to its tip, half up");
     // Down it is dark; it comes up glowing — a sunrise — and the glow
@@ -2009,7 +2012,7 @@ fn a_mascot_flips_head_over_heels() {
             let Some(at) = clip
                 .2
                 .iter()
-                .position(|pose| is_upside_down(mascot, pose.art))
+                .position(|pose| is_upside_down(mascot, &pose.art))
             else {
                 continue;
             };
@@ -2020,7 +2023,7 @@ fn a_mascot_flips_head_over_heels() {
             );
             let (before, after) = (clip.2[at - 1].art, clip.2[at + 1].art);
             assert!(
-                is_moved_half_a_cell(mascot, before) && is_moved_half_a_cell(mascot, after),
+                is_moved_half_a_cell(mascot, &before) && is_moved_half_a_cell(mascot, &after),
                 "{}: {before:?} … {after:?}",
                 mascot.name()
             );
@@ -2098,7 +2101,7 @@ fn every_eyed_mascot_pumps_its_limbs_one_after_the_other() {
                 let sides: Vec<Option<char>> = clip
                     .2
                     .iter()
-                    .map(|pose| half_moved(mascot, pose.art))
+                    .map(|pose| half_moved(mascot, &pose.art))
                     .collect();
                 sides == [Some('<'), Some('>'), Some('<'), Some('>')]
             })
@@ -2106,7 +2109,7 @@ fn every_eyed_mascot_pumps_its_limbs_one_after_the_other() {
         assert!(
             pump.2
                 .iter()
-                .all(|pose| eyes(mascot, pose.art) == eyes(mascot, mascot.art())),
+                .all(|pose| eyes(mascot, &pose.art) == eyes(mascot, mascot.art())),
             "{}: its eyes moved",
             mascot.name()
         );
@@ -2351,13 +2354,13 @@ fn a_mascot_left_alone_nods_off_within_the_minute() {
             // Four seconds on it is asleep — and all of it still there:
             // it sleeps where it stands, the whole of it on screen.
             assert!(
-                poses.iter().all(|pose| whole(mascot, pose.art)),
+                poses.iter().all(|pose| whole(mascot, &pose.art)),
                 "{} (seed {seed:#x}): part of it left the screen",
                 mascot.name()
             );
             app.set_mascot_clock(ms(from + 4_000));
             assert!(
-                asleep(mascot, app.banner_pose().art),
+                asleep(mascot, &app.banner_pose().art),
                 "{} (seed {seed:#x}): still awake four seconds on",
                 mascot.name()
             );
@@ -2389,8 +2392,8 @@ fn eyes_grow_heavy_before_they_close() {
         let mut looks: Vec<&str> = nap
             .2
             .iter()
-            .take_while(|pose| marks(pose.art).is_empty())
-            .map(|pose| eyelids(pose.art))
+            .take_while(|pose| marks(&pose.art).is_empty())
+            .map(|pose| eyelids(&pose.art))
             .collect();
         looks.dedup();
         // The skitterer settles onto its belly first, eyes still open.
@@ -2431,7 +2434,7 @@ fn falling_asleep_it_goes_down_once_and_stays_there() {
             let nap = naps(&mut app, 0, 120_000).remove(0);
             let mut postures: Vec<bool> = banner_spans(&mut app, nap.0, nap.1 - 4_000)
                 .iter()
-                .map(|span| on_its_feet(mascot, span.pose.art))
+                .map(|span| on_its_feet(mascot, &span.pose.art))
                 .collect();
             postures.dedup();
             let settles_first = matches!(mascot, Mascot::Skiter | Mascot::Gem);
@@ -2464,17 +2467,17 @@ fn asleep_it_holds_still_and_only_its_snore_moves() {
         for span in &sleeping {
             let art = span.pose.art;
             assert!(
-                asleep(mascot, art),
+                asleep(mascot, &art),
                 "{}: {art:?} at {}",
                 mascot.name(),
                 span.from
             );
             assert!(
-                whole(mascot, art),
+                whole(mascot, &art),
                 "{}: part of it is off screen in {art:?}",
                 mascot.name()
             );
-            let snore = marks(art);
+            let snore = marks(&art);
             if snores.last() != Some(&snore) {
                 snores.push(snore);
             }
@@ -2518,7 +2521,7 @@ fn asleep_it_holds_still_and_only_its_snore_moves() {
         // rise and sink with each — and no light coming and going in it.
         let bodies: BTreeSet<Vec<String>> = sleeping
             .iter()
-            .map(|span| unmarked(span.pose.art))
+            .map(|span| unmarked(&span.pose.art))
             .collect();
         assert_eq!(
             bodies.len(),
@@ -2529,7 +2532,7 @@ fn asleep_it_holds_still_and_only_its_snore_moves() {
         assert!(
             sleeping
                 .iter()
-                .all(|span| !on_its_feet(mascot, span.pose.art)),
+                .all(|span| !on_its_feet(mascot, &span.pose.art)),
             "{}: it sleeps standing up",
             mascot.name()
         );
@@ -2569,9 +2572,9 @@ fn asleep_its_eyes_are_closed_not_gone() {
         let mut slept = 0;
         for span in banner_spans(&mut app, nap.0, nap.1 - 4_000) {
             let art = span.pose.art;
-            if !asleep(mascot, art) {
+            if !asleep(mascot, &art) {
                 assert_eq!(
-                    lids(art),
+                    lids(&art),
                     0,
                     "{}: a lid on open eyes in {art:?}",
                     mascot.name()
@@ -2579,7 +2582,7 @@ fn asleep_its_eyes_are_closed_not_gone() {
                 continue;
             }
             assert_eq!(
-                lids(art),
+                lids(&art),
                 2,
                 "{}: its eyes are blank in {art:?} at {}",
                 mascot.name(),
@@ -2594,7 +2597,7 @@ fn asleep_its_eyes_are_closed_not_gone() {
     for mascot in Mascot::ALL {
         for span in spans(mascot, SEED, 0, 300_000) {
             assert_eq!(
-                lids(span.pose.art),
+                lids(&span.pose.art),
                 0,
                 "{}: {:?}",
                 mascot.name(),
@@ -2617,7 +2620,7 @@ fn a_snore_rises_in_the_corner_beside_the_sleepers_head() {
         let nap = naps(&mut app, 0, 120_000).remove(0);
         let mut seen = BTreeSet::new();
         for pose in &nap.2 {
-            let snore = marks(pose.art);
+            let snore = marks(&pose.art);
             if snore.is_empty() {
                 continue;
             }
@@ -2653,7 +2656,7 @@ fn a_nap_ends_by_itself_and_it_is_up_again() {
         let nap = naps(&mut app, 0, 120_000).remove(0);
         let waking = banner_spans(&mut app, nap.1 - 2_500, nap.1);
         assert!(
-            waking.iter().all(|span| whole(mascot, span.pose.art)),
+            waking.iter().all(|span| whole(mascot, &span.pose.art)),
             "{}: part of it left the screen as it woke",
             mascot.name()
         );
@@ -2665,14 +2668,14 @@ fn a_nap_ends_by_itself_and_it_is_up_again() {
                 .iter()
                 .position(|span| {
                     span.pose != rest
-                        && on_its_feet(mascot, span.pose.art)
-                        && eyes(mascot, span.pose.art) == (open, open)
+                        && on_its_feet(mascot, &span.pose.art)
+                        && eyes(mascot, &span.pose.art) == (open, open)
                 })
                 .unwrap_or_else(|| panic!("{} never stretched", mascot.name()));
             assert!(
                 waking[..stretch]
                     .iter()
-                    .any(|span| asleep(mascot, span.pose.art)),
+                    .any(|span| asleep(mascot, &span.pose.art)),
                 "{}: it was not asleep before it stretched",
                 mascot.name()
             );
@@ -2681,12 +2684,12 @@ fn a_nap_ends_by_itself_and_it_is_up_again() {
             let mut was_shut = false;
             for span in after {
                 assert!(
-                    on_its_feet(mascot, span.pose.art) && marks(span.pose.art).is_empty(),
+                    on_its_feet(mascot, &span.pose.art) && marks(&span.pose.art).is_empty(),
                     "{}: {:?} once it is up",
                     mascot.name(),
                     span.pose.art
                 );
-                let shut = eyes(mascot, span.pose.art) == ('█', '█');
+                let shut = eyes(mascot, &span.pose.art) == ('█', '█');
                 blinks += usize::from(shut && !was_shut);
                 was_shut = shut;
             }
@@ -2747,7 +2750,7 @@ fn the_gem_settles_as_its_light_goes_out_and_rises_glowing() {
     );
     let risen = waking
         .iter()
-        .position(|span| !asleep(gem, span.pose.art))
+        .position(|span| !asleep(gem, &span.pose.art))
         .expect("it rises");
     assert!(waking[risen].pose.glow > 0, "it is up in the glow");
     assert_eq!(waking.last().unwrap().pose.glow, 0, "and the glow is gone");
@@ -2770,7 +2773,7 @@ fn no_move_is_cut_short_by_a_nap() {
             for nap in &naps {
                 let snore = banner_spans(&mut app, nap.0, nap.0 + 8_000)
                     .into_iter()
-                    .find(|span| !marks(span.pose.art).is_empty())
+                    .find(|span| !marks(&span.pose.art).is_empty())
                     .expect("it snores");
                 assert!(
                     snore.from - nap.0 <= 4_300,
@@ -2830,7 +2833,7 @@ fn two_naps_and_then_it_sleeps_until_it_is_woken() {
                 app.set_mascot_clock(ms(at));
                 let art = app.banner_pose().art;
                 assert!(
-                    asleep(mascot, art) && whole(mascot, art),
+                    asleep(mascot, &art) && whole(mascot, &art),
                     "{} at {at}: {art:?}",
                     mascot.name()
                 );
@@ -2944,7 +2947,7 @@ fn woken_on(mascot: Mascot, seed: u64, stir: impl FnOnce(&mut App)) -> (App, u64
     let napping = nap.0 + 12_345;
     app.set_mascot_clock(ms(napping));
     assert!(
-        asleep(mascot, app.banner_pose().art),
+        asleep(mascot, &app.banner_pose().art),
         "{}: not asleep at {napping}",
         mascot.name()
     );
@@ -2959,9 +2962,9 @@ fn woken_on(mascot: Mascot, seed: u64, stir: impl FnOnce(&mut App)) -> (App, u64
 fn stays_up(mascot: Mascot, spans: &[Span]) -> bool {
     spans.iter().all(|span| {
         let art = span.pose.art;
-        on_its_feet(mascot, art)
+        on_its_feet(mascot, &art)
             && !art[0].contains(['z', 'Z'])
-            && !(asleep(mascot, art) && span.to - span.from > 400)
+            && !(asleep(mascot, &art) && span.to - span.from > 400)
     })
 }
 
@@ -2975,7 +2978,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
         let (mut app, at) = woken(mascot, |app| type_str(app, "h"));
         let start = banner_spans(&mut app, at, at + 1_500);
         let first = start[0].pose;
-        assert_eq!(marks(first.art), "!", "{}: {:?}", mascot.name(), first.art);
+        assert_eq!(marks(&first.art), "!", "{}: {:?}", mascot.name(), first.art);
         assert_eq!(
             first.art[0].chars().count(),
             mascot.art_width(),
@@ -2983,7 +2986,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
             mascot.name()
         );
         assert!(
-            whole(mascot, first.art),
+            whole(mascot, &first.art),
             "{}: {:?}",
             mascot.name(),
             first.art
@@ -2992,7 +2995,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
             assert!(first.glow >= 40, "the stone lights up: {}", first.glow);
         } else {
             let (open, _) = eyes(mascot, mascot.art());
-            let flinch = risen(mascot, first.art);
+            let flinch = risen(mascot, &first.art);
             let flinch: Vec<&str> = flinch.iter().map(String::as_str).collect();
             assert_eq!(
                 eyes(mascot, &flinch),
@@ -3003,7 +3006,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
         }
         let up = start
             .iter()
-            .position(|span| on_its_feet(mascot, span.pose.art) && !asleep(mascot, span.pose.art))
+            .position(|span| on_its_feet(mascot, &span.pose.art) && !asleep(mascot, &span.pose.art))
             .unwrap_or_else(|| panic!("{} never got up", mascot.name()));
         assert!(
             start[up].from - at <= 500,
@@ -3019,7 +3022,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
         );
         let marked: u64 = start
             .iter()
-            .filter(|span| marks(span.pose.art) == "!")
+            .filter(|span| marks(&span.pose.art) == "!")
             .map(|span| span.to - span.from)
             .sum();
         assert!(
@@ -3031,7 +3034,7 @@ fn a_keystroke_wakes_a_sleeping_mascot_with_a_start() {
             start
                 .iter()
                 .skip_while(|span| span.from < at + 800)
-                .all(|span| marks(span.pose.art).is_empty()),
+                .all(|span| marks(&span.pose.art).is_empty()),
             "{}: still startled most of a second on",
             mascot.name()
         );
@@ -3050,7 +3053,7 @@ fn a_start_is_the_same_wherever_in_its_sleep_the_key_finds_it() {
             let at = nap.0 + into;
             app.set_mascot_clock(ms(at));
             assert!(
-                asleep(mascot, app.banner_pose().art),
+                asleep(mascot, &app.banner_pose().art),
                 "{} at {at}",
                 mascot.name()
             );
@@ -3083,20 +3086,20 @@ fn caught_on_its_feet_it_is_never_taken_down() {
             // Where the key's own frame finds it.
             let mut calm = left_alone(mascot, SEED);
             calm.set_mascot_clock(ms(at + 8));
-            let standing = on_its_feet(mascot, calm.banner_pose().art);
+            let standing = on_its_feet(mascot, &calm.banner_pose().art);
             let mut app = left_alone(mascot, SEED);
             app.set_mascot_clock(ms(at));
             type_str(&mut app, "h");
             let start = banner_spans(&mut app, at + 8, at + 1_500);
             assert_eq!(
-                marks(start[0].pose.art),
+                marks(&start[0].pose.art),
                 "!",
                 "{} {into}ms into its nap",
                 mascot.name()
             );
             let mut postures: Vec<bool> = start
                 .iter()
-                .map(|span| on_its_feet(mascot, span.pose.art))
+                .map(|span| on_its_feet(mascot, &span.pose.art))
                 .collect();
             postures.dedup();
             let want: &[bool] = if standing { &[true] } else { &[false, true] };
@@ -3161,10 +3164,10 @@ fn a_lidded_mascot_starts_awake_wide_eyed() {
         let start = banner_spans(&mut app, at, at + 450);
         let up = start
             .iter()
-            .find(|span| on_its_feet(mascot, span.pose.art))
+            .find(|span| on_its_feet(mascot, &span.pose.art))
             .expect("it gets up");
         assert_eq!(
-            eyes(mascot, &unmarked_rows(up.pose.art)),
+            eyes(mascot, &unmarked_rows(&up.pose.art)),
             ('▂', '▂'),
             "{}",
             mascot.name()
@@ -3200,7 +3203,7 @@ fn woken_it_turns_to_what_is_being_typed() {
         // The start over, it reads along — and blinks no sooner than it
         // would have, had it been awake.
         app.set_mascot_clock(ms(at + 760));
-        let look = |gaze: Gaze| eyes(mascot, app.banner_pose_watching(gaze).art);
+        let look = |gaze: Gaze| eyes(mascot, &app.banner_pose_watching(gaze).art);
         assert_eq!(look(Gaze::Left), (left, left), "{}", mascot.name());
         assert_eq!(look(Gaze::Right), (right, right), "{}", mascot.name());
     }
@@ -3219,12 +3222,12 @@ fn any_key_wakes_it_even_one_that_types_nothing() {
             app.on_key(key(KeyCode::Left));
         });
         assert!(app.input.is_empty());
-        assert_eq!(marks(app.banner_pose().art), "!", "{}", mascot.name());
+        assert_eq!(marks(&app.banner_pose().art), "!", "{}", mascot.name());
         // …its own moves, each a couple of seconds at most: no snore, no
         // start, nothing as long as a nap.
         let after = banner_spans(&mut app, at + 800, at + 40_000);
         assert!(
-            after.iter().all(|span| marks(span.pose.art).is_empty()),
+            after.iter().all(|span| marks(&span.pose.art).is_empty()),
             "{}",
             mascot.name()
         );
@@ -3241,7 +3244,7 @@ fn any_key_wakes_it_even_one_that_types_nothing() {
 #[test]
 fn a_paste_wakes_it_too() {
     let (app, _) = woken(Mascot::Twin, |app| app.on_paste("pasted text"));
-    assert_eq!(marks(app.banner_pose().art), "!");
+    assert_eq!(marks(&app.banner_pose().art), "!");
 }
 
 #[test]
@@ -3255,7 +3258,7 @@ fn a_paste_that_lands_outside_the_draft_wakes_it_all_the_same() {
     app.set_mascot_clock(ms(10));
     let nap = naps(&mut app, 10, 130_000).remove(0);
     app.set_mascot_clock(ms(nap.0 + 12_345));
-    assert!(asleep(mascot, app.banner_pose().art));
+    assert!(asleep(mascot, &app.banner_pose().art));
     let draft = (app.input.text().to_string(), app.input.cursor());
     app.on_paste("needle");
     assert_eq!(
@@ -3264,7 +3267,7 @@ fn a_paste_that_lands_outside_the_draft_wakes_it_all_the_same() {
         "the paste went to the search, not the draft"
     );
     app.set_mascot_clock(ms(nap.0 + 12_353));
-    assert_eq!(marks(app.banner_pose().art), "!");
+    assert_eq!(marks(&app.banner_pose().art), "!");
 }
 
 #[test]
@@ -3321,7 +3324,7 @@ fn a_key_keeps_a_wakeful_mascot_up_and_gives_it_no_start() {
         app.set_mascot_clock(ms(40_008));
         let after = banner_spans(&mut app, 40_008, 84_000);
         assert!(
-            after.iter().all(|span| marks(span.pose.art).is_empty()),
+            after.iter().all(|span| marks(&span.pose.art).is_empty()),
             "{}: a start, or a snore",
             mascot.name()
         );
@@ -3417,7 +3420,7 @@ fn a_key_as_a_nap_nears_never_joins_a_move_half_way() {
             // next moves whole.
             let after = banner_spans(&mut app, left_out.1, left_out.1 + 30_000);
             assert!(
-                after.iter().all(|span| marks(span.pose.art).is_empty()),
+                after.iter().all(|span| marks(&span.pose.art).is_empty()),
                 "{} (seed {seed:#x})",
                 mascot.name()
             );
@@ -3442,7 +3445,7 @@ fn caught_nodding_off_it_starts_too() {
         app.set_mascot_clock(ms(nap.0 + 700));
         type_str(&mut app, "h");
         app.set_mascot_clock(ms(nap.0 + 708));
-        assert_eq!(marks(app.banner_pose().art), "!", "{}", mascot.name());
+        assert_eq!(marks(&app.banner_pose().art), "!", "{}", mascot.name());
     }
 }
 
@@ -3460,9 +3463,9 @@ fn a_key_as_it_wakes_by_itself_is_no_surprise() {
         for t in (waking + 8..waking + 800).step_by(40) {
             app.set_mascot_clock(ms(t));
             let pose = app.banner_pose_watching(Gaze::Right);
-            assert!(marks(pose.art).is_empty(), "{} at {t}", mascot.name());
+            assert!(marks(&pose.art).is_empty(), "{} at {t}", mascot.name());
             assert_eq!(
-                eyes(mascot, pose.art),
+                eyes(mascot, &pose.art),
                 (right, right),
                 "{} at {t}",
                 mascot.name()
@@ -3480,10 +3483,10 @@ fn it_can_be_woken_from_the_sleep_that_has_no_end() {
         let mut app = left_alone(mascot, SEED);
         let hour = 3_600_000;
         app.set_mascot_clock(ms(hour));
-        assert!(asleep(mascot, app.banner_pose().art));
+        assert!(asleep(mascot, &app.banner_pose().art));
         app.on_key(key(KeyCode::Left));
         app.set_mascot_clock(ms(hour + 8));
-        assert_eq!(marks(app.banner_pose().art), "!", "{}", mascot.name());
+        assert_eq!(marks(&app.banner_pose().art), "!", "{}", mascot.name());
         let naps = naps(&mut app, hour + 8, hour + 700_000);
         assert_eq!(naps.len(), 3, "{}", mascot.name());
         assert!(
@@ -3624,7 +3627,7 @@ fn the_mascot_watches_the_caret_while_the_user_types() {
         type_str(&mut app, "hello");
         app.set_mascot_clock(ms(10_100));
         let (left, right) = narrowed(mascot);
-        let look = |gaze: Gaze| eyes(mascot, app.banner_pose_watching(gaze).art);
+        let look = |gaze: Gaze| eyes(mascot, &app.banner_pose_watching(gaze).art);
         assert_eq!(look(Gaze::Left), (left, left), "{}", mascot.name());
         assert_eq!(look(Gaze::Right), (right, right), "{}", mascot.name());
         assert_eq!(
@@ -3661,7 +3664,7 @@ fn a_watching_mascot_still_blinks_now_and_then() {
                 type_str(&mut app, "x");
             }
             app.set_mascot_clock(ms(at));
-            let look = eyes(mascot, app.banner_pose_watching(Gaze::Right).art);
+            let look = eyes(mascot, &app.banner_pose_watching(Gaze::Right).art);
             let shut = look == ('█', '█');
             blinks += usize::from(shut && !was_shut);
             was_shut = shut;
@@ -3692,7 +3695,7 @@ fn the_mascot_goes_back_to_its_own_moves_when_the_typing_stops() {
         app.set_mascot_clock(ms(end - 1));
         if mascot != Mascot::Gem {
             let (_, right) = narrowed(mascot);
-            let look = eyes(mascot, app.banner_pose_watching(Gaze::Right).art);
+            let look = eyes(mascot, &app.banner_pose_watching(Gaze::Right).art);
             assert!(
                 [(right, right), ('█', '█'), ('▆', '▆')].contains(&look),
                 "{}: still watching just before the end, {look:?}",
@@ -3773,7 +3776,7 @@ fn an_emptied_composer_ends_the_watch_at_once() {
     app.set_mascot_clock(ms(40_500));
     let (left, _) = narrowed(mascot);
     assert_ne!(
-        eyes(mascot, app.banner_pose_watching(Gaze::Left).art),
+        eyes(mascot, &app.banner_pose_watching(Gaze::Left).art),
         (left, left)
     );
 }

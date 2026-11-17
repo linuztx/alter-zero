@@ -574,6 +574,7 @@ impl<'t> Session<'t> {
             round_budget,
             frame,
             draw_rx,
+            frames: alter_zero::frame::FrameLedger::default(),
             tx,
             reply_rx,
             file_req_tx,

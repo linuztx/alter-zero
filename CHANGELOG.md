@@ -90,8 +90,10 @@ release heading when a version is cut.
   preview moves too, each mascot greeting as the highlight lands on it, so
   one can be chosen for how it behaves — and the one you choose greets from
   the banner.
-  An idle screen stays cheap: a blink rewrites two cells, and nothing is
-  written between moves. Turn it off with the new **Animate mascot** row in
+  An idle screen stays cheap: a blink rewrites two cells, nothing is
+  written between moves, and the app's memory is what it was — the same
+  with the animation off and once a conversation starts, a few pages more
+  while the mascot moves. Turn it off with the new **Animate mascot** row in
   `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 
 ### Changed

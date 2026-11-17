@@ -57,6 +57,10 @@
 
 use super::*;
 
+mod packed;
+
+use packed::{Reel, Table};
+
 /// How often a light sweep repaints while it crosses the mascot — 25 frames
 /// a second, a step of under a column for the band, and a whole number of
 /// frames to a sweep so its last one is not a sliver.
@@ -204,6 +208,12 @@ const GLITTER_MS: u64 = 80 * MASCOT_GLITTER_STEPS as u64;
 pub const MASCOT_LIDS: [char; 2] = ['▁', '━'];
 
 /// One still of a mascot — its rows, drawn verbatim like [`Mascot::art`].
+///
+/// This and the tables made of it below — [`Step`], [`Clip`], [`Card`],
+/// [`Motions`] — are how a mascot's moves are **written**. Nothing reads
+/// them while the app runs: each mascot's are folded at compile time into
+/// the integer tables of [`packed`], which is what the timeline plays and
+/// what the binary keeps.
 type Art = &'static [&'static str];
 
 /// One step of a [`Clip`]: a still, how long it stays up, and how brightly
@@ -266,48 +276,11 @@ macro_rules! glowing {
     };
 }
 
+#[cfg(test)]
 impl Clip {
     /// The clip's whole length, in milliseconds.
     fn len(&self) -> u64 {
         self.steps.iter().map(|step| step.ms).sum()
-    }
-
-    /// The step on screen `at` milliseconds into the clip and how long it
-    /// has left, or `None` once the clip is over.
-    fn step_at(&self, at: u64) -> Option<(Step, u64)> {
-        let mut end = 0;
-        self.steps.iter().find_map(|step| {
-            end += step.ms;
-            (at < end).then(|| (*step, end - at))
-        })
-    }
-
-    /// The pose `at` milliseconds into the clip, or `None` once it is over.
-    fn pose_at(&self, at: u64) -> Option<MascotPose> {
-        let (step, _) = self.step_at(at)?;
-        Some(MascotPose {
-            art: step.art,
-            shine: self.band.map(|band| MascotShine {
-                band,
-                // Millisecond counts of a clip well under a minute: exact in
-                // f32.
-                progress: at as f32 / self.len() as f32,
-            }),
-            glow: step.glow,
-        })
-    }
-
-    /// How long the pose `at` milliseconds into the clip holds: to the end
-    /// of its step, or — under a band of light, which moves on every frame
-    /// — one [`MASCOT_SHINE_FRAME`] at most.
-    fn holds_at(&self, at: u64) -> Option<u64> {
-        let (_, left) = self.step_at(at)?;
-        let frame = u64::try_from(MASCOT_SHINE_FRAME.as_millis()).unwrap_or(u64::MAX);
-        Some(if self.band.is_some() {
-            left.min(frame)
-        } else {
-            left
-        })
     }
 }
 
@@ -689,6 +662,7 @@ struct Nap {
     caught: &'static Clip,
 }
 
+#[cfg(test)]
 impl Nap {
     /// The nap's clips: the three it plays in order, and the two starts
     /// that cut it short.
@@ -703,19 +677,20 @@ impl Nap {
     }
 }
 
-impl Motions {
-    /// How many copies of each kind a round deals.
-    fn copies(&self) -> [u8; DECK_KINDS] {
-        let mut copies = [0; DECK_KINDS];
-        for (kind, card) in self.deck.iter().enumerate().take(DECK_KINDS) {
-            copies[kind] = card.copies;
-        }
-        copies
-    }
+/// A deck as a round deals it: how many copies of each kind of card it
+/// holds, how many kinds there are, and how many beats of a round the
+/// mascot stands still.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Deck {
+    copies: [u8; DECK_KINDS],
+    kinds: usize,
+    rests: u8,
+}
 
+impl Deck {
     /// How many beats a round lasts: one a card, and its rests.
     fn beats(&self) -> u64 {
-        let moves: u64 = self.copies().iter().map(|&n| u64::from(n)).sum();
+        let moves: u64 = self.copies.iter().map(|&n| u64::from(n)).sum();
         moves + u64::from(self.rests)
     }
 
@@ -730,9 +705,7 @@ impl Motions {
     /// round promise the next one a move to differ from without either
     /// being dealt first.
     fn closer(&self, seed: u64, round: u64) -> usize {
-        let copies = self.copies();
-        let kinds = self.deck.len().min(DECK_KINDS);
-        let singles = (0..kinds).filter(|&kind| copies[kind] == 1);
+        let singles = (0..self.kinds).filter(|&kind| self.copies[kind] == 1);
         let count = u64::try_from(singles.clone().count()).unwrap_or(1).max(1);
         let pick = usize::try_from(lot(seed ^ CLOSER, round) % count).unwrap_or(0);
         singles.clone().nth(pick).unwrap_or(0)
@@ -751,8 +724,8 @@ impl Motions {
     /// ([`closer`](Self::closer)); and each rest is slipped in ahead of a
     /// move of its own, drawn from the moves still to come.
     fn dealt(&self, seed: u64, round: u64, at: u64) -> Option<(usize, u8)> {
-        let kinds = self.deck.len().min(DECK_KINDS);
-        let mut copies = self.copies();
+        let kinds = self.kinds;
+        let mut copies = self.copies;
         let closer = self.closer(seed, round);
         // The closer's one copy is the round's last card.
         copies[closer] = 0;
@@ -804,19 +777,64 @@ impl Motions {
             beat += 1;
         }
     }
+}
 
-    /// The clip the `nth` copy of card `kind` plays in `round`: the card's
-    /// moves take turns, from one the round draws.
+/// Which of a card's `count` moves the `nth` copy of card `kind` plays in
+/// `round`: the card's moves take turns, from one the round draws. `None`
+/// for a card with no move.
+fn turn(seed: u64, round: u64, kind: usize, nth: u8, count: usize) -> Option<usize> {
+    let count = u64::try_from(count).ok().filter(|&count| count > 0)?;
+    let card = u64::try_from(kind).unwrap_or(0);
+    let turn = lot(
+        seed ^ TURN,
+        round.wrapping_mul(DECK_KINDS as u64).wrapping_add(card),
+    );
+    usize::try_from((turn % count + u64::from(nth)) % count).ok()
+}
+
+/// The deck as written, dealt the way the timeline deals the packed one —
+/// what the dealer's tests read.
+#[cfg(test)]
+impl Motions {
+    /// The deck as a round deals it.
+    fn dealing(&self) -> Deck {
+        let mut copies = [0; DECK_KINDS];
+        for (kind, card) in self.deck.iter().enumerate().take(DECK_KINDS) {
+            copies[kind] = card.copies;
+        }
+        Deck {
+            copies,
+            kinds: self.deck.len().min(DECK_KINDS),
+            rests: self.rests,
+        }
+    }
+
+    /// How many copies of each kind a round deals.
+    fn copies(&self) -> [u8; DECK_KINDS] {
+        self.dealing().copies
+    }
+
+    /// How many beats a round lasts: one a card, and its rests.
+    fn beats(&self) -> u64 {
+        self.dealing().beats()
+    }
+
+    /// The kind `round` closes on ([`Deck::closer`]).
+    fn closer(&self, seed: u64, round: u64) -> usize {
+        self.dealing().closer(seed, round)
+    }
+
+    /// The card dealt `at` beats into `round` ([`Deck::dealt`]).
+    fn dealt(&self, seed: u64, round: u64, at: u64) -> Option<(usize, u8)> {
+        self.dealing().dealt(seed, round, at)
+    }
+
+    /// The clip the `nth` copy of card `kind` plays in `round` ([`turn`]).
     fn played(&self, seed: u64, round: u64, kind: usize, nth: u8) -> Option<&'static Clip> {
         let moves = self.deck.get(kind)?.moves;
-        let count = u64::try_from(moves.len()).ok().filter(|&count| count > 0)?;
-        let card = u64::try_from(kind).unwrap_or(0);
-        let turn = lot(
-            seed ^ TURN,
-            round.wrapping_mul(DECK_KINDS as u64).wrapping_add(card),
-        );
-        let index = (turn % count + u64::from(nth)) % count;
-        moves.get(usize::try_from(index).ok()?).copied()
+        moves
+            .get(turn(seed, round, kind, nth, moves.len())?)
+            .copied()
     }
 
     /// Every clip of the mascot's timeline: its greeting, and its deck.
@@ -825,6 +843,21 @@ impl Motions {
             .into_iter()
             .chain(self.deck.iter().flat_map(|card| card.moves.iter().copied()))
     }
+}
+
+/// One mascot's [`MOTIONS`](crest::MOTIONS) as the binary keeps them
+/// ([`packed`]): folded here, at compile time, into a table cut to the size
+/// they come to.
+macro_rules! packed {
+    () => {
+        const BUILT: packed::Built = packed::build(&MOTIONS);
+        pub(super) static TABLE: packed::Packed<
+            { BUILT.text },
+            { BUILT.rows },
+            { BUILT.steps },
+            { BUILT.clips },
+        > = BUILT.fit();
+    };
 }
 
 /// The crested hatchling: lidded eyes, and a frill it flares — the spikes
@@ -963,6 +996,8 @@ mod crest {
             card(1, &[&GLITTER]),
         ],
     };
+
+    packed!();
 }
 
 /// The round creature in bloom: lidded eyes, and petals at its sides that
@@ -1094,6 +1129,8 @@ mod bloom {
             card(1, &[&GLITTER]),
         ],
     };
+
+    packed!();
 }
 
 /// The seedling: eyes in the lower half of their cells, where the font-safe
@@ -1256,6 +1293,8 @@ mod sprout {
             card(1, &[&GLITTER]),
         ],
     };
+
+    packed!();
 }
 
 /// The two-eared one: lidded eyes, and ears that flick — fold flat and
@@ -1391,6 +1430,8 @@ mod twin {
             card(1, &[&GLITTER]),
         ],
     };
+
+    packed!();
 }
 
 /// The skitterer: eyes in the lower half of their cells (a one-frame blink,
@@ -1559,6 +1600,8 @@ mod skiter {
             card(1, &[&GLITTER]),
         ],
     };
+
+    packed!();
 }
 
 /// The cut gem: no eyes to blink, so it catches the light instead — a spark
@@ -1761,6 +1804,8 @@ mod gem {
             card(1, &[&ROCK]),
         ],
     };
+
+    packed!();
 }
 
 /// How long the mascot keeps its eyes on the composer after a keystroke —
@@ -1964,7 +2009,7 @@ pub struct MascotPose {
     /// The art's rows — the rest art's own count, none wider than
     /// [`Mascot::art_width`], so a pose never moves the banner's metadata
     /// column or its height.
-    pub art: &'static [&'static str],
+    pub art: [&'static str; 3],
     /// A band of light crossing the art — `None` when none is, which is
     /// nearly always.
     pub shine: Option<MascotShine>,
@@ -1977,8 +2022,9 @@ impl MascotPose {
     /// `mascot` standing still: its catalog art, unlit.
     #[must_use]
     pub const fn rest(mascot: Mascot) -> Self {
+        let art = mascot.art();
         Self {
-            art: mascot.art(),
+            art: [art[0], art[1], art[2]],
             shine: None,
             glow: 0,
         }
@@ -2024,7 +2070,23 @@ const fn lot(seed: u64, beat: u64) -> u64 {
 }
 
 impl Mascot {
-    /// Everything this mascot does (`docs/mascot-animation.md`).
+    /// Everything this mascot does (`docs/mascot-animation.md`), as the
+    /// timeline reads it: the integer tables its moves were folded into
+    /// ([`packed`]).
+    fn table(self) -> Table {
+        match self {
+            Self::Crest => crest::TABLE.table(),
+            Self::Bloom => bloom::TABLE.table(),
+            Self::Sprout => sprout::TABLE.table(),
+            Self::Twin => twin::TABLE.table(),
+            Self::Skiter => skiter::TABLE.table(),
+            Self::Gem => gem::TABLE.table(),
+        }
+    }
+
+    /// Everything this mascot does, **as written** — the tables the ones
+    /// above are folded from, which only the tests read.
+    #[cfg(test)]
     const fn motions(self) -> &'static Motions {
         match self {
             Self::Crest => &crest::MOTIONS,
@@ -2045,7 +2107,9 @@ impl Mascot {
     /// Every frame the animation can draw besides the rest art, each once —
     /// its moves' and its nap's: the catalog the tests hold to the art's own
     /// rules (three rows, no wider than the art, single-width glyphs) and to
-    /// the animation's: one row redrawn, or the whole mascot moved.
+    /// the animation's: one row redrawn, or the whole mascot moved. Read off
+    /// the tables as written, so it is the tests' alone.
+    #[cfg(test)]
     #[must_use]
     pub fn motion_frames(self) -> Vec<&'static [&'static str]> {
         let mut frames: Vec<Art> = Vec::new();
@@ -2066,7 +2130,7 @@ impl Mascot {
     /// millisecond it starts at — `None` for a beat the mascot stands still.
     ///
     /// The greeting's three slots are scripted. A beat plays the card its
-    /// round deals it ([`Motions::dealt`]) — a round being the mascot's deck
+    /// round deals it ([`Deck::dealt`]) — a round being the mascot's deck
     /// shuffled over the seed **and the mascot**, so no two mascots play one
     /// sequence (walking the `/mascot` list, each goes on from its greeting
     /// in an order of its own) — and starts it anywhere that leaves it whole
@@ -2074,16 +2138,17 @@ impl Mascot {
     /// rests in a row, so the stillness is never longer than a beat and the
     /// two clips either side of it — about eight seconds — however the
     /// cards fall.
-    fn cue(self, seed: u64, slot: u64) -> Option<(u64, &'static Clip)> {
-        let motions = self.motions();
+    fn cue(self, seed: u64, slot: u64) -> Option<(u64, Reel)> {
+        let table = self.table();
         let Some(beat) = slot.checked_sub(3) else {
             let slot = usize::try_from(slot).ok()?;
-            return Some((GREETING_STARTS[slot], motions.greeting[slot]));
+            return Some((GREETING_STARTS[slot], table.greeting(slot)));
         };
         let seed = seed ^ self.salt();
-        let (round, at) = motions.round_at(beat);
-        let (kind, nth) = motions.dealt(seed, round, at)?;
-        let clip = motions.played(seed, round, kind, nth)?;
+        let deck = table.deck();
+        let (round, at) = deck.round_at(beat);
+        let (kind, nth) = deck.dealt(seed, round, at)?;
+        let clip = table.played(seed, round, kind, nth)?;
         let room = BEAT_MS.saturating_sub(BEAT_BREATH_MS + clip.len());
         Some((
             slot_start(slot) + (lot(seed, beat) >> 32) % (room + 1),
@@ -2113,7 +2178,7 @@ impl Mascot {
     /// until `until`: begun no sooner than it was up — joining a move half
     /// way would be a move with no start — and over a breath before it
     /// nods off, so a nap never cuts one in two.
-    fn plays(cue: (u64, &Clip), from: u64, until: u64) -> bool {
+    fn plays(cue: (u64, Reel), from: u64, until: u64) -> bool {
         let (start, clip) = cue;
         start >= from && start.saturating_add(clip.len() + BEAT_BREATH_MS) <= until
     }
@@ -2136,7 +2201,7 @@ impl Mascot {
     /// was left, so it never nods off on the dot. The first [`CAT_NAPS`]
     /// end by themselves; the one after them has no end.
     fn nap(self, seed: u64, since: u64, n: u64) -> Sleep {
-        let nap = &self.motions().nap;
+        let nap = self.table().nap();
         let draw = lot(seed ^ NAP ^ self.salt() ^ since.rotate_left(23), n);
         let from = since
             .saturating_add(n.saturating_mul(NAP_STRETCH_MS))
@@ -2180,8 +2245,8 @@ impl Mascot {
     /// The clip of its nap a sleeping mascot is in at `ms`, and how far
     /// into it: nodding off, a breath of however many it has taken, or —
     /// when the nap has an end — waking for it.
-    fn sleeping(self, sleep: Sleep, ms: u64) -> (&'static Clip, u64) {
-        let nap = &self.motions().nap;
+    fn sleeping(self, sleep: Sleep, ms: u64) -> (Reel, u64) {
+        let nap = self.table().nap();
         let into = ms.saturating_sub(sleep.from);
         let Some(asleep) = into.checked_sub(nap.nod_off.len()) else {
             return (nap.nod_off, into);
@@ -2225,8 +2290,8 @@ impl Mascot {
     /// [`WATCH_BLINK_EVERY_MS`] from the watch's first keystroke, at an
     /// offset the seed draws — and the millisecond it starts at. `None` for
     /// the gem, which has no eyes to blink.
-    fn watch_blink(self, seed: u64, watch: Watch, window: u64) -> Option<(u64, &'static Clip)> {
-        let blink = self.motions().watch_blink?;
+    fn watch_blink(self, seed: u64, watch: Watch, window: u64) -> Option<(u64, Reel)> {
+        let blink = self.table().watch_blink()?;
         let room = WATCH_BLINK_EVERY_MS.saturating_sub(WATCH_BLINK_FIRST_MS + blink.len());
         let start = watch.began
             + window * WATCH_BLINK_EVERY_MS
@@ -2246,23 +2311,21 @@ impl Mascot {
         {
             return pose;
         }
-        let [left, right] = self.motions().gaze;
+        let [left, right] = self.table().gaze();
+        let rest = MascotPose::rest(self);
         let art = match gaze {
             Gaze::Left => left,
-            Gaze::Ahead => self.art(),
+            Gaze::Ahead => rest.art,
             Gaze::Right => right,
         };
-        MascotPose {
-            art,
-            ..MascotPose::rest(self)
-        }
+        MascotPose { art, ..rest }
     }
 
     /// The clip a start plays: from where it lies for one found sound
     /// asleep, from where it stands for one caught nodding off — a start
     /// never takes a mascot **down**.
-    fn start(self, woke: Woke) -> &'static Clip {
-        let nap = &self.motions().nap;
+    fn start(self, woke: Woke) -> Reel {
+        let nap = self.table().nap();
         if woke.nodding { nap.caught } else { nap.jolt }
     }
 
@@ -2296,7 +2359,7 @@ impl Mascot {
 
     /// The start a key gave it, while it lasts: the clip, and how far into
     /// it `ms` is.
-    fn jolting(self, company: Company, ms: u64) -> Option<(&'static Clip, u64)> {
+    fn jolting(self, company: Company, ms: u64) -> Option<(Reel, u64)> {
         let woke = company.woke?;
         let start = self.start(woke);
         let at = ms.checked_sub(woke.at)?;
@@ -2315,7 +2378,7 @@ impl Mascot {
         let Idle::Asleep(sleep) = self.idle(seed, self.alone(company), ms) else {
             return None;
         };
-        let nap = &self.motions().nap;
+        let nap = self.table().nap();
         let stirring = sleep
             .until
             .is_some_and(|until| ms >= until.saturating_sub(nap.wake_up.len()));
@@ -2382,7 +2445,7 @@ impl Mascot {
     /// How long [`pose_between`](Self::pose_between) holds at `ms`, in
     /// milliseconds — never past `until`, where the mascot nods off.
     fn holds_between(self, seed: u64, ms: u64, from: u64, until: u64) -> u64 {
-        let plays = |cue: &(u64, &'static Clip)| Self::plays(*cue, from, until);
+        let plays = |cue: &(u64, Reel)| Self::plays(*cue, from, until);
         let slot = slot_at(ms);
         let held = match self.cue(seed, slot).filter(plays) {
             // Still, ahead of this slot's clip.
@@ -2638,6 +2701,79 @@ mod tests {
                 .iter()
                 .zip(b.steps)
                 .all(|(x, y)| x.art == y.art && x.ms == y.ms && x.glow == y.glow)
+    }
+
+    /// Whether the clip the binary keeps plays as `clip` was written: the
+    /// same stills, for the same time, under the same light.
+    fn plays_as(kept: &Reel, clip: &Clip) -> bool {
+        let steps = kept.steps();
+        kept.band() == clip.band
+            && kept.len() == clip.len()
+            && steps.len() == clip.steps.len()
+            && steps.iter().zip(clip.steps).all(|((art, ms, glow), step)| {
+                art.as_slice() == step.art && *ms == step.ms && *glow == step.glow
+            })
+    }
+
+    #[test]
+    fn the_tables_the_binary_keeps_are_the_tables_as_written() {
+        // The moves are written as tables of references and folded, at
+        // compile time, into the integer tables the timeline plays
+        // (`packed`). Everything the written ones say must be in them:
+        // every clip in the order it is listed, step for step; the deck and
+        // what each copy of each card plays; the stills it watches with;
+        // and its nap.
+        for mascot in Mascot::ALL {
+            let (motions, table) = (mascot.motions(), mascot.table());
+            let name = mascot.name();
+            let listed: Vec<&Clip> = motions
+                .clips()
+                .chain(motions.watch_blink)
+                .chain(motions.nap.clips())
+                .collect();
+            assert_eq!(table.clips(), listed.len(), "{name}");
+            for (id, clip) in listed.iter().enumerate() {
+                assert!(plays_as(&table.clip(id), clip), "{name}: clip {id}");
+            }
+            for (slot, clip) in motions.greeting.iter().enumerate() {
+                assert!(
+                    plays_as(&table.greeting(slot), clip),
+                    "{name}: greeting {slot}"
+                );
+            }
+            assert_eq!(table.deck(), motions.dealing(), "{name}");
+            for seed in SEEDS {
+                for number in 0..ROUNDS {
+                    for (kind, card) in motions.deck.iter().enumerate() {
+                        for nth in 0..card.copies {
+                            let written = motions.played(seed, number, kind, nth).expect("a move");
+                            let kept = table.played(seed, number, kind, nth).expect("a move");
+                            assert!(
+                                plays_as(&kept, written),
+                                "{name}: card {kind}, copy {nth}, round {number}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(
+                table.played(0, 0, motions.deck.len(), 0).is_none(),
+                "{name}: a card past the deck"
+            );
+            let gaze = table.gaze();
+            assert_eq!(gaze[0].as_slice(), motions.gaze[0], "{name}");
+            assert_eq!(gaze[1].as_slice(), motions.gaze[1], "{name}");
+            match (table.watch_blink(), motions.watch_blink) {
+                (Some(kept), Some(written)) => assert!(plays_as(&kept, written), "{name}"),
+                (None, None) => {}
+                _ => panic!("{name}: a blink for its watch in one table only"),
+            }
+            let nap = table.nap();
+            let kept = [nap.nod_off, nap.breath, nap.wake_up, nap.jolt, nap.caught];
+            for (kept, written) in kept.iter().zip(motions.nap.clips()) {
+                assert!(plays_as(kept, written), "{name}: its nap");
+            }
+        }
     }
 
     /// Every card `round` deals, in order — `None` a rest.

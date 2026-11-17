@@ -739,7 +739,7 @@ fn no_pose_moves_the_metadata_or_the_banners_shape() {
         let column = mascot.art_width();
         for art in mascot.motion_frames() {
             let pose = MascotPose {
-                art,
+                art: art.try_into().expect("three rows"),
                 ..MascotPose::rest(mascot)
             };
             let lines = header_lines_posed(&app, mascot, &pose, 90);
@@ -1130,7 +1130,7 @@ fn a_mark_beside_the_mascot_is_drawn_in_the_light() {
     let mut seen = std::collections::BTreeSet::new();
     for art in mascot.motion_frames() {
         let pose = MascotPose {
-            art,
+            art: art.try_into().expect("three rows"),
             ..MascotPose::rest(mascot)
         };
         for line in header_lines_posed(&app, mascot, &pose, 90) {
@@ -1178,22 +1178,14 @@ fn a_sleepers_lid_is_cut_out_of_the_ink() {
             // The same frame, lit: a lid takes the light the body takes.
             for glow in [0, 60] {
                 let pose = MascotPose {
-                    art,
+                    art: art.try_into().expect("three rows"),
                     glow,
                     ..MascotPose::rest(mascot)
                 };
                 // …and what the body would wear there, were the eye shut.
-                let shut: Vec<String> = art
-                    .iter()
-                    .map(|row| row.replace(MASCOT_LIDS, "█"))
-                    .collect();
-                let shut: Vec<&str> = shut.iter().map(String::as_str).collect();
-                let shut: &'static [&'static str] = Box::leak(
-                    shut.iter()
-                        .map(|row| &*Box::leak(row.to_string().into_boxed_str()))
-                        .collect::<Vec<&'static str>>()
-                        .into_boxed_slice(),
-                );
+                let shut = pose.art.map(|row| -> &'static str {
+                    Box::leak(row.replace(MASCOT_LIDS, "█").into_boxed_str())
+                });
                 let filled = MascotPose { art: shut, ..pose };
                 let lines = header_lines_posed(&app, mascot, &pose, 90);
                 let inked = header_lines_posed(&app, mascot, &filled, 90);

@@ -22,7 +22,9 @@ smoke_begin
 # highlight lands on a mascot; and while the first message is typed the
 # mascot watches it — its eyes turned toward the text, to its right, never
 # to the screen's left edge — looking away a few seconds after the last
-# keystroke, and at once when the draft is cleared.
+# keystroke, and at once when the draft is cleared; and an idle session with
+# the animation on is within a few pages of resident memory of one with it
+# off, however wide the terminal.
 #
 # The suite pins the animation off (lib.sh); these launches turn it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘`, its frill
@@ -240,6 +242,50 @@ dump "the screen the app left behind" "$mm_dead"
 expect_has "$mm_dead" -F "$MM_REST_TOP" "the app quit with its mascot off its rest art"
 expect_lacks "$mm_dead" -F "$MM_FLARE" "the app quit mid-move and left the pose on the dead screen"
 tmux kill-session -t "$S159" 2>/dev/null
+
+# --- what the animation costs an idle screen -------------------------------
+# Resident memory is a feature (docs/memory.md), and the mascot moves on the
+# screen where the process is at its smallest. Two things once made that
+# expensive in proportion to the terminal's width: a repaint rendered the
+# whole banner twice at that width to diff it, and every frame of the
+# animation redrew the live region in a buffer of its own — about 0.6 kB a
+# column between them, 150 kB at these 200 columns. A frame the mascot asks
+# for now writes the banner's cells and renders nothing else, so a session
+# with the animation on must end within a few pages of the same session
+# with it off (16 kB measured). `RssAnon` from /proc; skipped where there is
+# none.
+mm_rss() {
+	local pid exe want
+	want="$(readlink -f "$BIN" 2>/dev/null)"
+	pid="$(tmux display-message -p -t "$1" '#{pane_pid}')"
+	for pid in "$pid" $(cat "/proc/$pid/task/$pid/children" 2>/dev/null); do
+		exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
+		if [ -n "$want" ] && [ "$exe" = "$want" ]; then
+			awk '/^RssAnon:/ {print $2}' "/proc/$pid/status" 2>/dev/null
+			return
+		fi
+	done
+}
+launch "$S159" 200 24 "$MM_APP"
+mm_record "$S159"
+wait_file 10 "$MM_LOG" -aF '▆' || fail "the launch's greeting never blinked"
+tmux pipe-pane -t "$S159"
+sleep 6 # past the greeting, into the first moves of its round
+mm_moving="$(mm_rss "$S159")"
+tmux kill-session -t "$S159" 2>/dev/null
+launch "$S159" 200 24
+sleep 3
+mm_still="$(mm_rss "$S159")"
+tmux kill-session -t "$S159" 2>/dev/null
+if [ -n "$mm_moving" ] && [ -n "$mm_still" ]; then
+	mm_cost=$((mm_moving - mm_still))
+	note "resident memory of an idle session at 200 columns: $mm_moving kB with the mascot moving, $mm_still kB with it still (${mm_cost} kB apart)"
+	if [ "$mm_cost" -gt 64 ]; then
+		fail "the animation cost an idle screen ${mm_cost} kB of resident memory (expected a few pages — a frame of the mascot's is building more than the banner's own cells)"
+	fi
+else
+	note "no /proc to read resident memory from; the animation's memory check was skipped"
+fi
 
 # --- the picker's preview greets, and so does the mascot just chosen -------
 # (Last, since the choice is saved for this directory and every launch after
