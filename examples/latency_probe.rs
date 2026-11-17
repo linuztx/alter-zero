@@ -90,7 +90,7 @@ fn usage() -> ! {
         "usage: latency_probe [--bin PATH] [--scenario NAME[,NAME…]|all] [--rate N] \
          [--chars N] [--bytes N] [--key-every MS] [--rows N] [--cols N] [--draft N] \
          [--warmup TURNS] [--overlay] [--env K=V] [--json PATH] [--keep]\n\
-         scenarios: idle burst prose code table oneline mixed reasoning write bash"
+         scenarios: idle burst prose code table oneline mixed reasoning thought write bash"
     );
     std::process::exit(2);
 }
