@@ -1489,3 +1489,36 @@ fn a_job_can_cross_to_another_thread() {
     sendable::<TranscriptJob>();
     sendable::<RenderedTranscriptItem>();
 }
+
+#[test]
+fn a_reply_withdrawn_while_the_pager_was_closed_is_not_shown_again() {
+    // Ctrl+O opened on a streaming reply and closed; the connection drops,
+    // the attempt is withdrawn and made again (docs/offline.md); Ctrl+O
+    // opened again once the new attempt has outgrown the old one. Nothing
+    // refreshed the page in between, so a length is no way to tell the two
+    // replies apart: the rows kept for the first must not come back under
+    // the second.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    app.begin_stream();
+    app.track_attempt(&crate::stream::StreamEvent::Chunk("x".into()));
+    app.push_chunk("The first attempt says one thing.\n\nIt was cut off here\n");
+    let _ = cache.lines(&app, 80);
+    cache.warm(&app, 80);
+    let _ = app.withdraw_attempt();
+    cache.warm(&app, 80);
+    app.push_chunk(
+        "A different answer entirely, and a longer one.\n\nWith a second paragraph.\n\nAnd a third.\n",
+    );
+    cache.warm(&app, 80);
+    let shown: Vec<String> = cache
+        .lines(&app, 80)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        !shown.iter().any(|row| row.contains("first attempt")),
+        "the withdrawn attempt is back on the page: {shown:#?}"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
