@@ -176,24 +176,39 @@ thing on a draw path that can change what a cell reserves.
 
 `a_frame_builds_the_strips_live_cells_once` counts builds, not time.
 
-## 5. A running command's tail walked its whole output, twice, per build
+## 5. A running command's cell measured its whole output on every build
 
 The running `bash` cell shows four rows of an output that can be thousands of
-lines (`docs/tool-streaming.md`), and to know which four it counted the
-display rows of every line. Each build copied every line into a `String` of
-its own and then walked each one a grapheme at a time, twice — about 2 ms a
-build at the 64 KB the cell retains.
+lines (`docs/tool-streaming.md`), and to know which four, and how many sit
+above them, it counted the display rows of every line. Each build copied
+every line into a `String` of its own and then walked each one a grapheme at
+a time, twice — about 2 ms a build at the 64 KB the cell usually retains,
+eight or nine builds a frame.
 
 Two changes. A line no longer than its row **in bytes** is one row, without a
 scan: a character is never wider than its bytes, so nothing in it can
 overflow (`WrapMode::scan_hanging`'s first branch; almost every line a
-command prints). And the tail reads its lines borrowed from the output
-(`display_lines`, a `Cow` per line, owned only where a tab is expanded) and
-counts each line's rows once, for the sums and the window walk alike.
+command prints). And a line is measured **once, the frame it settles**: the
+output before the live rows only grows while the call runs, so the tail
+keeps the settled lines' row counts and the last few lines' byte ranges
+(`LiveTail::settled_lines`) and a frame measures what printed since the last
+one, the line still arriving and the live rows — `docs/tool-streaming.md`
+*A flood costs what it adds*.
+
+The count was first kept per build rather than across frames — every line
+read borrowed and counted once a build, with 4 making that once a frame —
+which was enough at 64 KB and nothing more: a build still cost the whole
+retained output, 216 ms over 5.5 MB in the test profile, and the 64 KB is a
+budget the session stream enforces after the fact, so one large first update
+can pass it.
 
 With 4, a key under a command printing 4,000 lines a second went from 39.5 ms
-to about one, and the loop from 90% of a core to 3%.
+to under one, and the loop from 90% of a core to 3%.
 
+`the_running_window_counts_only_what_settled_since_the_last_frame` and its
+siblings count the lines measured per frame,
+`the_running_window_agrees_with_a_cold_count_at_every_step` holds the kept
+counts to a cold build, and
 `the_running_tail_counts_a_long_output_without_walking_its_lines` counts
 scans.
 
@@ -392,7 +407,8 @@ millisecond, and 7% of a core.
   key's frame right behind a stream's, and keys handled together as one.
 - `ui::tests::live::a_frame_builds_the_strips_live_cells_once` and its
   siblings — one build a frame, one per width, nothing kept outside a frame.
-- `ui::tests::tool::the_running_tail_counts_a_long_output_without_walking_its_lines`,
+- `ui::tests::tool::the_running_window_counts_only_what_settled_since_the_last_frame`
+  and its siblings, the wall-clock gate over ~6 MB beside them, and
   `ui::tests::wrap::a_line_no_longer_than_its_row_is_counted_without_a_scan`.
 - `ui::tests::transcript` — a job's rows are the cache's own; handed out
   once, a window at a time; refused after a reset, out of turn, or once a
