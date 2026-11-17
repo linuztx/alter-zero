@@ -51,6 +51,12 @@ pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duratio
 /// `mm:ss` countdown that is its only moving part. See `docs/copilot.md`.
 const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How often an open `/model` picker redraws with no other event. Its
+/// minute-granular `updated 2h ago`, and the `ctrl+r to refresh` offer that
+/// appears once its lists are a minute old, move with the clock alone — so a
+/// picker left open shows them within this long (`docs/model-cache.md`).
+const MODEL_PICKER_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
 /// rewind) re-renders into scrollback. A purge drops the terminal's own
 /// scrollback, so the whole conversation is rebuilt from history — capped here
@@ -104,6 +110,12 @@ impl Session<'_> {
         // (docs/usage.md).
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
+        }
+        // …and so does the `/model` page's `updated 2h ago`
+        // (docs/model-cache.md).
+        if self.app.model_picker.is_some() {
+            self.app
+                .set_model_picker_now(super::host::unix_secs_signed());
         }
         // How long a `/login` device code has left, when one is on screen
         // (docs/copilot.md).
@@ -307,21 +319,28 @@ impl Session<'_> {
         self.clocks.banner_start = Some(std::time::Instant::now());
     }
 
-    /// Render the full-screen tool-output overlay. Clamps the scroll to the
-    /// current screen first (so the last line can reach the bottom but not
-    /// scroll past it), then paints the view onto the alternate screen.
+    /// Render the full-screen tool-output overlay. Resolves the ←/→ steps
+    /// (and the scrolls pressed behind them) waiting against the transcript as built and clamps the scroll to the
+    /// current screen (so the last line can reach the bottom but not scroll
+    /// past it), then paints the view onto the alternate screen — the header
+    /// of the cell the window opens inside pinned over its top
+    /// (`docs/transcript-navigation.md`).
     pub(crate) fn draw_tool_view(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
         // An agent session view's Ctrl+O shows the *viewed agent's* transcript —
         // a fresh, bounded build (docs/agent-tool.md); the main cache below is
         // untouched, so the ordinary open stays warm.
-        if let Some(lines) = ui::agent_transcript_lines(&self.app, screen.width) {
-            let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+        if let Some(page) = ui::agent_transcript(&self.app, screen.width) {
+            let max = ui::tool_view_max_scroll_for(page.lines.len(), screen.height);
+            if !self.app.tool_moves.is_empty() {
+                let starts: Vec<usize> = page.entries.iter().map(|entry| entry.start).collect();
+                self.app.resolve_tool_moves(&starts, max);
+            }
             self.app.settle_tool_scroll(max);
             let app = &self.app;
             return self
                 .term
-                .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &lines));
+                .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &page));
         }
         // A backtrack preview open/step requested a scroll to its highlighted
         // message (docs/backtrack.md): apply the pure decision once — consumed,
@@ -342,6 +361,18 @@ impl Session<'_> {
             self.transcript.line_count(&self.app, screen.width),
             screen.height,
         );
+        // A ←/→ press lands against the transcript as built — its width, its
+        // wrapping — before the settle clamps it; the same cached build. The
+        // moves a frame received replay in the order they came.
+        if !self.app.tool_moves.is_empty() {
+            let starts: Vec<usize> = self
+                .transcript
+                .entries(&self.app, screen.width)
+                .iter()
+                .map(|entry| entry.start)
+                .collect();
+            self.app.resolve_tool_moves(&starts, max);
+        }
         self.app.settle_tool_scroll(max);
         let app = &self.app;
         let transcript = &mut self.transcript;
@@ -377,7 +408,7 @@ impl Session<'_> {
         let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
         // A ←/→ press lands against the page as built — its width, its
         // wrapping — before the settle clamps it.
-        self.app.resolve_debug_jump(&body.headers, max);
+        self.app.resolve_debug_moves(&body.headers, max);
         self.app.settle_debug_scroll(max);
         let app = &self.app;
         self.term
@@ -412,7 +443,7 @@ impl Session<'_> {
         let screen = self.term.screen();
         let body = ui::classifier_body(&self.app, screen.width);
         let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
-        self.app.resolve_debug_jump(&body.headers, max);
+        self.app.resolve_debug_moves(&body.headers, max);
         self.app.settle_classifier_scroll(max);
         let app = &self.app;
         self.term
@@ -745,6 +776,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::donate_picker_height(app, screen.width, screen.height) {
         return height;
     }
+    // The read-only `/sponsor` page, likewise (docs/sponsor.md).
+    if let Some(height) = ui::sponsor_page_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The read-only `/export` page, likewise (docs/export.md).
     if let Some(height) = ui::export_picker_height(app, screen.width, screen.height) {
         return height;
@@ -877,6 +912,11 @@ impl Session<'_> {
         // shimmer over the page (`docs/copilot.md`).
         if self.app.device_login_active() {
             self.frame.schedule_frame_in(DEVICE_TICK_INTERVAL);
+        }
+        // The `/model` picker keeps a slower chain still: what it says about
+        // its lists' age changes by the minute, with no event of its own.
+        if self.app.model_picker.is_some() {
+            self.frame.schedule_frame_in(MODEL_PICKER_TICK_INTERVAL);
         }
         Ok(())
     }

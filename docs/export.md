@@ -152,6 +152,16 @@ spaces *before* it, a code block keeps its indent, a table keeps its
 borders. OSC 8 link carriers and image markers ride `Style` only and vanish
 with it (`docs/links.md`).
 
+**A link keeps its address.** This is the one place the export is rendered
+differently from the screen on purpose. Where the terminal opens hyperlinks
+a reply's `[label](url)` is shown as its label alone, the address behind it
+as the hyperlink (`docs/links.md` *Labelled links*) — and a hyperlink is a
+style, exactly what the export drops. So `export_text` renders with the
+address spelled out, `label (url)`, whatever the terminal shows: the file
+of a sourced reply must not be a list of names. On such a terminal a row
+holding a link is therefore longer in the file than it was on screen, and
+the paragraph around it wraps where the longer text does.
+
 ## The file (`app::export_file_name`)
 
 `conversation-YYYY-MM-DD-HHMMSS.txt` — the date as ISO, the time as one run
@@ -216,8 +226,9 @@ Never a scrollback bullet (`docs/toast.md`).
   the transcript's rows verbatim and in order, opening with the startup
   banner (title row first, cwd, hint, one blank, then the conversation),
   no trailing whitespace, one closing newline, the live tail mid-turn,
-  wrapping at the width asked for, and the viewed agent's transcript —
-  under its own banner — inside its session view.
+  wrapping at the width asked for, the viewed agent's transcript —
+  under its own banner — inside its session view, and a link's address
+  spelled out while the screen shows its label alone.
 - `scripts/smoke.sh` Phase 122 — the page end to end in a real terminal,
   in a throwaway cwd: `/export` on an empty conversation toasts and writes
   nothing; after a settled reply the page opens with both rows and the

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 155 — the banner mascot naps when it is left alone, and a keystroke wakes it
+# Phase 160 — the banner mascot naps when it is left alone, and a keystroke wakes it
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -22,7 +22,7 @@ smoke_begin
 # mascot's message commits is the rest art — nothing of the sleeper, the
 # start or the watch left in scrollback — and scrollback then stays still.
 # (That quitting, resizing or sending while it is ASLEEP leaves the banner
-# clean is the anchored block's own contract, pinned by Phase 154 mid-move;
+# clean is the anchored block's own contract, pinned by Phase 159 mid-move;
 # a second nap here would cost this phase another minute.)
 #
 # The suite pins the animation off (lib.sh); this launch turns it on. The
@@ -32,7 +32,7 @@ smoke_begin
 # tips ` ▖ ▖ ▗ ▗` over `▗█▁███▁█▖` (the lids along the bottom of their
 # cells) over ` ▝▛▛▀▜▜▘`, with the snore in the ninth column of the top
 # row.
-S155="${S}_mascotnap"
+S160="${S}_mascotnap"
 MN_APP="env $CFG_ENV_NOHIST ALTER_ZERO_MASCOT_ANIMATION=1 ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 MN_REST_TOP=' ▙▄▙▄▟▄▟   Alter Zero'
 MN_REST_EYES='▝▜▄███▄▛▘'
@@ -68,16 +68,16 @@ PY
 }
 
 # --- left alone, it nods off -----------------------------------------------
-launch "$S155" 80 24 "$MN_APP"
+launch "$S160" 80 24 "$MN_APP"
 mn_began="$(date +%s.%N)"
 # Recorded from the start: its eyes close on the way down, and once it is
 # asleep nothing writes them again.
-mn_record "$S155" "$MN_NOD_LOG"
-if ! wait_for 80 "$S155" -E "$MN_SNORE"; then
-	dump "never asleep" "$(pane "$S155")"
+mn_record "$S160" "$MN_NOD_LOG"
+if ! wait_for 80 "$S160" -E "$MN_SNORE"; then
+	dump "never asleep" "$(pane "$S160")"
 	fail "the mascot never fell asleep: no snore beside the banner in 80s of an untouched session"
 fi
-tmux pipe-pane -t "$S155"
+tmux pipe-pane -t "$S160"
 mn_took="$(python3 -c "print(round($(date +%s.%N) - $mn_began, 1))")"
 note "the mascot was snoring ${mn_took}s after the app opened"
 # Three quarters of a minute up, a couple of seconds to nod off and settle,
@@ -85,7 +85,7 @@ note "the mascot was snoring ${mn_took}s after the app opened"
 if python3 -c "import sys; sys.exit(0 if $mn_took >= 44 else 1)"; then :; else
 	fail "the mascot was asleep ${mn_took}s after the app opened (it stays up three quarters of a minute)"
 fi
-mn_asleep="$(pane "$S155")"
+mn_asleep="$(pane "$S160")"
 dump "asleep" "$mn_asleep"
 # Asleep, the whole of it on screen and settled: the tips of its frill on
 # the title's row, its eyes closed on the row under it — a lid where each
@@ -99,9 +99,9 @@ expect_eq "$(printf '%s\n' "$mn_asleep" | grep -c 'Alter Zero (v')" "1" "the nap
 expect_eq "$(count_bare_prompts "$mn_asleep")" "1" "the nap disturbed the composer"
 
 # --- asleep, it holds still: only its snore is written ---------------------
-mn_record "$S155"
+mn_record "$S160"
 sleep 7
-tmux pipe-pane -t "$S155"
+tmux pipe-pane -t "$S160"
 mn_breathing="$(mn_frames | wc -l)"
 note "frames in 7s asleep: $mn_breathing"
 # Two breaths of three stages each — quiet, a `z`, a `Z`. A 32ms chain
@@ -156,14 +156,14 @@ if [ "${mn_lids% *}" -lt 4 ] || [ "${mn_lids% *}" != "${mn_lids#* }" ]; then
 fi
 
 # --- a keystroke wakes it with a start -------------------------------------
-mn_record "$S155"
-type_text "$S155" "hello"
+mn_record "$S160"
+type_text "$S160" "hello"
 # Its eyes on the text, to its right: the start is over and it is watching.
-if ! wait_for 4 "$S155" -F "$MN_WATCH_RIGHT"; then
+if ! wait_for 4 "$S160" -F "$MN_WATCH_RIGHT"; then
 	fail "the woken mascot did not turn its eyes to what was being typed"
 fi
 sleep 1.5
-tmux pipe-pane -t "$S155"
+tmux pipe-pane -t "$S160"
 mn_woke="$(mn_frames)"
 mn_bang="$(grep -n -m1 '!' <<<"$mn_woke" | cut -d: -f1)"
 note "the start was written in frame ${mn_bang:-none} after the key"
@@ -173,14 +173,14 @@ fi
 if [ -n "$mn_bang" ] && has "$(tail -n "+$((mn_bang + 1))" <<<"$mn_woke")" '[zZ]'; then
 	fail "the mascot went on snoring after it was woken"
 fi
-mn_woken="$(pane "$S155")"
+mn_woken="$(pane "$S160")"
 dump "woken, watching" "$mn_woken"
 expect_has "$mn_woken" -F "$MN_REST_TOP" "the woken mascot is not back on its feet"
 expect_lacks "$mn_woken" -E "$MN_SNORE" "a snore was left beside the woken mascot"
 
 # --- the message it woke for: the banner goes to scrollback at rest --------
-keys "$S155" Enter
-mn_turn="$(wait_summaries 60 "$S155" 1 -S -80)"
+keys "$S160" Enter
+mn_turn="$(wait_summaries 60 "$S160" 1 -S -80)"
 dump "after the first turn" "$mn_turn"
 expect_has "$mn_turn" -F "$MN_REST_TOP" "the banner over the conversation is not at its rest art"
 expect_has "$mn_turn" -F "$MN_REST_EYES" "the banner over the conversation has its eyes off rest"
@@ -188,10 +188,10 @@ expect_lacks "$mn_turn" -F "$MN_WATCH_RIGHT" "the eyes that watched the draft we
 expect_lacks "$mn_turn" -E "[▟▗][zZ!] +Alter Zero|^ ▖ ▖ ▗ ▗|$MN_LIDS|$MN_BLANK" "a snore, a start or a sleeper was left in the scrollback above the conversation"
 expect_eq "$(printf '%s\n' "$mn_turn" | grep -c 'Alter Zero (v')" "1" "the first cell doubled the banner"
 sleep 0.5
-mn_record "$S155"
+mn_record "$S160"
 sleep 4
-tmux pipe-pane -t "$S155"
+tmux pipe-pane -t "$S160"
 mn_after="$(wc -c <"$MN_LOG")"
 note "bytes written over 4s of idle after the first turn: $mn_after"
 expect_eq "$mn_after" "0" "the banner (or something) kept repainting after the conversation started"
-tmux kill-session -t "$S155" 2>/dev/null
+tmux kill-session -t "$S160" 2>/dev/null

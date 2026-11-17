@@ -36,6 +36,8 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo run --release --example link_probe    # what a link-heavy reply costs to render, both presentations (docs/links.md)
+PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
 DISPLAY=:99 cargo test --test clipboard_linux -- --ignored   # the X11 paste read, under Xvfb
@@ -270,19 +272,19 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -541,7 +543,7 @@ reading of the first frame that showed it, derived from the highlight, never
 tracked through the keys — so each mascot greets as the highlight lands on
 it, its page signing the selection rather than its rows. Gated by the `/settings` **Animate mascot**
 row and `ALTER_ZERO_MASCOT_ANIMATION`, which the smoke suite exports `0`;
-`smoke.sh` Phase 154 reads the raw byte stream, and Phase 155 waits out the
+`smoke.sh` Phase 159 reads the raw byte stream, and Phase 160 waits out the
 minute for the nap, holds every frame of the sleeper to its snore's one
 cell, and wakes it), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
@@ -697,6 +699,16 @@ under its own label — before the title and the blurb go, and then the
 highlighted address stands alone between the ↑/↓ overflow slots, the
 caution and the hint staying on every page, `docs/view-flow.md` *A page
 that sheds rows before it flows*) in `docs/donate.md`; the
+**`/sponsor` page** (`docs/sponsor.md`: `/donate`'s twin over the const
+`app::SPONSOR_LINKS` — the developer's GitHub Sponsors URL and contact
+address, each a `❯ 1. GitHub Sponsors  monthly or one-time` row over its
+value in the rounded box, the value an OSC 8 link (the URL, `mailto:` for
+the address) stamped before the wrap; Enter/`c`/a digit copies it with a
+`Copied the sponsor link to clipboard` toast and the page stays open; no
+caution row, nothing there being unrecoverable; built from the parts
+`donate_view` now shares — `title_line`, `label_line`, `value_box` and the
+`boxed_list_page` ladder — so the two pages shed rows identically;
+`smoke.sh` Phase 156) in `docs/sponsor.md`; the
 **`/export` page** (`docs/export.md`: `/copy`'s sibling over the **whole**
 conversation — the `/donate` page's shape, a read-only composer-replacing
 two-row page, `❯ 1. Copy to clipboard` over `2. Save to file`, the
@@ -1243,7 +1255,45 @@ behind whatever short form the row shows, stamped before the wrap so any
 fragment opens the whole file, while the `(`/`)` and the `⎿ Wrote … to
 {path}` corner row beneath stay plain — the rule a `[text](url)` suffix's own
 ` (`/`)` follow too, keeping the prose dress rather than the target's blue +
-underline, so the styled run and the clickable run are one run: the pure
+underline, so the styled run and the clickable run are one run — **and where
+the terminal opens hyperlinks a labelled link is its label alone**
+(`docs/links.md` *Labelled links*: `Source: FIDE` in the link dress, the
+whole address behind it, where it read `Source: FIDE (https://www.fide.com/…)`;
+`links::TargetDisplay` is a per-thread cell like the active theme's,
+`Shown` by default so a test, a headless run and the export never hide the
+only URL, set once at bootstrap from `links::detect_target_display` —
+pure over the environment and the name the terminal answered the startup
+read with (`InlineViewport::terminal_name`, the XTVERSION answer
+`term::query` takes in — asked for the pictures' sake, and on the links'
+own account wherever it could decide, `links::wants_terminal_name`, which
+is what reaches iTerm2 over `ssh`, where the pictures' `LC_TERMINAL` sniff
+asks nothing; `LC_TERMINAL` itself never hides, since it reaches a mosh
+session too): `Hidden` for the terminals known to open
+an OSC 8 link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot,
+the VTE family, Windows Terminal, a herdr pane — never Apple's Terminal or
+Konsole), by the variables they set or — what names one over `ssh`, where
+those stay behind — by its own answer (kitty, Ghostty, WezTerm, foot,
+iTerm2; an answer only ever adds a yes), `Shown` under a multiplexer, in
+an editor's own terminal (`NVIM`, `VIM_TERMINAL`, `INSIDE_EMACS`,
+`TERMINAL_EMULATOR`), for a `TERM_PROGRAM` it does not know whatever an
+outer terminal left in the environment, and with `ALTER_ZERO_HYPERLINKS`
+off, with `ALTER_ZERO_LINK_TARGETS=hide`/`show` the user's override;
+`ui::inline`'s `hides_target` keeps the `label (url)` shape for a target
+that is no web address or is past the 2083 bytes a hyperlink carries, and
+for a label that spells another address than the one it opens — read off
+the label's text as the reader sees it, its runs joined and what never
+reaches the screen left out (`shows_another_address`), so an address split
+by emphasis, a code span, a zero-width or a control character is still
+one — while on every terminal a link with no label is its target, a label
+that is its own target is written once as the link (`is_own_target`: a
+file named by its path, a web address give or take a closing `/`, a mail
+address under its `mailto:`) and a link with no target is its label;
+`tokenize_words` hands each word the style of
+the space in front of it (`Word::joiner`), so a label of several words is
+one underlined, clickable run instead of a link per word; `ui::export_text`
+renders with the address spelled out; the `link_probe` example measures
+both presentations against a link-free control; `smoke.sh` Phase 158): the
+pure
 `links` module detects/interns
 and stamps the id into `Style::underline_color`, `ui::inline` marks prose and
 code (a code URL gaining only the invisible target, never the link dress),
@@ -1383,9 +1433,11 @@ upgrades the half-block fallback unless the answering terminal names itself
 WezTerm or Konsole (no unicode placeholders; the variables saying so are only
 the fallback, since herdr keeps them in panes its own libghostty answers for).
 That is what draws real pictures in a **herdr** pane, whose environment says
-`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. Never asked under a
-multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a `linux`/`dumb` console, or with the
-protocol pinned; falling to half-blocks;
+`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. The graphics
+question is never asked under a multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a
+`linux`/`dumb` console, or with the protocol pinned — the name alone may still
+be, for the links (`links::wants_terminal_name`, settled in advance by
+`ALTER_ZERO_LINK_TARGETS`); falling to half-blocks;
 `ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
 `ALTER_ZERO_IMAGES` gates it (`smoke.sh` Phase 107e plays the answering
 terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**
@@ -2206,8 +2258,12 @@ sends any other non-allowlisted `bash` command to the **auto
 mode classifier** — a
 silent LLM safety check on the session's own provider
 (`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
-`ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
-seam in the user's stead, **task-aware**: each verdict reads the session's
+`ALTER_ZERO_CLASSIFIER_MODEL` overrides the model; asked under the id the
+session's own requests name, `classifier::verdict_config` — on the Cloud
+Code wire a grouped model's thinking level is its id's suffix, and dropping
+the mode alone asked for the unlisted `gemini-3.8-flash`, a 404 on every
+verdict) consulted by the approve seam in the user's stead, **task-aware**:
+each verdict reads the session's
 truncated context (`classifier::ClassifierContext` — two **rolling windows
 over the conversation**, not one turn: the newest `CONTEXT_MAX_REQUESTS`
 (10) user requests over the newest `CONTEXT_MAX_ACTIONS` (20) capped
@@ -2240,8 +2296,31 @@ the same event; the one inline exception is the quiet resolved MCP cell,
 whose one-line `Called {server}` stays note-less — Ctrl+O and the rollout
 keep its record, `docs/mcp.md`), a **deny** rejects it red (`Denied by auto mode
 classifier` + `Reason: …`) through the ordinary `ToolRejected` path with a
-Claude-Code-style stop-or-adjust model text, and a classifier **failure**
-falls back to the ordinary prompt (never an allow); `master` runs
+Claude-Code-style stop-or-adjust model text; the verdict is **one JSON
+object the prompt asks for** — `{"verdict": "allow"}` or `{"verdict":
+"block", "reason": "…"}` — read leniently about form and **strictly about
+content** (`classifier::parse_verdict`: an allow is the whole reply and
+gives no reason, or it is not one — the action under review can carry the
+contract's own words, and a small model that echoed it back, or answered
+`rm -rf ~/` with an allow whose reason was *"I cannot allow this action"*,
+was read as allowing it under the tag contract this replaced; a block needs
+only to open the reply; one spelling), **never through a provider's
+structured output**, which was measured and refused — it turns a confused
+model's unreadable reply into a well-formed wrong allow (six of sixteen on a
+small model), and Antigravity's GPT-OSS route answers it with a 400
+(`docs/permissions.md` *Why the verdict is JSON the prompt asks for*); a
+failed request is retried on the turn's own **Error retry** budget and a
+reply that is no verdict gets one **repair turn** — the reply handed back
+with the correction — both inside `RETRY_WINDOW`, an unreachable host never
+waited for (`classifier::reach_verdict`, pure over an injected send); and a
+classifier **failure** falls back to the ordinary prompt (never an allow),
+**which says why**: the seam keeps what the check said on
+`PermissionRequest::check_failure` and the prompt shows `Auto mode's safety
+check failed: …` in the standing notice's place, wrapped never cut, a
+headless refusal carrying it on its `Reason:` line (`smoke.sh` Phase 154
+drives the id, a retry, the repair turn, a block and the failed check's
+prompt against a Cloud Code stub; `examples/classifier_probe.rs` runs a
+labelled corpus through the real classifier on any provider); `master` runs
 *everything* unasked — no prompt, no classifier, Claude Code's
 bypass-permissions) pinned flush at the
 footer's **right edge** (`{model} · {cwd}      auto` — its columns reserved
@@ -3170,7 +3249,10 @@ pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
 to the reports: herdr's environment names no graphics protocol, so the
 startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
 terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
-a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
+a pane*), which `ALTER_ZERO_HERDR` does not touch. A pane's **links** owe
+nothing to them either: its own `TERM_PROGRAM=herdr` is on the list of
+terminals that open a hyperlink, so a labelled link is its label alone
+there (`docs/herdr.md` *Links in a pane*). `ALTER_ZERO_HERDR=0`
 turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
 socket (a failed turn through the real backend and a refusing stub provider)
 and the fixture unsets every `HERDR_*` variable.
@@ -3442,7 +3524,7 @@ each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
 entry naming that call) and `[Image #N]` placeholders unrendered, every entry
 on a lit role chip — `#n`, a `≈` token estimate by the footer gauge's own
 rule, `app::message_tokens` — over its text word-wrapped on the `⎿` gutter,
-←/→ stepping between entries (resolved at the draw, `App::resolve_debug_jump`),
+←/→ stepping between entries (resolved at the draw, `App::resolve_debug_moves`),
 the one the window opens inside pinned on its top row, the bottom rule
 counting the messages, and an agent session view's title naming the agent;
 `ui::render_context_view`/`ui::context_body` over the pure
@@ -3604,13 +3686,23 @@ of bug:
    screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
    vi-style `~` filler past its end, a `─` separator carrying the scroll
-   percentage right-aligned, and two dim key-hint rows (↑/↓, pgup/pgdn,
+   percentage right-aligned, and two dim key-hint rows (↑/↓, ←/→ to the
+   previous or next entry — Ctrl+D's step, resolved at the draw against the
+   build it paints, `App::resolve_tool_moves` — pgup/pgdn,
    home/end jump; q/esc/ctrl+o close — though Esc when idle with a previous
    user message instead *begins the backtrack preview* in place, the closing
    hint row saying so honestly (`q/ctrl+o to quit   esc to edit prev`, the
    key arm and the row sharing `App::overlay_esc_backtracks`), and while one
-   highlights a message the second hint row swaps to the backtrack keys;
-   `docs/backtrack.md`) — showing the **full conversation
+   highlights a message the second hint row swaps to the backtrack keys,
+   ← and → stepping the highlight and the first row dropping the entry
+   step; `docs/backtrack.md`) — with the header of the cell the window opens
+   inside **pinned over the body's top rows** while it is scrolled off (a
+   command's `● Bash(…)` over the middle of its output, a `!` command's
+   `! cmd`, an agent's `● Agent(…)`; at most two rows, the last ending on
+   `…` when the header goes on — the pure `transcript::pinned_rows` over the
+   `ui::TranscriptEntry`s every build records beside its rows, applied at
+   paint time only; an agent session view's title naming the agent;
+   `docs/transcript-navigation.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
    (in-progress reply / the running tool **and any `⎿ Waiting…` batch siblings**,
@@ -3835,7 +3927,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/sponsor`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. It lists five commands at a time (`MENU_MAX_COMMANDS`,
 the window centered on the highlight) over a dim `(n/total)` counter in the
 names' column — the pickers' counter, saying which match the highlight is on of
@@ -3883,7 +3975,40 @@ region hid exactly the turn the picker was opened beside — the reported bug,
 which the band had first (`docs/llm.md`, `docs/background.md`,
 `docs/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
 while a picker is open, the permission-prompt rule, since the picker owns
-every key).
+every key). **`/model` opens on the lists it kept** (`docs/model-cache.md`):
+each provider's listing is written to `{config_home}/model-cache/{id}.json`
+(temp file + rename, one file per provider so the parallel fetches never
+share one) and an open shows it at once — nothing fetched under an hour old
+(`llm::model_cache::MODEL_CACHE_TTL_SECS`), shown **and** fetched again
+behind its rows once older, kept by another app version, or a self-hosted
+server's (`auth = "optional_key"`: the kind of provider, not its address —
+a loopback rule caught the smoke stub), and another server's listing
+(`listing_source`, a SHA-256 of the wire, auth, bases and headers, never
+the key) not shown at all. A fetch belongs to the **session**, not the
+picker: `ModelSession`'s `model_cache::FetchLedger` keeps one live ticket
+per provider, each with its own cancel token, and only the live ticket's
+answer is kept or shown — written by the **loop** as it settles, the thread
+a `/login` save runs on, so the verdict and the write are one step; closing
+the picker cancels nothing (the answer is kept when it lands), a reopen
+waits on a fetch still out from the same source rather than asking again
+(`model_cache::plan` → `Await`) and retires one it will not wait on —
+another source's, or one out past `FETCH_GIVE_UP_SECS`
+(`FetchLedger::await_or_retire`) — so no answer lands over a list kept
+since, a
+`/login` save retires the fetch out for every provider the saved variable
+configures (`tui::config::providers_reading`) and drops their kept lists,
+quitting cancels them all, and a worker that panics still answers its
+ticket (`tui::workers`' `AnswerOnPanic`). Every open and every **Ctrl+R**
+(never a plain `r`, which types into the search; ignored while a fetch is
+out) lays a round over the picker (`App::begin_model_round`), which takes
+an answer only for a provider it waits on (`App::finish_model_fetch`) and
+keeps a provider's rows through a refresh only when they were read from
+the same source; a listing **replaces** its provider's rows, a failure
+keeps them as an amber `not refreshed`, the counter says `updated 2h ago`
+/ `refreshing…` and offers `ctrl+r to refresh` only when pressing it would
+change something, and an open picker redraws every ten seconds with no key
+pressed (`tui::view`'s `MODEL_PICKER_TICK_INTERVAL`) so a list that passes
+a minute while it is read says so; `smoke.sh` Phase 155.
 **`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
 (`docs/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as

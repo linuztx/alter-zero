@@ -125,6 +125,10 @@ pub enum Action {
     /// the picker is **inline** (it grows the bottom region in place), not an
     /// alternate-screen overlay. See `docs/llm.md`.
     OpenModelPicker,
+    /// Ctrl+R in the model picker: fetch every configured provider's list
+    /// again, whatever the cache says, keeping the rows on screen while the
+    /// round runs. See `docs/model-cache.md`.
+    RefreshModels,
     /// The inline model picker was dismissed (Esc on an empty query, or Ctrl+C):
     /// [`App::model_picker`] is already cleared; the loop just repaints the
     /// collapsed region.
@@ -281,6 +285,17 @@ pub enum Action {
     /// system clipboard. The loop does the I/O and raises the toast, like
     /// [`Action::CopyDeviceCode`]; the page stays open. See `docs/donate.md`.
     CopyDonationAddress(DonationAddress),
+    /// `/sponsor`: open the read-only sponsor page. Like `/donate` it works
+    /// mid-turn and the loop has nothing to fetch. See `docs/sponsor.md`.
+    OpenSponsorPage,
+    /// The sponsor page was dismissed (Esc, or Ctrl+C):
+    /// [`App::sponsor_page`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseSponsorPage,
+    /// Enter, `c`, or a digit on the sponsor page: copy this row's value to
+    /// the system clipboard. The loop does the I/O and raises the toast;
+    /// the page stays open. See `docs/sponsor.md`.
+    CopySponsorLink(SponsorLink),
     /// `/secrets`: the page is already open ([`App::secrets_page`]). Like
     /// `/skills` it works mid-turn — it only replaces the composer. The loop
     /// reloads `secrets.json`, so a secret another session added is listed,

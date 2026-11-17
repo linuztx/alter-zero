@@ -9,7 +9,7 @@
 use super::*;
 
 use crate::app::{
-    FileSearch, LocalChoice, Message, ModelFetchError, ProviderChoice, RetryInfo, SigninKind,
+    FileSearch, LocalChoice, Message, ProviderChoice, ProviderList, RetryInfo, SigninKind,
     SubscriptionChoice,
 };
 
@@ -48,6 +48,7 @@ mod secrets_view;
 mod settings_view;
 mod skills_view;
 mod spinner_view;
+mod sponsor_view;
 mod status;
 mod stream_render;
 mod stream_stress;
@@ -58,6 +59,7 @@ mod tips;
 mod tool;
 mod tool_group;
 mod transcript;
+mod transcript_navigation;
 mod usage_view;
 mod view_flow;
 mod wrap;

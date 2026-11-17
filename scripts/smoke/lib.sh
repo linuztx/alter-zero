@@ -161,7 +161,7 @@ smoke_sanitize_env() {
 	# a fresh screen would hold whatever pose the lot fell on, and a byte
 	# count of an idle one whatever frame it wrote. Still for the suite,
 	# exported and spelled out in every launch string; the animation phase
-	# (154) turns it back on for its own launches.
+	# (159) turns it back on for its own launches.
 	export ALTER_ZERO_MASCOT_ANIMATION=0
 }
 
@@ -527,6 +527,26 @@ wait_pane() {
 	for ((i = 0; i < n; i++)); do
 		last="$(tmux capture-pane -t "$sess" -p ${SMOKE_CAP[@]+"${SMOKE_CAP[@]}"})"
 		if printf '%s\n' "$last" | grep -q "${SMOKE_GREP[@]}"; then
+			printf '%s\n' "$last"
+			return 0
+		fi
+		sleep "$SMOKE_POLL_INTERVAL"
+	done
+	printf '%s\n' "$last"
+	return 1
+}
+# wait_row SECONDS SESSION ROW TEXT — wait until the pane's row ROW (1-based)
+# reads exactly TEXT, trailing blanks trimmed, printing the last capture
+# taken. The wait for a key that moves the screen: a pattern found anywhere
+# can be on screen before the key lands — the move before it left it there
+# — and the read after it then races the key (docs/smoke.md). Returns 1 on
+# timeout.
+wait_row() {
+	local secs="$1" sess="$2" row="$3" want="$4" last="" n i
+	n="$(smoke_ticks "$secs")"
+	for ((i = 0; i < n; i++)); do
+		last="$(tmux capture-pane -t "$sess" -p)"
+		if [ "$(sed -n "${row}p" <<<"$last" | sed 's/[[:space:]]*$//')" = "$want" ]; then
 			printf '%s\n' "$last"
 			return 0
 		fi

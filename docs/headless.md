@@ -263,8 +263,14 @@ kind and target), and a second failure on the same call answers
 `CHECK_FAILED_AGAIN_RESULT` — failed again, do not retry — with no
 invitation left, so a check that keeps failing cannot hold a model in a
 loop whatever it does. The cells read `Not run: the safety check failed
-(headless run)` and `… failed again …`; every attempt is a refusal in
-`permission_denials`.
+(headless run)` and `… failed again …`, each over a `Reason:` line saying
+what the check said (`permission::check_failed_display` — `HTTP 404: this
+model isn't available to this account …`, a reply that was no verdict):
+nobody is there to be shown the prompt that says it in the TUI, and "the
+check failed" alone names nothing a user can fix. Every attempt is a refusal
+in `permission_denials`. A check fails less often than it did — its request
+is retried like the turn's own and a reply that is no verdict is asked for
+once more (`docs/permissions.md` *Reaching a verdict*).
 
 The mode decides how much reaches that step. `master` runs everything;
 `auto` (the default, unless the project saved another) runs edits, read-only

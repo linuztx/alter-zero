@@ -25,9 +25,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, BackgroundShell, BackgroundView, DeviceLogin, DeviceStatus, HistoryItem, HistorySearch,
-    KeyOnboarding, KeyStep, LiveTail, ModelLoad, ModelPicker, PathDisplay, QueuedTurn,
-    ResumeControl, ResumeFilter, ResumePicker, ResumeSort, Role, SearchState, SigninKind,
-    SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus, TurnStatus, TurnSummary,
+    KeyOnboarding, KeyStep, LiveTail, ModelLoad, ModelPicker, PathDisplay, ProviderList,
+    QueuedTurn, ResumeControl, ResumeFilter, ResumePicker, ResumeSort, Role, SearchState,
+    SigninKind, SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus, TurnStatus, TurnSummary,
     command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
@@ -74,6 +74,7 @@ mod secrets_view;
 mod settings_view;
 mod skills_view;
 mod spinner_view;
+mod sponsor_view;
 mod status;
 mod stream_render;
 mod table;
@@ -148,6 +149,7 @@ pub use self::secrets_view::{render_secrets_picker, secrets_picker_height, secre
 pub use self::settings_view::{render_settings, settings_height};
 pub use self::skills_view::{render_skills_menu, skills_menu_height};
 pub use self::spinner_view::{render_spinner_picker, spinner_picker_height};
+pub use self::sponsor_view::{render_sponsor_page, sponsor_page_height, sponsor_view_lines};
 pub use self::status::{
     background_notice_lines, format_elapsed, format_timeout, format_token_count, status_line,
     status_line_with_verb, styled_status_line, summary_lines,
@@ -160,9 +162,10 @@ pub use self::tips::{tip_lines, tip_rows};
 pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};
 pub use self::tool_group::tool_group_lines;
 pub use self::transcript::{
-    TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,
-    render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,
-    transcript_lines, transcript_selection,
+    TranscriptCache, TranscriptEntry, TranscriptPage, agent_transcript, agent_transcript_lines,
+    backtrack_scroll, backtrack_scroll_for, render_tool_view, tool_view_body_rows,
+    tool_view_max_scroll, tool_view_max_scroll_for, transcript_lines, transcript_page,
+    transcript_selection,
 };
 pub use self::usage_view::{render_usage_page, usage_page_height, usage_view_lines};
 pub use self::view_flow::{ViewFlow, view_body_skip, view_flow, view_flow_signature};

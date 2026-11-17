@@ -342,7 +342,9 @@ into prose) — is withheld from scrollback until its line settles
 of `Inline` nodes (`Text`, `Bold`, `Italic`, `Strike`, `Code`, `Link`, `Image`,
 `Url` — nesting composes, e.g. `**bold _and italic_**`); `ui::inline_spans` maps
 each to a `Style` (emphasis is modifier-only; code is cyan; a link shows its
-text then a blue underlined ` (url)`; an autolink shows its bare URL in the
+label alone in the link dress where the terminal opens hyperlinks, and its
+text then a blue underlined ` (url)` anywhere else — `docs/links.md`
+*Labelled links*; an autolink shows its bare URL in the
 link dress; an image renders its alt), and `ui::wrap_inline` word-wraps the
 styled segments **span-preserving** (a bold run keeps its style across a wrap
 boundary; a word split by emphasis — `un**bold**` — stays one word).

@@ -3,9 +3,11 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::super::theme::{
-    PERMISSION_OPTION_MAX_ROWS, permission_agent_color, permission_detail_color,
-    permission_selected_color, permission_title_color,
+    PERMISSION_CHECK_FAILURE_MAX_ROWS, PERMISSION_OPTION_MAX_ROWS, permission_agent_color,
+    permission_check_failure_color, permission_detail_color, permission_selected_color,
+    permission_title_color,
 };
+use super::super::wrap::cols;
 use super::*;
 use crate::permission::{PermissionKind, PermissionRequest};
 use crate::stream::{AgentSpec, ToolCallSummary};
@@ -19,6 +21,7 @@ fn request(kind: PermissionKind, target: &str, body: &str) -> PermissionRequest 
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     }
 }
 
@@ -102,6 +105,18 @@ fn every_prompt_hugs_its_frame() {
         ),
         ("a session's input", app_with(session)),
         ("the amend field", amending),
+        (
+            "a command a failed check sent here",
+            app_with(unreviewed(request(PermissionKind::Bash, "ls", ""))),
+        ),
+        (
+            "an MCP call a failed check sent here",
+            app_with(unreviewed(request(
+                PermissionKind::Mcp,
+                "mcp__deepwiki__ask_question",
+                "question: \"why?\"",
+            ))),
+        ),
     ] {
         assert_frame_hugs_content(what, &permission_lines(&app, 70, 40));
     }
@@ -219,6 +234,154 @@ fn a_command_prompt_shows_the_command_its_description_and_the_notice() {
     );
 }
 
+// --- a prompt standing in for a failed safety check (docs/permissions.md) ---
+
+const CHECK_FAILURE: &str =
+    "HTTP 404: this model isn't available to this account — pick another with /model.";
+
+/// `request`, as it reaches the user after auto mode's classifier failed.
+fn unreviewed(mut request: PermissionRequest) -> PermissionRequest {
+    request.check_failure = Some(CHECK_FAILURE.to_string());
+    request
+}
+
+/// The rows between the body and the question, joined — where the notice
+/// sits, however many rows it wrapped to.
+fn notice_text(lines: &[String]) -> String {
+    let question = lines
+        .iter()
+        .position(|l| l.contains("Do you want to"))
+        .expect("the question");
+    let start = lines[..question]
+        .iter()
+        .position(|l| l.contains("Auto mode"))
+        .expect("the notice");
+    lines[start..question]
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn a_command_auto_mode_could_not_review_says_why_in_the_notices_place() {
+    // In auto mode a prompt is the exception. One raised because the check
+    // itself failed carries what the check said — whole, wrapped rather
+    // than cut, since the tail is the part that says what to do — where a
+    // command's standing notice would have been.
+    let app = app_with(unreviewed(request(PermissionKind::Bash, "cargo build", "")));
+    let lines = rows(&app, 60, 40);
+    assert_eq!(
+        notice_text(&lines),
+        format!("Auto mode's safety check failed: {CHECK_FAILURE}")
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.trim() == "This command requires approval"),
+        "the standing notice gives way: {lines:?}"
+    );
+    // A gap either side, like the notice it replaces.
+    let first = lines
+        .iter()
+        .position(|l| l.contains("Auto mode"))
+        .expect("the notice");
+    let question = lines
+        .iter()
+        .position(|l| l.contains("Do you want to"))
+        .expect("the question");
+    assert_eq!(lines[first - 1], "", "a gap above");
+    assert_eq!(lines[question - 1], "", "a gap below");
+    assert!(question - first > 2, "it wrapped at 60 columns: {lines:?}");
+    assert!(
+        lines.iter().all(|l| cols(l) <= 60),
+        "no row runs past the width: {lines:?}"
+    );
+}
+
+#[test]
+fn the_failed_check_notice_wears_the_caution_colour() {
+    let app = app_with(unreviewed(request(PermissionKind::Bash, "cargo build", "")));
+    let lines = permission_lines(&app, 60, 40);
+    let notice: Vec<_> = lines
+        .iter()
+        .filter(|line| {
+            let text = plain(line);
+            text.contains("Auto mode") || text.contains("pick another")
+        })
+        .collect();
+    assert!(notice.len() >= 2, "every wrapped row is found");
+    for row in notice {
+        assert_eq!(
+            row.spans[1].style.fg,
+            Some(permission_check_failure_color())
+        );
+    }
+}
+
+#[test]
+fn every_kind_of_reviewed_request_says_why_it_was_not() {
+    // The classifier reviews commands, MCP calls and session input, so each
+    // of their prompts can be the one a failed check falls back to.
+    let mut mcp = request(
+        PermissionKind::Mcp,
+        "mcp__deepwiki__read_wiki_structure",
+        r#"repoName: "linuztx/flaredantic""#,
+    );
+    mcp.detail = Some("Get a list of documentation topics.".to_string());
+    let mut session = request(PermissionKind::Session, "bash_1", "y⏎");
+    session.detail = Some("./configure.sh".to_string());
+    for (what, request) in [("an MCP call", mcp), ("session input", session)] {
+        let lines = rows(&app_with(unreviewed(request)), 60, 40);
+        assert_eq!(
+            notice_text(&lines),
+            format!("Auto mode's safety check failed: {CHECK_FAILURE}"),
+            "{what}"
+        );
+        let question = lines
+            .iter()
+            .position(|l| l.contains("Do you want to"))
+            .expect("the question");
+        assert_eq!(lines[question - 1], "", "{what}: a gap over the question");
+    }
+}
+
+#[test]
+fn a_pathological_failure_caps_its_rows_instead_of_eating_the_page() {
+    // A transport's message has no length of its own to stop at.
+    let mut req = request(PermissionKind::Bash, "cargo build", "");
+    req.check_failure = Some("request failed: ".to_string() + &"x ".repeat(2_000));
+    let lines = rows(&app_with(req), 60, 40);
+    let first = lines
+        .iter()
+        .position(|l| l.contains("Auto mode"))
+        .expect("the notice");
+    let question = lines
+        .iter()
+        .position(|l| l.contains("Do you want to"))
+        .expect("the question");
+    assert_eq!(
+        question - 1 - first,
+        PERMISSION_CHECK_FAILURE_MAX_ROWS,
+        "{lines:?}"
+    );
+    assert!(lines[question - 2].ends_with('…'), "the cut is visible");
+    assert!(lines.iter().all(|l| cols(l) <= 60), "{lines:?}");
+}
+
+#[test]
+fn a_reviewed_request_no_check_failed_on_looks_as_it_always_did() {
+    let app = app_with(request(PermissionKind::Bash, "cargo build", ""));
+    let lines = rows(&app, 60, 40);
+    assert!(lines.iter().all(|l| !l.contains("Auto mode")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.trim() == "This command requires approval")
+    );
+}
+
 #[test]
 fn a_command_with_no_description_skips_that_row() {
     let app = app_with(request(PermissionKind::Bash, "ls -la", ""));
@@ -289,6 +452,28 @@ fn the_reserved_height_equals_the_painted_rows() {
             permission_lines(&app, 70, region).len(),
             painted,
             "{target} at height {height} is stable at the region's height"
+        );
+    }
+    // A prompt standing in for a failed check is taller by its notice — at
+    // a width that wraps it, on a terminal it fits and one it flows on.
+    for (kind, target, height) in [
+        (PermissionKind::Bash, "ls -la", 40u16),
+        (PermissionKind::Mcp, "mcp__s__t", 40),
+        (PermissionKind::Session, "bash_1", 40),
+        (PermissionKind::Bash, "ls -la", 8),
+    ] {
+        let app = app_with(unreviewed(request(kind, target, "y⏎")));
+        let painted = permission_lines(&app, 40, height).len();
+        let region = painted.min(usize::from(height)) as u16;
+        assert_eq!(
+            permission_height(&app, 40, height),
+            Some(region),
+            "an unreviewed {target} at height {height}"
+        );
+        assert_eq!(
+            permission_lines(&app, 40, region).len(),
+            painted,
+            "an unreviewed {target} at height {height} is stable at the region's height"
         );
     }
 }
@@ -1438,6 +1623,7 @@ fn a_session_prompts_description_row_is_dim() {
                     detail: None,
                     agent: None,
                     agent_id: None,
+                    check_failure: None,
                 }
             })
             .permission()

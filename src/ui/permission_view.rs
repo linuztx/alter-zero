@@ -7,7 +7,8 @@
 //! exactly that many, so the two can never drift.
 
 use crate::permission::{
-    PermissionKind, PermissionRequest, command_scope, hints, options, question, title,
+    PermissionKind, PermissionRequest, check_failure_notice, command_scope, hints, options,
+    question, title,
 };
 
 use super::agent::live_agent_group_lines;
@@ -264,6 +265,31 @@ fn session_rows(
         })
         .collect();
     (lines, hidden)
+}
+
+/// What auto mode's safety check said when it failed, as the rows that take
+/// the standing notice's place ([`check_failure_notice`]): **wrapped**, never
+/// cut at the width — the tail is the part that says what to do (`… pick
+/// another with /model`) — and capped like an option's label, so a
+/// transport's pathological message cannot stack the question off the page.
+fn check_failure_rows(reason: &str, width: u16) -> Vec<Line<'static>> {
+    let room = (width as usize)
+        .saturating_sub(cols(PERMISSION_INDENT))
+        .max(1);
+    let mut rows = wrap_output(&check_failure_notice(reason), room as u16);
+    if rows.len() > PERMISSION_CHECK_FAILURE_MAX_ROWS {
+        rows.truncate(PERMISSION_CHECK_FAILURE_MAX_ROWS);
+        let last = rows.last_mut().expect("the cap is nonzero");
+        *last = format!("{}…", truncate_cols(last, room.saturating_sub(1)));
+    }
+    rows.into_iter()
+        .map(|text| {
+            Line::from(vec![
+                Span::raw(PERMISSION_INDENT),
+                Span::styled(text, Style::new().fg(permission_check_failure_color())),
+            ])
+        })
+        .collect()
 }
 
 /// The dim one-line description under a `bash` command / an MCP call, wrapped
@@ -536,17 +562,29 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     // options — or Tab's amend field, which is as tall as the feedback typed
     // — the hint row, and the closing frame.
     let mut below = Vec::new();
-    if request.kind == PermissionKind::Bash {
-        below.push(Line::default());
-        below.push(text_row(
-            PERMISSION_NOTICE,
-            permission_notice_color(),
-            width,
-        ));
-        below.push(Line::default());
-    }
-    if matches!(request.kind, PermissionKind::Mcp | PermissionKind::Session) {
-        below.push(Line::default());
+    match &request.check_failure {
+        // The prompt stands in for a verdict auto mode's classifier failed
+        // to reach: what the check said takes the standing notice's place —
+        // it answers the same question, *why am I being asked?* — on every
+        // kind the classifier reviews.
+        Some(reason) => {
+            below.push(Line::default());
+            below.extend(check_failure_rows(reason, width));
+            below.push(Line::default());
+        }
+        None if request.kind == PermissionKind::Bash => {
+            below.push(Line::default());
+            below.push(text_row(
+                PERMISSION_NOTICE,
+                permission_notice_color(),
+                width,
+            ));
+            below.push(Line::default());
+        }
+        None if matches!(request.kind, PermissionKind::Mcp | PermissionKind::Session) => {
+            below.push(Line::default());
+        }
+        None => {}
     }
     below.push(text_row(&question(request), Color::Reset, width));
     if prompt.amend {

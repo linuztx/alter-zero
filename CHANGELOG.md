@@ -14,6 +14,44 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/model` opens on the lists it already has, and Ctrl+R refreshes
+  them.** The picker used to ask every configured provider for its model
+  list on every open, so each one began on `Loading models…`, for a second
+  or more with a few providers configured. Each provider's list is now kept
+  in `~/.alter-zero/model-cache/` and shown at once. A list under an hour
+  old is used as it is, with no request at all. An older list is still
+  shown at once while it is fetched again behind the rows (`refreshing…`).
+  A server you run yourself (Ollama, LM Studio) is always asked again, so a
+  model you just pulled still appears. Ctrl+R in the picker asks every
+  provider again (not a plain `r`, which still types into the search, as in
+  `deepseek-r1`). The counter says how old the lists on screen are
+  (`updated 2h ago`), keeping itself current while the picker sits open,
+  and a refresh that fails keeps the rows it could not refresh, noted in
+  amber as `not refreshed` rather than `unavailable`. A list still arriving
+  when you close the picker is kept when it lands, and reopening the picker
+  meanwhile waits for it rather than asking again. Saving a key or signing
+  in again through `/login` drops that provider's kept list, and any list
+  still being fetched with the old key, since another account can list
+  other models (`docs/model-cache.md`).
+
+- **`/sponsor` shows where to sponsor the developer.** The page lists the
+  GitHub Sponsors link and a contact email, each in a box you can click
+  where your terminal follows links, or copy with Enter (`docs/sponsor.md`).
+
+- **Ctrl+O keeps the command you are reading on screen.** The transcript
+  shows every tool call's whole output, so one long `cargo test` or file
+  read runs to hundreds of rows, and halfway down nothing said which
+  command printed them. Scrolled into a cell, the transcript now pins that
+  cell's header over its top rows, the way Ctrl+D pins the message you are
+  reading: `● Bash(cargo test …)` above a test run, `! seq 1 500` above a
+  shell command's output, `● Agent(…)` above an agent's prompt and answer.
+  A command that wraps keeps both rows, and a longer one is cut with `…`.
+  While a command is still running, the pin names it above its live output.
+  ←/→ now step to the previous or next entry, opening it at the top, as in
+  Ctrl+D. During Esc-Esc's message preview they still step between your
+  messages. Inside an agent's session view the title names the agent
+  (`docs/transcript-navigation.md`).
+
 - **The banner mascot moves while the conversation is empty.** On a fresh
   screen — at launch, and again after `/clear` — the mascot is alive: a
   light sweeps it as the screen opens, it shows its own move, and it
@@ -56,6 +94,58 @@ release heading when a version is cut.
   written between moves. Turn it off with the new **Animate mascot** row in
   `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 
+### Changed
+
+- **Auto mode's safety check answers in JSON, and a reply that is not
+  exactly a verdict is never acted on.** The classifier that reviews a
+  command in your place used to answer `<block>yes</block>` or
+  `<block>no</block>`, and the app took the first such tag it found anywhere
+  in the reply. Two things could then allow a command nobody had judged
+  safe. A small model asked about `rm -rf ~/` answered
+  `<block>no</block><reason>… I cannot allow this action.</reason>`: it read
+  `no` as "do not run it", and the app ran it. And a model that echoed the
+  command back instead of judging it handed over whatever tags the command
+  itself carried. The verdict is now one JSON object, `{"verdict": "allow"}`
+  or `{"verdict": "block", "reason": "…"}`, whose words say what happens. An
+  allow counts only when it is the whole reply and gives no reason; anything
+  else is asked about once more, and after that the command comes to you.
+  The object is asked for in the prompt rather than through a provider's
+  structured output, which was measured and refused: on small models it
+  produced a well-formed allow for six of sixteen actions that should have
+  been blocked, and some routes reject the parameter outright
+  (`docs/permissions.md`).
+
+- **The startup review's hint names the arrow keys.** The page that asks
+  you to trust new or changed hooks, and which of a project's MCP servers
+  to enable, now starts its hint with `↑/↓ to navigate`, as `/mcp` and
+  `/theme` do, since Space and Enter act on the highlighted row. On a
+  terminal too narrow for the hint on one row, it now breaks between keys
+  rather than in the middle of one (`docs/config-review.md`).
+
+- **A link in a reply is shown as its label, with the address behind it.**
+  A reply that cites its sources used to print every address in full —
+  `Source: FIDE (https://www.fide.com/geneva-to-host-…/)` — which spent a
+  row or more per link and stretched a table to the width of its URLs.
+  Where your terminal opens hyperlinks (kitty, Ghostty, WezTerm, iTerm2, VS
+  Code, Alacritty, foot, GNOME Terminal and the other VTE terminals, Windows
+  Terminal, a herdr pane) the label is now the link: underlined in the link
+  colour, and a click opens the address. The terminal is recognised by the
+  variables it sets, and over `ssh`, where those stay behind, by the name
+  it gives when asked at startup (kitty, Ghostty, WezTerm, foot, iTerm2).
+  Under tmux or screen, inside an editor's terminal, and in a terminal the
+  app cannot name, the address stays on screen as before, since hidden
+  there it would be lost; `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides
+  for any terminal. A link to a file or an anchor always shows its target,
+  and so does a label that spells a different address than the one it
+  opens, however the label is written. On every terminal a link whose
+  label is its own target is no longer printed twice — a file named by its
+  path, `` [`src/links.rs`](src/links.rs) ``, or an address written out —
+  a link with no target is just its label, and a label of several words is
+  one link rather than one per word. `/export` keeps every address in the
+  text it writes, and nothing renders slower: a reply full of links draws
+  in about a third less time as labels, and one with no link in it in
+  slightly less than before (`docs/links.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
@@ -92,6 +182,53 @@ release heading when a version is cut.
   metadata was looked for under that path alone, so such a server ended
   with `could not discover the authorization server`. The root document is
   read last, and used only when it names that same address.
+
+- **Auto mode reviews your commands on Google Antigravity's Gemini models.**
+  On a model whose thinking level is part of its id, such as
+  `gemini-3.8-flash`, every safety check asked for a model the account's
+  catalog does not list and got a 404, so each command auto mode should have
+  reviewed came to you as a prompt instead. Commands that only read were
+  never checked and still ran, which made it look like the check failed
+  only sometimes. The check now asks under the id your session uses
+  (`docs/antigravity.md`).
+
+- **A provider that is busy for a moment no longer costs you a prompt.** The
+  safety check made one request and gave up on any failure, so a rate limit
+  that cleared in half a second or a reply cut short became a prompt where
+  the turn around it would have retried. The check now retries what the
+  turn retries, on the same **Error retry** setting, and a reply it cannot
+  read is asked for one more time (`docs/permissions.md`).
+
+- **The prompt says why when auto mode's safety check failed.** A prompt
+  raised because the check itself failed looked the same as any other, so
+  there was nothing to tell a wrong model from a rate limit. It now reads
+  `Auto mode's safety check failed:` followed by what the check said, where
+  `This command requires approval` would have been, and a headless run
+  writes the same reason under the refused call (`docs/permissions.md`,
+  `docs/headless.md`).
+
+- **Every ←/→ press in the Ctrl+O transcript and the Ctrl+D view takes a
+  step.** Keys that reached the view between two redraws, over a slow link
+  or on a busy machine, collapsed into the last one, so pressing → three
+  times could move one entry, and a PageDown pressed right after a → scrolled
+  before the step instead of after it. Each press now moves the view in the
+  order it was pressed (`docs/transcript-navigation.md`).
+
+### Security
+
+- **A command and its description can no longer write lines of the question
+  auto mode's safety check is asked.** The reviewing model was shown the
+  agent's description as written and the command inside a three-backtick
+  code block. A description with line breaks could add a command block of
+  its own, naming something harmless, above the real one. A command
+  containing a line of three backticks (a heredoc makes that valid shell)
+  could end its block and carry on as the request. Shown
+  `rm -rf ~/.ssh ~/.aws` dressed in one of those two ways, Gemini 3.8 Flash
+  allowed it 9 times in 24; it now refuses all 24. The block's fence is
+  always longer than anything inside it, and each description is kept to
+  one line. Many models can still be talked round by what a command says
+  about itself, which no quoting changes, so auto mode's reviewer needs to
+  be a model that resists it (`docs/permissions.md` says how to check one).
 
 ## [0.19.0] - 2026-11-13
 

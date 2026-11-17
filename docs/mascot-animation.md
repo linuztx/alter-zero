@@ -750,7 +750,7 @@ scrolled up reading something older.
   animation up where the clock is.
 - **`ALTER_ZERO_MASCOT_ANIMATION=0`** seeds the row off for a run, never
   saved. The smoke suite exports it, so the banner its phases capture holds
-  still and an idle screen's byte count is zero; Phases 154 and 155 turn it
+  still and an idle screen's byte count is zero; Phases 159 and 160 turn it
   back on.
   `scripts/codegen_mem.py` sets it too: what that probe measures is the
   memory a turn leaves behind, with nothing else moving on the screen.
@@ -942,7 +942,7 @@ seeded — every unit test's — never moves.
 - `settings/tests.rs` — the row: on by default and off the wire, cycles,
   sits after the picture rows, found by what it does (a search for `nap`
   included), recorded per directory.
-- `scripts/smoke.sh` Phase 154 — on the raw byte stream: the greeting's
+- `scripts/smoke.sh` Phase 159 — on the raw byte stream: the greeting's
   frames reach the terminal (the sweep's frames ahead of the flare, the
   first eyelid within a frame count no clock chain could keep) and leave one
   banner at rest over one composer; with the row off an idle session writes
@@ -959,7 +959,7 @@ seeded — every unit test's — never moves.
   art on the dead screen; the `/mascot` preview greets as a search lands
   the highlight on a mascot; and the mascot just chosen greets from the
   banner.
-- `scripts/smoke.sh` Phase 155 — the nap, on the screen and the raw byte
+- `scripts/smoke.sh` Phase 160 — the nap, on the screen and the raw byte
   stream: left untouched the mascot is snoring no sooner than 44 s after
   the app opens and inside 80, the whole of it on screen — its frill on the
   title's row, its eyes closed to lids under it and never filled in, its

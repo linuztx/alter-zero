@@ -28,7 +28,7 @@ use chrono::{DateTime, Datelike, FixedOffset};
 
 use super::header::{page_title_line, page_title_spans};
 use super::model_view::{
-    compact_page, first_page_that_fits, list_window, model_placeholder_row, model_rule,
+    age_text, compact_page, first_page_that_fits, list_window, model_placeholder_row, model_rule,
     model_wrapped_rows, placeholder_window,
 };
 use super::theme::*;
@@ -136,17 +136,6 @@ fn clock_time(at: i64, now: i64, at_offset: i32, now_offset: i32) -> Option<Stri
         1..=6 => format!("{} {time}", at.format("%a")),
         _ => format!("{}, {time}", at.format("%b %-d")),
     })
-}
-
-/// How long ago the numbers were read, in one unit: `just now`, `3m ago`,
-/// `2h ago`, `1d ago`.
-fn age_text(seconds: i64) -> String {
-    match seconds.max(0) {
-        s if s < 60 => "just now".to_string(),
-        s if s < 3_600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3_600),
-        s => format!("{}d ago", s / 86_400),
-    }
 }
 
 /// The parts of a limit's trailer, most important first: that it is spent,

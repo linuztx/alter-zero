@@ -237,6 +237,14 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.sponsor_page.is_some() {
+        // The `/sponsor` page is still too — `/donate`'s rule
+        // (`docs/sponsor.md`).
+        return Some(FlowPage::framed(
+            super::sponsor_view::sponsor_view_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.secrets_page.is_some() {
         // The `/secrets` page changes only on a keystroke, so it signs its
         // rows like `/donate` — and its values are masked in those rows

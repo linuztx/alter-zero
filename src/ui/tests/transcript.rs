@@ -346,12 +346,12 @@ fn compact_transcript_paints_every_viewport_without_expanding_history() {
         with_theme(theme, || {
             for width in [1, 17, 80, 120] {
                 cache.warm(&app, width);
-                let lines = transcript_lines(&app, width);
+                let page = transcript_page(&app, width);
                 for height in [1, 3, 4, 12, 40] {
-                    for scroll in [0, 5, lines.len() / 2, usize::MAX] {
+                    for scroll in [0, 5, page.lines.len() / 2, usize::MAX] {
                         app.tool_scroll = scroll;
                         let mut expected = buffer(width, height);
-                        render_tool_view(expected.area, &mut expected, &app, &lines);
+                        render_tool_view(expected.area, &mut expected, &app, &page);
                         let mut actual = buffer(width, height);
                         cache.render(actual.area, &mut actual, &app);
                         assert_eq!(actual, expected, "{width}x{height}, scroll {scroll}");
@@ -385,7 +385,7 @@ fn compact_transcript_backtrack_and_owned_access_keep_the_same_rows() {
             expected.area,
             &mut expected,
             &app,
-            &transcript_lines(&app, 80),
+            &transcript_page(&app, 80),
         );
         let mut actual = buffer(80, 24);
         cache.render(actual.area, &mut actual, &app);
@@ -403,8 +403,8 @@ fn compact_transcript_backtrack_and_owned_access_keep_the_same_rows() {
 fn render_tool_view_shows_the_title_messages_and_full_output() {
     let app = transcript_fixture();
     let mut buf = buffer(40, 24);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     let all: String = (0..24)
         .map(|y| row(&buf, y, 40))
         .collect::<Vec<_>>()
@@ -434,8 +434,8 @@ fn render_tool_view_paints_the_codex_pager_chrome() {
     // rows, and a final blank row.
     let app = transcript_fixture();
     let mut buf = buffer(40, 24);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     let header = row(&buf, 0, 40);
     assert!(
         header.starts_with("/ T R A N S C R I P T / / "),
@@ -449,9 +449,11 @@ fn render_tool_view_paints_the_codex_pager_chrome() {
         "everything fits → pinned at 100%: {sep:?}"
     );
     assert!(sep.ends_with('─'), "one dash right of the percent: {sep:?}");
+    // The first hint row is Ctrl+D's, in its order: the entry step second,
+    // so a 40-column pager keeps both its own keys (docs/transcript-navigation.md).
     let hints = row(&buf, 21, 40);
     assert!(
-        hints.contains("to scroll") && hints.contains("pgup/pgdn"),
+        hints.contains("to scroll") && hints.contains("←/→ prev/next entry"),
         "{hints:?}"
     );
     assert!(
@@ -468,8 +470,8 @@ fn render_tool_view_fills_rows_below_the_content_with_tildes() {
     let mut app = App::new();
     app.record_user_message("hi");
     let mut buf = buffer(40, 24);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     // Content is the banner chrome + two lines (message + spacer) in a
     // 19-row body: the rows after it are filler.
     let chrome = header_lines(&app, 40).len() + 1;
@@ -495,14 +497,14 @@ fn render_tool_view_separator_tracks_the_scroll_position() {
         .join("\n");
     app.end_tool(&output, true);
     let mut buf = buffer(40, 12);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     assert!(row(&buf, 8, 40).contains(" 0% "), "{:?}", row(&buf, 8, 40));
 
     app.tool_scroll = usize::MAX; // pinned to the bottom (clamped)
     let mut buf = buffer(40, 12);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     assert!(
         row(&buf, 8, 40).contains(" 100% "),
         "{:?}",
@@ -522,8 +524,8 @@ fn render_tool_view_scrolls_past_the_top() {
     app.view = crate::app::View::ToolOutput;
     app.tool_scroll = 9;
     let mut buf = buffer(40, 8);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     let all: String = (0..8)
         .map(|y| row(&buf, y, 40))
         .collect::<Vec<_>>()
@@ -762,8 +764,8 @@ fn backtrack_scroll_targets_the_highlight() {
 fn tool_view_hints_swap_while_previewing() {
     let mut app = backtrack_app();
     let mut buf = buffer(80, 16);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     let idle: String = (0..16).map(|y| row(&buf, y, 80)).collect();
     // backtrack_app is idle with targets, so Esc would begin the preview —
     // the closing hint says so instead of promising a quit
@@ -775,8 +777,8 @@ fn tool_view_hints_swap_while_previewing() {
 
     app.backtrack.selected = Some(1);
     let mut buf = buffer(80, 16);
-    let tv_lines = transcript_lines(&app, buf.area.width);
-    render_tool_view(buf.area, &mut buf, &app, &tv_lines);
+    let page = transcript_page(&app, buf.area.width);
+    render_tool_view(buf.area, &mut buf, &app, &page);
     let preview: String = (0..16)
         .map(|y| row(&buf, y, 80))
         .collect::<Vec<_>>()
@@ -910,8 +912,8 @@ fn the_quit_hint_tells_the_truth_about_esc() {
     // handler uses (`App::overlay_esc_backtracks`).
     let hint_row = |app: &App| {
         let mut buf = buffer(60, 12);
-        let lines = transcript_lines(app, 60);
-        render_tool_view(buf.area, &mut buf, app, &lines);
+        let page = transcript_page(app, 60);
+        render_tool_view(buf.area, &mut buf, app, &page);
         row(&buf, 10, 60) // sep at 8, keys at 9, the closing hint at 10
     };
     // Idle with a previous user message: Esc edits, and the hint says so.
@@ -958,6 +960,7 @@ fn the_quit_hint_tells_the_truth_about_esc() {
         detail: None,
         agent: Some("explorer".to_string()),
         agent_id: None,
+        check_failure: None,
     });
     assert!(!asking.turn_active(), "a background agent's request: idle");
     assert!(!asking.overlay_esc_backtracks());

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::app::STATUS_VERBS;
-use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
+use crate::ui::agent::{AgentCellView, agent_cell_lines, agent_group_full_cells};
 use crate::ui::live::preview_lines;
 use crate::ui::theme::{
     TOOL_BULLET, TOOL_PULSE_PERIOD, tool_dim_color, tool_fail_color, tool_ok_color,
@@ -422,7 +422,8 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
         timestamp: String::new(),
         batch: None,
     };
-    let texts: Vec<String> = agent_group_full_lines(&group, 100, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = agent_group_full_cells(&group, 100, &PathDisplay::VERBATIM)
+        .concat()
         .iter()
         .map(plain)
         .collect();
@@ -443,7 +444,8 @@ fn agent_cell_lines_expand_prompt_response_and_done() {
     // An interrupted agent ends with the bare Interrupted footer instead.
     let mut stopped = group;
     stopped.agents[0].status = AgentStatus::Interrupted;
-    let texts: Vec<String> = agent_group_full_lines(&stopped, 100, &PathDisplay::VERBATIM)
+    let texts: Vec<String> = agent_group_full_cells(&stopped, 100, &PathDisplay::VERBATIM)
+        .concat()
         .iter()
         .map(plain)
         .collect();

@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, spawn_file_search_worker};
+use super::workers::{ModelFetch, ProbeFetch, spawn_file_search_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -135,6 +135,19 @@ impl<'t> Session<'t> {
             app.set_theme(theme);
         }
         alter_zero::ui::activate_theme(app.theme());
+        // How a reply's `[label](url)` links read (docs/links.md *Labelled
+        // links*): the label alone where this terminal is known to open
+        // hyperlinks, `label (url)` anywhere else — decided once, from the
+        // environment and the name the terminal gave the startup read,
+        // before anything is rendered, so a resumed transcript and the first
+        // reply agree. A headless run draws nothing that carries a hyperlink
+        // and keeps the renderer's default, the address spelled out.
+        if !headless {
+            alter_zero::links::set_target_display(alter_zero::links::detect_target_display(
+                |name| std::env::var(name).ok(),
+                term.terminal_name(),
+            ));
+        }
 
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
 
@@ -479,7 +492,7 @@ impl<'t> Session<'t> {
         // Spawned once the startup directive is applied (`spawn_pending_probe`
         // below): a `--resume` may replace the queued probe with its own
         // model's (docs/session-model.md).
-        let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+        let (probe_tx, probe_rx) = tokio::sync::mpsc::unbounded_channel::<ProbeFetch>();
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
@@ -1057,9 +1070,10 @@ impl<'t> Session<'t> {
                 }
             }
         }
-        // Cancel a dangling /model fetch (its detached worker exits on the
-        // cancel), and the /usage page's reads likewise.
-        self.models.cancel_model_fetch();
+        // Cancel every /model fetch still out (each detached worker exits on
+        // its cancel, and nothing it read is kept), and the /usage page's
+        // reads likewise.
+        self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`

@@ -157,6 +157,10 @@ pub enum CommandEffect {
     /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
     /// only replaces the composer. See `docs/donate.md`.
     Donate,
+    /// Open the read-only `/sponsor` page: the developer's sponsor page and
+    /// contact address, each copyable. Works **mid-turn** like `/donate`.
+    /// See `docs/sponsor.md`.
+    Sponsor,
     /// Open the `/secrets` page: the user's secrets — credentials the agent
     /// uses by placeholder without ever seeing the value — to add, edit and
     /// delete. Works **mid-turn** like `/skills`: it only replaces the
@@ -307,6 +311,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         "donate",
         "Support the project with a crypto donation",
         CommandEffect::Donate,
+    ),
+    SlashCommand::builtin(
+        "sponsor",
+        "Sponsor the developer or get in touch",
+        CommandEffect::Sponsor,
     ),
     SlashCommand::builtin(
         "secrets",
@@ -613,6 +622,12 @@ impl App {
                 // docs/donate.md.
                 self.open_donate_picker();
                 Action::OpenDonatePicker
+            }
+            CommandEffect::Sponsor => {
+                // /sponsor works mid-turn like /donate: a read-only page
+                // over a const catalog, opened right here. docs/sponsor.md.
+                self.open_sponsor_page();
+                Action::OpenSponsorPage
             }
             CommandEffect::Secrets => {
                 // /secrets works mid-turn like /skills: the page only

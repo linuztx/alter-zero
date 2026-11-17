@@ -59,6 +59,7 @@ widened for the split.
 | `spinner.rs` | The status spinner-style catalog (with its `Look` impl, the `spinner` key), the `/spinner` picker's state (`docs/spinner.md`). |
 | `theme.rs` | The colour-theme catalog, the `/theme` picker's state, the `theme.json` format (`docs/theme.md`). |
 | `donate.rs` | The donation-address catalog and the read-only `/donate` page's state (`docs/donate.md`). |
+| `sponsor.rs` | The sponsor catalog and the read-only `/sponsor` page's state (`docs/sponsor.md`). |
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `context_usage.rs` | The `/context` page's state — the counted breakdown, its signature, the highlight that follows the largest category until moved — the injected tool sets, the provider's last frame and the since-launch ledger (`docs/context-usage.md`). The counting itself is the top-level `crate::context_usage`. |
 | `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
@@ -101,12 +102,13 @@ widened for the split.
 | `palette.rs` | The per-theme colour tables and the ambient active theme every renderer reads (`docs/theme.md`). |
 | `theme_view.rs` | The inline `/theme` picker — swatch rows in the picker family's shape with a real-cell preview in the highlighted theme beside them (under them on a narrow terminal) (`docs/theme.md`). |
 | `donate_view.rs` | The read-only `/donate` page — a gradient title over each address's labelled rounded box (`docs/donate.md`). |
+| `sponsor_view.rs` | The read-only `/sponsor` page — `/donate`'s frame over the sponsor link and the contact address (`docs/sponsor.md`). |
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `context_usage_view.rs` | The read-only `/context` page — the window bar, the legend with the highlighted category's parts beside or under it, the provider's usage rows and cache meter, and its shedding ladder (`docs/context-usage.md`). |
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |
 | `usage_view.rs` | The read-only `/usage` page — a section per subscription, one bar length for the page's meters, `limit reached`, the reset countdowns and local times and what a narrow row gives up, the highlighted subscription's link, the freshness, and its shedding ladder (`docs/usage.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
-| `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
+| `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`: the transcript's entries, the header pinned over a window inside a cell, and the chrome both overlays share (`overlay_header`, `view_title`; `docs/transcript-navigation.md`). |
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
@@ -140,9 +142,9 @@ opening the viewport, running the loop — and everything else lives here:
 | `ask.rs` | The `AskUserQuestion` idle clock's boundary half: `Instant::now()` into the pure `ask::AskTimer` on every key, paste and draw, and the expiry that resolves the waiting questions unanswered (`docs/ask.md`). |
 | `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
-| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`). |
+| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, Ctrl+T and probe arms (`docs/llm.md`) — and the `/model` fetches still out (its `FetchLedger`), each answer kept as it settles, a `/login` save retiring the fetch its key replaced (`docs/model-cache.md`). |
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
-| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), paths. |
+| `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), the `/model` picker's kept listings and which providers a saved variable configures (`docs/model-cache.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
 | `headless.rs` | `alter-zero -p`: the prompt read from the argument and stdin before the runtime, the loop that runs the same `Session` with no screen, the signals, the streams, the exit status (`docs/headless.md`). |
@@ -153,6 +155,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `spinner.rs` | Applying a `/spinner` selection: the per-directory `spinner.json` write + toast (`docs/spinner.md`). |
 | `theme.rs` | Applying a `/theme` selection: the `theme.json` write, the palette switch, the recolouring rebuild (`docs/theme.md`). |
 | `donate.rs` | Applying a `/donate` copy: the clipboard write + the toast (`docs/donate.md`). |
+| `sponsor.rs` | Applying a `/sponsor` copy: the clipboard write + the toast (`docs/sponsor.md`). |
 | `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `context_usage.rs` | Keeping an open `/context` page live: the backend's tool set (or the viewed agent type's) handed over on the open and at every loop bottom, then the re-count (`docs/context-usage.md`). |
 | `secrets.rs` | The `/secrets` page's saves, deletes and copies: the `secrets.json` read-modify-write, the shared store, the reminder sync (`docs/secrets.md`). |

@@ -121,7 +121,8 @@ pub(super) fn inline_code_color() -> Color {
     palette().accent
 }
 
-/// A link's URL, shown as ` (url)` after its text — blue and underlined.
+/// The link colour — a bare URL, a link's ` (url)` target, and a label
+/// standing in for its target (`docs/links.md`) — always underlined.
 pub(super) fn link_url_color() -> Color {
     palette().link
 }
@@ -819,9 +820,25 @@ pub(super) const TOOL_VIEW_TITLE_ROWS: u16 = 1;
 /// percentage, two key-hint rows, and the final blank row (codex's pager).
 pub(super) const TOOL_VIEW_FOOTER_ROWS: u16 = 4;
 
-/// First key-hint row under the separator (codex's pager hints, all dim).
+/// First key-hint row under the separator (codex's pager hints, all dim),
+/// with Ctrl+D's entry step: ←/→ open the previous or next entry — a
+/// message, a tool call, a thought — at the window's top
+/// (`docs/transcript-navigation.md`).
 pub(super) const TOOL_VIEW_HINT_KEYS: &str =
+    " ↑/↓ to scroll   ←/→ prev/next entry   pgup/pgdn to page   home/end to jump";
+
+/// The first key-hint row while a backtrack preview highlights a user
+/// message: ← and → step the highlight then ([`TOOL_VIEW_HINT_BACKTRACK`]
+/// says so on the row under it), so this one names only the scroll keys.
+pub(super) const TOOL_VIEW_HINT_SCROLL_KEYS: &str =
     " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump";
+
+/// The most header rows the transcript pins over a window that opens inside
+/// a cell — the inline cell's own ceiling ([`TOOL_HEADER_MAX_ROWS`]), so a
+/// wrapped command pins as the two rows the conversation showed it in, and a
+/// taller header pins its first two, the second ending on
+/// [`TOOL_HEADER_ELLIPSIS`] (`docs/transcript-navigation.md`).
+pub(super) const TRANSCRIPT_PIN_MAX_ROWS: usize = TOOL_HEADER_MAX_ROWS;
 
 /// Second key-hint row: every key that closes the overlay.
 pub(super) const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
@@ -866,9 +883,10 @@ pub(super) const CONTEXT_VIEW_AGENT_SEPARATOR: &str = " · ";
 /// See [`CONTEXT_VIEW_AGENT_SEPARATOR`].
 pub(super) const CONTEXT_VIEW_AGENT_SUFFIX: &str = " agent";
 
-/// First key-hint row — the pager's ([`TOOL_VIEW_HINT_KEYS`]) with the
-/// message step added, since a window of a few dozen entries is thousands
-/// of rows and ←/→ open the previous or next one at the top.
+/// First key-hint row — the transcript pager's ([`TOOL_VIEW_HINT_KEYS`]),
+/// its step naming what every entry here is: a window of a few dozen
+/// messages is thousands of rows, and ←/→ open the previous or next one at
+/// the top.
 pub(super) const CONTEXT_VIEW_HINT_KEYS: &str =
     " ↑/↓ to scroll   ←/→ prev/next message   pgup/pgdn to page   home/end to jump";
 
@@ -1188,6 +1206,45 @@ pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
 /// The counter's dim suffix while other providers are still being fetched (the
 /// list shows what's landed so far and keeps growing). See `docs/llm.md`.
 pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
+
+/// The counter's dim note while the lists on screen — kept from an earlier
+/// open — are being fetched again behind them: the `/usage` page's word
+/// (`docs/model-cache.md`).
+pub(super) const MODEL_REFRESHING: &str = "refreshing…";
+
+/// What leads the note saying how old the lists on screen are
+/// (`updated 2h ago`).
+pub(super) const MODEL_UPDATED: &str = "updated ";
+
+/// How old, in seconds, the oldest list on screen must be before the page
+/// says so — and offers Ctrl+R. A list listed a moment ago has no age worth
+/// reading, and asking for it again would bring back the same rows, so a
+/// page fresh off the network stays the page it always was.
+pub(super) const MODEL_AGE_SHOWN_SECS: i64 = 60;
+
+/// The key that asks every provider for its list again
+/// (`docs/model-cache.md`), said beside the counter where pressing it is
+/// worth something: the lists are old, or a provider failed. Left out whole
+/// rather than cut when the row has no room for it.
+pub(super) const MODEL_REFRESH_HINT: &str = "ctrl+r to refresh";
+
+/// Under the red rows of a page where every provider failed.
+pub(super) const MODEL_RETRY_HINT: &str = "ctrl+r to try again";
+
+/// What a provider whose fetch failed with nothing of it to show is noted
+/// as, in red — `GitHub Copilot unavailable`.
+pub(super) const MODEL_UNAVAILABLE: &str = "unavailable";
+
+/// What a provider whose kept list could not be refreshed is noted as —
+/// `OpenRouter not refreshed`, beside the rows it still shows.
+pub(super) const MODEL_NOT_REFRESHED: &str = "not refreshed";
+
+/// The amber a list kept through a failed refresh is noted in, and its
+/// reason: its rows are still there and still usable, so not the red of a
+/// provider with nothing to show — the `/usage` page's failed-refresh note.
+pub(super) fn model_stale_color() -> Color {
+    usage_warn_color()
+}
 
 /// The most display rows a failed provider's *reason* block may take under the
 /// list. The collapsed `{provider} unavailable` note names the provider and
@@ -1698,6 +1755,20 @@ pub(super) fn donate_caution_color() -> Color {
     ask_warning_color()
 }
 
+// --- the read-only /sponsor page (docs/sponsor.md). The /donate page's
+// twin: its heart, gradient title, label rows and rounded boxes over the
+// const sponsor catalog. Only its own words live here. ---
+
+/// The title's verb; the app's name follows it: `Sponsor Alter Zero`.
+pub(super) const SPONSOR_TITLE_PREFIX: &str = "Sponsor ";
+
+/// The dim row under the title: who is being sponsored and what it buys.
+pub(super) const SPONSOR_BLURB: &str = "Alter Zero is built and maintained by one developer. \
+A sponsorship pays for the time that goes into it — thank you.";
+
+/// The dim key hint — the page's whole grammar.
+pub(super) const SPONSOR_HINT: &str = "↑↓ navigate  enter/c copy  esc close";
+
 // --- the /secrets page (docs/secrets.md). The /donate page's frame — the
 // family's indent, its `❯` marker, the dim meta ink, the banner-gradient
 // title — over the user's secrets, and a three-field form under the same
@@ -2201,10 +2272,15 @@ pub(super) const REVIEW_SKIP_LABEL: &str = "Continue without trusting";
 pub(super) const REVIEW_ENABLE_LABEL: &str = "Enable selected";
 pub(super) const REVIEW_DISABLE_LABEL: &str = "Disable all";
 
-/// The key hints, saying what Esc means on each page.
+/// The key hints, led by the navigation the `/mcp` list's hint leads with,
+/// and saying what Esc means on each page.
 pub(super) const REVIEW_HOOKS_HINT: &str =
-    "Space to select · Enter to confirm · Esc to continue without trusting";
-pub(super) const REVIEW_MCP_HINT: &str = "Space to select · Enter to confirm · Esc to disable all";
+    "↑/↓ to navigate · Space to select · Enter to confirm · Esc to continue without trusting";
+pub(super) const REVIEW_MCP_HINT: &str =
+    "↑/↓ to navigate · Space to select · Enter to confirm · Esc to disable all";
+
+/// Between a key hint's entries — where a hint too wide for one row breaks.
+pub(super) const REVIEW_HINT_SEPARATOR: &str = " · ";
 
 /// A changed item's amber badge, and the line saying what it was: a hook's
 /// old command, or what changed in a server's entry.
@@ -3333,6 +3409,20 @@ pub(super) const PERMISSION_NOTICE: &str = "This command requires approval";
 pub(super) fn permission_notice_color() -> Color {
     tool_dim_color()
 }
+
+/// The row that takes the standing notice's place when the prompt stands in
+/// for a verdict auto mode's classifier failed to reach
+/// (`permission::check_failure_notice`) — the caution amber: nothing is
+/// wrong with the call, but something is with the check that should have
+/// answered for it.
+pub(super) fn permission_check_failure_color() -> Color {
+    ask_warning_color()
+}
+
+/// The most rows that notice wraps to. A provider's own message is cut to a
+/// few hundred characters where it is read; a transport's is not, and an
+/// unbounded one would push the question and its options off the page.
+pub(super) const PERMISSION_CHECK_FAILURE_MAX_ROWS: usize = 6;
 
 /// The `❯ ` on the highlighted option row (the unselected rows indent by its
 /// width so the list stays aligned).

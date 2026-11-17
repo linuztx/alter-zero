@@ -923,6 +923,7 @@ mod tests {
             detail: None,
             agent: None,
             agent_id: None,
+            check_failure: None,
         }
     }
 

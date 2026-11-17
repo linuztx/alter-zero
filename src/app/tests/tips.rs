@@ -244,6 +244,7 @@ fn a_modal_prompt_holds_the_tip_back_until_it_closes() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     });
     app.set_status_times(TIP_DELAY * 4, None);
     assert_eq!(app.tip(), None);

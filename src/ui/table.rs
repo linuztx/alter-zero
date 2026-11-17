@@ -40,7 +40,7 @@ fn natural_word_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
             for word in tokenize_words(cell) {
-                w[i] = w[i].max(segments_cols(&word));
+                w[i] = w[i].max(segments_cols(&word.pieces));
             }
         }
     }

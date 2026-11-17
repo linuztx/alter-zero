@@ -98,9 +98,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             Some(result) = session.usage_rx.recv() => session.on_usage_result(result),
 
             // 6. A finished `/model` fetch from one provider's worker thread.
-            Some((label, result)) = session.model_rx.recv() => {
-                session.on_model_fetch(label, result);
-            }
+            Some(fetch) = session.model_rx.recv() => session.on_model_fetch(fetch),
 
             // 7. The startup capability probe answered. Guarded so a `/model`
             //    switch that raced it (and already knows its support first-hand)

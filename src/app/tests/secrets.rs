@@ -640,6 +640,7 @@ fn feedback_on_a_refused_call_carries_the_placeholder() {
         detail: None,
         agent: None,
         agent_id: None,
+        check_failure: None,
     };
     app.open_permission(request.clone());
     app.on_key(key(KeyCode::Tab));

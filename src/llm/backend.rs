@@ -437,10 +437,14 @@ impl LlmBackend {
 
     /// Set how many times a failed request is retried before the error is
     /// surfaced — the `/settings` **Error retry** knob (`docs/settings.md`).
-    /// `0` never retries. Defaults to [`retry::MAX_RETRIES`].
+    /// `0` never retries. Defaults to [`retry::MAX_RETRIES`]. Auto mode's
+    /// classifier carries the same budget: a verdict is a request too, and
+    /// one that gave up where the turn would have retried turned a
+    /// provider's hiccup into a prompt (`docs/permissions.md`).
     #[must_use]
-    pub const fn with_max_retries(mut self, max_retries: u32) -> Self {
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
+        self.classifier = self.classifier.with_max_retries(max_retries);
         self
     }
 
@@ -2783,13 +2787,19 @@ mod tests {
         assert_eq!(plain.max_retries, MAX_RETRIES);
         assert_eq!(plain.max_tool_calls(), agent::MAX_TOOL_ITERATIONS);
 
+        // A verdict is a request too: auto mode's classifier retries on the
+        // same budget as the turn it reviews for (docs/permissions.md).
+        assert_eq!(plain.classifier.max_retries(), MAX_RETRIES);
+
         let tuned = plain.with_max_retries(0).with_max_tool_calls(0);
         assert_eq!(tuned.max_retries, 0, "never retry");
+        assert_eq!(tuned.classifier.max_retries(), 0, "nor a verdict");
         assert_eq!(tuned.max_tool_calls(), 0, "no tool-round limit");
         // …and a subagent runs under the same budgets, so a long side-task
         // isn't cut off by a ceiling the main turn doesn't have.
         let sub = tuned.subagent_config();
         assert_eq!(sub.max_retries, 0);
+        assert_eq!(sub.classifier.max_retries(), 0);
         assert_eq!(sub.max_tool_calls, 0);
     }
 
