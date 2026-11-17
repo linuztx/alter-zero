@@ -54,29 +54,30 @@ over the run:
 
 | streaming | before | loop | after | loop |
 |---|---|---|---|---|
-| nothing (idle) | 1.96 / 2.16 / 3.44 | 41 ms | 0.84 / 1.09 / 2.03 | 41 ms |
-| prose | 4.49 / 7.79 / 9.44 | 2.2 s | 0.61 / 2.37 / 2.84 | 2.3 s |
-| code | 4.68 / 8.00 / 9.36 | 2.6 s | 0.71 / 2.32 / 2.94 | 2.5 s |
-| a table | 5.32 / 8.60 / 10.16 | 4.8 s | 1.37 / 2.79 / 4.05 | 5.0 s |
-| reasoning | 4.72 / 8.20 / 9.43 | 2.2 s | 0.63 / 2.50 / 3.21 | 2.1 s |
-| a `write` call | 5.22 / 8.69 / 10.23 | 4.6 s | 0.94 / 2.69 / 3.79 | 3.4 s |
-| a command, 900 lines in 2.6 s | 13.2 / 32.4 / 46.1 | 1.2 s | 0.84 / 1.12 / 2.74 | 0.07 s |
-| a command, 4000 lines/s for 7 s | 39.5 / 66.1 / 87.5 | 6.3 s | 0.85 / 1.02 / 2.04 | 0.19 s |
-| one 60 KB line | 6.17 / 9.59 / 11.44 | 8.1 s | 2.56 / 4.89 / 8.30 | 9.4 s |
-| a thought, one 100 KB paragraph at 1000 events/s | 19.9 / 35.7 / 51.1 | 21.2 s | 0.51 / 0.72 / 3.00 | 1.7 s |
+| nothing (idle) | 1.96 / 2.16 / 3.44 | 41 ms | 0.86 / 1.09 / 1.31 | 40 ms |
+| prose | 4.49 / 7.79 / 9.44 | 2.2 s | 0.53 / 0.72 / 1.85 | 2.3 s |
+| code | 4.68 / 8.00 / 9.36 | 2.6 s | 0.60 / 0.82 / 2.18 | 2.5 s |
+| a table | 5.32 / 8.60 / 10.16 | 4.8 s | 1.32 / 2.03 / 3.23 | 5.1 s |
+| reasoning | 4.72 / 8.20 / 9.43 | 2.2 s | 0.51 / 0.67 / 1.05 | 2.1 s |
+| a `write` call | 5.22 / 8.69 / 10.23 | 4.6 s | 0.83 / 1.13 / 2.65 | 3.4 s |
+| a command, 900 lines in 2.6 s | 13.2 / 32.4 / 46.1 | 1.2 s | 0.73 / 0.94 / 1.42 | 0.06 s |
+| a command, 4000 lines/s for 7 s | 39.5 / 66.1 / 87.5 | 6.3 s | 0.69 / 0.89 / 1.04 | 0.14 s |
+| one 60 KB line | 6.17 / 9.59 / 11.44 | 8.1 s | 2.20 / 4.67 / 7.94 | 9.3 s |
+| a thought, one 100 KB paragraph at 1000 events/s | 19.9 / 35.7 / 51.1 | 21.2 s | 0.48 / 0.63 / 1.21 | 1.6 s |
 
 And the stalls, which a percentile over a paced run hides because they
 happen once:
 
 | | before | after |
 |---|---|---|
-| the slowest key as a 400 KB code reply ends | 778 ms | 19 ms |
-| …a 400 KB mixed reply | 205 ms | 4 ms |
+| the slowest key as a 400 KB code reply ends | 778 ms | 5 to 13 ms |
+| …a 400 KB mixed reply | 205 ms | 5 ms |
 | …a 400 KB table | 79 ms | 7 ms |
-| a scroll key in Ctrl+O under a streaming code reply (p50 / p99) | 145 / 280 ms | 1.3 / 3.9 ms |
-| the loop's CPU over that 38 s run | 35.6 s | 3.6 s |
+| a scroll key in Ctrl+O under a streaming code reply (p50 / p99) | 145 / 280 ms | 1.1 / 2.5 ms |
+| the loop's CPU over that 38 s run | 35.6 s | 3.4 s |
+| a scroll key in Ctrl+O as a 168 KB reply ends | 280 to 310 ms | under 3 ms |
 | 4,000 characters typed in one write | never shown whole | 3.9 ms |
-| 20,000 | never shown whole | 10 ms |
+| 20,000 | never shown whole | 10 to 16 ms |
 
 Ten causes, none of them the textarea.
 
