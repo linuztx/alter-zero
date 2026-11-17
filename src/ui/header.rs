@@ -514,8 +514,8 @@ pub fn banner_block_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// The banner over its blank spacer **as it should look now**: the session's
 /// mascot in its animation's current pose while the conversation under it is
-/// empty — its eyes on the caret's third of the composer while the user
-/// types ([`App::banner_pose_watching`]) — and [`banner_block_lines`]
+/// empty — its eyes toward the caret while the user types
+/// ([`App::banner_pose_watching`]) — and [`banner_block_lines`]
 /// exactly whenever nothing is moving, so a frame at rest has nothing to
 /// repaint. What the boundary repaints the committed block with, in place
 /// (docs/mascot-animation.md).

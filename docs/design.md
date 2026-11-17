@@ -795,14 +795,19 @@ which Ctrl+V reads the clipboard from.
   **watches**: its eyes turn to the text — right, where the line runs and
   the rest of the screen is, read from where the mascot stands — and a few
   seconds after the last keystroke it goes back to its own moves. Left
-  alone for three quarters of a minute it **naps** — nods off and sleeps
-  where it stands, all of it on screen, its eyes closed to thin lid lines
-  (a cell drawn in reverse, the line cut out of the body), its head down with
-  each breath out and a `z` that grows to a `Z` in the corner of its block
+  alone for three quarters of a minute it **naps** — its eyes grow heavy
+  and close to thin lid lines (a cell drawn in reverse, the line cut out of
+  the body), its head goes down once, and it sleeps there, all of it on
+  screen and **still**: its snore — a `z` that grows to a `Z` in the corner
+  of its block — is all of it that moves
   — for the better part of a minute, twice, and the third time, five
   minutes into being left, until someone is back. **Any key wakes it with
   a start**: a `!` where the snore was, wide awake inside half a second,
-  and then its eyes on what is being typed. The committed
+  and then its eyes on what is being typed — and a start never takes it
+  *down*: caught still nodding off on its feet, it starts where it stands
+  (playing the sleeper's start there flashed the crouch for an eighth of a
+  second, a flicker of the whole block). A key that types nothing puts the
+  nap off and leaves the move under way alone. The committed
   banner's rows are repainted **in place**, only the cells that changed (a
   blink is two), one frame per change of pose, so an idle session still
   sleeps between them. The first cell committed under

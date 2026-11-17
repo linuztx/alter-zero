@@ -7,16 +7,17 @@ smoke_begin
 # the banner mascot naps when it is left alone, and a keystroke wakes it
 # (docs/mascot-animation.md *The nap*). Nobody at the keyboard for three
 # quarters of a minute and the mascot over an empty conversation nods off:
-# it sleeps where it stands, ALL of it on screen — its eyes closed, each a
-# thin lid line where the eye was, never a blank — its head down with each
-# breath out, a `z` in the top corner of its block that grows to a `Z`. The
-# first key wakes it with a start: a `!` where the snore was, and it is
-# wide awake — and then, since something is being typed, its eyes go to the
-# text, to its right, like any other time. What this pins: it does not doze
-# the moment the app opens; asleep the whole mascot is on screen, its lids
-# drawn in reverse (cut out of the body's colour), and it is repainted IN
-# PLACE, one frame per stage of a breath and nothing between (no clock
-# chain turning under a sleeper);
+# its eyes close — each a thin lid line where the eye was, never a blank —
+# its head goes down, once, and it sleeps there, ALL of it on screen and
+# STILL: the one thing of it that moves is its snore, a `z` in the top
+# corner of its block that grows to a `Z`. The first key wakes it with a
+# start: a `!` where the snore was, and it is wide awake — and then, since
+# something is being typed, its eyes go to the text, to its right, like any
+# other time. What this pins: it does not doze the moment the app opens;
+# its lids are drawn in reverse (cut out of the body's colour); asleep the
+# whole mascot is on screen and none of it is repainted but the snore's one
+# cell, a frame per stage of a breath and nothing between (no clock chain
+# turning under a sleeper, and no body bobbing up and down);
 # the start is on the wire and no snore follows it; the banner the woken
 # mascot's message commits is the rest art — nothing of the sleeper, the
 # start or the watch left in scrollback — and scrollback then stays still.
@@ -26,30 +27,34 @@ smoke_begin
 #
 # The suite pins the animation off (lib.sh); this launch turns it on. The
 # default mascot is the crest: rest ` ▙▄▙▄▟▄▟` over `▝▜▄███▄▛▘` over
-# `  ▘▘ ▝▝`; asleep its eyes are closed — a lid through the middle of each
-# eye cell, `▝▜━███━▛▘` — and, breathing out, it is half a cell lower — the
-# frill's tips ` ▖ ▖ ▗ ▗` over `▗█▁███▁█▖` (the lids along the bottom of
-# their cells) over ` ▝▛▛▀▜▜▘` — with the snore in the ninth column of the
-# top row.
+# `  ▘▘ ▝▝`; its eyes close where it stands — a lid through the middle of
+# each eye cell, `▝▜━███━▛▘` — and it sleeps half a cell lower: the frill's
+# tips ` ▖ ▖ ▗ ▗` over `▗█▁███▁█▖` (the lids along the bottom of their
+# cells) over ` ▝▛▛▀▜▜▘`, with the snore in the ninth column of the top
+# row.
 S155="${S}_mascotnap"
 MN_APP="env $CFG_ENV_NOHIST ALTER_ZERO_MASCOT_ANIMATION=1 ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 MN_REST_TOP=' ▙▄▙▄▟▄▟   Alter Zero'
 MN_REST_EYES='▝▜▄███▄▛▘'
 MN_WATCH_RIGHT='▝▜▙███▙▛▘'
-# Asleep: the eye row on the breath in, and on the breath out — each eye a
-# lid — and the same rows with the eyes filled in solid, which is the blank
-# face a sleeper must not show. (Spelled out glyph by glyph: this grep
-# reads a bracket of block glyphs byte by byte.)
-MN_LIDS='▝▜━███━▛▘|▗█▁███▁█▖'
+# The sleeper's eye row — each eye a lid — and its eye row as its eyes
+# closed, still on its feet; and the same rows with the eyes filled in
+# solid, which is the blank face a sleeper must not show. (Spelled out
+# glyph by glyph: this grep reads a bracket of block glyphs byte by byte.)
+MN_ASLEEP_EYES='▗█▁███▁█▖'
+MN_LIDS="▝▜━███━▛▘|$MN_ASLEEP_EYES"
 MN_BLANK='▝▜█████▛▘|▗███████▖'
 # The snore beside the sleeper's head: a `z`, then a `Z`, in the corner of
 # its block — the cell after the frill's tips, on the title's row.
 MN_SNORE='^ ▖ ▖ ▗ ▗[zZ] +Alter Zero'
 MN_LOG="$SMOKE_TMP/mascotnap.stream"
+MN_NOD_LOG="$SMOKE_TMP/mascotnap.nod.stream"
 
+# mn_record SESSION [LOG] — record the pane's raw stream from here on.
 mn_record() {
-	: >"$MN_LOG"
-	tmux pipe-pane -t "$1" -o "cat >> $MN_LOG"
+	local log="${2:-$MN_LOG}"
+	: >"$log"
+	tmux pipe-pane -t "$1" -o "cat >> $log"
 }
 # mn_frames — the recorded frames, escapes taken out, one per line (a frame's
 # own newlines folded to spaces).
@@ -65,41 +70,44 @@ PY
 # --- left alone, it nods off -----------------------------------------------
 launch "$S155" 80 24 "$MN_APP"
 mn_began="$(date +%s.%N)"
+# Recorded from the start: its eyes close on the way down, and once it is
+# asleep nothing writes them again.
+mn_record "$S155" "$MN_NOD_LOG"
 if ! wait_for 80 "$S155" -E "$MN_SNORE"; then
 	dump "never asleep" "$(pane "$S155")"
 	fail "the mascot never fell asleep: no snore beside the banner in 80s of an untouched session"
 fi
+tmux pipe-pane -t "$S155"
 mn_took="$(python3 -c "print(round($(date +%s.%N) - $mn_began, 1))")"
 note "the mascot was snoring ${mn_took}s after the app opened"
-# Three quarters of a minute up, a few seconds to nod off, and the first
-# breath out: never sooner.
+# Three quarters of a minute up, a couple of seconds to nod off and settle,
+# and the first snore: never sooner.
 if python3 -c "import sys; sys.exit(0 if $mn_took >= 44 else 1)"; then :; else
 	fail "the mascot was asleep ${mn_took}s after the app opened (it stays up three quarters of a minute)"
 fi
 mn_asleep="$(pane "$S155")"
 dump "asleep" "$mn_asleep"
-# Asleep where it stands, the whole of it on screen: its frill on the
-# title's row (whole, or its tips on the breath out), its eyes closed on
-# the row under it — a lid where each was, not a blank — and its feet on
-# the third.
-expect_has "$mn_asleep" -E '^ (▙▄▙▄▟▄▟|▖ ▖ ▗ ▗)[zZ ] +Alter Zero' "the sleeping mascot's head is not on its block's top row"
-expect_has "$mn_asleep" -E "^($MN_LIDS) " "the sleeping mascot's closed eyes show no lid"
+# Asleep, the whole of it on screen and settled: the tips of its frill on
+# the title's row, its eyes closed on the row under it — a lid where each
+# was, not a blank — and its feet on the third.
+expect_has "$mn_asleep" -E '^ ▖ ▖ ▗ ▗[zZ ] +Alter Zero' "the sleeping mascot's head is not down on its block's top row"
+expect_has "$mn_asleep" -E "^$MN_ASLEEP_EYES " "the sleeping mascot's closed eyes show no lid"
 expect_lacks "$mn_asleep" -E "$MN_BLANK" "the sleeping mascot's eyes are filled in: a blank face"
 expect_lacks "$mn_asleep" -F "$MN_REST_EYES" "the sleeping mascot's eyes are open"
-expect_has "$mn_asleep" -E '^( ▝▛▛▀▜▜▘|  ▘▘ ▝▝) ' "the sleeping mascot's feet are not on screen"
+expect_has "$mn_asleep" -E '^ ▝▛▛▀▜▜▘ ' "the sleeping mascot's feet are not on screen"
 expect_eq "$(printf '%s\n' "$mn_asleep" | grep -c 'Alter Zero (v')" "1" "the nap left more than one banner behind"
 expect_eq "$(count_bare_prompts "$mn_asleep")" "1" "the nap disturbed the composer"
 
-# --- asleep, it breathes: a frame a stage, nothing between -----------------
+# --- asleep, it holds still: only its snore is written ---------------------
 mn_record "$S155"
 sleep 7
 tmux pipe-pane -t "$S155"
 mn_breathing="$(mn_frames | wc -l)"
 note "frames in 7s asleep: $mn_breathing"
-# Two breaths of five stages each. A 32ms chain turning under the sleeper
-# would have written two hundred.
-if [ "$mn_breathing" -lt 6 ] || [ "$mn_breathing" -gt 40 ]; then
-	fail "a sleeping mascot wrote $mn_breathing frames in 7s (expected about ten: one per stage of a breath)"
+# Two breaths of three stages each — quiet, a `z`, a `Z`. A 32ms chain
+# turning under the sleeper would have written two hundred.
+if [ "$mn_breathing" -lt 4 ] || [ "$mn_breathing" -gt 12 ]; then
+	fail "a sleeping mascot wrote $mn_breathing frames in 7s (expected about six: one per stage of a breath)"
 fi
 # (Captured first and matched with `has`: piped into `grep -q` the writer
 # can die of the closed pipe and, under pipefail, turn a match into a miss.)
@@ -107,10 +115,18 @@ mn_slept="$(mn_frames)"
 if ! has "$mn_slept" 'z'; then
 	fail "seven seconds asleep and not one snore was written"
 fi
-# A lid is cut out of the ink: every one written in those seconds is written
-# in reverse video — the body's colour filling the cell, the line left in
-# the ground's — and at least a breath's worth of them was.
-mn_lids="$(python3 - "$MN_LOG" <<'PY'
+# …and nothing else: a frame of its sleep writes the snore's one cell — a
+# `z`, a `Z`, or the blank that takes it away — and no cell of its body. A
+# sleeper that rose and sank with each breath rewrote its whole block.
+mn_moved="$(grep -vE '^ *[zZ]? *$' <<<"$mn_slept" || true)"
+if [ -n "$mn_moved" ]; then
+	dump "frames that moved the sleeper" "$mn_moved"
+	fail "the sleeping mascot moved: a frame of its sleep wrote more than its snore"
+fi
+# A lid is cut out of the ink: every one written as its eyes closed — on
+# its feet, and again as its head went down — is written in reverse video,
+# the body's colour filling the cell and the line left in the ground's.
+mn_lids="$(python3 - "$MN_NOD_LOG" <<'PY'
 import re, sys
 data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
 reverse, lids, cut = False, 0, 0
@@ -134,7 +150,7 @@ for found in re.finditer(r"\x1b\[([0-9;]*)m|([▁━])", data):
 print(lids, cut)
 PY
 )"
-note "lids written in 7s asleep, and how many of them in reverse: $mn_lids"
+note "lids written as it fell asleep, and how many of them in reverse: $mn_lids"
 if [ "${mn_lids% *}" -lt 4 ] || [ "${mn_lids% *}" != "${mn_lids#* }" ]; then
 	fail "a sleeper's lids were not all drawn in reverse: wrote ${mn_lids% *}, ${mn_lids#* } in reverse"
 fi

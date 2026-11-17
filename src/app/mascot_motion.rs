@@ -35,15 +35,17 @@
 //!
 //! Over that timeline the banner's mascot keeps the user **company**
 //! ([`Company`]). While they type the first message it **watches**: its
-//! eyes on the caret's third of the composer ([`Gaze`]), blinking now and
-//! then, until [`MASCOT_WATCH_LINGER`] after the last keystroke. Left alone
-//! for three quarters of a minute it **naps** ([`Nap`]): it nods off and
-//! sleeps where it stands, all of it on screen — its eyes shut, its head
-//! down with each breath out, a `z` and then a `Z` in the corner of its
-//! block — twice for the better part of a minute each, and the third time,
-//! five minutes into being left, until someone is back. And any key that
-//! finds it asleep gives it a **start** — a `!`, and it is wide awake —
-//! before it turns to what is being typed. All of it is derived from what each frame finds
+//! eyes toward the caret, read from where it stands ([`Gaze`]), blinking
+//! now and then, until [`MASCOT_WATCH_LINGER`] after the last keystroke.
+//! Left alone for three quarters of a minute it **naps** ([`Nap`]): its
+//! eyes close, its head goes down once, and it sleeps there, all of it on
+//! screen and **still** — a `z` and then a `Z` in the corner of its block
+//! is all of it that moves — twice for the better part of a minute each,
+//! and the third time, five minutes into being left, until someone is
+//! back. And any key that finds it napping gives it a **start** — a `!`,
+//! and it is wide awake, from where it lies or from where it still stood,
+//! never down first — before it turns to what is being typed. All of it
+//! is derived from what each frame finds
 //! ([`App::set_mascot_clock`]: the draft, the caret, a count of keys
 //! taken), and all of it is still a pure function of the clock.
 //!
@@ -154,27 +156,25 @@ const TAP_MS: u64 = 110;
 const TAP_APART_MS: u64 = 80;
 /// Nodding off: an eyelid heavy, the eyes open again between two droops —
 /// for less than the breath that would part two moves, like every pause
-/// inside one — the eyes closing, the head going down, and coming up
-/// between two nods.
+/// inside one — and the eyes closing, for good.
 const DROWSE_MS: u64 = 420;
 const DROWSE_APART_MS: u64 = 150;
 const EYES_CLOSE_MS: u64 = 620;
-const NOD_MS: u64 = 400;
-const NOD_APART_MS: u64 = 240;
-/// Asleep: the breath in, on its feet; the breath out, its head down — a
-/// pause, the snore (a `z`, and the `Z` it grows to), and a pause again.
-const BREATHE_IN_MS: u64 = 1_300;
-const BREATHE_OUT_MS: u64 = 300;
-const SNORE_MS: u64 = 600;
-const SNORE_LOUD_MS: u64 = 700;
-const BREATHE_AFTER_MS: u64 = 500;
-/// Waking by itself: an eye half open, its head still down; open, on its
-/// feet; and a stretch.
+/// The stone settling to sleep: a last light fading out of it, by thirds.
+const SETTLE_MS: u64 = 330;
+/// Asleep, and still: a quiet moment, then the snore — a `z` in the corner
+/// of its block, and the `Z` it grows to. Nothing else of a sleeper moves,
+/// so a breath is three frames of one cell each.
+const SLEEP_QUIET_MS: u64 = 1_300;
+const SNORE_MS: u64 = 900;
+const SNORE_LOUD_MS: u64 = 1_200;
+/// Waking by itself: an eye half open; open, on its feet; and a stretch.
 const STIR_MS: u64 = 380;
 const RISE_MS: u64 = 150;
 const STRETCH_MS: u64 = 420;
-/// Woken by a key: it flinches, its eyes open; it is up with a start; and
-/// the start wears off — three fifths of a second in all.
+/// Woken by a key: its eyes open where it lies; it is up with a start; and
+/// the start wears off — three fifths of a second in all. One caught still
+/// on its feet starts where it stands, for as long.
 const JOLT_OPEN_MS: u64 = 130;
 const JOLT_MS: u64 = 330;
 const JOLT_AFTER_MS: u64 = 140;
@@ -515,7 +515,8 @@ macro_rules! cartwheel {
 /// A pump — a little victory dance: a limb goes up on one side, then the
 /// other, and again. Whose limbs they are is the mascot's to say: the
 /// crest's arms, the bloom's petals, the sprout's arms, the twin's ears
-/// (one folds as the other stands), the skitterer's claws.
+/// (one folds as the other stands) — and the skitterer, which has no limb
+/// to raise, puffs out one side of itself and then the other.
 macro_rules! pump {
     ($left:ident, $right:ident) => {
         const PUMP: Clip = clip![
@@ -524,37 +525,37 @@ macro_rules! pump {
     };
 }
 
-/// One **breath** of a mascot asleep, from its own stills: in — on its
-/// feet (`$inhale`) — and out, its head down (`$exhale`), with a `z` in the
-/// top corner of its block (`$snore`) that grows to a `Z` (`$snore_loud`).
-/// All of it stays on screen: it sleeps where it stands, and its eyes are
-/// closed, not gone — each a lid ([`MASCOT_LIDS`]) where the eye was. A nap
-/// plays this over and over.
+/// One **breath** of a mascot asleep, from its own stills: a quiet moment
+/// (`$asleep` — settled where it sleeps, its eyes closed, each a lid
+/// ([`MASCOT_LIDS`]) where the eye was), then a `z` in the top corner of
+/// its block (`$snore`) that grows to a `Z` (`$snore_loud`). The three
+/// stills differ in that one cell: a sleeper **holds still**, and its snore
+/// is all of it that moves — one that rose and sank with each breath read
+/// as jumping on the spot. A nap plays this over and over.
 macro_rules! breath {
-    ($inhale:ident, $exhale:ident, $snore:ident, $snore_loud:ident) => {
+    ($asleep:ident, $snore:ident, $snore_loud:ident) => {
         const BREATH: Clip = clip![
-            $inhale for BREATHE_IN_MS, $exhale for BREATHE_OUT_MS,
-            $snore for SNORE_MS, $snore_loud for SNORE_LOUD_MS,
-            $exhale for BREATHE_AFTER_MS,
+            $asleep for SLEEP_QUIET_MS, $snore for SNORE_MS, $snore_loud for SNORE_LOUD_MS,
         ];
     };
 }
 
 /// A nap for eyes with a lid: they grow heavy, open, grow heavy again and
-/// close (`ASLEEP`); the head nods (`ASLEEP_LOW`), comes up, nods — and it
-/// is asleep where it stands ([`breath`]). It wakes by itself the way it went: an eye half open,
-/// open, a stretch (`$stretch`, the mascot's own), and two blinks to clear
-/// the sleep away. Woken by a key it **starts**: it flinches, its eyes
-/// open, a `!` where the snore was (`$flinch`), and it is on its feet
-/// wide-eyed (`$startled`, the `!` still beside it) before the start wears
-/// off.
+/// close (`ASLEEP`), all of it on its feet — and its head goes down
+/// (`ASLEEP_LOW`), once, where it sleeps ([`breath`]). It wakes by itself
+/// the way it went: an eye half open, open, a stretch (`$stretch`, the
+/// mascot's own), and two blinks to clear the sleep away. Woken by a key it
+/// **starts**: its eyes open where it lies, a `!` where the snore was
+/// (`$flinch`), and it is on its feet wide-eyed (`$startled`, the `!` still
+/// beside it) before the start wears off. **Caught** still on its feet —
+/// its eyes only closing — it starts where it stands: wide-eyed at once,
+/// never down first.
 macro_rules! lidded_nap {
     ($stretch:ident, $flinch:ident, $startled:ident) => {
-        breath!(ASLEEP, ASLEEP_LOW, SNORE, SNORE_LOUD);
+        breath!(ASLEEP_LOW, SNORE, SNORE_LOUD);
         const NOD_OFF: Clip = clip![
             LID for DROWSE_MS, REST for DROWSE_APART_MS, LID for DROWSE_MS,
             ASLEEP for EYES_CLOSE_MS,
-            ASLEEP_LOW for NOD_MS, ASLEEP for NOD_APART_MS, ASLEEP_LOW for NOD_MS,
         ];
         const WAKE_UP: Clip = clip![
             LID for STIR_MS, REST for RISE_MS, $stretch for STRETCH_MS,
@@ -564,11 +565,15 @@ macro_rules! lidded_nap {
         const JOLT: Clip = clip![
             $flinch for JOLT_OPEN_MS, $startled for JOLT_MS, WIDE for JOLT_AFTER_MS,
         ];
+        const CAUGHT: Clip = clip![
+            $startled for JOLT_OPEN_MS + JOLT_MS, WIDE for JOLT_AFTER_MS,
+        ];
         const NAP: Nap = Nap {
             nod_off: &NOD_OFF,
             breath: &BREATH,
             wake_up: &WAKE_UP,
             jolt: &JOLT,
+            caught: &CAUGHT,
         };
     };
 }
@@ -660,25 +665,41 @@ struct Motions {
 }
 
 /// How a mascot **naps** (`docs/mascot-animation.md` *The nap*): the three
-/// clips a nap is made of, and the one a key ends it with.
+/// clips a nap is made of, and the two a key ends it with.
 struct Nap {
-    /// Falling asleep: it grows drowsy, its eyes close, and its head nods.
+    /// Falling asleep: it grows drowsy and its eyes close. Its last step is
+    /// not the sleeper's own still — the breath's first is — so the frame
+    /// that opens the first breath is the one that puts it down.
     nod_off: &'static Clip,
-    /// One breath asleep — in, on its feet, and out with its head down and
-    /// a snore — played over and over for as long as the nap lasts.
+    /// One breath asleep — settled, quiet, and then a snore — played over
+    /// and over for as long as the nap lasts. Its steps differ in the
+    /// snore's one cell: a sleeper holds still.
     breath: &'static Clip,
     /// Waking by itself: it stirs, its eyes open, it stretches and blinks.
     wake_up: &'static Clip,
-    /// Woken by a key instead: the start it gives — a `!` beside it, and
-    /// wide awake inside half a second.
+    /// Woken by a key instead, **sound asleep**: the start it gives — its
+    /// eyes open where it lies, a `!` beside it, and it is up, wide awake
+    /// inside half a second.
     jolt: &'static Clip,
+    /// The start of one **caught nodding off**. The four that droop on
+    /// their feet start where they stand: taking them down to the
+    /// sleeper's still for an eighth of a second and straight back up was
+    /// a flicker of the whole block. The skitterer and the stone, down
+    /// from the first step of their nod, start as they do asleep.
+    caught: &'static Clip,
 }
 
 impl Nap {
-    /// The nap's clips: the three it plays in order, and the start that
-    /// cuts it short.
-    const fn clips(&self) -> [&'static Clip; 4] {
-        [self.nod_off, self.breath, self.wake_up, self.jolt]
+    /// The nap's clips: the three it plays in order, and the two starts
+    /// that cut it short.
+    const fn clips(&self) -> [&'static Clip; 5] {
+        [
+            self.nod_off,
+            self.breath,
+            self.wake_up,
+            self.jolt,
+            self.caught,
+        ]
     }
 }
 
@@ -874,14 +895,14 @@ mod crest {
     foot_taps!();
     patter!();
     // Asleep: its eyes closed — a lid along the bottom of each socket — on
-    // its feet and with its head down; and snoring, a `z` in the block's
-    // top corner, then a `Z`.
+    // its feet as they close, and with its head down from there; and
+    // snoring, a `z` in the block's top corner, then a `Z`.
     const ASLEEP: Art = &[SHUT[0], "▝▜━███━▛▘", SHUT[2]];
     const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▗█▁███▁█▖", DIPPED_SHUT[2]];
     const SNORE: Art = &[" ▖ ▖ ▗ ▗z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     const SNORE_LOUD: Art = &[" ▖ ▖ ▗ ▗Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
-    // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
-    // beside its head.
+    // Woken with a start: its eyes open where it lies, and up wide-eyed —
+    // a `!` beside its head.
     const FLINCH: Art = &[" ▖ ▖ ▗ ▗!", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
     const STARTLED: Art = &[" ▙▄▙▄▟▄▟!", "▝▜▂███▂▛▘", "  ▘▘ ▝▝"];
     lidded_nap!(FLARE, FLINCH, STARTLED);
@@ -1004,14 +1025,14 @@ mod bloom {
     foot_taps!();
     patter!();
     // Asleep: its eyes closed — a lid along the bottom of each socket — on
-    // its feet and with its head down; and snoring, a `z` in the block's
-    // top corner, then a `Z`.
+    // its feet as they close, and with its head down from there; and
+    // snoring, a `z` in the block's top corner, then a `Z`.
     const ASLEEP: Art = &[SHUT[0], "▀█━███━█▀", SHUT[2]];
     const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▄█▁███▁█▄", DIPPED_SHUT[2]];
     const SNORE: Art = &["  ▄▄▄▄▄ z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     const SNORE_LOUD: Art = &["  ▄▄▄▄▄ Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
-    // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
-    // beside its head.
+    // Woken with a start: its eyes open where it lies, and up wide-eyed —
+    // a `!` beside its head.
     const FLINCH: Art = &["  ▄▄▄▄▄ !", "▄█▀███▀█▄", " ▜▜▀▀▀▛▛"];
     const STARTLED: Art = &[" ▄█████▄!", "▀█▂███▂█▀", " ▝▝   ▘▘"];
     lidded_nap!(SWOLLEN, FLINCH, STARTLED);
@@ -1128,18 +1149,17 @@ mod sprout {
     pump!(LEFT_ARM_UP, RIGHT_ARM_UP);
     patter!();
     // Asleep: its eyes closed — a lid along the bottom of each socket. It
-    // has no room to dip, so its shoot droops to a bud with each breath out
-    // — a `z` in the block's top corner, then a `Z`.
+    // has no room to dip, so its shoot droops to a bud and stays there — a
+    // `z` in the block's top corner, then a `Z`.
     const ASLEEP: Art = &[SHUT[0], "▗▟▁███▁▙▖", SHUT[2]];
     const DROOPED: Art = &["    ▄", ASLEEP[1], ASLEEP[2]];
     const SNORE: Art = &["    ▄   z", ASLEEP[1], ASLEEP[2]];
     const SNORE_LOUD: Art = &["    ▄   Z", ASLEEP[1], ASLEEP[2]];
-    breath!(ASLEEP, DROOPED, SNORE, SNORE_LOUD);
+    breath!(DROOPED, SNORE, SNORE_LOUD);
     /// Nodding off with no lid to lower: its eyes close, open, and close
-    /// for good, and its shoot droops, comes up, and droops.
+    /// for good, its shoot still up — it droops as the first breath opens.
     const NOD_OFF: Clip = clip![
         ASLEEP for DROWSE_MS, REST for DROWSE_APART_MS, ASLEEP for EYES_CLOSE_MS,
-        DROOPED for NOD_MS, ASLEEP for NOD_APART_MS, DROOPED for NOD_MS,
     ];
     /// Woken with a start: its eyes open, a `!` beside its drooped shoot,
     /// and it is up with both arms thrown in the air.
@@ -1147,6 +1167,10 @@ mod sprout {
     const STARTLED: Art = &["    █   !", "▝▜▀███▀▛▘", " ▝▛▛▀▜▜▘"];
     const JOLT: Clip = clip![
         FLINCH for JOLT_OPEN_MS, STARTLED for JOLT_MS, ARMS_UP for JOLT_AFTER_MS,
+    ];
+    /// Caught with its shoot still up, it starts as it stands.
+    const CAUGHT: Clip = clip![
+        STARTLED for JOLT_OPEN_MS + JOLT_MS, ARMS_UP for JOLT_AFTER_MS,
     ];
     /// Awake again: its eyes open, its shoot comes up, its leaves spread as
     /// wide as they go — and it blinks the sleep away, twice.
@@ -1160,6 +1184,7 @@ mod sprout {
         breath: &BREATH,
         wake_up: &WAKE_UP,
         jolt: &JOLT,
+        caught: &CAUGHT,
     };
     const SWAY: Clip = clip![TIP_RIGHT for 170, REST for 110, TIP_LEFT for 170];
     const UNFURL: Clip = clip![TIP_RIGHT for 90, LEAF for 520, TIP_RIGHT for 90];
@@ -1299,14 +1324,14 @@ mod twin {
     foot_taps!();
     patter!();
     // Asleep: its eyes closed — a lid along the bottom of each socket — on
-    // its feet and with its head down; and snoring, a `z` in the block's
-    // top corner, then a `Z`.
+    // its feet as they close, and with its head down from there; and
+    // snoring, a `z` in the block's top corner, then a `Z`.
     const ASLEEP: Art = &[SHUT[0], "▝▜━███━▛▘", SHUT[2]];
     const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▗█▁███▁█▖", DIPPED_SHUT[2]];
     const SNORE: Art = &[" ▄▄   ▄▄z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     const SNORE_LOUD: Art = &[" ▄▄   ▄▄Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
-    // Woken with a start: a flinch, its eyes open, and up wide-eyed — a `!`
-    // beside its head.
+    // Woken with a start: its eyes open where it lies, and up wide-eyed —
+    // a `!` beside its head.
     const FLINCH: Art = &[" ▄▄   ▄▄!", "▗█▀███▀█▖", " ▝▛▛▀▜▜▘"];
     const STARTLED: Art = &[" ██▄▄▄██!", "▝▜▂███▂▛▘", "  ▘▘ ▝▝"];
     lidded_nap!(EARS_SPLAYED, FLINCH, STARTLED);
@@ -1369,8 +1394,9 @@ mod twin {
 }
 
 /// The skitterer: eyes in the lower half of their cells (a one-frame blink,
-/// like the seedling's), and six legs that scuttle on the spot, ripple one
-/// after another, and stretch.
+/// like the seedling's), six legs that scuttle on the spot, ripple one
+/// after another, and stretch — and a body it puffs up to the edges of its
+/// block where another mascot would throw its arms up.
 mod skiter {
     use super::*;
 
@@ -1393,11 +1419,15 @@ mod skiter {
     const LEG_6_UP: Art = &["▗▟▀███▀▙▖", "▝▜█████▛▘", " ▘▘▝ ▘▝"];
     const TUCKED: Art = &["▗▟▀███▀▙▖", "▝▜█████▛▘", " ▝▝▝ ▘▘▘"];
     const SPLAYED: Art = &["▗▟▀███▀▙▖", "▝▜█████▛▘", "▝ ▘▝ ▘▝ ▘"];
-    // The claws, raised from the body's sides to its shoulders — both, or
-    // one.
-    const CLAWS_UP: Art = &["▐▟▀███▀▙▌", " ▜█████▛", " ▘▘▝ ▘▝▝"];
-    const LEFT_CLAW_UP: Art = &["▐▟▀███▀▙▖", " ▜█████▛▘", " ▘▘▝ ▘▝▝"];
-    const RIGHT_CLAW_UP: Art = &["▗▟▀███▀▙▌", "▝▜█████▛", " ▘▘▝ ▘▝▝"];
+    // The body, puffed up: it swells to the edges of its block — both
+    // sides of it, or one — its eyes and its legs as drawn. It has no arm
+    // to throw up, and twice it was given one: the bumps at its sides were
+    // claws it raised, a thin stick at each shoulder that read as a small
+    // hand stuck to its head, and then it stood tall on the tips of its
+    // legs, which was liked no better.
+    const PUFFED: Art = &["▟█▀███▀█▙", "▜███████▛", " ▘▘▝ ▘▝▝"];
+    const LEFT_PUFFED: Art = &["▟█▀███▀▙▖", "▜██████▛▘", " ▘▘▝ ▘▝▝"];
+    const RIGHT_PUFFED: Art = &["▗▟▀███▀█▙", "▝▜██████▛", " ▘▘▝ ▘▝▝"];
     // The whole skitterer, half a cell off.
     const DIPPED: Art = &[" ▗▄▄▄▄▄▖", "▐█▄███▄█▌", " ▞▛▜▀▛▜▚"];
     const DIPPED_SHUT: Art = &[" ▗▄▄▄▄▄▖", "▐███████▌", " ▞▛▜▀▛▜▚"];
@@ -1428,7 +1458,7 @@ mod skiter {
     dance!();
     somersault!();
     cartwheel!();
-    pump!(LEFT_CLAW_UP, RIGHT_CLAW_UP);
+    pump!(LEFT_PUFFED, RIGHT_PUFFED);
     /// Hiding: it sinks until only its eyes show over the floor of its
     /// block, looks both ways from there, and is up again.
     const HIDE: Clip = clip![
@@ -1436,26 +1466,26 @@ mod skiter {
         SUNK_LOOKING_LEFT for PEEK_OVER_MS, SUNK_LOOKING_RIGHT for PEEK_OVER_MS,
         SUNK_TO_EYES for SURFACE_MS, SUNK for SINK_MS,
     ];
-    // Asleep: its eyes closed — a lid along the bottom of each socket — on
-    // its feet and with its body down; and snoring, a `z` in the block's
-    // top corner, then a `Z`.
-    const ASLEEP: Art = &["▗▟▁███▁▙▖", SHUT[1], SHUT[2]];
+    // Asleep: on its belly, its eyes closed — a lid along the bottom of
+    // each socket — and snoring, a `z` in the block's top corner, then a
+    // `Z`.
     const ASLEEP_LOW: Art = &[DIPPED_SHUT[0], "▐█━███━█▌", DIPPED_SHUT[2]];
     const SNORE: Art = &[" ▗▄▄▄▄▄▖z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
     const SNORE_LOUD: Art = &[" ▗▄▄▄▄▄▖Z", ASLEEP_LOW[1], ASLEEP_LOW[2]];
-    breath!(ASLEEP, ASLEEP_LOW, SNORE, SNORE_LOUD);
-    /// Nodding off without a lid to lower: its eyes close, open, and close
-    /// for good, and its body sinks, comes up, and sinks.
+    breath!(ASLEEP_LOW, SNORE, SNORE_LOUD);
+    /// Nodding off: it settles onto its belly first — on its feet its top
+    /// row leaves a snore, or a `!`, no corner — and there its eyes close,
+    /// open once more, and close for good as the first breath opens.
     const NOD_OFF: Clip = clip![
-        ASLEEP for DROWSE_MS, REST for DROWSE_APART_MS, ASLEEP for EYES_CLOSE_MS,
-        ASLEEP_LOW for NOD_MS, ASLEEP for NOD_APART_MS, ASLEEP_LOW for NOD_MS,
+        DIPPED for DROWSE_MS, ASLEEP_LOW for DROWSE_MS, DIPPED for DROWSE_APART_MS,
     ];
-    /// Woken with a start: its eyes open and it freezes in its crouch, a
-    /// `!` over it — on its feet its top row leaves the `!` no room — and
-    /// it is up with its claws raised.
+    /// Woken with a start: its eyes open and it freezes where it lies, a
+    /// `!` over it — and it is up, puffed out to the edges of its block,
+    /// long enough to be seen swollen rather than to flash. Down from the
+    /// first step of its nod, it is never caught on its feet.
     const STARTLED: Art = &[" ▗▄▄▄▄▄▖!", "▐█▄███▄█▌", " ▞▛▜▀▛▜▚"];
     const JOLT: Clip = clip![
-        STARTLED for JOLT_OPEN_MS + JOLT_MS, CLAWS_UP for JOLT_AFTER_MS,
+        STARTLED for JOLT_MS, PUFFED for JOLT_OPEN_MS + JOLT_AFTER_MS,
     ];
     /// Awake again: its eyes open, it is up, it stretches every leg — and
     /// blinks the sleep away, twice.
@@ -1469,6 +1499,7 @@ mod skiter {
         breath: &BREATH,
         wake_up: &WAKE_UP,
         jolt: &JOLT,
+        caught: &JOLT,
     };
     const SKITTER: Clip = clip![
         LEGS_RIGHT for 75, LEGS_LEFT for 75, LEGS_RIGHT for 75,
@@ -1481,11 +1512,13 @@ mod skiter {
         LEG_4_UP for 55, LEG_5_UP for 55, LEG_6_UP for 55,
     ];
     const STRETCH: Clip = clip![TUCKED for 140, SPLAYED for 380, TUCKED for 140];
-    /// Its claws raised, twice.
-    const CLAWS: Clip = clip![CLAWS_UP for 130, REST for 80, CLAWS_UP for 130];
-    /// A cheer: it springs with its claws up, twice, and blinks.
+    /// Puffed up to the edges of its block, let out, and puffed up again —
+    /// each held long enough to be seen swollen, not to flash.
+    const PUFF: Clip = clip![PUFFED for 260, REST for 140, PUFFED for 260];
+    /// A cheer: it springs from a crouch and puffs itself up, twice, and
+    /// blinks.
     const CHEER: Clip = clip![
-        DIPPED for 90, CLAWS_UP for 160, DIPPED for 90, CLAWS_UP for 160,
+        DIPPED for 90, PUFFED for 160, DIPPED for 90, PUFFED for 160,
         REST for PHRASE_REST_MS, SHUT for BLINK_MS,
     ];
     /// A scuttle: half a cell to one side, the other, and back — stopping
@@ -1510,7 +1543,7 @@ mod skiter {
             card(2, &[&SKITTER]),
             card(2, &[&WIGGLE, &SCUTTLE]),
             card(2, &[&LEG_WAVE]),
-            card(1, &[&CLAWS]),
+            card(1, &[&PUFF]),
             card(1, &[&CHEER]),
             card(1, &[&LOOK_AROUND]),
             card(1, &[&SHIFTY]),
@@ -1670,20 +1703,11 @@ mod gem {
     // in the block's top corner, then a `Z`.
     const SNORE: Art = &["   ▗▄▖  z", DIPPED[1], DIPPED[2]];
     const SNORE_LOUD: Art = &["   ▗▄▖  Z", DIPPED[1], DIPPED[2]];
-    /// One breath of the stone asleep, which has no head to nod: its light
-    /// swells and fades as it breathes in — and out, in the dark, comes
-    /// the snore.
-    const BREATH: Clip = glow_clip![
-        DIPPED at 12 for BREATHE_IN_MS / 5, DIPPED at 24 for BREATHE_IN_MS / 5,
-        DIPPED at 36 for BREATHE_IN_MS / 5, DIPPED at 24 for BREATHE_IN_MS / 5,
-        DIPPED at 12 for BREATHE_IN_MS / 5,
-        DIPPED at 0 for BREATHE_OUT_MS, SNORE at 0 for SNORE_MS,
-        SNORE_LOUD at 0 for SNORE_LOUD_MS, DIPPED at 0 for BREATHE_AFTER_MS,
-    ];
-    /// Nodding off with no eyes to close: it sinks, rises, sinks again —
-    /// and stays down.
-    const NOD_OFF: Clip = clip![
-        DIPPED for DROWSE_MS, REST for DROWSE_APART_MS, DIPPED for EYES_CLOSE_MS + NOD_MS,
+    breath!(DIPPED, SNORE, SNORE_LOUD);
+    /// Nodding off with no eyes to close: it settles, a last light fading
+    /// out of it — and sleeps dark, as still as the rest.
+    const NOD_OFF: Clip = glow_clip![
+        DIPPED at 30 for SETTLE_MS, DIPPED at 20 for SETTLE_MS, DIPPED at 10 for SETTLE_MS,
     ];
     /// Woken with a start: a `!` beside it and it lights up where it lies,
     /// then it is up in a flash that is still fading as the start wears
@@ -1706,6 +1730,7 @@ mod gem {
         breath: &BREATH,
         wake_up: &WAKE_UP,
         jolt: &JOLT,
+        caught: &JOLT,
     };
 
     pub(super) const MOTIONS: Motions = Motions {
@@ -1783,6 +1808,26 @@ struct Sleep {
     until: Option<u64>,
 }
 
+/// Since when a mascot has been **left to itself**, on its clock — two
+/// moments, which a key that types nothing tells apart: it puts the nap
+/// off and leaves the move under way alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Alone {
+    /// Since when its moves are its own: nothing it plays began before
+    /// this.
+    up: u64,
+    /// Since the last sign of anyone, which its naps are counted from.
+    since: u64,
+}
+
+#[cfg(test)]
+impl Alone {
+    /// Left to itself, and untouched, since `since`.
+    const fn from(since: u64) -> Self {
+        Self { up: since, since }
+    }
+}
+
 /// What a mascot left alone is doing at an instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Idle {
@@ -1834,12 +1879,25 @@ impl Gaze {
 }
 
 /// A run of typing the banner mascot is watching, on its clock: from the
-/// first keystroke to the moment it looks away — [`MASCOT_WATCH_LINGER`]
-/// after the last one, or at once when the composer is emptied.
+/// moment its eyes turn to the text — the first keystroke, or the end of
+/// the start that keystroke gave it — to the moment it looks away,
+/// [`MASCOT_WATCH_LINGER`] after the last one, or at once when the
+/// composer is emptied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Watch {
     began: u64,
     until: u64,
+}
+
+/// A **start**: a sign of the user that found the mascot napping, on its
+/// clock — when, and where in its nap, which is what the start it gives
+/// plays from ([`Mascot::start`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Woke {
+    at: u64,
+    /// Whether it was still **nodding off** — its eyes closing, the four
+    /// that droop on their feet not yet down — rather than sound asleep.
+    nodding: bool,
 }
 
 /// What the banner mascot has seen of the user, on its clock — the little
@@ -1856,9 +1914,13 @@ pub(super) struct Company {
     /// which is what a nap is counted from. Zero until the first: a mascot
     /// nobody has touched has been alone since its banner appeared.
     last: u64,
-    /// When a sign of the user last found it asleep: the start it gives
+    /// The last sign of the user that found it napping: the start it gives
     /// plays from here.
-    woke: Option<u64>,
+    woke: Option<Woke>,
+    /// Since when its timeline has been its own to play, by the signs of
+    /// the user that gave it nothing to look at: a key that types nothing
+    /// leaves this where it was, so the move under way plays on.
+    up: u64,
 }
 
 /// Which band of light crosses the mascot ([`MascotShine`]).
@@ -2087,10 +2149,11 @@ impl Mascot {
         }
     }
 
-    /// What this mascot is doing at `ms`, left alone since `since`: up, or
-    /// napping. A stretch of idleness holds one nap, so this is the draw of
-    /// two naps at most, however long it has been left.
-    fn idle(self, seed: u64, since: u64, ms: u64) -> Idle {
+    /// What this mascot is doing at `ms`, left to itself since `alone`:
+    /// up, or napping. A stretch of idleness holds one nap, so this is the
+    /// draw of two naps at most, however long it has been left.
+    fn idle(self, seed: u64, alone: Alone, ms: u64) -> Idle {
+        let since = alone.since;
         let n = (ms.saturating_sub(since) / NAP_STRETCH_MS).min(CAT_NAPS);
         let nap = self.nap(seed, since, n);
         // On its feet a breath before its timeline has it move again.
@@ -2099,7 +2162,7 @@ impl Mascot {
             let from = n
                 .checked_sub(1)
                 .and_then(|before| up_after(self.nap(seed, since, before)))
-                .unwrap_or(since);
+                .unwrap_or(alone.up);
             return Idle::Up {
                 from,
                 until: nap.from,
@@ -2132,10 +2195,10 @@ impl Mascot {
         }
     }
 
-    /// This mascot's pose at `ms`, **left alone** since `since`: its
+    /// This mascot's pose at `ms`, **left to itself** since `alone`: its
     /// timeline while it is up, its nap once it has nodded off.
-    fn idle_pose(self, seed: u64, ms: u64, since: u64) -> MascotPose {
-        match self.idle(seed, since, ms) {
+    fn idle_pose(self, seed: u64, ms: u64, alone: Alone) -> MascotPose {
+        match self.idle(seed, alone, ms) {
             Idle::Up { from, until } => self.pose_between(seed, ms, from, until),
             Idle::Asleep(sleep) => {
                 let (clip, at) = self.sleeping(sleep, ms);
@@ -2146,10 +2209,10 @@ impl Mascot {
 
     /// How long [`idle_pose`](Self::idle_pose) holds at `ms`, in
     /// milliseconds: asleep, to the end of the step of its nap it is in —
-    /// a breath is five (nine for the gem, whose light breathes), so a
-    /// sleeping mascot costs a frame or two a second and nothing between.
-    fn idle_holds(self, seed: u64, ms: u64, since: u64) -> u64 {
-        match self.idle(seed, since, ms) {
+    /// a breath is three, of one cell each — so a sleeping mascot costs a
+    /// frame a second and nothing between.
+    fn idle_holds(self, seed: u64, ms: u64, alone: Alone) -> u64 {
+        match self.idle(seed, alone, ms) {
             Idle::Up { from, until } => self.holds_between(seed, ms, from, until),
             Idle::Asleep(sleep) => {
                 let (clip, at) = self.sleeping(sleep, ms);
@@ -2172,8 +2235,8 @@ impl Mascot {
         Some((start, blink))
     }
 
-    /// The mascot **watching** at `ms`: its eyes turned toward the caret's
-    /// third of the composer (the gem's facet slid toward it), but for a
+    /// The mascot **watching** at `ms`: its eyes turned the way `gaze`
+    /// says the caret lies (the gem's facet slid toward it), but for a
     /// blink now and then.
     fn watching(self, seed: u64, ms: u64, watch: Watch, gaze: Gaze) -> MascotPose {
         let window = ms.saturating_sub(watch.began) / WATCH_BLINK_EVERY_MS;
@@ -2195,47 +2258,77 @@ impl Mascot {
         }
     }
 
-    /// Since when this mascot has been left alone, by what it has seen of
-    /// the user: the latest of the last sign of them, the end of its watch,
-    /// and the end of the start a key gave it. Its timeline plays from
-    /// here, and its next nap is counted from here.
-    fn left_since(self, company: Company) -> u64 {
+    /// The clip a start plays: from where it lies for one found sound
+    /// asleep, from where it stands for one caught nodding off — a start
+    /// never takes a mascot **down**.
+    fn start(self, woke: Woke) -> &'static Clip {
+        let nap = &self.motions().nap;
+        if woke.nodding { nap.caught } else { nap.jolt }
+    }
+
+    /// Since when this mascot has been left to itself, by what it has
+    /// seen of the user. Its **timeline** plays from the end of its watch
+    /// or of the start a key gave it — or from the key that last started
+    /// it over ([`Company::up`]); its next **nap** is counted from the
+    /// last sign of anyone, which is never sooner.
+    fn alone(self, company: Company) -> Alone {
         let watched = company.watch.map_or(0, |watch| watch.until);
         let started = company
             .woke
-            .map_or(0, |at| at.saturating_add(self.motions().nap.jolt.len()));
-        company.last.max(watched).max(started)
+            .map_or(0, |woke| woke.at.saturating_add(self.start(woke).len()));
+        let up = company.up.max(watched).max(started);
+        Alone {
+            up,
+            since: company.last.max(up),
+        }
+    }
+
+    /// Whether this mascot, left to itself, has a move **under way** at
+    /// `ms`: begun, and not yet over.
+    fn moving(self, seed: u64, ms: u64, company: Company) -> bool {
+        let Idle::Up { from, until } = self.idle(seed, self.alone(company), ms) else {
+            return false;
+        };
+        self.cue(seed, slot_at(ms))
+            .filter(|&cue| Self::plays(cue, from, until))
+            .is_some_and(|(start, clip)| ms >= start && ms - start < clip.len())
     }
 
     /// The start a key gave it, while it lasts: the clip, and how far into
     /// it `ms` is.
     fn jolting(self, company: Company, ms: u64) -> Option<(&'static Clip, u64)> {
-        let jolt = self.motions().nap.jolt;
-        let at = ms.checked_sub(company.woke?)?;
-        (at < jolt.len()).then_some((jolt, at))
+        let woke = company.woke?;
+        let start = self.start(woke);
+        let at = ms.checked_sub(woke.at)?;
+        (at < start.len()).then_some((start, at))
     }
 
-    /// Whether a sign of the user at `ms` finds this mascot **asleep** —
-    /// nodding off, or sound asleep — and so gives it a start. One that is
+    /// The start a sign of the user at `ms` gives this mascot, when it
+    /// finds it **napping** — nodding off, or sound asleep. One that is up,
     /// already stirring by itself, watching, or mid-start is not surprised.
-    fn asleep(self, seed: u64, ms: u64, company: Company) -> bool {
+    fn startled(self, seed: u64, ms: u64, company: Company) -> Option<Woke> {
         if self.jolting(company, ms).is_some()
             || company.watch.is_some_and(|watch| ms < watch.until)
         {
-            return false;
+            return None;
         }
-        match self.idle(seed, self.left_since(company), ms) {
-            Idle::Up { .. } => false,
-            Idle::Asleep(sleep) => sleep
-                .until
-                .is_none_or(|until| ms < until.saturating_sub(self.motions().nap.wake_up.len())),
-        }
+        let Idle::Asleep(sleep) = self.idle(seed, self.alone(company), ms) else {
+            return None;
+        };
+        let nap = &self.motions().nap;
+        let stirring = sleep
+            .until
+            .is_some_and(|until| ms >= until.saturating_sub(nap.wake_up.len()));
+        (!stirring).then(|| Woke {
+            at: ms,
+            nodding: ms.saturating_sub(sleep.from) < nap.nod_off.len(),
+        })
     }
 
     /// This mascot's pose `clock` into the timeline `seed`, **in company**:
     /// the start a key just gave it; else its eyes on the caret while it
-    /// watches; else what it does left alone since
-    /// [`left_since`](Self::left_since) — its moves, and its naps.
+    /// watches; else what it does left to itself since
+    /// [`alone`](Self::alone) — its moves, and its naps.
     fn company_pose(self, seed: u64, clock: Duration, company: Company, gaze: Gaze) -> MascotPose {
         let ms = millis(clock);
         if let Some((jolt, at)) = self.jolting(company, ms) {
@@ -2243,7 +2336,7 @@ impl Mascot {
         }
         match company.watch {
             Some(watch) if ms < watch.until => self.watching(seed, ms, watch, gaze),
-            _ => self.idle_pose(seed, ms, self.left_since(company)),
+            _ => self.idle_pose(seed, ms, self.alone(company)),
         }
     }
 
@@ -2269,7 +2362,7 @@ impl Mascot {
                     });
                     blink_edge.map_or(watch.until - ms, |edge| edge.min(watch.until - ms))
                 }
-                _ => self.idle_holds(seed, ms, self.left_since(company)),
+                _ => self.idle_holds(seed, ms, self.alone(company)),
             }
         };
         Duration::from_millis(wait.max(1))
@@ -2373,7 +2466,7 @@ impl App {
         let company = self.mascot_company;
         let startled = self
             .mascot_seed()
-            .is_some_and(|seed| self.mascot.asleep(seed, now, company));
+            .and_then(|seed| self.mascot.startled(seed, now, company));
         let watch = if self.input.is_empty() {
             company.watch.map(|watch| Watch {
                 until: watch.until.min(now),
@@ -2383,14 +2476,37 @@ impl App {
             let until = now.saturating_add(WATCH_LINGER_MS);
             Some(match company.watch {
                 Some(watch) if now < watch.until => Watch { until, ..watch },
-                _ => Watch { began: now, until },
+                // Its eyes turn to the text once the start is over, and
+                // the watch's blinks are counted from there: one that
+                // came a third of a second after them made a flurry of
+                // what should be a look.
+                _ => Watch {
+                    began: startled.map_or(now, |woke| {
+                        now.saturating_add(self.mascot.start(woke).len())
+                    }),
+                    until,
+                },
             })
         };
-        self.mascot_company = Company {
+        let mut next = Company {
             watch,
             last: now,
-            woke: if startled { Some(now) } else { company.woke },
+            woke: startled.or(company.woke),
+            up: company.up,
         };
+        // A key that gives it nothing to do leaves its timeline where it
+        // was: the move under way plays on, where it used to stop dead at
+        // the key. But the nap this key put off was holding a move back —
+        // one it would have cut in two — and with the nap gone that move
+        // would start from its middle: then its timeline starts over
+        // here instead.
+        let joins = self.mascot_seed().is_some_and(|seed| {
+            self.mascot.moving(seed, now, next) && !self.mascot.moving(seed, now, company)
+        });
+        if joins {
+            next.up = now;
+        }
+        self.mascot_company = next;
     }
 
     /// The animation's seed, when the mascot animates at all in this
@@ -2432,9 +2548,10 @@ impl App {
         self.banner_pose_watching(Gaze::Ahead)
     }
 
-    /// The banner mascot's pose now, its eyes — while the user types — on
-    /// the caret's third of the composer (`gaze`, `ui`'s to measure). See
-    /// `docs/mascot-animation.md` *Watching the user type*.
+    /// The banner mascot's pose now, its eyes — while the user types —
+    /// toward the caret (`gaze`, read from where the mascot stands, which
+    /// is `ui`'s to measure). See `docs/mascot-animation.md` *Watching the
+    /// user type*.
     #[must_use]
     pub fn banner_pose_watching(&self, gaze: Gaze) -> MascotPose {
         match self.mascot_seed() {
@@ -2841,14 +2958,20 @@ mod tests {
                             until - stretch
                         );
                         // Asleep at its two ends, and up either side of it.
-                        assert_eq!(mascot.idle(seed, since, nap.from), Idle::Asleep(nap));
-                        assert_eq!(mascot.idle(seed, since, until - 1), Idle::Asleep(nap));
+                        assert_eq!(
+                            mascot.idle(seed, Alone::from(since), nap.from),
+                            Idle::Asleep(nap)
+                        );
+                        assert_eq!(
+                            mascot.idle(seed, Alone::from(since), until - 1),
+                            Idle::Asleep(nap)
+                        );
                         assert!(matches!(
-                            mascot.idle(seed, since, nap.from - 1),
+                            mascot.idle(seed, Alone::from(since), nap.from - 1),
                             Idle::Up { until, .. } if until == nap.from
                         ));
                         assert!(matches!(
-                            mascot.idle(seed, since, until),
+                            mascot.idle(seed, Alone::from(since), until),
                             Idle::Up { from, .. } if from == until + BEAT_BREATH_MS
                         ));
                     }
@@ -2856,7 +2979,7 @@ mod tests {
                     let last = mascot.nap(seed, since, CAT_NAPS);
                     assert_eq!(last.until, None, "{}", mascot.name());
                     assert_eq!(
-                        mascot.idle(seed, since, u64::MAX),
+                        mascot.idle(seed, Alone::from(since), u64::MAX),
                         Idle::Asleep(last),
                         "{}",
                         mascot.name()
@@ -2889,9 +3012,9 @@ mod tests {
                     mascot.name()
                 );
             }
-            // It takes a couple of seconds to go under, and to come round.
+            // It takes a second or two to go under, and to come round.
             assert!(
-                (1_200..=3_500).contains(&nap.nod_off.len()),
+                (900..=2_000).contains(&nap.nod_off.len()),
                 "{}: nods off in {}ms",
                 mascot.name(),
                 nap.nod_off.len()
@@ -2917,6 +3040,21 @@ mod tests {
                 "{}",
                 mascot.name()
             );
+            // A breath is three stills of one body: quiet, a `z`, a `Z`.
+            assert_eq!(nap.breath.steps.len(), 3, "{}", mascot.name());
+            // The breath opens on a frame the nod did not end on — the one
+            // that puts it down — so no frame is drawn for nothing.
+            let (nodded, asleep) = (nap.nod_off.steps.last(), nap.breath.steps.first());
+            assert!(
+                nodded.map(|step| (step.art, step.glow))
+                    != asleep.map(|step| (step.art, step.glow)),
+                "{}: the nod ends on the sleeper's own still",
+                mascot.name()
+            );
+            // Either start lasts as long as the other: three fifths of a
+            // second.
+            assert_eq!(nap.jolt.len(), 600, "{}", mascot.name());
+            assert_eq!(nap.caught.len(), nap.jolt.len(), "{}", mascot.name());
         }
     }
 

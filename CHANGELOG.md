@@ -21,15 +21,16 @@ release heading when a version is cut.
   differs every session. Each of the six knows thirty moves and more: it
   blinks, glances, winks, stares, crosses its eyes and daydreams; it
   bounces, wiggles, dances and peeks to one side, the whole creature moving
-  half a cell; it waves and winks, cheers with its arms (petals, ears,
-  claws) thrown up, and pumps them one after the other; it does tricks —
+  half a cell; it waves and winks, cheers with its arms (petals, ears)
+  thrown up, and pumps them one after the other; it does tricks —
   ducks out of sight below its block and peeks back over the edge, turns a
   somersault or a cartwheel; it catches the light — a glint from either
   side, a glow that swells through it and fades, a glitter of twinkling
   cells; and it has moves of its own — the crest
   flares, ripples and ducks its frill, the bloom flutters, swells and
   wobbles, the sprout sways and unfurls its leaves, the twin flicks, splays
-  and droops its ears, the skiter skitters, stretches and raises its claws,
+  and droops its ears, the skiter skitters, stretches its six legs and
+  puffs itself up to the edges of its block,
   and the gem, which has no eyes, sparkles at every corner, turns its facet,
   spins edge-on, flashes, and sets like a sun to rise glowing. The moves
   are dealt like a deck rather than rolled, so the mascot
@@ -39,9 +40,9 @@ release heading when a version is cut.
   runs, never to the screen's left edge —
   and a few seconds after the last keystroke it goes back to its own moves.
   Leave it alone for three quarters of a minute and it **naps**: its eyes
-  grow heavy and it sleeps where it stands, its eyes closed to two thin
-  lines, its head down with each breath out and a `z`, then a `Z`, beside
-  it. It wakes by itself after the better
+  grow heavy and close to two thin lines, its head goes down, and it
+  sleeps there, still — a `z`, then a `Z`, beside it is all that moves.
+  It wakes by itself after the better
   part of a minute, stretches, and plays again — and after five minutes
   alone it sleeps until you are back. **Any key wakes it with a start** — a
   `!`, and it is wide awake — before it turns to what you are typing.

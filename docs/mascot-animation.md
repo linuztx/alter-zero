@@ -11,9 +11,9 @@ and peeks back over the edge, turns a somersault.
 And it keeps the user **company**. While the first message is typed it
 **watches**: its eyes turn to the text — to its right, where the line runs
 and the rest of the screen is. Left alone for three quarters of a minute it
-**naps** — nods off and sleeps where it stands, its eyes closed, each a
-thin lid line where the eye was, its head down with each breath out and a
-`z` in the corner of its block. And the first key that finds it asleep
+**naps** — its eyes close, each a thin lid line where the eye was, its
+head goes down, and it sleeps there, still, a `z` coming and going in the
+corner of its block. And the first key that finds it asleep
 **wakes it with a start**: a `!`, it is wide awake, and it turns to what is
 being typed. The first cell committed under the banner
 ends it all: from there the banner is scrollback, and scrollback does not
@@ -38,7 +38,8 @@ beats in five were a blink; "it's always just blinking" was a fair review.
 The second gave each a score; the third — ported in part from another
 branch's take on the same feature — added limbs, phrases and light; the
 fourth, tricks; the fifth took the stars out of its eyes and taught it to
-sleep (*The nap*, below). The moves come in six families:
+sleep (*The nap*, below); the sixth stilled the sleeper and gave the
+skitterer its legs to gesture with. The moves come in six families:
 
 - **Looks** — what a pair of eyes does: a **blink** (and a double), a
   **glance** to either side, a **look around**, a **shifty** dart from side
@@ -49,8 +50,9 @@ sleep (*The nap*, below). The moves come in six families:
   something that is not so sure.
 - **Phrases** — two moves that belong together, the second the first's
   punctuation: a **wave** and a wink of the eye beside the arm (a hello), a
-  **cheer** — a spring with the arms (petals, ears, claws) thrown up, twice
-  — and a blink, a startled stare or crossed eyes that collect themselves
+  **cheer** — a spring with the arms (petals, ears) thrown up, twice, the
+  skitterer puffing itself up — and a blink, a startled stare or
+  crossed eyes that collect themselves
   with a blink. A phrase pauses inside itself for a beat (150 ms), less
   than the breath that parts two moves, so it reads as one.
 - **The whole body, half a cell** — a **bounce** (it dips and is up again,
@@ -67,7 +69,8 @@ sleep (*The nap*, below). The moves come in six families:
 - **Its own moves** — the thing its catalog description says it does, and
   three or four more (the table below) — among them a **pump**, a little
   victory dance every eyed mascot has in its own limbs: one goes up on one
-  side, then the other, and again.
+  side, then the other, and again — the skitterer, which has none to
+  raise, puffing out one side of itself and then the other.
 - **Light** — the sweep that opens the greeting comes back once a round; a
   **glint**, a narrow catch of the light, crosses from either side; a
   **glow** swells through the whole mascot and fades, a breath of light;
@@ -79,19 +82,26 @@ sleep (*The nap*, below). The moves come in six families:
 | `bloom` | **flutters** its petals (down and up, three times) or **flaps** them (up to the head, down to the hem); **seesaws** them; **puffs up** its head, or **swells** it out to the block's edges; its crown **wobbles** from side to side; **tucks** its petals in, shy; **cheers** with them up, or lifts each in turn; taps or patters its feet | bounces, hides, somersaults — it fills its block from edge to edge, so it never leans, and never cartwheels |
 | `sprout` | its shoot **sways**; it **unfurls a leaf** to either side, or **spreads both**, or **blossoms** — two leaves opening as wide as they go; it **sinks to a bud and pushes up again**; it throws its **arms up**, three times, and blinks; it **waves** one, and sometimes winks after, or **pumps** them, one then the other; it **patters** its feet | wiggles, peeks, hides, cartwheels — its feet stand on the block's last half-row, so it never bounces, and never somersaults |
 | `twin` | **flicks an ear** (either one, twice); **wiggles** both out and in, or **splays** them to the corners; **sways** them; they **droop** and spring up pricked; they **see-saw**, one folding as the other stands; it **cheers** with them splayed; it taps or patters its feet | bounces, wiggles, dances, peeks, hides, somersaults, cartwheels |
-| `skiter` | **skitters**; a **wave** runs down its six legs, twice; it **stretches** them — drawn in, then spread wide; it **raises its claws** — both, or **one after the other** — and **cheers** with them up | bounces, wiggles, **scuttles** (half a cell each way, stopping between), dances, peeks, somersaults, cartwheels, and hides as far as its eyes — they are on its top row, so that is as deep as it goes |
+| `skiter` | **skitters**; a **wave** runs down its six legs, twice; it **stretches** them — drawn in, then spread wide; it **puffs up**, its body swollen to the edges of its block, twice; it puffs out **one side and then the other**; it **cheers**, springing from a crouch and puffing itself up | bounces, wiggles, **scuttles** (half a cell each way, stopping between), dances, peeks, somersaults, cartwheels, and hides as far as its eyes — they are on its top row, so that is as deep as it goes |
 | `gem` | a **spark** opens at any of its four corners, at two in turn, or **all round**; its **facet slides** from side to side as the stone turns, stands tall when it **gleams**, **pulses**; it **spins** — narrower, thin, edge-on and back; a sweep crosses it with a spark; it **flashes** — to full strength, dark, and again | bounces, **floats** (a slow bob), wiggles, dances, rocks slowly from side to side, and **sets like a sun** — half down, down to its tip — to rise glowing. Upside down it is itself, so it never flips |
 
 ### One part moved, or the whole mascot
 
-A frame is one of six things, and the tests hold every frame to it:
+A frame is one of seven things, and the tests hold every frame to it:
 
 - **the rest art with one part moved** — the eyes, a crest, a leaf, an ear,
-  a foot, a spark — so it differs from the rest art on exactly one row;
+  a foot, a leg, a spark — so it differs from the rest art on exactly one
+  row;
 - **a limb raised from the body's side** — the crest's arm, the bloom's
-  petals, the skitterer's claws, each a quarter cell at the end of the
-  middle row, lifted to the shoulder: two neighbouring rows redrawn, and
-  nothing in them but the art's two edge columns;
+  petals, each a quarter cell at the end of the middle row, lifted to the
+  shoulder: two neighbouring rows redrawn, and nothing in them but the
+  art's two edge columns;
+- **the body puffed out** — the skitterer's: swollen toward the edges of
+  its block, so every quarter cell of the rest art is still inked and all
+  that is added lies outside the body, past one end of a half-row of it or
+  the other. Nothing is taken away and nothing inside it is filled in — an
+  eye closed is a blink, not a breath taken — so it is the same creature,
+  bigger;
 - **the stone turned** — the gem's spin: every half-row of it as wide as the
   rest art's or narrower, about the same middle, down to a single column
   edge-on;
@@ -120,6 +130,31 @@ Beside any of these a **mark** may ride in the block's top right corner —
 the `z` and `Z` of a snore, the `!` of a start: light, not mascot, in the
 one cell beside its head every mascot leaves empty when it is down, and
 never anywhere else.
+
+**The skitterer puffs itself up, and raises nothing.** It has no arm to
+throw up, and twice it was given one. The bumps at its sides were claws it
+lifted to its shoulders — and a claw half a cell wide, raised, is a thin
+stick beside its head: it read as a small hand stuck on, and was not liked.
+Then it stood tall on the tips of its six legs instead, each stretched to
+the floor of its block, and that was liked no better. What it does now was
+picked from eight candidates played side by side: it **puffs up**. Its body
+swells to the edges of its block — a quarter cell or two at each end of
+every half-row of it, the cut corners kept — with its eyes and its legs as
+drawn. So "arms up" is the whole creature bigger, and its pump puffs out
+one side of it and then the other:
+
+```
+▗▟▀███▀▙▖    ▟█▀███▀█▙    ▟█▀███▀▙▖    ▗▟▀███▀█▙
+▝▜█████▛▘    ▜███████▛    ▜██████▛▘    ▝▜██████▛
+ ▘▘▝ ▘▝▝      ▘▘▝ ▘▝▝      ▘▘▝ ▘▝▝      ▘▘▝ ▘▝▝
+ at rest      puffed up    …one side    …the other
+```
+
+Puffed up is held a quarter of a second each time — a sixth in the spring
+of a cheer — so it is seen, not flashed. Two tests hold it there: no frame
+of the skitterer raises anything at its sides or stretches a leg to the
+floor, and the puff is where the others' arms go up — a move of its own,
+its cheer, and the end of its start.
 
 Either way a frame keeps the art's three rows and is never wider than the
 art: the banner's metadata column and the composer under it never shift.
@@ -180,7 +215,7 @@ tall, punched in the body. That decides how they can move:
    ▙▄▙▄▟▄▟      ▙▄▙▄▟▄▟      ▖ ▖ ▗ ▗z
   ▝▜▄███▄▛▘    ▝▜━███━▛▘    ▗█▁███▁█▖
     ▘▘ ▝▝        ▘▘ ▝▝       ▝▛▛▀▜▜▘
-   awake        asleep       …and breathing out
+   awake        its eyes close   …and it settles
   ```
 
   A socket is the upper half of its cell or the lower, so the line runs
@@ -426,29 +461,27 @@ quarters of a minute of it — every one of the six — it **naps**:
  ▙▄▙▄▟▄▟       ▖ ▖ ▗ ▗       ▖ ▖ ▗ ▗z      ▖ ▖ ▗ ▗Z      ▖ ▖ ▗ ▗!      ▙▄▙▄▟▄▟!
 ▝▜━███━▛▘     ▗█▁███▁█▖     ▗█▁███▁█▖     ▗█▁███▁█▖     ▗█▀███▀█▖     ▝▜▂███▂▛▘
   ▘▘ ▝▝        ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘       ▝▛▛▀▜▜▘        ▘▘ ▝▝
- a breath in   …and out      a snore       louder        a key!       up, wide awake
+ its eyes close  it settles   a snore       louder        a key!       up, wide awake
 ```
 
 - **It nods off**, and it is seen coming: its eyes grow heavy — through
-  their lid, where they have one — open again, grow heavy and close; its
-  head goes down half a cell, comes up, goes down. Two and a half seconds.
-  The seedling has no lid to lower and no room to dip, so its eyes close,
-  open and close for good, and its **shoot droops** to a bud; the
-  skitterer's close and its body sinks; the gem, with no eyes at all, dips,
-  rises, and settles.
-- **It sleeps where it stands**, all of it on screen, its eyes closed —
-  each a lid, a thin line where the eye was, not a blank (*Eyes*). And it
-  **breathes**, a breath every 3.4 s: in, on its feet; and out, half a cell
-  lower, with a `z` in the top corner of its block that grows to a `Z` and
-  is gone. The seedling's shoot droops with the breath out instead. The
-  gem, settled half a cell low, has no head to nod, so its **light**
-  breathes: it swells and fades as the stone breathes in, and the snore
-  comes out in the dark between. (The `z` and the `!` are the only letters
-  the animation draws: plain ASCII, so no font lacks them, and what a
-  sleeper and a start have been in every comic strip since comic strips.)
-  A sleeper is never mistaken for a mascot at rest — no stage of a breath
-  is the rest art — and never looks frozen: something changes every second
-  and a third at most.
+  their lid, where they have one — open again, grow heavy and close, all
+  of it on its feet. A second and a half. The seedling has no lid to
+  lower, so its eyes close, open and close for good; the skitterer settles
+  onto its belly first and closes them there; the gem, with no eyes at
+  all, settles with a last light fading out of it.
+- **It settles, once.** Its head goes down half a cell — the seedling,
+  which has no room to dip, droops its shoot to a bud — and there it
+  sleeps, all of it on screen, its eyes closed: each a lid, a thin line
+  where the eye was, not a blank (*Eyes*).
+- **Asleep it holds still**, and its snore is all of it that moves: a
+  quiet moment, a `z` in the top corner of its block that grows to a `Z`,
+  and gone — a breath every 3.4 s, three frames of one cell each. (The `z`
+  and the `!` are the only letters the animation draws: plain ASCII, so no
+  font lacks them, and what a sleeper and a start have been in every comic
+  strip since comic strips.) A sleeper is never mistaken for a mascot at
+  rest — no stage of a breath is the rest art — and never looks frozen:
+  the snore changes every second and a third at most.
 - **A nap ends by itself** after nine to thirteen breaths — the better part
   of a minute: an eye half open, open, a **stretch** that is the mascot's
   own (the crest's frill flared, the bloom's head swollen out, the twin's
@@ -480,47 +513,81 @@ one clip of the repertoire: eyes shut, the head dipping, a `z` and a `Z` in
 the corner — had the look worth keeping, so the nap is that look, held for
 the length of a nap.
 
+**And then it breathed with its whole body** — up on its feet on the breath
+in, half a cell down on the breath out, the gem's light swelling and fading
+— and that went too. Half a cell is the smallest step the grid has, so a
+breath was not a rise and fall but a hop: a sleeper that jumped up and down
+every three seconds, and nodded twice on its way under. A thing asleep is
+still. The body goes down once and stays; what says it is alive is the
+snore, which was always the part that read.
+
 ### Woken with a start
 
 **Any key wakes it** — and it is the one moment the mascot answers the user
-directly. It **flinches**: its eyes snap open, a `!` in the corner where
+directly. Its eyes snap open **where it lies**, a `!` in the corner where
 the snore was; then it is up, wide awake — an eighth of a second after the
 key for all but the skitterer, the `!` still beside it — and three fifths
 of a second after the key the start has worn off:
 
 | | the start |
 |---|---|
-| `crest`, `bloom`, `twin` | a flinch, eyes open; then up with eyes **wide** (`▂`) |
+| `crest`, `bloom`, `twin` | eyes open where it lies; then up with eyes **wide** (`▂`) |
 | `sprout` | eyes open under its drooped shoot; then up with **both arms thrown in the air** |
-| `skiter` | eyes open, frozen in its crouch — on its feet its top row leaves no cell for the `!` — then up with its **claws raised** |
+| `skiter` | eyes open, frozen on its belly; then up, **puffed out** to the edges of its block |
 | `gem` | it lights up where it lies, and is up in a **flash** — to full strength, and fading |
 
-The start is one clip, the same whichever way the breath was going when the
-key came — in, out, or mid-snore.
+**A start never takes a mascot down.** One caught while it is still nodding
+off — its eyes heavy or just closed, the four that droop on their feet not
+yet down — starts **where it stands**: wide-eyed at once (the seedling's
+arms up), the `!` beside it, for the same three fifths of a second
+(`Nap::caught`). It used to play the sleeper's start from wherever it was,
+and that was a **flicker**: a key that found it standing dropped it into
+the sleeper's crouch for an eighth of a second and brought it straight back
+up — the whole block redrawn twice — which is what typing looked like just
+as a nap began. (The breathing sleeper had the same fault for the third of
+every breath it spent on its feet.) So which start plays is recorded with
+the key that woke it (`Woke::nodding`), and asleep there is only one place
+to start from. The skitterer and the stone, down from the first step of
+their nod, start as they do asleep.
 
 Then, if something is being typed, it **turns to it** — the watch, its eyes
-on the caret, as if it had been awake all along; a key that types nothing
-(an arrow in an empty composer, a picker opened) leaves it standing, and it
-goes back to its own moves. Either way it is *up*: the next nap is three
-quarters of a minute off again, counted from the last sign of the user, or
-from the moment the watch looked away. One caught while still nodding off
-starts just the same; one already stirring by itself is not surprised, and
+on the caret, as if it had been awake all along — and it reads a while
+before it blinks: the watch's blinks are counted from the end of the start,
+not from the key, where the first used to land a third of a second after
+the eyes had turned. A key that types nothing (an arrow in an empty
+composer, a picker opened) leaves it standing, and it goes back to its own
+moves. Either way it is *up*: the next nap is three quarters of a minute
+off again, counted from the last sign of the user, or from the moment the
+watch looked away. One already stirring by itself is not surprised, and
 simply looks.
 
-### Company, kept in three numbers
+**A key that types nothing leaves a move alone.** Awake, with nothing in
+the composer to look at, a key says only that someone is there: the nap is
+put off and the move the mascot is in the middle of **plays on**. It used
+to stop dead at the key — a glance cut off a twentieth of a second in, a
+flip left upside down for a frame — because the timeline was restarted from
+every sign of the user. Now only what gives it something to do restarts it:
+a watch, a start. One case still does (`App::keep_company`): a move the
+coming nap had left out, which the key — by putting the nap off — would
+otherwise bring in from its middle.
+
+### Company, kept in four numbers
 
 What the mascot knows of the user is a `Company`: the run of typing it is
-watching (`watch`), when it last saw a sign of anyone (`last`), and when a
-sign last found it asleep (`woke`). `keep_company` updates them on the one
-frame that finds something changed — and the count of keys taken is what
-lets it notice someone who changed nothing it could see: an arrow key, Esc,
-a paste into an open search. That count is a number bumped at the top of
-`App::on_key` and `App::on_paste`, never what the key was.
+watching (`watch`), when it last saw a sign of anyone (`last`), the sign
+that last found it napping and where in its nap (`woke`), and since when
+its timeline has been its own to play (`up`). `keep_company` updates them
+on the one frame that finds something changed — and the count of keys taken
+is what lets it notice someone who changed nothing it could see: an arrow
+key, Esc, a paste into an open search. That count is a number bumped at the
+top of `App::on_key` and `App::on_paste`, never what the key was.
 
 Everything else is arithmetic on the clock:
 
-- the mascot has been **left alone since** the latest of `last`, the end of
-  its watch, and the end of the start (`Mascot::left_since`);
+- the mascot has been **left to itself** (`Mascot::alone`) in two senses,
+  which a key that types nothing tells apart: its *moves* are its own from
+  the end of its watch or its start — or from `up` — and its *naps* are
+  counted from the latest of that and `last`;
 - a stretch of being left alone is cut into two-minute pieces with one nap
   in each, so *which* nap an instant falls in is a division, and its start
   and length two draws of the same SplitMix64 hash the deck is dealt with
@@ -528,7 +595,8 @@ Everything else is arithmetic on the clock:
   minute in does;
 - asleep, the pose is a step of one of three clips — nodding off, a breath
   (taken modulo its length), waking (`Mascot::sleeping`) — and the start is
-  a fourth, played from `woke`.
+  one of two more, played from `woke`: from where it lies, or from where it
+  stood (`Mascot::start`).
 
 So the nap is as stateless as the blink: a loop that was busy for a minute
 asks again and gets the right answer, and the whole of it is unit-tested
@@ -570,6 +638,7 @@ block since are counted), and what they show now. Each frame the loop hands
 it the banner in its current pose (`pose_anchor`) and `draw` writes the
 cells that differ, in the same synchronized update as the live region,
 before the cursor is seated. A blink is two cells — 95 bytes on the wire;
+the skitterer's puff is the eight cells at its sides, 260 bytes;
 a frame that moves the whole mascot redraws its three rows, some 550 bytes;
 and a round of everything a mascot knows, a minute and a half of idling,
 comes to about 40 kB.
@@ -610,10 +679,11 @@ frame for exactly then:
   scatters (a frame that finds the scatter unchanged writes nothing);
 - while the user types, a keystroke brings its frame with it — the mascot
   adds only its blinks and the frame that looks away;
-- asleep, a breath is five frames (nine for the gem, whose light breathes)
-  — three and a half seconds of them — and nothing between: twenty seconds
-  of a sleeping mascot measured 28 frames, 7.6 kB and 20 ms of CPU, less
-  than the same twenty seconds awake;
+- asleep, a breath is three frames of one cell each — three and a half
+  seconds of them — and nothing between: twenty seconds of a sleeping
+  mascot measured 17 frames, 1.3 kB and 10 ms of CPU (a sleeper that
+  breathed with its body wrote 28 frames and 7.6 kB), far less than the
+  same twenty seconds awake;
 - a start is three frames, on top of the one the key itself asked for;
 - the greeting — sweep, move, blink — is under thirty frames in all, where a
   32 ms chain would have written a hundred in the same three seconds.
@@ -692,7 +762,7 @@ seeded — every unit test's — never moves.
 
 | | |
 |---|---|
-| The frames, the clips, the decks and their deal (`Card`, `Motions::dealt`), the timeline (`pose`, `pose_between`), the nap (`Nap`, `Sleep`, `Idle`, `nap`, `idle`, `sleeping`), the company kept (`Gaze`, `Watch`, `Company`, `left_since`, `asleep`, `company_pose`, `company_holds`), the session's side (`banner_is_live`, `banner_pose_watching`, `keep_company`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
+| The frames, the clips, the decks and their deal (`Card`, `Motions::dealt`), the timeline (`pose`, `pose_between`), the nap (`Nap`, `Sleep`, `Idle`, `nap`, `idle`, `sleeping`), the company kept (`Gaze`, `Watch`, `Woke`, `Company`, `Alone`, `alone`, `startled`, `start`, `moving`, `company_pose`, `company_holds`), the session's side (`banner_is_live`, `banner_pose_watching`, `keep_company`, `mascot_frame_in`) | `src/app/mascot_motion.rs` |
 | The count of keys and pastes taken (`keys_taken`) | `src/app/keys.rs` (`on_key`), `src/app/composer.rs` (`on_paste`) |
 | The posed banner and its light (`header_lines_posed`, `banner_frame_lines`, `banner_block_lines`, `banner_shows_art`, `shine_at`, `glitter_at`, `art_spans`) | `src/ui/header.rs`; the look (`MASCOT_SHINE_*`, `MASCOT_GLINT_*`, `MASCOT_GLITTER_*`) in `src/ui/theme.rs` |
 | Where the caret is (`caret_gaze`) | `src/ui/layout.rs` |
@@ -707,7 +777,8 @@ seeded — every unit test's — never moves.
 - `app/tests/mascot_motion.rs` — the frames (the rest art's rows, never
   wider, single-width glyphs in the art's own alphabet, none trailing a
   blank, and each one row redrawn, a limb raised across two rows at the
-  art's edges, the stone turned about its middle, the mascot sunk whole rows
+  art's edges, the body puffed out past its own sides with nothing taken
+  away, the stone turned about its middle, the mascot sunk whole rows
   below the floor, the mascot upside down, or the whole mascot moved half a
   cell — checked by folding the art onto its half-cell grid and moving it
   back, a sleeper's shut eyes opened first; a mark rides in the block's top
@@ -715,8 +786,11 @@ seeded — every unit test's — never moves.
   ever put in an eye — it holds the body's blocks or its own lid; a lid is
   the line along the bottom of its socket, two to a frame, in an eye's cell
   and nowhere else, on its feet and with its head down; the mascots with
-  limbs at their sides raise them; the gem spins edge-on and back the way
-  it went);
+  limbs at their sides raise them; the skitterer puffs itself up — both
+  sides, or one, its eyes and legs as drawn — raises nothing at its sides
+  and stretches no leg to the floor, and is puffed up in a move of its own,
+  in its cheer and at the end of its start, never for less than 150 ms; the
+  gem spins edge-on and back the way it went);
   the timeline (opens at rest; a pose holds exactly as long as it says,
   checked a millisecond at a time; the same seed the same timeline, another
   seed another; two mascots on one seed out of step); the greeting (the same
@@ -751,22 +825,26 @@ seeded — every unit test's — never moves.
   flips head over heels, upside down between a crouch and a landing or a
   lean and a lean, the bloom never cartwheeling and the seedling never
   somersaulting; every eyed mascot pumps its limbs, one side and then the
-  other, its eyes where they were); the nap (a mascot left alone nods off
+  other — the skitterer its two sides — its eyes where they were); the nap
+  (a mascot left alone nods off
   three quarters of a minute to a minute in — all six, under six seeds —
   and is itself move for move until then, and all of it is on screen from
   the first nod to the last blink; its eyes grow heavy, open, and close
-  before its head goes down; asleep its eyes are closed, not gone — two
-  lids from the moment they close to the moment it stirs, none on open
-  eyes and none in any move of the repertoire; asleep it is whole, a `z` and
-  then a `Z` out with each breath, over and over, a breath every three or
-  four seconds, nothing still past a second and a half, its body — or the
-  gem's light — moving with the breath and no snore on the breath in; the
-  snore rises in the block's top right corner; a nap ends by itself — a
-  stretch, two blinks, nothing of it off screen — and its own timeline is
-  back a breath later; the gem settles to sleep, its light breathing, and
-  rises in a brighter glow; no move is cut short by a nap — a straddling
-  one left out whole, and nothing but the nod and half a breath between
-  the first sign of a nap and its first snore;
+  before its first snore; falling asleep it goes down once and stays there
+  — the skitterer and the stone down from the first frame — under six
+  seeds; asleep its eyes are closed, not gone — two lids from the moment
+  they close to the moment it stirs, none on open eyes and none in any move
+  of the repertoire; asleep it holds still — one body from its first breath
+  to its last, settled, no light coming and going in it, each step of its
+  sleep redrawing the one cell its snore sits in — a `z` and then a `Z`,
+  over and over, a breath every three or four seconds, nothing still past a
+  second and a half; the snore rises in the block's top right corner; a nap
+  ends by itself — a stretch, two blinks, nothing of it off screen — and
+  its own timeline is back a breath later; the gem settles as a last light
+  fades out of it, sleeps dark, and rises in a brighter glow; no move is
+  cut short by a nap — a straddling one left out whole, and nothing but
+  the nod and a quiet moment between the first sign of a nap and its first
+  snore;
   two naps two minutes apart and then it sleeps until it is woken, still
   breathing an hour on, a week on, and at the end of the clock; no two
   naps begin at the same moment; a frame is due at every change while it
@@ -774,27 +852,41 @@ seeded — every unit test's — never moves.
   one that does not animate never sleeps); woken by the user (a keystroke
   wakes a sleeper with a start — a `!` in the block's corner as its eyes
   open, all of it still on screen, up inside half a second, the `!` gone
-  inside four fifths, no snore after it; the start is the same whichever
-  way the breath was going; a lidded mascot starts awake wide-eyed and the
-  gem in a flash; the start first, whatever the caret is
+  inside four fifths, no snore after it; the start is the same wherever
+  in its sleep the key finds it; caught on its feet it is never taken down
+  — a key at every twentieth of a second through the nod and into the
+  first breath keeps a standing mascot standing and brings a settled one
+  up once; woken it reads a while before it blinks, under six seeds; a
+  lidded mascot starts awake wide-eyed and the gem in a flash; the start
+  first, whatever the caret is
   doing, and then its eyes on what is typed; any key wakes it, an arrow in
   an empty composer too, and then it is itself again; a paste wakes it,
   one that lands in an open search and leaves the draft alone included;
   woken it stays up three quarters of a minute; it naps again only after
   the typing stops, counted from when it looked away; a key keeps a
-  wakeful mascot up and gives it no start; caught nodding off it starts
+  wakeful mascot up and gives it no start; a key that types nothing
+  leaves a move under way alone, and one as a nap nears never joins a move
+  half way; caught nodding off it starts
   too; a key as it wakes by itself is no surprise; it can be woken from
   the sleep that has no end, and the count begins again; a frame is due at
   every change through a start; a clock that starts over forgets it was
   woken; a key before the first frame is nobody at the keyboard yet —
-  fifteen ways of breaking the nap and the wake each fail these: a key that
-  never startles, a mascot that never naps, a nap allowed to cut a move in
-  two, a key that does not keep it up, keys left uncounted, pastes left
-  uncounted, a nap that always ends by itself, one that begins on the dot,
-  a start given to one already stirring, a start skipped for the watch, a
-  clock that starts over and keeps its company, no frame due at the nap's
-  start, a preview that naps, a sleeper with no snore, a nap counted from
-  the clock instead of from when the watch looked away); and
+  twenty-seven ways of breaking the nap and the wake each fail these: a key
+  that never startles, a mascot that never naps, a nap allowed to cut a
+  move in two, a key that does not keep it up, keys left uncounted, pastes
+  left uncounted, a nap that always ends by itself, one that begins on the
+  dot, a start given to one already stirring, a start skipped for the
+  watch, a clock that starts over and keeps its company, no frame due at
+  the nap's start, a preview that naps, a sleeper with no snore, a nap
+  counted from the clock instead of from when the watch looked away; the
+  sleeper's start played to one caught on its feet, one sound asleep taken
+  for one nodding off, a seedling that droops before it starts, a watch
+  that blinks the moment the start is over, a key that types nothing
+  stopping a move dead, a key bringing a left-out move in from its middle;
+  a sleeper on its feet between snores, one that nods twice on its way
+  under, a snore over another body, a seedling whose shoot comes up as it
+  snores, a gem whose light breathes in its sleep, one whose light swells
+  as it settles); and
   the session's side (unseeded never animates; only an empty conversation's
   banner is posed; a turn in flight stills it; the row turns it off and on;
   no frame for a banner off screen or behind an overlay; the picker's
@@ -818,7 +910,9 @@ seeded — every unit test's — never moves.
   its two ends, up either side — and the one after the cat-naps has no end,
   not at the end of the clock; a nap is drawn from the session, the mascot
   and the moment it was left; a nap is three clips of a sleeper's pace, the
-  same breath for all six, no stage of it the rest art.
+  same breath for all six — three stills of one body, no stage of it the
+  rest art — the nod never ending on the sleeper's own still, and either
+  start three fifths of a second.
 - `ui/tests/header.rs` — the committed banner wears the rest pose whatever
   the clock says; the live banner draws the pose beside unmoved metadata
   (a blink: two cells); no pose moves the metadata or the banner's shape; a
@@ -869,10 +963,12 @@ seeded — every unit test's — never moves.
   stream: left untouched the mascot is snoring no sooner than 44 s after
   the app opens and inside 80, the whole of it on screen — its frill on the
   title's row, its eyes closed to lids under it and never filled in, its
-  feet on the third — over one banner and one composer; asleep it writes a
-  frame a stage of a breath (about ten in seven seconds, where a clock
-  chain would write two hundred), a snore among them, and every lid among
-  them in reverse video; a keystroke puts the `!` on the wire with
+  feet on the third — over one banner and one composer, every lid written
+  as it fell asleep in reverse video; asleep it writes a frame a stage of
+  a breath (about six in seven seconds, where a clock chain would write
+  two hundred), a snore among them and **nothing but the snore's one cell**
+  in any of them — no cell of its body; a keystroke puts the `!` on the
+  wire with
   no snore after it, the mascot back on its feet with its eyes on the
   draft; and the message it woke for commits the rest art above the
   conversation — no snore, no start, no shut or turned eyes left in
