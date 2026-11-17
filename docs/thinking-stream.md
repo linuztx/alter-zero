@@ -91,9 +91,52 @@ writing now in view, the same body height a settled `bash` cell shows above
 its fold (`TOOL_FOLD_ROWS`); the whole thought is one Ctrl+O away.
 
 Blank source lines are skipped: reasoning is full of paragraph breaks, and
-spending the small window on them would show a third as much thought. Walking
-the source lines newest-first wraps only what the window shows, so a long think
-costs O(window) per animation frame, not O(reasoning).
+spending the small window on them would show a third as much thought. The
+rows come from the thought's own kept tail, so a build costs what arrived
+since the last one, not the paragraph it ends in (below).
+
+#### A long thought costs what it adds
+
+Walking the source lines newest-first used to be the whole of the bound: it
+wrapped only the newest paragraph, which was taken to be short. A model that
+thinks in one long paragraph — many do, and some providers stream their
+reasoning with hardly a line break — made that paragraph the whole thought,
+and the block wrapped it whole on every build, several builds a frame (the
+strip's sizing, its paint, the cursor's seat), to keep three rows of it. The
+cost grew with every token on the loop thread that also echoes keys.
+Measured on a raw pty against a stand-in provider streaming a thousand
+tokens a second (`docs/input-latency.md`), twenty seconds
+into a thought of one paragraph a typed key's echo had a **median of 21 ms
+and a worst of 33 ms in a release build** (33 ms and 58 ms in the debug
+build), with the loop thread saturated.
+
+Greedy wrapping only looks ahead **within a word**: whether a word too wide
+for any row starts on the row before it reads to the word's end, and a run
+of spaces at a full row is consumed to its end. So appending to a line can
+change only the row holding the last whitespace before its trailing word —
+the row whose break that word decided — and the rows after it; every row
+before is final. And a row start is a clean restart: wrapping the line from
+it yields the rest of its rows. `ui::wrap::output_tail` wraps a line and
+says how many of its leading rows are final, and `app::LiveThought` — the
+buffer `App::push_thinking` appends to, and `AgentRun`'s for a subagent's
+think — keeps the last `REASONING_PEEK_LINES` final rows and the row start
+the rest re-wrap from, filled by the render path behind a `RefCell` (the
+textarea's wrap-cache pattern; a clone starts cold, and the kept rows are
+no part of the thought's identity). A closed line is wrapped once, from
+where its kept rows end; the line still arriving from its first row that
+may change. A build therefore wraps what arrived since the last one plus a
+row: **4.5 ms median and 9.3 ms worst** for the same think in the debug
+build, the loop at 16% of a core instead of all of one. A word wider than
+every row, still arriving, is the one case that re-wraps more — from where
+that word starts — and costs what it cost before.
+
+`the_live_block_wraps_only_what_arrived_since_the_last_frame` pins the cost
+by counting the bytes the wrapper walks per frame (`ui::wrap::scanned_bytes`),
+`the_live_block_stays_inside_the_frame_budget_on_a_long_paragraph` is its
+wall-clock gate over a ~1 MB paragraph, and two differential tests stream
+hostile text — words wider than a row, runs of spaces at a row's end, wide
+glyphs, a joined emoji, combining marks, tabs, blank lines, a resize between
+frames — in random pieces and hold every frame to the whole-paragraph wrap.
 
 **The shimmer's floor is raised here.** Codex rests its verb on grey
 `#888888`, so it reads as *grey text with a white wave* — right for a metric,

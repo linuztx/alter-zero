@@ -42,6 +42,172 @@ pub struct Reasoning {
     pub timestamp: String,
 }
 
+/// An open thinking phase's chain-of-thought as it streams: the text, which
+/// only ever grows ([`push`](LiveThought::push)), and the live block's tail
+/// kept up beside it ([`tail_rows`](LiveThought::tail_rows)).
+///
+/// The block shows the thought's last few wrapped rows, and it is built
+/// several times a frame. Wrapping the newest paragraph whole each time made
+/// a frame cost all of it — a model that thinks in one long paragraph, which
+/// many do, slowed every frame and every typed key's echo the longer it
+/// thought (`docs/thinking-stream.md` *A long thought costs what it adds*).
+/// So the rows a later delta cannot change are kept, and a frame wraps only
+/// what arrived since, from the first row it may still rewrite.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveThought {
+    text: String,
+    tail: ThoughtTail,
+}
+
+impl From<&str> for LiveThought {
+    fn from(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            tail: ThoughtTail::default(),
+        }
+    }
+}
+
+impl LiveThought {
+    /// The chain-of-thought so far.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Append a streamed delta.
+    pub fn push(&mut self, chunk: &str) {
+        self.text.push_str(chunk);
+    }
+
+    /// The whole text, the phase over.
+    #[must_use]
+    pub fn into_text(self) -> String {
+        self.text
+    }
+
+    /// The last `keep` display rows of the thought, oldest first: every line
+    /// that is not blank, each wrapped by `wrap`, in order — the rows the
+    /// live block shows. `wrap` breaks a line, from one of its row starts,
+    /// into row ranges, and says how many leading rows nothing appended to
+    /// the line can change; the renderer's own wrapper answers both
+    /// (`ui::wrap`'s `output_tail`), and it must keep to its `width`, which
+    /// the kept rows are tied to.
+    ///
+    /// Brought up to date on the way out: a line that closed since the last
+    /// call is wrapped from where its kept rows end, the line still arriving
+    /// from its first row that may change, and nothing before — so a call
+    /// costs what arrived since the last one, plus a row.
+    pub fn tail_rows(
+        &self,
+        keep: usize,
+        width: u16,
+        wrap: impl Fn(&str) -> (Vec<std::ops::Range<usize>>, usize),
+    ) -> Vec<String> {
+        let text = self.text.as_str();
+        let mut tail = self.tail.0.borrow_mut();
+        if tail.width != width || tail.keep != keep || tail.searched > text.len() {
+            *tail = TailState {
+                width,
+                keep,
+                ..TailState::default()
+            };
+        }
+        // Every line that has closed since: its rows are final now.
+        let mut from = tail.line.max(tail.searched);
+        while let Some(newline) = text[from..].find('\n') {
+            let end = from + newline;
+            if !text[tail.line..end].trim().is_empty() {
+                let anchor = tail.anchor;
+                let (rows, _) = wrap(&text[anchor..end]);
+                for row in rows {
+                    tail.keep_row(&text[anchor + row.start..anchor + row.end]);
+                }
+            }
+            tail.line = end + 1;
+            tail.anchor = tail.line;
+            from = tail.line;
+        }
+        tail.searched = text.len();
+        // The line still arriving: the rows before the first one a later
+        // delta may change are final too.
+        let mut open = Vec::new();
+        if !text[tail.line..].trim().is_empty() {
+            let anchor = tail.anchor;
+            let (rows, settled) = wrap(&text[anchor..]);
+            for (i, row) in rows.iter().enumerate() {
+                let row = &text[anchor + row.start..anchor + row.end];
+                if i < settled {
+                    tail.keep_row(row);
+                } else {
+                    open.push(row.to_string());
+                }
+            }
+            if let Some(next) = rows.get(settled) {
+                tail.anchor = anchor + next.start;
+            }
+        }
+        let mut window: Vec<String> = tail.kept.iter().cloned().collect();
+        window.extend(open);
+        let skip = window.len().saturating_sub(keep);
+        window.split_off(skip)
+    }
+}
+
+/// [`LiveThought`]'s kept rows behind a `RefCell` — a render-path cache in
+/// the textarea's wrap-cache pattern, so it is no part of the thought's
+/// identity: thoughts with the same text are equal whatever has been
+/// wrapped, and a clone starts cold.
+#[derive(Default)]
+struct ThoughtTail(std::cell::RefCell<TailState>);
+
+/// The state inside [`ThoughtTail`].
+#[derive(Default)]
+struct TailState {
+    /// The width the rows were wrapped at.
+    width: u16,
+    /// How many rows are kept.
+    keep: usize,
+    /// How far the text has been searched for line breaks.
+    searched: usize,
+    /// Where the line still arriving starts.
+    line: usize,
+    /// A row start in that line: every row before it is final and kept.
+    anchor: usize,
+    /// The last `keep` final rows, oldest first.
+    kept: std::collections::VecDeque<String>,
+}
+
+impl TailState {
+    /// Keep a final row, dropping the oldest past `keep`.
+    fn keep_row(&mut self, row: &str) {
+        self.kept.push_back(row.to_string());
+        if self.kept.len() > self.keep {
+            self.kept.pop_front();
+        }
+    }
+}
+
+impl Clone for ThoughtTail {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for ThoughtTail {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ThoughtTail {}
+
+impl std::fmt::Debug for ThoughtTail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ThoughtTail(..)")
+    }
+}
+
 /// Split `total` over `weights` proportionally, the last part taking the
 /// remainder so the parts sum to exactly `total`.
 ///
@@ -79,7 +245,7 @@ impl App {
         if self.compact_buffer.is_some() {
             return;
         }
-        self.reasoning = Some(String::new());
+        self.reasoning = Some(LiveThought::default());
     }
 
     /// The chain-of-thought streamed so far in the open phase, or `None` when
@@ -88,7 +254,15 @@ impl App {
     /// before its first delta, and the block should say so.
     #[must_use]
     pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref()
+        self.reasoning.as_ref().map(LiveThought::text)
+    }
+
+    /// The open phase's thought with its live tail — what the strip's block
+    /// is built from ([`LiveThought::tail_rows`]); `None` when no phase is
+    /// open.
+    #[must_use]
+    pub fn live_thought(&self) -> Option<&LiveThought> {
+        self.reasoning.as_ref()
     }
 
     /// Close the open thinking phase, recording it as a [`Reasoning`] history
@@ -102,7 +276,7 @@ impl App {
     /// the phase produced no text: some providers open and close one without a
     /// single delta, and a `Thought for 0s` cell for that is noise.
     pub fn finish_reasoning(&mut self, secs: u64) -> Option<Reasoning> {
-        let text = self.reasoning.take()?;
+        let text = self.reasoning.take()?.into_text();
         if text.trim().is_empty() {
             return None;
         }

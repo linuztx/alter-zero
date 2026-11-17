@@ -184,8 +184,8 @@ fn build_live_cells(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
     if !group.is_empty() {
         return Some(group);
     }
-    app.reasoning()
-        .map(|text| live_reasoning_lines(text, app.pulse(), width))
+    app.live_thought()
+        .map(|thought| live_reasoning_lines(thought, app.pulse(), width))
 }
 
 /// The strip while the model generates a `write`: the open group — which a

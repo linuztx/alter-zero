@@ -908,6 +908,6 @@ pub(super) fn agent_view_cell_lines(
     // and before the reply's — what is genuinely executing is what the user
     // waits on, and the model cannot be streaming a reply while it thinks
     // (the main strip's order, `docs/thinking-stream.md`).
-    run.reasoning()
-        .map(|text| super::reasoning::live_reasoning_lines(text, pulse, width))
+    run.live_thought()
+        .map(|thought| super::reasoning::live_reasoning_lines(thought, pulse, width))
 }

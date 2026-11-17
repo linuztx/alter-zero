@@ -194,6 +194,15 @@ release heading when a version is cut.
   held most of a CPU core. It takes about a millisecond now, and a few
   percent of a core.
 
+- **Typing stays instant while a model thinks at length.** The thinking
+  block re-wrapped the model's newest paragraph on every frame to show its
+  last three rows, and a model that thinks in one long paragraph made that
+  the whole thought, so typing slowed the longer it thought: twenty seconds
+  into a fast model's think, a typed key took a median of 21 ms to appear,
+  with a core fully busy. Rows that can no longer change are kept now, and
+  a frame wraps only what arrived since the last one
+  (`docs/thinking-stream.md`).
+
 - **Scrolling Ctrl+O while a reply streams is smooth.** The transcript
   re-rendered the whole reply so far on every frame, so under a long code
   reply each scroll key took about 150 ms. It renders each line once now.
