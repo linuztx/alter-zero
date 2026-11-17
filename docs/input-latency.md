@@ -31,7 +31,8 @@ cargo run --release --example latency_probe -- --scenario burst --draft 4000
 ```
 
 A scenario is the shape of what streams: `prose`, `code`, `table`, `mixed`,
-`reasoning`, `oneline` (one line with no newline in it), `write` (a file
+`reasoning`, `thought` (reasoning in one paragraph, no line break in it),
+`oneline` (one line with no newline in it), `write` (a file
 streamed into a `write` call), `bash` (a command printing at `--rate` lines a
 second), `idle`, and `burst` (`--draft` characters typed in one write).
 `--rate 0` is a provider that never pauses, which no model is, and which is
@@ -62,6 +63,7 @@ over the run:
 | a command, 900 lines in 2.6 s | 13.2 / 32.4 / 46.1 | 1.2 s | 0.84 / 1.12 / 2.74 | 0.07 s |
 | a command, 4000 lines/s for 7 s | 39.5 / 66.1 / 87.5 | 6.3 s | 0.85 / 1.02 / 2.04 | 0.19 s |
 | one 60 KB line | 6.17 / 9.59 / 11.44 | 8.1 s | 2.56 / 4.89 / 8.30 | 9.4 s |
+| a thought, one 100 KB paragraph at 1000 events/s | 19.9 / 35.7 / 51.1 | 21.2 s | 0.51 / 0.72 / 3.00 | 1.7 s |
 
 And the stalls, which a percentile over a paced run hides because they
 happen once:
@@ -76,7 +78,7 @@ happen once:
 | 4,000 characters typed in one write | never shown whole | 3.9 ms |
 | 20,000 | never shown whole | 10 ms |
 
-Nine causes, none of them the textarea.
+Ten causes, none of them the textarea.
 
 ## 1. A frame that was due waited on a timer
 
@@ -333,6 +335,22 @@ This is the one change here that is not about a key: it is what the code
 already said it did, and it is what keeps a terminal without synchronized
 updates from painting between a scroll and the repaint.
 
+## 10. A long thought was wrapped whole on every frame
+
+The live `● Thinking…` block shows the last three wrapped rows of the
+thought, and to find them it wrapped the newest paragraph whole on every
+build. A model that thinks in one long paragraph — many do, and some
+providers stream reasoning with hardly a line break — made that the whole
+thought: over a 100 KB thought at a thousand events a second a key took
+20 ms at the median and 51 at the 99th percentile, and the loop held 85% of
+a core. One build a frame (4, above) brought the key to 3 ms and left the
+wrap itself, half a core of it.
+
+The thought now keeps the rows a later delta cannot change and wraps only
+what arrived since (`app::LiveThought`, `ui::wrap`'s `output_tail` —
+`docs/thinking-stream.md` *A long thought costs what it adds*): half a
+millisecond, and 7% of a core.
+
 ## What was measured and left alone
 
 - **One huge line.** A reply that is a single 60 KB line costs the loop 25%
@@ -369,6 +387,9 @@ updates from painting between a scroll and the repaint.
   the link display; the live reply renders a line once and puts its settled
   rows down once.
 - `ui::cached_lines::tests` — appending a store is extending with its rows.
+- `ui::tests::reasoning::the_live_block_wraps_only_what_arrived_since_the_last_frame`
+  counts the bytes the wrapper walks, and the two `the_kept_tail_agrees_…`
+  tests hold every frame of a hostile thought to the whole-paragraph wrap.
 - `term::output::tests` — a frame is one write.
 - `scripts/smoke.sh` Phase 159 — the typed burst.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a

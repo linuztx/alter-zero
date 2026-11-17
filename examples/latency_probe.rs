@@ -29,7 +29,8 @@
 //! scenario types `--draft` characters in one write and times the frame that
 //! shows the last of them — or reports that none did. The `bash`
 //! scenario runs a command that prints `--bytes` of output at `--rate` lines
-//! a second, and `write` streams a file of that size into a `write` call.
+//! a second, `write` streams a file of that size into a `write` call, and
+//! `thought` thinks in one paragraph of that size, with no line break in it.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -127,6 +128,7 @@ fn parse_options() -> Options {
                         "oneline",
                         "mixed",
                         "reasoning",
+                        "thought",
                         "write",
                         "bash",
                     ]
@@ -266,6 +268,21 @@ fn table(bytes: usize) -> String {
     text
 }
 
+/// One paragraph of thought with no line break in it — how some providers
+/// stream reasoning, and the shape that costs the live thinking block most:
+/// its window is the last rows of the newest paragraph.
+fn paragraph(bytes: usize) -> String {
+    let mut text = String::new();
+    let mut n = 0usize;
+    while text.len() < bytes {
+        text.push_str(&format!(
+            "then option {n} is weighed against the one before it, "
+        ));
+        n += 1;
+    }
+    text
+}
+
 fn oneline(bytes: usize) -> String {
     let mut text = String::from("The payload: ");
     let mut n = 0usize;
@@ -306,6 +323,10 @@ fn reply_for(scenario: &str, bytes: usize, rate: u64, turn: u64, follow_up: bool
         "reasoning" => Reply::Reasoned {
             thought: prose(bytes / 2),
             text: prose(bytes / 2) + &closing,
+        },
+        "thought" => Reply::Reasoned {
+            thought: paragraph(bytes),
+            text: format!("Decided.\n\n{closing}"),
         },
         "write" => Reply::Call {
             name: "write",
