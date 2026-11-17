@@ -128,8 +128,8 @@ pub use self::tool_group::{
     group_counts, group_kind, group_run, is_group_member, leading_group_calls, pending_edit_lines,
 };
 pub use self::tools::{
-    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
-    ToolStatus, apply_tool_screen,
+    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay,
+    SettledLines, ToolCall, ToolStatus, apply_tool_screen,
 };
 pub use self::turn::{
     CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,

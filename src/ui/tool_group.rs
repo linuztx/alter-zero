@@ -22,7 +22,7 @@
 //! conversation shows of them.
 
 use super::theme::*;
-use super::tool::{bullet_span, command_display_lines, result_row};
+use super::tool::{bullet_span, result_row, running_line_count};
 use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
 use crate::app::{
@@ -344,7 +344,7 @@ fn group_clock(app: &App, shown: GroupHintItem<'_>, with_queue: bool) -> Option<
         .command_elapsed()
         .filter(|elapsed| *elapsed >= TOOL_GROUP_CLOCK_DELAY)?;
     let time = crate::app::format_elapsed(elapsed.as_secs());
-    Some(match command_display_lines(running).len() {
+    Some(match running_line_count(running, app.live_tail()) {
         0 => format!(" ({time})"),
         1 => format!(" ({time}{TOOL_CLOCK_SEPARATOR}1 line)"),
         printed => format!(" ({time}{TOOL_CLOCK_SEPARATOR}{printed} lines)"),

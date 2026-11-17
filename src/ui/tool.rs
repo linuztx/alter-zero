@@ -457,26 +457,34 @@ pub(super) fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
 /// `'\t'` paints as zero cells otherwise), with a single trailing blank from a
 /// final newline dropped so a hidden-line count stays accurate.
 fn split_display_lines(text: &str) -> Vec<String> {
-    display_lines(text)
-        .into_iter()
-        .map(std::borrow::Cow::into_owned)
-        .collect()
-}
-
-/// [`split_display_lines`] without the copies: each line borrowed from
-/// `text`, only one that holds a tab made anew to expand it. What a cell
-/// built on every frame reads its output through — the running command's
-/// tail, whose output can be thousands of lines it shows four of
-/// (`docs/input-latency.md`).
-fn display_lines(text: &str) -> Vec<std::borrow::Cow<'_, str>> {
     if text.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<std::borrow::Cow<'_, str>> = text.split('\n').map(expand_code_tabs).collect();
-    if out.last().is_some_and(|line| line.is_empty()) {
+    let mut out: Vec<String> = text
+        .split('\n')
+        .map(|line| expand_code_tabs(line).into_owned())
+        .collect();
+    if out.last().is_some_and(String::is_empty) {
         out.pop();
     }
+    #[cfg(test)]
+    DISPLAY_LINES_SPLIT.with(|split| split.set(split.get() + out.len() as u64));
     out
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many display lines [`split_display_lines`] has materialized on
+    /// this thread — the hook the running cells' cost tests count with.
+    static DISPLAY_LINES_SPLIT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many display lines [`split_display_lines`] has materialized on this
+/// thread so far.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn display_lines_split() -> u64 {
+    DISPLAY_LINES_SPLIT.with(std::cell::Cell::get)
 }
 
 /// `output` as the cell **displays** it: the `Exit code: N` frame line is
@@ -538,10 +546,12 @@ fn session_state_row(tool: &ToolCall) -> Option<Line<'static>> {
     Some(result_row(0, format!("{state}{SESSION_ROW_ID}{session}")))
 }
 
-/// A command-style tool's output as display lines — [`tool_output_lines`] with
-/// the `Exit code: N` frame dropped ([`command_display_output`]).
-pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
-    split_display_lines(command_display_output(&tool.output))
+/// How many display lines a **running** command has printed — its output
+/// with the `Exit code: N` frame dropped ([`command_display_output`]), split
+/// as [`split_display_lines`] splits it — kept up as the output arrives
+/// ([`LiveTail::line_count`]) instead of copying every line each frame.
+pub(super) fn running_line_count(tool: &ToolCall, live: &LiveTail) -> usize {
+    live.line_count(&tool.output, command_display_output(&tool.output))
 }
 
 /// The lines a **settled** exec cell shows of its output — the `bash` tool
@@ -699,62 +709,74 @@ pub(super) fn running_command_lines(
         other => crate::llm::tools::session_wait_ms(&other.to_ascii_lowercase(), arguments),
     };
     let clock = command_clock_clause(elapsed, wait_ms);
-    let display = display_lines(command_display_output(&tool.output));
-    if display.is_empty() {
+    let peek_width = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+        .max(1);
+    let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+    let rows_of = |line: &str| WrapMode::Output.rows(line, wrap_width);
+    // The settled lines are measured once each, the frame they settle — the
+    // counts live on the tail (`LiveTail::settled_lines`) — so a frame costs
+    // what printed since the last one plus the window, never the whole
+    // retained output (`docs/tool-streaming.md` *A flood costs what it
+    // adds*). Only a line still arriving and the live rows are measured
+    // here, with the last settled lines a window can reach back into.
+    let output = tool.output.as_str();
+    let body = command_display_output(output);
+    let settled = live.settled_lines(output, body, wrap_width, TOOL_PEEK_ROWS, |line| {
+        rows_of(&expand_code_tabs(line))
+    });
+    let rest = split_display_lines(&body[settled.end..]);
+    let line_count = settled.lines + rest.len();
+    if line_count == 0 {
         // Nothing printed yet: the clause rides the `⎿ Running…` row, so a
         // silent command still shows it is alive and how long it may be.
         lines.push(result_row(0, format!("{TOOL_RUNNING} {clock}")));
         return lines;
     }
-    let peek_width = (width as usize)
-        .saturating_sub(cols(TOOL_RESULT_PREFIX))
-        .max(1);
-    let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     // The line the window ends at: the lowest row still moving, else the last
     // one. A program redrawing rows above finished ones (pacman's parallel
     // downloads, every bar within the terminal's reach and so live) used to
     // fill the window with the rows that had stopped while the motion sat
     // in the hidden count (docs/tool-streaming.md).
-    let anchor = live.anchor(display.len());
-    // Display **rows**, counted without being built (`WrapMode::rows`, so
-    // the whole retained buffer is cheap to measure every animation frame —
-    // a line no longer than its row is one, read off its length): counting
-    // source lines called a 2 KB line that scrolled past "1 line"
-    // (`docs/long-lines.md`). Counted once a line, for the sums and the
-    // window walk alike.
-    let rows: Vec<usize> = display
+    let anchor = live.anchor(line_count);
+    // Display **rows**, not source lines: counting source lines called a
+    // 2 KB line that scrolled past "1 line" (`docs/long-lines.md`).
+    let recent_rows: usize = settled.recent.iter().map(|(_, rows)| rows).sum();
+    let mut reach: Vec<(String, usize)> = settled
+        .recent
         .iter()
-        .map(|line| WrapMode::Output.rows(line, wrap_width))
+        .map(|(range, rows)| (expand_code_tabs(&body[range.clone()]).into_owned(), *rows))
         .collect();
-    let above: usize = rows[..anchor].iter().sum();
-    let total: usize = above + rows[anchor..].iter().sum::<usize>();
-    // The window's last row: the anchor line's last row — its newest rows
-    // for a line taller than the window, the tail rule for a long newest
-    // line — pushed down only as far as it takes for the window to keep
-    // its TOOL_PEEK_ROWS when fewer rows sit above the anchor: a window
-    // that hid rows it had room for would be folding for nothing.
-    let anchor_end = above + rows[anchor] - 1;
-    let end = anchor_end
-        .max(TOOL_PEEK_ROWS - 1)
-        .min(total.saturating_sub(1));
-    let start = (end + 1).saturating_sub(TOOL_PEEK_ROWS);
-    // Build only the rows the window holds: count past the lines above it,
-    // wrap the ones it reaches, stop at its end.
-    let mut window: Vec<String> = Vec::with_capacity(TOOL_PEEK_ROWS);
-    let mut at = 0usize;
-    for (line, &rows) in display.iter().zip(&rows) {
-        if at > end {
-            break;
-        }
-        if at + rows > start {
-            for (offset, row) in wrap_output(line, wrap_width).into_iter().enumerate() {
-                if (start..=end).contains(&(at + offset)) {
-                    window.push(row);
-                }
-            }
-        }
-        at += rows;
-    }
+    reach.extend(rest.into_iter().map(|line| {
+        let rows = rows_of(&line);
+        (line, rows)
+    }));
+    let total = settled.rows
+        + reach[settled.recent.len()..]
+            .iter()
+            .map(|(_, rows)| rows)
+            .sum::<usize>();
+    let window = running_window(
+        &reach,
+        settled.lines - settled.recent.len(),
+        settled.rows - recent_rows,
+        total,
+        anchor,
+        wrap_width,
+    )
+    .unwrap_or_else(|| {
+        // A window reaching above the lines kept by name — never in the
+        // shapes a session or a pipe streams, but kept exact all the same:
+        // measure every line, as the window always did.
+        let all: Vec<(String, usize)> = split_display_lines(body)
+            .into_iter()
+            .map(|line| {
+                let rows = rows_of(&line);
+                (line, rows)
+            })
+            .collect();
+        running_window(&all, 0, 0, total, anchor, wrap_width).unwrap_or_default()
+    });
     // Every row the window leaves out — above it, and below it when it
     // ends on a moving line with finished rows after it: what Ctrl+O adds.
     let hidden = total.saturating_sub(window.len());
@@ -773,6 +795,52 @@ pub(super) fn running_command_lines(
     };
     lines.push(result_row(shown, footer));
     lines
+}
+
+/// The running cell's window: the [`TOOL_PEEK_ROWS`] display rows ending at
+/// the `anchor` line's last row — pushed down only as far as it takes for the
+/// window to keep its rows when fewer sit above the anchor, since a window
+/// that hid rows it had room for would be folding for nothing — out of
+/// `total` rows in all. `lines` are the output's display lines from line
+/// `first_line` on, which opens at row `first_row`, each with its rows.
+/// `None` when the window reaches above `lines`.
+fn running_window(
+    lines: &[(String, usize)],
+    first_line: usize,
+    first_row: usize,
+    total: usize,
+    anchor: usize,
+    wrap_width: u16,
+) -> Option<Vec<String>> {
+    let index = anchor.checked_sub(first_line)?;
+    let anchor_rows = lines.get(index)?.1;
+    let above = first_row + lines[..index].iter().map(|(_, rows)| rows).sum::<usize>();
+    let anchor_end = above + anchor_rows.max(1) - 1;
+    let end = anchor_end
+        .max(TOOL_PEEK_ROWS - 1)
+        .min(total.saturating_sub(1));
+    let start = (end + 1).saturating_sub(TOOL_PEEK_ROWS);
+    if start < first_row {
+        return None;
+    }
+    // Build only the rows the window holds: count past the lines above it,
+    // wrap the ones it reaches, stop at its end.
+    let mut window: Vec<String> = Vec::with_capacity(TOOL_PEEK_ROWS);
+    let mut at = first_row;
+    for (line, rows) in lines {
+        if at > end {
+            break;
+        }
+        if at + rows > start {
+            for (offset, row) in wrap_output(line, wrap_width).into_iter().enumerate() {
+                if (start..=end).contains(&(at + offset)) {
+                    window.push(row);
+                }
+            }
+        }
+        at += rows;
+    }
+    Some(window)
 }
 
 /// The auto mode classifier's provenance row (`docs/permissions.md`): a

@@ -391,6 +391,8 @@ impl WrapMode {
     /// together). This is what a `+N lines` hint counts: rows the reader would
     /// see, not source lines (`docs/long-lines.md`).
     pub(super) fn rows(self, text: &str, width: u16) -> usize {
+        #[cfg(test)]
+        ROWS_SCANS.with(|scans| scans.set(scans.get() + 1));
         if width == 0 {
             return text.split('\n').count();
         }
@@ -408,6 +410,10 @@ thread_local! {
     /// test hook that pins a renderer's *cost* by counting it, for a
     /// renderer that wraps rather than counts.
     static SCANNED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many texts [`WrapMode::rows`] has measured on this thread — the
+    /// same hook for a renderer that counts, as `queued_builds` is for the
+    /// pending rows' memo.
+    static ROWS_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// How many bytes [`WrapMode`]'s scan has walked on this thread so far.
@@ -415,6 +421,13 @@ thread_local! {
 #[must_use]
 pub(crate) fn scanned_bytes() -> u64 {
     SCANNED_BYTES.with(std::cell::Cell::get)
+}
+
+/// How many texts [`WrapMode::rows`] has measured on this thread so far.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn rows_scans() -> u64 {
+    ROWS_SCANS.with(std::cell::Cell::get)
 }
 
 /// Whether the word opening at byte `bp` fills the current row from where it

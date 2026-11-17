@@ -173,12 +173,13 @@ full debug info: the test build measured **11 GB**. `check()` appends
 given, and the same build measured **1.2 GB** — and compiled in 7m 28s
 rather than 10m 23s. Nothing in the suite reads a backtrace.
 
-**Nine frame-budget gates are skipped.** A few tests hold rendering to a
+**Ten frame-budget gates are skipped.** A few tests hold rendering to a
 wall-clock budget — `the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line`
 wants an average redraw under 25 ms on a 130 KB line, the inline-diff and
 highlighter gates 32 and 50 ms, the live thinking block 10 ms a build over a
-megabyte of thought. They are performance regression gates, and on a user's
-machine what they measure is the machine: in the dev profile on four
+megabyte of thought, the running command cell 10 ms a build over megabytes
+of output. They are performance regression gates, and on a user's machine
+what they measure is the machine: in the dev profile on four
 cores, under makepkg's flags, that redraw averaged 33.9 ms and failed
 `check()`, while the release-profile run passed it. Upstream CI enforces
 them; the package skips them by name. The complexity gates beside them — a

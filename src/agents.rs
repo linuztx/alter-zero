@@ -762,7 +762,7 @@ impl AgentRun {
                     && front.status == ToolStatus::Running
                 {
                     front.output.push_str(chunk);
-                    self.tool_live.reset();
+                    self.tool_live.settle();
                 }
             }
             // A terminal session's live output and a refined header, folded

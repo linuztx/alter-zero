@@ -189,10 +189,15 @@ release heading when a version is cut.
   resize too, where it used to rebuild the whole conversation first.
 
 - **Typing under a command that prints a lot is no longer sluggish.** While a
-  command printed thousands of lines, each frame re-read all of them several
-  times to choose the four on screen: a key took 40 ms to show and the app
-  held most of a CPU core. It takes about a millisecond now, and a few
-  percent of a core.
+  command printed thousands of lines, each frame measured everything it had
+  printed, several times over, to show its last four rows and say how many
+  sit above them, so the longer a verbose build or test run went on the
+  slower each frame got: a key took 40 ms to show, over 100 ms under a
+  command printing long lines as fast as it could, and the app held most of
+  a CPU core. Each line is now measured once, as it scrolls past, and the
+  cell is built once a frame: the same key appears in about a millisecond.
+  A grouped search's `(12s · 34 lines)` count works the same way
+  (`docs/tool-streaming.md`).
 
 - **Typing stays instant while a model thinks at length.** The thinking
   block re-wrapped the model's newest paragraph on every frame to show its

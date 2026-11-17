@@ -61,7 +61,8 @@ check() {
     --skip the_activity_row_stays_inside_the_frame_budget_on_a_line_of_blank_space \
     --skip the_tail_of_a_huge_streaming_line_stays_inside_the_frame_budget \
     --skip the_head_of_a_huge_finished_line_stays_inside_the_frame_budget \
-    --skip the_live_block_stays_inside_the_frame_budget_on_a_long_paragraph
+    --skip the_live_block_stays_inside_the_frame_budget_on_a_long_paragraph \
+    --skip the_running_window_stays_inside_the_frame_budget_on_a_long_flood
 }
 
 package() {
