@@ -184,6 +184,14 @@ own): a refresh renders the lines that completed since the last, and the
 rows of finished lines stay on the page through the tail's rebuild
 (`docs/input-latency.md` *The pager rendered a streaming reply whole*).
 
+The same render answers for the reply once it **lands** in history — at the
+turn's end, or at a tool call that finalises the text before it. With the
+pager open that item is appended by the draw, not the worker, and it was
+rendered from its first line: the whole reply again, on the loop. The reply
+is frozen where it stands instead (`freeze_landed_reply`): its settled rows
+stay on the page, the live render appends the rest, and only what arrived
+since the last refresh is rendered.
+
 ## What guards it
 
 - `app::tests::history_generation_bumps_on_every_non_append_mutation` — the
@@ -198,8 +206,8 @@ rows of finished lines stay on the page through the tail's rebuild
 - `ui::tests::transcript::a_job_renders_an_item_exactly_as_the_cache_would`
   and its siblings — the job protocol: the same rows, handed out once and a
   window at a time, refused after a reset, out of turn, or once a draw has
-  rendered the item itself; and the live reply rendered a line once
-  (`docs/input-latency.md`).
+  rendered the item itself; and the live reply rendered a line once, and
+  not again when it lands (`docs/input-latency.md`).
 - The pre-existing transcript tests (interleaving, live tail, queued backlog,
   placeholder, stamps, selection) all run through the same single code path.
 - `scripts/smoke.sh` Phase 48 — resume a code-heavy session in tmux, Ctrl+O,

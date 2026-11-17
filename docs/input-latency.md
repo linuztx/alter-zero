@@ -306,11 +306,27 @@ again. So the text the rows came from is kept, and a buffer that does not
 start with it starts the render over. One comparison of bytes — a length or
 a counter could be fooled by a longer buffer.
 
+And when the reply **lands** — the turn ends, or a tool call finalises the
+text before it — the message is the same text with the same rows, and the
+pager, open, used to render it again from its first line on the loop: 120 ms
+for a scroll key at the end of a 60 KB code reply. The reply is now frozen
+where it stands (`TranscriptCache::freeze_landed_reply`): the rows of its
+finished lines are on the page already, right after the prefix, so the page
+is cut back to those, the reply's own render appends what follows them —
+rendering only what arrived since the last refresh — and the item is closed
+like any other. Nothing is copied. A render is a function of its text and
+width alone, so any message that starts with the text a render holds is
+that render's.
+
 `the_reply_so_far_is_the_batch_render_at_every_prefix` holds `whole` to the
 batch render over the hostile corpus;
 `the_pagers_live_reply_is_a_fresh_build_at_every_step_of_a_stream` holds the
 cache to a from-scratch build through the markdown tour, with tool calls
-splitting the reply and jobs coming back in between.
+splitting the reply and jobs coming back in between;
+`a_reply_withdrawn_while_the_pager_was_closed_is_not_shown_again` is the
+buffer a length cannot tell apart, and
+`a_reply_that_ends_under_the_pager_is_not_rendered_again` counts the lines
+rendered when the reply lands.
 
 ## 8. A typed burst over 1 KB stopped at 1 KB
 
@@ -414,7 +430,8 @@ millisecond, and 7% of a core.
   once, a window at a time; refused after a reset, out of turn, or once a
   draw has rendered the item; a job on another thread carries the theme and
   the link display; the live reply renders a line once and puts its settled
-  rows down once.
+  rows down once, starts over on a buffer that is not its own, and is not
+  rendered again when it lands.
 - `ui::cached_lines::tests` — appending a store is extending with its rows.
 - `ui::tests::reasoning::the_live_block_wraps_only_what_arrived_since_the_last_frame`
   counts the bytes the wrapper walks, and the two `the_kept_tail_agrees_…`

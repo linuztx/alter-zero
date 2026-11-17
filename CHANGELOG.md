@@ -210,7 +210,9 @@ release heading when a version is cut.
 
 - **Scrolling Ctrl+O while a reply streams is smooth.** The transcript
   re-rendered the whole reply so far on every frame, so under a long code
-  reply each scroll key took about 150 ms. It renders each line once now.
+  reply each scroll key took about 150 ms. It renders each line once now,
+  and not again when the reply ends, where the open transcript used to stop
+  for a tenth of a second.
 
 - **More than a kilobyte typed in one go all arrives.** Text pasted into a
   terminal without bracketed paste, typed by a dictation tool, or delivered

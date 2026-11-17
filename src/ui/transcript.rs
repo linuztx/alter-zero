@@ -386,6 +386,19 @@ fn transcript_item_into<R: RowSink>(
             }
         },
     };
+    close_item(page, top, item, width, user_rows, cells)
+}
+
+/// What every item's rows end on, whoever rendered the cell above: its
+/// pictures, then the blank spacer — and the [`ItemShape`] of the whole.
+fn close_item<R: RowSink>(
+    page: &mut R,
+    top: usize,
+    item: &HistoryItem,
+    width: u16,
+    user_rows: Option<usize>,
+    cells: ItemCells,
+) -> ItemShape {
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them
     // exactly as scrollback's does (`docs/images.md`).
@@ -800,6 +813,13 @@ impl LiveReply {
             settled,
         }
     }
+
+    /// Whether `text` at `width` is the buffer these rows were rendered
+    /// from, grown — the one case [`rows`](Self::rows) answers without
+    /// starting over.
+    fn follows(&self, text: &str, width: u16) -> bool {
+        width == self.width && !self.text.is_empty() && text.starts_with(self.text.as_str())
+    }
 }
 
 /// What pins [`TranscriptCache`]'s frozen prefix — see the struct docs.
@@ -1161,7 +1181,7 @@ impl TranscriptCache {
             self.reset_frozen(app, width);
         } else if self.items.len() == app.history.len() {
             return false;
-        } else {
+        } else if !self.freeze_landed_reply(app, width) {
             self.cut_to_frozen();
         }
         // Append the not-yet-rendered items (all of them after a reset). The
@@ -1185,6 +1205,67 @@ impl TranscriptCache {
             }
         }
         self.frozen_entries = self.entries.len();
+        true
+    }
+
+    /// Freeze the reply the page was following as the history item it has
+    /// become — at the turn's end, or at a tool call that finalised the text
+    /// before it — where it stands, and say whether it did.
+    ///
+    /// The next item of the prefix is then an assistant message with the
+    /// reply's text, and so with its rows; with the pager open it was
+    /// rendered again from its first line, on the loop, the grammar over the
+    /// whole reply while a scroll key waited (`docs/input-latency.md`). The
+    /// rows of its finished lines are on the page already, right after the
+    /// prefix, and the reply's own render ([`LiveReply`]) knows the rest: the
+    /// page is cut back to those rows, what follows them is appended — the
+    /// lines that arrived since the last refresh are all that is rendered —
+    /// and the item is closed like any other. Nothing is copied, either: the
+    /// kept rows stay in the page's own storage.
+    ///
+    /// Only for a message the render follows: one whose text starts with the
+    /// text its rows came from. A render is a function of its text and width
+    /// alone, so that is the message's render whatever became of the reply
+    /// it was made for; any other message leaves the page as it was, for the
+    /// caller to cut and render.
+    fn freeze_landed_reply(&mut self, app: &App, width: u16) -> bool {
+        let Some(item) = app.history.get(self.items.len()) else {
+            return false;
+        };
+        let HistoryItem::Message(message) = item else {
+            return false;
+        };
+        if message.role != Role::Assistant {
+            return false;
+        }
+        // Taken, not borrowed: the reply is over, and whatever streams next
+        // is another buffer.
+        let Some(mut live) = self
+            .live
+            .take()
+            .filter(|live| live.follows(&message.text, width))
+        else {
+            return false;
+        };
+        let reply = live.rows(&message.text, width, self.live_kept);
+        let top = self.frozen_rows;
+        self.rows.truncate(top + reply.keep);
+        self.entries.truncate(self.frozen_entries);
+        self.live_kept = 0;
+        self.rows.push_rows(reply.rows);
+        let cells = ItemCells::One { header: 0 };
+        let item = close_item(&mut self.rows, top, item, width, None, cells);
+        self.walk
+            .item(&mut self.entries, top, item.content, &item.cells);
+        self.items.push(RenderedItem {
+            rows: item.rows,
+            user_rows: None,
+        });
+        self.frozen_rows += item.rows;
+        #[cfg(test)]
+        {
+            self.item_renders += 1;
+        }
         true
     }
 

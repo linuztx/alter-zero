@@ -1522,3 +1522,73 @@ fn a_reply_withdrawn_while_the_pager_was_closed_is_not_shown_again() {
     );
     assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
 }
+
+#[test]
+fn a_reply_that_ends_under_the_pager_is_not_rendered_again() {
+    // The reply the pager was following lands in history as an item, and
+    // the item was rendered from its first line: the grammar over the whole
+    // reply again, with the pager open and a scroll key waiting — 120 ms at
+    // the end of a 60 KB code reply. Its lines are rendered already; the
+    // item takes them from the reply's own render and renders what arrived
+    // since the last refresh.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    let _ = cache.lines(&app, 80);
+    app.begin_stream();
+    app.push_chunk("```rust\n");
+    let lines = 200;
+    for i in 0..lines {
+        app.push_chunk(&format!("let value_{i} = compute({i});\n"));
+        let _ = cache.lines(&app, 80);
+    }
+    // The last of it arrives with the end of the turn, between two draws.
+    app.push_chunk("```\n\nDone.\n");
+    let before = crate::ui::assistant::fed_lines();
+    let put_down = cache.rows_appended();
+    let _ = app.finish_stream();
+    let _ = app.end_turn(3);
+    let _ = cache.lines(&app, 80);
+    let fed = crate::ui::assistant::fed_lines() - before;
+    assert!(
+        fed <= 10,
+        "{fed} lines rendered when the {lines}-line reply landed: the item \
+         was rendered from its first line"
+    );
+    // …and the rows of its finished lines stay where they are: a second
+    // copy of a long reply's rows is megabytes made to be freed.
+    let put_down = cache.rows_appended() - put_down;
+    assert!(
+        put_down <= 16,
+        "{put_down} rows put down when the {lines}-line reply landed: its \
+         settled rows were copied onto the page again"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
+
+#[test]
+fn a_reply_cut_by_a_tool_call_under_the_pager_is_not_rendered_again() {
+    // The same at a tool call, which finalises the text before it as a
+    // message of its own while the turn goes on.
+    let mut app = transcript_fixture();
+    let mut cache = TranscriptCache::new();
+    app.begin_stream();
+    let lines = 120;
+    for i in 0..lines {
+        app.push_chunk(&format!("- point {i} of the plan\n"));
+        let _ = cache.lines(&app, 80);
+    }
+    let before = crate::ui::assistant::fed_lines();
+    let _ = app.flush_streaming_segment();
+    app.start_tool("Read", "f", None);
+    let _ = cache.lines(&app, 80);
+    let fed = crate::ui::assistant::fed_lines() - before;
+    assert!(
+        fed <= 10,
+        "{fed} lines rendered when the {lines}-line segment landed"
+    );
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+    // …and the text that follows the call is a reply of its own.
+    app.end_tool("L1\nL2", true);
+    app.push_chunk("After the read.\n");
+    assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+}
