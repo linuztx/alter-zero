@@ -165,6 +165,13 @@ release heading when a version is cut.
   writes the same reason under the refused call (`docs/permissions.md`,
   `docs/headless.md`).
 
+- **Every ←/→ press in the Ctrl+O transcript and the Ctrl+D view takes a
+  step.** Keys that reached the view between two redraws, over a slow link
+  or on a busy machine, collapsed into the last one, so pressing → three
+  times could move one entry, and a PageDown pressed right after a → scrolled
+  before the step instead of after it. Each press now moves the view in the
+  order it was pressed (`docs/transcript-navigation.md`).
+
 ### Security
 
 - **A command and its description can no longer write lines of the question

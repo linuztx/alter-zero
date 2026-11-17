@@ -243,8 +243,9 @@ wait_for 3 "$S116" -F "dummy_model_name ·" || fail "Esc did not close the page"
   frame. Phase 157 failed both ways on a busy CI runner while passing every
   time on a fast machine: its → walk waited for a prompt, a reply and a call
   that were all on screen from the top, read a row one frame early, and sent
-  keys fast enough that two → reached the pager between draws, where the
-  newer step replaced the older. `wait_row` waits on the row the key is
+  keys fast enough that two → reached the pager between draws (which the app
+  collapsed into one step until each press became a move of its own,
+  `docs/transcript-navigation.md`). `wait_row` waits on the row the key is
   meant to change — the window's top row after a step, the row under a pin
   after a scroll — whose text holds only once every key has landed.
 - **Wait for a turn to start before waiting for it to end.** A settle loop that

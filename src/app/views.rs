@@ -36,6 +36,88 @@ fn step_target(jump: EntryJump, rows: &[usize], top: usize) -> usize {
     }
 }
 
+/// The move a pager key makes — ←/→ and the scroll set, shared by the
+/// Ctrl+O transcript and both Ctrl+D pages — or `None` for any other key.
+fn pager_move(code: KeyCode) -> Option<PagerMove> {
+    Some(match code {
+        KeyCode::Left => PagerMove::Step(EntryJump::Previous),
+        KeyCode::Right => PagerMove::Step(EntryJump::Next),
+        KeyCode::Up => PagerMove::Back(1),
+        KeyCode::Down => PagerMove::On(1),
+        KeyCode::PageUp => PagerMove::Back(TOOL_VIEW_PAGE),
+        KeyCode::PageDown => PagerMove::On(TOOL_VIEW_PAGE),
+        KeyCode::Home => PagerMove::Top,
+        KeyCode::End => PagerMove::Bottom,
+        _ => return None,
+    })
+}
+
+/// Whether a pager key's move waits for the draw rather than moving the
+/// window at once: a step always does — where the neighbouring entry starts
+/// is a fact about the page as built — and so does any move pressed behind
+/// moves already waiting, so the keys a frame receives land in the order
+/// they came (`docs/transcript-navigation.md`).
+fn waits(mv: PagerMove, waiting: &[PagerMove]) -> bool {
+    matches!(mv, PagerMove::Step(_)) || !waiting.is_empty()
+}
+
+/// Move a pager window — its scroll offset and tail-follow flag — by one
+/// key's move, on a page whose entries start on `rows` (ascending) with
+/// scroll ceiling `max`. Only a step reads those two; a scroll that need not
+/// wait for the draw ([`waits`]) moves without them.
+fn move_window(mv: PagerMove, scroll: &mut usize, follow: &mut bool, rows: &[usize], max: usize) {
+    match mv {
+        // The window's top row is the page's current end while it
+        // tail-follows, so a page that grew since its last draw is stepped
+        // from its new bottom. A step anywhere unpins the tail.
+        PagerMove::Step(jump) => {
+            let top = if *follow { max } else { (*scroll).min(max) };
+            *scroll = step_target(jump, rows, top);
+            *follow = false;
+        }
+        PagerMove::Back(by) => {
+            *follow = false; // reading back — stop tailing the bottom
+            *scroll = scroll.saturating_sub(by);
+        }
+        // `follow` untouched: reaching the bottom re-engages it in the settle.
+        PagerMove::On(by) => *scroll = scroll.saturating_add(by),
+        PagerMove::Top => {
+            *follow = false;
+            *scroll = 0;
+        }
+        // Past any end — the settle pins it to the bottom and re-engages
+        // tail-follow (codex's jump_bottom).
+        PagerMove::Bottom => *scroll = usize::MAX,
+    }
+}
+
+/// Settle a pager window for a draw whose scroll ceiling is `max`: at (or
+/// past) the bottom it sticks there, tail-following; otherwise it is capped
+/// to `max`.
+fn settle_window(scroll: &mut usize, follow: &mut bool, max: usize) {
+    if *scroll >= max {
+        *follow = true; // at (or past) the bottom — stick to it
+    }
+    *scroll = if *follow { max } else { (*scroll).min(max) };
+}
+
+/// Replay the moves `waiting` for the draw, oldest first, against a page
+/// whose entries start on `rows` (ascending) with scroll ceiling `max`: each
+/// lands where it would have had a draw come between them, since the window
+/// is settled after every one.
+fn replay_moves(
+    waiting: Vec<PagerMove>,
+    scroll: &mut usize,
+    follow: &mut bool,
+    rows: &[usize],
+    max: usize,
+) {
+    for mv in waiting {
+        move_window(mv, scroll, follow, rows, max);
+        settle_window(scroll, follow, max);
+    }
+}
+
 impl App {
     /// Keys while the full-screen tool-output view is showing: it is a read-only
     /// scroller (codex's transcript pager), so typing is ignored; Esc and `q`
@@ -81,49 +163,37 @@ impl App {
                 Action::ToggleToolView
             }
             // Outside a preview, ←/→ step between the transcript's entries —
-            // Ctrl+D's step (`docs/transcript-navigation.md`). The key knows
-            // only the direction; the draw, which has the transcript as
-            // built, resolves where that is (`resolve_tool_jump`).
-            KeyCode::Left => {
-                self.tool_jump = Some(EntryJump::Previous);
+            // Ctrl+D's step (`docs/transcript-navigation.md`) — and the rest
+            // of the pager keys scroll. A step knows only the direction, so
+            // it waits for the draw, which has the transcript as built
+            // (`resolve_tool_moves`); a scroll pressed behind it waits too.
+            code => {
+                if let Some(mv) = pager_move(code) {
+                    self.move_tool_view(mv);
+                }
                 Action::None
             }
-            KeyCode::Right => {
-                self.tool_jump = Some(EntryJump::Next);
-                Action::None
-            }
-            KeyCode::Up => {
-                self.tool_follow = false; // reading back — stop tailing the bottom
-                self.tool_scroll = self.tool_scroll.saturating_sub(1);
-                Action::None
-            }
-            KeyCode::Down => {
-                // Don't touch `tool_follow`: reaching the bottom re-engages it in
-                // `settle_tool_scroll`.
-                self.tool_scroll = self.tool_scroll.saturating_add(1);
-                Action::None
-            }
-            KeyCode::PageUp => {
-                self.tool_follow = false;
-                self.tool_scroll = self.tool_scroll.saturating_sub(TOOL_VIEW_PAGE);
-                Action::None
-            }
-            KeyCode::PageDown => {
-                self.tool_scroll = self.tool_scroll.saturating_add(TOOL_VIEW_PAGE);
-                Action::None
-            }
-            KeyCode::Home => {
-                self.tool_follow = false;
-                self.tool_scroll = 0;
-                Action::None
-            }
-            KeyCode::End => {
-                // Past any end — `settle_tool_scroll` pins it to the bottom
-                // and re-engages tail-follow (codex's jump_bottom).
-                self.tool_scroll = usize::MAX;
-                Action::None
-            }
-            _ => Action::None,
+        }
+    }
+
+    /// A Ctrl+O pager key's move: queued for the draw when it must wait
+    /// ([`waits`]), else the window moved at once.
+    fn move_tool_view(&mut self, mv: PagerMove) {
+        if waits(mv, &self.tool_moves) {
+            self.tool_moves.push(mv);
+        } else {
+            move_window(mv, &mut self.tool_scroll, &mut self.tool_follow, &[], 0);
+        }
+    }
+
+    /// A Ctrl+D key's move of the page showing —
+    /// [`move_tool_view`](Self::move_tool_view)'s twin.
+    fn move_debug_page(&mut self, mv: PagerMove) {
+        if waits(mv, &self.debug_moves) {
+            self.debug_moves.push(mv);
+        } else {
+            let (scroll, follow) = self.debug_page_scroll();
+            move_window(mv, scroll, follow, &[], 0);
         }
     }
 
@@ -192,8 +262,8 @@ impl App {
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
-        // A step pressed before a close never lands on the next open.
-        self.tool_jump = None;
+        // A move pressed before a close never lands on the next open.
+        self.tool_moves.clear();
     }
 
     /// Keys while the Ctrl+D context-debug view is showing: the transcript
@@ -213,57 +283,21 @@ impl App {
             // the prompt's Tab (its amend field) and this one never contend.
             KeyCode::Tab | KeyCode::BackTab => {
                 self.debug_page = self.debug_page.flipped();
-                // A step was pressed on the page just left behind.
-                self.debug_jump = None;
+                // The moves waiting were pressed on the page just left behind.
+                self.debug_moves.clear();
                 Action::None
             }
-            // ←/→ step between the page's entries (`docs/context.md`) — the
-            // key knows only the direction; the draw, which has the built
-            // page, resolves where that is (`resolve_debug_jump`).
-            KeyCode::Left => {
-                self.debug_jump = Some(EntryJump::Previous);
+            // ←/→ step between the page's entries (`docs/context.md`) and the
+            // rest of the pager keys scroll it, the transcript pager's moves:
+            // a step knows only the direction, so it waits for the draw,
+            // which has the built page (`resolve_debug_moves`), and a scroll
+            // pressed behind it waits too.
+            code => {
+                if let Some(mv) = pager_move(code) {
+                    self.move_debug_page(mv);
+                }
                 Action::None
             }
-            KeyCode::Right => {
-                self.debug_jump = Some(EntryJump::Next);
-                Action::None
-            }
-            KeyCode::Up => {
-                let (scroll, follow) = self.debug_page_scroll();
-                *follow = false;
-                *scroll = scroll.saturating_sub(1);
-                Action::None
-            }
-            KeyCode::Down => {
-                let (scroll, _) = self.debug_page_scroll();
-                *scroll = scroll.saturating_add(1);
-                Action::None
-            }
-            KeyCode::PageUp => {
-                let (scroll, follow) = self.debug_page_scroll();
-                *follow = false;
-                *scroll = scroll.saturating_sub(TOOL_VIEW_PAGE);
-                Action::None
-            }
-            KeyCode::PageDown => {
-                let (scroll, _) = self.debug_page_scroll();
-                *scroll = scroll.saturating_add(TOOL_VIEW_PAGE);
-                Action::None
-            }
-            KeyCode::Home => {
-                let (scroll, follow) = self.debug_page_scroll();
-                *follow = false;
-                *scroll = 0;
-                Action::None
-            }
-            KeyCode::End => {
-                // Past any end — the page's `settle_*_scroll` pins it to the
-                // bottom and re-engages tail-follow, like the pager's End.
-                let (scroll, _) = self.debug_page_scroll();
-                *scroll = usize::MAX;
-                Action::None
-            }
-            _ => Action::None,
         }
     }
 
@@ -296,8 +330,8 @@ impl App {
         // across opens, so Ctrl+D comes back to whichever you were reading.
         self.classifier_scroll = 0;
         self.classifier_follow = self.view == View::ContextDebug;
-        // A step pressed before a close never lands on the next open.
-        self.debug_jump = None;
+        // A move pressed before a close never lands on the next open.
+        self.debug_moves.clear();
     }
 
     /// Whether the draw tick should **re-arm** the next animation frame — the
@@ -331,58 +365,45 @@ impl App {
     /// otherwise it's capped to `max`, and reaching the bottom re-engages
     /// following so new content keeps scrolling into view.
     pub fn settle_tool_scroll(&mut self, max: usize) {
-        if self.tool_scroll >= max {
-            self.tool_follow = true; // at (or past) the bottom — stick to it
-        }
-        self.tool_scroll = if self.tool_follow {
-            max
-        } else {
-            self.tool_scroll.min(max)
-        };
+        settle_window(&mut self.tool_scroll, &mut self.tool_follow, max);
     }
 
-    /// Resolve a pending ←/→ step ([`tool_jump`](Self::tool_jump)) in the
-    /// Ctrl+O transcript, against the rows its entries start on (`rows`,
-    /// ascending) and its scroll ceiling (`max`) — the draw's call, made with
-    /// the transcript as built and before [`settle_tool_scroll`]
-    /// (`docs/transcript-navigation.md`). Ctrl+D's rule
-    /// ([`resolve_debug_jump`](Self::resolve_debug_jump)): ← opens the start
-    /// of the entry being read, or the one before it when the window already
-    /// starts there; → the next one; past either end, the page's edge.
+    /// Resolve the Ctrl+O pager's waiting moves ([`tool_moves`](Self::tool_moves)),
+    /// oldest first, against the rows the transcript's entries start on
+    /// (`rows`, ascending) and its scroll ceiling (`max`) — the draw's call,
+    /// made with the transcript as built and before [`settle_tool_scroll`]
+    /// (`docs/transcript-navigation.md`). Each press is a move of its own,
+    /// landing where it would have had a draw come between them. A step
+    /// follows Ctrl+D's rule ([`resolve_debug_moves`](Self::resolve_debug_moves)):
+    /// ← opens the start of the entry being read, or the one before it when
+    /// the window already starts there; → the next one; past either end, the
+    /// page's edge.
     ///
     /// [`settle_tool_scroll`]: Self::settle_tool_scroll
-    pub fn resolve_tool_jump(&mut self, rows: &[usize], max: usize) {
-        let Some(jump) = self.tool_jump.take() else {
-            return;
-        };
-        let top = if self.tool_follow {
-            max
-        } else {
-            self.tool_scroll.min(max)
-        };
-        self.tool_scroll = step_target(jump, rows, top);
-        self.tool_follow = false;
+    pub fn resolve_tool_moves(&mut self, rows: &[usize], max: usize) {
+        let waiting = std::mem::take(&mut self.tool_moves);
+        replay_moves(
+            waiting,
+            &mut self.tool_scroll,
+            &mut self.tool_follow,
+            rows,
+            max,
+        );
     }
 
     /// Settle the context-debug scroll for a draw —
     /// [`settle_tool_scroll`](Self::settle_tool_scroll) for the Ctrl+D view.
     pub fn settle_debug_scroll(&mut self, max: usize) {
-        if self.debug_scroll >= max {
-            self.debug_follow = true;
-        }
-        self.debug_scroll = if self.debug_follow {
-            max
-        } else {
-            self.debug_scroll.min(max)
-        };
+        settle_window(&mut self.debug_scroll, &mut self.debug_follow, max);
     }
 
-    /// Resolve a pending ←/→ step ([`debug_jump`](Self::debug_jump)) on the
-    /// Ctrl+D page showing, against the rows its entries start on (`rows`,
-    /// ascending) and the page's scroll ceiling (`max`) — the draw's call,
-    /// made with the page as built and before its `settle_*_scroll`
-    /// (`docs/context.md`). A context window is a few dozen messages over
-    /// thousands of rows; this opens the previous or next one at the top.
+    /// Resolve the waiting moves ([`debug_moves`](Self::debug_moves)) on the
+    /// Ctrl+D page showing, oldest first, against the rows its entries start
+    /// on (`rows`, ascending) and the page's scroll ceiling (`max`) — the
+    /// draw's call, made with the page as built and before its
+    /// `settle_*_scroll` (`docs/context.md`). A context window is a few dozen
+    /// messages over thousands of rows; a step opens the previous or next
+    /// one at the top.
     ///
     /// The window's top row is the scroll offset — `max` while the page
     /// tail-follows, since a page that grew since its last draw is still
@@ -391,28 +412,22 @@ impl App {
     /// the window already starts there), the top with none; → on the first
     /// starting below it, past the end with none — where the settle pins it
     /// and re-engages tail-follow, as it does for a header the last page
-    /// shares. A step anywhere else unpins the tail.
-    pub fn resolve_debug_jump(&mut self, rows: &[usize], max: usize) {
-        let Some(jump) = self.debug_jump.take() else {
-            return;
-        };
+    /// shares. A step anywhere else unpins the tail. Each press is a move of
+    /// its own, the window settled between them as a draw would have.
+    pub fn resolve_debug_moves(&mut self, rows: &[usize], max: usize) {
+        let waiting = std::mem::take(&mut self.debug_moves);
         let (scroll, follow) = self.debug_page_scroll();
-        let top = if *follow { max } else { (*scroll).min(max) };
-        *scroll = step_target(jump, rows, top);
-        *follow = false;
+        replay_moves(waiting, scroll, follow, rows, max);
     }
 
     /// Settle the **classifier page's** scroll for a draw, exactly like
     /// [`settle_debug_scroll`](Self::settle_debug_scroll) does the context
     /// page's (`docs/permissions.md`).
     pub fn settle_classifier_scroll(&mut self, max: usize) {
-        if self.classifier_scroll >= max {
-            self.classifier_follow = true;
-        }
-        self.classifier_scroll = if self.classifier_follow {
-            max
-        } else {
-            self.classifier_scroll.min(max)
-        };
+        settle_window(
+            &mut self.classifier_scroll,
+            &mut self.classifier_follow,
+            max,
+        );
     }
 }

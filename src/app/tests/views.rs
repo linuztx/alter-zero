@@ -137,13 +137,20 @@ fn left_and_right_queue_a_step_between_entries() {
     let mut app = App::new();
     app.on_key(ctrl('d'));
     assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
-    assert_eq!(app.debug_jump, Some(EntryJump::Previous));
+    assert_eq!(app.debug_moves, [PagerMove::Step(EntryJump::Previous)]);
     assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
     assert_eq!(
-        app.debug_jump,
-        Some(EntryJump::Next),
-        "the newest press wins"
+        app.debug_moves,
+        [
+            PagerMove::Step(EntryJump::Previous),
+            PagerMove::Step(EntryJump::Next)
+        ],
+        "every press waits its turn — the newest no longer wins"
     );
+    // A scroll pressed behind them waits too, so it lands after them.
+    app.on_key(key(KeyCode::PageDown));
+    assert_eq!(app.debug_moves.last(), Some(&PagerMove::On(TOOL_VIEW_PAGE)));
+    assert_eq!(app.debug_scroll, 0, "the scroll waits with the steps");
 }
 
 #[test]
@@ -157,21 +164,78 @@ fn a_step_lands_on_the_neighbouring_entrys_header() {
     app.on_key(ctrl('d'));
     app.settle_debug_scroll(40); // tail-following: the top row is 40
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&rows, 40);
+    app.resolve_debug_moves(&rows, 40);
     assert_eq!(app.debug_scroll, 30, "the last entry's header");
     assert!(!app.debug_follow, "a step unpins the tail");
-    assert_eq!(app.debug_jump, None, "the step is spent");
+    assert!(app.debug_moves.is_empty(), "the step is spent");
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&rows, 40);
+    app.resolve_debug_moves(&rows, 40);
     assert_eq!(app.debug_scroll, 14);
     // In the middle of an entry, ← goes back to its own header first.
     app.debug_scroll = 9;
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&rows, 40);
+    app.resolve_debug_moves(&rows, 40);
     assert_eq!(app.debug_scroll, 6);
     app.on_key(key(KeyCode::Right));
-    app.resolve_debug_jump(&rows, 40);
+    app.resolve_debug_moves(&rows, 40);
     assert_eq!(app.debug_scroll, 14);
+}
+
+#[test]
+fn every_press_before_a_draw_takes_its_own_step() {
+    // A laggy link, or a busy machine, can deliver several keys between two
+    // draws. Each ← or → is a step of its own: three → from the top land
+    // three entries on, where the newest press used to win and the three
+    // took one step between them.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Home));
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Right));
+    }
+    app.resolve_debug_moves(&rows, 40);
+    assert_eq!(app.debug_scroll, 30, "three presses, three entries on");
+    // ← then → from an entry's first row: back to the one before it, then
+    // on to this one again — not the newest press alone, which went past.
+    app.debug_scroll = 14;
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Right));
+    app.resolve_debug_moves(&rows, 40);
+    assert_eq!(app.debug_scroll, 14, "back, then on again");
+}
+
+#[test]
+fn a_scroll_pressed_behind_a_pending_step_lands_after_it() {
+    // → then PageDown before a draw: the step, then the page. The scroll
+    // used to move the window at once and the step then resolved from
+    // there, an entry further on than the keys asked for.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.on_key(key(KeyCode::Home));
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::PageDown));
+    app.resolve_debug_moves(&rows, 40);
+    assert_eq!(app.debug_scroll, 6 + TOOL_VIEW_PAGE);
+}
+
+#[test]
+fn queued_moves_settle_between_them_as_a_draw_would() {
+    // → onto a start the last page shares lands on the end; ↑ pressed after
+    // it in the same frame is one row up from there, the window settled
+    // between the two as a draw between them would have settled it.
+    let rows = [2, 10, 25];
+    let mut app = App::new();
+    app.on_key(ctrl('d'));
+    app.debug_follow = false;
+    app.debug_scroll = 10;
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Up));
+    app.resolve_debug_moves(&rows, 20);
+    app.settle_debug_scroll(20);
+    assert_eq!(app.debug_scroll, 19);
+    assert!(!app.debug_follow, "↑ unpinned the tail again");
 }
 
 #[test]
@@ -182,7 +246,7 @@ fn a_tail_following_page_steps_from_its_current_end() {
     app.on_key(ctrl('d'));
     app.settle_debug_scroll(10);
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&[0, 12, 18], 20);
+    app.resolve_debug_moves(&[0, 12, 18], 20);
     assert_eq!(app.debug_scroll, 18);
 }
 
@@ -194,20 +258,20 @@ fn a_step_past_either_end_stops_at_the_page_edge() {
     app.debug_follow = false;
     app.debug_scroll = 1;
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&rows, 20);
+    app.resolve_debug_moves(&rows, 20);
     assert_eq!(app.debug_scroll, 0, "nothing above: the top");
     // The last entries share the last page, so a header the window cannot
     // put at its top lands on the end — and the end re-engages tail-follow.
     app.debug_scroll = 10;
     app.on_key(key(KeyCode::Right));
-    app.resolve_debug_jump(&rows, 20);
+    app.resolve_debug_moves(&rows, 20);
     app.settle_debug_scroll(20);
     assert_eq!(app.debug_scroll, 20);
     assert!(app.debug_follow, "the end re-engages tail-follow");
     app.debug_follow = false;
     app.debug_scroll = 25;
     app.on_key(key(KeyCode::Right));
-    app.resolve_debug_jump(&rows, 30);
+    app.resolve_debug_moves(&rows, 30);
     app.settle_debug_scroll(30);
     assert_eq!(app.debug_scroll, 30, "nothing below: the end");
 }
@@ -218,7 +282,7 @@ fn nothing_pending_resolves_to_nothing() {
     app.on_key(ctrl('d'));
     app.debug_follow = false;
     app.debug_scroll = 7;
-    app.resolve_debug_jump(&[0, 3], 20);
+    app.resolve_debug_moves(&[0, 3], 20);
     assert_eq!(app.debug_scroll, 7);
     assert!(!app.debug_follow);
 }
@@ -231,7 +295,7 @@ fn steps_move_whichever_page_is_showing() {
     app.classifier_follow = false;
     app.classifier_scroll = 5;
     app.on_key(key(KeyCode::Left));
-    app.resolve_debug_jump(&[0, 3], 9);
+    app.resolve_debug_moves(&[0, 3], 9);
     assert_eq!(app.classifier_scroll, 3);
     assert_eq!(app.debug_scroll, 0, "the LLM page was left alone");
 }
@@ -242,11 +306,11 @@ fn a_pending_step_never_carries_over_to_another_page_or_open() {
     app.on_key(ctrl('d'));
     app.on_key(key(KeyCode::Right));
     app.on_key(key(KeyCode::Tab));
-    assert_eq!(app.debug_jump, None, "Tab drops it");
+    assert!(app.debug_moves.is_empty(), "Tab drops it");
     app.on_key(key(KeyCode::Left));
     app.on_key(ctrl('d')); // close
     app.on_key(ctrl('d')); // reopen
-    assert_eq!(app.debug_jump, None, "a close drops it");
+    assert!(app.debug_moves.is_empty(), "a close drops it");
 }
 
 #[test]
@@ -616,12 +680,15 @@ fn left_and_right_queue_a_step_between_transcript_entries() {
     let mut app = App::new();
     app.on_key(ctrl('o'));
     assert_eq!(app.on_key(key(KeyCode::Left)), Action::None);
-    assert_eq!(app.tool_jump, Some(EntryJump::Previous));
+    assert_eq!(app.tool_moves, [PagerMove::Step(EntryJump::Previous)]);
     assert_eq!(app.on_key(key(KeyCode::Right)), Action::None);
     assert_eq!(
-        app.tool_jump,
-        Some(EntryJump::Next),
-        "the newest press wins"
+        app.tool_moves,
+        [
+            PagerMove::Step(EntryJump::Previous),
+            PagerMove::Step(EntryJump::Next)
+        ],
+        "every press waits its turn — the newest no longer wins"
     );
 }
 
@@ -639,7 +706,7 @@ fn a_backtrack_preview_keeps_left_and_right_for_its_own_steps() {
     assert_eq!(app.backtrack.selected, Some(0), "← steps the highlight");
     app.on_key(key(KeyCode::Right));
     assert_eq!(app.backtrack.selected, Some(1), "→ steps it back");
-    assert_eq!(app.tool_jump, None, "no transcript step was queued");
+    assert!(app.tool_moves.is_empty(), "no transcript step was queued");
 }
 
 #[test]
@@ -652,21 +719,58 @@ fn a_transcript_step_lands_on_the_neighbouring_entrys_first_row() {
     app.on_key(ctrl('o'));
     app.settle_tool_scroll(40); // tail-following: the top row is 40
     app.on_key(key(KeyCode::Left));
-    app.resolve_tool_jump(&rows, 40);
+    app.resolve_tool_moves(&rows, 40);
     assert_eq!(app.tool_scroll, 30, "the last entry's first row");
     assert!(!app.tool_follow, "a step unpins the tail");
-    assert_eq!(app.tool_jump, None, "the step is spent");
+    assert!(app.tool_moves.is_empty(), "the step is spent");
     app.on_key(key(KeyCode::Left));
-    app.resolve_tool_jump(&rows, 40);
+    app.resolve_tool_moves(&rows, 40);
     assert_eq!(app.tool_scroll, 14);
     // In the middle of an entry, ← goes back to its own first row first.
     app.tool_scroll = 9;
     app.on_key(key(KeyCode::Left));
-    app.resolve_tool_jump(&rows, 40);
+    app.resolve_tool_moves(&rows, 40);
     assert_eq!(app.tool_scroll, 6);
     app.on_key(key(KeyCode::Right));
-    app.resolve_tool_jump(&rows, 40);
+    app.resolve_tool_moves(&rows, 40);
     assert_eq!(app.tool_scroll, 14);
+}
+
+#[test]
+fn every_transcript_press_before_a_draw_takes_its_own_step() {
+    // Phase 157 on a busy CI runner: three → sent one after another reached
+    // the pager between two draws, and the newest press won — one step where
+    // three were pressed, so the walk stopped an entry short.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.on_key(key(KeyCode::Home));
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Right));
+    }
+    app.resolve_tool_moves(&rows, 40);
+    assert_eq!(app.tool_scroll, 30, "three presses, three entries on");
+    app.tool_scroll = 14;
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Right));
+    app.resolve_tool_moves(&rows, 40);
+    assert_eq!(app.tool_scroll, 14, "back, then on again");
+}
+
+#[test]
+fn a_transcript_scroll_pressed_behind_a_pending_step_lands_after_it() {
+    // → then PageDown PageDown before a draw: two pages into the entry the
+    // step opened — the very keys Phase 157 pages into a call's output with.
+    let rows = [0, 6, 14, 30];
+    let mut app = App::new();
+    app.on_key(ctrl('o'));
+    app.on_key(key(KeyCode::Home));
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::PageDown));
+    app.on_key(key(KeyCode::PageDown));
+    app.resolve_tool_moves(&rows, 40);
+    assert_eq!(app.tool_scroll, 6 + 2 * TOOL_VIEW_PAGE);
+    assert!(!app.tool_follow);
 }
 
 #[test]
@@ -677,13 +781,13 @@ fn a_transcript_step_past_either_end_stops_at_the_page_edge() {
     app.tool_follow = false;
     app.tool_scroll = 1;
     app.on_key(key(KeyCode::Left));
-    app.resolve_tool_jump(&rows, 20);
+    app.resolve_tool_moves(&rows, 20);
     assert_eq!(app.tool_scroll, 0, "nothing above: the top");
     // A start the window cannot put at its top lands on the end, and the
     // end re-engages tail-follow as End does.
     app.tool_scroll = 10;
     app.on_key(key(KeyCode::Right));
-    app.resolve_tool_jump(&rows, 20);
+    app.resolve_tool_moves(&rows, 20);
     app.settle_tool_scroll(20);
     assert_eq!(app.tool_scroll, 20);
     assert!(app.tool_follow, "the end re-engages tail-follow");
@@ -695,7 +799,7 @@ fn nothing_pending_resolves_no_transcript_step() {
     app.on_key(ctrl('o'));
     app.tool_follow = false;
     app.tool_scroll = 7;
-    app.resolve_tool_jump(&[0, 3], 20);
+    app.resolve_tool_moves(&[0, 3], 20);
     assert_eq!(app.tool_scroll, 7);
     assert!(!app.tool_follow);
 }
@@ -706,9 +810,9 @@ fn a_pending_transcript_step_never_outlives_the_view() {
     app.on_key(ctrl('o'));
     app.on_key(key(KeyCode::Right));
     app.on_key(ctrl('o')); // close
-    assert_eq!(app.tool_jump, None, "a close drops it");
+    assert!(app.tool_moves.is_empty(), "a close drops it");
     app.on_key(ctrl('o')); // reopen
-    assert_eq!(app.tool_jump, None, "and the reopen starts clean");
+    assert!(app.tool_moves.is_empty(), "and the reopen starts clean");
 }
 
 #[test]
@@ -722,7 +826,11 @@ fn a_preview_begun_over_a_pending_transcript_step_drops_it() {
     exchange(&mut app, "one", "a");
     app.on_key(ctrl('o'));
     app.on_key(key(KeyCode::Right)); // queued, not yet drawn
+    app.on_key(key(KeyCode::PageDown)); // queued behind it
     app.on_key(key(KeyCode::Esc)); // idle with a target: begins the preview
     assert_eq!(app.backtrack.selected, Some(0));
-    assert_eq!(app.tool_jump, None, "the preview drops it");
+    assert!(
+        app.tool_moves.is_empty(),
+        "the preview drops it, and the scroll queued behind it"
+    );
 }

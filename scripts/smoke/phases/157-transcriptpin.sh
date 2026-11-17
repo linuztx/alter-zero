@@ -79,7 +79,9 @@ tmux kill-session -t "$S157" 2>/dev/null
 #   (b) ← opens that cell at its own first row, ↓ scrolls its output under
 #       the two-row pin;
 #   (c) from the top, → walks entry by entry to the first call, and paging
-#       into its output pins `● Bash(seq 1 60)`;
+#       into its output pins `● Bash(seq 1 60)` — and the same five keys
+#       sent in ONE write land in the same place, every press a move of its
+#       own in the order it came;
 #   (d) → and Esc sent in ONE write — a laggy link batching two keys into one
 #       frame — still open the backtrack preview with its highlight on
 #       screen: a step pending when the preview begins is dropped, where it
@@ -180,6 +182,19 @@ note "Part B (c): two pages into the first call's output"
 printf '%s\n' "$tp_paged"
 expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "deep in the first call's output its header is not pinned"
 expect_eq "$(tp_row 3)" "     21" "the first call's output does not carry on under its pin"
+
+# The same five keys in ONE write land where they did one at a time: each
+# press a move of its own, in the order it came. The newest step used to win
+# (three presses, one step) and the pages to overtake it, landing on the
+# reply after the call — the collapse that cost a CI run the third step.
+keys "$S157B" Home
+wait_for 5 "$S157B" -E '^─.* 0% ─$' || fail "Home did not return to the top"
+keys "$S157B" Right Right Right PageDown PageDown
+tp_batched="$(wait_row 5 "$S157B" 3 "     21")" ||
+	fail "→ → → PageDown PageDown in one write did not land two pages into the first call"
+note "Part B (c): the same keys in one write"
+printf '%s\n' "$tp_batched"
+expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "the keys in one write did not open the first call under its pin"
 
 # (d) → and Esc in one write: the preview opens with its highlight on screen.
 keys "$S157B" End

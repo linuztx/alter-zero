@@ -110,15 +110,30 @@ those rows: the stamp slices the block from the first carrier it finds
 
 ## ←/→
 
-The key records only the direction (`App::tool_jump`, an `EntryJump`), since
-where the neighbouring entry starts is a fact about the transcript as built —
-its width, its wrapping. The draw resolves it against the entries of the very
-build it is about to paint (`App::resolve_tool_jump`, before the scroll
-settle), by the rule Ctrl+D steps with (`app::views::step_target`, now shared):
-← opens the start of the entry being read, or the one before it when the
-window already starts there; → the next one; past the first, the top, and
-past the last, the end, which re-engages tail-follow. A close drops a step
-still pending, and so does the start of a backtrack preview (below).
+The key records only the direction (a `PagerMove::Step` carrying an
+`EntryJump`), since where the neighbouring entry starts is a fact about the
+transcript as built — its width, its wrapping. The draw resolves it against
+the entries of the very build it is about to paint
+(`App::resolve_tool_moves`, before the scroll settle), by the rule Ctrl+D
+steps with (`app::views::step_target`, now shared): ← opens the start of the
+entry being read, or the one before it when the window already starts there;
+→ the next one; past the first, the top, and past the last, the end, which
+re-engages tail-follow. A close drops the moves still waiting, and so does
+the start of a backtrack preview (below).
+
+**Every press is a move of its own, in the order it came.** The steps
+waiting for a draw are a queue (`App::tool_moves`), not one slot, and a
+scroll key pressed while any wait queues behind them instead of moving the
+window at once; the draw replays the queue oldest first, settling the window
+after each move as a draw between them would have (`replay_moves`). Keys
+reach the pager between two draws whenever a link batches them into one read
+or the machine is too busy to draw between them, and the one slot this
+replaced let the newest step win — three → moved one entry — while a
+PageDown pressed after a → scrolled first, the step then resolving from
+there, an entry further on than the keys asked for. Phase 157 lost a step
+that way on a busy CI runner. A scroll with nothing waiting still moves the
+window at once, and Ctrl+D's pages queue their moves the same way
+(`App::debug_moves`, `docs/context.md`).
 
 **The backtrack preview keeps ←/→.** While Esc-Esc highlights a user message,
 ← and → step the highlight (`docs/backtrack.md`) and queue no entry step; the
@@ -159,12 +174,18 @@ page past the highlighted message and open the preview with it off screen.
   and pins. The session, append and width tests are adapted from the
   parallel implementation on `feat/transcript-pinned-headers`.
 - `app::tests::views` — the keys, the preview's own ←/→, a preview begun over
-  a pending step dropping it, and the step's resolution at both ends.
+  a pending step dropping it (and the scroll queued behind it), the step's
+  resolution at both ends, every press before a draw a step of its own, a
+  scroll pressed behind a step landing after it, and the window settled
+  between queued moves.
 - `scripts/smoke.sh` Phase 157 — the real binary, in two parts. Two long `!`
   commands: Ctrl+O opens with the second one's header pinned over its tail, ←
   opens each command at its own first row, ↓ scrolls the output under the
   pinned header, → steps on. Then a resumed session with backend `bash`
   cells: a wrapped command's two header rows pinned over its output, paging
-  into a call's output under `● Bash(seq 1 60)`, → and Esc sent in one write
+  into a call's output under `● Bash(seq 1 60)`, the same keys sent in one
+  write landing in the same place (the check that failed while the newest
+  step won), each step waited on by the row it moves rather than text
+  already on screen, → and Esc sent in one write
   opening the preview with its highlight on screen (the check that failed
   before the preview dropped a pending step), and the preview's hint rows.

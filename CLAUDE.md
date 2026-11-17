@@ -3347,7 +3347,7 @@ each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
 entry naming that call) and `[Image #N]` placeholders unrendered, every entry
 on a lit role chip — `#n`, a `≈` token estimate by the footer gauge's own
 rule, `app::message_tokens` — over its text word-wrapped on the `⎿` gutter,
-←/→ stepping between entries (resolved at the draw, `App::resolve_debug_jump`),
+←/→ stepping between entries (resolved at the draw, `App::resolve_debug_moves`),
 the one the window opens inside pinned on its top row, the bottom rule
 counting the messages, and an agent session view's title naming the agent;
 `ui::render_context_view`/`ui::context_body` over the pure
@@ -3511,7 +3511,7 @@ of bug:
    vi-style `~` filler past its end, a `─` separator carrying the scroll
    percentage right-aligned, and two dim key-hint rows (↑/↓, ←/→ to the
    previous or next entry — Ctrl+D's step, resolved at the draw against the
-   build it paints, `App::resolve_tool_jump` — pgup/pgdn,
+   build it paints, `App::resolve_tool_moves` — pgup/pgdn,
    home/end jump; q/esc/ctrl+o close — though Esc when idle with a previous
    user message instead *begins the backtrack preview* in place, the closing
    hint row saying so honestly (`q/ctrl+o to quit   esc to edit prev`, the
