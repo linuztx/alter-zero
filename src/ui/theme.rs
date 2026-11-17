@@ -121,7 +121,8 @@ pub(super) fn inline_code_color() -> Color {
     palette().accent
 }
 
-/// A link's URL, shown as ` (url)` after its text — blue and underlined.
+/// The link colour — a bare URL, a link's ` (url)` target, and a label
+/// standing in for its target (`docs/links.md`) — always underlined.
 pub(super) fn link_url_color() -> Color {
     palette().link
 }

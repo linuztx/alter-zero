@@ -636,11 +636,14 @@ pub enum Inline {
     Strike(Vec<Inline>),
     /// `` `inline code` `` — rendered literally, in the code colour.
     Code(String),
-    /// `[text](url)` — the text nests, the URL is shown after it.
+    /// `[text](url)` — the text nests; the target goes behind it as a
+    /// hyperlink or after it in parentheses, the renderer's choice
+    /// (`docs/links.md` *Labelled links*).
     Link {
         /// The link's display text (parsed for nested emphasis).
         text: Vec<Inline>,
-        /// The link target, rendered as ` (url)` after the text.
+        /// The link target: what a click opens, shown as ` (url)` after the
+        /// text wherever it is not hidden behind it.
         url: String,
     },
     /// `![alt](url)` — rendered as its alt text (the URL is dropped).

@@ -3,9 +3,9 @@
 //! fragment still opens whole.
 
 use super::*;
-use crate::links::style_link;
+use crate::links::{TargetDisplay, style_link, with_target_display};
 use crate::markdown::parse_inline;
-use crate::ui::inline::{inline_spans, wrap_inline};
+use crate::ui::inline::{hides_target, inline_spans, wrap_inline};
 use crate::ui::theme::link_url_color;
 
 /// The `(text, target)` pairs of the segments that carry a link.
@@ -310,4 +310,610 @@ fn literal_url_marking_crosses_syntax_styles_and_preserves_unicode_and_spacing()
             .collect::<Vec<_>>()
     };
     assert_eq!(characters(actual), characters(segments));
+}
+
+// --- Labelled links: the label alone, its target behind it (docs/links.md) ---
+
+/// `source`'s segments as a terminal known to open hyperlinks is shown them.
+fn label_only(source: &str, base: Style) -> Vec<(String, Style)> {
+    with_target_display(TargetDisplay::Hidden, || {
+        inline_spans(&parse_inline(source), base)
+    })
+}
+
+/// The visible text of `segments`.
+fn text_of(segments: &[(String, Style)]) -> String {
+    segments.iter().map(|(text, _)| text.as_str()).collect()
+}
+
+/// Whether `style` is the link dress: the link colour, underlined.
+fn wears_link_dress(style: &Style) -> bool {
+    style.fg == Some(link_url_color()) && style.add_modifier.contains(Modifier::UNDERLINED)
+}
+
+/// The text of each linked span on `row`, in order.
+fn linked_runs(row: &[Span<'static>]) -> Vec<String> {
+    row.iter()
+        .filter(|span| style_link(&span.style).is_some())
+        .map(|span| span.content.to_string())
+        .collect()
+}
+
+#[test]
+fn a_web_link_is_shown_as_its_label_with_the_target_behind_it() {
+    // The report: `Source: FIDE (https://www.fide.com/geneva-to-host-…/)`
+    // spent a row and a half on an address nobody reads. Where the terminal
+    // opens hyperlinks the label is the link — dressed as one, the whole
+    // address behind it — and the address is off the screen.
+    let base = Style::new().fg(crate::ui::theme::ai_color());
+    let url = "https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/";
+    let segs = label_only(&format!("Source: [FIDE]({url}) today"), base);
+    assert_eq!(text_of(&segs), "Source: FIDE today", "{segs:?}");
+    assert_eq!(
+        linked_segments(&segs),
+        vec![("FIDE".to_string(), url.to_string())],
+        "the label carries the whole target, and nothing else does"
+    );
+    for (text, style) in &segs {
+        if text == "FIDE" {
+            assert!(wears_link_dress(style), "the label reads as a link");
+        } else {
+            assert_eq!(*style, base, "the prose around it is untouched: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn a_hidden_targets_label_keeps_its_emphasis_under_the_link_dress() {
+    let url = "https://x.com/n";
+    let segs = label_only(
+        &format!("[**bold** *slanted* `code` plain]({url})"),
+        Style::default(),
+    );
+    assert_eq!(text_of(&segs), "bold slanted code plain");
+    for (text, style) in &segs {
+        assert!(wears_link_dress(style), "every run is the link: {text:?}");
+        assert_eq!(style_link(style).as_deref(), Some(url), "{text:?}");
+    }
+    let style_of = |needle: &str| {
+        segs.iter()
+            .find(|(text, _)| text == needle)
+            .map(|(_, style)| *style)
+            .unwrap_or_else(|| panic!("no {needle:?} run in {segs:?}"))
+    };
+    assert!(style_of("bold").add_modifier.contains(Modifier::BOLD));
+    assert!(style_of("slanted").add_modifier.contains(Modifier::ITALIC));
+    // A code span in a label gives up its own colour: one link, one colour.
+    assert_eq!(style_of("code").fg, Some(link_url_color()));
+}
+
+#[test]
+fn a_label_of_several_words_is_one_unbroken_link_on_its_row() {
+    // The wrap rebuilds a row from its words and puts single spaces back
+    // between them. A space between two words of one label is the link too
+    // — underlined with them, opening what they open — or the label reads
+    // as three separate links with holes in the line under it.
+    let url = "https://example.com/docs";
+    let segs = label_only(
+        &format!("please read [the official documentation]({url}) first"),
+        Style::default(),
+    );
+    let rows = wrap_inline(&segs, 80);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let runs: Vec<&Span> = rows[0]
+        .iter()
+        .filter(|span| style_link(&span.style).is_some())
+        .collect();
+    assert_eq!(runs.len(), 1, "one run, its spaces included: {:?}", rows[0]);
+    assert_eq!(runs[0].content, "the official documentation");
+    assert!(wears_link_dress(&runs[0].style));
+    assert_eq!(style_link(&runs[0].style).as_deref(), Some(url));
+    let text: String = rows[0].iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(text, "please read the official documentation first");
+    // Broken between its words, each row holds one run of the label and no
+    // run opens or closes on a space.
+    for width in [14, 20, 30] {
+        let mut label = Vec::new();
+        for row in wrap_inline(&segs, width) {
+            let runs = linked_runs(&row);
+            assert!(runs.len() <= 1, "at {width}: {row:?}");
+            for run in runs {
+                assert_eq!(run.trim(), run, "no dangling space at {width}");
+                label.push(run);
+            }
+        }
+        assert_eq!(label.join(" "), "the official documentation", "at {width}");
+    }
+}
+
+#[test]
+fn a_space_at_the_edge_of_a_label_is_not_part_of_the_link() {
+    // Only a space *between* two words of the label joins them: one the
+    // author left inside the brackets, at either end, is the gap to the
+    // prose beside it and stays prose.
+    for source in [
+        "see [ docs ](https://x.com/d) ok",
+        "see [docs ](https://x.com/d) ok",
+        "see [ docs](https://x.com/d) ok",
+        "see[ docs](https://x.com/d) ok",
+    ] {
+        let rows = wrap_inline(&label_only(source, Style::default()), 80);
+        assert_eq!(linked_runs(&rows[0]), ["docs"], "{source:?}: {rows:?}");
+    }
+}
+
+#[test]
+fn two_links_to_one_target_stay_two_links() {
+    let segs = label_only(
+        "[one](https://x.com/s) [two](https://x.com/s)",
+        Style::default(),
+    );
+    let rows = wrap_inline(&segs, 80);
+    assert_eq!(
+        linked_runs(&rows[0]),
+        ["one", "two"],
+        "the space between them belongs to neither: {rows:?}"
+    );
+}
+
+#[test]
+fn a_shown_targets_label_is_one_hyperlink_across_its_words() {
+    // The other presentation gains the same thing: the label's words used
+    // to be a hyperlink each, the spaces between them opening nothing.
+    let base = Style::new().fg(crate::ui::theme::ai_color());
+    let url = "https://example.com/docs";
+    let segs = inline_spans(
+        &parse_inline(&format!("read [the official documentation]({url}) first")),
+        base,
+    );
+    let rows = wrap_inline(&segs, 120);
+    assert_eq!(
+        linked_runs(&rows[0]),
+        ["the official documentation", url],
+        "{rows:?}"
+    );
+    let text: String = rows[0].iter().map(|span| span.content.as_ref()).collect();
+    assert_eq!(
+        text,
+        format!("read the official documentation ({url}) first")
+    );
+}
+
+#[test]
+fn a_hidden_targets_every_wrapped_fragment_opens_the_whole_address() {
+    let url = "https://example.com/a/long/path/that/would/never/fit?on=one&row=at&all=true";
+    let segs = label_only(
+        &format!("the [supercalifragilistic expialidocious write-up]({url}) is out"),
+        Style::default(),
+    );
+    for width in [6, 11, 24] {
+        let rows = wrap_inline(&segs, width);
+        let text: String = rows
+            .iter()
+            .flatten()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            !text.contains("https://"),
+            "no address at {width}: {text:?}"
+        );
+        let mut label = String::new();
+        for span in rows.iter().flatten() {
+            if let Some(target) = style_link(&span.style) {
+                assert_eq!(target.as_ref(), url, "at {width}: {span:?}");
+                label.push_str(&span.content.replace(' ', ""));
+            }
+        }
+        assert_eq!(
+            label, "supercalifragilisticexpialidociouswrite-up",
+            "at {width}"
+        );
+    }
+}
+
+#[test]
+fn a_target_that_is_not_a_web_address_stays_on_screen() {
+    // Only an `http(s)://` address is hidden. A path, an anchor or another
+    // scheme is the information itself — `the notes (docs/links.md)` — and
+    // nothing here can promise a click on it opens anything.
+    for target in [
+        "AGENTS.md",
+        "docs/links.md#testing",
+        "/abs/path.rs",
+        "#anchor",
+        "mailto:me@example.com",
+        "file:///etc/hosts",
+        "ftp://files.example/a.zip",
+        "https://",
+    ] {
+        let source = format!("see [the notes]({target}) ok");
+        let shown = inline_spans(&parse_inline(&source), Style::default());
+        assert_eq!(
+            label_only(&source, Style::default()),
+            shown,
+            "{target}: the two presentations are one"
+        );
+        assert_eq!(text_of(&shown), format!("see the notes ({target}) ok"));
+    }
+}
+
+#[test]
+fn a_link_with_nothing_to_click_is_its_target() {
+    // A hidden target needs a label to stand behind, and a shown one needs
+    // a label to follow: with none — an empty label, one of spaces or
+    // zero-width characters, an image with no alt text — the target itself
+    // is the link, on every terminal, rather than a parenthesis around the
+    // only thing on screen.
+    for source in [
+        "see [](https://x.com/e) ok",
+        "see [ ](https://x.com/e) ok",
+        "see [\u{200d}](https://x.com/e) ok",
+        "see [\u{1}](https://x.com/e) ok",
+        "see [![](https://img.example/b.png)](https://x.com/e) ok",
+    ] {
+        let shown = inline_spans(&parse_inline(source), Style::default());
+        assert_eq!(label_only(source, Style::default()), shown, "{source:?}");
+        assert_eq!(text_of(&shown), "see https://x.com/e ok", "{source:?}");
+        assert_eq!(
+            linked_segments(&shown),
+            vec![("https://x.com/e".to_string(), "https://x.com/e".to_string())],
+            "{source:?}"
+        );
+        let (_, style) = shown
+            .iter()
+            .find(|(text, _)| text == "https://x.com/e")
+            .expect("the target segment");
+        assert!(wears_link_dress(style), "{source:?}");
+    }
+    // Whatever the target is: a path stands in for a missing label too.
+    let path = inline_spans(&parse_inline("[](docs/links.md)"), Style::default());
+    assert_eq!(text_of(&path), "docs/links.md");
+    assert_eq!(
+        linked_segments(&path),
+        vec![("docs/links.md".to_string(), "docs/links.md".to_string())]
+    );
+}
+
+#[test]
+fn a_label_that_shows_another_address_keeps_the_real_one_on_screen() {
+    // A hidden target is taken on trust, and the label is all there is to
+    // trust: one that spells a different address than the click opens is
+    // the one case where the reader must be shown both.
+    let target = "https://evil.example/login";
+    for label in [
+        "https://bank.example",
+        "sign in at https://bank.example today",
+        "`https://bank.example`",
+        "<https://bank.example>",
+        "**https://bank.example/account**",
+    ] {
+        let source = format!("[{label}]({target})");
+        let shown = inline_spans(&parse_inline(&source), Style::default());
+        let hidden = label_only(&source, Style::default());
+        assert_eq!(hidden, shown, "{source:?}");
+        assert!(
+            text_of(&hidden).ends_with(&format!(" ({target})")),
+            "{source:?}: {hidden:?}"
+        );
+    }
+}
+
+#[test]
+fn a_label_that_is_its_own_target_is_shown_once() {
+    for (source, label, target) in [
+        (
+            "[https://x.com/d](https://x.com/d)",
+            "https://x.com/d",
+            "https://x.com/d",
+        ),
+        // A closing slash is the same page.
+        (
+            "[https://x.com](https://x.com/)",
+            "https://x.com",
+            "https://x.com/",
+        ),
+        (
+            "[https://x.com/](https://x.com)",
+            "https://x.com/",
+            "https://x.com",
+        ),
+        (
+            "[see https://x.com/d now](https://x.com/d)",
+            "see https://x.com/d now",
+            "https://x.com/d",
+        ),
+    ] {
+        let segs = label_only(source, Style::default());
+        assert_eq!(text_of(&segs), label, "{source:?}");
+        for (text, style) in &segs {
+            assert!(wears_link_dress(style), "{source:?}: {text:?}");
+            assert_eq!(style_link(style).as_deref(), Some(target), "{source:?}");
+        }
+    }
+}
+
+#[test]
+fn a_target_that_could_not_be_marked_is_never_hidden() {
+    // The interner holds eight million targets and marks nothing past that
+    // (`links::carrier`). A label with its address hidden and no hyperlink
+    // behind it would be a URL nobody can reach, so an unmarked link keeps
+    // the address on screen.
+    let label = [("docs".to_string(), Style::default())];
+    let url = "https://x.com/unmarked";
+    let carrier = crate::links::carrier(url);
+    assert!(carrier.is_some(), "the interner has room in a test");
+    with_target_display(TargetDisplay::Hidden, || {
+        assert!(hides_target(&label, url, carrier));
+        assert!(!hides_target(&label, url, None));
+    });
+    // And the other presentation hides nothing, marked or not.
+    assert!(!hides_target(&label, url, carrier));
+}
+
+#[test]
+fn a_label_that_is_its_own_target_is_written_once_on_every_terminal() {
+    // `[https://x.com/d](https://x.com/d)` is how a model often writes a
+    // link, and the other presentation printed it twice — the address, then
+    // the same address in parentheses. A web address that is its own label
+    // is written once wherever it is shown.
+    for (source, text, target) in [
+        (
+            "[https://x.com/d](https://x.com/d)",
+            "https://x.com/d",
+            "https://x.com/d",
+        ),
+        (
+            "[https://x.com](https://x.com/)",
+            "https://x.com",
+            "https://x.com/",
+        ),
+        (
+            "[<https://x.com/d>](https://x.com/d)",
+            "https://x.com/d",
+            "https://x.com/d",
+        ),
+    ] {
+        let segs = inline_spans(&parse_inline(source), Style::default());
+        assert_eq!(text_of(&segs), text, "{source:?}");
+        assert_eq!(
+            linked_segments(&segs),
+            vec![(text.to_string(), target.to_string())],
+            "{source:?}"
+        );
+        assert!(wears_link_dress(&segs[0].1), "{source:?}");
+        assert_eq!(label_only(source, Style::default()), segs, "{source:?}");
+    }
+    // A label that only *holds* its target is still a label.
+    let source = "[see https://x.com/d now](https://x.com/d)";
+    let segs = inline_spans(&parse_inline(source), Style::default());
+    assert_eq!(text_of(&segs), "see https://x.com/d now (https://x.com/d)");
+}
+
+#[test]
+fn a_label_that_is_its_target_is_written_once_whatever_the_target() {
+    // `` [`src/links.rs`](src/links.rs) `` is how a reply points at a file,
+    // and it printed the path twice — `src/links.rs (src/links.rs)`. A label
+    // that is, character for character, the target it links to says
+    // everything the target would, so it is written once and is the link:
+    // on every terminal, since nothing is hidden. A mail address is its
+    // target without the `mailto:` in front.
+    for (source, text, target) in [
+        ("[AGENTS.md](AGENTS.md)", "AGENTS.md", "AGENTS.md"),
+        (
+            "[`src/links.rs`](src/links.rs)",
+            "src/links.rs",
+            "src/links.rs",
+        ),
+        (
+            "[**docs/links.md**#testing](docs/links.md#testing)",
+            "docs/links.md#testing",
+            "docs/links.md#testing",
+        ),
+        ("[#install](#install)", "#install", "#install"),
+        (
+            "[file:///etc/hosts](file:///etc/hosts)",
+            "file:///etc/hosts",
+            "file:///etc/hosts",
+        ),
+        (
+            "[me@example.com](mailto:me@example.com)",
+            "me@example.com",
+            "mailto:me@example.com",
+        ),
+        (
+            "[me@example.com](MAILTO:me@example.com)",
+            "me@example.com",
+            "MAILTO:me@example.com",
+        ),
+    ] {
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(source), Style::default())
+            });
+            assert_eq!(text_of(&segs), text, "{source:?} {display:?}");
+            for (run, style) in &segs {
+                assert_eq!(
+                    style_link(style).as_deref(),
+                    Some(target),
+                    "{source:?} {display:?}: {run:?} opens the target"
+                );
+                assert!(wears_link_dress(style), "{source:?} {display:?}: {run:?}");
+            }
+        }
+    }
+    // Emphasis inside the label stays under the dress.
+    let bold = inline_spans(
+        &parse_inline("[**docs/links.md**#testing](docs/links.md#testing)"),
+        Style::default(),
+    );
+    assert!(bold[0].1.add_modifier.contains(Modifier::BOLD), "{bold:?}");
+}
+
+#[test]
+fn a_label_that_only_resembles_its_target_keeps_the_target_after_it() {
+    // Written once only when nothing is lost by it. A name that differs from
+    // the path by its case is another file where case counts; a mail address
+    // over another one is the spoof a hidden target would be; and where the
+    // terminal is not known to open hyperlinks the whole web address stays,
+    // scheme included, since the text is then all there is to open it with.
+    for (source, text) in [
+        ("[the guide](AGENTS.md)", "the guide (AGENTS.md)"),
+        ("[agents.md](AGENTS.md)", "agents.md (AGENTS.md)"),
+        ("[AGENTS](AGENTS.md)", "AGENTS (AGENTS.md)"),
+        ("[ AGENTS.md](AGENTS.md)", " AGENTS.md (AGENTS.md)"),
+        (
+            "[me@example.com](mailto:you@example.com)",
+            "me@example.com (mailto:you@example.com)",
+        ),
+        (
+            "[mailto:me@example.com](me@example.com)",
+            "mailto:me@example.com (me@example.com)",
+        ),
+        ("[x.com/d](https://x.com/d)", "x.com/d (https://x.com/d)"),
+    ] {
+        let segs = inline_spans(&parse_inline(source), Style::default());
+        assert_eq!(text_of(&segs), text, "{source:?}");
+    }
+}
+
+#[test]
+fn an_address_is_compared_the_way_addresses_are() {
+    // A scheme and a host read the same in any case — `https://GitHub.com/x`
+    // is `https://github.com/x` — so a label apart from its target only
+    // there is still its own address: written once, with no other address
+    // to keep the target on screen for.
+    for (source, text) in [
+        (
+            "[https://GitHub.com/linuztx](https://github.com/linuztx)",
+            "https://GitHub.com/linuztx",
+        ),
+        ("[HTTPS://X.COM/d](https://x.com/d)", "HTTPS://X.COM/d"),
+        ("[https://X.com](https://x.com/)", "https://X.com"),
+    ] {
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(source), Style::default())
+            });
+            assert_eq!(text_of(&segs), text, "{source:?} {display:?}");
+        }
+    }
+    // Past the host, case is the server's to read: another path, query or
+    // fragment is another page, and both stay on screen.
+    for (label, target) in [
+        ("https://bit.ly/AbCd", "https://bit.ly/aBcD"),
+        ("https://x.com/Secret", "https://x.com/secret"),
+        ("https://x.com/a?Q=1", "https://x.com/a?q=1"),
+        ("https://x.com/a#Top", "https://x.com/a#top"),
+    ] {
+        let source = format!("[{label}]({target})");
+        for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+            let segs = with_target_display(display, || {
+                inline_spans(&parse_inline(&source), Style::default())
+            });
+            assert_eq!(
+                text_of(&segs),
+                format!("{label} ({target})"),
+                "{source:?} {display:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_link_with_no_target_is_its_label() {
+    // `[text]()` has nothing to open and nothing to show: it printed
+    // `text ()`, an empty pair of parentheses after the label. It is its
+    // label, as prose — no dress and no hyperlink promise a click.
+    for display in [TargetDisplay::Shown, TargetDisplay::Hidden] {
+        let segs = with_target_display(display, || {
+            inline_spans(
+                &parse_inline("see [the **notes**]() here"),
+                Style::default(),
+            )
+        });
+        assert_eq!(text_of(&segs), "see the notes here", "{display:?}");
+        assert!(linked_segments(&segs).is_empty(), "{display:?}: {segs:?}");
+        assert!(
+            !segs.iter().any(|(_, style)| wears_link_dress(style)),
+            "{display:?}: {segs:?}"
+        );
+        // And with no label either there is nothing at all.
+        let bare = with_target_display(display, || {
+            inline_spans(&parse_inline("see []() here"), Style::default())
+        });
+        assert_eq!(text_of(&bare), "see  here", "{display:?}");
+    }
+}
+
+#[test]
+fn a_target_too_long_for_a_hyperlink_stays_on_screen() {
+    // Terminals cap what a hyperlink may carry — VTE and iTerm2 drop one
+    // whose address is past 2083 bytes — so a longer address has no
+    // hyperlink to hide behind. The cap is on the bytes written, and a
+    // non-ASCII byte is written as three.
+    let of_len = |len: usize| format!("https://x.com/{}", "a".repeat(len - "https://x.com/".len()));
+    let fits = of_len(crate::links::HYPERLINK_URI_MAX_BYTES);
+    let over = of_len(crate::links::HYPERLINK_URI_MAX_BYTES + 1);
+    let hidden = label_only(&format!("the [signed link]({fits}) here"), Style::default());
+    assert_eq!(text_of(&hidden), "the signed link here");
+    for url in [
+        over,
+        // 700 two-byte characters are 4200 bytes on the wire.
+        format!("https://x.com/{}", "é".repeat(700)),
+    ] {
+        let source = format!("the [signed link]({url}) here");
+        let shown = inline_spans(&parse_inline(&source), Style::default());
+        assert_eq!(label_only(&source, Style::default()), shown);
+        assert_eq!(text_of(&shown), format!("the signed link ({url}) here"));
+    }
+}
+
+#[test]
+fn an_address_spelled_across_a_labels_runs_still_keeps_the_real_one_on_screen() {
+    // What the reader sees is the label's text as one string, whatever runs
+    // it was written in. A label could spell `https://bank.example` with the
+    // scheme split by emphasis or a code span, or carry it as an image's alt
+    // text: no single run holds an address, so none was marked — and the
+    // real target went behind a label naming somewhere else. The same for a
+    // character that takes no column: a zero-width space inside `https://`
+    // is invisible on screen, so it cannot hide the address from the check.
+    let target = "https://evil.example/login";
+    for label in [
+        "ht**tps://bank.example**",
+        "ht`tps://bank.example`",
+        "https://*bank.example*/login",
+        "https&#58;//bank.example",
+        "https\\://bank.example",
+        "![https://bank.example](https://img.example/b.png)",
+        "h\u{200b}ttps://bank.example",
+        "https:/\u{200d}/bank.example",
+        // A control character is never painted, so it hides nothing either.
+        "ht\u{1}tps://bank.example",
+        "https:\u{7f}//bank.example",
+        "https://bank\u{85}.example",
+    ] {
+        let source = format!("[{label}]({target})");
+        let shown = inline_spans(&parse_inline(&source), Style::default());
+        let hidden = label_only(&source, Style::default());
+        assert_eq!(hidden, shown, "{source:?}");
+        assert!(
+            text_of(&hidden).ends_with(&format!(" ({target})")),
+            "{source:?}: {hidden:?}"
+        );
+    }
+    // Split the same way, a label that spells its own target still stands
+    // alone — and reads as the link whichever way it was written.
+    for display in [TargetDisplay::Hidden, TargetDisplay::Shown] {
+        let segs = with_target_display(display, || {
+            inline_spans(
+                &parse_inline("[ht**tps://x.com/d**](https://x.com/d)"),
+                Style::default(),
+            )
+        });
+        assert_eq!(text_of(&segs), "https://x.com/d", "{display:?}");
+        for (text, style) in &segs {
+            assert!(wears_link_dress(style), "{display:?}: {text:?}");
+            assert_eq!(style_link(style).as_deref(), Some("https://x.com/d"));
+        }
+    }
 }

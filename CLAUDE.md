@@ -36,6 +36,7 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
+cargo run --release --example link_probe    # what a link-heavy reply costs to render, both presentations (docs/links.md)
 PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
@@ -1079,7 +1080,45 @@ behind whatever short form the row shows, stamped before the wrap so any
 fragment opens the whole file, while the `(`/`)` and the `⎿ Wrote … to
 {path}` corner row beneath stay plain — the rule a `[text](url)` suffix's own
 ` (`/`)` follow too, keeping the prose dress rather than the target's blue +
-underline, so the styled run and the clickable run are one run: the pure
+underline, so the styled run and the clickable run are one run — **and where
+the terminal opens hyperlinks a labelled link is its label alone**
+(`docs/links.md` *Labelled links*: `Source: FIDE` in the link dress, the
+whole address behind it, where it read `Source: FIDE (https://www.fide.com/…)`;
+`links::TargetDisplay` is a per-thread cell like the active theme's,
+`Shown` by default so a test, a headless run and the export never hide the
+only URL, set once at bootstrap from `links::detect_target_display` —
+pure over the environment and the name the terminal answered the startup
+read with (`InlineViewport::terminal_name`, the XTVERSION answer
+`term::query` takes in — asked for the pictures' sake, and on the links'
+own account wherever it could decide, `links::wants_terminal_name`, which
+is what reaches iTerm2 over `ssh`, where the pictures' `LC_TERMINAL` sniff
+asks nothing; `LC_TERMINAL` itself never hides, since it reaches a mosh
+session too): `Hidden` for the terminals known to open
+an OSC 8 link (kitty, Ghostty, WezTerm, iTerm2, VS Code, Alacritty, foot,
+the VTE family, Windows Terminal, a herdr pane — never Apple's Terminal or
+Konsole), by the variables they set or — what names one over `ssh`, where
+those stay behind — by its own answer (kitty, Ghostty, WezTerm, foot,
+iTerm2; an answer only ever adds a yes), `Shown` under a multiplexer, in
+an editor's own terminal (`NVIM`, `VIM_TERMINAL`, `INSIDE_EMACS`,
+`TERMINAL_EMULATOR`), for a `TERM_PROGRAM` it does not know whatever an
+outer terminal left in the environment, and with `ALTER_ZERO_HYPERLINKS`
+off, with `ALTER_ZERO_LINK_TARGETS=hide`/`show` the user's override;
+`ui::inline`'s `hides_target` keeps the `label (url)` shape for a target
+that is no web address or is past the 2083 bytes a hyperlink carries, and
+for a label that spells another address than the one it opens — read off
+the label's text as the reader sees it, its runs joined and what never
+reaches the screen left out (`shows_another_address`), so an address split
+by emphasis, a code span, a zero-width or a control character is still
+one — while on every terminal a link with no label is its target, a label
+that is its own target is written once as the link (`is_own_target`: a
+file named by its path, a web address give or take a closing `/`, a mail
+address under its `mailto:`) and a link with no target is its label;
+`tokenize_words` hands each word the style of
+the space in front of it (`Word::joiner`), so a label of several words is
+one underlined, clickable run instead of a link per word; `ui::export_text`
+renders with the address spelled out; the `link_probe` example measures
+both presentations against a link-free control; `smoke.sh` Phase 158): the
+pure
 `links` module detects/interns
 and stamps the id into `Style::underline_color`, `ui::inline` marks prose and
 code (a code URL gaining only the invisible target, never the link dress),
@@ -1219,9 +1258,11 @@ upgrades the half-block fallback unless the answering terminal names itself
 WezTerm or Konsole (no unicode placeholders; the variables saying so are only
 the fallback, since herdr keeps them in panes its own libghostty answers for).
 That is what draws real pictures in a **herdr** pane, whose environment says
-`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. Never asked under a
-multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a `linux`/`dumb` console, or with the
-protocol pinned; falling to half-blocks;
+`xterm-256color`/`TERM_PROGRAM=herdr` and nothing else. The graphics
+question is never asked under a multiplexer (`TMUX`/`STY`/`ZELLIJ`), on a
+`linux`/`dumb` console, or with the protocol pinned — the name alone may still
+be, for the links (`links::wants_terminal_name`, settled in advance by
+`ALTER_ZERO_LINK_TARGETS`); falling to half-blocks;
 `ALTER_ZERO_IMAGE_PROTOCOL`/`ALTER_ZERO_IMAGE_CELL_SIZE` override both and
 `ALTER_ZERO_IMAGES` gates it (`smoke.sh` Phase 107e plays the answering
 terminal on a pty, since tmux can answer none of it). The encoded pictures are bounded in **bytes**
@@ -3031,7 +3072,10 @@ pane's life; `HERDR_ENV` stays, since herdr's agent skill stops without it
 to the reports: herdr's environment names no graphics protocol, so the
 startup read asks the terminal (`term::query`, `docs/images.md` *Asking the
 terminal*) and herdr's libghostty answers `OK` (`docs/herdr.md` *Pictures in
-a pane*), which `ALTER_ZERO_HERDR` does not touch. `ALTER_ZERO_HERDR=0`
+a pane*), which `ALTER_ZERO_HERDR` does not touch. A pane's **links** owe
+nothing to them either: its own `TERM_PROGRAM=herdr` is on the list of
+terminals that open a hyperlink, so a labelled link is its label alone
+there (`docs/herdr.md` *Links in a pane*). `ALTER_ZERO_HERDR=0`
 turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
 socket (a failed turn through the real backend and a refusing stub provider)
 and the fixture unsets every `HERDR_*` variable.

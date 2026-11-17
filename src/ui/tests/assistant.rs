@@ -1115,12 +1115,14 @@ fn selecting_highlights_the_whole_row_in_one_consistent_colour() {
 
 #[test]
 fn a_code_labelled_link_marks_only_the_two_names() {
-    // The reported render: `` "[`AGENTS.md`](AGENTS.md)" `` shows
-    // `"AGENTS.md (AGENTS.md)"` — the label keeps its inline-code colour, the
-    // shown target the link dress, and the quotes and parens around them stay
-    // plain prose. Both names carry the verbatim target; nothing else does,
-    // at every width, the hard-breaking one included.
-    let source = "\"[`AGENTS.md`](AGENTS.md)\"";
+    // `` "[`the guide`](AGENTS.md)" `` shows `"the guide (AGENTS.md)"` — the
+    // label keeps its inline-code colour, the shown target the link dress,
+    // and the quotes and parens around them stay plain prose. Both names
+    // carry the verbatim target; nothing else does, at every width, the
+    // hard-breaking one included. (The report this came from had the file's
+    // own name as the label; that link is written once now — the test
+    // after this one.)
+    let source = "\"[`the guide`](AGENTS.md)\"";
     for width in [8, 26, 80] {
         let lines = message_lines(Role::Assistant, source, width);
         let spans: Vec<_> = lines.iter().flat_map(|line| &line.spans).collect();
@@ -1136,31 +1138,171 @@ fn a_code_labelled_link_marks_only_the_two_names() {
                 assert_eq!(span.style, Style::default(), "prose at {width}: {span:?}");
             }
         }
-        assert_eq!(linked, "AGENTS.mdAGENTS.md", "both names link at {width}");
+        let linked: String = linked.split_whitespace().collect();
+        assert_eq!(linked, "theguideAGENTS.md", "both names link at {width}");
         assert_eq!(parens, "()", "exactly one pair of parens at {width}");
         // The label keeps its own inline-code dress — a hard break splits it
         // into fragments, so read the colour off the run, not one span.
         let labelled: String = spans
             .iter()
             .filter(|s| s.style.fg == Some(inline_code_color()))
-            .map(|s| s.content.as_ref())
+            .flat_map(|s| s.content.split_whitespace())
             .collect();
-        assert_eq!(
-            labelled, "AGENTS.md",
-            "the code label at {width}: {spans:?}"
-        );
+        assert_eq!(labelled, "theguide", "the code label at {width}: {spans:?}");
     }
-    // Wide enough not to hard-break, the row reads exactly as before the
-    // parens lost the link dress — this fix moves no character.
+    // Wide enough not to hard-break, the row reads as it is written.
     let joined: String = message_lines(Role::Assistant, source, 80)
         .iter()
         .flat_map(|line| &line.spans)
         .map(|s| s.content.as_ref())
         .collect();
     assert!(
-        joined.ends_with("\"AGENTS.md (AGENTS.md)\""),
-        "visible text unchanged: {joined:?}"
+        joined.ends_with("\"the guide (AGENTS.md)\""),
+        "the label, then its target: {joined:?}"
     );
+}
+
+#[test]
+fn a_file_named_by_its_own_path_is_written_once() {
+    // How a reply points at a file: `` [`src/ui/inline.rs`](src/ui/inline.rs) ``.
+    // The path is the label and the target both, so it is written once — as
+    // the link, every fragment of it opening the whole path however narrow
+    // the row — where it used to read `src/ui/inline.rs (src/ui/inline.rs)`.
+    let source = "The rule lives in [`src/ui/inline.rs`](src/ui/inline.rs), tested beside it.";
+    for width in [9, 24, 80] {
+        for display in [
+            crate::links::TargetDisplay::Shown,
+            crate::links::TargetDisplay::Hidden,
+        ] {
+            let lines = crate::links::with_target_display(display, || {
+                message_lines(Role::Assistant, source, width)
+            });
+            let spans: Vec<_> = lines.iter().flat_map(|line| &line.spans).collect();
+            let linked: String = spans
+                .iter()
+                .filter(|span| {
+                    crate::links::style_link(&span.style).as_deref() == Some("src/ui/inline.rs")
+                })
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(linked, "src/ui/inline.rs", "at {width}, {display:?}");
+            // A narrow row breaks the path; read it with the breaks out.
+            let text: String = spans
+                .iter()
+                .flat_map(|span| span.content.split_whitespace())
+                .collect();
+            assert_eq!(
+                text.matches("inline.rs").count(),
+                1,
+                "the path is on screen once at {width}, {display:?}: {text:?}"
+            );
+            assert!(!text.contains('('), "no parenthesis at {width}: {text:?}");
+        }
+    }
+}
+
+// --- Labelled links through the whole renderer (docs/links.md) ---
+
+/// `source` as an assistant message where the terminal opens hyperlinks.
+fn label_only_lines(source: &str, width: u16) -> Vec<Line<'static>> {
+    crate::links::with_target_display(crate::links::TargetDisplay::Hidden, || {
+        message_lines(Role::Assistant, source, width)
+    })
+}
+
+#[test]
+fn a_sourced_reply_shows_the_label_wherever_prose_is_rendered() {
+    // One funnel renders a paragraph, a list item, a quote, a heading and a
+    // table cell, so the label-only link is the same in all of them: the
+    // address off the screen, the label in the link dress, the whole address
+    // behind it.
+    let url = "https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/";
+    for source in [
+        format!("Source: [FIDE]({url})"),
+        format!("- Source: [FIDE]({url})"),
+        format!("1. Source: [FIDE]({url})"),
+        format!("> Source: [FIDE]({url})"),
+        format!("## Source: [FIDE]({url})"),
+        format!("| Source |\n| --- |\n| [FIDE]({url}) |"),
+    ] {
+        for width in [24, 80] {
+            let lines = label_only_lines(&source, width);
+            let text: Vec<String> = lines.iter().map(plain).collect();
+            assert!(
+                !text.iter().any(|row| row.contains("https://")),
+                "{source:?} at {width}: {text:?}"
+            );
+            let mut label = String::new();
+            for span in lines.iter().flat_map(|line| &line.spans) {
+                if let Some(target) = crate::links::style_link(&span.style) {
+                    assert_eq!(target.as_ref(), url, "{source:?} at {width}");
+                    assert_eq!(
+                        span.style.fg,
+                        Some(crate::ui::theme::link_url_color()),
+                        "{source:?} at {width}: {span:?}"
+                    );
+                    assert!(
+                        span.style.add_modifier.contains(Modifier::UNDERLINED),
+                        "{source:?} at {width}: {span:?}"
+                    );
+                    label.push_str(&span.content);
+                }
+            }
+            assert_eq!(label, "FIDE", "{source:?} at {width}: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn a_table_column_is_sized_to_the_label_not_the_hidden_address() {
+    // A table sizes its columns from the rendered cells, so a column of
+    // sources is as wide as its labels — the address that used to set the
+    // width (and push the table into its stacked form) is no longer in it.
+    let source = "| Name | Source |\n| --- | --- |\n| chess | [FIDE](https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/) |";
+    let widest = |lines: &[Line<'static>]| {
+        lines
+            .iter()
+            .map(|line| crate::ui::wrap::cols(&plain(line)))
+            .max()
+            .unwrap_or(0)
+    };
+    let shown = message_lines(Role::Assistant, source, 120);
+    let hidden = label_only_lines(source, 120);
+    assert!(
+        widest(&hidden) < widest(&shown),
+        "the table narrows to its labels: {} vs {}",
+        widest(&hidden),
+        widest(&shown)
+    );
+    // Still a grid: every row of it is one width, the label cell padded out.
+    let grid: Vec<String> = hidden
+        .iter()
+        .map(plain)
+        .filter(|row| row.contains('│') || row.contains('─'))
+        .collect();
+    assert!(grid.len() >= 4, "a bordered table: {grid:?}");
+    assert!(
+        grid.iter()
+            .all(|row| crate::ui::wrap::cols(row) == crate::ui::wrap::cols(&grid[0])),
+        "{grid:?}"
+    );
+    assert!(
+        grid.iter().any(|row| row.contains("│ FIDE")),
+        "the label sits in its cell: {grid:?}"
+    );
+}
+
+#[test]
+fn a_heading_link_is_one_unbroken_run_across_its_words() {
+    let url = "https://example.com/guide";
+    let lines = label_only_lines(&format!("## See [the full guide]({url}) first"), 80);
+    let runs: Vec<String> = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter(|span| crate::links::style_link(&span.style).is_some())
+        .map(|span| span.content.to_string())
+        .collect();
+    assert_eq!(runs, ["the full guide"], "{lines:?}");
 }
 
 /// The texts the head and tail differentials wrap, each as one segment and

@@ -135,6 +135,19 @@ impl<'t> Session<'t> {
             app.set_theme(theme);
         }
         alter_zero::ui::activate_theme(app.theme());
+        // How a reply's `[label](url)` links read (docs/links.md *Labelled
+        // links*): the label alone where this terminal is known to open
+        // hyperlinks, `label (url)` anywhere else — decided once, from the
+        // environment and the name the terminal gave the startup read,
+        // before anything is rendered, so a resumed transcript and the first
+        // reply agree. A headless run draws nothing that carries a hyperlink
+        // and keeps the renderer's default, the address spelled out.
+        if !headless {
+            alter_zero::links::set_target_display(alter_zero::links::detect_target_display(
+                |name| std::env::var(name).ok(),
+                term.terminal_name(),
+            ));
+        }
 
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
 

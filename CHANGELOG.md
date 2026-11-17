@@ -80,6 +80,30 @@ release heading when a version is cut.
   terminal too narrow for the hint on one row, it now breaks between keys
   rather than in the middle of one (`docs/config-review.md`).
 
+- **A link in a reply is shown as its label, with the address behind it.**
+  A reply that cites its sources used to print every address in full —
+  `Source: FIDE (https://www.fide.com/geneva-to-host-…/)` — which spent a
+  row or more per link and stretched a table to the width of its URLs.
+  Where your terminal opens hyperlinks (kitty, Ghostty, WezTerm, iTerm2, VS
+  Code, Alacritty, foot, GNOME Terminal and the other VTE terminals, Windows
+  Terminal, a herdr pane) the label is now the link: underlined in the link
+  colour, and a click opens the address. The terminal is recognised by the
+  variables it sets, and over `ssh`, where those stay behind, by the name
+  it gives when asked at startup (kitty, Ghostty, WezTerm, foot, iTerm2).
+  Under tmux or screen, inside an editor's terminal, and in a terminal the
+  app cannot name, the address stays on screen as before, since hidden
+  there it would be lost; `ALTER_ZERO_LINK_TARGETS=hide` or `=show` decides
+  for any terminal. A link to a file or an anchor always shows its target,
+  and so does a label that spells a different address than the one it
+  opens, however the label is written. On every terminal a link whose
+  label is its own target is no longer printed twice — a file named by its
+  path, `` [`src/links.rs`](src/links.rs) ``, or an address written out —
+  a link with no target is just its label, and a label of several words is
+  one link rather than one per word. `/export` keeps every address in the
+  text it writes, and nothing renders slower: a reply full of links draws
+  in about a third less time as labels, and one with no link in it in
+  slightly less than before (`docs/links.md`).
+
 ### Fixed
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**

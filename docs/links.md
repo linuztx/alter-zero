@@ -31,30 +31,278 @@ terminals that don't simply consume the sequence (ECMA-48 OSC), so the screen
 is byte-for-byte what it was — the wrap, the styling, and the old
 auto-detection behaviour are all untouched there.
 
-Markdown links get the same treatment for free: `[text](url)` renders
-`text (url)` exactly as before, but both the text and the shown URL now carry
-the real target.
+A markdown link's target rides the same escape — and where the terminal is
+known to open it, the target no longer needs to be on screen at all.
+
+## Labelled links
+
+A reply's `[label](url)` has two presentations. Which one a session uses is
+decided once, at startup, by the terminal it finds itself in.
+
+**The label alone**, where the terminal is known to open hyperlinks:
+
+```
+  Source: FIDE
+```
+
+`FIDE` wears the link dress — the link colour, underlined — and carries the
+whole address as the hyperlink a click opens. The address is not on screen.
+
+**`label (url)`**, everywhere else:
+
+```
+  Source: FIDE
+  (https://www.fide.com/geneva-to-host-fide-world-championship-match-2026/)
+```
+
+The label in its own dress, then the address in the link dress between
+parentheses; both carry the target. This was the only presentation, and it
+is the report this section answers: a sourced reply spent a row and a half
+per source on an address nobody reads, and a table with a link in a cell
+was sized to the URL.
+
+### Why it is the terminal's call
+
+An address hidden where nothing opens it is simply gone — not on screen, not
+clickable, not recoverable. So the target is hidden only where something is
+*known* to open it, and every case that is not a known yes is a no.
+`links::detect_target_display` decides, pure over the environment and the
+one thing the terminal says for itself:
+
+1. With `ALTER_ZERO_HYPERLINKS` off no hyperlink is written at all, so the
+   address is shown — whatever the override below says.
+2. `ALTER_ZERO_LINK_TARGETS` decides when it says `hide` or `show`.
+3. Under a multiplexer (`TMUX`, `STY`, `ZELLIJ`, or a `tmux`/`screen`
+   `TERM`) the address is shown, as on a `dumb` or `linux` console. tmux
+   forwards a hyperlink only to a terminal its own `terminal-features` list
+   says takes one, screen never does, and the variables naming the terminal
+   the session was *started* from say nothing of the one attached now.
+4. The innermost thing drawing is the one that counts, and whatever is
+   started inside a terminal inherits that terminal's variables. So an
+   **editor's own terminal** — Neovim's and Vim's `:terminal` (`NVIM`,
+   `VIM_TERMINAL`), an Emacs terminal buffer (`INSIDE_EMACS`), a JetBrains
+   IDE's (`TERMINAL_EMULATOR`) — is unknown whatever surrounds it.
+5. A terminal that **answered with its name** is that terminal (*The
+   terminal's own answer*, below).
+6. A terminal that names itself in `TERM_PROGRAM` is judged by that name
+   alone, rule 4's reason again: an unknown name is unknown however much of
+   kitty is still in the environment.
+7. Otherwise the variables and `TERM` values the known terminals set
+   decide; with none of them, the address is shown.
+
+| Hidden for | Named by |
+| --- | --- |
+| kitty | `TERM` holding `kitty`, `KITTY_WINDOW_ID`, `TERM_PROGRAM=kitty` |
+| Ghostty | `TERM` holding `ghostty`, `GHOSTTY_RESOURCES_DIR`, `TERM_PROGRAM=ghostty` |
+| WezTerm | `TERM=wezterm`, `WEZTERM_PANE`, `WEZTERM_EXECUTABLE`, `TERM_PROGRAM=WezTerm` |
+| iTerm2 | `TERM_PROGRAM=iTerm.app`, `ITERM_SESSION_ID` |
+| VS Code's terminal | `TERM_PROGRAM=vscode` |
+| Alacritty | `TERM=alacritty`, `ALACRITTY_WINDOW_ID`, `ALACRITTY_SOCKET` |
+| foot | `TERM=foot`, `foot-extra` |
+| GNOME Terminal and the VTE family | `GNOME_TERMINAL_SCREEN`, `VTE_VERSION` ≥ 5000 (0.50, the first that read the escape) |
+| Windows Terminal | `WT_SESSION` |
+| a herdr pane | `TERM_PROGRAM=herdr` (`docs/herdr.md` *Links in a pane*) |
+
+Left off on purpose: Apple's Terminal, which does not read the escape;
+Konsole, which reads it only once its profile allows it (*Allow escape
+sequences for links*); and any name not listed. A wrong yes hides a URL; a
+wrong no only keeps it on screen. For a
+terminal the list gets wrong either way — a tmux configured to forward
+hyperlinks, a terminal with hyperlinks switched off in its settings —
+`ALTER_ZERO_LINK_TARGETS=hide` or `=show` is the user's word, and it is
+final.
+
+#### The terminal's own answer
+
+Every variable above is hearsay: it says which terminal *started* the
+session, and it reaches only the programs that terminal launched itself.
+Over `ssh` almost none of it arrives — `TERM_PROGRAM`, `KITTY_WINDOW_ID`
+and `WEZTERM_PANE` stay on the machine the terminal runs on, and `TERM` is
+often set down to `xterm-256color` because the remote host has no entry for
+`xterm-kitty` or `xterm-ghostty`. A session there is drawn by the same
+terminal and read as an unknown one.
+
+The terminal can speak for itself. The startup read asks it its name
+(`XTVERSION`, riding ahead of the cursor query in the one read —
+`term::query`, `docs/images.md` *Asking the terminal*), and the answer comes
+down the very line a hyperlink goes up, so it is this terminal's and nobody
+else's. `InlineViewport::terminal_name` keeps it, and an answer that opens
+on the name of a terminal known to open hyperlinks hides the address:
+
+| Answer | Terminal |
+| --- | --- |
+| `kitty(0.36.4)` | kitty |
+| `ghostty 1.1.0` | Ghostty |
+| `WezTerm 20240203-110809-5046fc22` | WezTerm |
+| `foot(1.20.2)` | foot |
+| `iTerm2 3.5.11` | iTerm2 |
+
+The name is the answer's first word — `footage(1.0)` is not foot — and
+`libghostty` is left off on purpose: it is whatever program embeds it (a
+herdr pane names itself in `TERM_PROGRAM` instead). An answer only ever
+**adds a yes**. Any other name, or none, leaves the environment to decide,
+because the list of names is short and a terminal the variables already
+vouch for must not lose its labels to an answer this does not recognise.
+And it ranks below rules 1 to 4: no hyperlink written, the user's own word,
+a multiplexer in between and an editor's terminal each keep the address for
+a reason the terminal's name does not answer.
+
+The read asks for two reasons, and either is enough. The pictures ask
+where the environment names no graphics protocol. The links ask, on their
+own account, wherever the answer could decide (`links::wants_terminal_name`:
+without one the address would stay, and a linking terminal's name would hide
+it) — the name alone then, `XTVERSION` with no kitty query and no title
+bracket. Neither asks under a multiplexer or on a console, and the links do
+not ask where something ahead of the answer has decided (no hyperlink
+written, the override, an editor's terminal) or where the environment has
+already named a terminal that opens hyperlinks.
+
+The links' own question is what reaches iTerm2 over `ssh`. `LC_TERMINAL`
+is the one variable of a terminal's that crosses (sshd accepts `LC_*`
+wherever it accepts a locale), iTerm2 sets it to `iTerm2`, and the picture
+detection reads it to name iTerm2's image protocol — after which it has
+nothing to ask about graphics. The name is asked all the same, iTerm2
+answers `iTerm2 3.5.11`, and the label stands alone.
+
+`LC_TERMINAL` itself is **not** read. A variable that crosses `ssh` crosses
+into a mosh session too, and mosh keeps its own picture of the screen and
+passes no hyperlink on to the terminal: every label there would hide an
+address nothing opens. The answer cannot make that mistake — mosh does not
+pass the question on either, so no name comes back and the address stays.
+
+The choice is a per-thread cell the boundary sets before the first row is
+rendered (`links::set_target_display`, the active theme's arrangement), and
+its default is **shown**: a caller that never learned the terminal opens
+hyperlinks — a unit test, a headless run — never hides the only usable URL.
+It does not change mid-session, so no row cache keys on it.
+
+### What is never hidden
+
+Even where the terminal opens hyperlinks, `ui::inline`'s `hides_target`
+keeps the address on screen — the `label (url)` shape, exactly — when hiding
+it would cost the reader something:
+
+- **The target is not a web address.** Only a whole `http://`/`https://`
+  URL is hidden. `[the notes](docs/links.md)`, an `#anchor`, `mailto:`,
+  `file://` and every other scheme stay `the notes (docs/links.md)`: there
+  the target is the information, it rides the escape as authored (only the
+  file tool header resolves a path to an absolute `file://` URI, since only
+  it is handed the session's cwd), and nothing here can promise a click on
+  it opens anything.
+- **The target is too long for a hyperlink to carry.** VTE and iTerm2 drop
+  an OSC 8 whose URI is past 2083 bytes and print its text unlinked
+  (`links::HYPERLINK_URI_MAX_BYTES`, counted as written — a non-ASCII byte
+  is three). Such a target is still marked, for a terminal with no cap, but
+  it must not be the only place the address is.
+- **The label shows another address.** A hidden target is taken on trust,
+  and the label is all there is to trust. A label reading
+  `https://bank.example` over a link to `https://evil.example/login` keeps
+  `https://bank.example (https://evil.example/login)` on screen. A label
+  that *is* its target shows once, and the two are compared the way
+  addresses are (`same_page`): a closing `/` given or taken, the scheme and
+  host without their case — `https://GitHub.com/x` is
+  `https://github.com/x` — and everything past the host exactly, since a
+  path's case is the server's to read and `https://bit.ly/AbCd` and
+  `https://bit.ly/aBcD` are two pages. The address is read two ways
+  (`shows_another_address`), because either alone can be written around:
+  - off the label's text **as the reader sees it** — its runs joined into
+    one string, every character that never reaches the screen left out
+    (`is_seen`: one that takes no column, and a control character, which a
+    terminal acts on or drops and draws neither). A label can spell an
+    address with the scheme split by emphasis or a code span
+    (`` ht`tps://bank.example` ``, which the link dress then paints as one
+    unbroken address), in an image's alt text, or around a zero-width space
+    or a control character: no single run holds an address then, and the
+    reader sees one all the same. An address needs the `:` of its scheme,
+    so a label without one — nearly every label — is told apart before any
+    text is put together;
+  - off the **carriers** its runs already wear: an autolinked address
+    (`<me@bank.example>`) is no `http(s)://` text to find, but it was marked
+    with its own target as the label rendered.
+- **The link could not be marked.** The interner holds eight million
+  targets; past that a label has no hyperlink behind it.
+
+### The same on every terminal
+
+Three links read alike in both presentations, because the target written
+after the label would add nothing:
+
+- **A link with no label to see** — `[](url)`, a label of spaces or of
+  characters that never reach the screen (zero-width ones, control
+  characters), an image with no alt text — is its target, in the link
+  dress. It used to print ` (url)`: a parenthesis around the only thing on
+  screen.
+- **A label that is its own target** is written once, as the link
+  (`is_own_target`). `` [`src/links.rs`](src/links.rs) `` is how a reply
+  points at a file, and it printed `src/links.rs (src/links.rs)`; a model
+  writing a link as `[https://x.com](https://x.com/)` printed the address
+  and then the same address in parentheses. Three ways to be it, each
+  losing nothing by being written once: **character for character**,
+  whatever the target is — a path, an anchor, any scheme; a **web address**
+  that is the same page as its target (`same_page`: a closing `/` and the
+  case of the scheme and host aside); and a **mail address** under its own
+  `mailto:`. Letter case counts everywhere else (`agents.md` is another
+  file than `AGENTS.md` where case does), a label that only *holds* its
+  target (`see https://x.com now`) is still a label, and a name that is not
+  the target keeps its `name (target)` shape (*The decoration parens*).
+
+  One near-miss is kept on purpose: `[x.com/d](https://x.com/d)` is
+  `x.com/d (https://x.com/d)` wherever the address is shown. That
+  presentation is for a terminal not known to open hyperlinks, where the
+  text is all there is to open the page with — and a terminal's own
+  detection finds `https://x.com/d`, not `x.com/d`. Where the terminal does
+  open them the label stands alone like any other.
+- **A link with no target** — `[text]()` — is its label, as the prose it
+  then is: no dress and no hyperlink promise a click. It used to print
+  `text ()`.
+
+### The label's dress
+
+Every run of a hidden target's label takes the link colour and the
+underline **over** whatever emphasis it has — bold stays bold, italic
+italic — and a code span in a label gives up its own colour: one link, one
+colour.
+
+A label of several words is **one** link. `wrap_inline` rebuilds a row from
+its words and puts single spaces back between them; those spaces used to be
+plain, which for an underlined label means holes in the line under it and a
+hyperlink per word, the spaces between opening nothing. `tokenize_words` now
+records, per word, the style of the space in front of it (`Word::joiner`):
+plain, except where the whitespace it replaces was written inside a link
+whose words are on both sides of it. A space the author left at the *edge* of
+a label (`[ docs ](…)`) is the gap to the prose beside it and stays prose,
+and the space between two separate links to one target belongs to neither.
+The other presentation gains the same thing — its label paints as one
+hyperlink rather than one per word.
+
+### The address in text
+
+Hiding the address is a property of a screen that can open it. What leaves
+the screen as text keeps it: `/export` renders with the address shown
+whatever the terminal (`ui::export_text` — text has nothing behind it, and a
+style is exactly what an export drops), `/copy` copies the reply's markdown
+source, and the Ctrl+D context view and the rollout hold the source too.
 
 ### The decoration parens
 
-The ` (` and `)` around that shown target are **decoration this renderer
-adds** — they are in neither the source line nor the URL — so they wear the
-surrounding prose's dress and carry no target. They used to take the link's
-own blue + underline, which read as one continuous link out to the closing
-paren while a click, which only the *marked* run carries, opened the URL
-without them: the reported bug. Giving them back to the prose is also what
-makes the shapes agree — a bare URL that prose happens to wrap in parens
-(`(see https://x.com/y)`) always read that way, since `find_urls` hands the
-`)` back under its unbalanced-closer rule, and a `● Read({path})` header's
-parens have always stayed plain.
+In the `label (url)` presentation the ` (` and `)` around the shown target
+are **decoration this renderer adds** — they are in neither the source line
+nor the URL — so they wear the surrounding prose's dress and carry no
+target. They used to take the link's own blue + underline, which read as one
+continuous link out to the closing paren while a click, which only the
+*marked* run carries, opened the URL without them: the reported bug. Giving
+them back to the prose is also what makes the shapes agree — a bare URL that
+prose happens to wrap in parens (`(see https://x.com/y)`) always read that
+way, since `find_urls` hands the `)` back under its unbalanced-closer rule,
+and a `● Read({path})` header's parens have always stayed plain.
 
-So `` [`AGENTS.md`](AGENTS.md) `` shows `AGENTS.md (AGENTS.md)`: the label in
-the inline-code colour, the shown target in link blue + underline, the parens
-(and any quotes around the whole thing) in the reply's own prose colour, and
-exactly those two names carrying the verbatim `AGENTS.md` target. A relative
-target rides the OSC 8 escape as authored — only the file tool header
-resolves a path to an absolute `file://` URI (`links::file_url`), since
-only it is handed the session's cwd policy.
+So `` [`the guide`](AGENTS.md) `` shows `the guide (AGENTS.md)` on every
+terminal — its target is no web address: the label in the inline-code
+colour, the shown target in link blue + underline, the parens (and any
+quotes around the whole thing) in the reply's own prose colour, and exactly
+those two names carrying the verbatim `AGENTS.md` target. (The report had
+the file's own name as the label; that link is written once now — *The same
+on every terminal*.)
 
 ## Where the pieces live
 
@@ -91,17 +339,33 @@ survives the trip.
      re-render (the interner hands the same URL the same id), and the paint
      boundary strips it before the terminal ever sees it, so no stray
      `SGR 58` underline colour can leak.
+   - A `Carrier` is one interned target ready to mark any number of
+     styles: `carrier(url)` looks the URL up once and `Carrier::stamp` copies
+     the id — what a link whose label is several styled runs uses, where a
+     `linked` per run hashed the whole URL again for each.
    - The **framing**: `osc8_open(id, url)` / `OSC8_CLOSE` build the escape,
      percent-encoding every byte a terminal could mis-parse (controls, space,
      DEL, non-ASCII — the kitty spec's rule) as escape-injection defence in
      depth.
+   - `TargetDisplay` (`Shown` / `Hidden`) and its per-thread cell
+     (`target_display`, `set_target_display`, `with_target_display`), with
+     `detect_target_display`, the pure decision *Labelled links* lists —
+     over the environment and the name the terminal answered the startup
+     read with (`InlineViewport::terminal_name`) — and
+     `wants_terminal_name`, whether that answer could decide, which is what
+     makes the read ask it when the pictures would not.
 2. **`src/ui/inline.rs` — the marking.** `inline_spans` is the one funnel all
    assistant prose runs through (plain lines, list items, blockquotes, *and*
    table cells), so marking there covers every surface that can wrap a URL:
    - `Inline::Text` autolinks: the URL slice takes the markdown-URL dress
      (`link_url_color()` + underline — a URL is a URL) plus the carrier.
-   - `Inline::Link { text, url }` marks the text spans (their visible style
-     untouched) and the `url` inside the ` (url)` suffix with the target.
+   - `Inline::Link { text, url }` is `link_spans`: the label alone in the
+     link dress where `hides_target` says so, else the label (its visible
+     style untouched) and the `url` inside the ` (url)` suffix — every run
+     marked with the target either way, from one `Carrier`.
+   - `tokenize_words` gives each word the style of the space in front of it
+     (`Word::joiner`), so `wrap_inline` keeps a label of several words one
+     underlined, clickable run (*The label's dress*).
    - `Inline::Code` also marks bare URLs, but preserves its literal text and
      code colour — no blue/underline override. Previously, putting a long
      token URL inside backticks silently bypassed OSC 8: only the first
@@ -212,13 +476,20 @@ paint as a colour — it just writes no OSC.
 
 ## Invariants held
 
-- **The escape is invisible; the dress is scoped.** The wrap and the row
-  text are byte-identical to before on every terminal — the only new bytes
-  are OSC sequences terminals render as nothing, and no character moves.
-  Two deliberate dress changes, both in the same direction: bare URLs took
-  the link blue + underline a ` (url)` target always had, and a markdown
-  target's decoration parens gave that dress back — so the run the eye reads
-  as the link and the run a click opens are the same run everywhere.
+- **The escape is invisible; the dress is scoped.** An OSC sequence is
+  rendered as nothing, so marking a run moves no character: a bare URL, a
+  code URL and a `label (url)` link wrap exactly as they did before they
+  were clickable. The dress follows the click: bare URLs took the link blue
+  + underline a ` (url)` target always had, a markdown target's decoration
+  parens gave that dress back, and a label standing in for its target wears
+  it whole, spaces included — so the run the eye reads as the link and the
+  run a click opens are the same run everywhere.
+- **A hidden address is one something opens.** The label-only presentation
+  changes the row text, and it is used only where the terminal is known to
+  open the hyperlink, the target is a web address a hyperlink can carry, and
+  the label names no other address (*Labelled links*). Everything else — an
+  unknown terminal, a multiplexer, `ALTER_ZERO_HYPERLINKS=0`, an export —
+  keeps the address on screen.
 - **Prefix-stability untouched** (invariant 2): marking happens inside a
   line's own render — `find_urls` never looks across lines — so a completed
   line's rows still never change. The strip's preview of a *partial* URL
@@ -233,7 +504,11 @@ paint as a colour — it just writes no OSC.
   pattern; a stress-fuzz find — a plain-styled `h` row committed at a narrow
   width used to repaint blue+underlined). A URL already sealed by a stopper,
   and a mid-word fragment the scheme boundary rule would never link, stay
-  settled and commit progressively.
+  settled and commit progressively. Whether a link's target is hidden is
+  decided by the **finished** link — its target and its label — and an
+  unfinished one (`[label](https://…` with no `)` yet) is already withheld
+  whole by `markdown::has_open_inline`, so no committed row is restyled when
+  the `)` lands.
 - **The three `mod.rs` facades are untouched**: `links` is a new top-level
   pure module (like `markdown`), reachable by `ui` and `term` without
   widening the `ui` surface `tests/api_surface.rs` locks.
@@ -252,7 +527,7 @@ partial target commits. Quote-delimited code URLs, punctuation-ending
 literals, carrier-only diff repaints, and combining marks in painted
 headings have explicit regressions. The decoration parens have both halves
 too — the segments' own dress in `ui/tests/inline.rs`, and the whole
-`` "[`AGENTS.md`](AGENTS.md)" `` render through `message_lines` in
+`` "[`the guide`](AGENTS.md)" `` render through `message_lines` in
 `ui/tests/assistant.rs`, each over several widths, since the wrap
 re-coalesces a row's spans by style and a paren that kept the link dress
 would come back as its own underlined span.
@@ -284,8 +559,127 @@ whole authorize URL for every row the page paints it on — the URL the page
 spells, and the one a stand-in `xdg-open` was handed — with no open
 anywhere carrying a fragment of it.
 
+Labelled links have the same halves. `links.rs` holds the decision: every
+terminal on the list by each variable that names it, the ones kept off it,
+a multiplexer over any of them, an editor's own terminal and `TERM_PROGRAM`
+each outranking what an outer terminal left behind, the terminal's own
+answer — each real answer hiding the address in an environment that names
+nothing, a name it does not know (or one that only opens on a known one)
+leaving the environment to decide, the answer outranking an inherited
+`TERM_PROGRAM` and outranked by the gate, the override, a multiplexer and
+an editor's terminal — when the answer is worth asking for (`ssh` from
+iTerm2 and an unnamed terminal yes; a named one, a multiplexer, a console,
+an editor's terminal, the switch and the override no), `LC_TERMINAL` alone
+never hiding the address, the override both ways, the hyperlink gate
+outranking the override, and the scoped cell restoring what it found;
+`term/query.rs` the name asked on its own, with no graphics query and no
+title bracket.
+`ui/tests/inline.rs` holds the render: the reported `Source: [FIDE](…)` as
+`Source: FIDE` with the whole address behind exactly that word; emphasis
+kept under the dress and a code span's colour given up; a label of several
+words as one run on its row, at widths that break it between words and
+inside one; edge spaces and two links to one target left alone; each case
+that keeps the address — a target that is no web address or is past the
+length a hyperlink carries, a label showing another address (whole, split
+across emphasis or a code span, in an image's alt text, around a zero-width
+or control character), an unmarked link — as *equal to* the other
+presentation, segment for segment; and the three links that read alike in
+both: a label-less one as its target, one whose label is its target written
+once as the link (a path, a code-span path, an anchor, a `file://` URL, a
+mail address under `mailto:` in either case) beside the near-misses that
+keep `name (target)` (another case, an edge space, another mail address, a
+scheme-less web address), and one with no target as its label in plain
+prose; and the comparison itself — a host and a scheme in another case as
+the same page, a path, a query or a fragment in another case as another.
+`ui/tests/assistant.rs` runs the label through a paragraph, a list item, a
+quote, a heading and a table cell, requires a table to narrow to its
+labels while staying a grid, and renders a file named by its own path once
+at widths that hard-break it, every fragment opening the whole path;
+`ui/tests/stream_stress.rs` drives the
+streaming differential — committed rows a stable prefix of the batch
+render, scrollback plus strip the reply so far, carriers compared — over
+link-heavy documents and a sweep of the hostile soup under this
+presentation, and over the links written once and the target-less one
+under both; `ui/tests/export_view.rs` requires the export to spell the
+address out while the screen shows the label. **Phase 158** plays the
+dummy's markdown tour three times in a tmux pane — which the app's own rule
+counts as a terminal that keeps the address: with
+`ALTER_ZERO_LINK_TARGETS=hide` the pane reads `a link and a bare URL` with
+the address nowhere on it, the label underlined, and the raw stream opening
+a hyperlink to the whole address around exactly that word; with nothing set
+the address is spelled out; and with `hide` beside
+`ALTER_ZERO_HYPERLINKS=0` it is spelled out again and no escape is written.
+The terminal the app works out for itself cannot be tmux, so the phase then
+plays it on a pty (Phase 107e's way), resuming a rollout that holds the
+reported link in an environment naming nothing: a terminal that answers
+the startup read `WezTerm 20240203-…` gets `Source: FIDE` with the address
+only inside the hyperlink; one that says nothing gets the address spelled
+out; one the environment names (`TERM=xterm-kitty`) is not asked at all and
+gets the label; an editor's terminal keeps the address whatever answered;
+and with `LC_TERMINAL=iTerm2` — `ssh` from iTerm2 — the name is asked on
+its own, `XTVERSION` with no kitty query and no title bracket: an
+`iTerm2 3.5.11` answer gets the label, silence (a mosh in between) the
+address, and with pictures switched off the name is still asked.
+
+## Cost
+
+The label-only presentation renders less — no ` (url)` segments, fewer
+wrapped rows, fewer cells inside a hyperlink — and the work that made it
+possible was paid for elsewhere on the same path:
+
+- a link's target is interned **once** (`links::carrier`) and stamped onto
+  each run of its label, where every run used to hash the URL again;
+- the bare-URL scan (`next_scheme`), which runs over every prose and code
+  line the renderer sees, goes straight to the next `h` instead of holding
+  every byte up against both schemes — 3.6× faster, which takes about 4%
+  off a prose render with no link in it;
+- `tokenize_words`, where every wrapped row of every reply, table cell and
+  tool header starts, copies each run of a segment as one slice rather than
+  pushing it a character at a time, and follows a link's spaces only on a
+  line that has a link in it.
+
+`cargo run --release --example link_probe` measures it: a 99 KB reply of
+300 paragraphs (two labelled links and a bare URL each) and a 300-row table
+of links, rendered whole and streamed in 20-character chunks, beside the
+same reply with its links taken out. At 80 columns, best of 15, on a
+four-core Linux machine, against the build before this change:
+
+| | Before | `label (url)` | Label only |
+| --- | --- | --- | --- |
+| Whole render | 7.15 ms | 6.24 ms | 4.59 ms |
+| Streamed, total | 1855 ms | 1776 ms | 1490 ms |
+| Rows | 2403 | 2403 | 1503 |
+| Cells inside a hyperlink | 78,840 | 80,640 | 27,270 |
+| Hyperlink runs painted | 4200 | 2400 | 1200 |
+| Escape bytes for those runs | 348 KB | 187 KB | 86 KB |
+| The same reply without links, whole | 3.08 ms | 2.88 ms | |
+| …streamed | 348 ms | 347 ms | |
+
+Nothing got slower, a reply with no link in it included. The `label (url)`
+presentation paints fewer runs because a label of several words is one run
+now instead of one per word.
+
 ## Limitations
 
+- The list of terminals that open hyperlinks is a list: a terminal not on
+  it keeps the address on screen until `ALTER_ZERO_LINK_TARGETS=hide` says
+  otherwise, and one on it with hyperlinks switched off in its own settings
+  hides an address nothing opens until `=show` does. A terminal can be
+  asked its name, not whether it opens them.
+- Nothing here can see a transport that drops the escape on its way to the
+  terminal. mosh is the one that matters: it carries `TERM` through and no
+  hyperlink, so a session whose `TERM` names kitty, Ghostty, foot or
+  Alacritty is believed there and its addresses go behind links nothing
+  opens — `ALTER_ZERO_LINK_TARGETS=show` is the answer. (`TERM` is still
+  read because it is how the commonest `ssh` session names its terminal,
+  and a terminal the environment names is not asked for its own name.)
+- A label is compared with its target as text. A look-alike domain (a
+  letter borrowed from another alphabet) or a label naming a site without
+  a scheme (`bank.example` over a link elsewhere) is a label like any
+  other: what a click opens is what the terminal shows on hover.
+- A hidden address is read by hovering or clicking — a mouse selection of
+  the row copies the label, as it does in a browser. `/copy` and `/export`
+  carry the address.
 - OSC 8 support must be enabled in the terminal and any multiplexer between
   it and the app. If the sequences are disabled or discarded, the terminal's
   ordinary per-row auto-detection cannot recover a wrapped URL. The default
