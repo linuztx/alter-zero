@@ -180,6 +180,12 @@ release heading when a version is cut.
   under a millisecond, as it is on an idle composer, where it used to take
   two (`docs/input-latency.md`).
 
+- **Typing under a command that prints a lot is no longer sluggish.** While a
+  command printed thousands of lines, each frame re-read all of them several
+  times to choose the four on screen: a key took 40 ms to show and the app
+  held most of a CPU core. It takes about a millisecond now, and a few
+  percent of a core.
+
 ### Security
 
 - **A command and its description can no longer write lines of the question

@@ -457,14 +457,23 @@ pub(super) fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
 /// `'\t'` paints as zero cells otherwise), with a single trailing blank from a
 /// final newline dropped so a hidden-line count stays accurate.
 fn split_display_lines(text: &str) -> Vec<String> {
+    display_lines(text)
+        .into_iter()
+        .map(std::borrow::Cow::into_owned)
+        .collect()
+}
+
+/// [`split_display_lines`] without the copies: each line borrowed from
+/// `text`, only one that holds a tab made anew to expand it. What a cell
+/// built on every frame reads its output through — the running command's
+/// tail, whose output can be thousands of lines it shows four of
+/// (`docs/input-latency.md`).
+fn display_lines(text: &str) -> Vec<std::borrow::Cow<'_, str>> {
     if text.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<String> = text
-        .split('\n')
-        .map(|line| expand_code_tabs(line).into_owned())
-        .collect();
-    if out.last().is_some_and(String::is_empty) {
+    let mut out: Vec<std::borrow::Cow<'_, str>> = text.split('\n').map(expand_code_tabs).collect();
+    if out.last().is_some_and(|line| line.is_empty()) {
         out.pop();
     }
     out
@@ -690,7 +699,7 @@ pub(super) fn running_command_lines(
         other => crate::llm::tools::session_wait_ms(&other.to_ascii_lowercase(), arguments),
     };
     let clock = command_clock_clause(elapsed, wait_ms);
-    let display = command_display_lines(tool);
+    let display = display_lines(command_display_output(&tool.output));
     if display.is_empty() {
         // Nothing printed yet: the clause rides the `⎿ Running…` row, so a
         // silent command still shows it is alive and how long it may be.
@@ -708,18 +717,23 @@ pub(super) fn running_command_lines(
     // in the hidden count (docs/tool-streaming.md).
     let anchor = live.anchor(display.len());
     // Display **rows**, counted without being built (`WrapMode::rows`, so
-    // the whole retained buffer is cheap to measure every animation frame):
-    // counting source lines called a 2 KB line that scrolled past "1 line"
-    // (`docs/long-lines.md`).
-    let rows_of = |line: &String| WrapMode::Output.rows(line, wrap_width);
-    let above: usize = display[..anchor].iter().map(rows_of).sum();
-    let total: usize = above + display[anchor..].iter().map(rows_of).sum::<usize>();
+    // the whole retained buffer is cheap to measure every animation frame —
+    // a line no longer than its row is one, read off its length): counting
+    // source lines called a 2 KB line that scrolled past "1 line"
+    // (`docs/long-lines.md`). Counted once a line, for the sums and the
+    // window walk alike.
+    let rows: Vec<usize> = display
+        .iter()
+        .map(|line| WrapMode::Output.rows(line, wrap_width))
+        .collect();
+    let above: usize = rows[..anchor].iter().sum();
+    let total: usize = above + rows[anchor..].iter().sum::<usize>();
     // The window's last row: the anchor line's last row — its newest rows
     // for a line taller than the window, the tail rule for a long newest
     // line — pushed down only as far as it takes for the window to keep
     // its TOOL_PEEK_ROWS when fewer rows sit above the anchor: a window
     // that hid rows it had room for would be folding for nothing.
-    let anchor_end = above + rows_of(&display[anchor]) - 1;
+    let anchor_end = above + rows[anchor] - 1;
     let end = anchor_end
         .max(TOOL_PEEK_ROWS - 1)
         .min(total.saturating_sub(1));
@@ -728,11 +742,10 @@ pub(super) fn running_command_lines(
     // wrap the ones it reaches, stop at its end.
     let mut window: Vec<String> = Vec::with_capacity(TOOL_PEEK_ROWS);
     let mut at = 0usize;
-    for line in &display {
+    for (line, &rows) in display.iter().zip(&rows) {
         if at > end {
             break;
         }
-        let rows = rows_of(line);
         if at + rows > start {
             for (offset, row) in wrap_output(line, wrap_width).into_iter().enumerate() {
                 if (start..=end).contains(&(at + offset)) {

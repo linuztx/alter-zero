@@ -959,6 +959,46 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
 }
 
 #[test]
+fn the_running_tail_counts_a_long_output_without_walking_its_lines() {
+    // A build log: thousands of lines, four of them in the window. The cell
+    // is built on every frame the command runs, and what it owes the lines
+    // it does not show is their row count — one each, read off their length.
+    // Walking all of them a grapheme at a time, twice, held every keystroke
+    // typed under a noisy command for tens of milliseconds
+    // (docs/input-latency.md).
+    let out = (1..=3000)
+        .map(|i| format!("line {i} of the build log"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let t = tool("Bash", "make", ToolStatus::Running, &out);
+    let before = crate::ui::wrap::scanned_lines();
+    let lines = running_command_lines(
+        &t,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let walked = crate::ui::wrap::scanned_lines() - before;
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
+    assert_eq!(
+        body,
+        [
+            "  ⎿  line 2997 of the build log",
+            "     line 2998 of the build log",
+            "     line 2999 of the build log",
+            "     line 3000 of the build log",
+            "     +2996 lines (9s · wait 2m)",
+        ]
+    );
+    assert!(
+        walked < 8,
+        "the build walked {walked} lines a grapheme at a time for a four-row window"
+    );
+}
+
+#[test]
 fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
     // Fewer lines than the window: show them all, then the clock row with
     // no `+N lines` count in front of it — `(1s · wait 2m)` — so a

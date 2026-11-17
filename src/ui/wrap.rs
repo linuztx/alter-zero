@@ -10,6 +10,21 @@ use super::theme::*;
 use super::*;
 use std::ops::Range;
 
+#[cfg(test)]
+thread_local! {
+    /// How many lines this thread has walked a grapheme at a time
+    /// ([`WrapMode::scan_graphemes`]) — the wrap's own test hook: what the
+    /// short-line rule exists for is a cost, and a cost is only pinned by
+    /// counting it.
+    static SCANNED_LINES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many lines this thread has walked a grapheme at a time.
+#[cfg(test)]
+pub(super) fn scanned_lines() -> u64 {
+    SCANNED_LINES.with(std::cell::Cell::get)
+}
+
 /// Display width of `s` in terminal columns.
 ///
 /// All width math in this module goes through this instead of `chars().count()`:
@@ -209,7 +224,7 @@ impl WrapMode {
     /// at `width` (> 0) columns — the single scan behind [`Self::wrap`] and
     /// [`Self::rows`]. Measured per grapheme cluster in display columns like
     /// every other width decision in this module.
-    fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
+    pub(super) fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
         self.scan_hanging(line, width, width, emit);
     }
 
@@ -223,6 +238,29 @@ impl WrapMode {
         rest: usize,
         emit: &mut dyn FnMut(Range<usize>),
     ) {
+        // A line no longer than its row **in bytes** is one row: a character
+        // is never wider than its bytes, so nothing in it can overflow. Most
+        // lines a command prints are, and the running cell counts every one
+        // of them on every build — walking each a grapheme at a time to
+        // learn that held a keystroke typed under a noisy command for tens
+        // of milliseconds (`docs/input-latency.md`).
+        if line.len() <= first {
+            emit(0..line.len());
+            return;
+        }
+        self.scan_graphemes(line, first, rest, emit);
+    }
+
+    /// The scan itself: `line` walked a grapheme cluster at a time.
+    pub(super) fn scan_graphemes(
+        self,
+        line: &str,
+        first: usize,
+        rest: usize,
+        emit: &mut dyn FnMut(Range<usize>),
+    ) {
+        #[cfg(test)]
+        SCANNED_LINES.with(|scanned| scanned.set(scanned.get() + 1));
         let mut start = 0usize; // byte index the current row opens at
         let mut cur_w = 0usize; // display width of `line[start..idx]`
         let mut brk: Option<usize> = None; // byte index past the last space

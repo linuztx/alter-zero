@@ -130,10 +130,33 @@ thing on a draw path that can change what a cell reserves.
 
 `a_frame_builds_the_strips_live_cells_once` counts builds, not time.
 
+## 5. A running command's tail walked its whole output, twice, per build
+
+The running `bash` cell shows four rows of an output that can be thousands of
+lines (`docs/tool-streaming.md`), and to know which four it counted the
+display rows of every line. Each build copied every line into a `String` of
+its own and then walked each one a grapheme at a time, twice — about 2 ms a
+build at the 64 KB the cell retains.
+
+Two changes. A line no longer than its row **in bytes** is one row, without a
+scan: a character is never wider than its bytes, so nothing in it can
+overflow (`WrapMode::scan_hanging`'s first branch; almost every line a
+command prints). And the tail reads its lines borrowed from the output
+(`display_lines`, a `Cow` per line, owned only where a tab is expanded) and
+counts each line's rows once, for the sums and the window walk alike.
+
+With 4, a key under a command printing 4,000 lines a second went from 39.5 ms
+to about one, and the loop from 90% of a core to 3%.
+
+`the_running_tail_counts_a_long_output_without_walking_its_lines` counts
+scans.
+
 ## What guards it
 
 - `frame::tests` — the scheduler on a runtime with no timer, and both floors.
 - `ui::tests::live::a_frame_builds_the_strips_live_cells_once` and its
   siblings — one build a frame, one per width, nothing kept outside a frame.
+- `ui::tests::tool::the_running_tail_counts_a_long_output_without_walking_its_lines`,
+  `ui::tests::wrap::a_line_no_longer_than_its_row_is_counted_without_a_scan`.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.
