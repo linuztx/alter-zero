@@ -124,10 +124,11 @@ impl Session<'_> {
     /// Schedule the redraw for a just-handled key. A plain typed character that
     /// lands in a `PasteBurst` asks for a *relaxed* frame a beat out instead of
     /// an immediate one; every other key (and the first characters of a run)
-    /// paints at once. The scheduler keeps the soonest pending deadline and its
-    /// rate limiter caps everything at 120 fps — that floor, not the burst
-    /// branch, is what coalesces a paste run into a few paints (see
-    /// `alter_zero::paste`).
+    /// paints at once — an **input frame**, which waits only its own short
+    /// floor and never the rest of the 120 fps one a streaming reply's frames
+    /// keep (`docs/input-latency.md`). The scheduler keeps the soonest pending
+    /// deadline, and that 120 fps floor, not the burst branch, is what
+    /// coalesces a paste run into a few paints (see `alter_zero::paste`).
     pub(crate) fn schedule_for_key(&mut self, key: &KeyEvent) {
         let plain_char =
             matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL);
@@ -137,7 +138,7 @@ impl Session<'_> {
         if plain_char && self.burst.note_char(std::time::Instant::now()) {
             self.frame.schedule_frame_in(paste::BURST_CHAR_INTERVAL);
         } else {
-            self.frame.schedule_frame();
+            self.frame.schedule_input_frame();
         }
     }
 

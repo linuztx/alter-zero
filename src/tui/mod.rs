@@ -29,7 +29,7 @@
 //! | Module | Holds |
 //! |--------|-------|
 //! | `mod.rs` | The [`Session`] struct and [`StatusClocks`] — the shared state. |
-//! | [`event_loop`] | [`event_loop::run`]: the `select!` over the eleven sources, the loop-bottom work, the teardown. |
+//! | [`event_loop`] | [`event_loop::run`]: the `select!` over every source that wakes the loop, the loop-bottom work, the teardown. |
 //! | [`actions`] | The [`alter_zero::app::Action`] dispatch — one method per key-press outcome. |
 //! | [`turn`] | Starting and ending turns: user, queued, `!` shell, background follow-up, `/compact`. |
 //! | [`stream`] | Folding one streamed reply event into `App` + scrollback. |
@@ -193,7 +193,7 @@ pub(crate) struct Session<'t> {
 
     // ----- the loop's own channels: what wakes it, and what it sends on -----
     //
-    // Both ends live here. `select!` creates all nine futures up front, each
+    // Both ends live here. `select!` creates all of its futures up front, each
     // borrowing a *distinct field* of this struct, and scopes them so the branch
     // body that wins can still take `&mut self` — which is what lets a handler
     // both read a receiver and mutate everything else. `recv`/`try_recv` hand

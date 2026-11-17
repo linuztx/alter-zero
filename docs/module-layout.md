@@ -131,7 +131,7 @@ opening the viewport, running the loop — and everything else lives here:
 | Module | Holds |
 |--------|-------|
 | `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
-| `event_loop.rs` | `run`: the `select!` over the eleven sources — one handler call per branch. |
+| `event_loop.rs` | `run`: the `select!` over every source that wakes the loop — input first, then a due frame, then one event off any data channel (`next_wake`) — one handler call per branch (`docs/input-latency.md`). |
 | `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
 | `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
 | `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
