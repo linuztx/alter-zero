@@ -51,6 +51,7 @@ mod donate_view;
 mod export_view;
 mod file_cell;
 mod footer;
+mod frame_memo;
 mod header;
 mod hook_cell;
 mod hooks_view;
@@ -117,6 +118,7 @@ pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
     search_line, shell_mode_line, toast_line, toast_rows,
 };
+pub use self::frame_memo::frame;
 pub use self::header::{
     header_lines, notice_card_lines, startup_notice_lines, startup_paragraph_lines,
     telemetry_notice_lines, update_notice_lines,

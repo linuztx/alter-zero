@@ -6,8 +6,6 @@
 //! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
 //! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
-use super::agent::agent_preview_rows;
-use super::live::preview_tool_lines;
 use super::theme::*;
 use super::wrap::cols;
 use super::*;
@@ -74,41 +72,13 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, hang_rows: u
 /// its own trim (they share this walk, so they agree by construction).
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
-    // An agent session view previews the *viewed agent's* stream — its live
-    // tool cells, its thinking block, or its reply's uncommitted frontier
-    // (docs/agent-tool.md, docs/agent-view-streaming.md). The branch mirrors
-    // the main one below, so `agent_preview_rows` owns it.
-    if let Some(run) = app.viewed_agent() {
-        return agent_preview_rows(app, run, width);
-    }
-    // A live agent group previews its whole tree cell (over the tool queue's
-    // cells when a mixed round runs both — docs/agent-tool.md); a live tool
-    // queue previews every call's cell (a **parallel batch** shows the
-    // running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
-    // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
-    // draws ([`preview_tool_lines`]) so the count and the paint agree.
-    if app.agent_group().is_some() || !app.tool_queue().is_empty() {
-        return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
-    }
-    // A `write` still being generated previews its streaming cell
-    // (docs/write-streaming.md), sized from the walk the strip draws.
-    if app.tool_drafts().previews().next().is_some() {
-        let lines = super::live::drafting_lines(app, width);
-        return u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    }
-    // The open read/search group's cell holds the slot alone — between
-    // rounds, and through a thought, which opens no block while the group is
-    // up (docs/tool-groups.md *Thoughts*); else an open thinking phase
-    // previews its live block, the `● Thinking…` header plus the tail it
-    // shows (docs/thinking-stream.md). Sized from the same walks the strip
-    // draws, so the two agree by construction.
-    let group = super::live::open_group_lines(app, width).len();
-    if group > 0 {
-        return u16::try_from(group).unwrap_or(u16::MAX);
-    }
-    if let Some(text) = app.reasoning() {
-        let block = super::reasoning::live_reasoning_lines(text, app.pulse(), width);
-        return u16::try_from(block.len()).unwrap_or(u16::MAX);
+    // Live cells — a running or queued call, a live agent group, a `write`
+    // still being generated, the open read/search group, an open thinking
+    // phase, in the main conversation or the viewed agent's — preview whole:
+    // sized from the very rows the strip draws ([`live_cell_lines`], built
+    // once a frame), so the count and the paint agree by construction.
+    if let Some(cells) = super::live::live_cell_lines(app, width) {
+        return u16::try_from(cells.len()).unwrap_or(u16::MAX);
     }
     // A streaming reply previews the rows scrollback does not hold yet — its
     // last row for ordinary prose, every wrapped row of a withheld source
@@ -122,8 +92,14 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // here would reserve a row [`preview_lines`] does not draw, tripping its
     // `debug_assert`. 1 until a draw injects one (`App::begin_stream`'s
     // default), which is also what the `None` render fallback draws. The
-    // pre-stream pause / idle reserve none.
-    if app.streaming_text().is_some_and(|t| !t.is_empty()) {
+    // pre-stream pause / idle reserve none. An agent session view previews
+    // the *viewed agent's* reply the same way, through the render its
+    // commits go through (docs/agent-view-streaming.md).
+    let streaming = match app.viewed_agent() {
+        Some(run) => run.streaming.as_deref(),
+        None => app.streaming_text(),
+    };
+    if streaming.is_some_and(|text| !text.is_empty()) {
         app.stream_preview_rows()
     } else {
         0

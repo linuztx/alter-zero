@@ -442,6 +442,7 @@ use alter_zero::ui::{
     format_elapsed,
     format_timeout,
     format_token_count,
+    frame,
     header_lines,
     hook_report_lines,
     hooks_menu_height,

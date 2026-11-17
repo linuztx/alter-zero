@@ -115,6 +115,7 @@ widened for the split.
 | `ask_view.rs` | The `AskUserQuestion` modal: the chip strip, option pages, preview panel, review page (`docs/ask.md`). |
 | `reasoning.rs` | The thinking stream's cells: the live `● Thinking…` block, the collapsed `Thought for …` line, and its Ctrl+O expansion (`docs/thinking-stream.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
+| `frame_memo.rs` | `frame`: the scope a draw opens so that every reading of the strip's live cells inside it shares one build (`docs/input-latency.md`). |
 
 ### `src/tui/` — the terminal shell
 

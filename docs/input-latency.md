@@ -103,8 +103,37 @@ inside a detected burst keeps asking for a relaxed frame, as before.
 That is what took a key under a stream at a model's pace from 4.5 ms to
 under one.
 
+## 4. The strip's live cells were built nine times a frame
+
+The live region's height, its paint, its cursor seat and its flow signature
+are separate pure functions (`ui::live_height`, `render_live`,
+`cursor_position`, `view_flow_signature`), and each asked the same question —
+how many rows does the strip's live cell take — by building the cell: the
+running command's tail, a `write` call's preview, the agent tree. Eight or
+nine builds per draw. Under a `write` stream that was 60% of the loop's time;
+under a noisy command it was most of the 52 ms a frame took.
+
+`ui::frame` opens a frame: inside it, the first reading of the strip's live
+cells at a width builds them and the rest are answered from that build
+(`ui/frame_memo.rs`). The boundary opens one around each draw
+(`Session::draw_conversation`, the rebuilds, and the draw tick's checks
+together with its paint). Outside a frame nothing is kept, so every caller
+that is not a draw — and every unit test — sees exactly what it saw before.
+
+The memo rests on one claim: a draw changes nothing the cells are built from.
+That is why the scope is opened by the boundary, around a draw, and never
+lives in `App`; and it is checked wherever debug assertions are on — a hit is
+compared with a fresh build — so the smoke suite, which runs the debug
+binary, fails on any state a draw mutates. The rebuilds open their frame
+*after* they have looked for the pictures' files again, which is the one
+thing on a draw path that can change what a cell reserves.
+
+`a_frame_builds_the_strips_live_cells_once` counts builds, not time.
+
 ## What guards it
 
 - `frame::tests` — the scheduler on a runtime with no timer, and both floors.
+- `ui::tests::live::a_frame_builds_the_strips_live_cells_once` and its
+  siblings — one build a frame, one per width, nothing kept outside a frame.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.
