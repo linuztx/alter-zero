@@ -536,7 +536,12 @@ a blink is four frames and the loop sleeps between clips, a sleeper's
 breath is three, of one cell each (twenty seconds asleep measured 17 frames, 1.3 kB and 10 ms of CPU), nothing is
 scheduled for a banner off screen, behind an overlay or in the narrow text
 badge, and `ui::header_lines` — everything committed, the Ctrl+O
-transcript, an export — is always the rest pose. The `/mascot` picker's
+transcript, an export — is always the rest pose. In **memory** it costs
+two fixed things and nothing per frame (*What it costs in memory*): the
+frame tables are pointers the loader relocates, 52 kB of the process's own
+whether the animation is on or not, and the first repaints leave about
+0.1 MB of heap the conversation then reuses — fifteen-minute runs and 3.6
+million frames in a loop both end flat. The `/mascot` picker's
 preview moves the same way (`App::mascot_pose_for`) on **a clock of its
 own** — `App::set_mascot_clock` remembers the highlighted mascot and the
 reading of the first frame that showed it, derived from the highlight, never

@@ -697,6 +697,43 @@ cursor-trail animation renders as a shimmer at thirty frames a second
 under it are rewritten (`docs/overlay-repaint.md`). A blink rewrites two
 cells of the banner's art and nothing else.
 
+### What it costs in memory
+
+Measured on release builds of the same tree with and without the
+animation's commits, each idling in a 100 by 30 terminal, by reading
+`/proc/PID/status` once a second. The figures are `RssAnon`, the memory
+that is the process's own:
+
+| | without | with |
+|---|---|---|
+| a fresh screen, **Animate mascot** off | 1,116 kB | 1,172 kB |
+| a fresh screen, the mascot moving | 1,116 kB | 1,292 kB |
+| after the first reply | 3,676 kB | 3,726 kB |
+
+Two things make up the difference, and neither grows.
+
+**The frames are tables of pointers.** A still is three `&str` rows, a clip
+a slice of stills, a deck a slice of clips: some 2,300 pointers the loader
+relocates at startup. That is 52 kB of `.data.rel.ro`, the process's own
+from its first instruction, whether the animation is on or not. A layout
+with no pointers in it — one string table and offsets — would give those
+pages back; it has not been worth the rewrite.
+
+**The first frames leave a high-water mark.** A repaint builds the block
+twice as a `Buffer` to diff it (`block_buffer`) — four rows of the
+terminal's width — and the allocator keeps what a process once used: about
+100 kB at 100 columns and 170 kB at 300, taken within the first second,
+and a few pages more as moves play for the first time. The conversation's
+own allocations reuse it, which is why the difference after a reply is the
+tables alone.
+
+Nothing accumulates per frame. Fifteen minutes left alone, kept awake by an
+arrow key, typed at, cleared every three seconds and with the `/mascot`
+picker walked up and down each end where they stood after the first few
+minutes. And the pure half — the clock, the company, the pose, the banner's
+rows — played 3.6 million frames in a loop, days of screen time, and moved
+the heap by a page at most.
+
 ### What always wears the rest pose
 
 `ui::header_lines` — what is committed at launch and by every rebuild, what
