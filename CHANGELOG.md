@@ -204,6 +204,11 @@ release heading when a version is cut.
   the rest appeared a kilobyte per further key press. The terminal library
   is patched to read all of it (`vendor/README.md`).
 
+- **A frame reaches the terminal in one write.** It was meant to and did
+  not: a frame went out in three pieces on average, a frame that scrolled
+  sent the scroll ahead of the repaint, and a long commit was one write per
+  row. A terminal without synchronized updates could paint in between.
+
 ### Security
 
 - **A command and its description can no longer write lines of the question

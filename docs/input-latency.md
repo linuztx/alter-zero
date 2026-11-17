@@ -46,6 +46,38 @@ Everything below is the release binary on a 120×40 terminal. "A model's
 pace" is 400 stream events a second of four characters each, a 60 KB reply,
 and a key every 60 ms.
 
+## What it found
+
+Key to paint, in milliseconds (p50 / p90 / p99), and the loop thread's CPU
+over the run:
+
+| streaming | before | loop | after | loop |
+|---|---|---|---|---|
+| nothing (idle) | 1.96 / 2.16 / 3.44 | 41 ms | 0.84 / 1.09 / 2.03 | 41 ms |
+| prose | 4.49 / 7.79 / 9.44 | 2.2 s | 0.61 / 2.37 / 2.84 | 2.3 s |
+| code | 4.68 / 8.00 / 9.36 | 2.6 s | 0.71 / 2.32 / 2.94 | 2.5 s |
+| a table | 5.32 / 8.60 / 10.16 | 4.8 s | 1.37 / 2.79 / 4.05 | 5.0 s |
+| reasoning | 4.72 / 8.20 / 9.43 | 2.2 s | 0.63 / 2.50 / 3.21 | 2.1 s |
+| a `write` call | 5.22 / 8.69 / 10.23 | 4.6 s | 0.94 / 2.69 / 3.79 | 3.4 s |
+| a command, 900 lines in 2.6 s | 13.2 / 32.4 / 46.1 | 1.2 s | 0.84 / 1.12 / 2.74 | 0.07 s |
+| a command, 4000 lines/s for 7 s | 39.5 / 66.1 / 87.5 | 6.3 s | 0.85 / 1.02 / 2.04 | 0.19 s |
+| one 60 KB line | 6.17 / 9.59 / 11.44 | 8.1 s | 2.56 / 4.89 / 8.30 | 9.4 s |
+
+And the stalls, which a percentile over a paced run hides because they
+happen once:
+
+| | before | after |
+|---|---|---|
+| the slowest key as a 400 KB code reply ends | 778 ms | 19 ms |
+| …a 400 KB mixed reply | 205 ms | 4 ms |
+| …a 400 KB table | 79 ms | 7 ms |
+| a scroll key in Ctrl+O under a streaming code reply (p50 / p99) | 145 / 280 ms | 1.3 / 3.9 ms |
+| the loop's CPU over that 38 s run | 35.6 s | 3.6 s |
+| 4,000 characters typed in one write | never shown whole | 3.9 ms |
+| 20,000 | never shown whole | 10 ms |
+
+Nine causes, none of them the textarea.
+
 ## 1. A frame that was due waited on a timer
 
 `frame::run_scheduler` sent every frame through `tokio::time::sleep_until`,
@@ -275,6 +307,32 @@ wait there for the next key.
 `scripts/smoke.sh` Phase 159 types 3,200 bytes in one write and reads the
 composer's last words.
 
+## 9. A frame was several writes
+
+Every paint queues its escapes and ends on one flush, so that a frame is one
+write and the terminal never reads half of one (`docs/flicker.md`). It was
+not one write, for two reasons.
+
+std's `Stdout` is a line writer over a 1 KB buffer: it writes whenever it
+holds a newline and whenever it fills. And ratatui's backend flushes inside
+`set_cursor_position` and `append_lines`, which the frame paths called
+part-way through. A frame went out as three writes on average — the paint,
+then the cursor's `Show` and the end of the synchronized update on their own
+— and a frame that scrolled wrote the scroll first, ahead of the repaint it
+made room for. A flood of commits was one write a row: 17,600 writes for
+6 MB.
+
+`term::output::FrameWriter` holds a frame until the flush and writes it in
+one piece, through a descriptor of the viewport's own rather than through
+`Stdout`. The frame paths queue their cursor moves, scrolls and clears
+(`InlineViewport::queue_cursor`). A frame is now one `write`; past 64 KB a
+frame is no longer held whole, since a purge rebuild is megabytes and no
+terminal takes that in one read.
+
+This is the one change here that is not about a key: it is what the code
+already said it did, and it is what keeps a terminal without synchronized
+updates from painting between a scroll and the repaint.
+
 ## What was measured and left alone
 
 - **One huge line.** A reply that is a single 60 KB line costs the loop 25%
@@ -311,6 +369,7 @@ composer's last words.
   the link display; the live reply renders a line once and puts its settled
   rows down once.
 - `ui::cached_lines::tests` — appending a store is extending with its rows.
+- `term::output::tests` — a frame is one write.
 - `scripts/smoke.sh` Phase 159 — the typed burst.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.
