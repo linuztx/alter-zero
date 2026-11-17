@@ -59,6 +59,7 @@ multi-minute full rebuild — don't, unless the user asks.
 | `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed (on a Mac, `cargo build` first: the terminal tests run through the built binary) |
 | `src/mcp/`, `src/llm/mcp/`, the `mcp` CLI | `cargo test --lib mcp::` (the filter matches both modules) + `cargo test --test mcp_cli` for the CLI |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`ls tests/*_memory.rs`) |
+| something a keystroke waits behind — `src/frame.rs`, the loop's order in `src/tui/event_loop.rs`, anything a draw or the loop bottom does per frame or per event | its unit tests count work (builds, scans, renders), not time; for the time itself, `cargo build --release && cargo run --release --example latency_probe -- --scenario <shape>` against the numbers in [`docs/input-latency.md`](docs/input-latency.md) — a measurement, not a gate |
 | `providers.toml`, `src/llm/config.rs` | `cargo test --lib llm::config` — it pins the shipped provider set and the `snake_case` spellings |
 | `scripts/smoke/lib.sh`, `scripts/smoke.sh` (the phase readers or the selector) | `bash scripts/smoke/selftest.sh` — under a second, no app, no tmux |
 | `scripts/smoke/phases/`, screen behaviour | `cargo build && scripts/smoke.sh <ids>` — by **id**, and widen only if you must |
