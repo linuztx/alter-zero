@@ -806,6 +806,47 @@ which Ctrl+V reads the clipboard from.
   walk's cursor moves only when a tip is actually seen and persists per user
   in `tips.json` beside the `/settings` **Show tips** switch, so every tip
   comes round before any repeats, across sessions.
+- **The banner mascot moves while the conversation is empty**
+  (`docs/mascot-animation.md`): a light sweeps it as the screen opens, it
+  shows its own move (the crest flares its frill, the sprout unfurls a leaf, the
+  gem twinkles) and blinks, then works through a **repertoire** of thirty
+  moves and more — looks (a wink, a stare, crossed eyes, a daydream), its
+  whole body moved half a cell (a bounce, a wiggle, a dance, a peek),
+  phrases that close on a blink or a wink (a wave, a cheer), tricks (it
+  ducks below the floor of its block and peeks back over; it turns a
+  somersault or a cartwheel, upside down for an instant), moves of its own
+  (a pump of its limbs, one side and then the other, among them), and light
+  (a sweep, a glint from either side, a glow, a glitter of twinkling cells)
+  — **dealt like a deck** rather than rolled, so two minutes show
+  everything it knows, never the same move twice running; at rest about
+  four fifths of the time, never still for more than about eight seconds.
+  And it keeps the user **company**. While the first message is typed it
+  **watches**: its eyes turn to the text — right, where the line runs and
+  the rest of the screen is, read from where the mascot stands — and a few
+  seconds after the last keystroke it goes back to its own moves. Left
+  alone for three quarters of a minute it **naps** — its eyes grow heavy
+  and close to thin lid lines (a cell drawn in reverse, the line cut out of
+  the body), its head goes down once, and it sleeps there, all of it on
+  screen and **still**: its snore — a `z` that grows to a `Z` in the corner
+  of its block — is all of it that moves
+  — for the better part of a minute, twice, and the third time, five
+  minutes into being left, until someone is back. **Any key wakes it with
+  a start**: a `!` where the snore was, wide awake inside half a second,
+  and then its eyes on what is being typed — and a start never takes it
+  *down*: caught still nodding off on its feet, it starts where it stands
+  (playing the sleeper's start there flashed the crouch for an eighth of a
+  second, a flicker of the whole block). A key that types nothing puts the
+  nap off and leaves the move under way alone. The committed
+  banner's rows are repainted **in place**, only the cells that changed (a
+  blink is two), one frame per change of pose, so an idle session still
+  sleeps between them. The first cell committed under
+  the banner stills it for good — put back to its rest art in the same
+  frame — as do a scroll that would carry it off the screen and the quit;
+  `/clear` brings the empty conversation back and the mascot greets it
+  again, as does a mascot just chosen in `/mascot`. The `/mascot` picker's
+  preview moves too, on a clock of its own: each mascot greets as the
+  highlight lands on it. Off with the `/settings`
+  **Animate mascot** row or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 - **Waiting for a lost connection** (`docs/offline.md`): a request no
   connection can be made for — the name won't resolve, the connect is refused
   or times out, the proxy is gone — is re-sent every few seconds for as long
@@ -901,7 +942,7 @@ logic is unit-testable without a real terminal.
 | `highlight.rs` | **Syntax highlighting** for code blocks (`docs/markdown.md`): `syntect` over `two_face`'s grammars with oniguruma regexes, the active theme's code theme resolving scopes to styles; `Highlighter` carries a block's parse state line to line (prefix-stable, `Clone` for the streaming peek), a line over 4 KB stays plain, and an unknown language renders in the theme's plain style. | Yes |
 | `links.rs` | **Clickable links** (`docs/links.md`): `find_urls` (bare `http(s)://` detection with boundary/trim/paren-balance rules, control bytes excluded), the process-global URL **interner** (same URL → same 24-bit id for the process's life), the `Style::underline_color` id **carrier** (`linked` stamps, `carrier_id`/`link_url`/`style_link` decode — nothing else sets an underline colour, id 0 reserved), the OSC 8 **framing** (`osc8_open` percent-encodes every unsafe byte, `OSC8_CLOSE`), `file_url` (a file tool header's `file://` target — cwd-resolved, lexically normalized, percent-encoded), `is_whole_url` (a text that *is* one `http(s)://` URL, linked verbatim — the `/mcp` sign-in page's authorize URL), the `ALTER_ZERO_HYPERLINKS` predicate, and **how a labelled link shows its target** — `TargetDisplay` (`Shown`/`Hidden`), its per-thread cell, and `detect_target_display`, the pure decision over the terminal's own variables and the name it answered the startup read with, with the `ALTER_ZERO_LINK_TARGETS` override. `ui::inline` marks prose and renders a link as its label alone where the target is hidden, `ui::tool` stamps the header's file target, `ui::model_view`'s builders link the sign-in pages' URLs, `term::draw_cells` strips + brackets. | Yes |
 | `ui/`       | Pure rendering, split one module per area (`docs/module-layout.md`; every styling/geometry `const` lives in `ui/theme.rs`, the colours as accessor functions over the active theme's palette in `ui/palette.rs` — `docs/theme.md`): `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`, the growing-input geometry (`live_height`, `repin`, `cursor_position` + `cursor_visible`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `centered_window_rows`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/resume.md`), and the **view flow** (`view_flow` — `view_body_skip`'s bottom anchor for every content-driven framed view plus `view_flow`/`view_flow_signature`, the decision that flows a screen-tall `/mcp`/`/hooks` page's top into real scrollback and the signature the boundary tracks; `docs/view-flow.md`), and the **inline image blocks** (`image_block_lines`/`image_lines` — the rows a picture reserves under the cell that produced it, marked for the boundary to draw into, and `item_image_paths`, the files the boundary looks for again before it lays history out; `docs/images.md`). | Yes |
-| `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
+| `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick; `FrameLedger` tells the ticks only the banner mascot asked for, which repaint the banner alone (`docs/mascot-animation.md`). | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Two pure paste jobs (`docs/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`) + `annotate_image_placeholders` (the wire form `[Image #N: {path}]`, `docs/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
 | `clipboard.rs` (+ `clipboard/linux.rs`, `clipboard/macos.rs`) | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → the session's paste folder, `{config_home}/image-cache/{session}/N.{ext}`, numbered in paste order and staged + header-checked before it takes its number — the path the backend reads and the model is told, `docs/image-paste.md`; on Linux `linux.rs` streams the owner's own encoded bytes into that folder before arboard is constructed — `image/png` then `jpeg`/`gif`/`webp`, a Wayland pipe or 1 MiB X11 property slices with `INCR` segments, capped at 256 MiB — so a paste decodes nothing — `docs/memory.md`; on macOS `macos.rs` is the fallback for the one shape arboard cannot read — a 16-bit floating-point `public.tiff`, i.e. a screenshot copied with ⌃⇧⌘4 — which AppKit coerces to PNG through `osascript` because `objc2-app-kit`'s PNG export is `unsafe` and this crate forbids it, the paste keeping only the chunks that draw the picture (`store_png_without_metadata`, never a decode) — `docs/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
 | `images/` | **Inline pictures** (`docs/images.md`), split five ways: `geometry` (pure — the cell footprint a picture takes at the terminal's cell size under the **Image width** cap, reproducing `ratatui_image`'s own `Resize::Fit` arithmetic so the reservation and the encoder agree to the cell, plus the per-cell carrier that marks a block's rows and packs `(placement id, row)` into the top half of `links`' `underline_color` channel), `registry` (the process-global render policy and the `(path, cols, rows)` placement interner, so pure line builders can reserve a block without a new argument on every signature, plus what the boundary last found at each picture's path — a paste's size, or no picture at all, which reserves nothing: the look a `--resume` load and every purge rebuild take first, `recheck_pictures`, so a `/tmp` screenshot gone after a reboot is no blank block, `docs/images.md` *A picture whose file is gone*), `payload` (the boundary that downscales a picture for the **model** — `/settings` **Auto-resize images** — and keeps the result on disk for the session so a re-sent attachment is never decoded twice), `attachment` (the wire's copy of a picture — its base64 `data:` URL — encoded once per session, streamed from the file or the sidecar, and shared by reference by every request that re-sends it, so a turn allocates nothing picture-sized; `docs/memory.md`), `fitted` (pure — a PNG decoded at the size it will be shown or sent, its rows streamed through an area-average shrink so the whole picture is never held; `fit_box` reproduces the encoder's `Resize::Fit` arithmetic — `docs/memory.md`), and `store` (the paint boundary: the env + `TIOCGWINSZ` capability detection, the encoded pictures under a byte budget, and the one `stamp` pass every paint path runs). | Pure parts: yes (I/O: smoke, Phase 107; `tests/clipboard_linux.rs` under Xvfb) |
@@ -1503,7 +1544,18 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
 `term.rs` is, like `src/tui/`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`,
 and its own pure corners — the `visible_cells` wide-glyph emitter, the
-`keyboard_enhancement_disabled` predicate — are unit-tested in place.
+`keyboard_enhancement_disabled` predicate, the anchored block's bookkeeping
+(`term::anchor`) — are unit-tested in place.
+
+One block of committed rows is repainted after it is written: the startup
+banner, **while the conversation under it is empty**, so its mascot can
+blink (`docs/mascot-animation.md`). It is not an exception to "scrollback is
+immutable" so much as its fine print: a row above the live region is a
+screen row until a scroll carries it off the top, and the viewport repaints
+the banner only while every one of its rows is still on screen
+(`InlineViewport::anchor_above`), putting it back to the rows it was
+committed as before anything scrolls. What reaches scrollback is always the
+banner standing still.
 
 ### The smoke suite defines its own environment
 
@@ -1526,10 +1578,12 @@ a phase run on its own is as hermetic as one run by the suite):
   would report its turns to the developer's real multiplexer —
   `docs/herdr.md`) before its first launch, then spells out per launch the ones
   it wants —
-  exporting three switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
-  `ALTER_ZERO_UPDATE_CHECK`, and `ALTER_ZERO_TIPS`, whose row under a turn's
+  exporting four switches off for every phase besides (`ALTER_ZERO_TELEMETRY`,
+  `ALTER_ZERO_UPDATE_CHECK`, `ALTER_ZERO_TIPS`, whose row under a turn's
   status line would otherwise land in every strip a phase holds past three
-  seconds; the phases that test each feature turn it back on for themselves). Each
+  seconds, and `ALTER_ZERO_MASCOT_ANIMATION`, whose blinks would put whatever
+  pose the lot fell on in a capture of a fresh screen; the phases that test
+  each feature turn it back on for themselves). Each
   is load-bearing: a resolvable key reaches a live provider instead of the
   dummy; `NO_COLOR` makes crossterm emit no SGR at all, so every colour
   assertion (the `/theme` banner accent, the focused shell indicator, the

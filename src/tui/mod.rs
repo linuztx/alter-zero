@@ -219,6 +219,10 @@ pub(crate) struct Session<'t> {
     /// draw ticks coming back.
     frame: FrameRequester,
     draw_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    /// Which of those ticks only the banner's mascot asked for — the frames
+    /// that repaint its cells and nothing else
+    /// (`docs/mascot-animation.md` *A frame of its own*).
+    frames: alter_zero::frame::FrameLedger,
     /// The reply channel a turn streams on. Both ends are swapped wholesale by
     /// [`Session::abandon_inflight`] so a detached backend can't reach the next
     /// turn (`docs/interrupt.md`).
@@ -451,6 +455,16 @@ pub(crate) struct StatusClocks {
     /// round's tool cells and its agent tree stay in step, and a background
     /// agent's live cell keeps animating between turns.
     loop_start: Instant,
+    /// When a fresh banner last reached the screen — the epoch of the
+    /// mascot's animation clock (`App::set_mascot_clock`,
+    /// `docs/mascot-animation.md`). Its own reading rather than
+    /// `loop_start`, which is taken before the session-start checkpoint and
+    /// can be seconds older: the mascot's greeting is scripted from the
+    /// moment the user can see it. Taken by `Session::greet_from_banner` —
+    /// at the first frame, on `/clear` and on a `/mascot` choice, so each
+    /// fresh banner greets — and never by a resize or a rewind, which only
+    /// redraw the banner already there and pick the animation up where it is.
+    banner_start: Option<Instant>,
 }
 
 impl StatusClocks {
@@ -463,6 +477,7 @@ impl StatusClocks {
             thinking_start: None,
             command_start: None,
             loop_start: Instant::now(),
+            banner_start: None,
         }
     }
 

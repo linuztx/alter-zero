@@ -45,6 +45,7 @@ mod keys;
 mod login;
 mod look;
 mod mascot;
+mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
@@ -98,6 +99,10 @@ pub use self::login::{
 };
 pub use self::look::{Look, LookFile, MascotFile, SpinnerFile};
 pub use self::mascot::{Mascot, MascotPicker, MascotRow};
+pub use self::mascot_motion::{
+    Gaze, MASCOT_GLITTER_STEPS, MASCOT_GREETING_MS, MASCOT_LIDS, MASCOT_SHINE_FRAME,
+    MASCOT_WATCH_LINGER, MascotPose, MascotShine, ShineBand,
+};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad};
 pub use self::permission::PermissionPrompt;
@@ -582,6 +587,43 @@ pub struct App {
     /// default) — chosen in the `/mascot` picker, seeded at the boundary from
     /// `mascot.json` before the first frame. See `docs/mascot.md`.
     mascot: Mascot,
+    /// The seed of the mascot's idle animation — the boundary's entropy,
+    /// handed over once at bootstrap ([`seed_mascot_motion`]). `None` until
+    /// then, which is every unit test's `App` and a headless run's: a mascot
+    /// nobody seeded never moves. See `docs/mascot-animation.md`.
+    ///
+    /// [`seed_mascot_motion`]: App::seed_mascot_motion
+    mascot_motion: Option<u64>,
+    /// How far into its timeline the mascot's animation is — time since a
+    /// fresh banner reached the screen, injected before every draw
+    /// ([`set_mascot_clock`](App::set_mascot_clock), the
+    /// [`set_pulse`](App::set_pulse) pattern).
+    mascot_clock: Duration,
+    /// The mascot the open `/mascot` picker is previewing and the
+    /// [`mascot_clock`](Self::mascot_clock) reading of the first frame that
+    /// showed it — the epoch of the preview's own timeline, so a mascot
+    /// greets as the highlight lands on it. Kept by
+    /// [`set_mascot_clock`](App::set_mascot_clock) from whichever mascot is
+    /// highlighted; `None` with no picker open. See
+    /// `docs/mascot-animation.md`.
+    mascot_preview: Option<(Mascot, Duration)>,
+    /// What the banner mascot has seen of the user — the run of typing it
+    /// is watching, when someone was last at the keyboard, and when they
+    /// last woke it — kept by
+    /// [`set_mascot_clock`](App::set_mascot_clock) from what each frame
+    /// finds. See `docs/mascot-animation.md`.
+    mascot_company: mascot_motion::Company,
+    /// The composer's draft, its caret and [`keys_taken`](Self::keys_taken)
+    /// as the last frame saw them, hashed: what tells
+    /// [`set_mascot_clock`](App::set_mascot_clock) the user did something.
+    /// `None` until the first frame has looked.
+    mascot_seen: Option<u64>,
+    /// How many key presses and pastes this app has taken
+    /// ([`on_key`](App::on_key), [`on_paste`](App::on_paste)), wrapping —
+    /// a count, never what they were. It is how the banner mascot knows
+    /// someone is at the keyboard when a key changes nothing it could see
+    /// (`docs/mascot-animation.md` *The nap*).
+    keys_taken: u64,
     /// The open inline `/spinner` picker; `None` when closed. The ninth
     /// composer-replacing picker, the [`mascot_picker`](Self::mascot_picker)'s
     /// twin over the spinner-style catalog — a **live** page whose every row

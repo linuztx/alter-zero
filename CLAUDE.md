@@ -278,7 +278,7 @@ Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
@@ -370,7 +370,209 @@ three pickers sharing `ui::model_view::PreviewLayout` — on a terminal too
 short for that page, the family's compact one, the preview yielding
 (`docs/view-flow.md`) — the
 choice persisted **per working directory** in `mascot.json` (`docs/per-directory-state.md`) and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`, and the **`/spinner` picker** that
+the banner at once) in `docs/mascot.md`, and the **mascot's idle animation**
+(`docs/mascot-animation.md`: while the conversation is empty — a fresh
+launch, the moment after `/clear` — the banner's mascot moves: a light
+sweeps it as the screen opens, it shows its own move (the crest flares its
+frill, the bloom flutters, the sprout sways or unfurls a leaf, the twin
+flicks an ear, the skiter skitters, the gem glints) and blinks, then works
+through a **repertoire** of thirty moves and more (the gem a score) — the
+looks its eyes give (blink, glance, look around, shifty eyes, a wink of
+either eye — through its lid where it has one — crossed eyes, a daydream
+that blinks while looking away — and for the three with lidded eyes a
+startled stare, a squint and one of each; never a light in a socket, which
+reads as an eye put out: the *starry eyes* that once did it were taken out,
+and a test holds every frame to it), its **whole body moved half a
+cell** (a bounce, a happy bounce with the eyes shut, a wiggle, a dance, a
+peek to one side), **phrases** that close on a blink or a wink (a wave and a
+wink of the eye beside the arm, a cheer with the arms — petals, ears —
+thrown up, the skiter puffing itself up), **tricks** (it **hides** — sinks whole rows below the floor
+of its block, comes back up to its eyes, looks both ways over the edge and
+pops up, the gem setting like a sun and rising glowing — and it **flips**,
+a somersault between two crouches or a cartwheel between two leans, the
+rest art upside down for an instant), moves of its own (the crest's frill ripples and ducks, the
+bloom swells and wobbles, the sprout blossoms and sinks to a bud, the twin's
+ears splay, sway and droop, a wave runs down the skiter's legs, the gem
+spins edge-on, its facet turns and gleams and sparks open at all four
+corners; and every eyed one **pumps** its limbs, one side and then the
+other — arms, petals, ears, and the skiter's two sides: **the skiter
+puffs itself up** where another mascot throws its arms up — its body
+swollen to the edges of its block, both sides or one, its eyes and legs
+as drawn (`skiter::PUFFED`), picked from eight candidates — since the
+claws it once raised from its sides were a thin stick at each shoulder
+that read as a small hand, and standing tall on the tips of its legs was
+liked no better, and a test holds it to neither), pattering feet, **light** — the greeting's sweep, a narrow glint
+from either side, a glow that swells through it and fades, a **glitter**
+of scattered cells twinkling through nine hashed steps
+(`ui::header::glitter_at`), the gem's flash, colour only
+(`MascotPose::shine`/`glow`, `ShineBand`) — at rest about four fifths of the time and never
+still past about eight seconds; the gem, which has no eyes, twinkles where
+the others blink and never shuts its facet. And it keeps the user
+**company** (`Company`: the watch, the last sign of the user, the one that
+last woke it and where in its nap, and since when its timeline is its own
+— four numbers `App::set_mascot_clock` → `keep_company` derives
+from what each frame finds: the draft, its caret, and `App::keys_taken`, a
+count bumped at the top of `App::on_key`/`on_paste`, never what the key
+was). While the first message is
+typed it **watches** (`docs/mascot-animation.md` *Watching the user type*):
+its eyes turn to the text, read **from where it stands**
+(`ui::layout::caret_gaze` → `Gaze::toward` → `App::banner_pose_watching`):
+the banner is at the screen's left edge, over the composer's first columns,
+so a caret past the mascot's middle — a line's third character — has it
+looking **right**, where the line runs and the rest of the screen is, one
+still under it has it looking straight ahead, and it never looks left (it
+first read the caret by the third of the composer it sat in, and stared at
+the screen's edge through every short message), blinking now and then, the
+gem's facet turning the same way, and a
+watch ends `MASCOT_WATCH_LINGER` (4 s) after the last keystroke — at once on
+an emptied composer — the timeline resuming without joining a move begun
+meanwhile (`Mascot::pose_between`). Left alone it **naps**
+(`docs/mascot-animation.md` *The nap*; `Nap`, `Mascot::nap`/`idle`/`sleeping`):
+three quarters of a minute to a minute after the last sign of anyone
+(`Mascot::alone`) every one of the six nods off — eyes heavy, open, shut,
+all of it on its feet (the skiter settles onto its belly first, the gem
+with a last light fading out of it) — its head goes down **once**, and it
+**sleeps there, all of it on screen and still**: eyes **closed, not gone** — each a **lid**,
+a thin line along the bottom of its socket (`MASCOT_LIDS`: `━` through the
+middle of the eye's cell or `▁` along its bottom, whichever half of the
+cell the socket is, the two swapping when the head goes down), the one
+cell the banner draws **in reverse** (`ui::header::art_spans`: the body's
+colour fills it and the line is left in the ground's, so a closed eye is a
+gap in the body like an open one — no block glyph leaves a dark line
+there), since eyes filled in solid for most of a minute left a sleeper no
+face, and only the nap's frames have them, a blink staying a blink — a
+breath every 3.4 s, and **its snore is all of it that moves**: a quiet
+moment, a `z` in the block's top right corner that grows to a `Z`, and
+gone, three frames of one cell each (the seedling, which cannot dip,
+droops its shoot and leaves it drooped) — a sleeper that breathed with its
+whole body, on its feet on the breath in and half a cell lower on the
+breath out, was built and taken out, since half a cell is the smallest
+step the grid has and it read as jumping on the spot; and so was one drawn
+lying down, its feet below the floor: three rows are too few to lie in and
+it read as half a mascot;
+nine to thirteen breaths and it wakes by itself — an eye half open, a
+stretch of its own, two blinks, the gem rising in a glow — one nap to each
+two-minute stretch
+of idleness (so which nap an instant falls in is a division, and asleep an
+hour in costs what asleep a minute in does), and **the third has no end**:
+five minutes left alone and it sleeps until someone is back. A nap never
+cuts a move in two (`Mascot::plays`). And **any key or paste that finds it
+asleep wakes it with a start** (`Mascot::startled` → `Company::woke`, the
+`jolt` clip): its eyes open where it lies, a `!` in the corner where the
+snore was, and it is up a moment later — wide-eyed, arms thrown up, the
+skiter puffed up, the gem in a flash — three fifths of a
+second in all, and then the watch if something is being typed, its first
+blink counted from the end of the start; one already stirring is not
+surprised, and the next nap is counted from the wake. **A start never
+takes a mascot down**: one caught still nodding off, on its feet, starts
+where it stands (`Nap::caught`, `Woke::nodding`) — playing the sleeper's
+start there dropped it into the crouch for an eighth of a second and
+straight back up, the whole block redrawn twice, which was the flicker
+typing showed as a nap began. And **a key that types nothing leaves a
+move alone**: awake over an empty composer it puts the nap off
+(`Alone::since`) and the move under way plays on (`Alone::up`,
+`Company::up`), where it used to stop dead at the key — but for a move
+the coming nap had left out, which the key would bring in from its
+middle (`App::keep_company`). `Mascot::pose` itself is the mascot
+**kept awake** — its moves alone, which the `/mascot` preview shows. A frame is the rest art with **one part
+moved** (one row differs, or a limb raised from the body's side across two
+rows at the art's edges), the body **puffed out** past its own sides with
+nothing of it taken away (the skiter's), the stone **turned** about its middle (the gem's
+spin), the mascot **sunk** whole rows below the floor, the mascot **upside
+down**, or **the whole mascot moved half a cell** — a sleeper's eyes shut
+over any of them — with, beside any of
+them, a **mark** in the block's top right corner and nowhere else (the `z`/`Z` of a
+snore, the `!` of a start: light, drawn in the highlight) — the art sits on a half-cell grid
+and every mascot leaves a half-row free under its feet or a half-column at
+its sides, so it can be redrawn a dip or a lean away inside the same block;
+moved back it is the rest art with one part moved at most, which is the
+rule a test folds every frame through — three rows kept, never wider than
+the art, so the metadata column and the composer never shift; the eyes are
+negative space, so a blink fills them (through a `▆` eyelid where the hole
+is a cell's upper half, in one frame where it is the lower and the
+font-safe glyphs have none), a glance narrows both to one side, and the lid's
+own eighth-block ramp draws the wide eye (`▂`). The **timeline is a pure
+function of a seed and a clock** — `Mascot::pose(seed, clock)` and
+`pose_holds`, `app/mascot_motion.rs`: a scripted greeting, then three-second
+beats, at most one clip to a beat — and what a beat plays is **dealt, not
+rolled** (the first version rolled, and three beats in five were a blink):
+the repertoire is a deck of cards with copies (`Card`), shuffled afresh for
+every **round** of some forty-four beats by `Deck::dealt(seed, round, beat)`
+over the seed *and the mascot* (so no two mascots play one sequence), which
+keeps three promises a shuffle alone would not — a round plays everything
+exactly as often as the deck holds it, **never the same card twice running**
+(not across a rest, not across a round's two ends; a card's left and right,
+or its variants, take turns), and **never two rests in a row** — by drawing
+the round's last move first (so the next round knows what to differ from
+without either being dealt), dealing each move from every card left but the
+kind just played, a kind grown to more than half of what is left going at
+once, and slipping each rest in ahead of a move of its own — no state, no thread, the pose three hours in
+costing what the pose three seconds in does; the seed is `App::seed_mascot_motion`'s
+(an unseeded `App`, every unit test's, never moves) and the clock
+`App::set_mascot_clock`'s, running from the frame that showed a fresh
+banner — the launch, `/clear` and a `/mascot` switch each restart it
+(`Session::greet_from_banner`), so a cleared screen and the mascot just
+chosen greet, while a resize or a rewind only redraws the banner and picks
+the animation up where it is. The banner is **committed scrollback**, so the mechanism is the
+viewport's one **anchored block** (`term::anchor`,
+`InlineViewport::anchor_above`): a row above the live region is a screen
+row until a scroll carries it off the top, so the boundary declares the
+banner it just committed — at launch and after any rebuild that wrote only
+the banner — hands it the pose before each frame (`pose_anchor`,
+`ui::banner_frame_lines`; `still_anchor` where nothing of it can move) and
+the frame writes the cells that differ inside one synchronized update, a
+blink being two; **only the rest pose may
+leave the screen** (the block is put back to the rows it was committed as
+before a flush, a growing region's scroll or the quit), a block with a row
+off the top is dropped, a resize or `reflow` drops it for the rebuild to
+declare again, and the loop `release_anchor`s it the moment
+`App::banner_is_live` is false — the frame that writes the first cell under
+the banner first puts it back to rest, and from there it is history.
+Moving the banner into the live region instead was weighed and refused: it
+would have changed the region's geometry in the state every other feature
+starts from, and a notice card committed under a live banner would have
+landed above it. **Frames are scheduled per change of pose, never on a
+chain** (`App::mascot_frame_in` after each frame → one
+`schedule_banner_frame_in`, or `schedule_frame_in` while the `/mascot`
+picker's preview moves inside the live region):
+a blink is four frames and the loop sleeps between clips, a sleeper's
+breath is three, of one cell each (twenty seconds asleep measured 17 frames, 1.3 kB and 10 ms of CPU), nothing is
+scheduled for a banner off screen, behind an overlay or in the narrow text
+badge, and `ui::header_lines` — everything committed, the Ctrl+O
+transcript, an export — is always the rest pose. In **memory** it is held
+to costing nothing with the row off and nothing from the first reply on —
+the same resident size as a build without it — and some 0.04 MB of heap
+residue while the mascot moves (*What it costs in memory*), by three rules
+it broke as first written, at 0.06 MB off and 0.18 MB moving. **The frame
+tables are written as references and kept as integers**
+(`app/mascot_motion/packed.rs`): `Step`/`Clip`/`Card`/`Motions` are read at
+compile time only, each mascot's folded by `const fn` (`build`,
+`Built::fit`) into a `Packed` of row bytes and indices with no address in
+it — read through a `Table`, played as a `Reel`, and held step for step to
+the tables as written by a test — since a table of `&'static` is addresses
+the loader relocates, the process's own pages whether the animation is on
+or not (2,300 of them, 52 kB). **A repaint renders only where the rows can
+differ** (`term::anchor::changed_cells`): the rows that changed, each as
+far as the spans ahead of the tail its two versions share — the art and
+its gap, a dozen columns — never the block at the terminal's width, which
+was two buffers of 0.4 kB a column a frame. And **a frame only the banner
+asked for draws only the banner** (`frame::FrameLedger` over
+`FrameRequester::asked`, which counts every request but
+`schedule_banner_frame_in`; `Session::draw_banner_frame` →
+`InlineViewport::draw_anchor`): no live region rendered, no buffer the
+region's size, and where no cell differs nothing written at all — while a
+frame anything else wanted is a whole one, as before. The `/mascot` picker's
+preview moves the same way (`App::mascot_pose_for`) on **a clock of its
+own** — `App::set_mascot_clock` remembers the highlighted mascot and the
+reading of the first frame that showed it, derived from the highlight, never
+tracked through the keys — so each mascot greets as the highlight lands on
+it, its page signing the selection rather than its rows. Gated by the `/settings` **Animate mascot**
+row and `ALTER_ZERO_MASCOT_ANIMATION`, which the smoke suite exports `0`;
+`smoke.sh` Phase 159 reads the raw byte stream — and holds an idle session
+with the mascot moving to within 64 kB of resident memory of one with it
+still, at 200 columns — and Phase 160 waits out the
+minute for the nap, holds every frame of the sleeper to its snore's one
+cell, and wakes it), and the **`/spinner` picker** that
 chooses the status line's **spinner style** (the `/theme` picker's layout,
 like `/mascot`, over a nine-style catalog — `comet` (the list's first row, and the status line's
 look before there was a catalog), the braille-track `gravity`
@@ -2861,10 +3063,12 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-twenty rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty-one rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
-**Auto-resize images** — the three from `docs/images.md` — **Error retry**,
+**Auto-resize images** — the three from `docs/images.md` — **Animate
+mascot** — the banner mascot's idle animation, read by the frame that poses
+the banner, `docs/mascot-animation.md` — **Error retry**,
 **Tools**, **Permission
 mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
 **Skills**, **MCP** — the session-wide switch over the `/mcp` servers, on
@@ -3590,6 +3794,28 @@ of bug:
    that finished in the overlay left behind, instead of the committed `Done for Ns`
    summary (`smoke.sh` Phase 7).
 
+**One block of committed rows is repainted after it is written** — the
+startup banner, while the conversation under it is empty, so its mascot can
+blink (`docs/mascot-animation.md`). It bends none of the four: a row above
+the live region is an ordinary screen row until a scroll carries it off the
+top, and `InlineViewport`'s **anchored block** (`term::anchor`) is repainted
+only while every one of its rows is still on screen — inside the frame the
+live region paints in, or, when nothing but its mascot asked for the frame,
+in **a frame of its own** that writes its cells and nothing else
+(`InlineViewport::draw_anchor`; which frames those are is
+`frame::FrameLedger`'s to say, and it says so only when no other request
+for a frame has been made since the last one began, so a frame anything
+else wanted is still a whole `draw`). Three rules are the whole contract, and breaking one
+puts a blink in scrollback for good: the block is **put back to the rows it
+was committed as before anything scrolls** (`flush_pending`, a `repin`
+scroll, `restore`); a block with a row off the top, and every resize or
+`reflow`, **drops** it (the rebuild that wrote only the banner declares it
+again); and the loop **releases** it the moment `App::banner_is_live` is
+false, so the first cell lands under a banner at rest. Anything new that
+commits rows or moves the screen goes through `insert_before`/`draw`/
+`reflow` and inherits all three — a path that wrote above the region any
+other way would not.
+
 ### Data flow
 
 The loop is an async (`tokio`, current-thread) `select!` over five sources —
@@ -3611,6 +3837,11 @@ pattern). `insert_before` only **queues** its lines: the draw tick writes them a
 repaints the live region in **one synchronized frame** (codex's pending-history
 pattern — no flushed state ever lacks the box, the flicker fix; `reflow` paints the
 same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md`).
+One kind of tick is not a whole frame: the banner mascot asks for its
+frames on its own account (`schedule_banner_frame_in`, the one request
+`FrameRequester::asked` does not count), and a tick before which nothing
+else asked (`frame::FrameLedger`) repaints the banner's cells alone —
+`docs/mascot-animation.md` *A frame of its own*.
 (See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
 
 ```

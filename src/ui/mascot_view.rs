@@ -15,7 +15,7 @@
 //! to the tallest mascot, and the list column is sized off the whole
 //! catalog, so the frame holds still as ↑/↓ and a search move the list.
 
-use super::header::header_lines_for;
+use super::header::{header_lines_for, header_lines_posed};
 use super::model_view::{
     PreviewLayout, capitalized, caption_lines, compact_page, compact_page_with_header,
     first_page_that_fits, list_counter_line, list_window, marked_row_head, model_placeholder_row,
@@ -114,8 +114,10 @@ fn list_lines(
 /// The preview for `mascot` at `width`: the caption ([`caption_lines`] —
 /// the mascot's name in bold over its description in the frame's dim), a
 /// gap, and the live banner — the startup banner's own builder at `width`,
-/// so the preview *is* the banner — padded with blank rows to the tallest
-/// banner any mascot draws there ([`banner_slot`]).
+/// so the preview *is* the banner, **in the pose its animation is in now**
+/// ([`App::mascot_pose_for`]): the picker shows how each mascot moves, not
+/// only how it stands (`docs/mascot-animation.md`) — padded with blank rows
+/// to the tallest banner any mascot draws there ([`banner_slot`]).
 fn preview_lines(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::from(caption_lines(
         &capitalized(mascot.name()),
@@ -124,7 +126,7 @@ fn preview_lines(app: &App, mascot: Mascot, width: u16) -> Vec<Line<'static>> {
     ));
     lines.push(Line::default());
     let slot = banner_slot(app, width);
-    let mut banner = header_lines_for(app, mascot, width);
+    let mut banner = header_lines_posed(app, mascot, &app.mascot_pose_for(mascot), width);
     banner.truncate(slot);
     banner.resize(slot, Line::default());
     lines.extend(banner);

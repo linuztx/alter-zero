@@ -125,9 +125,9 @@ pub struct ViewFlow {
 /// (`model_view::compact_page`), so on any terminal at least a row tall
 /// their page never flows — they stay eligible so a builder that ever
 /// overshot would still flow rather than drop rows into no buffer. The ↓
-/// background manager flows too — it and the `/spinner` picker are the two
-/// pages that tick between keystrokes, so they are the two signed
-/// [`FlowSign::Frozen`] rather than on their rows.
+/// background manager flows too — it, the `/spinner` picker and the
+/// `/mascot` picker are the pages that tick between keystrokes, so they are
+/// the ones signed [`FlowSign::Frozen`] rather than on their rows.
 ///
 /// Each branch returns the page **with** what its flow is signed on, so a
 /// view cannot acquire a flow without stating which changes to it matter.
@@ -174,16 +174,26 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
-    if app.mascot_picker.is_some() {
-        return Some(FlowPage::framed(
-            super::mascot_view::mascot_view_lines(app, width, term_height),
-            term_height,
-        ));
+    if let Some(picker) = &app.mascot_picker {
+        // The `/mascot` picker's preview moves between keystrokes — the
+        // highlighted mascot blinks and plays its move in it
+        // (`docs/mascot-animation.md`) — so, like the `/spinner` picker
+        // below, it signs the **selection and the query** rather than its
+        // rows: were its page ever to flow, a blink would never churn a
+        // purge rebuild.
+        let mut hasher = DefaultHasher::new();
+        picker.selected.hash(&mut hasher);
+        picker.query.hash(&mut hasher);
+        return Some(FlowPage {
+            lines: super::mascot_view::mascot_view_lines(app, width, term_height),
+            sign: FlowSign::Frozen(hasher.finish()),
+            painted: term_height.max(1),
+        });
     }
     if app.theme_picker.is_some() {
         // The `/theme` picker's page is still — its preview is built from
-        // finished cells, nothing on it ticks — so it signs its rows like
-        // the `/mascot` picker (`docs/theme.md`).
+        // finished cells, nothing on it ticks — so it signs its rows
+        // (`docs/theme.md`).
         return Some(FlowPage::framed(
             super::theme_view::theme_view_lines(app, width, term_height),
             term_height,

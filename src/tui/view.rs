@@ -95,6 +95,7 @@ impl Session<'_> {
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         let now = self.clocks.loop_start.elapsed();
         self.app.set_pulse(now);
+        self.update_mascot_clock();
         // The open read/search group's `⎿` row steps through its calls on
         // the same clock, each value held long enough to read
         // (docs/tool-groups.md *The hint row*).
@@ -254,6 +255,7 @@ impl Session<'_> {
         // layout reserves it. See `docs/markdown.md`, `docs/table-streaming.md`.
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
+        self.pose_banner();
         let app = &self.app;
         // `term` places the cursor from the final (content-anchored) viewport
         // via `ui::cursor_position`, which mirrors render_live's layout exactly.
@@ -262,6 +264,103 @@ impl Session<'_> {
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )
+    }
+
+    /// Hand the viewport the banner's pose for the frame about to be drawn —
+    /// or let the banner go (`docs/mascot-animation.md`).
+    ///
+    /// While the conversation is empty the banner is still **anchored**
+    /// above the live region, repaintable in place: this frame shows it as
+    /// `ui::banner_frame_lines` says — the mascot mid-blink, or standing
+    /// still, which repaints nothing. The moment a cell is recorded (or a
+    /// turn is in flight to record one) the banner is released instead: the
+    /// viewport puts it back to the rows it was committed as, in the same
+    /// frame that writes the first cell under it, and from then on it is
+    /// scrollback. A viewport with no anchor — a resumed conversation, a
+    /// banner scrolled off a short terminal — has nothing to pose.
+    fn pose_banner(&mut self) {
+        if !self.term.has_anchor() {
+            return;
+        }
+        let width = self.term.screen().width;
+        if !self.app.banner_is_live() {
+            self.term.release_anchor();
+        } else if self.app.mascot_animates() && ui::banner_shows_art(&self.app, width) {
+            self.term
+                .pose_anchor(ui::banner_frame_lines(&self.app, width));
+        } else {
+            // Nothing of it moves — the animation is off, or the terminal
+            // too narrow for the art: the banner stands as it was
+            // committed, and no frame builds its rows to learn that.
+            self.term.still_anchor();
+        }
+    }
+
+    /// Write the mascot's animation clock onto `App`: time since the banner
+    /// first reached the screen (`docs/mascot-animation.md`).
+    fn update_mascot_clock(&mut self) {
+        self.app.set_mascot_clock(
+            self.clocks
+                .banner_start
+                .map_or(std::time::Duration::ZERO, |start| start.elapsed()),
+        );
+    }
+
+    /// A frame **only the banner's mascot asked for**
+    /// (`docs/mascot-animation.md` *A frame of its own*): its clock, its
+    /// pose, the cells of the banner that differ — and nothing else. No
+    /// other clock is read and the live region is not rendered, since
+    /// nothing in it can have changed: whatever else moves by itself asks
+    /// for its own frames, and this one would not be the banner's alone.
+    fn draw_banner_frame(&mut self) -> io::Result<()> {
+        self.update_mascot_clock();
+        self.pose_banner();
+        self.term.draw_anchor(&self.app)?;
+        self.schedule_mascot_frame();
+        Ok(())
+    }
+
+    /// Ask for the frame the mascot's next pose is due at, when one is
+    /// moving on screen. The banner keeps no chain at all: it stands still
+    /// for seconds at a time, so each frame asks when its pose next changes
+    /// and one frame is scheduled for exactly then — a blink costs four,
+    /// and an idle session sleeps between them (`docs/mascot-animation.md`).
+    ///
+    /// That frame is asked for **on the banner's account**
+    /// ([`draw_banner_frame`](Self::draw_banner_frame)) unless the `/mascot`
+    /// picker is open: its preview moves inside the live region, which only
+    /// a whole frame repaints.
+    fn schedule_mascot_frame(&self) {
+        let Some(wait) = self.mascot_frame_due() else {
+            return;
+        };
+        if self.app.highlighted_mascot().is_some() {
+            self.frame.schedule_frame_in(wait);
+        } else {
+            self.frame.schedule_banner_frame_in(wait);
+        }
+    }
+
+    /// How long until the mascot's next animation frame is due, or `None`
+    /// when no mascot is moving on screen — asked after every draw
+    /// (`docs/mascot-animation.md`). The banner counts only while the
+    /// viewport still holds it anchored (so: on screen, over an empty
+    /// conversation) and the terminal is wide enough to draw its art.
+    fn mascot_frame_due(&self) -> Option<std::time::Duration> {
+        let width = self.term.screen().width;
+        let banner = self.term.has_anchor() && ui::banner_shows_art(&self.app, width);
+        self.app.mascot_frame_in(banner)
+    }
+
+    /// Start the mascot's animation over, so the banner about to be shown
+    /// **greets** — the sweep of light, the mascot's own move, a blink
+    /// (`docs/mascot-animation.md`). The three things that open a fresh
+    /// banner call it: the first frame, `/clear`, and a `/mascot` choice. A
+    /// rebuild that only redraws the banner already there — a resize, a
+    /// rewind to an empty conversation — never does, so a dragged window
+    /// edge does not greet on every step.
+    pub(crate) fn greet_from_banner(&mut self) {
+        self.clocks.banner_start = Some(std::time::Instant::now());
     }
 
     /// Render the full-screen tool-output overlay. Resolves the ←/→ steps
@@ -530,6 +629,10 @@ impl Session<'_> {
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).
+        // A rebuild of an empty conversation writes the banner and nothing
+        // under it: it stays repaintable where it lands, exactly as at
+        // launch (docs/mascot-animation.md).
+        let bare = tail.is_empty() && self.app.banner_is_live();
         let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
         // A screen-tall framed view flows its page top into scrollback: the
         // rows ride the tail's very end, so they land directly above the live
@@ -540,6 +643,8 @@ impl Session<'_> {
         // (`docs/view-flow.md`).
         let flow = self.current_view_flow();
         self.flowed_view = flow.as_ref().map(|flow| flow.signature);
+        // …unless a flowed page sits between it and the region.
+        let anchor = (bare && flow.is_none()).then(|| tail.clone());
         if let Some(flow) = flow {
             tail.extend(flow.lines);
         }
@@ -550,6 +655,9 @@ impl Session<'_> {
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )?;
+        if let Some(banner) = anchor {
+            self.term.anchor_above(banner);
+        }
         // Catch scrollback up on the in-flight partial the purge dropped:
         // exactly the rows live streaming would have committed, queued for
         // the next draw. Suppressed while a flow is active — the queued rows
@@ -806,6 +914,13 @@ impl Session<'_> {
     /// a thinking pause). The chain seeds from the Submit keypress and stops by
     /// itself on the first draw after the turn ends.
     pub(crate) fn on_draw_tick(&mut self) -> io::Result<()> {
+        // A frame nothing has asked for since the last one began but the
+        // banner's mascot is the banner's alone: its cells, and none of the
+        // work below (`docs/mascot-animation.md` *A frame of its own*).
+        let banner_alone = self.frames.banner_alone(self.frame.asked());
+        if banner_alone && self.app.view == View::Conversation {
+            return self.draw_banner_frame();
+        }
         self.update_status_times();
         // Inject each background shell's runtime (the boundary owns the started
         // clocks — docs/background.md), so the manager's details view ticks.
@@ -833,6 +948,7 @@ impl Session<'_> {
         if self.app.wants_animation_frames() {
             self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
         }
+        self.schedule_mascot_frame();
         // The `/login` device page keeps its own, much slower chain. Its only
         // moving part is an `mm:ss` countdown, so a frame a second is exactly
         // the rate its content changes at — and every frame costs a cursor

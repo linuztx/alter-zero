@@ -651,6 +651,45 @@ HTTP/TLS state remain, and raw conversation history still grows as work
 is recorded. A single item's temporary expanded rows and the allocator's
 retained pages can also affect RSS, so the reduction varies with the session.
 
+## An idle animation, on the emptiest screen
+
+The banner mascot moves while the conversation is empty
+(`docs/mascot-animation.md`) — on the one screen where the process is at
+its smallest, about 1.1 MB of memory of its own. As first written it added
+0.06 MB to that with the animation switched off and 0.18 MB with the
+mascot moving, and none of it was the animation's state, which is a clock
+and four numbers. Three things were, and each had a general shape:
+
+- **A table of references is memory of the process's own.** The frames
+  were written as stills, clips of stills and decks of clips — `&'static`
+  all the way down, 2,300 of them. Each is an address the loader fills in
+  at startup, so every page of `.data.rel.ro` holding one is private and
+  dirty from the first instruction: 52 kB, paid by every session whether
+  it ever animated or not. `readelf -S` shows it and nothing in the source
+  does. The tables are still written that way and are folded at compile
+  time into integers — row bytes and indices, no address in them — which
+  is ordinary read-only data, shared and paged in on demand.
+- **A diff does not need both pictures whole.** A repaint rendered the
+  banner's four rows twice at the terminal's width and diffed the two
+  buffers: 0.4 kB a column, 38 kB at 100 columns and 115 kB at 300, for a
+  blink that changes two cells. It renders the rows that changed, as far
+  along each as the spans ahead of the tail its two versions share — a
+  dozen columns — and is held to the same cells by a test.
+- **A frame that changes one thing should build one thing.** Every frame
+  of the animation went through the whole draw: a buffer the live region's
+  size beside the one on screen, rendered to learn that nothing in it had
+  changed. Worse than its size was its rhythm — freed each frame, split by
+  the small blocks allocated before the next, so the next took a new one
+  from the top of the heap. Frames nothing but the mascot asked for now
+  write the banner's cells and nothing else.
+
+Measured the same way as everything above (release builds, 100 by 30,
+`RssAnon`): with the animation off, and from the first reply on, the
+process is the size it is without the feature; while the mascot moves it
+is 0.04 MB larger, which is what the churn of building one banner's rows a
+frame leaves in glibc's heap. valgrind's dhat puts the heap's peak at
+191,187 bytes with the mascot moving against 191,082 with it still.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
@@ -681,3 +720,8 @@ And a fourth for anything rendered as it streams: **keep what the view can
 show, not everything it has seen.** A cache sized to the input rather than to
 its window is a cache sized by the largest input the session ever met, for the
 rest of the session.
+
+And a fifth for anything that moves on an idle screen: **an idle screen
+pays for what changes, not for what is on it.** Constant tables hold no
+addresses, a diff is built no wider than the change, and a frame that
+changes one thing does not render the rest to prove it.

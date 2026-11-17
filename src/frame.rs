@@ -5,6 +5,8 @@
 //! the async [`run_scheduler`] task that glues them to real time is covered by
 //! `scripts/smoke.sh`, like the rest of the I/O boundary.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -72,11 +74,16 @@ pub fn soonest(pending: Option<Instant>, deadline: Instant) -> Instant {
 #[derive(Debug, Clone)]
 pub struct FrameRequester {
     tx: UnboundedSender<Instant>,
+    /// How many frames have been asked for through this handle and its
+    /// clones — every request but the banner's own
+    /// ([`schedule_banner_frame_in`](Self::schedule_banner_frame_in)).
+    asked: Arc<AtomicU64>,
 }
 
 impl FrameRequester {
     /// Request a redraw as soon as the frame floor allows (immediately when idle).
     pub fn schedule_frame(&self) {
+        self.asked.fetch_add(1, Ordering::Relaxed);
         // The scheduler outlives every requester, so a send only fails during
         // shutdown — nothing left to draw, so dropping the request is correct.
         let _ = self.tx.send(Instant::now());
@@ -89,7 +96,53 @@ impl FrameRequester {
     /// else already asked for — it only avoids piling immediate demands on the
     /// rate limiter (see [`crate::paste`] and `run_scheduler`).
     pub fn schedule_frame_in(&self, after: Duration) {
+        self.asked.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(Instant::now() + after);
+    }
+
+    /// Request a redraw no sooner than `after` from now **on the banner's
+    /// account alone**: the frame its mascot's next pose is due at
+    /// (`docs/mascot-animation.md` *A frame of its own*). A deadline like
+    /// any other to the scheduler, but not counted in [`asked`](Self::asked)
+    /// — which is how the loop knows a frame nothing else asked for, and
+    /// repaints the banner's cells without rendering the rest of the
+    /// screen to find that it has not changed.
+    pub fn schedule_banner_frame_in(&self, after: Duration) {
+        let _ = self.tx.send(Instant::now() + after);
+    }
+
+    /// How many frames have been asked for so far by anything but
+    /// [`schedule_banner_frame_in`](Self::schedule_banner_frame_in), through
+    /// this handle or any clone of it.
+    #[must_use]
+    pub fn asked(&self) -> u64 {
+        self.asked.load(Ordering::Relaxed)
+    }
+}
+
+/// Tells the frames **only the banner asked for** from every other
+/// (`docs/mascot-animation.md` *A frame of its own*).
+///
+/// The scheduler folds every pending request into one draw tick, so a tick
+/// does not say who wanted it. The count of requests does
+/// ([`FrameRequester::asked`], which leaves the banner's own out): read as
+/// each frame begins, a count that has not moved since the frame before
+/// began means nothing asked in between but the banner — nothing else on
+/// screen can have changed, and whatever else re-arms itself would have
+/// asked while that frame was drawn. The first frame of all is never the
+/// banner's alone.
+#[derive(Debug, Default)]
+pub struct FrameLedger {
+    /// [`FrameRequester::asked`] as the last frame began.
+    seen: Option<u64>,
+}
+
+impl FrameLedger {
+    /// Whether the frame beginning now, with `asked` frames asked for so
+    /// far, is one only the banner asked for — and note the count for the
+    /// frame after it.
+    pub fn banner_alone(&mut self, asked: u64) -> bool {
+        self.seen.replace(asked) == Some(asked)
     }
 }
 
@@ -97,7 +150,8 @@ impl FrameRequester {
 #[must_use]
 pub fn channel() -> (FrameRequester, UnboundedReceiver<Instant>) {
     let (tx, rx) = unbounded_channel();
-    (FrameRequester { tx }, rx)
+    let asked = Arc::default();
+    (FrameRequester { tx, asked }, rx)
 }
 
 /// The scheduler task: receive requested draw deadlines, coalesce them and
@@ -194,5 +248,44 @@ mod tests {
     fn soonest_with_nothing_pending_is_the_new_deadline() {
         let t = Instant::now();
         assert_eq!(soonest(None, t), t);
+    }
+
+    #[test]
+    fn a_frame_asked_for_on_the_banners_account_is_not_counted() {
+        // What tells a frame nothing but the banner's mascot asked for from
+        // every other (`docs/mascot-animation.md` *A frame of its own*):
+        // each request is counted but the banner's own — which is a
+        // deadline for the scheduler all the same.
+        let (frame, mut rx) = channel();
+        assert_eq!(frame.asked(), 0);
+        frame.schedule_frame();
+        frame.schedule_frame_in(Duration::from_millis(5));
+        assert_eq!(frame.asked(), 2);
+        frame.schedule_banner_frame_in(Duration::from_millis(5));
+        assert_eq!(frame.asked(), 2, "the banner's own request");
+        // A clone asks on the same count: a worker's request is one too.
+        frame.clone().schedule_frame();
+        assert_eq!(frame.asked(), 3);
+        let mut deadlines = 0;
+        while rx.try_recv().is_ok() {
+            deadlines += 1;
+        }
+        assert_eq!(deadlines, 4, "every request reaches the scheduler");
+    }
+
+    #[test]
+    fn a_frame_is_the_banners_alone_when_nothing_else_asked_since_the_last_one() {
+        let mut ledger = FrameLedger::default();
+        // The first frame of all is nobody's alone, whatever the count.
+        assert!(!ledger.banner_alone(0));
+        // Nothing has asked since it began: the frame now due can only be
+        // one the banner asked for.
+        assert!(ledger.banner_alone(0));
+        assert!(ledger.banner_alone(0), "and the one after it");
+        // Anything asking makes the next frame a whole one — once.
+        assert!(!ledger.banner_alone(1));
+        assert!(ledger.banner_alone(1));
+        assert!(!ledger.banner_alone(4));
+        assert!(ledger.banner_alone(4));
     }
 }
