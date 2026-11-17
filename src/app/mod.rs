@@ -137,7 +137,8 @@ pub use self::turn::{
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{
-    DebugPage, EntryJump, HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View,
+    DebugPage, EntryJump, HistoryItem, HookNote, Message, PagerMove, Role, SessionInfo, Toast,
+    ToastKind, View,
 };
 pub use self::usage::{
     USAGE_EMPTY_NOTICE, USAGE_REFRESH_SECS, UsagePage, UsageSection, UsageTarget,
@@ -400,15 +401,16 @@ pub struct App {
     /// opens this way and re-streams keep the latest content in view, until you
     /// scroll up to read back (and re-engages when you scroll to the bottom).
     pub tool_follow: bool,
-    /// A ←/→ step between the Ctrl+O transcript's entries, waiting for the
-    /// draw to resolve it against the transcript as built
-    /// ([`resolve_tool_jump`](Self::resolve_tool_jump),
-    /// `docs/transcript-navigation.md`) — Ctrl+D's
-    /// [`debug_jump`](Self::debug_jump), in the pager. A backtrack preview
+    /// The Ctrl+O pager's moves waiting for the draw, oldest first: every
+    /// ←/→ step between the transcript's entries, and any scroll pressed
+    /// behind one — the draw replays them in order against the transcript
+    /// as built ([`resolve_tool_moves`](Self::resolve_tool_moves),
+    /// `docs/transcript-navigation.md`). Ctrl+D's
+    /// [`debug_moves`](Self::debug_moves), in the pager. A backtrack preview
     /// keeps ←/→ for its own steps, and both a close and the start of a
-    /// preview drop a pending one — resolved after the preview's scroll to
-    /// its highlight, it would push the highlight off the page.
-    pub tool_jump: Option<EntryJump>,
+    /// preview drop the moves still waiting — resolved after the preview's
+    /// scroll to its highlight, a step would push the highlight off the page.
+    pub tool_moves: Vec<PagerMove>,
     /// The Ctrl+D context-debug view's vertical scroll offset, in lines from
     /// the top — its own state so flipping between overlays never clobbers the
     /// transcript pager's place. See `docs/context.md`.
@@ -428,12 +430,13 @@ pub struct App {
     /// exactly like [`tool_follow`](Self::tool_follow) — so a page left open
     /// while the agent works keeps the newest actions in sight as they land.
     pub classifier_follow: bool,
-    /// A ←/→ step between the showing Ctrl+D page's entries, waiting for the
-    /// draw to resolve it against the page as built
-    /// ([`resolve_debug_jump`](Self::resolve_debug_jump), `docs/context.md`).
-    /// Tab and a close drop it, so a step never lands on a page it was not
-    /// pressed on.
-    pub debug_jump: Option<EntryJump>,
+    /// The showing Ctrl+D page's moves waiting for the draw, oldest first:
+    /// every ←/→ step between its entries, and any scroll pressed behind one
+    /// — the draw replays them in order against the page as built
+    /// ([`resolve_debug_moves`](Self::resolve_debug_moves),
+    /// `docs/context.md`). Tab and a close drop them, so a move never lands
+    /// on a page it was not pressed on.
+    pub debug_moves: Vec<PagerMove>,
     /// The auto mode classifier's **rendered task context** — the block the
     /// next verdict will read, injected per draw at the boundary from the
     /// live backend log (`ReplySource::classifier_context`), the

@@ -38,6 +38,7 @@ use alter_zero::app::{
     Compaction,
     ContextUsagePage,
     EntryJump,
+    PagerMove,
     ContextUsageRow,
     UsagePage,
     UsageSection,

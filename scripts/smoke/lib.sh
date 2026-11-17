@@ -528,6 +528,26 @@ wait_pane() {
 	printf '%s\n' "$last"
 	return 1
 }
+# wait_row SECONDS SESSION ROW TEXT — wait until the pane's row ROW (1-based)
+# reads exactly TEXT, trailing blanks trimmed, printing the last capture
+# taken. The wait for a key that moves the screen: a pattern found anywhere
+# can be on screen before the key lands — the move before it left it there
+# — and the read after it then races the key (docs/smoke.md). Returns 1 on
+# timeout.
+wait_row() {
+	local secs="$1" sess="$2" row="$3" want="$4" last="" n i
+	n="$(smoke_ticks "$secs")"
+	for ((i = 0; i < n; i++)); do
+		last="$(tmux capture-pane -t "$sess" -p)"
+		if [ "$(sed -n "${row}p" <<<"$last" | sed 's/[[:space:]]*$//')" = "$want" ]; then
+			printf '%s\n' "$last"
+			return 0
+		fi
+		sleep "$SMOKE_POLL_INTERVAL"
+	done
+	printf '%s\n' "$last"
+	return 1
+}
 # wait_summaries SECONDS SESSION COUNT [capture opts] — wait until the pane
 # holds COUNT committed turn summaries (rows opening with SUMMARY_RE), printing
 # the last capture taken: "the COUNTth turn settled", whichever verbs the

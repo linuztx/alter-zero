@@ -339,22 +339,25 @@ rows, so the view carries three aids, all fed by `DebugBody::headers` — the
 row each entry's header sits on, built beside the rows:
 
 - **←/→ step between messages**, opening the previous or next entry at the
-  top of the body. The key records only the direction (`App::debug_jump`, an
-  `EntryJump`): where the neighbouring entry starts is a fact about the page
-  as built — its width, its wrapping — so the draw resolves it against the
-  rows it is about to paint (`App::resolve_debug_jump`, before the scroll
-  settle), never against a previous frame's. ← from inside an entry opens
-  that entry's own head first, the way a paragraph motion does; past the
-  last entry → is the end and before the first ← is the top; the window's
-  top row is the page's current end while it tail-follows, so a page that
-  grew since its last draw is stepped from its new bottom; and a step that
-  lands within the last screenful re-engages the tail-follow, as End does.
-  Tab and a close drop a step still pending, so it never lands on a page it
-  was not pressed on. They are the keys the transcript pager's backtrack
-  uses for the previous and next message, meaning the same thing here — and
-  outside a backtrack preview the transcript pager steps between its own
-  entries with them, by this same rule (`app::views::step_target`, shared;
-  `docs/transcript-navigation.md`).
+  top of the body. The key records only the direction (a `PagerMove::Step`
+  carrying an `EntryJump`, queued on `App::debug_moves`): where the
+  neighbouring entry starts is a fact about the page as built — its width,
+  its wrapping — so the draw resolves it against the rows it is about to
+  paint (`App::resolve_debug_moves`, before the scroll settle), never
+  against a previous frame's. Each press is a step of its own, and a scroll
+  pressed behind one waits with it, so keys that reach the view between two
+  draws land in the order they came (`docs/transcript-navigation.md`). ←
+  from inside an entry opens that entry's own head first, the way a
+  paragraph motion does; past the last entry → is the end and before the
+  first ← is the top; the window's top row is the page's current end while
+  it tail-follows, so a page that grew since its last draw is stepped from
+  its new bottom; and a step that lands within the last screenful re-engages
+  the tail-follow, as End does. Tab and a close drop the moves still
+  waiting, so a step never lands on a page it was not pressed on. They are
+  the keys the transcript pager's backtrack uses for the previous and next
+  message, meaning the same thing here — and outside a backtrack preview the
+  transcript pager steps between its own entries with them, by this same
+  rule (`app::views::step_target`, shared; `docs/transcript-navigation.md`).
 - **The entry the window opens inside is pinned** over the top row while its
   own header is scrolled off (`pinned_header`): deep in a long system prompt
   or tool result the top row still says whose text it is. Not on the header

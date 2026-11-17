@@ -48,8 +48,10 @@ expect_eq "$(printf '%s\n' "$pin_prev" | sed -n 2p | sed 's/ *$//')" "! seq 1 60
 
 # ↓ five rows: the output scrolls under the pinned header — the window
 # opens on `5`, the pin covers it, and `6` sits right under the header.
+# The wait is on that row: `23` at the bottom is on screen after four of
+# the five, and a read then would race the fifth.
 for _ in 1 2 3 4 5; do keys "$S157" Down; done
-pin_scrolled="$(wait_pane 5 "$S157" -E '^ +23 *$')"
+pin_scrolled="$(wait_row 5 "$S157" 3 "     6")"
 note "↓×5 — the first command's output scrolled under its pinned header"
 printf '%s\n' "$pin_scrolled"
 expect_eq "$(printf '%s\n' "$pin_scrolled" | sed -n 2p | sed 's/ *$//')" "! seq 1 60" "the header was not pinned over the scrolled output"
@@ -77,7 +79,9 @@ tmux kill-session -t "$S157" 2>/dev/null
 #   (b) ← opens that cell at its own first row, ↓ scrolls its output under
 #       the two-row pin;
 #   (c) from the top, → walks entry by entry to the first call, and paging
-#       into its output pins `● Bash(seq 1 60)`;
+#       into its output pins `● Bash(seq 1 60)` — and the same five keys
+#       sent in ONE write land in the same place, every press a move of its
+#       own in the order it came;
 #   (d) → and Esc sent in ONE write — a laggy link batching two keys into one
 #       frame — still open the backtrack preview with its highlight on
 #       screen: a step pending when the preview begins is dropped, where it
@@ -150,7 +154,7 @@ keys "$S157B" Left
 wait_pane 5 "$S157B" -E '^  ⎿  row 1 *$' >/dev/null || fail "← did not open the wide command at its first row"
 expect_eq "$(tp_row 2)" "$TP_HEAD1" "← did not put the wide command's header on top"
 for _ in 1 2 3 4 5 6 7 8; do keys "$S157B" Down; done
-tp_scrolled="$(wait_pane 5 "$S157B" -E '^ +row 9 *$')"
+tp_scrolled="$(wait_row 5 "$S157B" 4 "     row 9")"
 note "Part B (b): eight rows into the wide command's output, under its two-row pin"
 printf '%s\n' "$tp_scrolled"
 expect_eq "$(tp_row 2)" "$TP_HEAD1" "scrolled into the output, the header's first row is not pinned"
@@ -162,19 +166,35 @@ expect_lacks "$tp_scrolled" -E '⎿ +row 1 *$' "the output's first row is still 
 keys "$S157B" Home
 # (`.*`, not `─+`: a repeat binds to the last byte of a multibyte glyph.)
 wait_for 5 "$S157B" -E '^─.* 0% ─$' || fail "Home did not reach the top of the transcript"
+# Each step waits on the row it moves: the prompt, the reply and the call
+# are all on screen from the top, so a wait for their text anywhere returned
+# before the key had landed, and a busy CI runner read the pane a frame early.
 keys "$S157B" Right
-wait_for 5 "$S157B" -E '^❯ count to sixty' || fail "→ from the top did not open the prompt"
+wait_row 5 "$S157B" 2 "❯ count to sixty" >/dev/null || fail "→ from the top did not open the prompt"
 keys "$S157B" Right
-wait_for 5 "$S157B" -F "● Counting with seq." || fail "a second → did not open the reply"
+wait_row 5 "$S157B" 2 "● Counting with seq." >/dev/null || fail "a second → did not open the reply"
 keys "$S157B" Right
-wait_pane 5 "$S157B" -E '^  ⎿  1 *$' >/dev/null || fail "a third → did not open the first bash cell"
-expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "a third → did not put the first bash cell on top"
+wait_row 5 "$S157B" 2 "● Bash(seq 1 60)" >/dev/null || fail "a third → did not put the first bash cell on top"
+expect_eq "$(tp_row 3)" "  ⎿  1" "a third → did not open the first bash cell at its first row"
 keys "$S157B" PageDown PageDown
-tp_paged="$(wait_pane 5 "$S157B" -E '^ +21 *$')"
+tp_paged="$(wait_row 5 "$S157B" 3 "     21")"
 note "Part B (c): two pages into the first call's output"
 printf '%s\n' "$tp_paged"
 expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "deep in the first call's output its header is not pinned"
 expect_eq "$(tp_row 3)" "     21" "the first call's output does not carry on under its pin"
+
+# The same five keys in ONE write land where they did one at a time: each
+# press a move of its own, in the order it came. The newest step used to win
+# (three presses, one step) and the pages to overtake it, landing on the
+# reply after the call — the collapse that cost a CI run the third step.
+keys "$S157B" Home
+wait_for 5 "$S157B" -E '^─.* 0% ─$' || fail "Home did not return to the top"
+keys "$S157B" Right Right Right PageDown PageDown
+tp_batched="$(wait_row 5 "$S157B" 3 "     21")" ||
+	fail "→ → → PageDown PageDown in one write did not land two pages into the first call"
+note "Part B (c): the same keys in one write"
+printf '%s\n' "$tp_batched"
+expect_eq "$(tp_row 2)" "● Bash(seq 1 60)" "the keys in one write did not open the first call under its pin"
 
 # (d) → and Esc in one write: the preview opens with its highlight on screen.
 keys "$S157B" End

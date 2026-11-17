@@ -1085,10 +1085,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `DebugBody { lines, headers, summary }` — one built page of the Ctrl+D
   view: its rows, the row each entry's role chip sits on, and the bottom
   rule's `N messages · ≈tokens` lead (the footer gauge's own estimate,
-  `app::message_tokens`). `App::debug_jump` is a pending ←/→ step — an
-  `EntryJump` direction the key records and the draw resolves against the
-  page as built (`App::resolve_debug_jump`, before the scroll settle;
-  dropped on Tab and on a close); the renderer pins the header of the entry
+  `app::message_tokens`). `App::debug_moves` is the queue of pending ←/→
+  steps — `PagerMove`s the keys record, with any scroll pressed behind one,
+  that the draw replays in order against the page as built
+  (`App::resolve_debug_moves`, before the scroll settle; dropped on Tab and
+  on a close); the renderer pins the header of the entry
   the window opens inside over its top row (`docs/context.md`).
 - The Ctrl+D classifier page shows the backend's classifier system prompt
   above its live task context. `ReplySource::classifier_system_prompt` is

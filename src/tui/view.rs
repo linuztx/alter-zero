@@ -264,8 +264,8 @@ impl Session<'_> {
         )
     }
 
-    /// Render the full-screen tool-output overlay. Resolves a pending ←/→
-    /// step against the transcript as built and clamps the scroll to the
+    /// Render the full-screen tool-output overlay. Resolves the ←/→ steps
+    /// (and the scrolls pressed behind them) waiting against the transcript as built and clamps the scroll to the
     /// current screen (so the last line can reach the bottom but not scroll
     /// past it), then paints the view onto the alternate screen — the header
     /// of the cell the window opens inside pinned over its top
@@ -277,9 +277,9 @@ impl Session<'_> {
         // untouched, so the ordinary open stays warm.
         if let Some(page) = ui::agent_transcript(&self.app, screen.width) {
             let max = ui::tool_view_max_scroll_for(page.lines.len(), screen.height);
-            if self.app.tool_jump.is_some() {
+            if !self.app.tool_moves.is_empty() {
                 let starts: Vec<usize> = page.entries.iter().map(|entry| entry.start).collect();
-                self.app.resolve_tool_jump(&starts, max);
+                self.app.resolve_tool_moves(&starts, max);
             }
             self.app.settle_tool_scroll(max);
             let app = &self.app;
@@ -307,15 +307,16 @@ impl Session<'_> {
             screen.height,
         );
         // A ←/→ press lands against the transcript as built — its width, its
-        // wrapping — before the settle clamps it; the same cached build.
-        if self.app.tool_jump.is_some() {
+        // wrapping — before the settle clamps it; the same cached build. The
+        // moves a frame received replay in the order they came.
+        if !self.app.tool_moves.is_empty() {
             let starts: Vec<usize> = self
                 .transcript
                 .entries(&self.app, screen.width)
                 .iter()
                 .map(|entry| entry.start)
                 .collect();
-            self.app.resolve_tool_jump(&starts, max);
+            self.app.resolve_tool_moves(&starts, max);
         }
         self.app.settle_tool_scroll(max);
         let app = &self.app;
@@ -352,7 +353,7 @@ impl Session<'_> {
         let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
         // A ←/→ press lands against the page as built — its width, its
         // wrapping — before the settle clamps it.
-        self.app.resolve_debug_jump(&body.headers, max);
+        self.app.resolve_debug_moves(&body.headers, max);
         self.app.settle_debug_scroll(max);
         let app = &self.app;
         self.term
@@ -387,7 +388,7 @@ impl Session<'_> {
         let screen = self.term.screen();
         let body = ui::classifier_body(&self.app, screen.width);
         let max = ui::tool_view_max_scroll_for(body.lines.len(), screen.height);
-        self.app.resolve_debug_jump(&body.headers, max);
+        self.app.resolve_debug_moves(&body.headers, max);
         self.app.settle_classifier_scroll(max);
         let app = &self.app;
         self.term

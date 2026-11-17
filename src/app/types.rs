@@ -215,13 +215,11 @@ impl DebugPage {
     }
 }
 
-/// Which way a ←/→ press in the Ctrl+D view steps between the page's
-/// entries (`docs/context.md`). The key records only the direction: where
-/// the neighbouring entry starts is a fact about the rendered page — its
-/// width, its wrapping — so the draw resolves it
-/// ([`App::resolve_debug_jump`]).
-///
-/// [`App::resolve_debug_jump`]: crate::app::App::resolve_debug_jump
+/// Which way a ←/→ press in a pager — the Ctrl+O transcript or a Ctrl+D
+/// page — steps between the page's entries (`docs/context.md`,
+/// `docs/transcript-navigation.md`). The key records only the direction:
+/// where the neighbouring entry starts is a fact about the rendered page —
+/// its width, its wrapping — so the draw resolves it ([`PagerMove`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryJump {
     /// ← — back to the start of the entry at the window's top, or to the
@@ -229,6 +227,32 @@ pub enum EntryJump {
     Previous,
     /// → — on to the start of the next entry.
     Next,
+}
+
+/// One key's move of a pager's window — the Ctrl+O transcript's or the
+/// showing Ctrl+D page's. A [`Step`](Self::Step) waits for the draw, which
+/// has the page as built; a scroll pressed while moves wait queues behind
+/// them, so the draw replays the keys a frame received in the order they
+/// came, each press a move of its own ([`App::resolve_tool_moves`],
+/// [`App::resolve_debug_moves`]; `docs/transcript-navigation.md`). A link
+/// that batches keys into one read, or a machine too busy to draw between
+/// them, used to collapse the waiting steps into the newest one and let a
+/// scroll overtake it.
+///
+/// [`App::resolve_tool_moves`]: crate::app::App::resolve_tool_moves
+/// [`App::resolve_debug_moves`]: crate::app::App::resolve_debug_moves
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagerMove {
+    /// ←/→ — to the neighbouring entry's first row.
+    Step(EntryJump),
+    /// ↑/PageUp — back this many rows, unpinning the tail.
+    Back(usize),
+    /// ↓/PageDown — on this many rows; reaching the bottom pins the tail.
+    On(usize),
+    /// Home — the top, unpinning the tail.
+    Top,
+    /// End — past any end, where the settle pins the tail again.
+    Bottom,
 }
 
 /// The session context shown in the footer under the input box: the backend's

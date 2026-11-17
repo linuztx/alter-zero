@@ -105,9 +105,9 @@ impl App {
         self.tool_follow = false; // pin to the highlight, not the tail
         // A ←/→ step still waiting for its draw would land after the scroll
         // that brings the highlight into view, and push the highlight off
-        // the page; from here ←/→ step the highlight instead
-        // (docs/transcript-navigation.md).
-        self.tool_jump = None;
+        // the page — and the scrolls queued behind it with it; from here ←/→
+        // step the highlight instead (docs/transcript-navigation.md).
+        self.tool_moves.clear();
     }
 
     /// The primed second Esc: open the transcript overlay as a backtrack

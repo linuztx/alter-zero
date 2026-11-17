@@ -143,6 +143,7 @@ was not a safe transformation until each carried its own.
 | `pane SESSION [capture opts]` | `capture-pane -p`; `-S -N` reaches scrollback, `-e` keeps the SGR escapes |
 | `wait_for SECS SESSION [capture opts --] [grep opts] PATTERN` | poll until the pane matches; 1 on timeout |
 | `wait_pane SECS SESSION … PATTERN` | the same wait, **printing the last capture** so the phase can assert on — and log — the frame that satisfied it |
+| `wait_row SECS SESSION ROW TEXT` | until the pane's row ROW (1-based) reads exactly TEXT, trailing blanks trimmed, printing the last capture: the wait for a key that **moves** the screen (below) |
 | `wait_settled SECS SESSION … PATTERN` | matches AND two identical samples 0.2s apart: the settled layout after a reply, not a mid-stream frame |
 | `wait_summaries SECS SESSION COUNT [capture opts]` / `count_summaries CONTENT` | "the COUNTth turn settled": the committed turn summaries on screen, **whatever verbs they wear** (`SUMMARY_RE`, below) |
 | `poll SECS COMMAND ARGS…` | the generic form for a compound condition |
@@ -234,6 +235,19 @@ wait_for 3 "$S116" -F "dummy_model_name ·" || fail "Esc did not close the page"
   clone. A 43-character checkout path already cut `· 1 shell` to `· 1 sh…` at
   80 columns, failing Phase 42 and silently timing out Phase 43's wait for the
   same text. `~/work` is six columns wherever the repo lives.
+- **Wait for the row a key moves, not for text it brings into view.** A
+  scroll or a step in a pager shows text that was often on screen already —
+  the key before it left it there — so a `wait_for` that text returns before
+  the key has landed, and the read after it races the key. The next key then
+  goes out before the last one drew, and both can reach the app in one
+  frame. Phase 157 failed both ways on a busy CI runner while passing every
+  time on a fast machine: its → walk waited for a prompt, a reply and a call
+  that were all on screen from the top, read a row one frame early, and sent
+  keys fast enough that two → reached the pager between draws (which the app
+  collapsed into one step until each press became a move of its own,
+  `docs/transcript-navigation.md`). `wait_row` waits on the row the key is
+  meant to change — the window's top row after a step, the row under a pin
+  after a scroll — whose text holds only once every key has landed.
 - **Wait for a turn to start before waiting for it to end.** A settle loop that
   breaks on the *absence* of the status line samples before the first frame
   paints on a loaded machine, breaks at once and races the turn. Phases 58 to
