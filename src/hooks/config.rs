@@ -57,9 +57,9 @@ pub struct MatcherGroup {
     /// Variables every handler of this group runs with, beside the project
     /// directory's — never in the file itself: [`HooksFile::with_env`]
     /// stamps them. A plugin's hooks get their plugin's root and data
-    /// directory this way (`docs/plugins.md`), which is what lets a command
-    /// written as `"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh"` stay exactly as its
-    /// author wrote it: the shell it runs under expands the name.
+    /// directory this way (`docs/plugins.md`) — exported to the process as
+    /// Claude Code exports them, beside being substituted into the command
+    /// itself ([`HooksFile::with_substitutions`]).
     #[serde(skip)]
     pub env: Vec<(String, String)>,
 }
@@ -73,6 +73,13 @@ pub struct HookHandler {
     pub kind: HandlerKind,
     #[serde(default)]
     pub command: Option<String>,
+    /// Claude Code's **exec form**: with `args`, `command` is the program
+    /// and each argument is one word exactly as written — no shell reads
+    /// them — while a path placeholder (`${CLAUDE_PROJECT_DIR}`,
+    /// `${CLAUDE_PLUGIN_ROOT}`, …) is still the directory it names.
+    /// Without it, `command` is a shell command line.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
     /// Seconds. `None` takes [`CommandHook::DEFAULT_TIMEOUT_SECS`].
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -187,6 +194,34 @@ impl HooksFile {
     pub fn with_env(mut self, env: &[(String, String)]) -> Self {
         for group in self.hooks.values_mut().flatten() {
             group.env = env.to_vec();
+        }
+        self
+    }
+
+    /// This file with each `${NAME}` of `vars` written into every handler's
+    /// command and arguments as the text it stands for — Claude Code's rule
+    /// for a plugin's hooks, whose directories are substituted inline (and
+    /// exported too, [`Self::with_env`]): the review then shows the command
+    /// that runs, and two plugins' hooks written alike stay two hooks.
+    #[must_use]
+    pub fn with_substitutions(mut self, vars: &[(String, String)]) -> Self {
+        let substitute = |text: &mut String| {
+            for (name, value) in vars {
+                let placeholder = format!("${{{name}}}");
+                if text.contains(&placeholder) {
+                    *text = text.replace(&placeholder, value);
+                }
+            }
+        };
+        for group in self.hooks.values_mut().flatten() {
+            for handler in &mut group.hooks {
+                if let Some(command) = handler.command.as_mut() {
+                    substitute(command);
+                }
+                for arg in handler.args.iter_mut().flatten() {
+                    substitute(arg);
+                }
+            }
         }
         self
     }
@@ -316,7 +351,8 @@ impl HookHandler {
                  skipped rather than run unscoped"
             ));
         }
-        if self.shell.as_deref() == Some("powershell") {
+        // `shell` is ignored in the exec form, which runs no shell of its own.
+        if self.args.is_none() && self.shell.as_deref() == Some("powershell") {
             return Err("handler asks for powershell — skipped (hooks run under sh)".to_string());
         }
         let command = self
@@ -325,8 +361,16 @@ impl HookHandler {
             .map(str::trim)
             .filter(|c| !c.is_empty())
             .ok_or_else(|| "command handler has no command — skipped".to_string())?;
+        let command = match &self.args {
+            Some(args) => std::iter::once(command)
+                .chain(args.iter().map(String::as_str))
+                .map(exec_word)
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => command.to_string(),
+        };
         Ok(CommandHook {
-            command: command.to_string(),
+            command,
             timeout_secs: self
                 .timeout
                 .filter(|t| *t > 0)
@@ -336,6 +380,57 @@ impl HookHandler {
             env: Vec::new(),
         })
     }
+}
+
+/// The path placeholders an exec-form argument may hold — each still the
+/// directory it names, read from the variable the runner exports under the
+/// same name.
+const PATH_PLACEHOLDERS: &[&str] = &[
+    "CLAUDE_PROJECT_DIR",
+    "ALTER_ZERO_PROJECT_DIR",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
+    "PLUGIN_ROOT",
+    "PLUGIN_DATA",
+];
+
+/// One exec-form word as `sh -c` must be handed it to read it back exactly:
+/// the text single-quoted, a path placeholder spliced in as the variable
+/// it names, double-quoted — `${CLAUDE_PROJECT_DIR}/x` is
+/// `"$CLAUDE_PROJECT_DIR"'/x'` — and an empty word `''`.
+fn exec_word(text: &str) -> String {
+    fn literal(out: &mut String, text: &str) {
+        if !text.is_empty() {
+            out.push('\'');
+            out.push_str(&text.replace('\'', "'\\''"));
+            out.push('\'');
+        }
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let name = after
+            .find('}')
+            .map(|end| &after[..end])
+            .filter(|name| PATH_PLACEHOLDERS.contains(name));
+        match name {
+            Some(name) => {
+                literal(&mut out, &rest[..start]);
+                out.push_str(&format!("\"${name}\""));
+                rest = &after[name.len() + 1..];
+            }
+            None => {
+                literal(&mut out, &rest[..start + 2]);
+                rest = after;
+            }
+        }
+    }
+    literal(&mut out, rest);
+    if out.is_empty() {
+        out.push_str("''");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -660,6 +755,30 @@ mod tests {
             selection.warnings[0].contains("powershell"),
             "{:?}",
             selection.warnings
+        );
+    }
+
+    #[test]
+    fn an_exec_form_handler_runs_each_argument_exactly_as_written() {
+        // Claude Code's exec form (`command` + `args`): no shell reads the
+        // arguments, so each is one word whatever it holds — quoted for the
+        // `sh -c` every hook runs under — while a path placeholder is still
+        // the directory it names.
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node",
+                "args":["${CLAUDE_PROJECT_DIR}/hooks/check.js","it's $HOME","","--x"]}]}]}}"#,
+        );
+        assert_eq!(
+            file.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some(r#"'node' "$CLAUDE_PROJECT_DIR"'/hooks/check.js' 'it'\''s $HOME' '' '--x'"#)
+        );
+        // An empty argument list is still the exec form: the program alone.
+        let bare = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./fmt","args":[]}]}]}}"#,
+        );
+        assert_eq!(
+            bare.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some("'./fmt'")
         );
     }
 

@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use alter_zero::app::{PluginDone, PluginOp, ToastKind};
+use alter_zero::app::{PLUGINS_JOB_DELAY, PluginDone, PluginOp, ToastKind};
 use alter_zero::llm::mcp::McpHold;
 use alter_zero::mcp::{McpScope, McpServerEntry};
 use alter_zero::plugins::{
     LoadedPlugins, PluginCatalog, PluginStore, build_catalog, load_enabled,
-    parse_marketplace_source,
+    parse_marketplace_source, with_project_dir,
 };
 use alter_zero::stream::CancelToken;
 
@@ -47,6 +47,11 @@ pub(crate) struct PluginResult {
 /// no other event.
 const PLUGIN_JOB_TICK: Duration = Duration::from_secs(1);
 
+/// The round a catalog read with no page open is asked under — below every
+/// page's, so the page never takes it as its own answer and a page's newer
+/// read is never replaced by it.
+const PREFETCH_ROUND: u64 = 0;
+
 /// The plugins on in `project`, read from `store` — none when there is no
 /// store or `ALTER_ZERO_PLUGINS` turned them off for the run.
 pub(crate) fn load_plugins(store: Option<&PluginStore>, project: &Path) -> LoadedPlugins {
@@ -65,6 +70,7 @@ pub(crate) fn load_plugins(store: Option<&PluginStore>, project: &Path) -> Loade
 pub(crate) fn plugin_mcp_entries(
     trust: &TrustState,
     loaded: &LoadedPlugins,
+    project: &Path,
 ) -> (Vec<McpServerEntry>, BTreeMap<String, McpHold>) {
     let reviews = trust.server_reviews();
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
@@ -85,9 +91,17 @@ pub(crate) fn plugin_mcp_entries(
                 held.insert(name.clone(), McpHold::Review);
             }
         }
+        // `${CLAUDE_PROJECT_DIR}` is the session's directory (Claude Code's
+        // rule) — never in an Agent Plugin's entry, which expands nothing
+        // but its two plugin variables.
+        let config = if server.server.literal {
+            server.server.config
+        } else {
+            with_project_dir(server.server.config, project)
+        };
         entries.push(McpServerEntry {
             name,
-            config: server.server.config,
+            config,
             scope: McpScope::Plugin,
             config_path: alter_zero::ui::display_cwd(&server.source, home.as_deref()),
             literal: server.server.literal,
@@ -248,6 +262,26 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
+    /// Read the catalog with no page open, so the first `/plugins` opens on
+    /// it at once (`App::keep_plugin_catalog`). Nothing is cancelled: a
+    /// page's own job is never this one.
+    pub(crate) fn prefetch_plugin_catalog(&mut self) {
+        let Some(store) = self.plugin_store.clone() else {
+            return;
+        };
+        let tx = self.plugin_tx.clone();
+        let project = self.cwd.clone();
+        std::thread::spawn(move || {
+            let catalog = build_catalog(&store, &project.display().to_string());
+            let _ = tx.send(PluginResult {
+                round: PREFETCH_ROUND,
+                catalog: Some(catalog),
+                outcome: Ok(PluginDone::default()),
+                reload: false,
+            });
+        });
+    }
+
     /// Stop the job running — Esc on the page, the page closing, the app
     /// quitting. A clone or a fetch is killed; the worker still answers, so
     /// an open page learns its job ended.
@@ -258,9 +292,10 @@ impl Session<'_> {
     }
 
     /// A job answered: hand it to the page — which takes it only while it is
-    /// still the job the page waits on — say what happened, and take any
-    /// change into the session. A failure the page did not take (it closed)
-    /// is a toast instead.
+    /// still the job the page waits on, and says what happened in its own
+    /// status row — and take any change into the session. What a page that
+    /// has closed did not take is a toast instead: never one over the page,
+    /// which would move it (docs/plugins.md *No flicker*).
     pub(crate) fn on_plugin_result(&mut self, result: PluginResult) {
         let PluginResult {
             round,
@@ -268,21 +303,24 @@ impl Session<'_> {
             outcome,
             reload,
         } = result;
-        if self
-            .app
-            .plugins_job_round()
-            .is_none_or(|current| current == round)
+        if round != PREFETCH_ROUND
+            && self
+                .app
+                .plugins_job_round()
+                .is_none_or(|current| current == round)
         {
             self.plugin_cancel = None;
             self.plugin_job_started = None;
         }
         let taken = self.app.finish_plugin_job(round, catalog, &outcome);
-        match &outcome {
-            Ok(done) if !done.message.is_empty() => {
-                self.toast(done.message.clone(), ToastKind::Info);
+        if !taken && round != PREFETCH_ROUND {
+            match &outcome {
+                Ok(done) if !done.message.is_empty() => {
+                    self.toast(done.message.clone(), ToastKind::Info);
+                }
+                Err(error) => self.toast(error.clone(), ToastKind::Error),
+                _ => {}
             }
-            Err(error) if !taken => self.toast(error.clone(), ToastKind::Error),
-            _ => {}
         }
         if reload {
             self.reload_plugins();
@@ -291,18 +329,24 @@ impl Session<'_> {
     }
 
     /// The page's clocks, every draw: how long its job has run, and the wall
-    /// clock its ages count from — and, while a job runs, a frame a second
-    /// so the count moves on a page nothing else redraws.
+    /// clock its ages count from — and, while a job runs, a frame the moment
+    /// it has run long enough to be said (`PLUGINS_JOB_DELAY`), then one a
+    /// second so the count moves on a page nothing else redraws.
     pub(crate) fn tick_plugins_page(&mut self) {
         if self.app.plugins_menu.is_none() {
             return;
         }
-        let secs = self
+        let elapsed = self
             .plugin_job_started
-            .map_or(0, |start| start.elapsed().as_secs());
-        self.app.set_plugins_clock(secs, host::unix_secs_signed());
+            .map_or(Duration::ZERO, |start| start.elapsed());
+        self.app
+            .set_plugins_clock(elapsed, host::unix_secs_signed());
         if self.app.plugins_job_round().is_some() && !self.app.view.is_overlay() {
-            self.frame.schedule_frame_in(PLUGIN_JOB_TICK);
+            let next = PLUGINS_JOB_DELAY
+                .checked_sub(elapsed)
+                .filter(|wait| !wait.is_zero())
+                .unwrap_or(PLUGIN_JOB_TICK);
+            self.frame.schedule_frame_in(next);
         }
     }
 
@@ -338,10 +382,14 @@ impl Session<'_> {
         let servers_before: std::collections::BTreeSet<String> =
             self.mcp.awaiting_review().into_iter().collect();
         self.plugins = load_plugins(self.plugin_store.as_ref(), &self.cwd);
-        self.report_plugin_errors();
+        // An open page says it on the plugin's own row (`✘ not loaded`): a
+        // toast over the page would move it.
+        if self.app.plugins_menu.is_none() {
+            self.report_plugin_errors();
+        }
         self.trust.set_plugins(&self.plugins);
         self.models.set_hooks_file(self.trust.runner_hooks());
-        let (entries, held) = plugin_mcp_entries(&self.trust, &self.plugins);
+        let (entries, held) = plugin_mcp_entries(&self.trust, &self.plugins, &self.cwd);
         let refused = self.mcp.set_plugin_servers(entries, held);
         for name in refused {
             self.toast(

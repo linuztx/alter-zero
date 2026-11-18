@@ -940,13 +940,10 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
-    // The `/plugins` list's search line and its add page's field are typed
-    // into; its detail pages are menus (`docs/plugins.md`).
+    // The `/plugins` list's search line — the add tab's field too — is
+    // typed into; its other pages are menus (`docs/plugins.md`).
     if let Some(menu) = &app.plugins_menu {
-        return matches!(
-            menu.page,
-            crate::app::PluginsPage::List | crate::app::PluginsPage::Add
-        );
+        return menu.page == crate::app::PluginsPage::List;
     }
     // The `/secrets` list is a menu; its form is typed into
     // (`docs/secrets.md`).

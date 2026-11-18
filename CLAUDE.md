@@ -3302,18 +3302,35 @@ Claude Code's default locations (`skills/`, `commands/**.md`, `agents/**.md`,
 `hooks/hooks.json`, `.mcp.json`) and `${CLAUDE_PLUGIN_ROOT}`/`DATA`. A
 catalog is `.agents/plugins/marketplace.json` (codex) or
 `.claude-plugin/marketplace.json`, and a plugin directory with neither is a
-marketplace of one; an entry's source is a relative path, `github`, `url` or
-`git-subdir` (a sparse, shallow fetch of one commit — `plugins::git`, run
-detached with no prompt and a cancel), never `npm`/archives/commands. What a
+marketplace of one — its name a plain one, since it becomes a directory (a
+manifest naming itself `../../.ssh` is refused before any path is made), a
+nameless one named after its repository; the names Claude Code and codex
+reserve for their own catalogs come only from `github.com/anthropics/` and
+`github.com/openai/` (`marketplace::check_reserved`); an entry's source is a
+relative path, `github`, `url` or `git-subdir` (a sparse, shallow fetch of
+one commit — `plugins::git`, run detached with no prompt and a cancel, its
+`ref`/`sha` read as a branch, tag or commit and never as an option), never
+`npm`/archives/commands. A plugin of a marketplace **kept in a directory
+loads in place** (Claude Code's rule — no copy, no update; the registry
+records its folder, which an uninstall never touches); a git marketplace's
+plugins are copied under `installed/`. What a
 plugin adds keeps its plugin's name: skills and **commands, which become
 skills,** are `{plugin}:{name}` (so `validate`/the `$` mention grammar let
 `:` and `.` join a name, and `LoadedSkills` keys on the file), agents
 `{plugin}:{name}` with their `tools:` translated (`plugins::agents`) and their
 `model:` ignored, hooks a **third trust layer** after the user's and the
-project's (`TrustState::set_plugins` → `hook_layers`, each handler handed its
-`CLAUDE_PLUGIN_ROOT`/`PLUGIN_ROOT`/`…_DATA` through `HooksFile::with_env`), and
-MCP servers their own `McpScope::Plugin`, held for the review like a
-project's and switched live (`McpManager::set_plugin_servers`) — **nothing that
+project's (`TrustState::set_plugins` → `hook_layers`, their plugin's
+directories **substituted into the command** — Claude Code's rule, so the
+review shows what runs and two plugins' `${CLAUDE_PLUGIN_ROOT}/hooks/run.sh`
+stay two hooks, `HooksFile::with_substitutions` — and exported too,
+`HooksFile::with_env`; Claude Code's exec form, `command` + `args`, runs each
+argument as one word), and MCP servers their own `McpScope::Plugin` **under
+Claude Code's scoped name**, `plugin:{plugin}:{server}`, whose tools are
+`mcp__plugin_{plugin}_{server}__{tool}` (`plugins::plugin_server_name` — a
+plugin's hook matcher or agent `tools:` written for Claude Code finds them,
+and no plugin's server takes another's name), held for the review like a
+project's and switched live (`McpManager::set_plugin_servers`); of two
+enabled plugins of one name only the first in id order loads — **nothing that
 runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,
 `marketplace`, `source`, `registry` — `plugins.json`, never written over when
@@ -3321,12 +3338,20 @@ it will not parse — `layout`, `components`, `mcp`, `agents`, `git`, `store`,
 `catalog` with `build_catalog` and `load_enabled`), everything kept under
 `{config_home}/plugins/` (`ALTER_ZERO_PLUGINS_DIR` moves it; plugins are **on
 per directory** until one turns them off, `skills.json`'s shape). The page
-(`app::PluginsMenu`, `ui::plugins_view`) is a search-line picker under the ask
-modal's chip strip of tabs — *Installed*, *Discover*, *Marketplaces* — with
-the picker ladder on a short terminal, a `/mcp`-style page per plugin and per
-marketplace, a confirmation before anything is deleted, and one field to add a
-marketplace; every operation is a typed `PluginOp` run on one worker under a
-round (`/usage`'s rule, `tui::plugins`), the answer carrying a fresh catalog,
+(`app::PluginsMenu`, `ui::plugins_view`) is codex's `/plugins`: a search-line
+picker under the ask modal's chip strip of tabs — *All*, *Installed*, **one
+per marketplace** (its header its source, age and skipped entries; Ctrl+U
+updates a git one, Ctrl+R removes it) and **+ Add**, whose field is the search
+line and whose rows are Claude Code's and codex's official catalogs
+(`plugins::SUGGESTED_MARKETPLACES`) — with the picker ladder on a short
+terminal, a `/mcp`-style page per plugin, and a confirmation before anything
+is deleted; **acting on it never moves it** (`docs/plugins.md` *No flicker*:
+a job and its result are said in the hint's own row — the job only once it
+has run `PLUGINS_JOB_DELAY`, the result until the next key — no toast goes
+over the open page, and a reopened page shows the catalog the session kept,
+read behind the first frame); every operation is a typed `PluginOp` run on
+one worker under a round (`/usage`'s rule, `tui::plugins`), the answer
+carrying a fresh catalog,
 and anything that changed what is installed or on is taken into the running
 session by `Session::reload_plugins` (hooks rebound, servers set, skills and
 agents re-listed — the per-turn rescans append the plugins' to the roots').

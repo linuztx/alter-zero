@@ -158,7 +158,7 @@ pub use self::status::{
 };
 pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
-pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
+pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT, REVIEW_PLUGIN_SCOPE};
 pub use self::theme_view::{render_theme_picker, theme_picker_height};
 pub use self::tips::{tip_lines, tip_rows};
 pub use self::tool::{held_run_len, resolved_tools_commit_lines, tool_commit_lines, tool_lines};

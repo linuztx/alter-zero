@@ -113,7 +113,7 @@ pub(crate) fn load_mcp_sources(
     // The enabled plugins' servers (`docs/plugins.md`), after every
     // configured one — a name the user or the project already uses stays
     // theirs — each held until the review has passed it.
-    let (plugin_entries, plugin_held) = super::plugins::plugin_mcp_entries(trust, plugins);
+    let (plugin_entries, plugin_held) = super::plugins::plugin_mcp_entries(trust, plugins, cwd);
     for entry in plugin_entries {
         if entries.iter().any(|taken| taken.name == entry.name) {
             errors.push(format!(

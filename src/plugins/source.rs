@@ -88,3 +88,30 @@ pub fn parse_marketplace_source(
     )?;
     Ok(MarketplaceSource::Git { url, ref_name })
 }
+
+/// A marketplace `/plugins` offers on its add tab, so nobody types its
+/// source to get it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarketplaceSuggestion {
+    /// What adding it fetches — the text the add field takes.
+    pub source: &'static str,
+    /// The name its catalog gives, which tells whether it is added.
+    pub name: &'static str,
+    /// What it is, in a few words.
+    pub description: &'static str,
+}
+
+/// The official catalogs of the two clients whose plugin formats this app
+/// reads: Claude Code's and codex's.
+pub const SUGGESTED_MARKETPLACES: [MarketplaceSuggestion; 2] = [
+    MarketplaceSuggestion {
+        source: "anthropics/claude-plugins-official",
+        name: "claude-plugins-official",
+        description: "Claude Code's official plugin directory",
+    },
+    MarketplaceSuggestion {
+        source: "openai/plugins",
+        name: "openai-curated",
+        description: "codex's curated plugins",
+    },
+];

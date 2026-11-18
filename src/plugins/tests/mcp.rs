@@ -512,3 +512,33 @@ fn later_declarations_replace_earlier_ones_by_name() {
         .collect();
     assert_eq!(lines, ["a=one", "b=three", "c=four"]);
 }
+
+#[test]
+fn a_plugin_servers_tools_are_named_as_claude_code_names_them() {
+    // `mcp__plugin_<plugin-name>_<server-name>__<tool-name>`, Claude Code's
+    // own example.
+    assert_eq!(
+        crate::mcp::tool_wire_name(&plugin_server_name("my-plugin", "database-tools"), "query"),
+        "mcp__plugin_my-plugin_database-tools__query"
+    );
+    assert_eq!(plugin_server_name("hello", "echo"), "plugin:hello:echo");
+}
+
+#[test]
+fn the_project_directory_is_substituted_into_a_plugin_servers_config() {
+    let stdio = McpServerConfig::Stdio {
+        command: "${CLAUDE_PROJECT_DIR}/bin/db".to_string(),
+        args: vec!["--root".to_string(), "${CLAUDE_PROJECT_DIR}".to_string()],
+        env: [("DB".to_string(), "${CLAUDE_PROJECT_DIR}/db".to_string())].into(),
+        cwd: None,
+    };
+    assert_eq!(
+        with_project_dir(stdio, std::path::Path::new("/work/api")),
+        McpServerConfig::Stdio {
+            command: "/work/api/bin/db".to_string(),
+            args: vec!["--root".to_string(), "/work/api".to_string()],
+            env: [("DB".to_string(), "/work/api/db".to_string())].into(),
+            cwd: None,
+        }
+    );
+}

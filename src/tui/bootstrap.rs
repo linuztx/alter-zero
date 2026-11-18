@@ -715,6 +715,10 @@ impl<'t> Session<'t> {
         // the banner (before a [PROMPT]'s bubble below), and the send goes to
         // a detached thread. Nothing here can fail the boot.
         session.start_telemetry();
+        // The `/plugins` catalog, read behind the first frame so the page
+        // opens on it at once — at its own height, with no placeholder for
+        // the rows to push away (docs/plugins.md *No flicker*).
+        session.prefetch_plugin_catalog();
         // The day's update check (docs/update.md), the same posture: after
         // the first frame, a known newer release announced under the banner
         // at once, the request itself on a detached thread.

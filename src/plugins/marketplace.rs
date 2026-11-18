@@ -301,9 +301,20 @@ fn parse_entry(raw: &str, plugin_root: Option<&str>) -> Result<MarketplaceEntry,
 /// one entry, named after the plugin, whose source is the directory itself.
 /// How a plugin's own repository — the only way an Agent Plugin is
 /// published — is something a user can add.
-#[must_use]
-pub fn single_plugin_marketplace(manifest: &PluginManifest) -> Marketplace {
-    Marketplace {
+///
+/// # Errors
+/// A manifest name that cannot name a marketplace directory.
+pub fn single_plugin_marketplace(manifest: &PluginManifest) -> Result<Marketplace, String> {
+    // The marketplace's name becomes a directory under the plugins tree, and
+    // a lenient manifest's name is whatever its file says: one that is no
+    // plain name (`../../.ssh`) is refused before any path is made of it.
+    validate_name(&manifest.name).map_err(|reason| {
+        format!(
+            "the plugin's name `{}` cannot name a marketplace: {reason}",
+            manifest.name
+        )
+    })?;
+    Ok(Marketplace {
         name: manifest.name.clone(),
         description: manifest.description.clone(),
         owner: manifest.author.clone(),
@@ -322,7 +333,118 @@ pub fn single_plugin_marketplace(manifest: &PluginManifest) -> Marketplace {
             manifest_fields: None,
         }],
         notes: Vec::new(),
+    })
+}
+
+/// The names Claude Code reserves for Anthropic's own marketplaces —
+/// official, community and directory — taken only by a catalog fetched from
+/// `github.com/anthropics/`.
+pub const ANTHROPIC_RESERVED: &[&str] = &[
+    "claude-code-marketplace",
+    "claude-code-plugins",
+    "claude-plugins-official",
+    "anthropic-marketplace",
+    "anthropic-plugins",
+    "agent-skills",
+    "anthropic-agent-skills",
+    "life-sciences",
+    "knowledge-work-plugins",
+    "claude-for-legal",
+    "claude-for-financial-services",
+    "financial-services-plugins",
+    "first-party-plugins",
+    "claude-tag-plugins",
+    "claude-community",
+    "claude-plugins-community",
+    "healthcare",
+    "anthropic-plugin-directory",
+    "claude-plugin-directory",
+];
+
+/// The names Codex reserves for OpenAI's own marketplaces, taken only by a
+/// catalog fetched from `github.com/openai/`.
+pub const OPENAI_RESERVED: &[&str] = &[
+    "openai-curated",
+    "openai-api-curated",
+    "openai-bundled",
+    "openai-bundled-alpha",
+    "openai-primary-runtime",
+];
+
+/// A name as the reserved lists compare it: lowercased, a trailing `.`
+/// dropped and every other `.` a `-` — so `claude.plugins.official.` is
+/// another spelling of `claude-plugins-official` (Claude Code's rule).
+fn reserved_spelling(name: &str) -> String {
+    name.trim_end_matches('.')
+        .chars()
+        .map(|c| {
+            if c == '.' {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// The GitHub owner a git URL is fetched from, lowercased — `None` for a
+/// URL on another host or a directory.
+fn github_owner(url: &str) -> Option<String> {
+    let rest = [
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+    ]
+    .iter()
+    .find_map(|prefix| url.strip_prefix(prefix))
+    .or_else(|| url.strip_prefix("git@github.com:"))?;
+    let owner = rest.split('/').next()?;
+    (!owner.is_empty()).then(|| owner.to_ascii_lowercase())
+}
+
+/// May a marketplace from `source` be called `name`? A name Claude Code or
+/// Codex reserves for its own vendor's marketplaces — or another spelling of
+/// one — only when the catalog is fetched from that vendor's GitHub
+/// organisation: no other catalog can pass for the official one.
+///
+/// # Errors
+/// The reserved name, and where it may come from.
+pub fn check_reserved(
+    name: &str,
+    source: &super::registry::MarketplaceSource,
+) -> Result<(), String> {
+    let spelled = reserved_spelling(name);
+    let (reserved, owner) = if let Some(reserved) = ANTHROPIC_RESERVED
+        .iter()
+        .find(|reserved| **reserved == spelled)
+    {
+        (*reserved, "anthropics")
+    } else if let Some(reserved) = OPENAI_RESERVED
+        .iter()
+        .find(|reserved| **reserved == spelled)
+    {
+        (*reserved, "openai")
+    } else {
+        return Ok(());
+    };
+    let from_owner = match source {
+        super::registry::MarketplaceSource::Git { url, .. } => {
+            github_owner(url).as_deref() == Some(owner)
+        }
+        super::registry::MarketplaceSource::Local { .. } => false,
+    };
+    if from_owner {
+        return Ok(());
     }
+    let respelled = if reserved == name {
+        String::new()
+    } else {
+        format!(" (another spelling of `{reserved}`)")
+    };
+    Err(format!(
+        "`{name}`{respelled} is a reserved marketplace name — it can only come from \
+         github.com/{owner}/"
+    ))
 }
 
 /// A relative path as clean `/`-joined components — no `.`, no empty part —

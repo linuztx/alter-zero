@@ -88,6 +88,22 @@ impl Fixture {
             .unwrap()
     }
 
+    /// Commit `dir` and add it as a git marketplace — whose plugins are
+    /// copied into the tree, where a directory's load in place.
+    fn add_git(&self, dir: &Path) -> AddedMarketplace {
+        commit(dir, "marketplace");
+        self.store
+            .add_marketplace(
+                &MarketplaceSource::Git {
+                    url: dir.display().to_string(),
+                    ref_name: None,
+                },
+                &self.cancel,
+                100,
+            )
+            .unwrap()
+    }
+
     fn install(&self, key: &str) -> Result<InstalledPlugin, String> {
         self.store
             .install(&PluginId::parse(key).unwrap(), &self.cancel, 200)
@@ -203,7 +219,7 @@ fn a_directory_that_is_no_marketplace_is_refused() {
 #[test]
 fn installing_copies_the_plugin_and_records_it() {
     let fixture = Fixture::new();
-    fixture.add_local(&team_marketplace(&fixture));
+    fixture.add_git(&team_marketplace(&fixture));
     let installed = fixture.install("formatter@team").unwrap();
     assert!(!installed.replaced);
     let id = PluginId::parse("formatter@team").unwrap();
@@ -235,7 +251,7 @@ fn installing_copies_the_plugin_and_records_it() {
 #[test]
 fn a_plugin_with_no_manifest_keeps_its_entry_as_one() {
     let fixture = Fixture::new();
-    fixture.add_local(&team_marketplace(&fixture));
+    fixture.add_git(&team_marketplace(&fixture));
     let installed = fixture.install("bare@team").unwrap();
     let manifest = &installed.package.manifest;
     assert_eq!(manifest.name, "bare");
@@ -319,12 +335,9 @@ fn a_link_out_of_the_plugin_is_not_copied() {
     let secret = fixture.dir("secret");
     write(&secret, "key", "do not copy");
     std::os::unix::fs::symlink(secret.join("key"), market.join("plugins/formatter/leak")).unwrap();
-    std::os::unix::fs::symlink(
-        market.join("plugins/formatter/skills"),
-        market.join("plugins/formatter/skills-alias"),
-    )
-    .unwrap();
-    fixture.add_local(&market);
+    // A relative link, as a repository holds one.
+    std::os::unix::fs::symlink("skills", market.join("plugins/formatter/skills-alias")).unwrap();
+    fixture.add_git(&market);
     let installed = fixture.install("formatter@team").unwrap();
     let dest = &installed.package.root;
     assert!(!dest.join("leak").exists());
@@ -337,22 +350,23 @@ fn a_link_out_of_the_plugin_is_not_copied() {
 fn an_update_replaces_the_copy_and_keeps_the_data() {
     let fixture = Fixture::new();
     let market = team_marketplace(&fixture);
-    fixture.add_local(&market);
+    fixture.add_git(&market);
     fixture.install("formatter@team").unwrap();
     let id = PluginId::parse("formatter@team").unwrap();
     write(&fixture.store.layout.data_dir(&id), "cache.db", "state");
-    let registry = fixture.store.registry().unwrap();
-    let catalog = read_catalog(&market).unwrap();
-    let entry = catalog
-        .plugins
-        .iter()
-        .find(|e| e.name == "formatter")
-        .unwrap();
-    assert!(!update_available(
-        &registry.plugins["formatter@team"],
-        entry,
-        &market
-    ));
+    let checkout = fixture.store.layout.marketplace_dir("team");
+    let offered = |fixture: &Fixture| {
+        let registry = fixture.store.registry().unwrap();
+        let catalog = read_catalog(&checkout).unwrap();
+        let entry = catalog
+            .plugins
+            .iter()
+            .find(|e| e.name == "formatter")
+            .unwrap()
+            .clone();
+        update_available(&registry.plugins["formatter@team"], &entry, &checkout)
+    };
+    assert!(!offered(&fixture));
 
     // The marketplace's copy changes without a version bump.
     write(
@@ -360,11 +374,12 @@ fn an_update_replaces_the_copy_and_keeps_the_data() {
         "plugins/formatter/skills/lint/SKILL.md",
         &skill_md("lint"),
     );
-    assert!(update_available(
-        &registry.plugins["formatter@team"],
-        entry,
-        &market
-    ));
+    commit(&market, "lint");
+    fixture
+        .store
+        .update_marketplace("team", &fixture.cancel, 300)
+        .unwrap();
+    assert!(offered(&fixture));
     let updated = fixture.install("formatter@team").unwrap();
     assert!(updated.replaced);
     let names: Vec<&str> = updated
@@ -403,7 +418,7 @@ fn a_plugin_is_turned_off_for_one_directory() {
 #[test]
 fn uninstalling_removes_the_copy_and_its_data() {
     let fixture = Fixture::new();
-    fixture.add_local(&team_marketplace(&fixture));
+    fixture.add_git(&team_marketplace(&fixture));
     fixture.install("formatter@team").unwrap();
     let id = PluginId::parse("formatter@team").unwrap();
     fixture.store.uninstall(&id).unwrap();
@@ -426,10 +441,10 @@ fn uninstalling_removes_the_copy_and_its_data() {
 }
 
 #[test]
-fn removing_a_marketplace_uninstalls_its_plugins_and_leaves_a_directory_alone() {
+fn removing_a_git_marketplace_uninstalls_its_plugins_and_its_checkout() {
     let fixture = Fixture::new();
     let market = team_marketplace(&fixture);
-    fixture.add_local(&market);
+    fixture.add_git(&market);
     fixture.install("formatter@team").unwrap();
     fixture.install("bare@team").unwrap();
     let removed = fixture.store.remove_marketplace("team").unwrap();
@@ -437,9 +452,10 @@ fn removing_a_marketplace_uninstalls_its_plugins_and_leaves_a_directory_alone() 
     let registry = fixture.store.registry().unwrap();
     assert!(registry.marketplaces.is_empty() && registry.plugins.is_empty());
     assert!(!fixture.store.layout.installed_root().join("team").exists());
+    assert!(!fixture.store.layout.marketplace_dir("team").exists());
     assert!(
         market.join(".claude-plugin/marketplace.json").is_file(),
-        "the user's directory stays"
+        "the repository it was fetched from stays"
     );
     assert!(fixture.store.remove_marketplace("team").is_err());
 }
@@ -677,4 +693,278 @@ fn a_tree_digest_follows_names_and_bytes() {
         tree_digest(&dir).unwrap(),
         "`.git` is not the plugin's"
     );
+}
+
+// ===== names that become paths =====
+
+#[test]
+fn a_plugin_repository_whose_name_climbs_out_of_the_tree_is_refused_and_touches_nothing() {
+    let fixture = Fixture::new();
+    // `config/plugins/marketplaces/../../../victim` is `{base}/victim`.
+    let victim = fixture.dir("victim");
+    write(&victim, "important.txt", "precious");
+    let repo = fixture.dir("evil-plugin");
+    write(
+        &repo,
+        ".claude-plugin/plugin.json",
+        r#"{"name":"../../../victim"}"#,
+    );
+    write(&repo, "config", "ProxyCommand attacker");
+    write(&repo, "skills/x/SKILL.md", &skill_md("x"));
+    commit(&repo, "init");
+    let source = MarketplaceSource::Git {
+        url: repo.display().to_string(),
+        ref_name: None,
+    };
+    let error = fixture
+        .store
+        .add_marketplace(&source, &fixture.cancel, 1)
+        .unwrap_err();
+    assert!(error.contains("../../../victim"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(victim.join("important.txt")).unwrap(),
+        "precious",
+        "the directory the name pointed at is untouched"
+    );
+    assert!(!victim.join("config").exists());
+    assert!(fixture.store.registry().unwrap().marketplaces.is_empty());
+}
+
+#[test]
+fn a_nameless_plugin_repository_is_named_after_its_repository_and_updates() {
+    let fixture = Fixture::new();
+    let repo = fixture.dir("my-tool.git");
+    write(
+        &repo,
+        ".claude-plugin/plugin.json",
+        r#"{"version":"1.0.0"}"#,
+    );
+    write(&repo, "skills/hello/SKILL.md", &skill_md("hello"));
+    commit(&repo, "init");
+    let source = MarketplaceSource::Git {
+        url: repo.display().to_string(),
+        ref_name: None,
+    };
+    let added = fixture
+        .store
+        .add_marketplace(&source, &fixture.cancel, 1)
+        .unwrap();
+    assert_eq!(
+        added.name, "my-tool",
+        "named after the repository, never `checkout`"
+    );
+    write(&repo, "skills/bye/SKILL.md", &skill_md("bye"));
+    commit(&repo, "more");
+    let updated = fixture
+        .store
+        .update_marketplace("my-tool", &fixture.cancel, 2)
+        .unwrap();
+    assert!(updated.changed);
+}
+
+#[test]
+fn a_checkout_is_named_after_its_repository() {
+    for (url, name) in [
+        ("https://github.com/acme/tools.git", "tools"),
+        ("https://github.com/acme/tools/", "tools"),
+        ("git@github.com:acme/team-plugins.git", "team-plugins"),
+        ("/srv/repos/My Plugins.git", "My-Plugins"),
+        ("https://example.com/", "example.com"),
+        ("..", "marketplace"),
+        ("", "marketplace"),
+    ] {
+        assert_eq!(repository_name(url), name, "{url}");
+    }
+}
+
+// ===== a directory's plugins load in place =====
+
+#[test]
+fn a_plugin_of_a_directory_marketplace_loads_in_place() {
+    // Claude Code's rule for a marketplace added from a local path: its
+    // plugins load from where they are, so an edit to the source is what
+    // the next session reads — no copy, no update to run.
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    fixture.add_local(&market);
+    let installed = fixture.install("formatter@team").unwrap();
+    let source = market.join("plugins/formatter").canonicalize().unwrap();
+    assert_eq!(installed.package.root, source);
+    let id = PluginId::parse("formatter@team").unwrap();
+    assert!(
+        !fixture.store.layout.installed_dir(&id).exists(),
+        "nothing is copied"
+    );
+    assert!(fixture.store.layout.data_dir(&id).is_dir());
+    let registry = fixture.store.registry().unwrap();
+    let record = &registry.plugins["formatter@team"];
+    assert_eq!(
+        record.root.as_deref(),
+        Some(source.display().to_string().as_str())
+    );
+    assert_eq!(record.version.as_deref(), Some("1.0.0"));
+
+    // The source changes: the store reads the change, and offers no update.
+    write(
+        &market,
+        "plugins/formatter/skills/lint/SKILL.md",
+        &skill_md("lint"),
+    );
+    let package = fixture.store.installed_package(&id).unwrap();
+    let names: Vec<&str> = package
+        .components
+        .skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, ["formatter:format", "formatter:lint"]);
+    let catalog = read_catalog(&market).unwrap();
+    let entry = catalog
+        .plugins
+        .iter()
+        .find(|e| e.name == "formatter")
+        .unwrap();
+    assert!(!update_available(record, entry, &market));
+
+    // Uninstalling forgets it and its data; the source is the user's.
+    fixture.store.uninstall(&id).unwrap();
+    assert!(source.join("skills/format/SKILL.md").is_file());
+    assert!(!fixture.store.layout.data_dir(&id).exists());
+    assert!(
+        !fixture
+            .store
+            .registry()
+            .unwrap()
+            .is_installed("formatter@team")
+    );
+}
+
+#[test]
+fn a_directory_plugin_with_no_manifest_loads_in_place_by_its_entry() {
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    fixture.add_local(&market);
+    let installed = fixture.install("bare@team").unwrap();
+    assert_eq!(installed.package.manifest.name, "bare");
+    assert_eq!(installed.package.manifest.version.as_deref(), Some("0.9.0"));
+    let id = PluginId::parse("bare@team").unwrap();
+    let package = fixture.store.installed_package(&id).unwrap();
+    let names: Vec<&str> = package
+        .components
+        .skills
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    assert_eq!(names, ["bare:hello"]);
+    // The source is never written to.
+    assert!(!market.join("plugins/bare/.claude-plugin").exists());
+}
+
+#[test]
+fn removing_a_directory_marketplace_forgets_its_plugins_and_leaves_their_files() {
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    fixture.add_local(&market);
+    fixture.install("formatter@team").unwrap();
+    fixture.install("bare@team").unwrap();
+    let removed = fixture.store.remove_marketplace("team").unwrap();
+    assert_eq!(removed, ["bare@team", "formatter@team"]);
+    let registry = fixture.store.registry().unwrap();
+    assert!(registry.marketplaces.is_empty() && registry.plugins.is_empty());
+    assert!(
+        market
+            .join("plugins/formatter/skills/format/SKILL.md")
+            .is_file()
+    );
+    assert!(market.join(".claude-plugin/marketplace.json").is_file());
+}
+
+#[test]
+fn a_directory_cannot_pass_for_the_official_marketplace() {
+    let fixture = Fixture::new();
+    let market = fixture.dir("fake-official");
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"claude-plugins-official","owner":{"name":"Not Anthropic"},"plugins":[]}"#,
+    );
+    let error = fixture
+        .store
+        .add_marketplace(
+            &MarketplaceSource::Local {
+                path: market.display().to_string(),
+            },
+            &fixture.cancel,
+            1,
+        )
+        .unwrap_err();
+    assert!(error.contains("reserved"), "{error}");
+    assert!(fixture.store.registry().unwrap().marketplaces.is_empty());
+}
+
+// ===== what counts as an update =====
+
+#[test]
+fn a_version_its_manifest_and_its_entry_disagree_on_is_no_update() {
+    // The entry says 0.9.0, the plugin's own manifest 1.0.0 (Claude Code's
+    // rule: the manifest wins). The copy installed is the copy on offer, so
+    // nothing is to update — not a badge that never goes away.
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"team","plugins":[
+            {"name":"formatter","source":"./plugins/formatter","version":"0.9.0"}]}"#,
+    );
+    fixture.add_git(&market);
+    fixture.install("formatter@team").unwrap();
+    let checkout = fixture.store.layout.marketplace_dir("team");
+    let registry = fixture.store.registry().unwrap();
+    let record = &registry.plugins["formatter@team"];
+    assert_eq!(record.version.as_deref(), Some("1.0.0"));
+    let catalog = read_catalog(&checkout).unwrap();
+    assert!(!update_available(record, &catalog.plugins[0], &checkout));
+}
+
+#[test]
+fn a_repository_sourced_plugin_is_an_update_when_its_entry_moves_on() {
+    // A plugin fetched from a repository of its own has no copy in the
+    // marketplace to compare: the entry's version is the signal — compared
+    // with the version the entry offered at install, never the manifest's.
+    let fixture = Fixture::new();
+    let plugin = fixture.dir("remote-plugin");
+    write(
+        &plugin,
+        ".claude-plugin/plugin.json",
+        r#"{"name":"remote","version":"2.0.1"}"#,
+    );
+    write(&plugin, "skills/r/SKILL.md", &skill_md("r"));
+    commit(&plugin, "init");
+    let market = fixture.dir("remote-market");
+    let listing = |version: &str| {
+        format!(
+            r#"{{"name":"remote-market","plugins":[{{"name":"remote","version":"{version}",
+                "source":{{"source":"url","url":"{}"}}}}]}}"#,
+            plugin.display()
+        )
+    };
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        &listing("2.0.0"),
+    );
+    fixture.add_local(&market);
+    fixture.install("remote@remote-market").unwrap();
+    let registry = fixture.store.registry().unwrap();
+    let record = &registry.plugins["remote@remote-market"];
+    assert_eq!(record.version.as_deref(), Some("2.0.1"), "the manifest's");
+    let offered = |market: &Path| read_catalog(market).unwrap().plugins[0].clone();
+    assert!(!update_available(record, &offered(&market), &market));
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        &listing("2.1.0"),
+    );
+    assert!(update_available(record, &offered(&market), &market));
 }

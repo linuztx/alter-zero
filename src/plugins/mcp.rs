@@ -59,6 +59,72 @@ impl PluginVars<'_> {
     }
 }
 
+/// The name a plugin's server is declared under — Claude Code's scoped
+/// name, the plugin's name then the server's key: `plugin:hello:echo`,
+/// whose tools are `mcp__plugin_hello_echo__{tool}` on the wire. A hook
+/// matcher or an agent's `tools:` written for Claude Code finds them, and
+/// no plugin's server can take the name of the user's own or another
+/// plugin's.
+#[must_use]
+pub fn plugin_server_name(plugin: &str, server: &str) -> String {
+    format!("plugin:{plugin}:{server}")
+}
+
+/// `config` with `${CLAUDE_PROJECT_DIR}` written as `project` wherever a
+/// launch reads it — a stdio server's command, arguments, environment and
+/// directory; a remote one's URL and headers — Claude Code's rule for a
+/// plugin's servers, which the session's own environment does not hold.
+#[must_use]
+pub fn with_project_dir(config: McpServerConfig, project: &std::path::Path) -> McpServerConfig {
+    const PLACEHOLDER: &str = "${CLAUDE_PROJECT_DIR}";
+    let dir = project.display().to_string();
+    let put = |text: String| {
+        if text.contains(PLACEHOLDER) {
+            text.replace(PLACEHOLDER, &dir)
+        } else {
+            text
+        }
+    };
+    let map = |map: BTreeMap<String, String>| -> BTreeMap<String, String> {
+        map.into_iter()
+            .map(|(key, value)| (key, put(value)))
+            .collect()
+    };
+    match config {
+        McpServerConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => McpServerConfig::Stdio {
+            command: put(command),
+            args: args.into_iter().map(put).collect(),
+            env: map(env),
+            cwd: cwd.map(put),
+        },
+        McpServerConfig::Http {
+            url,
+            headers,
+            sse_fallback,
+            oauth,
+        } => McpServerConfig::Http {
+            url: put(url),
+            headers: map(headers),
+            sse_fallback,
+            oauth,
+        },
+        McpServerConfig::Sse {
+            url,
+            headers,
+            oauth,
+        } => McpServerConfig::Sse {
+            url: put(url),
+            headers: map(headers),
+            oauth,
+        },
+    }
+}
+
 /// One server a plugin declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginServer {

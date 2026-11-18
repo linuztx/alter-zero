@@ -67,6 +67,16 @@ fn an_empty_file_is_an_empty_registry_and_a_broken_one_is_an_error() {
 }
 
 #[test]
+fn a_marketplace_name_that_is_no_directory_name_is_refused() {
+    // Every added marketplace's name becomes `plugins/marketplaces/{name}`:
+    // a hand-edited one that climbs out is refused, never followed.
+    let text =
+        r#"{"marketplaces": {"../../outside": {"source": {"kind": "local", "path": "/tmp"}}}}"#;
+    let error = Registry::parse(text).unwrap_err();
+    assert!(error.contains("../../outside"), "{error}");
+}
+
+#[test]
 fn a_plugin_is_on_in_every_directory_until_one_turns_it_off() {
     let mut registry = Registry::parse(SAMPLE).unwrap();
     let id = "hookify@claude-plugins-official";
@@ -148,6 +158,8 @@ fn a_change_is_made_over_the_file_as_it_is_now() {
                 revision: None,
                 installed_at: Some(7),
                 digest: None,
+                root: None,
+                offered: None,
             },
         );
     })

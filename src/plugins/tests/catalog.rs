@@ -140,7 +140,7 @@ fn an_installed_plugin_says_its_state_and_what_it_holds() {
     assert!(zeta.is_enabled());
     assert_eq!(zeta.format, Some(PluginFormat::ClaudeCode));
     let components = zeta.components.as_ref().unwrap();
-    assert_eq!(components.skills, ["notes"]);
+    assert_eq!(components.skills, ["zeta:notes"]);
     assert_eq!(components.hooks, ["Stop"]);
     assert!(components.runs_code());
 }
@@ -156,15 +156,15 @@ fn a_plugin_kept_in_its_marketplace_is_read_before_it_is_installed() {
         .unwrap();
     assert!(alpha.installed.is_none());
     let components = alpha.components.as_ref().unwrap();
-    assert_eq!(components.agents, ["helper"]);
-    assert_eq!(components.servers, ["alpha-db"]);
+    assert_eq!(components.agents, ["alpha:helper"]);
+    assert_eq!(components.servers, ["plugin:alpha:alpha-db"]);
     let beta = catalog
         .plugins
         .iter()
         .find(|p| p.id.name == "beta")
         .unwrap();
     assert_eq!(beta.title(), "Beta Tools");
-    assert_eq!(beta.components.as_ref().unwrap().commands, ["run"]);
+    assert_eq!(beta.components.as_ref().unwrap().commands, ["beta:run"]);
     let gone = catalog
         .plugins
         .iter()
@@ -204,7 +204,9 @@ fn a_plugin_read_before_it_is_installed_says_what_its_manifest_says() {
 }
 
 #[test]
-fn a_change_in_the_marketplace_is_an_update_and_a_directory_turns_one_off() {
+fn a_directory_plugin_is_always_current_and_a_directory_turns_one_off() {
+    // Loaded in place: a change to its folder is what is loaded, so it is
+    // never an update — its version is the one the folder says now.
     let fixture = fixture();
     install(&fixture, "zeta@team");
     let id = PluginId::parse("zeta@team").unwrap();
@@ -221,10 +223,11 @@ fn a_change_in_the_marketplace_is_an_update_and_a_directory_turns_one_off() {
     );
     let catalog = build_catalog(&fixture.store, "/project");
     let state = catalog.plugins[0].installed.as_ref().unwrap();
-    assert!(state.update);
+    assert!(!state.update);
+    assert!(state.in_place);
     assert!(!state.enabled);
     assert_eq!(catalog.plugins[0].version.as_deref(), Some("1.1.0"));
-    assert_eq!(state.version.as_deref(), Some("1.0.0"));
+    assert_eq!(state.version.as_deref(), Some("1.1.0"));
     assert!(build_catalog(&fixture.store, "/elsewhere").plugins[0].is_enabled());
 }
 
@@ -242,7 +245,7 @@ fn an_installed_plugin_its_marketplace_dropped_is_still_listed() {
     let zeta = &catalog.plugins[0];
     assert!(zeta.installed.is_some());
     assert!(zeta.unavailable.is_some());
-    assert_eq!(zeta.components.as_ref().unwrap().skills, ["notes"]);
+    assert_eq!(zeta.components.as_ref().unwrap().skills, ["zeta:notes"]);
 }
 
 #[test]
@@ -274,14 +277,16 @@ fn a_session_loads_the_plugins_it_has_on() {
     let servers = loaded.servers();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].plugin, "alpha@team");
-    assert_eq!(servers[0].server.name, "alpha-db");
-    let alpha_root = fixture
-        .store
-        .layout
-        .installed_dir(&PluginId::parse("alpha@team").unwrap());
+    assert_eq!(servers[0].server.name, "plugin:alpha:alpha-db");
+    // Loaded in place: its file is the one in the marketplace's folder.
     assert_eq!(
         servers[0].source,
-        alpha_root.canonicalize().unwrap().join(".mcp.json")
+        fixture
+            .market
+            .join("plugins/alpha")
+            .canonicalize()
+            .unwrap()
+            .join(".mcp.json")
     );
     assert!(
         fixture
@@ -300,21 +305,75 @@ fn a_session_loads_the_plugins_it_has_on() {
 }
 
 #[test]
-fn a_plugin_whose_copy_is_gone_is_an_error_not_a_crash() {
+fn a_plugin_whose_folder_is_gone_is_an_error_not_a_crash() {
     let fixture = fixture();
     install(&fixture, "zeta@team");
-    std::fs::remove_dir_all(
-        fixture
-            .store
-            .layout
-            .installed_dir(&PluginId::parse("zeta@team").unwrap()),
-    )
-    .unwrap();
+    std::fs::remove_dir_all(fixture.market.join("plugins/zeta")).unwrap();
     let loaded = load_enabled(&fixture.store, "/project");
     assert!(loaded.packages.is_empty());
     assert_eq!(loaded.errors.len(), 1);
     assert!(
         loaded.errors[0].starts_with("zeta@team:"),
+        "{:?}",
+        loaded.errors
+    );
+}
+
+#[test]
+fn a_second_enabled_plugin_of_one_name_is_not_loaded() {
+    // Everything a plugin adds is named after it — `hello:greet`,
+    // `plugin:hello:echo` — so two of one name would share every name: the
+    // first in id order loads, the other says why it did not.
+    let fixture = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let other = tmp.path().canonicalize().unwrap().join("other");
+    write(
+        &other,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"other","owner":{"name":"Other"},"plugins":[
+            {"name":"zeta","source":"./zeta"}]}"#,
+    );
+    write(
+        &other,
+        "zeta/.claude-plugin/plugin.json",
+        r#"{"name":"zeta"}"#,
+    );
+    write(
+        &other,
+        "zeta/skills/notes/SKILL.md",
+        "---\nname: notes\ndescription: Other notes.\n---\nNotes.",
+    );
+    fixture
+        .store
+        .add_marketplace(
+            &MarketplaceSource::Local {
+                path: other.display().to_string(),
+            },
+            &CancelToken::new(),
+            1,
+        )
+        .unwrap();
+    install(&fixture, "zeta@team");
+    install(&fixture, "zeta@other");
+    let loaded = load_enabled(&fixture.store, "/project");
+    let ids: Vec<String> = loaded.packages.iter().map(|p| p.id.key()).collect();
+    assert_eq!(ids, ["zeta@other"], "the first of the name, in id order");
+    // The page says the same: the one not loaded is no `✔ enabled`.
+    let catalog = build_catalog(&fixture.store, "/project");
+    let state = |key: &str| {
+        catalog
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id.key() == key)
+            .and_then(|plugin| plugin.installed.clone())
+            .unwrap()
+    };
+    assert_eq!(state("zeta@other").error, None);
+    let refused = state("zeta@team").error.unwrap();
+    assert!(refused.contains("zeta@other"), "{refused}");
+    assert_eq!(loaded.errors.len(), 1, "{:?}", loaded.errors);
+    assert!(
+        loaded.errors[0].starts_with("zeta@team:") && loaded.errors[0].contains("zeta@other"),
         "{:?}",
         loaded.errors
     );

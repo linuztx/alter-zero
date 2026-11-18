@@ -12,10 +12,10 @@ use crate::subagents::AgentDefinition;
 use super::components::{ComponentSummary, PluginHooks, PluginPackage, read_plugin};
 use super::id::PluginId;
 use super::manifest::PluginFormat;
-use super::marketplace::PluginSource;
+use super::marketplace::{MarketplaceEntry, PluginSource};
 use super::mcp::{AGENT_PLUGIN_MCP_FILE, LEGACY_MCP_FILE, PluginServer};
 use super::registry::Registry;
-use super::store::{PluginStore, update_available};
+use super::store::{CatalogCache, PluginStore, update_available};
 
 /// An installed plugin's state, as the page shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,8 +26,12 @@ pub struct InstalledState {
     pub enabled: bool,
     /// Its marketplace now has a newer copy.
     pub update: bool,
-    /// Why its installed copy could not be read, when it could not.
+    /// Why its installed copy could not be read — or why a session does not
+    /// load it — when one of those is so.
     pub error: Option<String>,
+    /// It loads in place from its marketplace's directory: always current,
+    /// nothing to update.
+    pub in_place: bool,
 }
 
 /// One plugin, as `/plugins` lists it.
@@ -131,6 +135,7 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
         }
     };
     let mut catalog = PluginCatalog::default();
+    let mut names: Vec<(PluginId, String)> = Vec::new();
     for (name, read) in store.catalogs(&registry) {
         let record = &registry.marketplaces[&name];
         let mut market = CatalogMarketplace {
@@ -177,7 +182,16 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
                     match registry.plugins.get(&plugin.id.key()) {
                         Some(record) => {
                             let update = update_available(record, entry, &root);
-                            fill_installed(store, &registry, project, &mut plugin, update);
+                            if let Some(namespace) = fill_installed(
+                                store,
+                                &registry,
+                                project,
+                                &mut plugin,
+                                Some(entry),
+                                update,
+                            ) {
+                                names.push((plugin.id.clone(), namespace));
+                            }
                         }
                         None => {
                             // A plugin kept in its marketplace can be read
@@ -227,9 +241,13 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
             notes: Vec::new(),
             id,
         };
-        fill_installed(store, &registry, project, &mut plugin, false);
+        if let Some(namespace) = fill_installed(store, &registry, project, &mut plugin, None, false)
+        {
+            names.push((plugin.id.clone(), namespace));
+        }
         catalog.plugins.push(plugin);
     }
+    mark_shadowed(&mut catalog.plugins, names);
     catalog.plugins.sort_by(|a, b| {
         b.installed
             .is_some()
@@ -246,28 +264,75 @@ fn fill_installed(
     registry: &Registry,
     project: &str,
     plugin: &mut CatalogPlugin,
+    entry: Option<&MarketplaceEntry>,
     update: bool,
-) {
+) -> Option<String> {
     let key = plugin.id.key();
     let record = registry.plugins.get(&key).cloned().unwrap_or_default();
+    let in_place = record.root.is_some();
     let mut state = InstalledState {
-        version: record.version,
+        version: record.version.clone(),
         enabled: registry.is_enabled(project, &key),
         update,
         error: None,
+        in_place,
     };
-    let root = store.layout.installed_dir(&plugin.id);
+    let root = store.plugin_root(&plugin.id, &record);
     let data = store.layout.data_dir(&plugin.id);
-    match read_plugin(&plugin.id, &root, &data, None) {
+    let mut namespace = None;
+    // One loaded in place reads as a session reads it: its entry is the
+    // manifest of a directory that has none.
+    let fallback = entry.filter(|_| in_place);
+    match read_plugin(&plugin.id, &root, &data, fallback) {
         Ok(package) => {
             describe(plugin, &package);
             // The installed copy's version is the installed one, never the
             // one on offer — which is what an update compares against.
             fill_from_manifest(plugin, &package, false);
+            if in_place {
+                // In place, what is loaded is what the folder says now.
+                state.version = package
+                    .manifest
+                    .version
+                    .clone()
+                    .or_else(|| entry.and_then(|entry| entry.version.clone()))
+                    .or(state.version);
+            }
+            if state.enabled {
+                namespace = Some(package.namespace().to_string());
+            }
         }
         Err(error) => state.error = Some(error),
     }
     plugin.installed = Some(state);
+    namespace
+}
+
+/// Mark every enabled plugin a session does not load because an earlier one
+/// (in id order, [`load_enabled`]'s) is on under the same name.
+fn mark_shadowed(plugins: &mut [CatalogPlugin], mut names: Vec<(PluginId, String)>) {
+    names.sort();
+    let mut first: Vec<(&str, &PluginId)> = Vec::new();
+    for (id, namespace) in &names {
+        match first.iter().find(|(name, _)| name == namespace) {
+            Some((_, earlier)) => {
+                let message = shadowed_message(earlier, namespace);
+                if let Some(state) = plugins
+                    .iter_mut()
+                    .find(|plugin| plugin.id == *id)
+                    .and_then(|plugin| plugin.installed.as_mut())
+                {
+                    state.error = Some(message);
+                }
+            }
+            None => first.push((namespace, id)),
+        }
+    }
+}
+
+/// Why a plugin is not loaded when `earlier` is on under its `namespace`.
+fn shadowed_message(earlier: &PluginId, namespace: &str) -> String {
+    format!("not loaded — {earlier} is on under the same name, `{namespace}`; turn one off")
 }
 
 /// What a read copy says about itself fills what the marketplace entry did
@@ -393,14 +458,27 @@ pub fn load_enabled(store: &PluginStore, project: &str) -> LoadedPlugins {
             return loaded;
         }
     };
+    let mut cache = CatalogCache::default();
     for id in registry.installed() {
         if !registry.is_enabled(project, &id.key()) {
             continue;
         }
-        let root = store.layout.installed_dir(&id);
         let data = store.layout.data_dir(&id);
-        match read_plugin(&id, &root, &data, None) {
+        match store.read_installed(&registry, &id, &mut cache) {
             Ok(package) => {
+                // Everything a plugin adds is named after it, so a second of
+                // one name would share every name with the first.
+                if let Some(first) = loaded
+                    .packages
+                    .iter()
+                    .find(|loaded| loaded.namespace() == package.namespace())
+                {
+                    loaded.errors.push(format!(
+                        "{id}: {}",
+                        shadowed_message(&first.id, package.namespace())
+                    ));
+                    continue;
+                }
                 if !package.components.servers.is_empty() {
                     let _ = std::fs::create_dir_all(&data);
                 }

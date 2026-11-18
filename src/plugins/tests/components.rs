@@ -464,10 +464,12 @@ fn a_claude_plugin_loads_every_component_from_its_default_location() {
     assert_eq!(hooks.source, fixture.path("hooks/hooks.json"));
     let guard = hooks.file.select(HookEvent::PreToolUse, Some("bash"));
     assert_eq!(guard.handlers.len(), 1);
-    // The command is its author's; the directories ride the handler.
+    // Claude Code's rule: the plugin's directories are substituted into the
+    // command (so the review shows what runs, and two plugins' hooks never
+    // read as one), and exported to it too.
     assert_eq!(
         guard.handlers[0].command,
-        r#"sh "${CLAUDE_PLUGIN_ROOT}/hooks/guard.sh""#
+        format!(r#"sh "{}/hooks/guard.sh""#, fixture.root.display())
     );
     assert_eq!(
         guard.handlers[0].source.as_deref(),
@@ -486,7 +488,16 @@ fn a_claude_plugin_loads_every_component_from_its_default_location() {
     assert_eq!(env["PLUGIN_DATA"], fixture.data.display().to_string());
 
     assert_eq!(package.components.servers.len(), 1);
-    assert_eq!(package.components.servers[0].name, "context7");
+    // Claude Code's scoped name: the plugin's name, then the server's key —
+    // `mcp__plugin_reports_context7__…` on the wire.
+    assert_eq!(
+        package.components.servers[0].name,
+        "plugin:reports:context7"
+    );
+    assert_eq!(
+        package.components.summary().servers,
+        ["plugin:reports:context7"]
+    );
 }
 
 #[test]
@@ -565,7 +576,14 @@ fn manifest_keys_add_to_skills_and_replace_commands_and_agents() {
         .iter()
         .map(|s| format!("{}={}", s.name, s.config.target()))
         .collect();
-    assert_eq!(servers, ["file=uvx", "both=from-manifest", "inline=npx"]);
+    assert_eq!(
+        servers,
+        [
+            "plugin:reports:file=uvx",
+            "plugin:reports:both=from-manifest",
+            "plugin:reports:inline=npx"
+        ]
+    );
 }
 
 #[test]
@@ -695,11 +713,12 @@ fn a_summary_counts_what_the_plugin_adds() {
         )
         .file(".mcp.json", r#"{"e":{"command":"npx"}}"#);
     let summary = fixture.read().components.summary();
-    assert_eq!(summary.skills, ["a"]);
-    assert_eq!(summary.commands, ["b", "c"]);
-    assert_eq!(summary.agents, ["d"]);
+    // The names a user types: `$reports:a`, as the server's is its own.
+    assert_eq!(summary.skills, ["reports:a"]);
+    assert_eq!(summary.commands, ["reports:b", "reports:c"]);
+    assert_eq!(summary.agents, ["reports:d"]);
     assert_eq!(summary.hooks, ["PreToolUse", "Stop (2)"]);
-    assert_eq!(summary.servers, ["e"]);
+    assert_eq!(summary.servers, ["plugin:reports:e"]);
     assert_eq!(
         summary.line(),
         "1 skill · 2 commands · 1 agent · 3 hooks · 1 MCP server"
@@ -712,4 +731,73 @@ fn a_skill_body_is_what_follows_the_frontmatter_or_the_whole_file() {
     assert_eq!(skill_body("---\nname: x\n---\n\nDo it.\n"), "Do it.");
     assert_eq!(skill_body("Just do it.\n"), "Just do it.");
     assert_eq!(skill_body(""), "");
+}
+
+#[test]
+fn two_plugins_whose_hooks_read_alike_both_run() {
+    // Both write `${CLAUDE_PLUGIN_ROOT}/hooks/run.sh`; deduplicating by the
+    // command as written would run only the first plugin's.
+    let hooks = r#"{"hooks":{"Stop":[{"hooks":[
+        {"type":"command","command":"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh"}]}]}}"#;
+    let first = Fixture::new();
+    first
+        .file(".claude-plugin/plugin.json", r#"{"name":"a"}"#)
+        .file("hooks/hooks.json", hooks);
+    let second = Fixture::new();
+    second
+        .file(".claude-plugin/plugin.json", r#"{"name":"b"}"#)
+        .file("hooks/hooks.json", hooks);
+    let a = read_plugin(
+        &PluginId::parse("a@market").unwrap(),
+        &first.root,
+        &first.data,
+        None,
+    )
+    .unwrap();
+    let b = read_plugin(
+        &PluginId::parse("b@market").unwrap(),
+        &second.root,
+        &second.data,
+        None,
+    )
+    .unwrap();
+    let runner = crate::hooks::HooksFile::default()
+        .merged(&a.components.hooks[0].file)
+        .merged(&b.components.hooks[0].file);
+    let commands: Vec<String> = runner
+        .select(HookEvent::Stop, None)
+        .handlers
+        .into_iter()
+        .map(|hook| hook.command)
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            format!("{}/hooks/run.sh", first.root.display()),
+            format!("{}/hooks/run.sh", second.root.display()),
+        ]
+    );
+}
+
+#[test]
+fn an_exec_form_hook_has_its_placeholders_substituted_into_each_argument() {
+    let fixture = Fixture::new();
+    fixture.file(".claude-plugin/plugin.json", r#"{"name":"reports"}"#);
+    fixture.file(
+        "hooks/hooks.json",
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node",
+            "args":["${CLAUDE_PLUGIN_ROOT}/hooks/stop.js","${CLAUDE_PLUGIN_DATA}"]}]}]}}"#,
+    );
+    let package = fixture.read();
+    let selection = package.components.hooks[0]
+        .file
+        .select(HookEvent::Stop, None);
+    assert_eq!(
+        selection.handlers[0].command,
+        format!(
+            "'node' '{}/hooks/stop.js' '{}'",
+            fixture.root.display(),
+            fixture.data.display()
+        )
+    );
 }

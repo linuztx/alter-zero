@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::app::{
-    MarketplaceAction, PluginAction, PluginDone, PluginOp, PluginsConfirm, PluginsPage, PluginsTab,
-    marketplace_actions, plugin_actions,
+    AddRow, PluginAction, PluginDone, PluginOp, PluginsConfirm, PluginsPage, PluginsTab,
+    plugin_actions,
 };
 use crate::plugins::{
     CatalogMarketplace, CatalogPlugin, ComponentSummary, InstalledState, PluginCatalog, PluginId,
@@ -28,6 +28,7 @@ fn plugin(key: &str, installed: Option<bool>) -> CatalogPlugin {
             enabled,
             update: false,
             error: None,
+            in_place: false,
         }),
         notes: Vec::new(),
     }
@@ -61,6 +62,10 @@ fn catalog() -> PluginCatalog {
         ],
         error: None,
     }
+}
+
+fn tab(name: &str) -> PluginsTab {
+    PluginsTab::Marketplace(name.to_string())
 }
 
 /// An app with the page open and its first read answered.
@@ -102,7 +107,31 @@ fn the_palette_lists_plugins_and_it_opens_the_page_through_the_loop() {
 }
 
 #[test]
-fn the_page_opens_reading_and_picks_the_tab_with_something_on_it() {
+fn the_tabs_are_all_installed_each_marketplace_and_add() {
+    // codex's `/plugins`: every plugin, the installed ones, a tab per
+    // marketplace in the catalog's order, and the tab that adds one.
+    let app = plugins_app();
+    assert_eq!(
+        menu(&app).tabs(),
+        [
+            PluginsTab::All,
+            PluginsTab::Installed,
+            tab("team"),
+            tab("local"),
+            PluginsTab::Add
+        ]
+    );
+    // Before the first read: the fixed tabs alone.
+    let mut app = App::new();
+    app.open_plugins_menu(true);
+    assert_eq!(
+        menu(&app).tabs(),
+        [PluginsTab::All, PluginsTab::Installed, PluginsTab::Add]
+    );
+}
+
+#[test]
+fn the_page_opens_on_the_tab_with_something_on_it() {
     let mut app = App::new();
     let round = app.open_plugins_menu(true);
     assert!(menu(&app).catalog.is_none());
@@ -112,13 +141,13 @@ fn the_page_opens_reading_and_picks_the_tab_with_something_on_it() {
     assert_eq!(rows(&app), ["hookify@team", "lint@local"]);
     assert!(menu(&app).job.is_none());
 
-    // Nothing installed: what can be.
+    // Nothing installed: everything there is.
     let mut app = App::new();
     let round = app.open_plugins_menu(true);
     let mut fresh = catalog();
     fresh.plugins.iter_mut().for_each(|p| p.installed = None);
     app.finish_plugin_job(round, Some(fresh), &Ok(PluginDone::default()));
-    assert_eq!(menu(&app).tab, PluginsTab::Discover);
+    assert_eq!(menu(&app).tab, PluginsTab::All);
 
     // Nothing at all: where a marketplace is added.
     let mut app = App::new();
@@ -128,10 +157,36 @@ fn the_page_opens_reading_and_picks_the_tab_with_something_on_it() {
         Some(PluginCatalog::default()),
         &Ok(PluginDone::default()),
     );
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
+}
+
+#[test]
+fn a_reopened_page_shows_the_catalog_it_kept_at_once() {
+    // The read runs again behind the rows, so the page opens at its own
+    // height instead of on a placeholder that the rows then push away.
+    let mut app = plugins_app();
+    app.close_plugins_menu();
+    let round = app.open_plugins_menu(true);
+    assert_eq!(menu(&app).catalog, Some(catalog()));
+    assert_eq!(menu(&app).tab, PluginsTab::Installed);
+    assert_eq!(app.plugins_job_round(), Some(round));
+    // A catalog the boundary read with no page open is kept too — an older
+    // round never over a newer one.
+    let mut app = App::new();
+    app.keep_plugin_catalog(0, catalog());
+    let mut older = catalog();
+    older.plugins.clear();
+    app.keep_plugin_catalog(0, older.clone());
+    app.open_plugins_menu(true);
+    assert_eq!(menu(&app).catalog, Some(older), "the same round replaces");
+    let mut app = App::new();
+    app.keep_plugin_catalog(5, catalog());
+    app.keep_plugin_catalog(3, PluginCatalog::default());
+    app.open_plugins_menu(true);
     assert_eq!(
-        menu(&app).marketplace_rows(),
-        [crate::app::MarketplaceRow::Add]
+        menu(&app).catalog,
+        Some(catalog()),
+        "an older round does not"
     );
 }
 
@@ -142,7 +197,6 @@ fn a_late_answer_is_dropped() {
     app.close_plugins_menu();
     let second = app.open_plugins_menu(true);
     assert!(!app.finish_plugin_job(first, Some(catalog()), &Ok(PluginDone::default())));
-    assert!(menu(&app).catalog.is_none());
     assert!(app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
     app.close_plugins_menu();
     assert!(!app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
@@ -153,20 +207,24 @@ fn tabs_move_with_the_arrows_and_tab_and_clear_the_search() {
     let mut app = plugins_app();
     type_str(&mut app, "hook");
     app.on_key(key(KeyCode::Right));
-    assert_eq!(menu(&app).tab, PluginsTab::Discover);
+    assert_eq!(menu(&app).tab, tab("team"));
     assert_eq!(menu(&app).query, "");
+    assert_eq!(rows(&app), ["hookify@team", "deploy@team", "zeta@team"]);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(menu(&app).tab, tab("local"));
+    assert_eq!(rows(&app), ["lint@local"]);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(menu(&app).tab, PluginsTab::All, "wrapping");
     assert_eq!(
         rows(&app),
         ["hookify@team", "lint@local", "deploy@team", "zeta@team"]
     );
-    app.on_key(key(KeyCode::Tab));
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
-    app.on_key(key(KeyCode::Tab));
-    assert_eq!(menu(&app).tab, PluginsTab::Installed, "wrapping");
     app.on_key(key(KeyCode::BackTab));
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
     app.on_key(key(KeyCode::Left));
-    assert_eq!(menu(&app).tab, PluginsTab::Discover);
+    assert_eq!(menu(&app).tab, tab("local"));
 }
 
 #[test]
@@ -177,7 +235,8 @@ fn the_search_matches_names_marketplaces_descriptions_and_keywords() {
     fresh.plugins[2].description = Some("Ships builds to staging".to_string());
     fresh.plugins[3].keywords = vec!["kubernetes".to_string()];
     app.finish_plugin_job(round, Some(fresh), &Ok(PluginDone::default()));
-    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(menu(&app).tab, PluginsTab::All);
     type_str(&mut app, "LOCAL");
     assert_eq!(rows(&app), ["lint@local"]);
     app.on_key(key(KeyCode::Esc));
@@ -222,11 +281,43 @@ fn space_turns_an_installed_plugin_on_or_off_at_once() {
 }
 
 #[test]
+fn a_success_is_said_on_the_page_until_the_next_key() {
+    // Never a toast row over the page, which would move it down a row and
+    // back up again — the flicker: the page says it where its hint was.
+    let mut app = plugins_app();
+    let action = app.on_key(key(KeyCode::Char(' ')));
+    finish(
+        &mut app,
+        action,
+        catalog(),
+        Ok(PluginDone {
+            message: "Disabled hookify in this directory".into(),
+            marketplace: None,
+        }),
+    );
+    assert_eq!(
+        menu(&app).notice.as_deref(),
+        Some("Disabled hookify in this directory")
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(menu(&app).notice, None);
+    // A failure, the same way.
+    let action = app.on_key(key(KeyCode::Char(' ')));
+    let Action::PluginOp { round, .. } = action else {
+        panic!("{action:?}");
+    };
+    app.finish_plugin_job(round, Some(catalog()), &Err("disk full".to_string()));
+    assert_eq!(menu(&app).error.as_deref(), Some("disk full"));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(menu(&app).error, None);
+}
+
+#[test]
 fn space_on_a_plugin_that_is_not_installed_does_nothing() {
     let mut app = plugins_app();
     app.on_key(key(KeyCode::Right));
     app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Down));
+    assert_eq!(rows(&app)[menu(&app).selected], "deploy@team");
     assert_eq!(app.on_key(key(KeyCode::Char(' '))), Action::None);
     assert!(menu(&app).job.is_none());
 }
@@ -268,23 +359,16 @@ fn a_plugin_page_offers_what_its_state_affords() {
     let mut orphan = plugin("a@m", Some(true));
     orphan.unavailable = Some("its marketplace no longer lists it".to_string());
     assert!(!plugin_actions(&orphan).contains(&PluginAction::Update));
-    assert_eq!(
-        marketplace_actions(&market("m", true)),
-        [
-            MarketplaceAction::Browse,
-            MarketplaceAction::Update,
-            MarketplaceAction::Remove,
-            MarketplaceAction::Back
-        ]
-    );
-    assert!(!marketplace_actions(&market("m", false)).contains(&MarketplaceAction::Update));
+    // Loaded in place, it is always current: nothing to update.
+    let mut in_place = plugin("a@m", Some(true));
+    in_place.installed.as_mut().unwrap().in_place = true;
+    assert!(!plugin_actions(&in_place).contains(&PluginAction::Update));
 }
 
 #[test]
 fn installing_from_a_plugins_page_stays_on_it() {
     let mut app = plugins_app();
     app.on_key(key(KeyCode::Right));
-    app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter));
     let deploy = PluginId::parse("deploy@team").unwrap();
@@ -297,6 +381,7 @@ fn installing_from_a_plugins_page_stays_on_it() {
         enabled: true,
         update: false,
         error: None,
+        in_place: false,
     });
     let op = finish(
         &mut app,
@@ -313,14 +398,15 @@ fn installing_from_a_plugins_page_stays_on_it() {
     assert_eq!(app.on_key(key(KeyCode::Char('9'))), Action::None);
     app.on_key(key(KeyCode::Esc));
     assert_eq!(menu(&app).page, PluginsPage::List);
-    assert_eq!(menu(&app).selected, 2);
+    assert_eq!(rows(&app)[menu(&app).selected], "deploy@team");
 }
 
 #[test]
 fn back_from_a_plugins_page_lands_on_its_row_wherever_the_list_moved_it() {
     let mut app = plugins_app();
-    app.on_key(key(KeyCode::Right));
-    // deploy is the third row of Discover.
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(menu(&app).tab, PluginsTab::All);
+    // deploy is the third row of All.
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter));
@@ -333,6 +419,7 @@ fn back_from_a_plugins_page_lands_on_its_row_wherever_the_list_moved_it() {
         enabled: true,
         update: false,
         error: None,
+        in_place: false,
     });
     after.plugins.insert(0, deploy);
     finish(&mut app, action, after, Ok(PluginDone::default()));
@@ -391,33 +478,20 @@ fn a_page_whose_plugin_is_gone_comes_back_to_the_list() {
 }
 
 #[test]
-fn a_marketplace_page_browses_updates_and_removes() {
+fn a_marketplace_tab_updates_with_ctrl_u_and_removes_with_ctrl_r() {
+    // codex's keys, on the marketplace's own tab.
     let mut app = plugins_app();
-    app.on_key(key(KeyCode::Left));
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(
-        menu(&app).page,
-        PluginsPage::Marketplace("team".to_string())
-    );
-    // Browse: the list, searched for it.
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(menu(&app).page, PluginsPage::List);
-    assert_eq!(menu(&app).tab, PluginsTab::Discover);
-    assert_eq!(rows(&app), ["hookify@team", "deploy@team", "zeta@team"]);
-
-    let mut app = plugins_app();
-    app.on_key(key(KeyCode::Left));
-    app.on_key(key(KeyCode::Enter));
-    let action = app.on_key(key(KeyCode::Char('2')));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(menu(&app).tab, tab("team"));
+    let action = app.on_key(ctrl('u'));
     assert!(
-        matches!(action, Action::PluginOp { op: PluginOp::UpdateMarketplace(ref name), .. } if name == "team")
+        matches!(action, Action::PluginOp { op: PluginOp::UpdateMarketplace(ref name), .. } if name == "team"),
+        "{action:?}"
     );
 
     let mut app = plugins_app();
-    app.on_key(key(KeyCode::Left));
-    app.on_key(key(KeyCode::Enter));
-    app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(app.on_key(ctrl('r')), Action::None);
     assert_eq!(
         menu(&app).page,
         PluginsPage::Confirm(PluginsConfirm::RemoveMarketplace {
@@ -425,99 +499,147 @@ fn a_marketplace_page_browses_updates_and_removes() {
             plugins: vec!["hookify".to_string()],
         })
     );
+    assert_eq!(menu(&app).selected, 1, "the safe answer is highlighted");
+    // Cancel comes back to the tab.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(menu(&app).page, PluginsPage::List);
+    assert_eq!(menu(&app).tab, tab("team"));
+    app.on_key(ctrl('r'));
     let action = app.on_key(key(KeyCode::Char('1')));
     let mut after = catalog();
     after.marketplaces.remove(0);
+    after.plugins.retain(|p| p.id.marketplace != "team");
     let op = finish(&mut app, action, after, Ok(PluginDone::default()));
     assert_eq!(op, PluginOp::RemoveMarketplace("team".to_string()));
+    // Its tab is gone: the page lands on All.
     assert_eq!(menu(&app).page, PluginsPage::List);
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
+    assert_eq!(menu(&app).tab, PluginsTab::All);
 }
 
 #[test]
-fn a_local_marketplace_has_nothing_to_update() {
+fn a_directory_marketplace_has_nothing_to_update() {
     let mut app = plugins_app();
-    app.on_key(key(KeyCode::Left));
-    app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(
-        menu(&app).page,
-        PluginsPage::Marketplace("local".to_string())
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(menu(&app).tab, tab("local"));
+    assert!(
+        matches!(app.on_key(ctrl('u')), Action::Toast(text) if text.contains("always current"))
     );
-    // Browse, Remove, Back.
-    assert_eq!(app.on_key(key(KeyCode::Char('4'))), Action::None);
-    app.on_key(key(KeyCode::Char('3')));
+    assert!(menu(&app).job.is_none());
+    // Neither key means anything on a tab that is no marketplace's.
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(menu(&app).tab, PluginsTab::All);
+    assert_eq!(app.on_key(ctrl('r')), Action::None);
     assert_eq!(menu(&app).page, PluginsPage::List);
 }
 
-#[test]
-fn a_marketplace_is_added_from_its_field() {
+/// The add tab of a fresh page.
+fn add_tab() -> App {
     let mut app = plugins_app();
     app.on_key(key(KeyCode::Left));
-    app.on_key(key(KeyCode::End));
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(menu(&app).page, PluginsPage::Add);
-    // Enter on an empty field does nothing.
-    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
-    app.on_paste("  anthropics/claude-plugins-official\n");
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
+    app
+}
+
+fn add_rows(app: &App) -> Vec<String> {
+    menu(app)
+        .add_rows()
+        .iter()
+        .map(|row| match row {
+            AddRow::Typed(source) => format!("typed:{source}"),
+            AddRow::Suggestion(suggestion) => suggestion.source.to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn the_add_tab_offers_the_official_marketplaces() {
+    // Claude Code's and codex's own catalogs are one Enter away — nobody
+    // types `owner/repo` to get them.
+    let mut app = add_tab();
     assert_eq!(
-        menu(&app).input.text(),
-        "anthropics/claude-plugins-official"
+        add_rows(&app),
+        ["anthropics/claude-plugins-official", "openai/plugins"]
     );
     let action = app.on_key(key(KeyCode::Enter));
-    let Action::PluginOp { op, round } = action else {
-        panic!();
-    };
-    assert_eq!(
-        op,
-        PluginOp::AddMarketplace("anthropics/claude-plugins-official".to_string())
+    assert!(
+        matches!(action, Action::PluginOp { op: PluginOp::AddMarketplace(ref source), .. }
+            if source == "anthropics/claude-plugins-official"),
+        "{action:?}"
     );
-    // A failure stays on the page, under the field.
+    let mut app = add_tab();
+    app.on_key(key(KeyCode::Down));
+    let action = app.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(action, Action::PluginOp { op: PluginOp::AddMarketplace(ref source), .. }
+            if source == "openai/plugins"),
+        "{action:?}"
+    );
+}
+
+#[test]
+fn a_suggestion_already_added_opens_its_tab() {
+    let mut catalog = catalog();
+    let mut official = market("claude-plugins-official", true);
+    official.source = "https://github.com/anthropics/claude-plugins-official.git".to_string();
+    catalog.marketplaces.push(official);
+    let mut app = App::new();
+    let round = app.open_plugins_menu(true);
+    app.finish_plugin_job(round, Some(catalog), &Ok(PluginDone::default()));
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(menu(&app).tab, tab("claude-plugins-official"));
+}
+
+#[test]
+fn a_typed_source_is_added_and_lands_on_its_tab() {
+    let mut app = add_tab();
+    // Space types here: a directory's path may hold one.
+    type_str(&mut app, "/srv/my plugins");
+    assert_eq!(menu(&app).query, "/srv/my plugins");
+    assert_eq!(add_rows(&app), ["typed:/srv/my plugins"]);
+    // A source that names a suggestion's owner shows the suggestion too.
+    let mut app = add_tab();
+    type_str(&mut app, "openai");
+    assert_eq!(add_rows(&app), ["typed:openai", "openai/plugins"]);
+    // Pasted, then added; a failure says why and keeps what was typed.
+    let mut app = add_tab();
+    app.on_paste("  acme/tools\n");
+    assert_eq!(menu(&app).query, "acme/tools");
+    let action = app.on_key(key(KeyCode::Enter));
+    let Action::PluginOp { op, round } = action else {
+        panic!("{action:?}");
+    };
+    assert_eq!(op, PluginOp::AddMarketplace("acme/tools".to_string()));
     app.finish_plugin_job(round, None, &Err("not a marketplace".to_string()));
-    assert_eq!(menu(&app).page, PluginsPage::Add);
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
+    assert_eq!(menu(&app).query, "acme/tools");
     assert_eq!(menu(&app).error.as_deref(), Some("not a marketplace"));
-    // Editing clears it; a success lands on its plugins.
+    // Editing clears it; Ctrl+U empties the field; a success lands on the
+    // new marketplace's tab.
     app.on_key(key(KeyCode::Backspace));
     assert!(menu(&app).error.is_none());
-    type_str(&mut app, "l");
+    app.on_key(ctrl('u'));
+    assert_eq!(menu(&app).query, "");
+    type_str(&mut app, "acme/team");
     let action = app.on_key(key(KeyCode::Enter));
     finish(
         &mut app,
         action,
         catalog(),
         Ok(PluginDone {
-            message: "Added".into(),
+            message: "Added team — 3 plugins".into(),
             marketplace: Some("team".to_string()),
         }),
     );
     assert_eq!(menu(&app).page, PluginsPage::List);
-    assert_eq!(menu(&app).tab, PluginsTab::Discover);
-    assert_eq!(menu(&app).query, "team");
-}
-
-#[test]
-fn esc_on_the_field_goes_back_to_the_marketplaces() {
-    let mut app = plugins_app();
-    app.on_key(key(KeyCode::Left));
-    app.on_key(key(KeyCode::End));
-    app.on_key(key(KeyCode::Enter));
-    type_str(&mut app, "x");
-    app.on_key(key(KeyCode::Esc));
-    assert_eq!(menu(&app).page, PluginsPage::List);
-    assert_eq!(menu(&app).tab, PluginsTab::Marketplaces);
-}
-
-#[test]
-fn ctrl_r_reads_the_marketplaces_again() {
-    let mut app = plugins_app();
-    let action = app.on_key(ctrl('r'));
-    assert!(matches!(
-        action,
-        Action::PluginOp {
-            op: PluginOp::Refresh,
-            ..
-        }
-    ));
+    assert_eq!(menu(&app).tab, tab("team"));
+    assert_eq!(menu(&app).query, "");
+    assert_eq!(menu(&app).notice.as_deref(), Some("Added team — 3 plugins"));
 }
 
 #[test]

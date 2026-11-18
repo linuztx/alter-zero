@@ -130,7 +130,7 @@ counterpart here.
 | Command | a skill — its markdown is the body | `{plugin}:{command}`, subdirectories adding segments (`{plugin}:db:migrate`) |
 | Agent | a subagent type | `{plugin}:{agent}`, subdirectories adding segments |
 | Hook | a hooks layer after the user's and the project's | by its event and matcher, as every hook is |
-| MCP server | a server in the `/mcp` manager's **Plugin** scope | its own name |
+| MCP server | a server in the `/mcp` manager's **Plugin** scope | `plugin:{plugin}:{server}` — its tools `mcp__plugin_{plugin}_{server}__{tool}` |
 
 The prefix is the **manifest's** name — what Claude Code and codex both
 namespace under — while the install key is the marketplace entry's
@@ -165,11 +165,28 @@ turned into a request that fails. And its `tools:` list is **translated**
 `TodoWrite`, `Task`) is dropped. An agent that asked only for tools that do
 not exist here keeps an allowlist that matches nothing, which is the truth.
 
-**MCP servers** keep the name their plugin gave them — codex's rule, and
-the one that leaves `mcp__context7__query` the same tool whether the user
-configured the server by hand or installed the plugin. A name the user's or
-the project's config already uses, or an earlier plugin's, is left to its
-first owner and the plugin's page says the server was not added.
+**MCP servers** are named as Claude Code names them: `plugin:{plugin}:{server}`
+declared, `mcp__plugin_{plugin}_{server}__{tool}` on the wire
+(`plugins::plugin_server_name`) — the plugin's name, then the server's key.
+A plugin's own hook matcher (`mcp__plugin_my-plugin_db__.*`) or an agent's
+`tools:` list written for Claude Code finds its tools under that name, and
+no plugin's server can take the name of one the user configured or another
+plugin's. A stdio server's `${CLAUDE_PROJECT_DIR}` is the session's directory
+(an Agent Plugin's entry expands nothing but its two variables, §9.2).
+
+**Hooks** have their plugin's directories substituted into the command —
+`${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and the Agent Plugins
+spellings — and exported to it too, Claude Code's rule
+(`HooksFile::with_substitutions`): the review shows the command that runs,
+and two plugins that both write `${CLAUDE_PLUGIN_ROOT}/hooks/run.sh` stay two
+hooks rather than deduplicating into the first. Claude Code's **exec form**
+(`command` and `args`) runs each argument as one word exactly as written,
+a path placeholder still the directory it names — for every hook, a
+plugin's or the user's.
+
+**Two enabled plugins of one name** would share every name above: the first
+in id order loads, and the other is listed `✘ not loaded`, its page saying
+which plugin is on under its name — turn one off (`load_enabled`).
 
 ## Marketplaces
 
@@ -183,7 +200,21 @@ ignored, each entry validated on its own so one bad entry does not cost the
 catalog. A directory with no catalog but a plugin manifest at its root is a
 **marketplace of one**, named after its plugin: Agent Plugins defines no
 distribution format, so a plugin's own repository has to be something a
-user can add.
+user can add. The name becomes a directory under the plugins tree, so it
+must be a plain name — a manifest naming itself `../../.ssh` is refused
+before any path is made of it — and a manifest that names nothing is named
+after its repository (`my-tool.git` is `my-tool`).
+
+### Reserved names
+
+A catalog cannot pass for an official one. The names Claude Code reserves
+for Anthropic's marketplaces (`claude-plugins-official`,
+`claude-code-marketplace`, `anthropic-agent-skills` and the rest,
+`marketplace::ANTHROPIC_RESERVED`) come only from `github.com/anthropics/`;
+the names codex reserves (`openai-curated`, `openai-bundled`, …,
+`OPENAI_RESERVED`) only from `github.com/openai/`. Another spelling of one —
+`claude.plugins.official`, a trailing `.`, another case — is the same name
+(Claude Code's rule). Anything else is anyone's.
 
 An entry's `source`:
 
@@ -208,7 +239,10 @@ that has none — Claude Code's rule, and codex's fallback.
 
 ### Adding one
 
-`/plugins` → Marketplaces → Add, or `alter-zero plugin marketplace add`:
+`/plugins` → **+ Add**, where Claude Code's official catalog
+(`anthropics/claude-plugins-official`) and codex's
+(`openai/plugins`) are one Enter away — or type a source there, or run
+`alter-zero plugin marketplace add`:
 
 | Typed | Read as |
 | --- | --- |
@@ -227,10 +261,16 @@ Everything is under the config home (`ALTER_ZERO_CONFIG_DIR`, else
 ```
 plugins.json                               the registry
 plugins/marketplaces/{name}/               a git marketplace's checkout
-plugins/installed/{marketplace}/{plugin}/  an installed plugin — PLUGIN_ROOT
+plugins/installed/{marketplace}/{plugin}/  a git marketplace's plugin, copied — PLUGIN_ROOT
 plugins/data/{marketplace}/{plugin}/       its data directory — PLUGIN_DATA
 plugins/staging/                           clones and copies in flight
 ```
+
+A plugin of a marketplace **kept in a directory** is not copied: it loads in
+place from its folder there — Claude Code's rule — so an edit to it is what
+the next session (or the next `/plugins` reload) reads, with no update to
+run. Its registry record names that folder (`"root"`), and an uninstall
+forgets it without touching it: the folder is the user's.
 
 An installed plugin has **one path for as long as it is installed**, not a
 directory per version as both references keep. A version in the path makes
@@ -284,7 +324,9 @@ posture: a registry silently reset is a set of plugins silently gone).
    must be on the pinned `sha`.
 2. **Read it.** The manifest by the precedence above; an Agent Plugin that
    fails validation stops here. With no manifest, the entry is one.
-3. **Copy it** into `plugins/staging/`, then rename it into place — over the
+3. **Copy it** — unless it is a plugin of a marketplace kept in a
+   directory, which loads in place and is recorded with its folder — into
+   `plugins/staging/`, then rename it into place — over the
    old copy on an update, with the old one moved aside first and put back if
    the rename fails. Regular files and directories only; a symlink that
    resolves inside the plugin is copied as what it points at, one that leaves
@@ -304,7 +346,19 @@ clone. Each git command has two minutes.
 An **update** is the same four steps; the plugin's data directory is never
 touched. Updating a git marketplace re-clones it beside the old checkout and
 swaps the two, and marks which of its installed plugins now differ from
-their catalog entry — by version, or by pinned commit.
+their catalog entry — each kind of source by what it can tell
+(`store::update_available`): a plugin kept in the marketplace by its files,
+one pinned to a commit by the commit, one fetched from a repository of its
+own by the entry's version against the one the entry **offered at install**
+(never the manifest's, which may say another — the manifest wins, Claude
+Code's rule — and would read as an update forever). One loaded in place is
+always current.
+
+A catalog's `ref` and `sha` reach `git` as arguments, so they are read as
+what they must be — a branch or tag name, a commit id — and an entry whose
+`ref` is anything else (`--upload-pack=…`, an option) is skipped with the
+reason on its marketplace's tab: nothing a catalog says runs before the
+review.
 
 ## Trust
 
@@ -314,10 +368,13 @@ servers **run**, so they go through the review every hook and every project
 server already goes through (`docs/config-review.md`):
 
 - a plugin's hooks files are a third layer of `TrustState::hook_layers`,
-  after the user's and the project's, keyed by their path under the installed
-  copy — so each hook is trusted by event, matcher and command, `/hooks`
-  lists it, and an update that changes a command asks again and shows what
-  it was;
+  after the user's and the project's, keyed by their path — under the
+  installed copy, or the plugin's own folder for one loaded in place — so
+  each hook is trusted by event, matcher and command, `/hooks` lists it, and
+  an update that changes a command asks again and shows what it was. The
+  review shows each file under its plugin (`Plugin hello@demo · …`), and a
+  servers page made of plugins' servers says they were found in your
+  plugins, not in this project;
 - a plugin's MCP servers are held by the manager (`McpHold::Review`) until
   the servers page enables them, each decision pinned to the whole entry and
   recorded under the plugin's MCP file — so `/mcp`'s Enable and Disable on a
@@ -335,101 +392,120 @@ from says what it is for, not what it executes.
 ## The `/plugins` page
 
 The composer-replacing page (`app::PluginsMenu`, `ui::plugins_view`), opening
-mid-turn like every other.
+mid-turn like every other — codex's `/plugins`, a tab per marketplace.
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
   Plugins
-  2 installed · 319 plugins in 2 marketplaces
+  The plugins installed on this machine
+  2 installed · 1 on in this directory
 
-   Installed (2)    Discover (319)    Marketplaces (2)
+   All (319)    Installed (2)    claude-plugins-official (317)    team (2)    + Add
 
   ❯
 
-  → commit-commands   ◯ disabled   Streamline your git workflow with simple…
-    hookify           ✔ enabled    Easily create hooks to prevent unwanted …
+  → commit-commands   ◯ disabled   claude-plugins-official · Streamline your…
+    hookify           ✔ enabled    claude-plugins-official · Easily create h…
     (1/2)
 
     Streamline your git workflow with simple commands for committing,
     pushing, and creating pull requests
     commit-commands@claude-plugins-official · v1.0.0 · 3 commands
 
-  Type to search · ←/→ tabs · Enter to open · Space to toggle · Esc to close
+  ←/→ tabs · Enter to open · Space to toggle · Esc to close
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
-- **Tabs.** *Installed*, *Discover* (every plugin of every marketplace) and
-  *Marketplaces*, the active one a filled chip in the accent — the
+- **Tabs**, codex's: *All*, *Installed*, **one per added marketplace** and
+  **+ Add**, the active one a filled chip in the accent — the
   `AskUserQuestion` strip's dress. ←/→ and Tab/Shift+Tab move, wrapping, and
-  clear the search. Each tab names its count once the catalog is read. The
-  page opens on *Installed* when anything is, else on *Discover*, else —
-  nothing added yet — on *Marketplaces*, whose last row adds one. Three
-  fixed tabs rather than codex's one per marketplace: the
-  strip is one width whatever the user has added, and a marketplace's own
-  plugins are a search away (the search matches the marketplace's name).
+  clear the search; each tab names its count once the catalog is read. A
+  strip too wide for the terminal shows a window around the active tab, a
+  dim `‹`/`›` where tabs are hidden. The page opens on *Installed* when
+  anything is, else on *All*, else — nothing added yet — on *+ Add*.
+- **Each tab's header** says what it is: *All* counts every plugin and
+  marketplace, *Installed* what is on in this directory, a marketplace's tab
+  its description, its counts and age, its source and commit — and, in red,
+  why its catalog could not be read, or, in amber, the entries it skipped
+  and the first one's reason.
 - **Rows.** `→ {name}  {mark} {status}  {description}`, the name and status
   columns sized off every listed row so they hold still as the window
-  scrolls, the description `…`-cut. An installed plugin is `✔ enabled` (the
-  one green mark) or `◯ disabled` here, `✘ error` (red) when its copy cannot
-  be read; one that is not is `+ available`, or `– unavailable` when its
+  scrolls, the description `…`-cut — opening on the marketplace's name on
+  *All* and *Installed*. An installed plugin is `✔ enabled` (the one green
+  mark) or `◯ disabled` here, `✘ not loaded` (red) when a session cannot
+  load it; one that is not is `+ available`, or `– unavailable` when its
   source is one this app does not fetch. An update opens the description on
-  an amber `▲ update ·`. Two rows of one name — the same plugin in two
-  marketplaces — show their whole ids. Installed plugins sort first, then by
-  name — codex's order. The Marketplaces tab's rows are `→ {name}  {n}
-  plugins · {k} installed · {source}` (a red `✘` and why, for one whose
-  catalog cannot be read) over the `+ Add a marketplace` row.
+  an amber `▲ update ·`. Two rows of one name show their whole ids.
+  Installed plugins sort first, then by name — codex's order.
+- **+ Add** is the field and the official catalogs under it: the `❯` line
+  takes a source (owner/repo, a git URL, a directory — Space types, a path
+  may hold one), and its rows are what Enter adds — the typed source first,
+  then Claude Code's and codex's catalogs (`SUGGESTED_MARKETPLACES`), one
+  already added marked `✔ added`, where Enter shows its tab. A success lands
+  on the new marketplace's tab.
 - **Search** matches the name, the id, the marketplace, the description and
   the keywords, case-insensitively.
-- **Under the list**, the highlighted plugin's id, version and what it is
-  made of — or, on *Marketplaces*, the marketplace's source and when it was
-  last updated.
 - **Keys.** ↑/↓ (wrapping), PageUp/PageDown, Home/End; Enter opens the row;
   Space turns an installed plugin on or off for this directory — the row
-  answers at once, the write follows; Ctrl+R reads the marketplaces again;
-  Esc clears the search, then closes; Ctrl+C closes. Space is the toggle,
-  so a search never holds one (the `/skills` rule).
+  answers at once, the write follows; on a marketplace's tab **Ctrl+U**
+  updates it (a git one; a directory is always current) and **Ctrl+R**
+  removes it, asking once more and naming the plugins it would uninstall;
+  Esc clears the search, then closes; Ctrl+C closes. The hint names the
+  tab's keys and, on a narrow terminal, leaves out whole clauses — never the
+  key that closes the page — rather than ending on a cut word.
 
 **A plugin's page** is the `/mcp` server page's twin: the name in the title
 dress over its id, version and author; its description; the fact rows —
-status, format, source, and each kind of component by name; a line for what
-it carries that is not used here; the trust note for one not yet installed;
-then the numbered actions its state affords — `Install`; or `Disable` /
-`Enable`, `Update`, `Uninstall` — and Esc goes back, to the plugin's own
-row wherever an install or an uninstall has since sorted it. A homepage is
-a link. A plugin kept in its marketplace is read before it is installed, so
-the page names what it adds — and its manifest's version, author and
-homepage when the marketplace entry leaves them out.
+status, format, source, where it loads from (one loaded in place), and each
+kind of component by the name a session knows it by (`hello:greet`,
+`plugin:guard:probe`); a line for what it carries that is not used here;
+the trust note for one not yet installed; then the numbered actions its
+state affords — `Install`; or `Disable` / `Enable`, `Update` (not for one
+loaded in place), `Uninstall` — and Esc goes back, to the plugin's own row
+wherever an install or an uninstall has since sorted it.
 
-**A marketplace's page**: its source, revision, age and location, then
-`Browse plugins` (Discover, searched for it), `Update`, `Remove` — which
-asks once more, naming the plugins it would uninstall.
+### No flicker
 
-**Adding a marketplace** is a one-field page; Enter adds, and a failure
-stays on the page in red under what was typed.
+Acting on the page never moves it — the reported bug was Enter on
+*Disable*: a job line and a gap that came for one frame, then a toast row
+over the page that pushed it down a row and, three seconds later, back up,
+each height change scrolling or blanking the bottom of a full screen. Now:
 
-**While a job runs** — a clone, an install — the page that started it says
-what is happening over its hint, `Installing deploy… (4s · esc to cancel)`
-in the status line's grammar, every other operation waits (a second one is
-refused with a toast naming the first), and Esc cancels the job: the git
-child is killed, and the worker still answers with what is on disk, so the
-page never waits on a job that is gone. One job at a time: they all write
-one registry. The first read of a page that has never had one shows that
-line where the rows will be. Each answer carries its round (`/usage`'s
-rule), so one that comes back after the page closed — or after a newer job
-began — is not taken; a change it made is still loaded into the session,
-and a failure nobody saw is a toast.
+- **what runs and what happened are said in the hint's own row**
+  (`status_row`): a job only once it has run `PLUGINS_JOB_DELAY` (400 ms) —
+  a toggle answers in milliseconds, and a line shown for one frame is the
+  flicker — then `Installing deploy… (4s · esc to cancel)`; what it did,
+  `✔ Disabled hookify in this directory`, until the next key; a failure in
+  red over that row, until the next key;
+- **no toast is raised over an open page** — one goes up only for an answer
+  the page closed before taking, and a reload's plugin errors are said on
+  their rows;
+- **a reopened page opens on the catalog the session kept**, read again
+  behind its rows — and the session reads it behind its first frame — so
+  the page opens at its own height rather than on a placeholder the rows
+  then push away.
+
+A toggle rewrites the rows it changes and nothing else: `smoke.sh` Phase 161
+records the bytes and holds the page's bottom rule on one row throughout.
+
+**While a job runs** every other operation waits (a second one is refused
+with a toast naming the first), and Esc cancels the job: the git child is
+killed, and the worker still answers with what is on disk, so the page never
+waits on a job that is gone. One job at a time: they all write one
+registry. Each answer carries its round (`/usage`'s rule), so one that
+comes back after the page closed — or after a newer job began — is not
+taken; a change it made is still loaded into the session, and a failure
+nobody saw is a toast.
 
 On a short terminal the list page is a picker like any other and sheds rows
 down the picker ladder (`ui::plugins_view::list_page`, `docs/view-flow.md`
 *A page that sheds rows before it flows*): the highlighted plugin's
 description first, leaving its one-row facts; then the facts and the
 counter, the rows down to the compact three between the `↑`/`↓` slots, the
-title and count kept; then those too, the **tab strip** kept — ←/→ still
-move between tabs, so it outlasts the title; then the compact rungs down to
-the search line alone. So the search line, the highlighted row and the hint
-stay on screen and the list never flows. A detail page bottom-anchors
-instead, its actions, job line and hint staying on screen while its top
-flows into scrollback.
+header kept; then the header too, the **tab strip** kept — ←/→ still move
+between tabs, so it outlasts the title; then the compact rungs down to the
+search line alone. A detail page bottom-anchors instead, its actions and
+status row staying on screen while its top flows into scrollback.
 
 ## From a shell
 
@@ -488,10 +564,13 @@ parse), `2` a grammar error, over the plugin page's usage block.
 - `src/tui/plugins.rs` — the boundary: loading at bootstrap, the worker, the
   reload after every change. `src/tui/plugin_cli.rs` — the subcommands.
 - `smoke.sh` Phase 161 drives the page in tmux against a marketplace kept
-  in a directory: added through the field, a plugin installed from its page,
-  one with a hook installed and the review answered, its skill completed as
-  a `$` mention, the installs persisted for a second process, a toggle with
-  Space, and `plugin list` reading the same store.
+  in a directory: the official catalogs offered on an empty config home, the
+  marketplace added by typing its folder, a plugin installed in place from
+  its page, one with a hook and a server installed and the review answered,
+  its server's tool named `mcp__plugin_guard_probe__…` in `/mcp`, its skill
+  completed as a `$` mention, the installs persisted for a second process
+  that opens on them at once, a toggle with Space that writes no clear and
+  never moves the page, and `plugin list` reading the same store.
 
 ## What this deliberately is not
 

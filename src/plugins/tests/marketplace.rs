@@ -375,7 +375,7 @@ fn a_plugin_directory_is_a_marketplace_of_one() {
             "description":"A copyable reference package.","keywords":["example"]}"#,
     )
     .unwrap();
-    let market = single_plugin_marketplace(&manifest);
+    let market = single_plugin_marketplace(&manifest).unwrap();
     assert_eq!(market.name, "agent-plugins-example");
     assert_eq!(market.plugins.len(), 1);
     let entry = &market.plugins[0];
@@ -451,4 +451,51 @@ fn a_local_copy_of_the_official_catalog_parses_whole() {
     assert!(market.plugins[0].source.installable().is_ok());
     assert!(market.plugins[1].source.installable().is_ok());
     assert!(market.plugins[2].source.installable().is_err());
+}
+
+// ===== reserved names =====
+
+#[test]
+fn an_official_marketplace_name_comes_only_from_its_owner() {
+    use super::super::registry::MarketplaceSource;
+    let git = |url: &str| MarketplaceSource::Git {
+        url: url.to_string(),
+        ref_name: None,
+    };
+    let local = MarketplaceSource::Local {
+        path: "/home/me/plugins".to_string(),
+    };
+    // From its owner's organisation, the name is its own.
+    for (name, url) in [
+        (
+            "claude-plugins-official",
+            "https://github.com/anthropics/claude-plugins-official.git",
+        ),
+        (
+            "claude-plugins-official",
+            "git@github.com:anthropics/claude-plugins-official.git",
+        ),
+        ("openai-curated", "https://github.com/openai/plugins.git"),
+    ] {
+        assert_eq!(check_reserved(name, &git(url)), Ok(()), "{name} from {url}");
+    }
+    // From anywhere else — another owner, a directory, a respelling — it is
+    // refused, so no catalog can pass for the official one.
+    for (name, source) in [
+        ("claude-plugins-official", local.clone()),
+        (
+            "claude-plugins-official",
+            git("https://github.com/anthropics-fake/claude-plugins-official.git"),
+        ),
+        ("claude.plugins.official", local.clone()),
+        ("Claude-Plugins-Official", local.clone()),
+        ("claude-plugins-official.", local.clone()),
+        ("openai-curated", git("https://github.com/acme/plugins.git")),
+        ("knowledge-work-plugins", local.clone()),
+    ] {
+        let error = check_reserved(name, &source).unwrap_err();
+        assert!(error.contains("reserved"), "{name}: {error}");
+    }
+    // Every other name is anyone's.
+    assert_eq!(check_reserved("team-tools", &local), Ok(()));
 }

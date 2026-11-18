@@ -116,8 +116,8 @@ pub use self::config_review::{
     ReviewPage, ReviewSection,
 };
 pub use self::plugins_menu::{
-    MarketplaceAction, MarketplaceRow, PluginAction, PluginDone, PluginJob, PluginOp,
-    PluginsConfirm, PluginsMenu, PluginsPage, PluginsTab, marketplace_actions, plugin_actions,
+    AddRow, PLUGINS_JOB_DELAY, PluginAction, PluginDone, PluginJob, PluginOp, PluginsConfirm,
+    PluginsMenu, PluginsPage, PluginsTab, plugin_actions,
 };
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
@@ -585,6 +585,10 @@ pub struct App {
     /// The round the newest `/plugins` job was asked under — what an answer
     /// must carry to be taken (`App::finish_plugin_job`).
     plugin_rounds: u64,
+    /// The newest catalog read — and the round it was read under — so a
+    /// reopened `/plugins` page shows it at once, at its own height, while
+    /// the read runs again behind it (`App::keep_plugin_catalog`).
+    plugins_kept: Option<(u64, crate::plugins::PluginCatalog)>,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over

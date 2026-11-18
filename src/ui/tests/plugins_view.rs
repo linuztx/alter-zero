@@ -4,14 +4,14 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
-use crate::app::{PluginDone, PluginsTab};
+use crate::app::{PLUGINS_JOB_DELAY, PluginDone, PluginsTab};
 use crate::plugins::{
     CatalogMarketplace, CatalogPlugin, ComponentSummary, InstalledState, PluginCatalog,
     PluginFormat, PluginId,
 };
 use crate::ui::theme::{
-    PLUGINS_ADD_HINT, PLUGINS_LIST_HINT, PLUGINS_MARKETS_HINT, PLUGINS_TRUST_NOTE,
-    ask_chip_current_bg, ask_warning_color, model_active_color, toast_error_color,
+    PLUGINS_TRUST_NOTE, ask_chip_current_bg, ask_warning_color, model_active_color,
+    toast_error_color,
 };
 
 const TALL: u16 = 200;
@@ -42,6 +42,7 @@ fn plugin(key: &str, installed: Option<bool>) -> CatalogPlugin {
             enabled,
             update: false,
             error: None,
+            in_place: false,
         }),
         notes: Vec::new(),
     }
@@ -122,11 +123,14 @@ fn the_list_shows_the_tabs_the_rows_and_the_highlighted_plugins_facts() {
     let texts = page(&plugins_app());
     assert!(has(&texts, "Plugins"), "{texts:#?}");
     assert!(
-        has(&texts, "2 installed · 4 plugins in 2 marketplaces"),
+        has(&texts, "2 installed · 1 on in this directory"),
         "{texts:#?}"
     );
     assert!(
-        has(&texts, " Installed (2)    Discover (4)    Marketplaces (2)"),
+        has(
+            &texts,
+            " All (4)    Installed (2)    team (3)    local (1)    + Add"
+        ),
         "{texts:#?}"
     );
     assert!(texts.iter().any(|t| t == "  ❯"), "{texts:#?}");
@@ -135,7 +139,11 @@ fn the_list_shows_the_tabs_the_rows_and_the_highlighted_plugins_facts() {
         .find(|t| t.contains("→ hookify"))
         .expect("the highlighted row");
     assert!(hookify.contains("✔ enabled"), "{hookify}");
-    assert!(hookify.contains("What hookify@team does"), "{hookify}");
+    // Where every marketplace is listed, a row names its own.
+    assert!(
+        hookify.contains("team · What hookify@team does"),
+        "{hookify}"
+    );
     let lint = texts.iter().find(|t| t.contains("lint")).expect("lint");
     assert!(lint.contains("◯ disabled"), "{lint}");
     assert!(has(&texts, "(1/2)"), "{texts:#?}");
@@ -146,7 +154,7 @@ fn the_list_shows_the_tabs_the_rows_and_the_highlighted_plugins_facts() {
         ),
         "the facts under the list: {texts:#?}"
     );
-    assert!(has(&texts, PLUGINS_LIST_HINT), "{texts:#?}");
+    assert!(has(&texts, "←/→ tabs"), "{texts:#?}");
     assert_frame_hugs_content(
         "the list",
         &crate::ui::plugins_view::plugins_view_lines(&plugins_app(), 80, TALL),
@@ -174,7 +182,7 @@ fn the_current_tab_is_a_lit_chip() {
     let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
     let strip = lines
         .iter()
-        .find(|line| plain(line).contains("Discover"))
+        .find(|line| plain(line).contains("+ Add"))
         .expect("the strip");
     let lit: Vec<&str> = strip
         .spans
@@ -186,16 +194,159 @@ fn the_current_tab_is_a_lit_chip() {
 }
 
 #[test]
-fn discover_says_what_can_and_cannot_be_installed() {
+fn a_marketplace_tab_lists_its_plugins_under_what_it_is() {
     let mut app = plugins_app();
     press(&mut app, KeyCode::Right);
-    let texts = page(&app);
+    let mut texts = page(&app);
+    assert!(has(&texts, "The team catalog"), "{texts:#?}");
+    assert!(has(&texts, "3 plugins · 1 installed"), "{texts:#?}");
+    assert!(
+        has(&texts, "https://example.com/team.git · 1a2b3c4"),
+        "{texts:#?}"
+    );
     let deploy = texts.iter().find(|t| t.contains("deploy")).expect("deploy");
     assert!(deploy.contains("+ available"), "{deploy}");
-    assert!(deploy.contains("Ships builds to staging"), "{deploy}");
+    // Its own tab does not name it on every row.
+    assert!(deploy.contains("  Ships builds to staging"), "{deploy}");
+    assert!(!deploy.contains("team ·"), "{deploy}");
     let npm = texts.iter().find(|t| t.contains("npm-thing")).expect("npm");
     assert!(npm.contains("– unavailable"), "{npm}");
-    assert!(has(&texts, "(1/4)"), "{texts:#?}");
+    assert!(has(&texts, "(1/3)"), "{texts:#?}");
+    assert!(
+        has(&texts, "Ctrl+U update"),
+        "a git marketplace: {texts:#?}"
+    );
+    assert!(has(&texts, "Ctrl+R remove"), "{texts:#?}");
+    assert!(!has(&texts, "updated"), "no clock yet: {texts:#?}");
+    app.set_plugins_clock(std::time::Duration::ZERO, 1_000 + 7_200);
+    texts = page(&app);
+    assert!(
+        has(&texts, "3 plugins · 1 installed · updated 2h ago"),
+        "{texts:#?}"
+    );
+    // A directory has nothing to update.
+    press(&mut app, KeyCode::Right);
+    let texts = page(&app);
+    assert!(!has(&texts, "Ctrl+U update"), "{texts:#?}");
+    assert!(has(&texts, "Ctrl+R remove"), "{texts:#?}");
+}
+
+#[test]
+fn a_marketplace_says_in_its_header_why_it_could_not_be_read_or_what_it_skipped() {
+    let mut catalog = catalog();
+    catalog.marketplaces[1].error = Some("no marketplace.json".to_string());
+    catalog.marketplaces[0].notes = vec![
+        "entry 4 skipped: `evil`: `ref` `--x` is not a branch or tag name".to_string(),
+        "entry 5 skipped: `bad name`: invalid plugin name".to_string(),
+    ];
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Right);
+    let texts = page(&app);
+    assert!(has(&texts, "2 entries skipped — `evil`"), "{texts:#?}");
+    assert!(
+        has(&texts, "is not a branch or tag name"),
+        "the reason, whole: {texts:#?}"
+    );
+    press(&mut app, KeyCode::Right);
+    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
+    let error = lines
+        .iter()
+        .find(|line| plain(line).contains("✘ no marketplace.json"))
+        .expect("the failure in the header");
+    assert!(
+        error
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(toast_error_color()))
+    );
+}
+
+#[test]
+fn toggling_a_plugin_never_moves_the_page() {
+    // The flicker: a job line and a gap that came for one frame, then a toast
+    // row over the page that pushed it down a row, then took it back up.
+    // What runs and what happened are said in the hint's own row now.
+    let mut app = plugins_app();
+    let before = page(&app);
+    let hint_row = before
+        .iter()
+        .position(|t| t.contains("←/→ tabs"))
+        .expect("the hint");
+    press(&mut app, KeyCode::Char(' '));
+    app.set_plugins_clock(std::time::Duration::ZERO, 0);
+    let running = page(&app);
+    assert_eq!(running.len(), before.len(), "{running:#?}");
+    assert!(
+        !has(&running, "Disabling"),
+        "a quick job says nothing: {running:#?}"
+    );
+    app.set_plugins_clock(PLUGINS_JOB_DELAY, 0);
+    let slow = page(&app);
+    assert_eq!(slow.len(), before.len(), "{slow:#?}");
+    assert!(
+        slow[hint_row].contains("Disabling hookify… (0s · esc to cancel)"),
+        "{slow:#?}"
+    );
+    let round = app.plugins_job_round().unwrap();
+    app.finish_plugin_job(
+        round,
+        Some(catalog()),
+        &Ok(PluginDone {
+            message: "Disabled hookify in this directory".to_string(),
+            marketplace: None,
+        }),
+    );
+    let done = page(&app);
+    assert_eq!(done.len(), before.len(), "{done:#?}");
+    assert!(
+        done[hint_row].contains("✔ Disabled hookify in this directory"),
+        "{done:#?}"
+    );
+    press(&mut app, KeyCode::Down);
+    let after = page(&app);
+    assert_eq!(after.len(), before.len(), "{after:#?}");
+    assert!(after[hint_row].contains("←/→ tabs"), "{after:#?}");
+    // On a plugin's own page, the same.
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Enter);
+    let before = page(&app);
+    press(&mut app, KeyCode::Enter);
+    app.set_plugins_clock(PLUGINS_JOB_DELAY, 0);
+    assert_eq!(page(&app).len(), before.len());
+    let round = app.plugins_job_round().unwrap();
+    app.finish_plugin_job(
+        round,
+        Some(catalog()),
+        &Ok(PluginDone {
+            message: "Disabled hookify in this directory".to_string(),
+            marketplace: None,
+        }),
+    );
+    assert_eq!(page(&app).len(), before.len());
+}
+
+#[test]
+fn a_failure_is_said_in_red_on_the_page() {
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Char(' '));
+    let round = app.plugins_job_round().unwrap();
+    app.finish_plugin_job(
+        round,
+        Some(catalog()),
+        &Err("could not save plugins.json".to_string()),
+    );
+    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
+    let error = lines
+        .iter()
+        .find(|line| plain(line).contains("could not save plugins.json"))
+        .expect("the failure");
+    assert!(
+        error
+            .spans
+            .iter()
+            .any(|span| span.style.fg == Some(toast_error_color()))
+    );
+    assert_frame_hugs_content("a failure", &lines);
 }
 
 #[test]
@@ -210,7 +361,10 @@ fn an_update_opens_the_description_on_an_amber_mark() {
         .expect("the row");
     let text = plain(row);
     assert!(text.contains("✔ enabled"), "{text}");
-    assert!(text.contains("▲ update · What hookify@team does"), "{text}");
+    assert!(
+        text.contains("▲ update · team · What hookify@team does"),
+        "{text}"
+    );
     let mark = row
         .spans
         .iter()
@@ -245,7 +399,7 @@ fn two_plugins_of_one_name_name_their_marketplaces() {
     let mut catalog = catalog();
     catalog.plugins.push(plugin("lint@team", None));
     let mut app = open_with(catalog);
-    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
     let texts = page(&app);
     assert!(has(&texts, "lint@local"), "{texts:#?}");
     assert!(has(&texts, "lint@team"), "{texts:#?}");
@@ -254,50 +408,12 @@ fn two_plugins_of_one_name_name_their_marketplaces() {
 }
 
 #[test]
-fn the_marketplaces_tab_lists_counts_sources_and_the_add_row() {
-    let mut app = plugins_app();
-    press(&mut app, KeyCode::Left);
-    assert_eq!(
-        app.plugins_menu.as_ref().unwrap().tab,
-        PluginsTab::Marketplaces
-    );
-    let mut texts = page(&app);
-    let team = texts.iter().find(|t| t.contains("→ team")).expect("team");
-    assert!(
-        team.contains("3 plugins · 1 installed · https://example.com/team.git"),
-        "{team}"
-    );
-    assert!(has(&texts, "+ Add a marketplace"), "{texts:#?}");
-    assert!(has(&texts, PLUGINS_MARKETS_HINT), "{texts:#?}");
-    // Under the list: its description, then its source and revision — and
-    // its age, once the clock is injected.
-    assert!(has(&texts, "The team catalog"), "{texts:#?}");
-    assert!(
-        has(&texts, "https://example.com/team.git · 1a2b3c4"),
-        "{texts:#?}"
-    );
-    assert!(!has(&texts, "updated"), "no clock yet: {texts:#?}");
-    app.set_plugins_clock(0, 1_000 + 7_200);
-    texts = page(&app);
-    assert!(has(&texts, "· updated 2h ago"), "{texts:#?}");
-}
-
-#[test]
-fn a_marketplace_that_cannot_be_read_says_why_on_its_row() {
-    let mut catalog = catalog();
-    catalog.marketplaces[1].error = Some("no marketplace.json".to_string());
-    let mut app = open_with(catalog);
-    press(&mut app, KeyCode::Left);
-    let texts = page(&app);
-    let local = texts.iter().find(|t| t.contains("local")).expect("local");
-    assert!(local.contains("✘ no marketplace.json"), "{local}");
-}
-
-#[test]
-fn the_first_read_shows_its_clock_where_the_rows_will_be() {
+fn the_first_read_waits_a_moment_then_shows_its_clock_where_the_rows_will_be() {
     let mut app = App::new();
     app.open_plugins_menu(true);
-    app.set_plugins_clock(3, 0);
+    app.set_plugins_clock(std::time::Duration::ZERO, 0);
+    assert!(!has(&page(&app), "Reading"), "{:#?}", page(&app));
+    app.set_plugins_clock(std::time::Duration::from_secs(3), 0);
     let texts = page(&app);
     let reading: Vec<&String> = texts
         .iter()
@@ -305,58 +421,26 @@ fn the_first_read_shows_its_clock_where_the_rows_will_be() {
         .collect();
     assert_eq!(reading.len(), 1, "once: {texts:#?}");
     assert!(reading[0].contains("(3s · esc to cancel)"), "{texts:#?}");
-    assert!(has(&texts, " Installed  "), "no counts yet: {texts:#?}");
+    assert!(
+        has(&texts, " All    Installed    + Add"),
+        "no counts yet: {texts:#?}"
+    );
 }
 
 #[test]
 fn an_empty_tab_names_where_to_go() {
-    let app = open_with(PluginCatalog::default());
-    // No catalog entry at all: the Marketplaces tab, whose add row is the
-    // way in.
-    assert!(has(&page(&app), "+ Add a marketplace"));
     let mut app = open_with(PluginCatalog {
         marketplaces: vec![market("team", true)],
         plugins: vec![plugin("deploy@team", None)],
         error: None,
     });
-    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(
+        app.plugins_menu.as_ref().unwrap().tab,
+        PluginsTab::Installed
+    );
     let texts = page(&app);
     assert!(has(&texts, "No plugins installed yet"), "{texts:#?}");
-}
-
-#[test]
-fn a_running_job_and_a_failure_show_over_the_hint() {
-    let mut app = plugins_app();
-    press(&mut app, KeyCode::Char(' '));
-    app.set_plugins_clock(2, 0);
-    let texts = page(&app);
-    let job = texts
-        .iter()
-        .position(|t| t.contains("Disabling hookify… (2s · esc to cancel)"))
-        .expect("the job line");
-    let hint = texts
-        .iter()
-        .position(|t| t.contains(PLUGINS_LIST_HINT))
-        .expect("the hint");
-    assert_eq!(hint, job + 2, "a gap between them: {texts:#?}");
-
-    let round = app.plugins_job_round().unwrap();
-    app.finish_plugin_job(
-        round,
-        Some(catalog()),
-        &Err("could not save plugins.json".to_string()),
-    );
-    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
-    let error = lines
-        .iter()
-        .find(|line| plain(line).contains("could not save plugins.json"))
-        .expect("the failure");
-    assert!(
-        error
-            .spans
-            .iter()
-            .any(|span| span.style.fg == Some(toast_error_color()))
-    );
 }
 
 #[test]
@@ -383,7 +467,7 @@ fn a_short_terminal_sheds_rows_down_to_the_search_line() {
         |height| page_at(&app, 80, height),
         "",
         "→ hookify",
-        "Type to search",
+        "←/→ tabs",
     );
     for height in 1..=12 {
         assert_caret_on_search_line(&app, &page_at(&app, 80, height), 80, "");
@@ -393,7 +477,7 @@ fn a_short_terminal_sheds_rows_down_to_the_search_line() {
     let compact: Vec<usize> = (1..=30)
         .filter(|h| {
             let texts = page_at(&app, 80, *h);
-            has(&texts, "Discover") && !has(&texts, "4 plugins in")
+            has(&texts, "+ Add") && !has(&texts, "1 on in this directory")
         })
         .map(usize::from)
         .collect();
@@ -407,8 +491,28 @@ fn a_short_terminal_sheds_rows_down_to_the_search_line() {
         |height| page_at(&app, 80, height),
         "zzz",
         "No matching plugins",
-        "Type to search",
+        "←/→ tabs",
     );
+}
+
+#[test]
+fn the_hint_keeps_its_clauses_whole_on_a_narrow_terminal() {
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Right);
+    for width in [40_u16, 52, 64, 80, 120] {
+        let texts = page_at(&app, width, TALL);
+        let hint = texts
+            .iter()
+            .rev()
+            .nth(1)
+            .expect("the hint, over the closing rule");
+        assert!(!hint.ends_with('…'), "{width} columns: {hint:?}");
+        assert!(hint.contains("Esc to close"), "{width} columns: {hint:?}");
+        assert!(
+            crate::ui::wrap::cols(hint) <= usize::from(width),
+            "{width}: {hint:?}"
+        );
+    }
 }
 
 #[test]
@@ -420,6 +524,39 @@ fn the_caret_follows_the_search() {
     let texts = page(&app);
     assert_caret_on_search_line(&app, &texts, 80, "hoo");
     assert!(cursor_visible(&app));
+}
+
+#[test]
+fn the_tab_strip_scrolls_to_keep_the_current_tab_in_view() {
+    let mut catalog = catalog();
+    for i in 0..8 {
+        catalog
+            .marketplaces
+            .push(market(&format!("market-{i}"), true));
+    }
+    let mut app = open_with(catalog);
+    // The strip is two rows over the search line, past its gap.
+    let strip = |app: &App| {
+        let texts = page_at(app, 60, TALL);
+        let search = texts
+            .iter()
+            .position(|t| t.starts_with("  ❯"))
+            .expect("the search line");
+        texts[search - 2].clone()
+    };
+    let first = strip(&app);
+    assert!(first.contains(" Installed (2) "), "{first}");
+    assert!(first.ends_with('›'), "more to the right: {first}");
+    assert!(crate::ui::wrap::cols(&first) <= 60, "{first}");
+    for _ in 0..9 {
+        press(&mut app, KeyCode::Right);
+    }
+    let last = strip(&app);
+    assert!(last.contains(" market-7 (0) "), "{last}");
+    assert!(
+        last.trim_start().starts_with('‹'),
+        "more to the left: {last}"
+    );
 }
 
 fn open_plugin_page(app: &mut App) {
@@ -464,10 +601,50 @@ fn a_plugins_page_shows_its_facts_over_its_actions() {
 }
 
 #[test]
+fn a_plugin_loaded_in_place_says_where_from_and_offers_no_update() {
+    let mut catalog = catalog();
+    let state = catalog.plugins[0].installed.as_mut().unwrap();
+    state.in_place = true;
+    catalog.plugins[0].source = "/srv/team/plugins/hookify".to_string();
+    let mut app = open_with(catalog);
+    open_plugin_page(&mut app);
+    let texts = page(&app);
+    let loads = texts
+        .iter()
+        .find(|t| t.contains("Loads from:"))
+        .expect("where it loads from");
+    assert!(loads.contains("/srv/team/plugins/hookify"), "{loads}");
+    assert!(!has(&texts, "Update"), "{texts:#?}");
+    assert!(has(&texts, "2. Uninstall"), "{texts:#?}");
+}
+
+#[test]
+fn a_plugin_that_was_not_loaded_says_why() {
+    let mut catalog = catalog();
+    catalog.plugins[0].installed.as_mut().unwrap().error = Some(
+        "not loaded — hookify@other is on under the same name, `hookify`; turn one off".to_string(),
+    );
+    let mut app = open_with(catalog);
+    let texts = page(&app);
+    let row = texts.iter().find(|t| t.contains("→ hookify")).expect("row");
+    assert!(row.contains("✘ not loaded"), "{row}");
+    open_plugin_page(&mut app);
+    let texts = page(&app);
+    let status = texts
+        .iter()
+        .find(|t| t.contains("Status:"))
+        .expect("status");
+    assert!(status.contains("installed, but not loaded"), "{status}");
+    assert!(
+        has(&texts, "hookify@other is on under the same name"),
+        "{texts:#?}"
+    );
+}
+
+#[test]
 fn a_plugin_that_brings_hooks_says_they_wait_for_review() {
     let mut app = plugins_app();
     press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     open_plugin_page(&mut app);
     let texts = page(&app);
@@ -509,42 +686,10 @@ fn the_hidden_cursor_seats_on_the_highlighted_action() {
 }
 
 #[test]
-fn a_marketplaces_page_shows_where_it_comes_from() {
-    let mut app = plugins_app();
-    press(&mut app, KeyCode::Left);
-    press(&mut app, KeyCode::Enter);
-    app.set_plugins_clock(0, 1_000 + 120);
-    let texts = page(&app);
-    assert!(
-        has(&texts, "3 plugins · 1 installed · by Team"),
-        "{texts:#?}"
-    );
-    assert!(has(&texts, "The team catalog"), "{texts:#?}");
-    let source = texts
-        .iter()
-        .find(|t| t.contains("Source:"))
-        .expect("source");
-    assert!(source.contains("https://example.com/team.git"), "{source}");
-    let revision = texts.iter().find(|t| t.contains("Revision:")).expect("rev");
-    assert!(revision.contains("1a2b3c4d5e6f"), "{revision}");
-    let updated = texts.iter().find(|t| t.contains("Updated:")).expect("age");
-    assert!(updated.contains("2m ago"), "{updated}");
-    assert!(has(&texts, "Location:"), "{texts:#?}");
-    assert!(has(&texts, "❯ 1. Browse its plugins"), "{texts:#?}");
-    assert!(has(&texts, "2. Update"), "{texts:#?}");
-    assert!(has(&texts, "3. Remove"), "{texts:#?}");
-    assert_frame_hugs_content(
-        "a marketplace's page",
-        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
-    );
-}
-
-#[test]
 fn removing_a_marketplace_names_what_it_uninstalls() {
     let mut app = plugins_app();
-    press(&mut app, KeyCode::Left);
-    press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Char('3'));
+    press(&mut app, KeyCode::Right);
+    app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     let texts = page(&app);
     assert!(has(&texts, "Remove the team marketplace?"), "{texts:#?}");
     assert!(
@@ -563,38 +708,51 @@ fn removing_a_marketplace_names_what_it_uninstalls() {
 }
 
 #[test]
-fn the_add_page_seats_the_caret_in_its_field() {
-    let mut app = plugins_app();
+fn the_add_tab_offers_the_official_marketplaces_under_its_field() {
+    let mut catalog = catalog();
+    let mut official = market("openai-curated", true);
+    official.source = "https://github.com/openai/plugins.git".to_string();
+    catalog.marketplaces.push(official);
+    let mut app = open_with(catalog);
     press(&mut app, KeyCode::Left);
-    press(&mut app, KeyCode::End);
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::Add);
     let texts = page(&app);
-    assert!(has(&texts, "Add a marketplace"), "{texts:#?}");
     assert!(
-        texts.iter().any(|t| t == "  ❯ owner/repo"),
-        "the placeholder: {texts:#?}"
+        has(
+            &texts,
+            "Add a marketplace: owner/repo, a git URL, or a directory"
+        ),
+        "what the field takes: {texts:#?}"
     );
-    assert!(has(&texts, PLUGINS_ADD_HINT), "{texts:#?}");
+    let claude = texts
+        .iter()
+        .find(|t| t.contains("anthropics/claude-plugins-official"))
+        .expect("Claude Code's catalog");
+    assert!(claude.contains("→ "), "highlighted first: {claude}");
+    assert!(claude.contains("Claude Code"), "{claude}");
+    let codex = texts
+        .iter()
+        .find(|t| t.contains("openai/plugins"))
+        .expect("codex's catalog");
+    assert!(codex.contains("✔ added"), "it is added already: {codex}");
+    assert!(has(&texts, "Enter to add"), "{texts:#?}");
     assert!(cursor_visible(&app));
+    assert_caret_on_search_line(&app, &texts, 80, "");
+    assert_frame_hugs_content(
+        "the add tab",
+        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
+    );
     for c in "acme/tools".chars() {
         press(&mut app, KeyCode::Char(c));
     }
     let texts = page(&app);
-    let row = texts
+    assert_caret_on_search_line(&app, &texts, 80, "acme/tools");
+    let typed = texts
         .iter()
-        .position(|t| t == "  ❯ acme/tools")
-        .expect("the field");
-    let width = 80;
-    let height = crate::ui::plugins_menu_height(&app, width, TALL).expect("open");
-    let area = Rect::new(0, 0, width, height);
-    assert_eq!(
-        cursor_position(area, &app),
-        (4 + 10, u16::try_from(row).unwrap())
-    );
-    assert_frame_hugs_content(
-        "the add page",
-        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
-    );
+        .find(|t| t.contains("→ acme/tools"))
+        .expect("the typed source, highlighted");
+    assert!(typed.contains("Press Enter to add it"), "{typed}");
 }
 
 #[test]

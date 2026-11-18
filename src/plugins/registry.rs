@@ -93,6 +93,17 @@ pub struct InstalledRecord {
     /// newer copy (`store::update_available`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
+    /// The directory it loads from **in place** — a plugin of a marketplace
+    /// added from a directory, Claude Code's rule — rather than a copy
+    /// under the tree's `installed/`. Never deleted by an uninstall: it is
+    /// the user's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    /// The version its marketplace entry offered at install — what a later
+    /// entry is compared with to see a newer one, for a plugin fetched from
+    /// a repository of its own (its manifest's version may well differ).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offered: Option<String>,
 }
 
 /// One directory's turned-off plugins.
@@ -135,7 +146,14 @@ impl Registry {
         if !text.starts_with('{') {
             return Err("expected a JSON object".to_string());
         }
-        serde_json::from_str(text).map_err(|err| err.to_string())
+        let registry: Self = serde_json::from_str(text).map_err(|err| err.to_string())?;
+        // A marketplace's name becomes a directory under the plugins tree:
+        // a hand-edited one that is no plain name is refused, never followed.
+        for name in registry.marketplaces.keys() {
+            super::id::validate_name(name)
+                .map_err(|reason| format!("invalid marketplace name `{name}`: {reason}"))?;
+        }
+        Ok(registry)
     }
 
     /// The file's body, pretty-printed like the sibling config files.

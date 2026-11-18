@@ -154,8 +154,9 @@ fn a_marketplace_is_added_and_its_plugins_installed_toggled_and_removed() {
     let text = ok(&scratch, &["install", "hello"]);
     assert!(text.contains("Installed hello@demo v1.2.0"), "{text}");
     assert!(text.contains("1 skill · 1 command"), "{text}");
+    // A directory's plugins load in place: nothing is copied.
     let copy = scratch.config.join("plugins/installed/demo/hello");
-    assert!(copy.join("skills/greet/SKILL.md").is_file());
+    assert!(!copy.exists(), "a directory's plugin is not copied");
 
     // A plugin that runs something says the app asks first.
     let text = ok(&scratch, &["add", "guard@demo"]);
@@ -179,7 +180,13 @@ fn a_marketplace_is_added_and_its_plugins_installed_toggled_and_removed() {
 
     let text = ok(&scratch, &["uninstall", "hello"]);
     assert!(text.contains("Uninstalled hello@demo"), "{text}");
-    assert!(!copy.exists(), "its copy is gone");
+    assert!(
+        scratch
+            .market
+            .join("plugins/hello/skills/greet/SKILL.md")
+            .is_file(),
+        "its folder is the user's and stays"
+    );
 
     let text = ok(&scratch, &["marketplace", "rm", "demo"]);
     assert!(text.contains("uninstalled 1 plugin: guard@demo"), "{text}");
@@ -187,11 +194,33 @@ fn a_marketplace_is_added_and_its_plugins_installed_toggled_and_removed() {
     assert!(text.starts_with("No plugins installed"), "{text}");
 }
 
+/// Make `dir` a git repository with everything in it committed.
+fn commit(dir: &Path, message: &str) {
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", stderr(&out));
+    };
+    if !dir.join(".git").exists() {
+        git(&["init", "-q", "-b", "main"]);
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", message]);
+}
+
 #[test]
 fn update_reinstalls_a_plugin_its_marketplace_changed() {
+    // A git marketplace's plugins are copies, so a change upstream is an
+    // update to fetch (a directory's load in place and are always current).
     let scratch = scratch("update");
-    let market = scratch.market.display().to_string();
-    ok(&scratch, &["marketplace", "add", &market]);
+    commit(&scratch.market, "init");
+    let url = format!("file://{}", scratch.market.display());
+    ok(&scratch, &["marketplace", "add", &url]);
     ok(&scratch, &["install", "hello"]);
     let text = ok(&scratch, &["update"]);
     assert!(
@@ -204,6 +233,7 @@ fn update_reinstalls_a_plugin_its_marketplace_changed() {
         "plugins/hello/skills/greet/SKILL.md",
         "---\nname: greet\ndescription: Greet warmly.\n---\nSay hello warmly.",
     );
+    commit(&scratch.market, "warmly");
     let text = ok(&scratch, &["upgrade"]);
     assert!(text.contains("Updated hello@demo"), "{text}");
     let copied = std::fs::read_to_string(

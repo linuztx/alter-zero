@@ -90,6 +90,8 @@ impl ProjectLayer {
 pub(crate) struct PluginLayer {
     hooks: Vec<(PathBuf, hooks::HooksFile)>,
     mcp: Vec<(PathBuf, mcp::McpFile)>,
+    /// Each file's plugin (`hello@demo`), which the review names it by.
+    owners: std::collections::BTreeMap<PathBuf, String>,
 }
 
 /// What the review decides over: `trust.json` and the files it is about.
@@ -172,13 +174,23 @@ impl TrustState {
     /// each under its own absolute path, so trusting one plugin's hook says
     /// nothing about another's. Replaces what the last call adopted.
     pub(crate) fn set_plugins(&mut self, loaded: &alter_zero::plugins::LoadedPlugins) {
-        self.plugins.hooks = loaded
-            .hooks()
-            .into_iter()
-            .map(|hooks| (hooks.source, hooks.file))
-            .collect();
+        self.plugins.owners.clear();
+        self.plugins.hooks.clear();
+        for package in &loaded.packages {
+            for hooks in &package.components.hooks {
+                self.plugins
+                    .owners
+                    .insert(hooks.source.clone(), package.id.key());
+                self.plugins
+                    .hooks
+                    .push((hooks.source.clone(), hooks.file.clone()));
+            }
+        }
         let mut files: Vec<(PathBuf, mcp::McpFile)> = Vec::new();
         for server in loaded.servers() {
+            self.plugins
+                .owners
+                .insert(server.source.clone(), server.plugin.clone());
             let entry = (server.server.name, server.server.config);
             match files.iter_mut().find(|(path, _)| *path == server.source) {
                 Some((_, file)) => file.servers.push(entry),
@@ -197,20 +209,33 @@ impl TrustState {
     /// Every hooks file that parsed, with its absolute path and scope word —
     /// the user's first, the project's after it, then each plugin's (the
     /// merge's order).
-    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, &'static str)> {
+    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, String)> {
         let mut out = Vec::new();
         if let Some((path, file)) = &self.user_hooks {
-            out.push((path.display().to_string(), file, "User"));
+            out.push((path.display().to_string(), file, "User".to_string()));
         }
         if let Some(file) = self.project.as_ref().and_then(|p| p.hooks.as_ref())
             && let Ok(parsed) = &file.parsed
         {
-            out.push((file.path.display().to_string(), parsed, "Project"));
+            out.push((
+                file.path.display().to_string(),
+                parsed,
+                "Project".to_string(),
+            ));
         }
         for (path, file) in &self.plugins.hooks {
-            out.push((path.display().to_string(), file, "Plugin"));
+            out.push((path.display().to_string(), file, self.plugin_scope(path)));
         }
         out
+    }
+
+    /// The scope a plugin's file is shown under on the review: `Plugin`
+    /// and the plugin it belongs to.
+    fn plugin_scope(&self, path: &Path) -> String {
+        match self.plugins.owners.get(path) {
+            Some(owner) => format!("{} {owner}", alter_zero::ui::REVIEW_PLUGIN_SCOPE),
+            None => alter_zero::ui::REVIEW_PLUGIN_SCOPE.to_string(),
+        }
     }
 
     /// The enabled plugins' hooks the user has not trusted, each under its
@@ -312,7 +337,7 @@ impl TrustState {
                 .collect();
             if !items.is_empty() {
                 sections.push(ReviewSection {
-                    scope: Some(scope.to_string()),
+                    scope: Some(scope),
                     path: alter_zero::ui::display_cwd(Path::new(&source), home),
                     items,
                 });
@@ -357,10 +382,18 @@ impl TrustState {
                 },
             };
             let path = alter_zero::ui::display_cwd(Path::new(&review.source), home);
+            // A plugin's server is shown as its plugin's; a project's as the
+            // project's (`docs/plugins.md` *Trust*).
+            let source = Path::new(&review.source);
+            let scope = if self.plugins.owners.contains_key(source) {
+                self.plugin_scope(source)
+            } else {
+                "Project".to_string()
+            };
             match sections.iter_mut().find(|section| section.path == path) {
                 Some(section) => section.items.push(item),
                 None => sections.push(ReviewSection {
-                    scope: None,
+                    scope: Some(scope),
                     path,
                     items: vec![item],
                 }),

@@ -14,12 +14,12 @@ use crate::stream::CancelToken;
 
 use super::components::{PluginPackage, find_manifest, read_manifest, read_plugin};
 use super::git::{GIT_TIMEOUT, Git};
-use super::id::PluginId;
+use super::id::{PluginId, validate_name};
 use super::layout::PluginLayout;
 use super::manifest::CLAUDE_MANIFEST;
 use super::marketplace::{
     MARKETPLACE_MANIFESTS, MARKETPLACE_MAX_BYTES, Marketplace, MarketplaceEntry, PluginSource,
-    parse_marketplace, single_plugin_marketplace,
+    check_reserved, parse_marketplace, single_plugin_marketplace,
 };
 use super::registry::{
     InstalledRecord, MarketplaceRecord, MarketplaceSource, Registry, update_registry,
@@ -219,7 +219,7 @@ pub fn read_catalog(root: &Path) -> Result<Marketplace, String> {
     match find_manifest(root)? {
         Some(_) => {
             let (manifest, _) = read_manifest(root, None)?;
-            Ok(single_plugin_marketplace(&manifest))
+            single_plugin_marketplace(&manifest)
         }
         None => Err(
             "no `.claude-plugin/marketplace.json` or `.agents/plugins/marketplace.json`, and \
@@ -258,6 +258,27 @@ pub struct InstalledPlugin {
     pub replaced: bool,
     /// What the copy left out.
     pub notes: Vec<String>,
+}
+
+/// The catalogs a load has read so far, by marketplace name — `None` for
+/// one that could not be read.
+#[derive(Debug, Default)]
+pub(crate) struct CatalogCache {
+    read: std::collections::BTreeMap<String, Option<Marketplace>>,
+}
+
+impl CatalogCache {
+    /// The catalog of `name`, read by `read` the first time it is asked for.
+    fn catalog(
+        &mut self,
+        name: &str,
+        read: impl FnOnce() -> Option<Marketplace>,
+    ) -> Option<&Marketplace> {
+        self.read
+            .entry(name.to_string())
+            .or_insert_with(read)
+            .as_ref()
+    }
 }
 
 /// One marketplace's catalog as read: where its files are and what it
@@ -334,6 +355,57 @@ impl PluginStore {
         }
     }
 
+    /// Where the installed plugin `id` loads from: the directory it is kept
+    /// in, for one loaded in place; else its copy under `installed/`.
+    #[must_use]
+    pub fn plugin_root(&self, id: &PluginId, record: &InstalledRecord) -> PathBuf {
+        record
+            .root
+            .as_ref()
+            .map_or_else(|| self.layout.installed_dir(id), PathBuf::from)
+    }
+
+    /// Read the installed plugin `id` as a session loads it.
+    ///
+    /// # Errors
+    /// A plugin that is not installed, or one whose files cannot be read.
+    pub fn installed_package(&self, id: &PluginId) -> Result<PluginPackage, String> {
+        let registry = self.registry()?;
+        self.read_installed(&registry, id, &mut CatalogCache::default())
+    }
+
+    /// Read the installed plugin `id` of `registry`. One loaded in place
+    /// reads its marketplace entry too — the manifest of a directory that
+    /// has none, Claude Code's rule — through `cache`, so a marketplace's
+    /// catalog is read once however many of its plugins load.
+    pub(crate) fn read_installed(
+        &self,
+        registry: &Registry,
+        id: &PluginId,
+        cache: &mut CatalogCache,
+    ) -> Result<PluginPackage, String> {
+        let record = registry
+            .plugins
+            .get(&id.key())
+            .ok_or_else(|| format!("`{id}` is not installed"))?;
+        let root = self.plugin_root(id, record);
+        let data = self.layout.data_dir(id);
+        if record.root.is_none() {
+            return read_plugin(id, &root, &data, None);
+        }
+        let entry = registry
+            .marketplaces
+            .get(&id.marketplace)
+            .and_then(|market| {
+                cache
+                    .catalog(&id.marketplace, || {
+                        read_catalog(&self.marketplace_root(&id.marketplace, market)).ok()
+                    })
+                    .and_then(|catalog| catalog.plugins.iter().find(|e| e.name == id.name).cloned())
+            });
+        read_plugin(id, &root, &data, entry.as_ref())
+    }
+
     /// Every added marketplace's catalog, by name, in name order — or why
     /// it could not be read.
     #[must_use]
@@ -385,7 +457,16 @@ impl PluginStore {
         let old = aside.path().join("old");
         std::fs::rename(to, &old).map_err(|err| format!("{}: {err}", to.display()))?;
         if let Err(err) = std::fs::rename(from, to) {
-            let _ = std::fs::rename(&old, to);
+            if std::fs::rename(&old, to).is_err() {
+                // Never let the staging area's cleanup delete the only copy
+                // of what was there: keep it, and say where.
+                let kept = aside.keep().join("old");
+                return Err(format!(
+                    "{}: {err} — the previous copy is kept at {}",
+                    to.display(),
+                    kept.display()
+                ));
+            }
             return Err(format!("{}: {err}", to.display()));
         }
         Ok(())
@@ -417,7 +498,10 @@ impl PluginStore {
             }
             MarketplaceSource::Git { url, ref_name } => {
                 let stage = self.stage("marketplace-")?;
-                let checkout = stage.path().join("checkout");
+                // Checked out under the repository's own name: a plugin
+                // repository whose manifest names nothing is named after
+                // its directory, as Claude Code names it.
+                let checkout = stage.path().join(repository_name(url));
                 let revision = self.git(cancel).fetch_commit(
                     url,
                     ref_name.as_deref(),
@@ -430,6 +514,10 @@ impl PluginStore {
             }
         };
         let name = catalog.name.clone();
+        // The name is about to become a directory under the tree.
+        validate_name(&name)
+            .map_err(|reason| format!("invalid marketplace name `{name}`: {reason}"))?;
+        check_reserved(&name, source)?;
         if let Some(existing) = registry.marketplaces.get(&name) {
             if existing.source != *source {
                 return Err(format!(
@@ -492,7 +580,9 @@ impl PluginStore {
         let mut changed = false;
         if let MarketplaceSource::Git { url, ref_name } = &record.source {
             let stage = self.stage("marketplace-")?;
-            let checkout = stage.path().join("checkout");
+            // Under its own name, so a repository that names nothing reads
+            // as the marketplace it was added as.
+            let checkout = stage.path().join(name);
             let revision =
                 self.git(cancel)
                     .fetch_commit(url, ref_name.as_deref(), None, None, &checkout)?;
@@ -650,9 +740,42 @@ impl PluginStore {
             PluginSource::Unsupported { reason, .. } => return Err(reason.clone()),
         };
 
+        // A plugin kept in a marketplace that is itself a directory loads in
+        // place (Claude Code's rule): its folder is the plugin, edits and
+        // all — nothing is copied, and there is never an update to fetch.
+        let data = self.layout.data_dir(id);
+        if !record.source.is_git() && matches!(entry.source, PluginSource::Local { .. }) {
+            let package = read_plugin(id, &source_dir, &data, Some(entry))?;
+            let replaced = registry.is_installed(&id.key());
+            std::fs::create_dir_all(&data).map_err(|err| format!("{}: {err}", data.display()))?;
+            let version = package
+                .manifest
+                .version
+                .clone()
+                .or_else(|| entry.version.clone());
+            let root = source_dir.display().to_string();
+            self.record(|registry| {
+                registry.plugins.insert(
+                    id.key(),
+                    InstalledRecord {
+                        version,
+                        revision: None,
+                        installed_at: Some(now),
+                        digest: None,
+                        root: Some(root),
+                        offered: entry.version.clone(),
+                    },
+                );
+            })?;
+            return Ok(InstalledPlugin {
+                package,
+                replaced,
+                notes: Vec::new(),
+            });
+        }
+
         // Read it before anything is copied: a plugin its own format rejects
         // is never installed.
-        let data = self.layout.data_dir(id);
         read_plugin(id, &source_dir, &data, Some(entry))?;
         let digest = tree_digest(&source_dir).ok();
 
@@ -684,6 +807,8 @@ impl PluginStore {
                     revision,
                     installed_at: Some(now),
                     digest,
+                    root: None,
+                    offered: entry.version.clone(),
                 },
             );
         })?;
@@ -734,6 +859,35 @@ impl PluginStore {
     }
 }
 
+/// The directory name a git source's checkout is made under: the last
+/// segment of its URL or path, `.git` dropped, cut to a plain name — or
+/// `marketplace` when nothing of it is one.
+#[must_use]
+pub(crate) fn repository_name(url: &str) -> String {
+    let last = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':', '\\'])
+        .next()
+        .unwrap_or_default();
+    let stem = last.strip_suffix(".git").unwrap_or(last);
+    let plain: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let plain = plain.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if validate_name(plain).is_ok() {
+        plain.to_string()
+    } else {
+        "marketplace".to_string()
+    }
+}
+
 /// Write `entry` as a Claude Code manifest into the plugin copy `dir`.
 fn write_entry_manifest(dir: &Path, entry: &MarketplaceEntry) -> Result<(), String> {
     let text = match &entry.manifest_fields {
@@ -769,29 +923,35 @@ fn write_entry_manifest(dir: &Path, entry: &MarketplaceEntry) -> Result<(), Stri
 }
 
 /// Does the catalog `entry` (of the marketplace at `root`) offer a newer copy
-/// of the plugin `installed`? A version that differs, a pinned commit that
-/// differs, or — for a plugin kept in the marketplace itself — contents that
-/// differ.
+/// of the plugin `installed`? Each kind of source by what it can tell: a
+/// plugin kept in the marketplace by its files (a version bump among them),
+/// one pinned to a commit by the commit, one fetched from a repository of
+/// its own by the entry's version against the one it offered at install —
+/// never against the manifest's, which may say another version (the
+/// manifest wins, Claude Code's rule) and would read as an update forever.
+/// One loaded in place is what the marketplace has: never.
 #[must_use]
 pub fn update_available(
     installed: &InstalledRecord,
     entry: &MarketplaceEntry,
     root: &Path,
 ) -> bool {
-    if let (Some(have), Some(offered)) = (&installed.version, &entry.version)
-        && have != offered
-    {
-        return true;
+    if installed.root.is_some() {
+        return false;
     }
     match &entry.source {
-        PluginSource::Git { sha: Some(sha), .. } => installed
-            .revision
-            .as_deref()
-            .is_some_and(|revision| !revision.starts_with(sha.as_str())),
         PluginSource::Local { path } => match (&installed.digest, tree_digest(&root.join(path))) {
             (Some(have), Ok(now)) => *have != now,
             _ => false,
         },
-        _ => false,
+        PluginSource::Git { sha: Some(sha), .. } => installed
+            .revision
+            .as_deref()
+            .is_some_and(|revision| !revision.starts_with(sha.as_str())),
+        PluginSource::Git { sha: None, .. } => {
+            let had = installed.offered.as_ref().or(installed.version.as_ref());
+            matches!((had, &entry.version), (Some(had), Some(offered)) if had != offered)
+        }
+        PluginSource::Unsupported { .. } => false,
     }
 }

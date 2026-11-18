@@ -32,7 +32,7 @@ use super::manifest::{
 use super::marketplace::MarketplaceEntry;
 use super::mcp::{
     AGENT_PLUGIN_MCP_FILE, LEGACY_MCP_FILE, PluginServer, PluginVars, merge_servers,
-    parse_agent_mcp, parse_legacy_mcp,
+    parse_agent_mcp, parse_legacy_mcp, plugin_server_name,
 };
 
 /// The most of a skill, command or agent file read to list it. The body a
@@ -121,14 +121,11 @@ impl ComponentSummary {
 }
 
 impl PluginComponents {
-    /// The components by their own names, the plugin's prefix dropped.
+    /// The components by the names a session knows them by — the names a
+    /// user types (`$hello:greet`), the scoped server name — so the page
+    /// and what it describes never disagree.
     #[must_use]
     pub fn summary(&self) -> ComponentSummary {
-        let local = |name: &str| {
-            name.split_once(super::id::NAMESPACE_SEPARATOR)
-                .map_or(name, |(_, local)| local)
-                .to_string()
-        };
         let is_command =
             |skill: &&SkillMetadata| skill.plugin.as_ref().is_some_and(|plugin| plugin.command);
         let mut hooks = Vec::new();
@@ -156,15 +153,15 @@ impl PluginComponents {
                 .skills
                 .iter()
                 .filter(|skill| !is_command(skill))
-                .map(|skill| local(&skill.name))
+                .map(|skill| skill.name.clone())
                 .collect(),
             commands: self
                 .skills
                 .iter()
                 .filter(is_command)
-                .map(|skill| local(&skill.name))
+                .map(|skill| skill.name.clone())
                 .collect(),
-            agents: self.agents.iter().map(|agent| local(&agent.name)).collect(),
+            agents: self.agents.iter().map(|agent| agent.name.clone()).collect(),
             hooks,
             hook_count,
             servers: self.servers.iter().map(|s| s.name.clone()).collect(),
@@ -183,6 +180,26 @@ pub struct PluginPackage {
     pub data: PathBuf,
     pub manifest: PluginManifest,
     pub components: PluginComponents,
+}
+
+impl PluginPackage {
+    /// The prefix of everything it adds — its skills, agents and servers:
+    /// its own name where that is one a `$` mention can hold, else the name
+    /// it is installed under (`namespace_of`).
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        namespace_of(&self.manifest, &self.id)
+    }
+}
+
+/// The prefix of everything a plugin adds: its own name where that is one a
+/// `$` mention can hold, else the name it is installed under.
+fn namespace_of<'a>(manifest: &'a PluginManifest, id: &'a PluginId) -> &'a str {
+    if validate_name(&manifest.name).is_ok() {
+        &manifest.name
+    } else {
+        &id.name
+    }
 }
 
 /// The body of a skill or command file: what follows its frontmatter, or
@@ -334,18 +351,12 @@ pub fn read_plugin(
         .canonicalize()
         .map_err(|err| format!("{}: {err}", root.display()))?;
     let (manifest, manifest_path) = read_manifest(&root, fallback)?;
-    // The prefix of everything the plugin adds: its own name where that is
-    // one a `$` mention can hold, else the name it is installed under.
-    let namespace = if validate_name(&manifest.name).is_ok() {
-        manifest.name.clone()
-    } else {
-        id.name.clone()
-    };
+    let namespace = namespace_of(&manifest, id).to_string();
     let mut reader = Reader {
         id,
         root: root.clone(),
         data: data.to_path_buf(),
-        namespace,
+        namespace: namespace.clone(),
         out: PluginComponents {
             unused: manifest.unused.clone(),
             ..PluginComponents::default()
@@ -359,6 +370,11 @@ pub fn read_plugin(
     }
     reader.unused_kinds();
     let mut components = reader.out;
+    // Every server under Claude Code's scoped name (`plugin:{name}:{key}`),
+    // so its tools are the ones a plugin written for it names.
+    for server in &mut components.servers {
+        server.name = plugin_server_name(&namespace, &server.name);
+    }
     // Two files may name one skill; the first keeps it, as in any root.
     let mut seen: Vec<String> = Vec::new();
     components.skills.retain(|skill| {
@@ -915,7 +931,10 @@ impl Reader<'_> {
         match plugin_hooks(text) {
             Ok(file) if file.is_empty() => {}
             Ok(file) => {
-                let file = file.with_source(source).with_env(&self.env());
+                let file = file
+                    .with_substitutions(&self.env())
+                    .with_source(source)
+                    .with_env(&self.env());
                 self.out.hooks.push(PluginHooks {
                     source: source.to_path_buf(),
                     file,
