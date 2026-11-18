@@ -229,8 +229,8 @@ impl App {
     ///
     /// [`begin_reasoning`]: App::begin_reasoning
     pub fn push_thinking(&mut self, chunk: &str) {
-        if let Some(buf) = self.reasoning.as_mut() {
-            buf.push_str(chunk);
+        if let Some(thought) = self.reasoning.as_mut() {
+            thought.push(chunk);
         }
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);

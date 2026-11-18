@@ -1,9 +1,16 @@
 //! Frame scheduling — coalesce many redraw requests into rate-limited draws.
 //!
+//! One floor, [`MIN_FRAME_INTERVAL`], paces the frames a stream, an animation
+//! or a worker's result asks for. The frame that shows a key press is not
+//! held to it, nor to any floor of its own: it is drawn when it is asked for
+//! (`docs/input-latency.md`).
+//!
 //! Ported from openai/codex's `FrameRequester`/`FrameScheduler`. The pure parts
 //! ([`FrameRateLimiter`], [`soonest`]) are unit-tested with injected `Instant`s;
 //! the async [`run_scheduler`] task that glues them to real time is covered by
-//! `scripts/smoke.sh`, like the rest of the I/O boundary.
+//! `scripts/smoke.sh`, like the rest of the I/O boundary, and by tests that
+//! run it on a runtime with no timer — which is how "a due frame never waits
+//! on one" is held (`docs/input-latency.md`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,11 +23,8 @@ use tokio::time::sleep_until;
 /// requests can never produce frames closer together than this.
 pub const MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_334);
 
-/// The scheduler's idle sleep when nothing is pending — effectively "never" until
-/// the next request wakes it (mirrors codex's `ONE_YEAR` placeholder).
-const IDLE_SLEEP: Duration = Duration::from_secs(60 * 60 * 24 * 365);
-
-/// Rate-limits emitted frames to at most one per [`MIN_FRAME_INTERVAL`].
+/// Rate-limits emitted frames to at most one per [`MIN_FRAME_INTERVAL`] —
+/// all but the one a key press asks for ([`FrameRateLimiter::clamp`]).
 ///
 /// Pure: it makes decisions from injected `Instant`s and remembers only when the
 /// last frame was emitted, so it is testable with no clock or runtime.
@@ -45,6 +49,29 @@ impl FrameRateLimiter {
         match self.last_emitted_at {
             Some(last) => requested.max(last + MIN_FRAME_INTERVAL),
             None => requested,
+        }
+    }
+
+    /// The earliest `request` may be emitted. A stream's, an animation's or a
+    /// worker's waits for its slot ([`clamp_deadline`](Self::clamp_deadline)),
+    /// so their requests coalesce into one draw a slot. A **key press**'s is
+    /// due when it was asked for: a key is not one of many events to
+    /// coalesce — a person types a few dozen a second — and typed just after
+    /// a stream's frame it waited the rest of that slot to be shown, four
+    /// milliseconds on average and eight at worst, where on an idle composer
+    /// it is shown at once. Nor does it keep a shorter floor of its own: any
+    /// wait at all goes through the runtime's timer, which counts in whole
+    /// milliseconds, so a key that owed a fraction of one paid one to two
+    /// (`docs/input-latency.md`). What bounds the paints is the loop, which
+    /// takes every key already waiting before it draws; and since the frame
+    /// a key draws counts as the last one ([`mark_emitted`](Self::mark_emitted)),
+    /// the stream's next waits a whole slot past it.
+    #[must_use]
+    pub fn clamp(&self, request: FrameRequest) -> Instant {
+        if request.input {
+            request.at
+        } else {
+            self.clamp_deadline(request.at)
         }
     }
 
@@ -73,11 +100,19 @@ pub fn soonest(pending: Option<Instant>, deadline: Instant) -> Instant {
 /// [`schedule_frame`]: FrameRequester::schedule_frame
 #[derive(Debug, Clone)]
 pub struct FrameRequester {
-    tx: UnboundedSender<Instant>,
+    tx: UnboundedSender<FrameRequest>,
     /// How many frames have been asked for through this handle and its
     /// clones — every request but the banner's own
     /// ([`schedule_banner_frame_in`](Self::schedule_banner_frame_in)).
     asked: Arc<AtomicU64>,
+}
+
+/// One request for a frame, as a [`FrameRequester`] sends it to
+/// [`run_scheduler`]: when it is wanted, and whether a key press wants it.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameRequest {
+    at: Instant,
+    input: bool,
 }
 
 impl FrameRequester {
@@ -86,7 +121,27 @@ impl FrameRequester {
         self.asked.fetch_add(1, Ordering::Relaxed);
         // The scheduler outlives every requester, so a send only fails during
         // shutdown — nothing left to draw, so dropping the request is correct.
-        let _ = self.tx.send(Instant::now());
+        let _ = self.tx.send(FrameRequest {
+            at: Instant::now(),
+            input: false,
+        });
+    }
+
+    /// Request the redraw that shows the user's own input — a **key press**,
+    /// a paste — at once, whatever the frame floor says
+    /// ([`FrameRateLimiter::clamp`]). A stream's frames are paced by that
+    /// floor because nothing is lost by showing a token eight milliseconds
+    /// late; a key typed while they run is what the user is looking at.
+    ///
+    /// Counted in [`asked`](Self::asked) like every request but the
+    /// banner's: a frame nothing counted asked for is drawn as the banner's
+    /// alone, which would take the key and never show it.
+    pub fn schedule_input_frame(&self) {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send(FrameRequest {
+            at: Instant::now(),
+            input: true,
+        });
     }
 
     /// Request a redraw no sooner than `after` from now — a *relaxed* request
@@ -97,7 +152,10 @@ impl FrameRequester {
     /// rate limiter (see [`crate::paste`] and `run_scheduler`).
     pub fn schedule_frame_in(&self, after: Duration) {
         self.asked.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(Instant::now() + after);
+        let _ = self.tx.send(FrameRequest {
+            at: Instant::now() + after,
+            input: false,
+        });
     }
 
     /// Request a redraw no sooner than `after` from now **on the banner's
@@ -108,7 +166,10 @@ impl FrameRequester {
     /// repaints the banner's cells without rendering the rest of the
     /// screen to find that it has not changed.
     pub fn schedule_banner_frame_in(&self, after: Duration) {
-        let _ = self.tx.send(Instant::now() + after);
+        let _ = self.tx.send(FrameRequest {
+            at: Instant::now() + after,
+            input: false,
+        });
     }
 
     /// How many frames have been asked for so far by anything but
@@ -148,7 +209,7 @@ impl FrameLedger {
 
 /// Create a [`FrameRequester`] and the receiver its [`run_scheduler`] consumes.
 #[must_use]
-pub fn channel() -> (FrameRequester, UnboundedReceiver<Instant>) {
+pub fn channel() -> (FrameRequester, UnboundedReceiver<FrameRequest>) {
     let (tx, rx) = unbounded_channel();
     let asked = Arc::default();
     (FrameRequester { tx, asked }, rx)
@@ -159,35 +220,70 @@ pub fn channel() -> (FrameRequester, UnboundedReceiver<Instant>) {
 /// per due frame. Returns when every [`FrameRequester`] has been dropped (or the
 /// draw consumer hung up), so the runtime can shut down cleanly.
 ///
+/// A frame that is **already due** is emitted at once, with no timer: the
+/// runtime's timer wheel counts in whole milliseconds, so a frame sent through
+/// it lands one to two milliseconds after it was asked for — which every
+/// keystroke on an idle composer paid before its paint
+/// (`docs/input-latency.md`). Only a frame still inside the floor, or one
+/// asked for a beat out, waits on the timer.
+///
+/// Everything asked for before the task ran folds into the one pending frame
+/// first, so the requests one turn of the loop makes (a key's handler, then
+/// its bookkeeping) are one frame rather than one at once and a second a
+/// floor later.
+///
 /// The timing is real, so this is exercised by `scripts/smoke.sh`; the pure
 /// decisions it leans on ([`FrameRateLimiter::clamp_deadline`], [`soonest`]) are
-/// unit-tested above.
-pub async fn run_scheduler(mut req_rx: UnboundedReceiver<Instant>, draw_tx: UnboundedSender<()>) {
+/// unit-tested above, and the tests below drive the task itself on a runtime
+/// with no timer.
+pub async fn run_scheduler(
+    mut req_rx: UnboundedReceiver<FrameRequest>,
+    draw_tx: UnboundedSender<()>,
+) {
     let mut limiter = FrameRateLimiter::new();
     let mut pending: Option<Instant> = None;
     loop {
-        let target = pending.unwrap_or_else(|| Instant::now() + IDLE_SLEEP);
-        let sleep = sleep_until(tokio::time::Instant::from_std(target));
+        while let Ok(request) = req_rx.try_recv() {
+            pending = Some(soonest(pending, limiter.clamp(request)));
+        }
+        let Some(deadline) = pending else {
+            // Idle: nothing to draw until someone asks.
+            match req_rx.recv().await {
+                Some(request) => pending = Some(limiter.clamp(request)),
+                None => break, // all requesters dropped → nothing more to draw
+            }
+            continue;
+        };
+        let now = Instant::now();
+        if deadline <= now {
+            // Recorded as emitted *now*, not at its deadline: a frame the
+            // loop was too busy to ask for on time must still hold the next
+            // one a whole floor away.
+            limiter.mark_emitted(now);
+            pending = None;
+            if draw_tx.send(()).is_err() {
+                break; // the loop hung up → stop scheduling
+            }
+            continue;
+        }
+        let sleep = sleep_until(tokio::time::Instant::from_std(deadline));
         tokio::pin!(sleep);
         tokio::select! {
-            requested = req_rx.recv() => {
-                match requested {
+            request = req_rx.recv() => {
+                match request {
                     // Fold the (rate-limit-clamped) request into the pending
-                    // deadline, keeping the soonest, and re-loop to re-arm the sleep.
-                    Some(requested) => {
-                        let clamped = limiter.clamp_deadline(requested);
-                        pending = Some(soonest(pending, clamped));
+                    // deadline, keeping the soonest, and re-loop to re-arm.
+                    Some(request) => {
+                        pending = Some(soonest(pending, limiter.clamp(request)));
                     }
-                    None => break, // all requesters dropped → nothing more to draw
+                    None => break,
                 }
             }
-            // Only fires while a frame is pending (idle, the year-long sleep never
-            // wins). Emit one tick, record it for the next clamp, and go idle.
-            () = &mut sleep, if pending.is_some() => {
-                limiter.mark_emitted(target);
+            () = &mut sleep => {
+                limiter.mark_emitted(deadline);
                 pending = None;
                 if draw_tx.send(()).is_err() {
-                    break; // the loop hung up → stop scheduling
+                    break;
                 }
             }
         }
@@ -250,6 +346,167 @@ mod tests {
         assert_eq!(soonest(None, t), t);
     }
 
+    /// A runtime with **no time driver**: any path that arms a timer panics
+    /// on it, which ends the scheduler and closes its draw channel — so a
+    /// tick that arrives here was emitted without one.
+    fn timerless() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime")
+    }
+
+    #[test]
+    fn a_due_frame_is_emitted_without_a_timer() {
+        // An idle keystroke's frame is due the moment it is asked for. Sent
+        // through `sleep_until` it waited on the runtime's timer wheel, whose
+        // millisecond granularity put one to two milliseconds between every
+        // key press and the paint that shows it (`docs/input-latency.md`).
+        timerless().block_on(async {
+            let (requester, req_rx) = channel();
+            let (draw_tx, mut draw_rx) = unbounded_channel();
+            let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
+            requester.schedule_frame();
+            assert_eq!(
+                draw_rx.recv().await,
+                Some(()),
+                "a frame that is already due is drawn at once, with no timer"
+            );
+            drop(requester);
+            scheduler
+                .await
+                .expect("the scheduler ends when its requesters are gone");
+        });
+    }
+
+    #[test]
+    fn requests_made_together_are_one_frame() {
+        // One turn of the loop often asks more than once (a key's handler,
+        // then its bookkeeping). Emitting the first at once must not leave
+        // the rest to draw a second, identical frame a beat later.
+        timerless().block_on(async {
+            let (requester, req_rx) = channel();
+            let (draw_tx, mut draw_rx) = unbounded_channel();
+            requester.schedule_frame();
+            requester.schedule_frame();
+            requester.schedule_frame();
+            let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
+            assert_eq!(draw_rx.recv().await, Some(()));
+            drop(requester);
+            scheduler
+                .await
+                .expect("the scheduler ends when its requesters are gone");
+            assert!(
+                draw_rx.try_recv().is_err(),
+                "three requests made together are one frame, not three"
+            );
+        });
+    }
+
+    #[test]
+    fn a_keys_frame_skips_the_frame_floor() {
+        let mut limiter = FrameRateLimiter::new();
+        let base = Instant::now();
+        limiter.mark_emitted(base);
+        // A key typed right behind a stream's frame is due when it is typed:
+        // a floor of its own, however short, is a wait on the runtime's
+        // millisecond timer — one to two milliseconds for a key that asked
+        // for a tenth of one (`docs/input-latency.md`).
+        let typed = base + Duration::from_micros(100);
+        let key = FrameRequest {
+            at: typed,
+            input: true,
+        };
+        assert_eq!(limiter.clamp(key), typed, "a key's frame is not held");
+        // Everything else still waits for its slot…
+        let chunk = FrameRequest {
+            at: typed,
+            input: false,
+        };
+        assert_eq!(limiter.clamp(chunk), base + MIN_FRAME_INTERVAL);
+        // …and the frame a key draws counts as the last one, so typing adds
+        // at most its own rate to the frame rate.
+        limiter.mark_emitted(typed);
+        assert_eq!(limiter.clamp(chunk), typed + MIN_FRAME_INTERVAL);
+    }
+
+    #[test]
+    fn a_keys_frame_right_behind_a_streams_needs_no_timer() {
+        // A reply is streaming, its frames a floor apart, and a key is typed
+        // right behind one of them. Its frame is drawn at once — on a runtime
+        // with no timer, which any wait at all would have needed.
+        timerless().block_on(async {
+            let (requester, req_rx) = channel();
+            let (draw_tx, mut draw_rx) = unbounded_channel();
+            let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
+            requester.schedule_frame();
+            assert_eq!(draw_rx.recv().await, Some(()));
+            requester.schedule_input_frame();
+            assert_eq!(
+                draw_rx.recv().await,
+                Some(()),
+                "a key's frame behind a stream's is drawn at once, with no timer"
+            );
+            drop(requester);
+            scheduler
+                .await
+                .expect("the scheduler ends when its requesters are gone");
+        });
+    }
+
+    #[test]
+    fn keys_handled_together_are_one_frame() {
+        // With no floor of their own, what keeps a run of keys from being a
+        // paint each is that the loop takes every key already waiting before
+        // it draws (`tui::event_loop`): their requests reach the scheduler
+        // together, and are one frame.
+        timerless().block_on(async {
+            let (requester, req_rx) = channel();
+            let (draw_tx, mut draw_rx) = unbounded_channel();
+            requester.schedule_input_frame();
+            requester.schedule_input_frame();
+            requester.schedule_input_frame();
+            let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
+            assert_eq!(draw_rx.recv().await, Some(()));
+            drop(requester);
+            scheduler
+                .await
+                .expect("the scheduler ends when its requesters are gone");
+            assert!(
+                draw_rx.try_recv().is_err(),
+                "three keys handled together are one frame, not three"
+            );
+        });
+    }
+
+    #[test]
+    fn a_frame_right_behind_another_still_waits_out_the_floor() {
+        // The floor is what coalesces a stream's requests: emitting due
+        // frames at once must not let two land closer than it.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let (requester, req_rx) = channel();
+            let (draw_tx, mut draw_rx) = unbounded_channel();
+            let scheduler = tokio::spawn(run_scheduler(req_rx, draw_tx));
+            let asked = Instant::now();
+            requester.schedule_frame();
+            assert_eq!(draw_rx.recv().await, Some(()));
+            requester.schedule_frame();
+            assert_eq!(draw_rx.recv().await, Some(()));
+            assert!(
+                asked.elapsed() >= MIN_FRAME_INTERVAL,
+                "the second frame came {:?} after the first was asked for",
+                asked.elapsed()
+            );
+            drop(requester);
+            scheduler
+                .await
+                .expect("the scheduler ends when its requesters are gone");
+        });
+    }
+
     #[test]
     fn a_frame_asked_for_on_the_banners_account_is_not_counted() {
         // What tells a frame nothing but the banner's mascot asked for from
@@ -271,6 +528,25 @@ mod tests {
             deadlines += 1;
         }
         assert_eq!(deadlines, 4, "every request reaches the scheduler");
+    }
+
+    #[test]
+    fn a_keys_frame_is_never_the_banners_alone() {
+        // A key's frame skips the frame floor, and it must still count as
+        // asked for: the loop draws a frame nothing counted asked for as the
+        // banner's alone — the mascot's cells and nothing else — so an
+        // uncounted key would be taken and never shown
+        // (`docs/mascot-animation.md` *A frame of its own*,
+        // `docs/input-latency.md`).
+        let (frame, mut rx) = channel();
+        let mut ledger = FrameLedger::default();
+        assert!(!ledger.banner_alone(frame.asked()), "the first frame");
+        frame.schedule_input_frame();
+        assert!(
+            !ledger.banner_alone(frame.asked()),
+            "the frame a key asked for is a whole one"
+        );
+        assert!(rx.try_recv().is_ok(), "and it reaches the scheduler");
     }
 
     #[test]

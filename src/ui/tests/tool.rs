@@ -959,6 +959,46 @@ fn running_footers_humanize_the_elapsed_past_a_minute() {
 }
 
 #[test]
+fn the_running_tail_counts_a_long_output_without_walking_its_lines() {
+    // A build log: thousands of lines, four of them in the window. The cell
+    // is built on every frame the command runs, and what it owes the lines
+    // it does not show is their row count — one each, read off their length.
+    // Walking all of them a grapheme at a time, twice, held every keystroke
+    // typed under a noisy command for tens of milliseconds
+    // (docs/input-latency.md).
+    let out = (1..=3000)
+        .map(|i| format!("line {i} of the build log"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let t = tool("Bash", "make", ToolStatus::Running, &out);
+    let before = crate::ui::wrap::scanned_lines();
+    let lines = running_command_lines(
+        &t,
+        &crate::app::LiveTail::default(),
+        Duration::from_secs(9),
+        Duration::ZERO,
+        80,
+        &PathDisplay::VERBATIM,
+    );
+    let walked = crate::ui::wrap::scanned_lines() - before;
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
+    assert_eq!(
+        body,
+        [
+            "  ⎿  line 2997 of the build log",
+            "     line 2998 of the build log",
+            "     line 2999 of the build log",
+            "     line 3000 of the build log",
+            "     +2996 lines (9s · wait 2m)",
+        ]
+    );
+    assert!(
+        walked < 8,
+        "the build walked {walked} lines a grapheme at a time for a four-row window"
+    );
+}
+
+#[test]
 fn running_command_lines_without_overflow_shows_the_clock_row_alone() {
     // Fewer lines than the window: show them all, then the clock row with
     // no `+N lines` count in front of it — `(1s · wait 2m)` — so a
@@ -4968,5 +5008,188 @@ fn the_strip_follows_the_apps_live_tail() {
         preview_rows(&app, 80) as usize,
         rows.len(),
         "the strip is sized by the same walk it is painted from"
+    );
+}
+
+// --- the running window's cost: each settled line counted once (docs/tool-streaming.md) ---
+
+/// One line of a flood's output — long enough to wrap at forty columns, and
+/// numbered, so no two lines are alike.
+fn flood_line(i: usize) -> String {
+    format!("{i:>7} the quick brown fox jumps over the lazy dog, a line long enough to wrap")
+}
+
+/// `n` flood lines from `from`, each closed by its newline — what a terminal
+/// session settles as its rows scroll out of reach.
+fn flood_lines(from: usize, n: usize) -> String {
+    (from..from + n).map(|i| flood_line(i) + "\n").collect()
+}
+
+/// The rows still on a session's screen: twenty flood lines from `from`,
+/// the newest without a newline.
+fn flood_screen(from: usize) -> String {
+    (from..from + 20)
+        .map(flood_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The strip's running cell for `app`'s front call, as plain rows, and how
+/// many lines the row counter measured to build it.
+fn strip_rows_and_scans(app: &App, width: u16) -> (Vec<String>, u64) {
+    let before = crate::ui::wrap::rows_scans();
+    let rows = crate::ui::live::preview_tool_lines(app, width)
+        .iter()
+        .map(plain)
+        .collect();
+    (rows, crate::ui::wrap::rows_scans() - before)
+}
+
+#[test]
+fn the_running_window_counts_only_what_settled_since_the_last_frame() {
+    // A command flooding output used to cost the whole of it every frame:
+    // the window copied every line and re-counted every row to say how many
+    // it hides, so a few minutes of a verbose build made each frame — and
+    // every key typed meanwhile — wait on megabytes of grapheme scanning (a
+    // key's echo measured 117 ms at the median under `yes`). A settled line
+    // never changes, so its rows are counted once, the frame it settles.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "flood", None);
+    app.set_command_elapsed(Some(Duration::from_secs(1)));
+    app.push_tool_screen(&flood_lines(0, 5_000), &flood_screen(5_000));
+    let (_, first) = strip_rows_and_scans(&app, 80);
+    assert!(
+        first >= 5_000,
+        "the first frame counts every line once: {first}"
+    );
+    let mut next = 5_000;
+    for frame in 0..10u64 {
+        app.set_command_elapsed(Some(Duration::from_secs(2 + frame)));
+        app.push_tool_screen(&flood_lines(next, 3), &flood_screen(next + 3));
+        next += 3;
+        let (rows, scans) = strip_rows_and_scans(&app, 80);
+        assert!(
+            scans <= 60,
+            "frame {frame} measured {scans} lines to show the newest of {next}: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn a_piped_command_counts_only_what_it_printed_since_the_last_frame() {
+    // The pipe path appends whole lines rather than replacing a screen
+    // (`App::push_tool_output`), and making the previous live rows final
+    // there must not throw away what was already counted.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "flood", None);
+    app.set_command_elapsed(Some(Duration::from_secs(1)));
+    app.push_tool_output(&flood_lines(0, 5_000));
+    let _ = strip_rows_and_scans(&app, 80);
+    let mut next = 5_000;
+    for frame in 0..10u64 {
+        app.push_tool_output(&flood_lines(next, 3));
+        next += 3;
+        let (rows, scans) = strip_rows_and_scans(&app, 80);
+        assert!(
+            scans <= 60,
+            "frame {frame} measured {scans} lines to show the newest of {next}: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains(&format!("{:>7}", next - 1))),
+            "the newest line is on the strip: {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn the_running_window_agrees_with_a_cold_count_at_every_step() {
+    // What the window keeps between frames must never change what it shows:
+    // at every step of a stream mixing screen updates, piped appends, a line
+    // still arriving, tabs, wide glyphs, blank lines, rows that wrap and a
+    // resize, the cell built on the warm counts is the cell a cold count
+    // builds (a clone of the live tail starts cold).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "mixed", None);
+    let render = |app: &App, live: &LiveTail, width: u16| -> Vec<String> {
+        let tool = app.current_tool().expect("the running call");
+        running_command_lines(
+            tool,
+            live,
+            Duration::from_secs(3),
+            Duration::ZERO,
+            width,
+            &PathDisplay::VERBATIM,
+        )
+        .iter()
+        .map(plain)
+        .collect()
+    };
+    type Step = Box<dyn Fn(&mut App)>;
+    let steps: Vec<Step> = vec![
+        Box::new(|app| app.push_tool_output("first\tline with a tab\n")),
+        Box::new(|app| app.push_tool_output("a partial li")),
+        Box::new(|app| app.push_tool_output("ne finished\n\n\nafter two blanks\n")),
+        Box::new(|app| {
+            app.push_tool_screen("", "live one\nlive two 日本語の文字列はここで折り返す")
+        }),
+        Box::new(|app| app.push_tool_screen("live one\n", "live two changed\nlive three")),
+        Box::new(|app| app.push_tool_screen(&flood_lines(0, 7), &flood_screen(7))),
+        Box::new(|app| app.push_tool_output("piped after a screen\n")),
+        Box::new(|app| app.push_tool_screen(&flood_lines(30, 2), "")),
+        Box::new(|app| app.push_tool_output(&"x".repeat(300))),
+        Box::new(|app| app.push_tool_output(" tail of the long line\n")),
+    ];
+    for (i, step) in steps.iter().enumerate() {
+        step(&mut app);
+        for width in [80u16, 40, 23] {
+            let warm = render(&app, app.live_tail(), width);
+            let cold = render(&app, &app.live_tail().clone(), width);
+            assert_eq!(warm, cold, "step {i} at {width} columns");
+        }
+        let tool = app.current_tool().expect("the running call");
+        let printed = tool.output.strip_suffix('\n').unwrap_or(&tool.output);
+        assert_eq!(
+            crate::ui::tool::running_line_count(tool, app.live_tail()),
+            if tool.output.is_empty() {
+                0
+            } else {
+                printed.split('\n').count()
+            },
+            "step {i}: the line count"
+        );
+    }
+}
+
+#[test]
+fn the_running_window_stays_inside_the_frame_budget_on_a_long_flood() {
+    // The wall-clock half of the counting tests above: ~6 MB of settled
+    // output — a long verbose build — and a frame that adds a few lines must
+    // cost what those lines cost, not the six megabytes before them.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "flood", None);
+    app.push_tool_screen(&flood_lines(0, 70_000), &flood_screen(70_000));
+    let _ = crate::ui::live::preview_tool_lines(&app, 80); // the first count
+    let mut next = 70_000;
+    let frames = 10u32;
+    let mut total = Duration::ZERO;
+    for _ in 0..frames {
+        app.push_tool_screen(&flood_lines(next, 3), &flood_screen(next + 3));
+        next += 3;
+        let start = std::time::Instant::now();
+        let rows = crate::ui::live::preview_tool_lines(&app, 80);
+        total += start.elapsed();
+        assert!(!rows.is_empty());
+    }
+    let per_build = total / frames;
+    println!("the running cell over ~6 MB of output: {per_build:?} per build");
+    assert!(
+        per_build < Duration::from_millis(10),
+        "one build of the running cell took {per_build:?} — it is counting \
+         the whole output again"
     );
 }

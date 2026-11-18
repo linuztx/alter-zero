@@ -4,10 +4,18 @@
 //! The walk over the whole history lives in
 //! [`conversation`](super::conversation).
 
-use super::assistant::{assistant_lines, expand_code_tabs};
+use super::assistant::{assistant_lines, assistant_rows, expand_code_tabs};
 use super::theme::*;
 use super::wrap::{cols, wrap_output};
 use super::*;
+
+/// An assistant reply's rows — [`message_lines`]`(Role::Assistant, …)`, the
+/// same rows from the same renderer — handed out one at a time instead of
+/// collected, for a caller that keeps rows in another form
+/// (`assistant_rows`).
+pub(super) fn assistant_message_rows(text: &str, width: u16, emit: impl FnMut(Line<'static>)) {
+    assistant_rows(text, width, AI_BULLET, ai_color(), emit);
+}
 
 /// Build the styled, wrapped lines for one message.
 ///

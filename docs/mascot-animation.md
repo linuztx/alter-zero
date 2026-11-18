@@ -755,7 +755,10 @@ buffer of its own to find that out. So the loop tells those frames apart,
 and draws them differently.
 
 Every request for a frame is counted but the banner's own
-(`FrameRequester::schedule_banner_frame_in`). The scheduler folds every
+(`FrameRequester::schedule_banner_frame_in`) — a key's, which skips the
+frame floor (`schedule_input_frame`, `docs/input-latency.md`), included: a
+key counted as nothing would be taken by a frame that draws only the
+banner, and not shown until something else asked. The scheduler folds every
 pending request into one tick, so a tick does not say who wanted it; the
 count does (`FrameLedger`). Read as each frame begins, a count that has not
 moved since the frame before began means nothing asked in between but the
@@ -1095,9 +1098,9 @@ seeded — every unit test's — never moves.
   changed, only as far as they can differ — a blink beside a sixty-column
   directory on a 300-column terminal renders one row, the art and its gap.
 - `frame.rs` — a frame asked for on the banner's account is not counted,
-  and reaches the scheduler all the same; a frame is the banner's alone
-  when nothing else has asked since the last one began, and the first frame
-  of all never is.
+  and reaches the scheduler all the same; a key's is, and is never the
+  banner's alone; a frame is the banner's alone when nothing else has asked
+  since the last one began, and the first frame of all never is.
   Twenty-five ways of breaking these three — cards numbered a clip late, a
   step's time halved, a row's end a byte short, a glint read back from the
   other side, the nap a clip late, one mascot reading another's table, a

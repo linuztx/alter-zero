@@ -364,6 +364,52 @@ fires when the frame line is actually present, so non-`bash` tools, `!` shell
 cells (whose output is raw, never framed, closing on their own
 `[exit status: N]` — `docs/shell-command.md`), and old rollouts are untouched.
 
+### A flood costs what it adds
+
+The running cell was built several times a frame — the strip's sizing, its
+paint, the cursor's seat; once a frame now, `docs/input-latency.md` — and
+every build measured **all** the output the command had printed so far: each line copied into a fresh
+`Vec<String>`, each line's rows counted again, to say how many rows sit
+above the four the window shows. A command that prints for minutes — a
+verbose build, a test suite, a `grep -r` over a big tree — made a frame cost
+more with every line, on the loop thread that also echoes keys. Measured on
+a raw pty against a stand-in provider whose `bash` call floods long lines
+(`docs/input-latency.md`), a typed key's echo had a **median of 117 ms and a
+worst of 203 ms in a release build**, two cores busy.
+
+None of that work was needed. The part of the output before the live rows
+only grows while the call runs: a screen update appends what scrolled out
+of the terminal's reach and replaces only the live rows
+(`apply_tool_screen`), and a piped chunk only appends. So
+`LiveTail::settled_lines` counts a line's display rows **once, the frame it
+settles**, keeping the totals and the last few lines' byte ranges — all a
+window ending near the output's end can reach back into — beside the live
+rows, filled by the render path behind a `RefCell` (the textarea's
+wrap-cache pattern; a clone starts cold). A frame measures what printed
+since the last one, the line still arriving and the live rows. The counts
+start over when what they were taken against changes: the width, where the
+body starts (a session frame line in front of it), or the call itself
+(`LiveTail::reset` at its start and its end). Piped text that makes the
+live rows final only `settle`s them, keeping the counts. The window is the
+same walk as before (`running_window`) over the lines it can reach; a window
+that would reach above them — never in the shapes a session or a pipe
+streams — measures every line, as it always did. The collapsed group's
+`(12s · 34 lines)` clock counts the same way (`LiveTail::line_count`).
+
+The same flood's echo after: **a median of 2.8 ms and a worst of 10.8 ms**
+in the debug build, the work left on the loop being the frame itself; what
+still keeps a core busy is the pty monitor thread folding the flood, which
+the loop never waits on. `the_running_window_counts_only_what_settled_since_the_last_frame`
+and `a_piped_command_counts_only_what_it_printed_since_the_last_frame` pin
+the cost by counting the lines measured per frame (`ui::wrap::rows_scans`),
+`a_grouped_command_counts_only_what_it_printed_since_the_last_frame` the
+lines copied (`ui::tool::display_lines_split`),
+`the_running_window_agrees_with_a_cold_count_at_every_step` holds the warm
+counts to a cold build through screen updates, piped appends, a line still
+arriving, tabs, wide glyphs, blank lines and a resize, and
+`the_running_window_stays_inside_the_frame_budget_on_a_long_flood` is the
+wall-clock gate over ~6 MB.
+
 ## Live in the Ctrl+O overlay (ours streams; Claude Code doesn't)
 
 Claude Code's transcript pager shows a tool's output only once the tool

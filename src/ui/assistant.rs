@@ -186,33 +186,62 @@ pub(super) fn assistant_lines(
     bullet: &str,
     color: Color,
 ) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    assistant_rows(text, width, bullet, color, |row| rows.push(row));
+    rows
+}
+
+/// [`assistant_lines`], handed out **a row at a time** as each is finished —
+/// the one implementation behind it — so a caller that stores rows in
+/// another form (the Ctrl+O transcript's compact rows) never holds the whole
+/// message as lines first: for a long code reply that is megabytes of
+/// strings built only to be copied and freed, and a freed block of that size
+/// is one the allocator keeps (`docs/memory.md`, `docs/input-latency.md`).
+pub(super) fn assistant_rows(
+    text: &str,
+    width: u16,
+    bullet: &str,
+    color: Color,
+    mut emit: impl FnMut(Line<'static>),
+) {
     let mut renderer = AssistantRenderer::new(width, bullet, color);
-    let mut rows: Vec<Line<'static>> = Vec::new();
+    // Blank rows wait here for a row that is not blank: a run with nothing
+    // after it is the message's trailing blank rows, settled below.
+    let mut blanks: Vec<Line<'static>> = Vec::new();
+    let mut emitted = false;
+    let mut put = |rows: Vec<Line<'static>>, blanks: &mut Vec<Line<'static>>| {
+        for row in rows {
+            if row_is_blank(&row) {
+                blanks.push(row);
+            } else {
+                blanks.drain(..).for_each(&mut emit);
+                emit(row);
+                emitted = true;
+            }
+        }
+    };
     for line in text.split('\n') {
-        rows.extend(renderer.feed_line(line));
+        put(renderer.feed_line(line), &mut blanks);
     }
     // Flush a trailing table (one the reply ended on, with no closing line) — its
     // rows were buffered pending a close that never came. The streaming
     // `StreamRender::finish` flushes the same way, so the two never disagree.
-    rows.extend(renderer.flush());
-    // Trim trailing blank rows (a model's `…\n\n` before a tool call, say): the
-    // caller adds exactly one spacer, so trailing blanks would stack. Skipped
-    // when the reply ends inside an open code fence — its blank lines are
-    // content. The streaming [`StreamRender`] trims the same way, so the two
-    // never disagree.
-    if !renderer.in_code() {
-        while rows.last().is_some_and(row_is_blank) {
-            rows.pop();
-        }
+    put(renderer.flush(), &mut blanks);
+    // Trailing blank rows go (a model's `…\n\n` before a tool call, say): the
+    // caller adds exactly one spacer, so they would stack. Kept when the reply
+    // ends inside an open code fence — its blank lines are content. The
+    // streaming [`StreamRender`] trims the same way, so the two never disagree.
+    if renderer.in_code() {
+        emitted |= !blanks.is_empty();
+        blanks.into_iter().for_each(&mut emit);
     }
     // A reply that renders to zero rows still gets one bullet row so the bullet
     // always has a home — an empty reply, or (now that fences render nothing) a
     // reply that is only a code fence. The streaming [`StreamRender`] applies the
     // same fallback, so the two never disagree on such a reply.
-    if rows.is_empty() {
-        rows.push(empty_assistant_row(bullet, color));
+    if !emitted {
+        emit(empty_assistant_row(bullet, color));
     }
-    rows
 }
 
 /// The lone bullet row an assistant message falls back to when its body renders
@@ -499,6 +528,19 @@ fn drop_prefix(s: Cow<'_, str>, n: usize) -> Cow<'_, str> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many source lines this thread's renderers have been fed — what a
+    /// test reads to prove a render is incremental rather than whole.
+    static FED_LINES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The source lines fed to any [`AssistantRenderer`] on this thread, ever.
+#[cfg(test)]
+pub(super) fn fed_lines() -> u64 {
+    FED_LINES.with(std::cell::Cell::get)
+}
+
 impl AssistantRenderer {
     pub(super) fn new(width: u16, bullet: &str, color: Color) -> Self {
         Self {
@@ -523,6 +565,8 @@ impl AssistantRenderer {
     /// block-layout, fence and highlight state. The first row ever emitted
     /// carries the bullet; the rest are indented under it.
     pub(super) fn feed_line(&mut self, line: &str) -> Vec<Line<'static>> {
+        #[cfg(test)]
+        FED_LINES.with(|fed| fed.set(fed.get().saturating_add(1)));
         let rows = self.content_rows(line);
         self.stamp(rows)
     }

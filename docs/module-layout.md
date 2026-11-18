@@ -116,6 +116,7 @@ widened for the split.
 | `ask_view.rs` | The `AskUserQuestion` modal: the chip strip, option pages, preview panel, review page (`docs/ask.md`). |
 | `reasoning.rs` | The thinking stream's cells: the live `● Thinking…` block, the collapsed `Thought for …` line, and its Ctrl+O expansion (`docs/thinking-stream.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
+| `frame_memo.rs` | `frame`: the scope a draw opens so that every reading of the strip's live cells inside it shares one build (`docs/input-latency.md`). |
 
 ### `src/tui/` — the terminal shell
 
@@ -132,7 +133,7 @@ opening the viewport, running the loop — and everything else lives here:
 | Module | Holds |
 |--------|-------|
 | `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
-| `event_loop.rs` | `run`: the `select!` over the eleven sources — one handler call per branch. |
+| `event_loop.rs` | `run`: the `select!` over every source that wakes the loop — input first, then a due frame, then one event off any data channel (`next_wake`) — one handler call per branch (`docs/input-latency.md`). |
 | `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
 | `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
 | `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
@@ -165,7 +166,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `update_cli.rs` | The `alter-zero update` subcommand: the same check, then the one-line installer fetched to a temp file and run over this binary's own directory (`docs/update.md`). |
 | `herdr.rs` | Reporting the session's state to the herdr pane it runs in: the loop-bottom sync into the library's `herdr::Tracker` and `herdr::Reporter` worker, the failed-turn hold, the resume command's `PATH`-checked first word, the release on quit (`docs/herdr.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
-| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / usage / telemetry-ping / update-check jobs. |
+| `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / usage / telemetry-ping / update-check jobs, and the Ctrl+O transcript's render worker. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
 
 ### `src/stream/` — the backend seam

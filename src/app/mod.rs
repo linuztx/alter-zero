@@ -107,7 +107,7 @@ pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_
 pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
-pub use self::reasoning::Reasoning;
+pub use self::reasoning::{LiveThought, Reasoning};
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
 pub use self::config_review::{
@@ -133,8 +133,8 @@ pub use self::tool_group::{
     group_counts, group_kind, group_run, is_group_member, leading_group_calls, pending_edit_lines,
 };
 pub use self::tools::{
-    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay, ToolCall,
-    ToolStatus, apply_tool_screen,
+    ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, LIVE_ACTIVE_SPAN, LiveTail, PathDisplay,
+    SettledLines, ToolCall, ToolStatus, apply_tool_screen,
 };
 pub use self::turn::{
     CONNECTION_LOST_NOTICE, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, STATUS_VERBS,
@@ -251,7 +251,7 @@ pub struct App {
     /// committed `Thought for …` cell. `None` between phases — and always,
     /// when the display is off (`ALTER_ZERO_SHOW_THINKING=0`), because the
     /// boundary then never opens one. See `docs/thinking-stream.md`.
-    reasoning: Option<String>,
+    reasoning: Option<LiveThought>,
     /// Where this round's settled [`HistoryItem::Reasoning`] items landed in
     /// [`history`](Self::history) — the snap targets for the round's usage
     /// frame, which reports the *real* `reasoning_tokens` the cells were built

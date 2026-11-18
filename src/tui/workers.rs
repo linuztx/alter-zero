@@ -25,12 +25,18 @@
 //! - [`spawn_telemetry_ping`] — the once-a-day anonymous usage ping
 //!   (`docs/telemetry.md`), fire-and-forget: it reports only success, so the
 //!   loop can record the day, and a dead collector costs the user nothing.
+//! - [`spawn_transcript_worker`] — the Ctrl+O transcript's rows for every
+//!   item the conversation commits (`docs/input-latency.md`), the one worker
+//!   that lives as long as the session: a whole file through the grammar is
+//!   work with nothing to wait on but the CPU, and the loop has keys to read.
 //!
 //! **Invariant 1:** a worker only ever *sends*. None of them reads stdin, so
 //! the `EventStream` stays the single stdin reader.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use alter_zero::app::{App, ServerTest, SigninKind, ToastKind};
@@ -38,6 +44,7 @@ use alter_zero::clipboard;
 use alter_zero::file_search::{FileMatch, rank_files, sibling_order};
 use alter_zero::llm::{self, AuthScheme, ModelConfig, ModelEntry};
 use alter_zero::stream::CancelToken;
+use alter_zero::ui;
 
 use super::Session;
 
@@ -667,6 +674,68 @@ pub(crate) fn dispatch_file_search(
             let _ = req_tx.send(q.clone());
         }
         *last = query;
+    }
+}
+
+/// The Ctrl+O transcript's render worker ([`spawn_transcript_worker`]): where
+/// the loop sends the jobs its cache hands out.
+pub(crate) struct TranscriptWorker {
+    jobs: std::sync::mpsc::Sender<ui::TranscriptJob>,
+    /// The cache's epoch as of the last hand-off: a job of an earlier one is
+    /// for a transcript that no longer exists — a resize drag leaves dozens —
+    /// and is dropped unrendered.
+    epoch: Arc<AtomicU64>,
+    /// Kept so the thread's lifetime is tied to the session's. Never joined.
+    _thread: JoinHandle<()>,
+}
+
+impl TranscriptWorker {
+    /// Hand over `jobs`, the cache now being in `epoch`. A worker that is
+    /// gone takes nothing: its channel closing has already ended the loop
+    /// ([`spawn_transcript_worker`]).
+    pub(crate) fn send(&self, epoch: u64, jobs: Vec<ui::TranscriptJob>) {
+        self.epoch.store(epoch, Ordering::Relaxed);
+        for job in jobs {
+            let _ = self.jobs.send(job);
+        }
+    }
+}
+
+/// Spawn the Ctrl+O transcript's render worker: one thread, for the session's
+/// life, rendering each history item the cache hands out
+/// ([`ui::TranscriptCache::warm_jobs`]) and sending its rows back for
+/// [`ui::TranscriptCache::accept`] — in the order they were handed out, which
+/// is the only order the cache takes them in.
+///
+/// The loop used to render them itself, at the bottom of the iteration that
+/// committed the item: a 2000-line `read` put the whole file through the
+/// grammar there, ~200 ms in which no key was read (`docs/input-latency.md`).
+///
+/// It holds the only sender of `done`, so the channel closing means the
+/// worker is gone — a render that panicked, the panic hook having already
+/// put the terminal back — and the loop ends on that, as it would have ended
+/// when it rendered the item itself. It only *sends*; it never reads stdin
+/// (invariant 1).
+pub(crate) fn spawn_transcript_worker(
+    done: tokio::sync::mpsc::UnboundedSender<ui::RenderedTranscriptItem>,
+) -> TranscriptWorker {
+    let (jobs, queue) = std::sync::mpsc::channel::<ui::TranscriptJob>();
+    let epoch = Arc::new(AtomicU64::new(0));
+    let current = Arc::clone(&epoch);
+    let thread = std::thread::spawn(move || {
+        while let Ok(job) = queue.recv() {
+            if job.epoch() < current.load(Ordering::Relaxed) {
+                continue;
+            }
+            if done.send(job.run()).is_err() {
+                break; // the loop is gone
+            }
+        }
+    });
+    TranscriptWorker {
+        jobs,
+        epoch,
+        _thread: thread,
     }
 }
 

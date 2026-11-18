@@ -1,6 +1,7 @@
 //! Painting the live region and its streaming strip.
 
 use super::*;
+use crate::ui::frame_memo::live_cell_builds;
 use crate::ui::live::{preview_lines, preview_tool_lines};
 use crate::ui::theme::{
     INPUT_CHROME_ROWS, STATUS_GAP_ROWS, STATUS_ROWS, TOOL_BACKGROUND_HINT,
@@ -1304,4 +1305,175 @@ fn a_queued_write_previews_its_head_under_waiting() {
         ["  ⎿  Waiting…", "      1 one", "      2 two"],
         "{texts:#?}"
     );
+}
+
+// --- One build of the strip's live cells a frame (docs/input-latency.md) ---
+
+/// A turn whose strip is a running command tailing `lines` lines of output.
+fn app_with_a_running_command(lines: usize) -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "make", None);
+    for i in 1..=lines {
+        app.push_tool_output(&format!("line {i}\n"));
+    }
+    app.set_command_elapsed(Some(Duration::from_secs(3)));
+    app
+}
+
+/// The live region's height for `app` — the sum the boundary reserves.
+fn region_height(app: &App, width: u16, height: u16) -> u16 {
+    let band = band_rows(app, width);
+    live_height(
+        &app.input,
+        width,
+        height,
+        strip_has_status(app),
+        fitted_preview_rows(app, width, height),
+        hang_rows(app, width),
+        queued_rows(app, width),
+        toast_rows(app),
+        band,
+        footer_rows(app, band),
+        agent_list_rows(app),
+    )
+}
+
+/// Everything one draw asks of the strip, in the boundary's order: the flow
+/// check, the region's height (twice — the modal check takes one), the paint
+/// and the cursor seat.
+fn one_draw(app: &App, width: u16, height: u16) -> Buffer {
+    let _ = view_flow_signature(app, width, height, 10_000);
+    let _ = region_height(app, width, height);
+    let mut buf = buffer(width, region_height(app, width, height));
+    render_live(buf.area, &mut buf, app);
+    let _ = cursor_position(buf.area, app);
+    buf
+}
+
+#[test]
+fn a_frame_builds_the_strips_live_cells_once() {
+    // A draw sizes the strip's preview again and again before it paints it,
+    // and every sizing used to build the cells to count them: a command's
+    // whole tail, a `write`'s highlighted window, eight times a frame.
+    let app = app_with_a_running_command(40);
+    let before = live_cell_builds();
+    let loose = one_draw(&app, 80, 24);
+    assert!(
+        live_cell_builds() - before > 1,
+        "outside a frame every reading builds — the cost a frame saves"
+    );
+    let before = live_cell_builds();
+    let framed = frame(|| one_draw(&app, 80, 24));
+    assert_eq!(
+        live_cell_builds() - before,
+        1,
+        "one build serves the whole frame"
+    );
+    assert_eq!(framed, loose, "and paints what a fresh build paints");
+}
+
+#[test]
+fn a_frame_keeps_a_build_for_each_width_it_is_asked_at() {
+    let app = app_with_a_running_command(40);
+    let before = live_cell_builds();
+    frame(|| {
+        for _ in 0..3 {
+            assert_eq!(preview_rows(&app, 80), preview_rows(&app, 80));
+            assert_eq!(preview_rows(&app, 30), preview_rows(&app, 30));
+        }
+    });
+    assert_eq!(live_cell_builds() - before, 2);
+}
+
+#[test]
+fn a_frame_opened_inside_another_is_part_of_it() {
+    let app = app_with_a_running_command(40);
+    let before = live_cell_builds();
+    frame(|| {
+        let outer = preview_rows(&app, 80);
+        let inner = frame(|| preview_rows(&app, 80));
+        assert_eq!(outer, inner);
+        // …and the inner one closing does not end the outer.
+        assert_eq!(preview_rows(&app, 80), outer);
+    });
+    assert_eq!(live_cell_builds() - before, 1);
+}
+
+#[test]
+fn each_frame_reads_the_state_it_opens_on() {
+    // Nothing outlives its frame: the next one builds from the conversation
+    // as it then is.
+    let mut app = app_with_a_running_command(2);
+    let short = frame(|| preview_rows(&app, 80));
+    app.push_tool_output("line 3\nline 4\n");
+    let grown = frame(|| preview_rows(&app, 80));
+    assert_eq!(grown, short + 2, "two more rows of output, two more rows");
+    let _ = app.end_tool("Exit code: 0\ndone", true);
+    assert_eq!(
+        frame(|| preview_rows(&app, 80)),
+        0,
+        "the call resolved: nothing live is left to preview"
+    );
+}
+
+#[test]
+fn outside_a_frame_nothing_is_kept() {
+    // The loop reads the strip's height right after a state change, with no
+    // draw around it — to reseat the region before a commit. Such a reading
+    // must be of the state as it is.
+    let mut app = app_with_a_running_command(2);
+    let short = preview_rows(&app, 80);
+    app.push_tool_output("line 3\nline 4\n");
+    assert_eq!(preview_rows(&app, 80), short + 2);
+    // …and a frame that has closed left nothing behind either.
+    let framed = frame(|| preview_rows(&app, 80));
+    app.push_tool_output("line 5\n");
+    assert_eq!(
+        preview_rows(&app, 80),
+        framed,
+        "a fifth line: still four rows"
+    );
+    let _ = app.end_tool("Exit code: 0", true);
+    assert_eq!(preview_rows(&app, 80), 0);
+}
+
+#[test]
+fn a_frame_that_panics_leaves_nothing_open() {
+    let mut app = app_with_a_running_command(2);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        frame(|| {
+            let _ = preview_rows(&app, 80);
+            panic!("a draw that failed part-way");
+        })
+    }));
+    assert!(caught.is_err());
+    // No frame is open: readings are fresh again.
+    let before = preview_rows(&app, 80);
+    app.push_tool_output("line 3\nline 4\n");
+    assert_eq!(preview_rows(&app, 80), before + 2);
+}
+
+#[test]
+fn an_agent_views_strip_is_one_build_a_frame_too() {
+    // The session view sizes and paints the viewed agent's cells through the
+    // same walk (docs/agent-view-streaming.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Build the thing", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "make".into(),
+            detail: None,
+            arguments: None,
+        },
+    );
+    app.open_agent_view("a1");
+    assert!(app.viewed_agent().is_some(), "the session view is open");
+    let before = live_cell_builds();
+    let framed = frame(|| one_draw(&app, 80, 24));
+    assert_eq!(live_cell_builds() - before, 1);
+    assert_eq!(framed, one_draw(&app, 80, 24));
 }

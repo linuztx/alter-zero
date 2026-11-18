@@ -85,6 +85,19 @@ shape in `main.rs` barely changes.
 - `paint_frame` queues `Show` instead of ratatui's `show_cursor` (which
   `execute!`s — an extra mid-frame flush), so a frame is one write.
 
+  That sentence was the intent for a long time before it was true. The
+  cursor move right above that `Show` went through ratatui's
+  `set_cursor_position`, which `execute!`s too, as does the `append_lines`
+  a scroll used — so the paint went out in one write and the `Show` with
+  the end of the synchronized update in a second, and a frame that scrolled
+  wrote the scroll ahead of the repaint it made room for. And std's
+  `Stdout`, which the frame was written to, is a line writer over a 1 KB
+  buffer: it writes at every newline and whenever it fills. The frame paths
+  now queue their moves, scrolls and clears (`InlineViewport::queue_cursor`),
+  and the viewport writes through `term::output::FrameWriter`, which holds a
+  frame until the flush and hands it to the terminal in one `write`
+  (`docs/input-latency.md` *A frame was several writes*).
+
 ## Cursor visibility — the kitty cursor-trail refinement
 
 Date: 2026-07-09

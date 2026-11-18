@@ -10,6 +10,21 @@ use super::theme::*;
 use super::*;
 use std::ops::Range;
 
+#[cfg(test)]
+thread_local! {
+    /// How many lines this thread has walked a grapheme at a time
+    /// ([`WrapMode::scan_graphemes`]) — the wrap's own test hook: what the
+    /// short-line rule exists for is a cost, and a cost is only pinned by
+    /// counting it.
+    static SCANNED_LINES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many lines this thread has walked a grapheme at a time.
+#[cfg(test)]
+pub(super) fn scanned_lines() -> u64 {
+    SCANNED_LINES.with(std::cell::Cell::get)
+}
+
 /// Display width of `s` in terminal columns.
 ///
 /// All width math in this module goes through this instead of `chars().count()`:
@@ -137,6 +152,35 @@ pub(super) fn wrap_output(text: &str, width: u16) -> Vec<String> {
     WrapMode::Output.wrap(text, width)
 }
 
+/// One `'\n'`-free `line`, wrapped by [`wrap_output`]'s rules at `width`, as
+/// the byte range of each row — and how many leading rows **nothing
+/// appended to the line can change**, which is what lets a growing line be
+/// wrapped again from its first row that can (`app::LiveThought::tail_rows`,
+/// `docs/thinking-stream.md` *A long thought costs what it adds*).
+///
+/// The wrapper only ever looks ahead within a word: whether a word too wide
+/// for any row starts on the row before it ([`fills_from_here`]) reads to the
+/// word's end, and a run of spaces at a full row is consumed to its end.
+/// Appending to the line can therefore change only the row holding the last
+/// whitespace before the trailing word — the row whose break that word
+/// decided — and the rows after it; every row before is final. And a row
+/// start is a clean restart: wrapping the line from it yields the rows from
+/// it on.
+pub(super) fn output_tail(line: &str, width: u16) -> (Vec<Range<usize>>, usize) {
+    if width == 0 {
+        return (std::iter::once(0..line.len()).collect(), 0);
+    }
+    let mut rows = Vec::new();
+    WrapMode::Output.scan(line, usize::from(width), &mut |row| rows.push(row));
+    let word = line
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let settled = rows.iter().rposition(|row| row.start < word).unwrap_or(0);
+    (rows, settled)
+}
+
 /// [`wrap_output`] with a **hanging indent**: the first row of `text`'s first
 /// line wraps to `first` columns — the room left beside a lead the caller
 /// prints on that row (a tool header's `● {name}(`) — and every other row,
@@ -209,7 +253,7 @@ impl WrapMode {
     /// at `width` (> 0) columns — the single scan behind [`Self::wrap`] and
     /// [`Self::rows`]. Measured per grapheme cluster in display columns like
     /// every other width decision in this module.
-    fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
+    pub(super) fn scan(self, line: &str, width: usize, emit: &mut dyn FnMut(Range<usize>)) {
         self.scan_hanging(line, width, width, emit);
     }
 
@@ -223,6 +267,32 @@ impl WrapMode {
         rest: usize,
         emit: &mut dyn FnMut(Range<usize>),
     ) {
+        // A line no longer than its row **in bytes** is one row: a character
+        // is never wider than its bytes, so nothing in it can overflow. Most
+        // lines a command prints are, and the running cell counts every one
+        // of them on every build — walking each a grapheme at a time to
+        // learn that held a keystroke typed under a noisy command for tens
+        // of milliseconds (`docs/input-latency.md`).
+        if line.len() <= first {
+            emit(0..line.len());
+            return;
+        }
+        self.scan_graphemes(line, first, rest, emit);
+    }
+
+    /// The scan itself: `line` walked a grapheme cluster at a time.
+    pub(super) fn scan_graphemes(
+        self,
+        line: &str,
+        first: usize,
+        rest: usize,
+        emit: &mut dyn FnMut(Range<usize>),
+    ) {
+        #[cfg(test)]
+        {
+            SCANNED_LINES.with(|scanned| scanned.set(scanned.get() + 1));
+            SCANNED_BYTES.with(|scanned| scanned.set(scanned.get() + line.len() as u64));
+        }
         let mut start = 0usize; // byte index the current row opens at
         let mut cur_w = 0usize; // display width of `line[start..idx]`
         let mut brk: Option<usize> = None; // byte index past the last space
@@ -321,6 +391,8 @@ impl WrapMode {
     /// together). This is what a `+N lines` hint counts: rows the reader would
     /// see, not source lines (`docs/long-lines.md`).
     pub(super) fn rows(self, text: &str, width: u16) -> usize {
+        #[cfg(test)]
+        ROWS_SCANS.with(|scans| scans.set(scans.get() + 1));
         if width == 0 {
             return text.split('\n').count();
         }
@@ -330,6 +402,32 @@ impl WrapMode {
         }
         n
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many bytes [`WrapMode`]'s scan has walked on this thread — the
+    /// test hook that pins a renderer's *cost* by counting it, for a
+    /// renderer that wraps rather than counts.
+    static SCANNED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many texts [`WrapMode::rows`] has measured on this thread — the
+    /// same hook for a renderer that counts, as `queued_builds` is for the
+    /// pending rows' memo.
+    static ROWS_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many bytes [`WrapMode`]'s scan has walked on this thread so far.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn scanned_bytes() -> u64 {
+    SCANNED_BYTES.with(std::cell::Cell::get)
+}
+
+/// How many texts [`WrapMode::rows`] has measured on this thread so far.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn rows_scans() -> u64 {
+    ROWS_SCANS.with(std::cell::Cell::get)
 }
 
 /// Whether the word opening at byte `bp` fills the current row from where it

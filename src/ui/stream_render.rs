@@ -378,6 +378,70 @@ impl StreamRender {
         self.take_rows(&[], total)
     }
 
+    /// Every row of the reply as it stands: what the batch render gives for
+    /// `text`, and so what [`finish`](Self::finish) would leave in scrollback
+    /// if the reply ended here — without ending it. Only the lines that
+    /// completed since the last call are rendered; the rest are the rows this
+    /// render already holds. What the Ctrl+O pager shows of a reply still
+    /// streaming, where rendering the whole reply on every frame made each
+    /// scroll key wait behind it (`docs/input-latency.md`).
+    #[must_use]
+    pub fn whole(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
+        self.whole_after(text, width, 0).0
+    }
+
+    /// [`whole`](Self::whole) from row `from` on, for a caller that kept the
+    /// rows before it — and how many of the reply's leading rows are
+    /// **settled**: the same in every later call for this text grown, so the
+    /// caller may keep that many and ask from there next time. They are the
+    /// rows of the lines that have ended, less a trailing run of blank ones
+    /// (dropped while it ends the reply, shown once content follows it);
+    /// what comes after is the line still growing and a table still forming.
+    ///
+    /// A width change settles nothing — every row is rendered again — so a
+    /// caller keeps rows only across calls at one width.
+    #[must_use]
+    pub fn whole_after(
+        &mut self,
+        text: &str,
+        width: u16,
+        from: usize,
+    ) -> (Vec<Line<'static>>, usize) {
+        self.advance(text, width);
+        // The trailing line — and a table it leaves open — on a clone, so
+        // the next call still finds the state that enters that line.
+        let mut clone = self.renderer.clone();
+        let mut tail = clone.feed_line(&text[self.consumed..]);
+        tail.extend(clone.flush());
+        let frozen = self.frozen.len();
+        let row = |i: usize| {
+            if i < frozen {
+                &self.frozen[i]
+            } else {
+                &tail[i - frozen]
+            }
+        };
+        // The batch render's two closing rules (`assistant_lines`), in its
+        // order: trailing blank rows go unless the reply ends inside an open
+        // fence, and a reply that renders to nothing keeps its bullet.
+        let mut total = frozen + tail.len();
+        if !clone.in_code() {
+            while total > 0 && row_is_blank(row(total - 1)) {
+                total -= 1;
+            }
+        }
+        if total == 0 {
+            let home = empty_assistant_row(&self.renderer.bullet, self.renderer.color);
+            return (vec![home], 0);
+        }
+        let mut settled = frozen;
+        while settled > 0 && row_is_blank(&self.frozen[settled - 1]) {
+            settled -= 1;
+        }
+        let rows = (from.min(total)..total).map(|i| row(i).clone()).collect();
+        (rows, settled.min(total))
+    }
+
     /// The rows this render has already handed to scrollback for `text` — the
     /// first `committed` rows of the virtual `frozen ++ tail` concatenation —
     /// re-rendered for a repaint (the Ctrl+O overlay return; see

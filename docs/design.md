@@ -972,9 +972,12 @@ input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
 channel, **draw ticks** come from the frame scheduler, the **`@` file-search
 worker** answers on a fourth channel (`docs/file-search.md`), and each Ctrl+V
 **image-paste worker** delivers its saved file on a fifth
-(`docs/image-paste.md`). `select!` polls its branches in randomized order, so
-input and draws can't starve each other (codex's explicit round-robin fairness,
-for free). The async-rewrite design lives in `docs/async-rewrite.md`.
+(`docs/image-paste.md`) — and, since, a dozen more workers each on a channel
+of its own. Input is polled first and the draw tick second, so a key and the
+frame that shows it wait behind nothing; the other sources are chosen at
+random among themselves, so none of them can starve another
+(`docs/input-latency.md`). The async-rewrite design lives in
+`docs/async-rewrite.md`.
 
 The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
 has queried the cursor position over stdin once, synchronously — and any other

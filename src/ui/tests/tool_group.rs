@@ -311,6 +311,42 @@ fn a_command_running_two_seconds_shows_its_clock_on_the_hint_row() {
 }
 
 #[test]
+fn a_grouped_command_counts_only_what_it_printed_since_the_last_frame() {
+    // The hint row's `· N lines` counted by copying every line the command
+    // had printed, every frame: a grouped `grep -r` over a big tree cost the
+    // whole of its output per frame, and every key typed meanwhile waited
+    // on it. Settled lines are counted once, as they settle
+    // (`docs/tool-streaming.md` *A flood costs what it adds*).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "grep -rn todo .", None);
+    app.set_command_elapsed(Some(Duration::from_secs(12)));
+    let printed: String = (0..5_000)
+        .map(|i| format!("src/{i}.rs:1: todo\n"))
+        .collect();
+    app.push_tool_output(&printed);
+    let row = |app: &App| texts(&live_group_lines(app, 80, None, true))[1].clone();
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (12s · 5000 lines)");
+    for more in 1..=5 {
+        app.push_tool_output("src/x.rs:1: todo\n");
+        let before = crate::ui::tool::display_lines_split();
+        let shown = row(&app);
+        let split = crate::ui::tool::display_lines_split() - before;
+        assert_eq!(
+            shown,
+            format!("  ⎿  $ grep -rn todo . (12s · {} lines)", 5_000 + more)
+        );
+        assert!(
+            split <= 5,
+            "frame {more} copied {split} lines to count them"
+        );
+    }
+    // A line still arriving counts as printed, as before.
+    app.push_tool_output("src/y.rs:1: to");
+    assert_eq!(row(&app), "  ⎿  $ grep -rn todo . (12s · 5006 lines)");
+}
+
+#[test]
 fn the_clock_rides_only_the_running_commands_own_value() {
     // A row still showing an earlier call's value never wears the clock of
     // the command running behind it.

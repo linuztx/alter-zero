@@ -127,33 +127,70 @@ paints. A new commit or cache invalidation drops that owned view too.
 
 Rebuilding the transcript on demand would save closed-overlay storage but
 restore the slow first open described above. Keeping compact rendered rows
-preserves that performance guarantee. Rendering one history item still uses
-temporary expanded rows, so one enormous item can affect allocator high-water
-memory; the change primarily removes the accumulation across items.
+preserves that performance guarantee. An item's rows are written straight
+into the compact store as they are rendered (`transcript_item_into`, an
+assistant reply's a line at a time), so not even one enormous item is first
+built whole as expanded rows (`docs/input-latency.md` *Rows go straight onto
+the page*).
 
-### 3. The cache is pre-warmed at the boundary (`TranscriptCache::warm`)
+### 3. The cache is pre-warmed at the boundary, off the loop thread
 
 Rendering an item costs the same wherever it happens — so it happens where the
-user can't feel it. The loop bottom (beside `recorder.sync`) calls
-`transcript.warm(&app, width)` every iteration:
+user can't feel it. That used to mean the loop bottom: `transcript.warm(&app,
+width)` every iteration, one grammar-highlight per new item, amortized into
+the turn that produced it. It was felt after all. The loop bottom sits
+between two keystrokes, and a 2000-line `read` put 216 ms there, a long code
+reply most of a second (`docs/input-latency.md`).
+
+The loop bottom now only **hands the work out**
+(`TranscriptCache::warm_jobs`, beside `recorder.sync`):
 
 - nothing committed → a few integer compares;
-- a turn committed items → one grammar-highlight per new item, amortized into
-  the turn that produced them;
+- a turn committed items → a `TranscriptJob` per new item, for the worker
+  thread `tui::workers::spawn_transcript_worker` runs for the session's life;
 - a `/resume` load swapped history (a generation bump) → the whole loaded
-  session renders once, inside the load's already-heavy moment (the same
-  iteration purge-repaints the inline view), ~240 ms for the 146 KB session.
+  session, a window of eight items at a time.
 
-So the Ctrl+O keypress itself is always O(live tail) — ~1 µs after a warm on
-the measured session — and the overlay never opens cold.
+Each job renders its item into compact rows on the worker, and the loop
+splices them onto the frozen prefix when they come back
+(`TranscriptCache::accept`) — a copy of some bytes. A result is taken only as
+the very next item of the prefix as it stands: every reset of the prefix is a
+new epoch, a job is of the epoch it was handed out in, and anything else is
+refused.
 
-**Width is the one deliberate exception**: `warm` skips a *width-only*
-mismatch. Resize events arrive in bursts (a drag delivers dozens), and a full
-O(history) re-render per event would freeze the loop; the first overlay draw
-at the new width pays the one rebuild instead — behind the still-painted
-inline screen, thanks to half 1. A generation change re-warms at the current
-width, so the stale-width state can't persist past the next real mutation
-either.
+So the Ctrl+O keypress itself is still O(live tail), the overlay still never
+opens cold, and the cost of that no longer falls on the loop. Pressed before
+the worker has caught up — right behind a long reply, or a big `/resume` —
+the open renders what is missing itself, as it always did, and the worker's
+copies of those items are refused when they arrive.
+
+The synchronous `TranscriptCache::warm` remains for a caller with no worker
+(the memory gate in `tests/transcript_memory.rs` drives it). It keeps its one
+deliberate exception — it skips a *width-only* mismatch, since resize events
+arrive in bursts and a full O(history) re-render per event would freeze its
+caller. `warm_jobs` has no such exception: re-keying costs a few rows of
+banner and the rendering is the worker's, so after a resize the pager is
+warm at the new width too, where it used to rebuild the whole history on the
+loop at the next Ctrl+O.
+
+### 4. The live tail renders a line once
+
+The frozen prefix was never the whole page: the reply still streaming is the
+live tail, rebuilt on every refresh. It was rebuilt by rendering the reply
+whole, so under an open pager a 60 KB code reply cost the grammar over all
+of it per frame and a scroll key waited ~150 ms. The cache now keeps an
+incremental render of the live reply (`LiveReply`, a `StreamRender` of its
+own): a refresh renders the lines that completed since the last, and the
+rows of finished lines stay on the page through the tail's rebuild
+(`docs/input-latency.md` *The pager rendered a streaming reply whole*).
+
+The same render answers for the reply once it **lands** in history — at the
+turn's end, or at a tool call that finalises the text before it. With the
+pager open that item is appended by the draw, not the worker, and it was
+rendered from its first line: the whole reply again, on the loop. The reply
+is frozen where it stands instead (`freeze_landed_reply`): its settled rows
+stay on the page, the live render appends the rest, and only what arrived
+since the last refresh is rendered.
 
 ## What guards it
 
@@ -166,11 +203,16 @@ either.
   `…_warm_prebuilds_so_the_open_renders_nothing` — the incremental behaviour,
   each asserting byte-equality with a from-scratch build (`item_renders` /
   `builds` are the test-only counters proving reuse).
+- `ui::tests::transcript::a_job_renders_an_item_exactly_as_the_cache_would`
+  and its siblings — the job protocol: the same rows, handed out once and a
+  window at a time, refused after a reset, out of turn, or once a draw has
+  rendered the item itself; and the live reply rendered a line once, and
+  not again when it lands (`docs/input-latency.md`).
 - The pre-existing transcript tests (interleaving, live tail, queued backlog,
   placeholder, stamps, selection) all run through the same single code path.
 - `scripts/smoke.sh` Phase 48 — resume a code-heavy session in tmux, Ctrl+O,
   assert the expanded transcript appears promptly and the inline view returns
-  intact (the boundary halves: the queued switch and the loop-bottom warm).
+  intact (the boundary halves: the queued switch and the loop-bottom jobs).
 
 ## What this doc does *not* cover: the paint
 

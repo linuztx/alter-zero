@@ -125,9 +125,11 @@ impl Session<'_> {
     /// Schedule the redraw for a just-handled key. A plain typed character that
     /// lands in a `PasteBurst` asks for a *relaxed* frame a beat out instead of
     /// an immediate one; every other key (and the first characters of a run)
-    /// paints at once. The scheduler keeps the soonest pending deadline and its
-    /// rate limiter caps everything at 120 fps — that floor, not the burst
-    /// branch, is what coalesces a paste run into a few paints (see
+    /// paints at once — an **input frame**, which is not held to the 120 fps
+    /// floor a streaming reply's frames keep, nor to one of its own
+    /// (`docs/input-latency.md`). The scheduler keeps the soonest pending
+    /// deadline, and that 120 fps floor, not the burst branch, is what
+    /// coalesces a paste run's relaxed frames into a few paints (see
     /// `alter_zero::paste`).
     pub(crate) fn schedule_for_key(&mut self, key: &KeyEvent) {
         let plain_char =
@@ -138,7 +140,7 @@ impl Session<'_> {
         if plain_char && self.burst.note_char(std::time::Instant::now()) {
             self.frame.schedule_frame_in(paste::BURST_CHAR_INTERVAL);
         } else {
-            self.frame.schedule_frame();
+            self.frame.schedule_input_frame();
         }
     }
 
@@ -249,21 +251,28 @@ impl Session<'_> {
     /// chat above it scrolling into real scrollback (`InlineViewport` notes that
     /// one-way move for the close's purge rebuild; `docs/permissions.md`).
     pub(crate) fn draw_conversation(&mut self) -> io::Result<()> {
-        // Compute the strip preview cheaply once per frame (O(one line); a
-        // forming table re-renders just its own block), so the status animation
-        // never re-renders the whole reply — and inject its row count so the
-        // layout reserves it. See `docs/markdown.md`, `docs/table-streaming.md`.
-        let preview = self.stream_preview_lines();
-        let height = self.live_region_height();
-        self.pose_banner();
-        let app = &self.app;
-        // `term` places the cursor from the final (content-anchored) viewport
-        // via `ui::cursor_position`, which mirrors render_live's layout exactly.
-        self.term.draw(
-            height,
-            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
-            app,
-        )
+        // One frame: the height, the paint and the cursor seat each ask what
+        // the strip's live cells are, and share one build of them
+        // (`ui::frame`, `docs/input-latency.md`).
+        ui::frame(|| {
+            // Compute the strip preview cheaply once per frame (O(one line); a
+            // forming table re-renders just its own block), so the status
+            // animation never re-renders the whole reply — and inject its row
+            // count so the layout reserves it. See `docs/markdown.md`,
+            // `docs/table-streaming.md`.
+            let preview = self.stream_preview_lines();
+            let height = self.live_region_height();
+            self.pose_banner();
+            let app = &self.app;
+            // `term` places the cursor from the final (content-anchored)
+            // viewport via `ui::cursor_position`, which mirrors render_live's
+            // layout exactly.
+            self.term.draw(
+                height,
+                |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
+                app,
+            )
+        })
     }
 
     /// Hand the viewport the banner's pose for the frame about to be drawn —
@@ -524,11 +533,24 @@ impl Session<'_> {
             // (`docs/view-flow.md`; the flow check runs first so a prompt
             // opening over a flowed menu cleans the flow in the very rebuild
             // that seats the prompt).
-            View::Conversation if self.view_flow_stale() || self.modal_rebuild_due() => {
+            View::Conversation => {
+                // The two checks and the paint are one frame: each reads the
+                // strip's live cells, and they share one build of them
+                // (`ui::frame`, `docs/input-latency.md`). The rebuild is a
+                // frame of its own — it looks for the pictures' files again
+                // first, which can change what a cell reserves.
+                let painted = ui::frame(|| {
+                    if self.view_flow_stale() || self.modal_rebuild_due() {
+                        return Ok(false);
+                    }
+                    self.draw_conversation().map(|()| true)
+                })?;
+                if painted {
+                    return Ok(());
+                }
                 let _ = self.term.take_modal_scrolled();
                 self.repaint_active_view()
             }
-            View::Conversation => self.draw_conversation(),
             View::ToolOutput => self.draw_tool_view(),
             View::ResumePicker => self.draw_resume_picker(),
             View::DiffReview => self.draw_diff_review(),
@@ -609,55 +631,62 @@ impl Session<'_> {
         // so nothing is "already committed" any more: reset, and let the
         // catch-up below re-commit the whole partial at the current width.
         self.render.reset();
-        // The preview comes FIRST: it injects the strip's preview row count
-        // (`set_stream_preview_rows` — a forming table previews multi-row) that
-        // `live_region_height` below must reserve (docs/table-streaming.md).
-        let preview = self.stream_preview_lines();
-        let height = self.live_region_height();
-        let tail = ui::repaint_tail(
-            // Only what has actually reached scrollback: the open read/search
-            // group, or a parallel MCP run still in flight, has cells
-            // recorded but held, and the strip is showing them
-            // (`docs/tool-groups.md`, `docs/mcp.md`).
-            ui::committed_history(&self.app.history, self.app.tool_queue(), held),
-            self.app.streaming_text(),
-            &mut self.render,
-            screen.width,
-            RESIZE_REFLOW_MAX_ROWS,
-            self.app.path_display(),
-            self.app.settings().verbose,
-        );
-        // Re-emit the header banner atop the rebuilt tail — it lives outside
-        // `history` and would otherwise be lost (docs/header.md).
-        // A rebuild of an empty conversation writes the banner and nothing
-        // under it: it stays repaintable where it lands, exactly as at
-        // launch (docs/mascot-animation.md).
-        let bare = tail.is_empty() && self.app.banner_is_live();
-        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
-        // A screen-tall framed view flows its page top into scrollback: the
-        // rows ride the tail's very end, so they land directly above the live
-        // region — the page reads whole across the seam. Recomputed here, at
-        // the one place every purge rebuild goes through, so a resize or a
-        // rewind under an open menu re-flows at the new state for free; the
-        // stored signature is what the draw tick compares
-        // (`docs/view-flow.md`).
-        let flow = self.current_view_flow();
-        self.flowed_view = flow.as_ref().map(|flow| flow.signature);
-        // …unless a flowed page sits between it and the region.
-        let anchor = (bare && flow.is_none()).then(|| tail.clone());
-        if let Some(flow) = flow {
-            tail.extend(flow.lines);
-        }
-        let app = &self.app;
-        self.term.reflow(
-            tail,
-            height,
-            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
-            app,
-        )?;
-        if let Some(banner) = anchor {
-            self.term.anchor_above(banner);
-        }
+        // The rebuild's own frame, opened once the pictures have been looked
+        // for: the height, the flow and the paint share one build of the
+        // strip's live cells (`ui::frame`, `docs/input-latency.md`).
+        ui::frame(|| -> io::Result<()> {
+            // The preview comes FIRST: it injects the strip's preview row
+            // count (`set_stream_preview_rows` — a forming table previews
+            // multi-row) that `live_region_height` below must reserve
+            // (docs/table-streaming.md).
+            let preview = self.stream_preview_lines();
+            let height = self.live_region_height();
+            let tail = ui::repaint_tail(
+                // Only what has actually reached scrollback: the open
+                // read/search group, or a parallel MCP run still in flight,
+                // has cells recorded but held, and the strip is showing them
+                // (`docs/tool-groups.md`, `docs/mcp.md`).
+                ui::committed_history(&self.app.history, self.app.tool_queue(), held),
+                self.app.streaming_text(),
+                &mut self.render,
+                screen.width,
+                RESIZE_REFLOW_MAX_ROWS,
+                self.app.path_display(),
+                self.app.settings().verbose,
+            );
+            // Re-emit the header banner atop the rebuilt tail — it lives
+            // outside `history` and would otherwise be lost (docs/header.md).
+            // A rebuild of an empty conversation writes the banner and
+            // nothing under it: it stays repaintable where it lands, exactly
+            // as at launch (docs/mascot-animation.md).
+            let bare = tail.is_empty() && self.app.banner_is_live();
+            let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+            // A screen-tall framed view flows its page top into scrollback:
+            // the rows ride the tail's very end, so they land directly above
+            // the live region — the page reads whole across the seam.
+            // Recomputed here, at the one place every purge rebuild goes
+            // through, so a resize or a rewind under an open menu re-flows at
+            // the new state for free; the stored signature is what the draw
+            // tick compares (`docs/view-flow.md`).
+            let flow = self.current_view_flow();
+            self.flowed_view = flow.as_ref().map(|flow| flow.signature);
+            // …unless a flowed page sits between it and the region.
+            let anchor = (bare && flow.is_none()).then(|| tail.clone());
+            if let Some(flow) = flow {
+                tail.extend(flow.lines);
+            }
+            let app = &self.app;
+            self.term.reflow(
+                tail,
+                height,
+                |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
+                app,
+            )?;
+            if let Some(banner) = anchor {
+                self.term.anchor_above(banner);
+            }
+            Ok(())
+        })?;
         // Catch scrollback up on the in-flight partial the purge dropped:
         // exactly the rows live streaming would have committed, queued for
         // the next draw. Suppressed while a flow is active — the queued rows
@@ -692,36 +721,39 @@ impl Session<'_> {
         let history = ui::committed_history(&run.history, &run.tool_queue, None).to_vec();
         recheck_pictures(&history);
         let streaming = run.streaming.clone().filter(|text| !text.is_empty());
-        // The preview comes FIRST, as in `repaint_conversation`: it injects
-        // the strip's row count (`set_stream_preview_rows`) that
-        // `live_region_height` below must reserve — a rebuild that skipped it
-        // squeezed a multi-row frontier back to one row for that frame
-        // (`docs/agent-view-streaming.md`).
-        let preview = self.stream_preview_lines();
-        let height = self.live_region_height();
-        // An agent's session view keeps a cell per call: its commits are
-        // keyed on the records its own run makes (docs/tool-groups.md).
-        let mut tail =
-            ui::conversation_lines(&history, screen.width, self.app.path_display(), true);
-        if let Some(text) = &streaming {
-            tail.extend(self.agent_render.committed_rows(text, screen.width));
-        }
-        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
-        // A framed view opened from the agent view's own palette renders over
-        // it and flows the same way (`docs/view-flow.md`) — the rebuild is
-        // this view's, so the flow rides this tail.
-        let flow = self.current_view_flow();
-        self.flowed_view = flow.as_ref().map(|flow| flow.signature);
-        if let Some(flow) = flow {
-            tail.extend(flow.lines);
-        }
-        let app = &self.app;
-        self.term.reflow(
-            tail,
-            height,
-            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
-            app,
-        )?;
+        // The rebuild's own frame, as in `repaint_conversation`.
+        ui::frame(|| {
+            // The preview comes FIRST, as in `repaint_conversation`: it
+            // injects the strip's row count (`set_stream_preview_rows`) that
+            // `live_region_height` below must reserve — a rebuild that
+            // skipped it squeezed a multi-row frontier back to one row for
+            // that frame (`docs/agent-view-streaming.md`).
+            let preview = self.stream_preview_lines();
+            let height = self.live_region_height();
+            // An agent's session view keeps a cell per call: its commits are
+            // keyed on the records its own run makes (docs/tool-groups.md).
+            let mut tail =
+                ui::conversation_lines(&history, screen.width, self.app.path_display(), true);
+            if let Some(text) = &streaming {
+                tail.extend(self.agent_render.committed_rows(text, screen.width));
+            }
+            let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+            // A framed view opened from the agent view's own palette renders
+            // over it and flows the same way (`docs/view-flow.md`) — the
+            // rebuild is this view's, so the flow rides this tail.
+            let flow = self.current_view_flow();
+            self.flowed_view = flow.as_ref().map(|flow| flow.signature);
+            if let Some(flow) = flow {
+                tail.extend(flow.lines);
+            }
+            let app = &self.app;
+            self.term.reflow(
+                tail,
+                height,
+                |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
+                app,
+            )
+        })?;
         // Catch scrollback up on the agent's in-flight partial the purge
         // dropped — `repaint_conversation`'s catch-up over `agent_render`, so
         // a rebuild mid-reply leaves the same rows behind here as it does in

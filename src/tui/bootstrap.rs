@@ -47,7 +47,7 @@ use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
 use super::startup::{LoadedSession, Startup, StartupSession};
 use super::view::RESIZE_REFLOW_MAX_ROWS;
-use super::workers::{ModelFetch, ProbeFetch, spawn_file_search_worker};
+use super::workers::{ModelFetch, ProbeFetch, spawn_file_search_worker, spawn_transcript_worker};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
@@ -477,6 +477,12 @@ impl<'t> Session<'t> {
         let (file_req_tx, file_req_rx) = std::sync::mpsc::channel::<String>();
         let (file_res_tx, file_rx) = tokio::sync::mpsc::unbounded_channel();
         let file_worker = spawn_file_search_worker(cwd.clone(), file_req_rx, file_res_tx);
+        // The Ctrl+O transcript's render worker (docs/input-latency.md): each
+        // committed item's rows are rendered there and spliced in here. It
+        // holds the channel's only sender, so the channel closing says the
+        // worker is gone. A headless run has no pager to render for.
+        let (transcript_tx, transcript_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcript_worker = (!headless).then(|| spawn_transcript_worker(transcript_tx));
         // The Ctrl+V image-paste pipeline (docs/image-paste.md) and the `/model`
         // picker's list fetch (docs/llm.md): each runs on its own short-lived
         // worker thread and reports here.
@@ -553,6 +559,8 @@ impl<'t> Session<'t> {
             render: ui::StreamRender::new(),
             agent_render: ui::StreamRender::new(),
             transcript: ui::TranscriptCache::new(),
+            transcript_worker,
+            transcript_rx,
             context: ui::ContextCache::new(),
             burst: PasteBurst::new(),
             clocks: StatusClocks::started_now(),
@@ -1117,8 +1125,8 @@ impl<'t> Session<'t> {
     /// The loop-bottom bookkeeping, run after every event: the context gauge's
     /// re-read, the auto-compact check, the abandoned-permission release, the
     /// three on-disk mirrors (the rollout, the input history, the tip walk's
-    /// position), the herdr pane's state, the transcript pre-render, and the
-    /// detached-thread sweep.
+    /// position), the herdr pane's state, the transcript worker's next jobs,
+    /// and the detached-thread sweep.
     pub(crate) fn after_iteration(&mut self) {
         // The context gauge (docs/token-estimate.md): whatever this iteration
         // added to the history — a message sent, a tool's output — shows on
@@ -1188,19 +1196,45 @@ impl<'t> Session<'t> {
         // under it — a tool round landing, a server connecting
         // (docs/context-usage.md). Nothing at all while the page is closed.
         self.sync_context_usage();
-        // Pre-render whatever this iteration committed into the Ctrl+O transcript
-        // cache (docs/tool-view-performance.md) — a few integer compares when
-        // nothing did, one grammar-highlight per new item when something did, the
-        // whole loaded history on the iteration a `/resume` swapped it in. Paying
-        // it here, at the boundary, is what makes the Ctrl+O keypress itself
-        // O(live tail): the overlay never opens cold.
-        let width = self.term.screen().width;
-        self.transcript.warm(&self.app, width);
+        // Have whatever this iteration committed rendered for the Ctrl+O
+        // transcript (docs/tool-view-performance.md): a few integer compares
+        // when nothing did, a job for the worker per new item when something
+        // did, the whole loaded history a window at a time after a `/resume`
+        // swapped it in. The overlay still never opens cold — and the
+        // grammar-highlight that pays for that no longer runs here, between
+        // two keystrokes (docs/input-latency.md).
+        self.warm_transcript();
         // Reap detached backend threads (interrupt / `/clear` abandonments) that
         // have finished. `is_finished()` never blocks, so this can't stall the
         // loop; a thread still parked in its final network read is left until it
         // exits on its own. See `Session::abandon_inflight` / docs/interrupt.md.
         self.reaping.retain(|handle| !handle.is_finished());
+    }
+
+    /// Hand the transcript worker the history items the Ctrl+O cache does
+    /// not hold yet ([`ui::TranscriptCache::warm_jobs`]) — a window of them:
+    /// each result's arrival runs this again, which hands out the next.
+    ///
+    /// Not while the pager is open: its own draws render what it is missing,
+    /// there and then, so a job for the same item would only be refused.
+    fn warm_transcript(&mut self) {
+        let Some(worker) = &self.transcript_worker else {
+            return;
+        };
+        if self.app.view == alter_zero::app::View::ToolOutput {
+            return;
+        }
+        let width = self.term.screen().width;
+        let jobs = self.transcript.warm_jobs(&self.app, width);
+        worker.send(self.transcript.epoch(), jobs);
+    }
+
+    /// A history item's rows, back from the transcript worker: spliced onto
+    /// the Ctrl+O cache when they are still the next ones it wants
+    /// ([`ui::TranscriptCache::accept`]) — the loop bottom then hands the
+    /// worker the item after the window.
+    pub(crate) fn on_transcript_item(&mut self, done: ui::RenderedTranscriptItem) {
+        self.transcript.accept(done);
     }
 
     /// Write the spinner tip walk's position back to the per-user
