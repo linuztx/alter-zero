@@ -2454,9 +2454,15 @@ pub(super) const PLUGINS_HINT_CLOSE: (&str, u8) = ("Esc to close", 0);
 pub(super) const PLUGINS_HINT_TYPE: (&str, u8) = ("type a source", 5);
 pub(super) const PLUGINS_HINT_ADD: (&str, u8) = ("Enter to add", 0);
 
-/// A detail page's hint and the confirmation's.
-pub(super) const PLUGINS_PAGE_HINT: &str = "↑/↓ to navigate · Enter to select · Esc to go back";
-pub(super) const PLUGINS_CONFIRM_HINT: &str = "Enter to confirm · Esc to go back";
+/// A detail page's hint and the confirmation's, clause by clause in the
+/// order they give way (the list's rule): the way back is never left out.
+pub(super) const PLUGINS_PAGE_HINT: [(&str, u8); 3] = [
+    ("↑/↓ to navigate", 2),
+    ("Enter to select", 1),
+    ("Esc to go back", 0),
+];
+pub(super) const PLUGINS_CONFIRM_HINT: [(&str, u8); 2] =
+    [("Enter to confirm", 1), ("Esc to go back", 0)];
 
 /// The list's placeholders: a first read that did not answer, a search
 /// matching nothing, and the two empty tabs — each naming where to go next.
@@ -2476,11 +2482,18 @@ pub(super) const PLUGINS_SESSION_OFF: &str =
 
 /// What the add tab's typed row says.
 pub(super) const PLUGINS_ADD_TYPED: &str = "Press Enter to add it";
+/// The add tab's second line under its typed source: how to pin one —
+/// `@ref` on the shorthand, `#ref` on any git source (`plugins::source`).
+pub(super) const PLUGINS_ADD_PIN: &str =
+    "Pin a branch, tag or commit: owner/repo@ref, or #ref on a git URL";
+/// The line under the list for a plugin whose manifest describes nothing.
+pub(super) const PLUGINS_NO_DESCRIPTION: &str = "No description";
 
-/// A plugin page's note for one not yet installed that brings something
-/// that runs (`docs/plugins.md` *Trust*).
-pub(super) const PLUGINS_TRUST_NOTE: &str =
-    "Its hooks and MCP servers run only once you have reviewed them, after it is installed.";
+/// A plugin page's warning for one not yet installed that brings something
+/// that runs — or whose contents are read only once it is installed — the
+/// risk in Claude Code's opening words, then this app's own guard
+/// (`docs/plugins.md` *Trust*).
+pub(super) const PLUGINS_TRUST_NOTE: &str = "Plugins can run code on your computer — install only plugins you trust. Any hooks or MCP servers it brings wait for your review before they run.";
 
 /// The job line's closing clause: `Installing deploy… (4s · esc to cancel)`.
 pub(super) const PLUGINS_JOB_CANCEL: &str = "esc to cancel";

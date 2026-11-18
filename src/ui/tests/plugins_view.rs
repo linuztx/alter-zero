@@ -139,9 +139,9 @@ fn the_list_shows_the_tabs_the_rows_and_the_highlighted_plugins_facts() {
         .find(|t| t.contains("→ hookify"))
         .expect("the highlighted row");
     assert!(hookify.contains("✔ enabled"), "{hookify}");
-    // Where every marketplace is listed, a row names its own.
+    // Where every marketplace is listed, a row names its own, in a column.
     assert!(
-        hookify.contains("team · What hookify@team does"),
+        hookify.contains(" team    What hookify@team does"),
         "{hookify}"
     );
     let lint = texts.iter().find(|t| t.contains("lint")).expect("lint");
@@ -174,6 +174,199 @@ fn the_rows_line_up_their_status_column() {
 /// The display columns of `row` before `needle`.
 fn cols_before(row: &str, needle: &str) -> usize {
     crate::ui::wrap::cols(&row[..row.find(needle).expect(needle)])
+}
+
+/// A catalog shaped like the official ones: two marketplaces with long
+/// names, a few long plugin names among short ones, and descriptions of
+/// every length.
+fn official_like() -> PluginCatalog {
+    let described = |key: &str, text: &str| {
+        let mut plugin = plugin(key, None);
+        plugin.description = Some(text.to_string());
+        plugin
+    };
+    PluginCatalog {
+        marketplaces: vec![
+            market("claude-plugins-official", true),
+            market("openai-curated", true),
+        ],
+        plugins: vec![
+            described(
+                "42crunch-api-security-testing@claude-plugins-official",
+                "Automate API security directly in Claude Code with 42Crunch - automatically \
+                 audit OpenAPI specs, detect vulnerabilities aligned with OWASP API Security \
+                 risks (including BOLA/BFLA), and apply AI-powered fixes.",
+            ),
+            described(
+                "activecampaign@claude-plugins-official",
+                "Marketing automation, CRM and email campaigns from ActiveCampaign.",
+            ),
+            described(
+                "context7@claude-plugins-official",
+                "Upstash Context7 MCP server for up-to-date documentation lookup.",
+            ),
+            described(
+                "github@openai-curated",
+                "Inspect repositories, triage pull requests and issues, debug CI.",
+            ),
+            described("sentry@openai-curated", "Errors."),
+        ],
+        error: None,
+    }
+}
+
+/// The row of `texts` that names `needle`.
+fn row_of<'a>(texts: &'a [String], needle: &str) -> &'a str {
+    texts
+        .iter()
+        .find(|t| t.contains(needle))
+        .unwrap_or_else(|| panic!("a row naming {needle}: {texts:#?}"))
+}
+
+#[test]
+fn a_long_name_never_crowds_the_descriptions_off_the_rows() {
+    // On the official catalogs a 29-column name sized the column for every
+    // row: at 60 columns no row had room left for its description — the
+    // marketplace was cut to `clau…` — and at 80 an All row read
+    // `claude-plugins-official …`.
+    let mut app = open_with(official_like());
+    for tab in ["All", "claude-plugins-official"] {
+        for width in [60_u16, 80, 120] {
+            let texts = page_at(&app, width, TALL);
+            let context = format!("the {tab} tab at {width} columns: {texts:#?}");
+            assert!(
+                row_of(&texts, "→ 42crunch").contains("Automate API"),
+                "{context}"
+            );
+            assert!(
+                row_of(&texts, "activecampaign").contains("Marketing automation"),
+                "{context}"
+            );
+            assert!(
+                row_of(&texts, "context7").contains("Upstash Context7"),
+                "{context}"
+            );
+            // The highlighted row's name, cut in its column, is whole under
+            // the list.
+            assert!(
+                has(
+                    &texts,
+                    "42crunch-api-security-testing@claude-plugins-official"
+                ),
+                "{context}"
+            );
+        }
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+    }
+    let texts = page_at(&open_with(official_like()), 60, TALL);
+    let (name, _) = row_of(&texts, "→ 42crunch")
+        .split_once("+ available")
+        .expect("the status");
+    assert!(
+        name.trim_end().ends_with('…'),
+        "a name past its column gives way: {texts:#?}"
+    );
+}
+
+#[test]
+fn the_marketplace_is_a_column_of_its_own_where_the_rows_have_room() {
+    let app = open_with(official_like());
+    let wide = page_at(&app, 120, TALL);
+    let at = |row: &str, needle: &str| cols_before(row_of(&wide, row), needle);
+    assert_eq!(
+        at("context7", "claude-plugins-official"),
+        at("github", "openai-curated"),
+        "{wide:#?}"
+    );
+    assert_eq!(
+        at("context7", "Upstash"),
+        at("github", "Inspect"),
+        "{wide:#?}"
+    );
+    assert_eq!(
+        at("context7", "Upstash"),
+        at("sentry", "Errors."),
+        "{wide:#?}"
+    );
+    // Narrower, the descriptions keep the room: the marketplace is the
+    // line under the list's to name, for the highlighted row.
+    for width in [60_u16, 80, 100] {
+        let texts = page_at(&app, width, TALL);
+        for row in texts.iter().filter(|t| t.contains("+ available")) {
+            assert!(
+                !row.contains("claude-plugins") && !row.contains("openai-curated"),
+                "{width} columns: {row}"
+            );
+        }
+    }
+}
+
+#[test]
+fn moving_through_the_list_never_resizes_the_page() {
+    // On the official catalogs the highlighted plugin's description, wrapped
+    // whole under the list, set the page's height: ↑/↓ moved its bottom
+    // rule from row 30 to 26 to 22 and back, every growth scrolling the
+    // conversation above it.
+    let mut catalog = official_like();
+    catalog.plugins[4].description = None;
+    let mut app = open_with(catalog);
+    for width in [60_u16, 80, 120] {
+        press(&mut app, KeyCode::Home);
+        let mut heights = Vec::new();
+        for _ in 0..5 {
+            heights.push(page_at(&app, width, TALL).len());
+            press(&mut app, KeyCode::Down);
+        }
+        assert!(
+            heights.windows(2).all(|pair| pair[0] == pair[1]),
+            "{width} columns: {heights:?}"
+        );
+    }
+    // The highlighted row's description reads under the list, cut to its
+    // row; one with none says so, rather than giving the row back.
+    press(&mut app, KeyCode::Home);
+    let texts = page(&app);
+    assert!(
+        has(&texts, "Automate API security directly in Claude Code"),
+        "{texts:#?}"
+    );
+    press(&mut app, KeyCode::End);
+    assert!(has(&page(&app), "No description"), "{:#?}", page(&app));
+
+    // The add tab's typed source and its suggestions alike.
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::Add);
+    for c in "anthropics".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let typed = page(&app);
+    press(&mut app, KeyCode::Down);
+    let suggestion = page(&app);
+    assert_eq!(typed.len(), suggestion.len(), "{typed:#?}\n{suggestion:#?}");
+}
+
+#[test]
+fn a_row_never_ends_on_a_stub() {
+    // `clau…` and `claude-plugins-official …` say nothing: a description
+    // with less room than a word or two is left out whole.
+    let app = open_with(official_like());
+    for width in 30..=130_u16 {
+        let texts = page_at(&app, width, TALL);
+        for row in texts.iter().filter(|t| t.contains("+ available")) {
+            let after = row
+                .split_once("+ available")
+                .map_or("", |(_, after)| after)
+                .trim_start();
+            if let Some(cut) = after.strip_suffix('…') {
+                let last = cut.rsplit("  ").next().unwrap_or(cut);
+                assert!(
+                    crate::ui::wrap::cols(last) >= 7,
+                    "{width} columns: a stub {last:?} in {row:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -362,7 +555,7 @@ fn an_update_opens_the_description_on_an_amber_mark() {
     let text = plain(row);
     assert!(text.contains("✔ enabled"), "{text}");
     assert!(
-        text.contains("▲ update · team · What hookify@team does"),
+        text.contains(" team    ▲ update · What hookify@team does"),
         "{text}"
     );
     let mark = row
@@ -516,6 +709,40 @@ fn the_hint_keeps_its_clauses_whole_on_a_narrow_terminal() {
 }
 
 #[test]
+fn a_detail_pages_hint_keeps_the_way_back_on_a_narrow_terminal() {
+    // At 40 columns a plugin's page cut its hint to `… · Enter to select ·
+    // E…`: the one key that leaves the page was the one it lost.
+    let mut app = plugins_app();
+    open_plugin_page(&mut app);
+    let mut confirm = plugins_app();
+    open_plugin_page(&mut confirm);
+    press(&mut confirm, KeyCode::Char('3'));
+    assert!(matches!(
+        confirm.plugins_menu.as_ref().unwrap().page,
+        crate::app::PluginsPage::Confirm(_)
+    ));
+    for (what, app) in [("a plugin's page", &app), ("the confirmation", &confirm)] {
+        for width in [24_u16, 30, 40, 52, 80] {
+            let texts = page_at(app, width, TALL);
+            let hint = texts
+                .iter()
+                .rev()
+                .nth(1)
+                .expect("the hint, over the closing rule");
+            assert!(!hint.ends_with('…'), "{what} at {width}: {hint:?}");
+            assert!(
+                hint.contains("Esc to go back"),
+                "{what} at {width}: {hint:?}"
+            );
+            assert!(
+                crate::ui::wrap::cols(hint) <= usize::from(width),
+                "{what} at {width}: {hint:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_caret_follows_the_search() {
     let mut app = plugins_app();
     for c in "hoo".chars() {
@@ -572,14 +799,15 @@ fn a_plugins_page_shows_its_facts_over_its_actions() {
     let mut app = plugins_app();
     open_plugin_page(&mut app);
     let texts = page(&app);
-    assert!(has(&texts, "hookify"), "{texts:#?}");
-    assert!(has(&texts, "hookify@team · v1.0.0"), "{texts:#?}");
+    assert_eq!(texts[1], "  hookify", "{texts:#?}");
+    // Its state leads the line under its name: on a long description a
+    // `Status:` row sat five rows further down.
+    assert_eq!(
+        texts[2], "  ✔ enabled in this directory · hookify@team · v1.0.0",
+        "{texts:#?}"
+    );
+    assert!(!has(&texts, "Status:"), "{texts:#?}");
     assert!(has(&texts, "What hookify@team does"), "{texts:#?}");
-    let status = texts
-        .iter()
-        .find(|t| t.contains("Status:"))
-        .expect("status");
-    assert!(status.contains("✔ enabled in this directory"), "{status}");
     assert!(has(&texts, "Claude Code plugin"), "{texts:#?}");
     let skills = texts
         .iter()
@@ -592,7 +820,7 @@ fn a_plugins_page_shows_its_facts_over_its_actions() {
     assert!(has(&texts, "❯ 1. Disable in this directory"), "{texts:#?}");
     assert!(has(&texts, "2. Update"), "{texts:#?}");
     assert!(has(&texts, "3. Uninstall"), "{texts:#?}");
-    assert!(has(&texts, "4. Back"), "{texts:#?}");
+    assert!(has(&texts, "4. Back to plugins"), "{texts:#?}");
     assert!(!cursor_visible(&app), "a page of actions hides the cursor");
     assert_frame_hugs_content(
         "a plugin's page",
@@ -630,11 +858,10 @@ fn a_plugin_that_was_not_loaded_says_why() {
     assert!(row.contains("✘ not loaded"), "{row}");
     open_plugin_page(&mut app);
     let texts = page(&app);
-    let status = texts
-        .iter()
-        .find(|t| t.contains("Status:"))
-        .expect("status");
-    assert!(status.contains("installed, but not loaded"), "{status}");
+    assert!(
+        texts[2].starts_with("  ✘ installed, but not loaded · "),
+        "{texts:#?}"
+    );
     assert!(
         has(&texts, "hookify@other is on under the same name"),
         "{texts:#?}"
@@ -650,8 +877,118 @@ fn a_plugin_that_brings_hooks_says_they_wait_for_review() {
     let texts = page(&app);
     assert!(has(&texts, "+ not installed"), "{texts:#?}");
     assert!(has(&texts, "❯ 1. Install"), "{texts:#?}");
-    let note = PLUGINS_TRUST_NOTE.split(',').next().unwrap();
-    assert!(has(&texts, note), "{texts:#?}");
+    assert!(
+        has(&texts, "Plugins can run code on your computer"),
+        "{texts:#?}"
+    );
+    let note: String = texts.join(" ");
+    let note: String = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(note.contains(PLUGINS_TRUST_NOTE), "{texts:#?}");
+}
+
+#[test]
+fn a_plugin_whose_contents_are_not_read_yet_warns_all_the_same() {
+    // A plugin in a repository of its own is read once it is installed: its
+    // page said `read once it is installed` and nothing about what it may
+    // run — the one case the user knows least about.
+    let mut catalog = catalog();
+    catalog.plugins[2].components = None;
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Down);
+    open_plugin_page(&mut app);
+    let texts = page(&app);
+    assert!(has(&texts, "read once it is installed"), "{texts:#?}");
+    assert!(
+        has(&texts, "Plugins can run code on your computer"),
+        "{texts:#?}"
+    );
+    // One that brings only instructions runs nothing of its own.
+    let mut catalog = catalog_with_skills_only_deploy();
+    catalog.plugins[2].installed = None;
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Down);
+    open_plugin_page(&mut app);
+    let texts = page(&app);
+    assert!(
+        !has(&texts, "Plugins can run code on your computer"),
+        "{texts:#?}"
+    );
+}
+
+/// [`catalog`] with `deploy` bringing one skill and nothing that runs.
+fn catalog_with_skills_only_deploy() -> PluginCatalog {
+    let mut catalog = catalog();
+    catalog.plugins[2].components = Some(ComponentSummary {
+        skills: vec!["deploy:ship".to_string()],
+        ..ComponentSummary::default()
+    });
+    catalog
+}
+
+#[test]
+fn a_plugins_line_under_its_name_breaks_between_its_clauses() {
+    // At 60 columns `… · by` ended one row and `42Crunch` opened the next.
+    let mut catalog = official_like();
+    catalog.plugins[0].author = Some("42Crunch".to_string());
+    let mut app = open_with(catalog);
+    open_plugin_page(&mut app);
+    for width in [40_u16, 60, 80, 120] {
+        let texts = page_at(&app, width, TALL);
+        assert!(has(&texts, "by 42Crunch"), "{width}: {texts:#?}");
+        for row in &texts {
+            assert!(
+                !row.ends_with(" by") && !row.ends_with('·') && !row.starts_with("  · "),
+                "{width} columns: {row:?} in {texts:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_plugins_facts_line_up_on_a_column_sized_to_their_labels() {
+    // The `/mcp` page's label column, sized for its `Config location:`,
+    // left every value of a plugin's page four columns further right than
+    // its own labels needed — a wrapped homepage one row longer.
+    let mut app = plugins_app();
+    open_plugin_page(&mut app);
+    let texts = page(&app);
+    // The widest label here is `Not used here:`.
+    let column = 2 + crate::ui::wrap::cols("Not used here:") + 2;
+    assert_eq!(
+        cols_before(row_of(&texts, "Format:"), "Claude Code plugin"),
+        column,
+        "{texts:#?}"
+    );
+    assert_eq!(
+        cols_before(row_of(&texts, "Source:"), "./plugins/x"),
+        column,
+        "{texts:#?}"
+    );
+}
+
+#[test]
+fn a_source_with_a_repository_links_its_address() {
+    let mut catalog = official_like();
+    catalog.plugins[0].source =
+        "https://github.com/42Crunch-AI/claude-plugins.git · plugins/api-security-testing @ v1.5.5"
+            .to_string();
+    let mut app = open_with(catalog);
+    open_plugin_page(&mut app);
+    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 60, TALL);
+    let targets: Vec<String> = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .filter_map(|span| crate::links::style_link(&span.style))
+        .map(|target| target.to_string())
+        .collect();
+    assert!(
+        targets
+            .iter()
+            .any(|target| target == "https://github.com/42Crunch-AI/claude-plugins.git"),
+        "the repository is a link, every wrapped piece of it: {targets:#?}"
+    );
 }
 
 #[test]
@@ -663,7 +1000,7 @@ fn a_plugin_that_cannot_be_installed_says_why() {
     let texts = page(&app);
     assert!(has(&texts, "– cannot be installed"), "{texts:#?}");
     assert!(has(&texts, "Npm sources are not supported"), "{texts:#?}");
-    assert!(has(&texts, "❯ 1. Back"), "{texts:#?}");
+    assert!(has(&texts, "❯ 1. Back to plugins"), "{texts:#?}");
 }
 
 #[test]

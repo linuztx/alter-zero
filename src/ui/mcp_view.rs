@@ -6,7 +6,9 @@
 
 use super::inline::wrap_inline;
 use super::menu::centered_window;
-use super::model_view::{model_linked_rows, model_rule, model_url_rows, whole_url_run};
+use super::model_view::{
+    linked_segments, model_linked_rows, model_rule, model_url_rows, whole_url_run,
+};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
@@ -236,16 +238,25 @@ pub(super) fn field_line(
     value_style: Style,
     width: u16,
 ) -> Line<'static> {
-    let room = (width as usize)
-        .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
-        .max(1);
+    field_line_at(MCP_FIELD_COL, label, value, value_style, width)
+}
+
+/// [`field_line`] with its values at column `col` past the inset — a page
+/// whose labels are its own sizes the column to them (`/plugins`).
+pub(super) fn field_line_at(
+    col: usize,
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Line<'static> {
     Line::from(vec![
         Span::raw(MODEL_INDENT),
+        label_span(col, label),
         Span::styled(
-            format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(mcp_detail_label_color()),
+            ellipsize(value, usize::from(field_room(col, width))),
+            value_style,
         ),
-        Span::styled(ellipsize(value, room), value_style),
     ])
 }
 
@@ -260,11 +271,22 @@ pub(super) fn field_lines(
     value_style: Style,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let rows = wrap_text(value, field_room(width))
+    field_lines_at(MCP_FIELD_COL, label, value, value_style, width)
+}
+
+/// [`field_lines`] with its values at column `col` ([`field_line_at`]).
+pub(super) fn field_lines_at(
+    col: usize,
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let rows = wrap_text(value, field_room(col, width))
         .into_iter()
         .map(|row| vec![Span::styled(row, value_style)])
         .collect();
-    field_rows(label, rows)
+    field_rows(col, label, rows)
 }
 
 /// [`field_lines`] for a remote server's address: the same rows, every
@@ -277,38 +299,71 @@ pub(super) fn url_field_lines(
     value_style: Style,
     width: u16,
 ) -> Vec<Line<'static>> {
+    url_field_lines_at(MCP_FIELD_COL, label, url, value_style, width)
+}
+
+/// [`url_field_lines`] with its values at column `col` ([`field_line_at`]).
+pub(super) fn url_field_lines_at(
+    col: usize,
+    label: &str,
+    url: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
     match whole_url_run(url, value_style) {
-        Some(run) => field_rows(label, wrap_inline(&[run], field_room(width))),
-        None => field_lines(label, url, value_style, width),
+        Some(run) => field_rows(col, label, wrap_inline(&[run], field_room(col, width))),
+        None => field_lines_at(col, label, url, value_style, width),
     }
 }
 
+/// [`field_lines_at`] for a value with addresses **in** it — a plugin's
+/// `https://….git · plugins/x @ v1.5.5` source: each address a link to
+/// itself, whole behind every wrapped piece, the rest plain.
+pub(super) fn linked_field_lines_at(
+    col: usize,
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if crate::links::find_urls(value).is_empty() {
+        return field_lines_at(col, label, value, value_style, width);
+    }
+    field_rows(
+        col,
+        label,
+        wrap_inline(&linked_segments(value, value_style), field_room(col, width)),
+    )
+}
+
+/// A label padded to the field column `col`, in the labels' bright.
+fn label_span(col: usize, label: &str) -> Span<'static> {
+    Span::styled(
+        format!("{label:<col$}"),
+        Style::new().fg(mcp_detail_label_color()),
+    )
+}
+
 /// The room a field's value wraps to: what is left of the row past the inset
-/// and the label column.
-fn field_room(width: u16) -> u16 {
-    (width as usize)
-        .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
-        .max(1) as u16
+/// and the label column `col`.
+fn field_room(col: usize, width: u16) -> u16 {
+    u16::try_from(
+        usize::from(width)
+            .saturating_sub(cols(MODEL_INDENT) + col)
+            .max(1),
+    )
+    .unwrap_or(u16::MAX)
 }
 
 /// A field's already-wrapped value rows laid out under its label: the first
-/// row beside the label, the rest hanging at the field column.
-fn field_rows(label: &str, rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
+/// row beside the label, the rest hanging at the field column `col`.
+fn field_rows(col: usize, label: &str, rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
     let mut rows = rows.into_iter();
-    let mut first = vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(
-            format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(mcp_detail_label_color()),
-        ),
-    ];
+    let mut first = vec![Span::raw(MODEL_INDENT), label_span(col, label)];
     first.extend(rows.next().unwrap_or_default());
     let mut lines = vec![Line::from(first)];
     lines.extend(rows.map(|row| {
-        let mut spans = vec![
-            Span::raw(MODEL_INDENT),
-            Span::raw(" ".repeat(MCP_FIELD_COL)),
-        ];
+        let mut spans = vec![Span::raw(MODEL_INDENT), Span::raw(" ".repeat(col))];
         spans.extend(row);
         Line::from(spans)
     }));
@@ -327,15 +382,24 @@ pub(super) fn state_field_line(
     words: &str,
     width: u16,
 ) -> Line<'static> {
-    let room = (width as usize)
-        .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL + cols(glyph) + 1)
+    state_field_line_at(MCP_FIELD_COL, label, glyph, glyph_color, words, width)
+}
+
+/// [`state_field_line`] with its values at column `col` ([`field_line_at`]).
+pub(super) fn state_field_line_at(
+    col: usize,
+    label: &str,
+    glyph: &str,
+    glyph_color: Color,
+    words: &str,
+    width: u16,
+) -> Line<'static> {
+    let room = usize::from(field_room(col, width))
+        .saturating_sub(cols(glyph) + 1)
         .max(1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(
-            format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(mcp_detail_label_color()),
-        ),
+        label_span(col, label),
         Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
         Span::styled(
             ellipsize(words, room),

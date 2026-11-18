@@ -398,19 +398,19 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
 ────────────────────────────────────────────────────────────────────────────────
   Plugins
   The plugins installed on this machine
-  2 installed · 1 on in this directory
+  3 installed · 3 on in this directory
 
-   All (319)    Installed (2)    claude-plugins-official (317)    team (2)    + Add
+   All (382)    Installed (3)    claude-plugins-official (317)  ›
 
   ❯
 
-  → commit-commands   ◯ disabled   claude-plugins-official · Streamline your…
-    hookify           ✔ enabled    claude-plugins-official · Easily create h…
-    (1/2)
+  → context7   ✔ enabled   Upstash Context7 MCP server for up-to-date documenta…
+    github     ✔ enabled   Inspect repositories, triage pull requests and issue…
+    hookify    ✔ enabled   Easily create custom hooks to prevent unwanted behav…
+    (1/3)
 
-    Streamline your git workflow with simple commands for committing,
-    pushing, and creating pull requests
-    commit-commands@claude-plugins-official · v1.0.0 · 3 commands
+    Upstash Context7 MCP server for up-to-date documentation lookup. Connects t…
+    context7@claude-plugins-official · 1 MCP server
 
   ←/→ tabs · Enter to open · Space to toggle · Esc to close
 ────────────────────────────────────────────────────────────────────────────────
@@ -428,15 +428,35 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
   its description, its counts and age, its source and commit — and, in red,
   why its catalog could not be read, or, in amber, the entries it skipped
   and the first one's reason.
-- **Rows.** `→ {name}  {mark} {status}  {description}`, the name and status
-  columns sized off every listed row so they hold still as the window
-  scrolls, the description `…`-cut — opening on the marketplace's name on
-  *All* and *Installed*. An installed plugin is `✔ enabled` (the one green
+- **Rows.** `→ {name}  {mark} {status}  [{marketplace}  ]{description}`,
+  every column sized off every listed row so it holds still as the window
+  scrolls (`row_columns`). The **name column** is the widest name, capped at
+  two fifths of what the row has past its status (12 to 32 columns): on the
+  official catalogs one 29-column name used to size the column for all 382
+  rows, and at 60 columns no row had room left for its description — the
+  marketplace was cut to `clau…` — so a name past the cap is `…`-cut now,
+  whole in the facts under the list. On *All* and *Installed* the
+  **marketplace** is a column of its own, but only where the description
+  keeps 30 columns beside it (from about 112 columns on those catalogs);
+  narrower, the facts under the list name it for the highlighted row. What
+  follows the status is left out whole rather than cut to a stub — a
+  description gets at least eight columns or none — and a row never ends on
+  a column's padding. An installed plugin is `✔ enabled` (the one green
   mark) or `◯ disabled` here, `✘ not loaded` (red) when a session cannot
   load it; one that is not is `+ available`, or `– unavailable` when its
   source is one this app does not fetch. An update opens the description on
   an amber `▲ update ·`. Two rows of one name show their whole ids.
   Installed plugins sort first, then by name — codex's order.
+- **Under the list**, the highlighted row's description cut to one row
+  (`No description` for a plugin with none) over its facts — the id, the
+  version, what it is made of — **two rows at every selection**, so ↑/↓
+  never resize the page: wrapped whole, a three-row description gave way to
+  a one-row one and the page's bottom rule jumped with every step — the
+  official catalogs moved it from row 30 to 26 to 22 and back — each growth
+  scrolling the conversation above the page. The whole description is on
+  the plugin's page. The *+ Add* tab's rows say the same two things: what a
+  catalog is and where it comes from; for the typed source, the forms it
+  takes and how to pin one.
 - **+ Add** is the field and the official catalogs under it: the `❯` line
   takes a source (owner/repo, a git URL, a directory — Space types, a path
   may hold one), and its rows are what Enter adds — the typed source first,
@@ -454,15 +474,65 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
   tab's keys and, on a narrow terminal, leaves out whole clauses — never the
   key that closes the page — rather than ending on a cut word.
 
-**A plugin's page** is the `/mcp` server page's twin: the name in the title
-dress over its id, version and author; its description; the fact rows —
-status, format, source, where it loads from (one loaded in place), and each
-kind of component by the name a session knows it by (`hello:greet`,
-`plugin:guard:probe`); a line for what it carries that is not used here;
-the trust note for one not yet installed; then the numbered actions its
-state affords — `Install`; or `Disable` / `Enable`, `Update` (not for one
-loaded in place), `Uninstall` — and Esc goes back, to the plugin's own row
-wherever an install or an uninstall has since sorted it.
+**A plugin's page** is the `/mcp` server page's twin:
+
+```
+────────────────────────────────────────────────────────────────────────────────
+  42crunch-api-security-testing
+  + not installed · 42crunch-api-security-testing@claude-plugins-official
+  by 42Crunch
+
+  Automate API security directly in Claude Code with 42Crunch - automatically
+  audit OpenAPI specs, detect vulnerabilities aligned with OWASP API Security
+  …
+
+  Source:    https://github.com/42Crunch-AI/claude-plugins.git ·
+             plugins/api-security-testing @ v1.5.5
+  Homepage:  https://42crunch.com
+  Category:  security
+  Contents:  read once it is installed
+
+  Plugins can run code on your computer — install only plugins you trust. Any
+  hooks or MCP servers it brings wait for your review before they run.
+
+  ❯ 1. Install
+    2. Back to plugins
+
+  ↑/↓ to navigate · Enter to select · Esc to go back
+────────────────────────────────────────────────────────────────────────────────
+```
+
+- **Its state leads the line under its name** — `✔ enabled in this
+  directory`, `◯ disabled in this directory`, `✘ installed, but not
+  loaded`, `+ not installed`, `– cannot be installed`, the mark in its
+  colour — beside its id, version and author: a `Status:` fact row sat
+  under the description, five rows down on a long one. The line breaks
+  between its clauses (`clause_lines`), never inside one: `… · by` over
+  `42Crunch` was the old wrap at 60 columns.
+- **The description**, its addresses links (`docs/links.md`).
+- **The facts**, on a label column sized to the labels the page shows —
+  `/mcp`'s is sized for its `Config location:`, four columns more than a
+  plugin's page needs — an update, the format, the source (a repository's
+  address a link, whole behind every wrapped piece), where it loads from
+  (one loaded in place), the homepage, the category, and each kind of
+  component by the name a session knows it by (`hello:greet`,
+  `plugin:guard:probe`); then what it carries that is not used here.
+- **The trust warning** for one not yet installed that runs something — a
+  hook or an MCP server — **or whose contents are read only once it is
+  installed** (a plugin in a repository of its own): the risk in Claude
+  Code's opening words, then this app's own guard (*Trust* above). Before,
+  that last case — the one the user knows least about — had no warning at
+  all.
+- **The numbered actions** its state affords — `Install`; or `Disable` /
+  `Enable`, `Update` (not for one loaded in place), `Uninstall` — over
+  `Back to plugins`. The primary action comes first, where codex puts
+  `Back to plugins`: an install opens the review before anything runs and
+  an uninstall asks once more, so the highlighted first row is the one the
+  page was opened for. Esc goes back too, to the plugin's own row wherever
+  an install or an uninstall has since sorted it — and the hint, here and
+  on the confirmation, gives way a whole clause at a time on a narrow
+  terminal, the list's rule, never losing `Esc to go back` (it was cut to
+  `E…` at 40 columns).
 
 ### No flicker
 

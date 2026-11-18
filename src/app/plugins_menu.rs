@@ -69,7 +69,7 @@ impl PluginAction {
             Self::Disable => "Disable in this directory",
             Self::Update => "Update",
             Self::Uninstall => "Uninstall",
-            Self::Back => "Back",
+            Self::Back => "Back to plugins",
         }
     }
 }

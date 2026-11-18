@@ -14,9 +14,10 @@ smoke_begin
 # server runs under Claude Code's scoped name — `/mcp` shows its tool as
 # `mcp__plugin_guard_probe__…` — and its skill is live (its `$hello:`
 # mention completes), that the install PERSISTED for a second process, that
-# toggling a plugin NEVER MOVES THE PAGE (the flicker: no clear, no toast row
-# over the page, the bottom rule on the same row throughout), and that the
-# `plugin` subcommand reads the same store.
+# neither moving through the list (guard's description is three rows long,
+# hello's one) nor toggling a plugin MOVES THE PAGE (the flicker: no clear,
+# no toast row over the page, the bottom rule on the same row throughout),
+# and that the `plugin` subcommand reads the same store.
 S161="${S}_plugins"
 PL_CFG="$(mktemp -d)"
 PL_SKILLS="$(mktemp -d)"
@@ -28,7 +29,7 @@ mkdir -p "$PL_MARKET/.claude-plugin" "$PL_MARKET/plugins/hello/.claude-plugin" \
 cat >"$PL_MARKET/.claude-plugin/marketplace.json" <<'JSON'
 { "name": "demo", "owner": { "name": "Demo" }, "plugins": [
   { "name": "hello", "source": "./plugins/hello", "description": "Greets people in many languages" },
-  { "name": "guard", "source": "./plugins/guard", "description": "Refuses dangerous shell commands" } ] }
+  { "name": "guard", "source": "./plugins/guard", "description": "Refuses dangerous shell commands before they run: rm -rf on the home directory, force pushes to a main branch, and anything that pipes a download straight into a shell. The commands it refuses are listed in its hook, ready to change." } ] }
 JSON
 cat >"$PL_MARKET/plugins/hello/.claude-plugin/plugin.json" <<'JSON'
 { "name": "hello", "version": "1.2.0" }
@@ -70,7 +71,7 @@ dump "the page on an empty config home" "$pl_empty"
 expect_has "$pl_empty" -E "^  Plugins *$" "the page does not open on its title"
 expect_has "$pl_empty" -F " All (0)    Installed (0)    + Add" "the tab strip is not All / Installed / + Add"
 expect_has "$pl_empty" -E "^  → anthropics/claude-plugins-official +Claude Code's official plugin directory" "an empty page does not offer Claude Code's catalog first"
-expect_has "$pl_empty" -E "^    openai/plugins +codex's curated plugins" "an empty page does not offer codex's catalog"
+expect_has "$pl_empty" -E "^    openai/plugins +Codex's official plugin directory" "an empty page does not offer Codex's catalog"
 
 # Add the marketplace by typing its folder: the page lands on its tab.
 type_text "$S161" "$PL_MARKET"
@@ -91,12 +92,12 @@ expect_has "$pl_hint" -F "Ctrl+R remove" "a marketplace's tab does not offer its
 keys "$S161" Enter
 pl_hello="$(wait_pane 3 "$S161" -F "❯ 1. Install")"
 dump "hello's page" "$pl_hello"
-expect_has "$pl_hello" -E "Status: +\+ not installed" "hello's page does not say it is not installed"
+expect_has "$pl_hello" -E "^  \+ not installed · hello@demo · v1.2.0 *$" "hello's page does not lead with its state"
 expect_has "$pl_hello" -E "Skills: +hello:greet" "hello's page does not name its skill"
 keys "$S161" Enter
 pl_installed="$(wait_pane 10 "$S161" -F "✔ Installed hello")"
 dump "hello installed" "$pl_installed"
-expect_has "$pl_installed" -E "Status: +✔ enabled in this directory" "hello is not enabled once installed"
+expect_has "$pl_installed" -E "^  ✔ enabled in this directory · hello@demo" "hello is not enabled once installed"
 expect_has "$pl_installed" -E "Loads from: " "a directory's plugin does not say it loads in place"
 expect_lacks "$pl_installed" -F "Update" "a plugin loaded in place offers an update"
 
@@ -118,7 +119,7 @@ pl_servers="$(wait_pane 5 "$S161" -F "found in your plugins")"
 dump "the review over guard's server" "$pl_servers"
 expect_has "$pl_servers" -F "plugin:guard:probe · stdio" "the server is not under its scoped name"
 keys "$S161" Enter
-pl_trusted="$(wait_pane 5 "$S161" -E "Status: +✔ enabled in this directory")"
+pl_trusted="$(wait_pane 5 "$S161" -E "✔ enabled in this directory · guard@demo")"
 dump "guard's page after the review" "$pl_trusted"
 expect_has "$pl_trusted" -E "Hooks: +Stop" "guard's page does not name its hook's event"
 expect_has "$pl_trusted" -E "MCP servers: +plugin:guard:probe" "guard's page does not name its server"
@@ -176,11 +177,20 @@ dump "a fresh process" "$pl_again"
 expect_has "$pl_again" -E "^  → guard +✔ enabled" "a fresh process does not open on the installed plugins"
 expect_lacks "$pl_again" -F "Reading the marketplaces" "the page did not open on the catalog it read at startup"
 
+# Moving through the list never resizes the page: guard's long description
+# is one row under the list, like hello's short one.
+rule_row() { pane "$S161" | grep -nE '^(─)+$' | tail -1 | cut -d: -f1; }
+before_rule="$(rule_row)"
+keys "$S161" Down
+wait_for 3 "$S161" -E "^  → hello " || fail "Down did not move to hello"
+expect_eq "$(rule_row)" "$before_rule" "the page moved as the selection did"
+keys "$S161" Up
+wait_for 3 "$S161" -E "^  → guard " || fail "Up did not move back to guard"
+expect_eq "$(rule_row)" "$before_rule" "the page moved as the selection did"
+
 # Space turns one off — and the page never moves (the flicker): the rows
 # the toggle changes are rewritten in place, no clear, no toast row over
 # the page, the bottom rule on one row from the key to the end.
-rule_row() { pane "$S161" | grep -nE '^(─)+$' | tail -1 | cut -d: -f1; }
-before_rule="$(rule_row)"
 tmux pipe-pane -t "$S161" -o "cat >> $PL_RAW"
 sleep 0.2
 keys "$S161" " "

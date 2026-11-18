@@ -19,23 +19,25 @@ release heading when a version is cut.
   it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex
   plugins all install the same way. A plugin's skills and commands become
   skills named `plugin:skill` (a `$plugin:skill` mention loads one), its
-  agents become subagent types, and its hooks and MCP servers join yours —
-  its servers under Claude Code's names, `mcp__plugin_<plugin>_<server>__…`,
-  so a plugin written for Claude Code finds its own tools. Hooks and servers
-  are code that runs, so nothing of them runs until you have trusted it:
+  agents become subagent types, and its hooks and MCP servers join yours — its
+  servers under Claude Code's names, `mcp__plugin_<plugin>_<server>__…`, so a
+  plugin written for Claude Code finds its own tools. Hooks and servers are
+  code that runs, so nothing of them runs until you have trusted it:
   installing one opens the same review the startup review shows for a
-  project's hooks and servers, with the commands on screen first. The page
-  is codex's: tabs for every plugin, the installed ones, each marketplace and
-  `+ Add`, where Claude Code's and codex's official marketplaces are one
-  Enter away; a search; a page per plugin saying exactly what it adds; and
-  Space to turn a plugin on or off for the directory you are in, said in
-  place without moving the page. A marketplace kept in a directory has its
-  plugins load in place, so editing one needs no reinstall. Updates are
-  something you ask for: `Update` on a plugin's page, Ctrl+U on a
+  project's hooks and servers, with the commands on screen first. The page is
+  Codex's: tabs for every plugin, the installed ones, each marketplace and
+  `+ Add`, where Claude Code's and Codex's official marketplaces are one Enter
+  away; a search; a page per plugin saying first whether it is on and then
+  exactly what it adds, warning before you install one that may run code; and
+  Space to turn a plugin on or off for the directory you are in, said in place
+  — neither that nor moving through the list moves the page, and a narrow
+  terminal cuts a long name before a description. A marketplace kept in a
+  directory has its plugins load in place, so editing one needs no reinstall.
+  Updates are something you ask for: `Update` on a plugin's page, Ctrl+U on a
   marketplace's tab, or `alter-zero plugin update`, which reinstalls the
   plugins their marketplace has a newer copy of. Everything is kept under
-  `~/.alter-zero/plugins/` and `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads
-  no plugin for a run (`docs/plugins.md`).
+  `~/.alter-zero/plugins/` and `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads no
+  plugin for a run (`docs/plugins.md`).
 
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model

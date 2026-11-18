@@ -112,6 +112,6 @@ pub const SUGGESTED_MARKETPLACES: [MarketplaceSuggestion; 2] = [
     MarketplaceSuggestion {
         source: "openai/plugins",
         name: "openai-curated",
-        description: "codex's curated plugins",
+        description: "Codex's official plugin directory",
     },
 ];
