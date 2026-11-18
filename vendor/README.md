@@ -104,7 +104,7 @@ descriptor is not a non-blocking one (crossterm reads stdin as it finds it),
 so a read with nothing to return would wait there for the next key — on the
 loop thread, where the stream polls with a zero timeout.
 
-`scripts/smoke.sh` Phase 159 types 3,200 bytes in one write and reads the
+`scripts/smoke.sh` Phase 161 types 3,200 bytes in one write and reads the
 composer's last words; `examples/latency_probe.rs`'s `burst` scenario times
 the same thing (`docs/input-latency.md`).
 

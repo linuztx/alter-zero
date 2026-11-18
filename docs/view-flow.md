@@ -142,7 +142,7 @@ the same thing in the same place on every one (`model_view`'s
   → Hide thinking        false               the window: `→` under the `❯`
     Verbose output       false
     …                                        (five rows; /model 7, /theme 10)
-    (1/20)                                   the counter, under the names
+    (1/21)                                   the counter, under the names
                                              gap
     Hide the model's chain-of-thought …      the highlighted row's detail
                                              gap
@@ -311,7 +311,12 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
   top rather than drop it into no buffer; the hardware cursor would then
   clamp at the body top (`anchored_view_row`, the seat's skip subtraction),
   as it still does for the `/login` key step, whose field sits at the foot
-  of its page where the anchor keeps it.
+  of its page where the anchor keeps it. Two of them tick between
+  keystrokes — the `/spinner` picker's rows and sample, and the `/mascot`
+  picker's preview, whose mascot blinks (`docs/mascot-animation.md`) — so
+  those two sign the selection and the query (`FlowSign::Frozen`) rather
+  than their rows: were either ever to flow, a frame would not churn a
+  purge rebuild.
 - **Flow + bottom anchor, with a context rule**: the tool-permission prompt
   (`docs/permissions.md`). Its body — the numbered write/diff, the command —
   shows **whole** now (the retired cap hid the middle behind a `… +N lines`

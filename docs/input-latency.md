@@ -150,6 +150,13 @@ typed in one write are still one paint. Without it the same stream reads
 That is what took a key under a stream at a model's pace from 4.5 ms to
 about half of one.
 
+An input frame is counted among the requests like any other
+(`FrameRequester::asked`): the loop draws a frame that nothing counted asked
+for as the banner mascot's alone, repainting only its cells
+(`docs/mascot-animation.md` *A frame of its own*), so a key left out of the
+count would be taken and not shown. `a_keys_frame_is_never_the_banners_alone`
+holds it.
+
 ## 4. The strip's live cells were built nine times a frame
 
 The live region's height, its paint, its cursor seat and its flow signature
@@ -350,7 +357,7 @@ reads what is left — while `FIONREAD` says there is something to read, since
 the descriptor may be a blocking one and a read with nothing to return would
 wait there for the next key.
 
-`scripts/smoke.sh` Phase 159 types 3,200 bytes in one write and reads the
+`scripts/smoke.sh` Phase 161 types 3,200 bytes in one write and reads the
 composer's last words.
 
 ## 9. A frame was several writes
@@ -438,6 +445,6 @@ millisecond, and 7% of a core.
   counts the bytes the wrapper walks, and the two `the_kept_tail_agrees_…`
   tests hold every frame of a hostile thought to the whole-paragraph wrap.
 - `term::output::tests` — a frame is one write.
-- `scripts/smoke.sh` Phase 159 — the typed burst.
+- `scripts/smoke.sh` Phase 161 — the typed burst.
 - `examples/latency_probe.rs` — the numbers above. It is not a gate: a
   latency in milliseconds measures the machine it runs on.

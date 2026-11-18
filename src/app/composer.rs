@@ -83,6 +83,9 @@ impl App {
     ///
     /// [`pasted`]: App::pasted
     pub fn on_paste(&mut self, pasted: &str) {
+        // A paste is a sign of the user like a key (docs/mascot-animation.md
+        // *The nap*).
+        self.keys_taken = self.keys_taken.wrapping_add(1);
         // An open Ctrl+R search owns *every* key ([`on_key`] routes them all to
         // on_key_search) — a bracketed paste is input too, so it extends the
         // query (readline's paste-into-isearch) instead of editing the doomed

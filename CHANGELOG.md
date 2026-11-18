@@ -52,6 +52,50 @@ release heading when a version is cut.
   messages. Inside an agent's session view the title names the agent
   (`docs/transcript-navigation.md`).
 
+- **The banner mascot moves while the conversation is empty.** On a fresh
+  screen — at launch, and again after `/clear` — the mascot is alive: a
+  light sweeps it as the screen opens, it shows its own move, and it
+  blinks; from there it does something every few seconds, in an order that
+  differs every session. Each of the six knows thirty moves and more: it
+  blinks, glances, winks, stares, crosses its eyes and daydreams; it
+  bounces, wiggles, dances and peeks to one side, the whole creature moving
+  half a cell; it waves and winks, cheers with its arms (petals, ears)
+  thrown up, and pumps them one after the other; it does tricks —
+  ducks out of sight below its block and peeks back over the edge, turns a
+  somersault or a cartwheel; it catches the light — a glint from either
+  side, a glow that swells through it and fades, a glitter of twinkling
+  cells; and it has moves of its own — the crest
+  flares, ripples and ducks its frill, the bloom flutters, swells and
+  wobbles, the sprout sways and unfurls its leaves, the twin flicks, splays
+  and droops its ears, the skiter skitters, stretches its six legs and
+  puffs itself up to the edges of its block,
+  and the gem, which has no eyes, sparkles at every corner, turns its facet,
+  spins edge-on, flashes, and sets like a sun to rise glowing. The moves
+  are dealt like a deck rather than rolled, so the mascot
+  gets through everything it knows before it repeats itself and never does
+  the same thing twice running. While the first message is typed it
+  **watches**: its eyes turn to the text — to its right, where the line
+  runs, never to the screen's left edge —
+  and a few seconds after the last keystroke it goes back to its own moves.
+  Leave it alone for three quarters of a minute and it **naps**: its eyes
+  grow heavy and close to two thin lines, its head goes down, and it
+  sleeps there, still — a `z`, then a `Z`, beside it is all that moves.
+  It wakes by itself after the better
+  part of a minute, stretches, and plays again — and after five minutes
+  alone it sleeps until you are back. **Any key wakes it with a start** — a
+  `!`, and it is wide awake — before it turns to what you are typing.
+  It stops the moment the first message is
+  sent: the banner above a conversation always stands still, and so does
+  the one in the Ctrl+O transcript and in an export. The `/mascot` picker's
+  preview moves too, each mascot greeting as the highlight lands on it, so
+  one can be chosen for how it behaves — and the one you choose greets from
+  the banner.
+  An idle screen stays cheap: a blink rewrites two cells, nothing is
+  written between moves, and the app's memory is what it was — the same
+  with the animation off and once a conversation starts, a few pages more
+  while the mascot moves. Turn it off with the new **Animate mascot** row in
+  `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
+
 ### Changed
 
 - **Auto mode's safety check answers in JSON, and a reply that is not

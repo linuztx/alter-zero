@@ -31,6 +31,17 @@ already in this codebase; this change ports the rest.
   `docs/input-latency.md`). Pure parts are unit-tested; the async task is
   covered by `smoke.sh`.
 
+  A tick does not say who asked for it, and one kind of asker wants less
+  than a frame: the banner mascot, whose pose is the only thing that can
+  have changed when nothing else asked. So the requester **counts** its
+  requests — all but `schedule_banner_frame_in`, the mascot's — and the
+  loop's `FrameLedger` reads the count as each frame begins: unmoved since
+  the frame before began, the frame is the banner's alone and repaints the
+  banner's cells without rendering the live region
+  (`docs/mascot-animation.md` *A frame of its own*). Everything else that
+  re-arms itself asks while a frame is drawn, which moves the count, so a
+  frame anything else wanted stays a whole one.
+
 - **`paste.rs`** — `PasteBurst`, a pure state machine: characters arriving within
   `BURST_CHAR_INTERVAL` (8 ms) of each other are a *burst* once `BURST_MIN_CHARS`
   (3) accumulate. The loop uses this to coalesce a paste/fast-type run into a

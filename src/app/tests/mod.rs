@@ -30,6 +30,7 @@ mod input_history;
 mod keys;
 mod login;
 mod mascot;
+mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
