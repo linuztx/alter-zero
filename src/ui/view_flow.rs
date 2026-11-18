@@ -287,6 +287,16 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.plugins_menu.is_some() {
+        // The `/plugins` list sheds rows before it could flow; a detail page
+        // can be taller than the terminal, and changes on a keystroke or an
+        // answer — its job clock ticks on its last rows, which are always on
+        // screen — so it signs its rows (`docs/plugins.md`).
+        return Some(FlowPage::framed(
+            super::plugins_view::plugins_view_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if let Some(view) = &app.background_view {
         // The ↓ manager band, last in the render precedence. Its **details**
         // page live-tails: the runtime advances, the output box fills and the

@@ -267,24 +267,24 @@ symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catche
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, `plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `plugins`, `plugin_cli`, `login`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `plugins_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `plugins_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -3284,6 +3284,54 @@ turns the reporting off; `smoke.sh` Phase 132 drives it against a stub
 socket (a failed turn through the real backend and a refusing stub provider)
 and the fixture unsets every `HERDR_*` variable.
 
+**Plugins** (`docs/plugins.md`): the user adds **marketplaces** — a GitHub
+`owner/repo`, a git URL (both pinned with `@ref`/`#ref`), or a directory read
+in place — and installs the plugins they list, from the composer-replacing
+**`/plugins` page** or the **`alter-zero plugin …`** subcommands (Claude
+Code's verbs with codex's `rm` and an `upgrade`; `cli::PluginCli`,
+`tui::plugin_cli`, `tests/plugin_cli.rs`). Three formats install the same
+way, read by the first manifest a directory has (`plugins::manifest`): a root
+`plugin.json` naming the **Agent Plugins 1.0.0** schema (agent-plugins.org)
+— a **closed** document read strictly, its skills only at
+`skills/<name>/SKILL.md` and its servers only in a closed `mcp.json` whose
+`${PLUGIN_ROOT}`/`${PLUGIN_DATA}` are expanded once and nothing else
+(`McpServerEntry::literal`), its own extensions under
+`io.github.linuztx.alter-zero` — then `.codex-plugin/plugin.json`, then
+`.claude-plugin/plugin.json` (or none at all), both read leniently, with
+Claude Code's default locations (`skills/`, `commands/**.md`, `agents/**.md`,
+`hooks/hooks.json`, `.mcp.json`) and `${CLAUDE_PLUGIN_ROOT}`/`DATA`. A
+catalog is `.agents/plugins/marketplace.json` (codex) or
+`.claude-plugin/marketplace.json`, and a plugin directory with neither is a
+marketplace of one; an entry's source is a relative path, `github`, `url` or
+`git-subdir` (a sparse, shallow fetch of one commit — `plugins::git`, run
+detached with no prompt and a cancel), never `npm`/archives/commands. What a
+plugin adds keeps its plugin's name: skills and **commands, which become
+skills,** are `{plugin}:{name}` (so `validate`/the `$` mention grammar let
+`:` and `.` join a name, and `LoadedSkills` keys on the file), agents
+`{plugin}:{name}` with their `tools:` translated (`plugins::agents`) and their
+`model:` ignored, hooks a **third trust layer** after the user's and the
+project's (`TrustState::set_plugins` → `hook_layers`, each handler handed its
+`CLAUDE_PLUGIN_ROOT`/`PLUGIN_ROOT`/`…_DATA` through `HooksFile::with_env`), and
+MCP servers their own `McpScope::Plugin`, held for the review like a
+project's and switched live (`McpManager::set_plugin_servers`) — **nothing that
+runs runs before the user has trusted it**, and installing from the page opens
+the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,
+`marketplace`, `source`, `registry` — `plugins.json`, never written over when
+it will not parse — `layout`, `components`, `mcp`, `agents`, `git`, `store`,
+`catalog` with `build_catalog` and `load_enabled`), everything kept under
+`{config_home}/plugins/` (`ALTER_ZERO_PLUGINS_DIR` moves it; plugins are **on
+per directory** until one turns them off, `skills.json`'s shape). The page
+(`app::PluginsMenu`, `ui::plugins_view`) is a search-line picker under the ask
+modal's chip strip of tabs — *Installed*, *Discover*, *Marketplaces* — with
+the picker ladder on a short terminal, a `/mcp`-style page per plugin and per
+marketplace, a confirmation before anything is deleted, and one field to add a
+marketplace; every operation is a typed `PluginOp` run on one worker under a
+round (`/usage`'s rule, `tui::plugins`), the answer carrying a fresh catalog,
+and anything that changed what is installed or on is taken into the running
+session by `Session::reload_plugins` (hooks rebound, servers set, skills and
+agents re-listed — the per-turn rescans append the plugins' to the roots').
+`ALTER_ZERO_PLUGINS=0` loads none for a run; `smoke.sh` Phase 161 drives it.
+
 ### The runtime model and its invariants
 
 This is an **inline** TUI: finished messages *and tool calls* flow into the
@@ -3964,7 +4012,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/sponsor`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/plugins`, `/donate`, `/sponsor`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. It lists five commands at a time (`MENU_MAX_COMMANDS`,
 the window centered on the highlight) over a dim `(n/total)` counter in the
 names' column — the pickers' counter, saying which match the highlight is on of

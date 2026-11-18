@@ -97,6 +97,10 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 5c. One subscription's `/usage` read (docs/usage.md).
             Some(result) = session.usage_rx.recv() => session.on_usage_result(result),
 
+            // 5d. The `/plugins` page's one job — a read, an install, a
+            //     clone — answered (docs/plugins.md).
+            Some(result) = session.plugin_rx.recv() => session.on_plugin_result(result),
+
             // 6. A finished `/model` fetch from one provider's worker thread.
             Some(fetch) = session.model_rx.recv() => session.on_model_fetch(fetch),
 

@@ -49,6 +49,7 @@ mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
+mod plugins_menu;
 mod queue;
 mod reasoning;
 mod resume;
@@ -113,6 +114,10 @@ pub use self::reasoning::Reasoning;
 pub use self::config_review::{
     ConfigReview, ItemChange, ReviewAnswer, ReviewChoice, ReviewItem, ReviewKey, ReviewKind,
     ReviewPage, ReviewSection,
+};
+pub use self::plugins_menu::{
+    MarketplaceAction, MarketplaceRow, PluginAction, PluginDone, PluginJob, PluginOp,
+    PluginsConfirm, PluginsMenu, PluginsPage, PluginsTab, marketplace_actions, plugin_actions,
 };
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
@@ -573,6 +578,13 @@ pub struct App {
     /// (page walk, no search) over the boundary-injected server snapshot.
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
+    /// The open `/plugins` page; `None` when closed. Composer-replacing like
+    /// `/mcp`, over the boundary-read catalog, its operations run on a
+    /// worker. See `docs/plugins.md`.
+    pub plugins_menu: Option<PluginsMenu>,
+    /// The round the newest `/plugins` job was asked under — what an answer
+    /// must carry to be taken (`App::finish_plugin_job`).
+    plugin_rounds: u64,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over

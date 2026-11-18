@@ -230,7 +230,12 @@ fn list_lines(menu: &McpMenu, mcp_on: bool, width: u16) -> Vec<Line<'static>> {
 /// value stays one row (`…`-cut when it can't fit) — bounded values only;
 /// the fields a user opens the page to *read whole* go through
 /// [`field_lines`].
-fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<'static> {
+pub(super) fn field_line(
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
         .max(1);
@@ -249,7 +254,12 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
 /// read whole — the server's URL or launch command and its config path
 /// routinely outrun a narrow terminal, and the tail is the distinguishing
 /// part.
-fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
+pub(super) fn field_lines(
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
     let rows = wrap_text(value, field_room(width))
         .into_iter()
         .map(|row| vec![Span::styled(row, value_style)])
@@ -261,7 +271,12 @@ fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<
 /// fragment a link to the whole URL (`docs/links.md`) — a wrapped address is
 /// exactly where a terminal's own detection opens a truncated target. A value
 /// that is not one whole URL reads as plain [`field_lines`].
-fn url_field_lines(label: &str, url: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
+pub(super) fn url_field_lines(
+    label: &str,
+    url: &str,
+    value_style: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
     match whole_url_run(url, value_style) {
         Some(run) => field_rows(label, wrap_inline(&[run], field_room(width))),
         None => field_lines(label, url, value_style, width),
@@ -305,7 +320,7 @@ fn field_rows(label: &str, rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> 
 /// (it is the one thing on the row that still has to shout when a server is
 /// failing) over white words, so the row reads settled without laundering a
 /// failure into a calm white line.
-fn state_field_line(
+pub(super) fn state_field_line(
     label: &str,
     glyph: &str,
     glyph_color: Color,
@@ -362,7 +377,11 @@ fn tool_field_lines(label: &str, value: &str, width: u16) -> Vec<Line<'static>> 
 }
 
 /// The numbered action rows (`❯ 1. Authenticate`).
-fn action_rows(labels: &[&'static str], selected: usize, width: u16) -> Vec<Line<'static>> {
+pub(super) fn action_rows(
+    labels: &[&'static str],
+    selected: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
     labels
         .iter()
         .enumerate()

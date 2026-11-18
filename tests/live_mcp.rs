@@ -103,6 +103,7 @@ fn connecting_server(name: &str, url: &str) -> McpManager {
                 },
                 scope: mcp::McpScope::User,
                 config_path: "<test>".to_string(),
+                literal: false,
             }],
             errors: Vec::new(),
             disabled: BTreeSet::new(),

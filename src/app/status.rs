@@ -484,6 +484,9 @@ impl App {
             || self.export_picker.is_some()
             || self.context_usage.is_some()
             || self.usage_page.is_some()
+            || self.mcp_menu.is_some()
+            || self.plugins_menu.is_some()
+            || self.config_review.is_some()
         {
             return None;
         }

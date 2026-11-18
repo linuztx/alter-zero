@@ -69,10 +69,11 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
     let parsed = cli::parse(std::env::args().skip(1)).map_err(|message| {
         // An `mcp` grammar error gets the subcommand's own usage block
         // (`mcp` only ever routes as the first argument).
-        let page = if std::env::args().nth(1).is_some_and(|first| first == "mcp") {
-            HelpPage::Mcp
-        } else {
-            HelpPage::Main
+        let page = match std::env::args().nth(1).as_deref() {
+            Some("mcp") => HelpPage::Mcp,
+            // …and a `plugin` one the plugin page's (docs/plugins.md).
+            Some("plugin") => HelpPage::Plugin,
+            _ => HelpPage::Main,
         };
         let style = help_style(std::io::stderr().is_terminal());
         eprintln!("{}", cli::usage_error(page, &message, style));
@@ -86,6 +87,9 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
         // The mcp subcommand family (docs/mcp-cli.md): does its file work
         // and exits — success rides the same Err(0) channel --help uses.
         Cli::Mcp(cmd) => Err(super::mcp_cli::run(&cmd)),
+        // The plugin subcommand family (docs/plugins.md *From a shell*),
+        // the same print-and-exit path.
+        Cli::Plugin(cmd) => Err(super::plugin_cli::run(&cmd)),
         // `alter-zero update` (docs/update.md): the same print-and-exit path.
         Cli::Update => Err(super::update_cli::run()),
         Cli::Version => {

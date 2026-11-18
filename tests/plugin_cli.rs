@@ -1,0 +1,218 @@
+//! Integration proof of the `plugin` CLI subcommand family (`docs/plugins.md`
+//! *From a shell*) against the **real built binary** (the `mcp_cli.rs`
+//! pattern — cargo hands the path as `CARGO_BIN_EXE_alter-zero`), with the
+//! config home and a local marketplace in a per-test temp dir. Offline and
+//! deterministic: a marketplace kept in a directory is read in place, so no
+//! command here clones anything.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use alter_zero::cli::{self, HelpPage, HelpStyle};
+
+/// The TUI binary this test run just built.
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_alter-zero"))
+}
+
+fn write(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+    std::fs::write(path, contents).expect("write");
+}
+
+/// A per-test scratch dir (unique per test name, wiped at entry) holding a
+/// config home, a working directory and the `demo` marketplace: `hello` (a
+/// skill and a command) and `guard` (a hook).
+struct Scratch {
+    config: PathBuf,
+    work: PathBuf,
+    market: PathBuf,
+}
+
+fn scratch(test: &str) -> Scratch {
+    let dir = std::env::temp_dir()
+        .join("alter-zero-plugin-cli-tests")
+        .join(test);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    let dir = dir.canonicalize().expect("canonical");
+    let market = dir.join("market");
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"demo","owner":{"name":"Demo"},"plugins":[
+            {"name":"hello","source":"./plugins/hello","description":"Greets"},
+            {"name":"guard","source":"./plugins/guard","description":"Guards"}]}"#,
+    );
+    write(
+        &market,
+        "plugins/hello/.claude-plugin/plugin.json",
+        r#"{"name":"hello","version":"1.2.0"}"#,
+    );
+    write(
+        &market,
+        "plugins/hello/skills/greet/SKILL.md",
+        "---\nname: greet\ndescription: Greet.\n---\nSay hello.",
+    );
+    write(&market, "plugins/hello/commands/hi.md", "Say hi.");
+    write(
+        &market,
+        "plugins/guard/hooks/hooks.json",
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}}"#,
+    );
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).expect("work dir");
+    Scratch {
+        config: dir.join("config"),
+        work,
+        market,
+    }
+}
+
+/// Run `alter-zero plugin …` in the scratch's working directory, its
+/// config home the scratch's.
+fn plugin(scratch: &Scratch, args: &[&str]) -> Output {
+    Command::new(bin())
+        .arg("plugin")
+        .args(args)
+        .current_dir(&scratch.work)
+        .env("ALTER_ZERO_CONFIG_DIR", &scratch.config)
+        .env_remove("ALTER_ZERO_PLUGINS_DIR")
+        .env_remove("NO_COLOR")
+        .output()
+        .expect("binary runs")
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).to_string()
+}
+
+/// `plugin …` that must succeed: its stdout.
+fn ok(scratch: &Scratch, args: &[&str]) -> String {
+    let out = plugin(scratch, args);
+    assert!(
+        out.status.success(),
+        "{args:?}: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    stdout(&out)
+}
+
+#[test]
+fn piped_help_is_the_plain_plugin_page() {
+    let scratch = scratch("help");
+    for args in [&["--help"][..], &["install", "-h"]] {
+        let out = plugin(&scratch, args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            format!("{}\n", cli::help(HelpPage::Plugin, HelpStyle::Plain))
+        );
+    }
+}
+
+#[test]
+fn a_grammar_error_exits_two_over_the_plugin_usage() {
+    let scratch = scratch("grammar");
+    let out = plugin(&scratch, &["frobnicate"]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr(&out);
+    assert!(
+        err.starts_with("error: unrecognized plugin command: frobnicate"),
+        "{err}"
+    );
+    assert!(err.contains("Usage: alter-zero plugin install"), "{err}");
+}
+
+#[test]
+fn a_marketplace_is_added_and_its_plugins_installed_toggled_and_removed() {
+    let scratch = scratch("flow");
+    // Nothing yet: a name nothing lists is an error that says what to do.
+    let out = plugin(&scratch, &["install", "hello"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("marketplace add"), "{}", stderr(&out));
+
+    let market = scratch.market.display().to_string();
+    let text = ok(&scratch, &["marketplace", "add", &market]);
+    assert!(
+        text.contains("Added marketplace demo (2 plugins)"),
+        "{text}"
+    );
+    let text = ok(&scratch, &["marketplace", "list"]);
+    assert!(text.starts_with("demo  "), "{text}");
+
+    let text = ok(&scratch, &["list", "--available"]);
+    assert!(text.contains("hello@demo"), "{text}");
+    assert!(text.contains("available"), "{text}");
+
+    let text = ok(&scratch, &["install", "hello"]);
+    assert!(text.contains("Installed hello@demo v1.2.0"), "{text}");
+    assert!(text.contains("1 skill · 1 command"), "{text}");
+    let copy = scratch.config.join("plugins/installed/demo/hello");
+    assert!(copy.join("skills/greet/SKILL.md").is_file());
+
+    // A plugin that runs something says the app asks first.
+    let text = ok(&scratch, &["add", "guard@demo"]);
+    assert!(text.contains("the app asks"), "{text}");
+
+    let text = ok(&scratch, &["disable", "guard"]);
+    assert!(text.contains("Disabled guard@demo in"), "{text}");
+    let text = ok(&scratch, &["list"]);
+    let guard = text
+        .lines()
+        .find(|l| l.starts_with("guard@demo"))
+        .expect(&text);
+    assert!(guard.ends_with("disabled here"), "{text}");
+    let hello = text
+        .lines()
+        .find(|l| l.starts_with("hello@demo"))
+        .expect(&text);
+    assert!(hello.ends_with("enabled"), "{text}");
+    let text = ok(&scratch, &["enable", "guard"]);
+    assert!(text.contains("Enabled guard@demo"), "{text}");
+
+    let text = ok(&scratch, &["uninstall", "hello"]);
+    assert!(text.contains("Uninstalled hello@demo"), "{text}");
+    assert!(!copy.exists(), "its copy is gone");
+
+    let text = ok(&scratch, &["marketplace", "rm", "demo"]);
+    assert!(text.contains("uninstalled 1 plugin: guard@demo"), "{text}");
+    let text = ok(&scratch, &["list"]);
+    assert!(text.starts_with("No plugins installed"), "{text}");
+}
+
+#[test]
+fn update_reinstalls_a_plugin_its_marketplace_changed() {
+    let scratch = scratch("update");
+    let market = scratch.market.display().to_string();
+    ok(&scratch, &["marketplace", "add", &market]);
+    ok(&scratch, &["install", "hello"]);
+    let text = ok(&scratch, &["update"]);
+    assert!(
+        text.contains("Every installed plugin is up to date"),
+        "{text}"
+    );
+
+    write(
+        &scratch.market,
+        "plugins/hello/skills/greet/SKILL.md",
+        "---\nname: greet\ndescription: Greet warmly.\n---\nSay hello warmly.",
+    );
+    let text = ok(&scratch, &["upgrade"]);
+    assert!(text.contains("Updated hello@demo"), "{text}");
+    let copied = std::fs::read_to_string(
+        scratch
+            .config
+            .join("plugins/installed/demo/hello/skills/greet/SKILL.md"),
+    )
+    .expect("the copy");
+    assert!(copied.contains("warmly"), "{copied}");
+    let text = ok(&scratch, &["update", "hello"]);
+    assert!(text.contains("hello@demo is up to date"), "{text}");
+}

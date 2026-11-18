@@ -28,6 +28,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
         config_path: match scope {
             McpScope::Project => "~/repo/.mcp.json".to_string(),
             McpScope::User => "~/.alter-zero/mcp.json".to_string(),
+            McpScope::Plugin => "~/.alter-zero/plugins/installed/m/p/.mcp.json".to_string(),
         },
         config: McpServerConfig::Http {
             url: format!("https://{name}.test/mcp"),
@@ -1237,6 +1238,7 @@ fn a_stdio_servers_command_row_is_no_link() {
         command: "npx".to_string(),
         args: vec!["-y".to_string(), "some-mcp-server".to_string()],
         env: Default::default(),
+        cwd: None,
     };
     let mut app = App::new();
     app.open_mcp_menu(vec![server]);

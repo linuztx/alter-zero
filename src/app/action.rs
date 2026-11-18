@@ -367,6 +367,24 @@ pub enum Action {
     /// [`App::mcp_menu`] is already cleared; the loop just repaints the
     /// collapsed region.
     CloseMcpMenu,
+    /// `/plugins`: open the plugins page. The *loop* opens it
+    /// ([`App::open_plugins_menu`] — it knows whether the session loads
+    /// plugins) and reads the catalog on a worker. See `docs/plugins.md`.
+    OpenPluginsMenu,
+    /// The `/plugins` page was closed (Esc from the list, or Ctrl+C):
+    /// [`App::plugins_menu`] is already cleared; the loop stops a job still
+    /// running.
+    ClosePluginsMenu,
+    /// Esc while a `/plugins` job runs: stop it. Its answer comes back as a
+    /// failure, `cancelled`.
+    CancelPluginJob,
+    /// One `/plugins` operation, already marked running on the page under
+    /// `round`: the loop runs it on a worker and answers with
+    /// [`App::finish_plugin_job`]. See `docs/plugins.md`.
+    PluginOp {
+        op: crate::app::PluginOp,
+        round: u64,
+    },
     /// One `/mcp` operation to apply against the live manager
     /// (`tui::mcp::Session::apply_mcp_op`) — connection work runs on worker
     /// threads, completions re-inject the snapshot via the MCP event

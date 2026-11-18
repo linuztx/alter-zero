@@ -14,6 +14,23 @@ release heading when a version is cut.
 
 ### Added
 
+- **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
+  GitHub `owner/repo`, any git URL, or a directory — and install the plugins
+  it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex
+  plugins all install the same way. A plugin's skills and commands become
+  skills named `plugin:skill` (a `$plugin:skill` mention loads one), its
+  agents become subagent types, and its hooks and MCP servers join yours.
+  Hooks and servers are code that runs, so nothing of them runs until you
+  have trusted it: installing one opens the same review the startup review
+  shows for a project's hooks and servers, with the commands on screen
+  first. The page has three tabs (Installed, Discover, Marketplaces), a
+  search, a page per plugin saying exactly what it adds, and Space to turn a
+  plugin on or off for the directory you are in. Updates are something you
+  ask for: `Update` on a plugin's page, or `alter-zero plugin update`, which
+  reinstalls the plugins their marketplace has a newer copy of. Everything is
+  kept under `~/.alter-zero/plugins/` and `plugins.json`;
+  `ALTER_ZERO_PLUGINS=0` loads no plugin for a run (`docs/plugins.md`).
+
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model
   list on every open, so each one began on `Loading models…`, for a second

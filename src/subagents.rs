@@ -184,11 +184,14 @@ impl AgentTools {
             })
     }
 
-    /// How the listing renders this set: `*`, or the allowlist as written.
+    /// How the listing renders this set: `*`, the allowlist as written, or
+    /// `none` for a list that names no tool — a plugin agent's, translated
+    /// down to nothing (`docs/plugins.md`).
     #[must_use]
     pub fn summary(&self) -> String {
         match self {
             Self::All => ALL_TOOLS.to_string(),
+            Self::Only(entries) if entries.is_empty() => "none".to_string(),
             Self::Only(entries) => entries.join(", "),
         }
     }

@@ -1,0 +1,413 @@
+//! What `/plugins` shows, and what a session takes from the plugins it has
+//! on (`docs/plugins.md`): two reads of the store, both made at the boundary
+//! — the catalog on a worker, since it reads every added marketplace; the
+//! loaded plugins at startup and after every change.
+
+use std::path::PathBuf;
+
+use crate::hooks::HooksFile;
+use crate::skills::SkillMetadata;
+use crate::subagents::AgentDefinition;
+
+use super::components::{ComponentSummary, PluginHooks, PluginPackage, read_plugin};
+use super::id::PluginId;
+use super::manifest::PluginFormat;
+use super::marketplace::PluginSource;
+use super::mcp::{AGENT_PLUGIN_MCP_FILE, LEGACY_MCP_FILE, PluginServer};
+use super::registry::Registry;
+use super::store::{PluginStore, update_available};
+
+/// An installed plugin's state, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledState {
+    /// The version installed.
+    pub version: Option<String>,
+    /// On in the directory the page was opened in.
+    pub enabled: bool,
+    /// Its marketplace now has a newer copy.
+    pub update: bool,
+    /// Why its installed copy could not be read, when it could not.
+    pub error: Option<String>,
+}
+
+/// One plugin, as `/plugins` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPlugin {
+    pub id: PluginId,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    /// The version its marketplace offers.
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub category: Option<String>,
+    pub homepage: Option<String>,
+    pub keywords: Vec<String>,
+    /// Where it is fetched from, in one line.
+    pub source: String,
+    /// Why it cannot be installed, when it cannot.
+    pub unavailable: Option<String>,
+    /// Its format, once its files have been read.
+    pub format: Option<PluginFormat>,
+    /// What it adds, once its files have been read — before it is installed
+    /// too, for a plugin kept in its marketplace.
+    pub components: Option<ComponentSummary>,
+    pub installed: Option<InstalledState>,
+    /// What reading it said that did not cost it.
+    pub notes: Vec<String>,
+}
+
+impl CatalogPlugin {
+    /// The name people see: the display name, else the plugin's own.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.id.name)
+    }
+
+    /// Is it installed and on in this directory?
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.installed.as_ref().is_some_and(|state| state.enabled)
+    }
+}
+
+/// One added marketplace, as `/plugins` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogMarketplace {
+    pub name: String,
+    /// Where it comes from, in one line.
+    pub source: String,
+    /// A git repository — one an update fetches.
+    pub git: bool,
+    pub description: Option<String>,
+    pub owner: Option<String>,
+    /// The commit its checkout is at.
+    pub revision: Option<String>,
+    /// When it was added or last updated, in Unix seconds.
+    pub updated_at: Option<i64>,
+    /// Where its files are.
+    pub root: PathBuf,
+    /// How many plugins it lists.
+    pub plugins: usize,
+    /// How many of them are installed.
+    pub installed: usize,
+    /// Why its catalog could not be read, when it could not.
+    pub error: Option<String>,
+    /// The entries it lists that were skipped, and why.
+    pub notes: Vec<String>,
+}
+
+/// Everything `/plugins` shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginCatalog {
+    pub marketplaces: Vec<CatalogMarketplace>,
+    /// Installed plugins first, then by name.
+    pub plugins: Vec<CatalogPlugin>,
+    /// Why `plugins.json` could not be read, when it could not.
+    pub error: Option<String>,
+}
+
+impl PluginCatalog {
+    /// How many plugins are installed.
+    #[must_use]
+    pub fn installed_count(&self) -> usize {
+        self.plugins
+            .iter()
+            .filter(|p| p.installed.is_some())
+            .count()
+    }
+}
+
+/// Read the catalog `/plugins` shows: every added marketplace's plugins,
+/// what is installed, and what is on in the directory `project`.
+#[must_use]
+pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
+    let registry = match store.registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            return PluginCatalog {
+                error: Some(error),
+                ..PluginCatalog::default()
+            };
+        }
+    };
+    let mut catalog = PluginCatalog::default();
+    for (name, read) in store.catalogs(&registry) {
+        let record = &registry.marketplaces[&name];
+        let mut market = CatalogMarketplace {
+            name: name.clone(),
+            source: record.source.label(),
+            git: record.source.is_git(),
+            description: None,
+            owner: None,
+            revision: record.revision.clone(),
+            updated_at: record.updated_at,
+            root: store.marketplace_root(&name, record),
+            plugins: 0,
+            installed: registry.plugins_of(&name).len(),
+            error: None,
+            notes: Vec::new(),
+        };
+        match read {
+            Err(error) => market.error = Some(error),
+            Ok((root, listing)) => {
+                market.description = listing.description;
+                market.owner = listing.owner;
+                market.plugins = listing.plugins.len();
+                market.notes = listing.notes;
+                for entry in &listing.plugins {
+                    let Ok(id) = PluginId::new(&entry.name, &name) else {
+                        continue;
+                    };
+                    let mut plugin = CatalogPlugin {
+                        display_name: entry.display_name.clone(),
+                        description: entry.description.clone(),
+                        version: entry.version.clone(),
+                        author: entry.author.clone(),
+                        category: entry.category.clone(),
+                        homepage: entry.homepage.clone(),
+                        keywords: entry.keywords.clone(),
+                        source: entry.source.label(),
+                        unavailable: entry.source.installable().err(),
+                        format: None,
+                        components: None,
+                        installed: None,
+                        notes: Vec::new(),
+                        id,
+                    };
+                    match registry.plugins.get(&plugin.id.key()) {
+                        Some(record) => {
+                            let update = update_available(record, entry, &root);
+                            fill_installed(store, &registry, project, &mut plugin, update);
+                        }
+                        None => {
+                            // A plugin kept in its marketplace can be read
+                            // before it is installed: the page says what it
+                            // adds — and what it runs — before it is chosen.
+                            if let PluginSource::Local { path } = &entry.source {
+                                let data = store.layout.data_dir(&plugin.id);
+                                match read_plugin(&plugin.id, &root.join(path), &data, Some(entry))
+                                {
+                                    Ok(package) => {
+                                        describe(&mut plugin, &package);
+                                        // The copy read here is the one an
+                                        // install takes, so its version is
+                                        // the one on offer.
+                                        fill_from_manifest(&mut plugin, &package, true);
+                                    }
+                                    Err(reason) => plugin.unavailable = Some(reason),
+                                }
+                            }
+                        }
+                    }
+                    catalog.plugins.push(plugin);
+                }
+            }
+        }
+        catalog.marketplaces.push(market);
+    }
+    // An installed plugin its marketplace no longer lists — or whose
+    // marketplace is gone — is still installed, and still listed.
+    for id in registry.installed() {
+        if catalog.plugins.iter().any(|plugin| plugin.id == id) {
+            continue;
+        }
+        let mut plugin = CatalogPlugin {
+            display_name: None,
+            description: None,
+            version: None,
+            author: None,
+            category: None,
+            homepage: None,
+            keywords: Vec::new(),
+            source: format!("marketplace `{}` no longer lists it", id.marketplace),
+            unavailable: Some("its marketplace no longer lists it".to_string()),
+            format: None,
+            components: None,
+            installed: None,
+            notes: Vec::new(),
+            id,
+        };
+        fill_installed(store, &registry, project, &mut plugin, false);
+        catalog.plugins.push(plugin);
+    }
+    catalog.plugins.sort_by(|a, b| {
+        b.installed
+            .is_some()
+            .cmp(&a.installed.is_some())
+            .then_with(|| a.title().to_lowercase().cmp(&b.title().to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    catalog
+}
+
+/// An installed plugin's state and what its installed copy holds.
+fn fill_installed(
+    store: &PluginStore,
+    registry: &Registry,
+    project: &str,
+    plugin: &mut CatalogPlugin,
+    update: bool,
+) {
+    let key = plugin.id.key();
+    let record = registry.plugins.get(&key).cloned().unwrap_or_default();
+    let mut state = InstalledState {
+        version: record.version,
+        enabled: registry.is_enabled(project, &key),
+        update,
+        error: None,
+    };
+    let root = store.layout.installed_dir(&plugin.id);
+    let data = store.layout.data_dir(&plugin.id);
+    match read_plugin(&plugin.id, &root, &data, None) {
+        Ok(package) => {
+            describe(plugin, &package);
+            // The installed copy's version is the installed one, never the
+            // one on offer — which is what an update compares against.
+            fill_from_manifest(plugin, &package, false);
+        }
+        Err(error) => state.error = Some(error),
+    }
+    plugin.installed = Some(state);
+}
+
+/// What a read copy says about itself fills what the marketplace entry did
+/// not — and, for the copy an install would take (`offered`), its version.
+fn fill_from_manifest(plugin: &mut CatalogPlugin, package: &PluginPackage, offered: bool) {
+    let manifest = &package.manifest;
+    let fill = |field: &mut Option<String>, value: &Option<String>| {
+        if field.is_none() {
+            field.clone_from(value);
+        }
+    };
+    fill(&mut plugin.display_name, &manifest.display_name);
+    fill(&mut plugin.description, &manifest.description);
+    fill(&mut plugin.author, &manifest.author);
+    fill(&mut plugin.homepage, &manifest.homepage);
+    if offered {
+        fill(&mut plugin.version, &manifest.version);
+    }
+}
+
+/// Copy what a read package holds onto its catalog row.
+fn describe(plugin: &mut CatalogPlugin, package: &PluginPackage) {
+    plugin.format = Some(package.manifest.format);
+    plugin.components = Some(package.components.summary());
+    plugin.notes.clone_from(&package.manifest.notes);
+    plugin
+        .notes
+        .extend(package.components.notes.iter().cloned());
+}
+
+/// One MCP server a plugin adds, with where it is declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedServer {
+    /// The plugin's id.
+    pub plugin: String,
+    pub server: PluginServer,
+    /// The file it is reviewed and shown under: the plugin's MCP file.
+    pub source: PathBuf,
+}
+
+/// What a session takes from the plugins it has on.
+#[derive(Debug, Clone, Default)]
+pub struct LoadedPlugins {
+    pub packages: Vec<PluginPackage>,
+    /// Plugins that could not be read, by id, with why.
+    pub errors: Vec<String>,
+}
+
+impl LoadedPlugins {
+    /// Every skill the plugins add — commands included — in plugin order.
+    #[must_use]
+    pub fn skills(&self) -> Vec<SkillMetadata> {
+        self.packages
+            .iter()
+            .flat_map(|package| package.components.skills.iter().cloned())
+            .collect()
+    }
+
+    /// Every subagent type the plugins add.
+    #[must_use]
+    pub fn agents(&self) -> Vec<AgentDefinition> {
+        self.packages
+            .iter()
+            .flat_map(|package| package.components.agents.iter().cloned())
+            .collect()
+    }
+
+    /// Every hooks source the plugins add, each stamped with its file and
+    /// its plugin's directories.
+    #[must_use]
+    pub fn hooks(&self) -> Vec<PluginHooks> {
+        self.packages
+            .iter()
+            .flat_map(|package| package.components.hooks.iter().cloned())
+            .collect()
+    }
+
+    /// Every hooks file merged into one — what `/hooks` and the runner see
+    /// of the plugins, before trust.
+    #[must_use]
+    pub fn merged_hooks(&self) -> HooksFile {
+        self.hooks()
+            .iter()
+            .fold(HooksFile::default(), |merged, hooks| {
+                merged.merged(&hooks.file)
+            })
+    }
+
+    /// Every MCP server the plugins add.
+    #[must_use]
+    pub fn servers(&self) -> Vec<LoadedServer> {
+        self.packages
+            .iter()
+            .flat_map(|package| {
+                let file = match package.manifest.format {
+                    PluginFormat::AgentPlugin => AGENT_PLUGIN_MCP_FILE,
+                    PluginFormat::Codex | PluginFormat::ClaudeCode => LEGACY_MCP_FILE,
+                };
+                let source = package.root.join(file);
+                package
+                    .components
+                    .servers
+                    .iter()
+                    .map(move |server| LoadedServer {
+                        plugin: package.id.key(),
+                        server: server.clone(),
+                        source: source.clone(),
+                    })
+            })
+            .collect()
+    }
+}
+
+/// Read every installed plugin that is on in the directory `project`. Each
+/// one's data directory is made here when it has servers to start in it.
+#[must_use]
+pub fn load_enabled(store: &PluginStore, project: &str) -> LoadedPlugins {
+    let mut loaded = LoadedPlugins::default();
+    let registry = match store.registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            loaded.errors.push(error);
+            return loaded;
+        }
+    };
+    for id in registry.installed() {
+        if !registry.is_enabled(project, &id.key()) {
+            continue;
+        }
+        let root = store.layout.installed_dir(&id);
+        let data = store.layout.data_dir(&id);
+        match read_plugin(&id, &root, &data, None) {
+            Ok(package) => {
+                if !package.components.servers.is_empty() {
+                    let _ = std::fs::create_dir_all(&data);
+                }
+                loaded.packages.push(package);
+            }
+            Err(error) => loaded.errors.push(format!("{id}: {error}")),
+        }
+    }
+    loaded
+}

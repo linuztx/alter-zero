@@ -33,6 +33,7 @@ fn meta(name: &str, description: &str) -> SkillMetadata {
         path: std::path::PathBuf::from("/skills")
             .join(name)
             .join("SKILL.md"),
+        plugin: None,
     }
 }
 

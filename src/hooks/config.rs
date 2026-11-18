@@ -54,6 +54,14 @@ pub struct MatcherGroup {
     /// which file each handler came from.
     #[serde(skip)]
     pub source: Option<PathBuf>,
+    /// Variables every handler of this group runs with, beside the project
+    /// directory's — never in the file itself: [`HooksFile::with_env`]
+    /// stamps them. A plugin's hooks get their plugin's root and data
+    /// directory this way (`docs/plugins.md`), which is what lets a command
+    /// written as `"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh"` stay exactly as its
+    /// author wrote it: the shell it runs under expands the name.
+    #[serde(skip)]
+    pub env: Vec<(String, String)>,
 }
 
 /// One handler inside a group.
@@ -126,6 +134,8 @@ pub struct CommandHook {
     pub status_message: Option<String>,
     /// The `hooks.json` it is configured in, when it came from a file.
     pub source: Option<PathBuf>,
+    /// Variables it runs with ([`MatcherGroup::env`]).
+    pub env: Vec<(String, String)>,
 }
 
 impl CommandHook {
@@ -167,6 +177,16 @@ impl HooksFile {
     pub fn with_source(mut self, path: &Path) -> Self {
         for group in self.hooks.values_mut().flatten() {
             group.source = Some(path.to_path_buf());
+        }
+        self
+    }
+
+    /// This file with every handler given `env` to run with — a plugin's
+    /// hooks and their plugin's directories ([`MatcherGroup::env`]).
+    #[must_use]
+    pub fn with_env(mut self, env: &[(String, String)]) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            group.env = env.to_vec();
         }
         self
     }
@@ -244,6 +264,7 @@ impl HooksFile {
                 match handler.resolve() {
                     Ok(mut hook) => {
                         hook.source.clone_from(&group.source);
+                        hook.env.clone_from(&group.env);
                         // `"async": true` parses so a config shared with
                         // another tool loads, but every v1 hook is
                         // synchronous. Running it inline is the safe reading
@@ -312,6 +333,7 @@ impl HookHandler {
                 .unwrap_or(CommandHook::DEFAULT_TIMEOUT_SECS),
             status_message: self.status_message.clone(),
             source: None,
+            env: Vec::new(),
         })
     }
 }
@@ -354,6 +376,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                env: Vec::new(),
             }]
         );
     }
@@ -747,6 +770,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                env: Vec::new(),
             }]
         );
     }
@@ -770,5 +794,36 @@ mod tests {
                 .merged(&HooksFile::default())
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_stamped_file_hands_its_handlers_their_variables() {
+        // A plugin's hooks: every handler runs with its plugin's directories,
+        // and the command itself is left exactly as written.
+        let env = vec![
+            ("CLAUDE_PLUGIN_ROOT".to_string(), "/plugins/p".to_string()),
+            ("PLUGIN_DATA".to_string(), "/data/p".to_string()),
+        ];
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command",
+                "command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\""}]}]}}"#,
+        )
+        .with_env(&env);
+        let selection = file.select(HookEvent::Stop, None);
+        assert_eq!(selection.handlers.len(), 1);
+        assert_eq!(selection.handlers[0].env, env);
+        assert_eq!(
+            selection.handlers[0].command,
+            r#"sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh""#
+        );
+        // The stamp survives a merge beside a file that has none, each
+        // handler keeping its own.
+        let merged = parse(SAMPLE).merged(&file);
+        assert!(
+            merged.select(HookEvent::PreToolUse, Some("bash")).handlers[0]
+                .env
+                .is_empty()
+        );
+        assert_eq!(merged.select(HookEvent::Stop, None).handlers[0].env, env);
     }
 }

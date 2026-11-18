@@ -109,6 +109,10 @@ impl App {
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);
         }
+        // …and the `/plugins` page. See `docs/plugins.md`.
+        if self.view == View::Conversation && self.plugins_menu.is_some() {
+            return self.on_key_plugins(key);
+        }
         if self.view == View::Conversation && self.skills_menu.is_some() {
             return self.on_key_skills(key);
         }

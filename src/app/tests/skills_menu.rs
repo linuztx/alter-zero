@@ -12,6 +12,7 @@ fn meta(name: &str, description: &str) -> SkillMetadata {
         description: description.to_string(),
         dir: PathBuf::from("/skills").join(name),
         path: PathBuf::from("/skills").join(name).join("SKILL.md"),
+        plugin: None,
     }
 }
 

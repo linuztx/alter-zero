@@ -319,6 +319,12 @@ impl Session<'_> {
                 // Esc/Ctrl+C dismissed the browser: nothing to reap; the
                 // region collapses back to the composer on the next draw.
             }
+            Action::OpenPluginsMenu => self.open_plugins_menu(),
+            // The page closed (Esc on its list, Ctrl+C anywhere): its job, if
+            // one runs, is stopped; the answer still lands and a change it
+            // made is still taken in (docs/plugins.md).
+            Action::ClosePluginsMenu | Action::CancelPluginJob => self.cancel_plugin_job(),
+            Action::PluginOp { op, round } => self.run_plugin_op(op, round),
             Action::OpenMcpMenu => self.open_mcp_menu(),
             Action::CloseMcpMenu => {
                 // Esc/Ctrl+C dismissed the manager: nothing to reap; the
@@ -636,6 +642,11 @@ impl Session<'_> {
             // point); every other page swallows them (docs/mcp.md).
             View::Conversation if self.app.mcp_menu.is_some() => {
                 let _ = self.app.paste_into_mcp_auth(pasted);
+            }
+            // The `/plugins` page: a marketplace's address into its add
+            // field, or into the list's search (docs/plugins.md).
+            View::Conversation if self.app.plugins_menu.is_some() => {
+                self.app.on_paste(pasted);
             }
             View::Conversation => {
                 self.app.on_paste(pasted);

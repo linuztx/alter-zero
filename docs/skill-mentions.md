@@ -50,6 +50,13 @@ unless the instructions are already in its context:
 
 ## The mapping onto this codebase
 
+**A plugin's skills keep its name** (`docs/plugins.md`): `hello:greet`, a
+command `hello:hi`. So a mention name continues over codex's
+`[A-Za-z0-9_-]` **and** over a `:` or a `.` that sits *between* two of
+those (`mention_name_len`) — `$hello:greet` is one mention, while a `:` or a
+`.` closing the word still ends it, so `$dataviz:` and `$dataviz.` query
+`dataviz` as before.
+
 The picker is a **fourth live-region band** below the box, exactly parallel
 to the `@` file picker (`docs/file-search.md`) — but its matches derive
 **synchronously** from the already-discovered `SkillRegistry`, so unlike the

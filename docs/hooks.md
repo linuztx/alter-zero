@@ -815,6 +815,17 @@ waiting for trust opens the review's hooks page.
 `ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value off — the
 `ALTER_ZERO_TOOLS` pattern) and is never saved.
 
+### Plugins' hooks
+
+An enabled plugin's hooks files (`docs/plugins.md`) are a third layer after
+the user's and the project's — read, merged and trusted per file like them
+(`TrustState::set_plugins`, `docs/config-review.md`). Each handler from one
+runs with its plugin's directories in its environment —
+`CLAUDE_PLUGIN_ROOT`/`PLUGIN_ROOT` and `CLAUDE_PLUGIN_DATA`/`PLUGIN_DATA` —
+stamped on the file at load (`HooksFile::with_env`) and exported by
+`run_handler`, so a command written `${CLAUDE_PLUGIN_ROOT}/check.sh` is
+expanded by the shell, as Claude Code's are.
+
 ## Module layout
 
 Following the pure-core / boundary split the rest of the crate uses:

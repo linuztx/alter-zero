@@ -2383,6 +2383,83 @@ pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
 pub(super) const HOOKS_MODIFY_NOTE: &str =
     "To modify or remove this hook, edit hooks.json directly or ask alter-zero to help.";
 
+// --- The inline `/plugins` page (docs/plugins.md): the `/skills` menu's list
+// under a tab strip, and the `/mcp` manager's detail pages — so it borrows
+// both frames (the picker family's rows, the `MCP_FIELD_COL` fact rows, the
+// `HOOKS_MARKER` actions, the ask modal's chips) and adds only its own
+// vocabulary. ---
+
+/// The list page's title.
+pub(super) const PLUGINS_TITLE: &str = "Plugins";
+
+/// The tab strip's names, in strip order (`app::PluginsTab::ALL`).
+pub(super) const PLUGINS_TAB_NAMES: [&str; 3] = ["Installed", "Discover", "Marketplaces"];
+
+/// The status column's marks: the `/skills` rows' `✔`/`◯` for an installed
+/// plugin on or off here, `+` for one that can be installed, `–` for one
+/// whose source this app cannot fetch, and `/mcp`'s `✘` for an installed copy
+/// that cannot be read. Only the `✔` is green and only the `✘` red: the eye
+/// hunts down the column for what is on and what is broken.
+pub(super) const PLUGINS_ENABLED_MARK: &str = LOGIN_CONFIGURED_MARK;
+pub(super) const PLUGINS_DISABLED_MARK: &str = LOGIN_UNCONFIGURED_MARK;
+pub(super) const PLUGINS_AVAILABLE_MARK: &str = "+";
+pub(super) const PLUGINS_UNAVAILABLE_MARK: &str = "–";
+pub(super) const PLUGINS_BROKEN_MARK: &str = "✘";
+
+/// The status column's words, beside those marks.
+pub(super) const PLUGINS_ENABLED: &str = "enabled";
+pub(super) const PLUGINS_DISABLED: &str = "disabled";
+pub(super) const PLUGINS_AVAILABLE: &str = "available";
+pub(super) const PLUGINS_UNAVAILABLE: &str = "unavailable";
+pub(super) const PLUGINS_BROKEN: &str = "error";
+
+/// The amber mark an installed plugin's description opens on when its
+/// marketplace has a newer copy: `▲ update · Easily create hooks…`.
+pub(super) const PLUGINS_UPDATE_MARK: &str = "▲";
+pub(super) const PLUGINS_UPDATE_WORD: &str = "update";
+
+/// The Marketplaces tab's last row, the one that adds a marketplace.
+pub(super) const PLUGINS_ADD_ROW: &str = "+ Add a marketplace";
+
+/// The key hints: the plugin tabs, the Marketplaces tab, a detail page, the
+/// confirmation, the add page.
+pub(super) const PLUGINS_LIST_HINT: &str =
+    "Type to search · ←/→ tabs · Enter to open · Space to toggle · Esc to close";
+pub(super) const PLUGINS_MARKETS_HINT: &str =
+    "Type to search · ←/→ tabs · Enter to open · Esc to close";
+pub(super) const PLUGINS_PAGE_HINT: &str = "↑/↓ to navigate · Enter to select · Esc to go back";
+pub(super) const PLUGINS_CONFIRM_HINT: &str = "Enter to confirm · Esc to go back";
+pub(super) const PLUGINS_ADD_HINT: &str = "Enter to add · Esc to go back";
+
+/// The list's placeholders: a first read that did not answer, a search
+/// matching nothing, and the two empty tabs — each naming where to go next.
+/// (The first read still out shows its own job line there.)
+pub(super) const PLUGINS_NOT_READ: &str = "Not read — ctrl+r to try again";
+pub(super) const PLUGINS_NO_MATCH: &str = "No matching plugins";
+pub(super) const PLUGINS_NONE_INSTALLED: &str =
+    "No plugins installed yet — find one under Discover.";
+pub(super) const PLUGINS_NONE_LISTED: &str =
+    "No plugins to discover yet — add a marketplace under Marketplaces.";
+
+/// The note under the count when the session loads no plugin
+/// (`ALTER_ZERO_PLUGINS=0`): the page still installs and toggles, red like
+/// the `/skills` and `/mcp` session-off notes.
+pub(super) const PLUGINS_SESSION_OFF: &str =
+    "Plugins are off for this session (ALTER_ZERO_PLUGINS) — nothing installed is loaded";
+
+/// The add page.
+pub(super) const PLUGINS_ADD_TITLE: &str = "Add a marketplace";
+pub(super) const PLUGINS_ADD_BLURB: &str = "A git repository or a directory holding a plugin marketplace — or a single plugin, read as a marketplace of one.";
+pub(super) const PLUGINS_ADD_PLACEHOLDER: &str = "owner/repo";
+
+/// A plugin page's note for one not yet installed that brings something
+/// that runs (`docs/plugins.md` *Trust*).
+pub(super) const PLUGINS_TRUST_NOTE: &str =
+    "Its hooks and MCP servers run only once you have reviewed them, after it is installed.";
+
+/// The job line's closing clause: `Installing deploy… (4s · esc to cancel)`.
+pub(super) const PLUGINS_JOB_CANCEL: &str = "esc to cancel";
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but

@@ -105,6 +105,17 @@ is inert markdown until the model explicitly loads it, and any command in a
 loaded body still meets the permission gate like every other tool call —
 there is nothing here that executes on discovery.
 
+Installed **plugins** add skills too (`docs/plugins.md`): each plugin's
+skills and commands, named `{plugin}:{name}` so they never collide with a
+root's, appended after the walk at bootstrap and at every rescan — so
+`ALTER_ZERO_SKILLS_DIR`, which replaces the roots, does not hide them. A
+plugin's skill is loaded and listed like any other; one in the Agent
+Plugins format is read strictly (its frontmatter must name it as its
+directory does, and describe it), and its body's `${CLAUDE_PLUGIN_ROOT}` /
+`${PLUGIN_ROOT}` (and `…_DATA`) are its plugin's directories
+(`skills::render_skill`). `LoadedSkills` keys on the `SKILL.md` file, so two
+skills that share a name in different places are told apart.
+
 ### Built-in skills
 
 Five skills ship with the binary: **`skill-creator`**, **`jina-reader`**,

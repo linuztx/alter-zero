@@ -14,7 +14,7 @@ use super::tools::{ToolCallRequest, ToolOutcome};
 use super::{ChatMessage, MessageContent};
 use crate::skills::{
     SKILL_FILE_NAME, SKILL_LOADED_DISPLAY, SkillError, SkillMetadata, SkillRegistry, parse_skill,
-    render_skill_body,
+    render_skill,
 };
 
 /// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
@@ -262,6 +262,7 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
                         description: parsed.description,
                         dir,
                         path,
+                        plugin: None,
                     });
                 }
                 Err(err) => errors.push(SkillError {
@@ -334,7 +335,10 @@ struct SkillArgs {
 /// have independent contexts, and compaction or a rewind can remove a body.
 #[derive(Debug, Default)]
 pub struct LoadedSkills {
-    directories: BTreeSet<PathBuf>,
+    /// The file each loaded body was read from — a `SKILL.md`, or a plugin
+    /// command's own markdown. The file rather than its directory, since a
+    /// plugin's commands share one (`docs/plugins.md`).
+    files: BTreeSet<PathBuf>,
 }
 
 impl LoadedSkills {
@@ -352,9 +356,9 @@ impl LoadedSkills {
             .snapshot()
             .into_iter()
             .map(|skill| {
-                let header = render_skill_body(&skill.dir, "");
+                let header = render_skill(&skill, "");
                 let redacted = secrets.map(|secrets| secrets.redact(&header));
-                (skill.dir, header, redacted)
+                (skill.path, header, redacted)
             })
             .collect();
         let mut loaded = Self::default();
@@ -374,7 +378,7 @@ impl LoadedSkills {
                 && pending.remove(id)
                 && let MessageContent::Text(text) = &message.content
             {
-                for (dir, header, redacted) in &headers {
+                for (file, header, redacted) in &headers {
                     // The executor masks results before recording them. Keep
                     // the raw form too, for loads predating a secret's addition.
                     if text.starts_with(header)
@@ -382,7 +386,7 @@ impl LoadedSkills {
                             .as_ref()
                             .is_some_and(|header| text.starts_with(header))
                     {
-                        loaded.directories.insert(dir.clone());
+                        loaded.files.insert(file.clone());
                     }
                 }
             }
@@ -415,7 +419,7 @@ pub fn run_skill_tool(
     let Some(skill) = registry.find(&args.skill) else {
         return ToolOutcome::error(unknown_skill_message(&args.skill, &registry.names()));
     };
-    if loaded.directories.contains(&skill.dir) {
+    if loaded.files.contains(&skill.path) {
         return ToolOutcome::ok(format!(
             "Skill {} is already loaded. Follow its instructions; do not load it again.",
             skill.name
@@ -432,14 +436,24 @@ pub fn run_skill_tool(
     };
     // Read fresh on the first load into this context. A failed read or parse
     // must remain retryable; only a successfully rendered body marks a load.
-    let body = match parse_skill(&contents, &skill.name) {
-        Ok(parsed) => parsed.body,
-        Err(err) => {
-            return ToolOutcome::error(format!("Skill {} could not be loaded: {err}", skill.name));
+    let body = if skill.plugin.is_some() {
+        // A plugin's skill was validated by its own, looser rules when it
+        // was discovered (a command file may carry no frontmatter at all),
+        // so only its body is taken here (`docs/plugins.md`).
+        crate::plugins::skill_body(&contents)
+    } else {
+        match parse_skill(&contents, &skill.name) {
+            Ok(parsed) => parsed.body,
+            Err(err) => {
+                return ToolOutcome::error(format!(
+                    "Skill {} could not be loaded: {err}",
+                    skill.name
+                ));
+            }
         }
     };
-    let rendered = render_skill_body(&skill.dir, &body);
-    loaded.directories.insert(skill.dir);
+    let rendered = render_skill(&skill, &body);
+    loaded.files.insert(skill.path);
     ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(rendered)
 }
 
@@ -457,6 +471,7 @@ fn unknown_skill_message(wanted: &str, available: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::render_skill_body;
 
     fn write_skill(root: &Path, name: &str, contents: &str) {
         let dir = root.join(name);

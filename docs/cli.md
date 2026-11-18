@@ -28,11 +28,14 @@ Starts an interactive session by default; with -p, answers once and exits.
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Commands:
   mcp                            Manage MCP servers in the user config file —
                                  see alter-zero mcp --help
+  plugin                         Install and manage plugins and marketplaces —
+                                 see alter-zero plugin --help
   update                         Install the newest release over this binary,
                                  if one is out (the checksum-verified installer)
 
@@ -219,6 +222,7 @@ error: unrecognized argument: --frob
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 For more information, try '--help'.
@@ -226,15 +230,18 @@ For more information, try '--help'.
 
 `cli::usage_error(page, message, style)` renders it — the `error:` lead,
 the page's own `Usage:` block, the pointer at `--help` — and the `mcp`
-page's grammar errors take the same shape over its six usage lines. Exit
+page's grammar errors take the same shape over its six usage lines, the
+`plugin` page's over its ten (`docs/plugins.md` *From a shell*). Exit
 `2`, on stderr, as before.
 
 ### The pure `cli` module (src/cli.rs)
 
 - `Cli` — the parsed invocation: `Session(SessionArgs)` (a session run —
   how to start, plus the optional prompt), `Help`, `Version`,
-  `Mcp(McpCli)`, `Update` (the `update` subcommand — `tui::update_cli::run`
-  does the work, `docs/update.md`).
+  `Mcp(McpCli)`, `Plugin(PluginCli)` (the `plugin` subcommands —
+  `tui::plugin_cli::run` does the work, `docs/plugins.md`), `Update` (the
+  `update` subcommand — `tui::update_cli::run` does the work,
+  `docs/update.md`).
   `SessionArgs { start, prompt, cwd, permission_mode, print }` with
   `SessionStart::{Fresh, Continue, Resume(Option<String>)}`, `cwd` the
   `-C`/`--cwd` directory, `permission_mode` the `--permission-mode` seed,

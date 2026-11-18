@@ -840,6 +840,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::mcp_menu_height(app, screen.width, screen.height) {
         return height;
     }
+    // The `/plugins` page, likewise (docs/plugins.md).
+    if let Some(height) = ui::plugins_menu_height(app, screen.width, screen.height) {
+        return height;
+    }
     if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
         return height;
     }
@@ -936,6 +940,7 @@ impl Session<'_> {
         // …and an open `/usage` page due its minute refresh starts it, the
         // page keeping its own slow frame (docs/usage.md).
         self.tick_usage_page();
+        self.tick_plugins_page();
         self.draw_active_view()?;
         // The ↓ manager band re-arms frames like an active turn: its details
         // view's Runtime ticks with no events otherwise — and so does a non-empty

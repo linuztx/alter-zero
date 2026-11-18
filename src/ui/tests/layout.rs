@@ -985,6 +985,7 @@ fn tall_mcp_server_app() -> App {
             command: "npx".to_string(),
             args: (0..60).map(|i| format!("--flag-{i}")).collect(),
             env: Default::default(),
+            cwd: None,
         },
         status: crate::mcp::McpServerStatus::Connected,
         auth: None,

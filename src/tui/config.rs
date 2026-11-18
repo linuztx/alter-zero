@@ -922,6 +922,31 @@ pub(crate) fn permission_mode_seed() -> Option<PermissionMode> {
     alter_zero::permission::mode_by_env(value.as_deref())
 }
 
+/// Whether the session loads the plugins it has on (`docs/plugins.md`
+/// *Switches*): `ALTER_ZERO_PLUGINS`, on unless set falsy. `/plugins` opens
+/// either way and says so.
+pub(crate) fn plugins_enabled() -> bool {
+    env_flag("ALTER_ZERO_PLUGINS")
+}
+
+/// Where plugins are kept (`docs/plugins.md` *On disk*): the tree
+/// `ALTER_ZERO_PLUGINS_DIR` names — `plugins.json` beside it — else the
+/// config home's `plugins/` and `plugins.json`; `None` without either, when
+/// there is nowhere to install anything. Git's detach tier gets this binary.
+pub(crate) fn plugin_store() -> Option<alter_zero::plugins::PluginStore> {
+    let layout = match std::env::var_os("ALTER_ZERO_PLUGINS_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => {
+            let dir = PathBuf::from(dir);
+            alter_zero::plugins::PluginLayout::at(&std::path::absolute(&dir).unwrap_or(dir))
+        }
+        None => alter_zero::plugins::PluginLayout::under(&config_home()?),
+    };
+    Some(alter_zero::plugins::PluginStore::new(
+        layout,
+        std::env::current_exe().ok(),
+    ))
+}
+
 /// A feature toggle read from the environment: **on** unless `name` is set to
 /// one of `0`/`false`/`no`/`off` (case- and whitespace-insensitive). The one
 /// grammar every `ALTER_ZERO_*` on/off flag uses.

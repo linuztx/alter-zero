@@ -211,13 +211,21 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
     println!("{name}:");
     println!("  Type: {}", config.transport_label());
     match config {
-        McpServerConfig::Stdio { command, args, env } => {
+        McpServerConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => {
             println!("  Command: {command}");
             if !args.is_empty() {
                 println!("  Args: {}", args.join(" "));
             }
             if !env.is_empty() {
                 println!("  Env: {}", masked(env, "="));
+            }
+            if let Some(cwd) = cwd {
+                println!("  Cwd: {cwd}");
             }
         }
         McpServerConfig::Http { url, headers, .. } | McpServerConfig::Sse { url, headers, .. } => {
