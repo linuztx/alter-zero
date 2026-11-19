@@ -1,24 +1,23 @@
 //! The inline `/plugins` page (`docs/plugins.md` *The `/plugins` page*):
-//! codex's `/plugins` in this app's picker frame — a tab for every plugin,
-//! one for the installed ones, one per added marketplace and one that adds a
-//! marketplace, over a search line; a page per plugin; a question before
-//! anything that cannot be undone.
+//! three tabs — the installed plugins, every plugin the marketplaces list,
+//! and the marketplaces themselves — over a search line; a page per plugin
+//! and per marketplace; the field that adds any marketplace; a question
+//! before anything that cannot be undone.
 //!
 //! The pure half holds the boundary-injected catalog
 //! ([`crate::plugins::PluginCatalog`], the `/mcp` snapshot seam) and the
 //! page state. Every operation is a typed [`PluginOp`] the boundary runs on
 //! a worker — one at a time, since they all write one registry — and whose
 //! answer comes back with a fresh catalog. The job is marked here, the
-//! moment it is asked for, so the frame that took the key already says
-//! what is happening; its answer is taken only while it is still the job
-//! the page is waiting on (`/usage`'s rounds).
+//! moment it is asked for; its answer is taken only while it is still the
+//! job the page is waiting on (`/usage`'s rounds).
 //!
 //! **The page never moves under the user** (`docs/plugins.md` *No
-//! flicker*): what runs and what happened are said in the hint's own row —
-//! a job only once it has run [`PLUGINS_JOB_DELAY`], so a quick one says
-//! nothing — and never in a toast row over the page, which pushed it down a
-//! row and later back up. A reopened page shows the catalog it kept while
-//! the read runs behind it.
+//! flicker*): a job is said in the hint's own row, and only once it has run
+//! [`PLUGINS_JOB_DELAY`] — a quick one says nothing — and what went right
+//! is never said at all: the rows and pages show it. A failure is said
+//! until the next key. A reopened page shows the catalog it kept while the
+//! read runs behind it.
 
 use std::time::Duration;
 
@@ -28,6 +27,7 @@ use crate::plugins::{
     CatalogMarketplace, CatalogPlugin, MarketplaceSuggestion, PluginCatalog, PluginId,
     SUGGESTED_MARKETPLACES,
 };
+use crate::textarea::TextArea;
 
 use super::views::TOOL_VIEW_PAGE;
 use super::{Action, App, Backtrack, wrap_step};
@@ -36,16 +36,28 @@ use super::{Action, App, Backtrack, wrap_step};
 /// milliseconds, and a line shown for one frame is a flicker.
 pub const PLUGINS_JOB_DELAY: Duration = Duration::from_millis(400);
 
-/// One of the page's tabs, in strip order: every plugin, the installed
-/// ones, each added marketplace (the catalog's order), the add tab.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The page's three tabs, in strip order — Claude Code's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginsTab {
-    All,
+    /// The installed plugins.
     Installed,
-    /// The added marketplace of this name.
-    Marketplace(String),
-    /// The field that adds a marketplace, over the official catalogs.
-    Add,
+    /// Every plugin every added marketplace lists.
+    Discover,
+    /// The added marketplaces, the official ones not added yet, and the row
+    /// that adds any other.
+    Marketplaces,
+}
+
+impl PluginsTab {
+    /// In strip order.
+    pub const ALL: [Self; 3] = [Self::Installed, Self::Discover, Self::Marketplaces];
+
+    /// The tab `delta` steps from this one, wrapping.
+    #[must_use]
+    pub fn step(self, delta: isize) -> Self {
+        let at = Self::ALL.iter().position(|tab| *tab == self).unwrap_or(0);
+        Self::ALL[wrap_step(at, Self::ALL.len(), delta)]
+    }
 }
 
 /// One action a plugin's page offers.
@@ -94,6 +106,45 @@ pub fn plugin_actions(plugin: &CatalogPlugin) -> Vec<PluginAction> {
     }
 }
 
+/// One action a marketplace's page offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketplaceAction {
+    Browse,
+    Update,
+    Remove,
+    Back,
+}
+
+impl MarketplaceAction {
+    /// The action row's label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Browse => "Browse its plugins",
+            Self::Update => "Update",
+            Self::Remove => "Remove",
+            Self::Back => "Back to marketplaces",
+        }
+    }
+}
+
+/// The actions `market` affords, in display order: its plugins when it
+/// lists any, an update for a git one (a directory is read in place and is
+/// always current), removing it.
+#[must_use]
+pub fn marketplace_actions(market: &CatalogMarketplace) -> Vec<MarketplaceAction> {
+    use MarketplaceAction as A;
+    let mut out = Vec::new();
+    if market.plugins > 0 {
+        out.push(A::Browse);
+    }
+    if market.git {
+        out.push(A::Update);
+    }
+    out.extend([A::Remove, A::Back]);
+    out
+}
+
 /// What a confirmation page asks about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginsConfirm {
@@ -106,10 +157,14 @@ pub enum PluginsConfirm {
 /// Which page the menu shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginsPage {
-    /// The tabbed list — the add tab included.
+    /// The tabbed list.
     List,
     /// One plugin's page.
     Plugin(PluginId),
+    /// One marketplace's page.
+    Marketplace(String),
+    /// The field that adds a marketplace from any source.
+    Add,
     /// A question before something that cannot be undone.
     Confirm(PluginsConfirm),
 }
@@ -164,19 +219,23 @@ pub struct PluginJob {
 /// What a finished operation reports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PluginDone {
-    /// What to tell the user; empty for a quiet read.
+    /// What it did, for the toast an answer gets when the page it was asked
+    /// from has closed — an open page shows it instead; empty for a quiet
+    /// read.
     pub message: String,
     /// The marketplace an add added — what the page shows next.
     pub marketplace: Option<String>,
 }
 
-/// One row of the add tab.
+/// One row of the Marketplaces tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AddRow {
-    /// The source typed into the field.
-    Typed(String),
-    /// An official catalog.
+pub enum MarketplaceRow {
+    /// The added marketplace of this name.
+    Market(String),
+    /// An official catalog not added yet — one Enter adds it.
     Suggestion(&'static MarketplaceSuggestion),
+    /// The row that opens the field for any other source.
+    Add,
 }
 
 /// The open `/plugins` page.
@@ -193,13 +252,12 @@ pub struct PluginsMenu {
     pub selected: usize,
     /// The list row a plugin's page was opened from, to come back to.
     pub list_selected: usize,
-    /// The search on a plugin tab; the source typed on the add tab.
+    /// The list's search.
     pub query: String,
+    /// The add page's field.
+    pub input: TextArea,
     /// The last operation's failure, said until the next key.
     pub error: Option<String>,
-    /// What the last operation did, said in the hint's row until the next
-    /// key.
-    pub notice: Option<String>,
     /// The operation running now.
     pub job: Option<PluginJob>,
     /// How long it has run — injected per draw.
@@ -215,27 +273,12 @@ pub struct PluginsMenu {
 impl PluginsMenu {
     /// The tabs in strip order.
     #[must_use]
-    pub fn tabs(&self) -> Vec<PluginsTab> {
-        let mut tabs = vec![PluginsTab::All, PluginsTab::Installed];
-        tabs.extend(
-            self.catalog
-                .iter()
-                .flat_map(|catalog| catalog.marketplaces.iter())
-                .map(|market| PluginsTab::Marketplace(market.name.clone())),
-        );
-        tabs.push(PluginsTab::Add);
-        tabs
-    }
-
-    /// The tab `delta` steps from the current one, wrapping.
-    fn stepped_tab(&self, delta: isize) -> PluginsTab {
-        let tabs = self.tabs();
-        let at = tabs.iter().position(|tab| *tab == self.tab).unwrap_or(0);
-        tabs[wrap_step(at, tabs.len(), delta)].clone()
+    pub const fn tabs(&self) -> [PluginsTab; 3] {
+        PluginsTab::ALL
     }
 
     /// The plugins the current tab lists, matching the search — none on the
-    /// add tab.
+    /// Marketplaces tab.
     #[must_use]
     pub fn plugin_rows(&self) -> Vec<&CatalogPlugin> {
         let Some(catalog) = &self.catalog else {
@@ -245,36 +288,47 @@ impl PluginsMenu {
         catalog
             .plugins
             .iter()
-            .filter(|plugin| match &self.tab {
-                PluginsTab::All => true,
+            .filter(|plugin| match self.tab {
                 PluginsTab::Installed => plugin.installed.is_some(),
-                PluginsTab::Marketplace(name) => plugin.id.marketplace == *name,
-                PluginsTab::Add => false,
+                PluginsTab::Discover => true,
+                PluginsTab::Marketplaces => false,
             })
             .filter(|plugin| query.is_empty() || matches_query(plugin, &query))
             .collect()
     }
 
-    /// The add tab's rows: the typed source first, then the official
-    /// catalogs — all of them on an empty field, else those it names.
+    /// The Marketplaces tab's rows: the added marketplaces matching the
+    /// search, then the official catalogs not added yet that match it, then
+    /// — whatever the search — the row that adds any other. Nothing before
+    /// the first read, which says it is reading where the rows will be.
     #[must_use]
-    pub fn add_rows(&self) -> Vec<AddRow> {
-        let typed = self.query.trim();
-        let query = typed.to_lowercase();
-        let mut rows = Vec::new();
-        if !typed.is_empty() && !SUGGESTED_MARKETPLACES.iter().any(|s| s.source == typed) {
-            rows.push(AddRow::Typed(typed.to_string()));
-        }
+    pub fn marketplace_rows(&self) -> Vec<MarketplaceRow> {
+        let Some(catalog) = &self.catalog else {
+            return Vec::new();
+        };
+        let query = self.query.to_lowercase();
+        let has = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+        let mut rows: Vec<MarketplaceRow> = catalog
+            .marketplaces
+            .iter()
+            .filter(|market| {
+                has(&market.name)
+                    || has(&market.source)
+                    || market.description.as_deref().is_some_and(has)
+                    || market.owner.as_deref().is_some_and(has)
+            })
+            .map(|market| MarketplaceRow::Market(market.name.clone()))
+            .collect();
         rows.extend(
             SUGGESTED_MARKETPLACES
                 .iter()
+                .filter(|suggestion| !self.is_added(suggestion))
                 .filter(|suggestion| {
-                    query.is_empty()
-                        || suggestion.source.contains(&query)
-                        || suggestion.name.contains(&query)
+                    has(suggestion.name) || has(suggestion.source) || has(suggestion.description)
                 })
-                .map(AddRow::Suggestion),
+                .map(MarketplaceRow::Suggestion),
         );
+        rows.push(MarketplaceRow::Add);
         rows
     }
 
@@ -282,8 +336,8 @@ impl PluginsMenu {
     #[must_use]
     pub fn row_count(&self) -> usize {
         match self.tab {
-            PluginsTab::Add => self.add_rows().len(),
-            _ => self.plugin_rows().len(),
+            PluginsTab::Marketplaces => self.marketplace_rows().len(),
+            PluginsTab::Installed | PluginsTab::Discover => self.plugin_rows().len(),
         }
     }
 
@@ -305,15 +359,6 @@ impl PluginsMenu {
             .marketplaces
             .iter()
             .find(|market| market.name == name)
-    }
-
-    /// The marketplace whose tab is showing.
-    #[must_use]
-    pub fn current_marketplace(&self) -> Option<&CatalogMarketplace> {
-        match &self.tab {
-            PluginsTab::Marketplace(name) => self.marketplace(name),
-            _ => None,
-        }
     }
 
     /// Is the official catalog `suggestion` added?
@@ -341,8 +386,11 @@ impl PluginsMenu {
     fn action_count(&self) -> usize {
         match &self.page {
             PluginsPage::Plugin(id) => self.plugin(id).map_or(1, |p| plugin_actions(p).len()),
+            PluginsPage::Marketplace(name) => self
+                .marketplace(name)
+                .map_or(1, |m| marketplace_actions(m).len()),
             PluginsPage::Confirm(_) => 2,
-            PluginsPage::List => 0,
+            PluginsPage::List | PluginsPage::Add => 0,
         }
     }
 
@@ -400,8 +448,8 @@ impl App {
             selected: 0,
             list_selected: 0,
             query: String::new(),
+            input: TextArea::new(),
             error: None,
-            notice: None,
             job: Some(PluginJob {
                 label: PluginOp::Refresh.label(false),
                 op: PluginOp::Refresh,
@@ -472,7 +520,6 @@ impl App {
         self.plugin_rounds += 1;
         let round = self.plugin_rounds;
         menu.error = None;
-        menu.notice = None;
         // Turning a plugin off answers on its row at once; the registry
         // write follows.
         if let PluginOp::SetEnabled { id, enabled } = &op
@@ -518,13 +565,12 @@ impl App {
         match outcome {
             Err(error) => menu.error = Some(error.clone()),
             Ok(done) => {
-                if !done.message.is_empty() {
-                    menu.notice = Some(done.message.clone());
-                }
                 if let (PluginOp::AddMarketplace(_), Some(name)) = (&job.op, &done.marketplace) {
                     // The plugins it brought, straight away.
                     menu.page = PluginsPage::List;
-                    menu.show_tab(PluginsTab::Marketplace(name.clone()));
+                    menu.input.clear();
+                    menu.show_tab(PluginsTab::Discover);
+                    menu.query = format!("@{name}");
                 }
             }
         }
@@ -533,15 +579,13 @@ impl App {
         if first && !menu.tab_chosen {
             menu.tab = first_tab(menu.catalog.as_ref());
         }
-        // A tab or a page whose subject is gone comes back to the list.
-        if !menu.tabs().contains(&menu.tab) {
-            menu.tab = PluginsTab::All;
-            menu.page = PluginsPage::List;
-            menu.selected = 0;
-        }
-        if let PluginsPage::Plugin(id) = &menu.page
-            && menu.plugin(id).is_none()
-        {
+        // A page whose subject is gone comes back to the list.
+        let gone = match &menu.page {
+            PluginsPage::Plugin(id) => menu.plugin(id).is_none(),
+            PluginsPage::Marketplace(name) => menu.marketplace(name).is_none(),
+            _ => false,
+        };
+        if gone {
             menu.page = PluginsPage::List;
             menu.selected = menu.list_selected;
         }
@@ -564,18 +608,18 @@ impl App {
         if key.code == KeyCode::Esc && menu.job.is_some() {
             return Action::CancelPluginJob;
         }
-        // What the last job said is said until the next key.
-        menu.notice = None;
+        // A failure is said until the next key.
         menu.error = None;
         match menu.page.clone() {
             PluginsPage::List => self.on_key_plugins_list(key),
             PluginsPage::Plugin(id) => self.on_key_plugin_page(key, &id),
+            PluginsPage::Marketplace(name) => self.on_key_marketplace_page(key, &name),
+            PluginsPage::Add => self.on_key_plugins_add(key),
             PluginsPage::Confirm(confirm) => self.on_key_plugins_confirm(key, &confirm),
         }
     }
 
     fn on_key_plugins_list(&mut self, key: KeyEvent) -> Action {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -584,7 +628,7 @@ impl App {
         };
         let len = menu.row_count();
         let last = len.saturating_sub(1);
-        let adding = menu.tab == PluginsTab::Add;
+        let markets = menu.tab == PluginsTab::Marketplaces;
         match key.code {
             KeyCode::Esc => {
                 if menu.query.is_empty() {
@@ -594,27 +638,15 @@ impl App {
                 menu.query.clear();
                 menu.selected = 0;
             }
-            KeyCode::Left | KeyCode::BackTab => {
-                let tab = menu.stepped_tab(-1);
-                menu.show_tab(tab);
-            }
-            KeyCode::Right | KeyCode::Tab => {
-                let tab = menu.stepped_tab(1);
-                menu.show_tab(tab);
-            }
+            KeyCode::Left | KeyCode::BackTab => menu.show_tab(menu.tab.step(-1)),
+            KeyCode::Right | KeyCode::Tab => menu.show_tab(menu.tab.step(1)),
             KeyCode::Up => menu.selected = wrap_step(menu.selected, len, -1),
             KeyCode::Down => menu.selected = wrap_step(menu.selected, len, 1),
             KeyCode::PageUp => menu.selected = menu.selected.saturating_sub(TOOL_VIEW_PAGE),
             KeyCode::PageDown => menu.selected = (menu.selected + TOOL_VIEW_PAGE).min(last),
             KeyCode::Home => menu.selected = 0,
             KeyCode::End => menu.selected = last,
-            KeyCode::Char('u') if ctrl && adding => {
-                menu.query.clear();
-                menu.selected = 0;
-            }
-            KeyCode::Char('u') if ctrl => return self.update_current_marketplace(),
-            KeyCode::Char('r') if ctrl => self.ask_to_remove_current_marketplace(),
-            KeyCode::Enter if adding => return self.add_highlighted_marketplace(),
+            KeyCode::Enter if markets => return self.enter_marketplace_row(),
             KeyCode::Enter => {
                 menu.list_selected = menu.selected;
                 if let Some(id) = menu.highlighted_plugin().map(|plugin| plugin.id.clone()) {
@@ -622,7 +654,8 @@ impl App {
                     menu.selected = 0;
                 }
             }
-            KeyCode::Char(' ') if !adding => {
+            // Space toggles on a plugin tab, and never types into a search.
+            KeyCode::Char(' ') => {
                 let toggle = menu.highlighted_plugin().and_then(|plugin| {
                     plugin.installed.as_ref().map(|state| PluginOp::SetEnabled {
                         id: plugin.id.clone(),
@@ -646,69 +679,36 @@ impl App {
         Action::None
     }
 
-    /// Ctrl+U on a marketplace's tab: fetch it again — a directory is read
-    /// in place and is always current.
-    fn update_current_marketplace(&mut self) -> Action {
-        let Some(market) = self
-            .plugins_menu
-            .as_ref()
-            .and_then(PluginsMenu::current_marketplace)
-        else {
+    /// Enter on the Marketplaces tab: a marketplace's page; an official
+    /// catalog added; the field for any other source — holding what was
+    /// searched for, which is often the source itself.
+    fn enter_marketplace_row(&mut self) -> Action {
+        let Some(menu) = self.plugins_menu.as_mut() else {
             return Action::None;
         };
-        if !market.git {
-            return Action::Toast(format!(
-                "{} is a directory — it is always current",
-                market.name
-            ));
-        }
-        let name = market.name.clone();
-        self.start_plugin_op(PluginOp::UpdateMarketplace(name))
-    }
-
-    /// Ctrl+R on a marketplace's tab: ask before removing it, naming what
-    /// it uninstalls.
-    fn ask_to_remove_current_marketplace(&mut self) {
-        let Some(menu) = self.plugins_menu.as_mut() else {
-            return;
-        };
-        let Some(name) = menu.current_marketplace().map(|market| market.name.clone()) else {
-            return;
-        };
-        let plugins = menu
-            .catalog
-            .iter()
-            .flat_map(|catalog| catalog.plugins.iter())
-            .filter(|plugin| plugin.installed.is_some() && plugin.id.marketplace == name)
-            .map(|plugin| plugin.id.name.clone())
-            .collect();
         menu.list_selected = menu.selected;
-        menu.page = PluginsPage::Confirm(PluginsConfirm::RemoveMarketplace { name, plugins });
-        menu.selected = 1;
-    }
-
-    /// Enter on the add tab: add the highlighted source — or, for an
-    /// official catalog already added, show its tab.
-    fn add_highlighted_marketplace(&mut self) -> Action {
-        let Some(menu) = self.plugins_menu.as_mut() else {
-            return Action::None;
-        };
-        match menu.add_rows().get(menu.selected).cloned() {
-            Some(AddRow::Typed(source)) => self.start_plugin_op(PluginOp::AddMarketplace(source)),
-            Some(AddRow::Suggestion(suggestion)) if menu.is_added(suggestion) => {
-                menu.show_tab(PluginsTab::Marketplace(suggestion.name.to_string()));
+        match menu.marketplace_rows().get(menu.selected).cloned() {
+            Some(MarketplaceRow::Market(name)) => {
+                menu.page = PluginsPage::Marketplace(name);
+                menu.selected = 0;
                 Action::None
             }
-            Some(AddRow::Suggestion(suggestion)) => {
+            Some(MarketplaceRow::Suggestion(suggestion)) => {
                 self.start_plugin_op(PluginOp::AddMarketplace(suggestion.source.to_string()))
+            }
+            Some(MarketplaceRow::Add) => {
+                menu.input = TextArea::from_text(menu.query.trim());
+                menu.page = PluginsPage::Add;
+                Action::None
             }
             None => Action::None,
         }
     }
 
-    /// Back from a plugin's page to the list — on the row of the plugin,
-    /// wherever an answer since moved it (an install sorts a plugin in with
-    /// the installed ones); else on the row the page was opened from.
+    /// Back from a page to the list — on the row of the plugin or the
+    /// marketplace it was about, wherever an answer since moved it (an
+    /// install sorts a plugin in with the installed ones), or the add row
+    /// the field was opened from; else on the row the page was opened from.
     fn plugins_back_to_list(&mut self) {
         if let Some(menu) = self.plugins_menu.as_mut() {
             let subject = match &menu.page {
@@ -716,6 +716,14 @@ impl App {
                     .plugin_rows()
                     .iter()
                     .position(|plugin| plugin.id == *id),
+                PluginsPage::Marketplace(name) => menu
+                    .marketplace_rows()
+                    .iter()
+                    .position(|row| matches!(row, MarketplaceRow::Market(n) if n == name)),
+                PluginsPage::Add => menu
+                    .marketplace_rows()
+                    .iter()
+                    .position(|row| *row == MarketplaceRow::Add),
                 _ => None,
             };
             menu.page = PluginsPage::List;
@@ -777,10 +785,12 @@ impl App {
                 id: id.clone(),
                 enabled: false,
             }),
+            // The question highlights the answer the user just chose: Enter
+            // confirms it.
             PluginAction::Uninstall => {
                 if let Some(menu) = self.plugins_menu.as_mut() {
                     menu.page = PluginsPage::Confirm(PluginsConfirm::Uninstall(id.clone()));
-                    menu.selected = 1;
+                    menu.selected = 0;
                 }
                 Action::None
             }
@@ -791,20 +801,72 @@ impl App {
         }
     }
 
+    fn on_key_marketplace_page(&mut self, key: KeyEvent, name: &str) -> Action {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Backspace) {
+            self.plugins_back_to_list();
+            return Action::None;
+        }
+        let Some(market) = self
+            .plugins_menu
+            .as_ref()
+            .and_then(|menu| menu.marketplace(name))
+            .cloned()
+        else {
+            self.plugins_back_to_list();
+            return Action::None;
+        };
+        let actions = marketplace_actions(&market);
+        let Some(index) = self.chosen_action(key, actions.len()) else {
+            return Action::None;
+        };
+        match actions[index] {
+            MarketplaceAction::Browse => {
+                if let Some(menu) = self.plugins_menu.as_mut() {
+                    menu.page = PluginsPage::List;
+                    menu.show_tab(PluginsTab::Discover);
+                    menu.query = format!("@{name}");
+                }
+                Action::None
+            }
+            MarketplaceAction::Update => {
+                self.start_plugin_op(PluginOp::UpdateMarketplace(name.to_string()))
+            }
+            MarketplaceAction::Remove => {
+                if let Some(menu) = self.plugins_menu.as_mut() {
+                    let plugins = menu
+                        .catalog
+                        .iter()
+                        .flat_map(|catalog| catalog.plugins.iter())
+                        .filter(|plugin| {
+                            plugin.installed.is_some() && plugin.id.marketplace == name
+                        })
+                        .map(|plugin| plugin.id.name.clone())
+                        .collect();
+                    menu.page = PluginsPage::Confirm(PluginsConfirm::RemoveMarketplace {
+                        name: name.to_string(),
+                        plugins,
+                    });
+                    menu.selected = 0;
+                }
+                Action::None
+            }
+            MarketplaceAction::Back => {
+                self.plugins_back_to_list();
+                Action::None
+            }
+        }
+    }
+
     fn on_key_plugins_confirm(&mut self, key: KeyEvent, confirm: &PluginsConfirm) -> Action {
         let back = |app: &mut Self| {
             if let Some(menu) = app.plugins_menu.as_mut() {
-                match confirm {
-                    PluginsConfirm::Uninstall(id) => {
-                        menu.page = PluginsPage::Plugin(id.clone());
-                        menu.selected = 0;
+                menu.page = match confirm {
+                    PluginsConfirm::Uninstall(id) => PluginsPage::Plugin(id.clone()),
+                    PluginsConfirm::RemoveMarketplace { name, .. } => {
+                        PluginsPage::Marketplace(name.clone())
                     }
-                    PluginsConfirm::RemoveMarketplace { .. } => {
-                        menu.page = PluginsPage::List;
-                        menu.selected = menu.list_selected;
-                        menu.clamp_selection();
-                    }
-                }
+                };
+                menu.selected = 0;
             }
         };
         if matches!(key.code, KeyCode::Esc | KeyCode::Backspace) {
@@ -830,30 +892,65 @@ impl App {
         }
     }
 
-    /// A bracketed paste while `/plugins` is open: into the add tab's field
-    /// — a marketplace URL is what gets pasted — or a plugin tab's search;
-    /// never the composer underneath.
+    /// Keys on the add page: its field edits like the composer's line, Enter
+    /// adds what it holds, Esc goes back to the row it was opened from.
+    fn on_key_plugins_add(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let Some(menu) = self.plugins_menu.as_mut() else {
+            return Action::None;
+        };
+        match key.code {
+            KeyCode::Esc => self.plugins_back_to_list(),
+            KeyCode::Enter => {
+                let source = menu.input.text().trim().to_string();
+                if !source.is_empty() {
+                    return self.start_plugin_op(PluginOp::AddMarketplace(source));
+                }
+            }
+            KeyCode::Char('u') if ctrl => menu.input.clear(),
+            KeyCode::Char(c) if plain => menu.input.insert_char(c),
+            KeyCode::Backspace => menu.input.delete_backward(),
+            KeyCode::Delete => menu.input.delete_forward(),
+            KeyCode::Left => menu.input.move_left(),
+            KeyCode::Right => menu.input.move_right(),
+            KeyCode::Home => menu.input.move_home(),
+            KeyCode::End => menu.input.move_end(),
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// A bracketed paste while `/plugins` is open: into the add page's field
+    /// — a marketplace URL is what gets pasted — or the list's search; never
+    /// the composer underneath.
     pub fn paste_into_plugins(&mut self, pasted: &str) {
         let Some(menu) = self.plugins_menu.as_mut() else {
             return;
         };
-        if menu.page != PluginsPage::List {
-            return;
-        }
         let text: String = pasted.replace(['\n', '\r'], " ");
-        menu.query.push_str(text.trim());
-        menu.selected = 0;
+        let text = text.trim();
         menu.error = None;
+        match menu.page {
+            PluginsPage::Add => menu.input.insert_str(text),
+            PluginsPage::List => {
+                menu.query.push_str(text);
+                menu.selected = 0;
+            }
+            _ => {}
+        }
     }
 }
 
 /// The tab a page opens on, before the user chooses: what is installed;
-/// else everything there is; else where a marketplace is added.
+/// else everything there is to install; else where a marketplace is added.
 fn first_tab(catalog: Option<&PluginCatalog>) -> PluginsTab {
     match catalog {
         Some(catalog) if catalog.installed_count() > 0 => PluginsTab::Installed,
-        Some(catalog) if catalog.plugins.is_empty() => PluginsTab::Add,
-        Some(_) => PluginsTab::All,
+        Some(catalog) if catalog.plugins.is_empty() => PluginsTab::Marketplaces,
+        Some(_) => PluginsTab::Discover,
         None => PluginsTab::Installed,
     }
 }

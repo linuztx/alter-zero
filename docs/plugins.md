@@ -239,10 +239,10 @@ that has none — Claude Code's rule, and codex's fallback.
 
 ### Adding one
 
-`/plugins` → **+ Add**, where Claude Code's official catalog
-(`anthropics/claude-plugins-official`) and codex's
-(`openai/plugins`) are one Enter away — or type a source there, or run
-`alter-zero plugin marketplace add`:
+`/plugins` → **Marketplaces**, where Claude Code's official catalog
+(`anthropics/claude-plugins-official`) and Codex's (`openai/plugins`) are
+one Enter away until added — or **Add a marketplace…** there, a field for
+any source — or run `alter-zero plugin marketplace add`:
 
 | Typed | Read as |
 | --- | --- |
@@ -392,15 +392,12 @@ from says what it is for, not what it executes.
 ## The `/plugins` page
 
 The composer-replacing page (`app::PluginsMenu`, `ui::plugins_view`), opening
-mid-turn like every other — codex's `/plugins`, a tab per marketplace.
+mid-turn like every other — Claude Code's three tabs.
 
 ```
 ────────────────────────────────────────────────────────────────────────────────
   Plugins
-  The plugins installed on this machine
-  3 installed · 3 on in this directory
-
-   All (382)    Installed (3)    claude-plugins-official (317)  ›
+  Installed · Discover · Marketplaces
 
   ❯
 
@@ -416,18 +413,25 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
-- **Tabs**, codex's: *All*, *Installed*, **one per added marketplace** and
-  **+ Add**, the active one a filled chip in the accent — the
-  `AskUserQuestion` strip's dress. ←/→ and Tab/Shift+Tab move, wrapping, and
-  clear the search; each tab names its count once the catalog is read. A
-  strip too wide for the terminal shows a window around the active tab, a
-  dim `‹`/`›` where tabs are hidden. The page opens on *Installed* when
-  anything is, else on *All*, else — nothing added yet — on *+ Add*.
-- **Each tab's header** says what it is: *All* counts every plugin and
-  marketplace, *Installed* what is on in this directory, a marketplace's tab
-  its description, its counts and age, its source and commit — and, in red,
-  why its catalog could not be read, or, in amber, the entries it skipped
-  and the first one's reason.
+- **Tabs**, three that never change: *Installed*, *Discover* — every plugin
+  every marketplace lists — and *Marketplaces*, on **one quiet line under
+  the title**, `Installed · Discover · Marketplaces`: the active one in the
+  accent and bold, the others dim, ` · ` between, **no counts and no
+  chips**. Two strips were tried and dropped: codex's tab per marketplace
+  (with one marketplace added *All* and its tab were the same list twice,
+  and the strip filled with marketplace names), then chips with counts,
+  `Installed (2)    Discover (317)    Marketplaces (1)` — a heavy bar of
+  numbers that changed width with every install, the row counter under the
+  list already saying how many. ←/→ and Tab/Shift+Tab move, wrapping, and
+  clear the search. A strip too wide for the terminal (under about 37
+  columns) shows a window around the active tab, a dim `‹`/`›` where tabs
+  are hidden. The page opens on *Installed* when anything is, else on
+  *Discover*, else — nothing added yet — on *Marketplaces*.
+- **The header** is the title over the tab strip — the strip stands where a
+  subtitle that only repeated the tab's name used to — with the notes about
+  the whole page in red between them (plugins off for the session, a
+  `plugins.json` that will not parse): the same rows on every tab, so
+  switching never moves the search line.
 - **Rows.** `→ {name}  {mark} {status}  [{marketplace}  ]{description}`,
   every column sized off every listed row so it holds still as the window
   scrolls (`row_columns`). The **name column** is the widest name, capped at
@@ -435,44 +439,86 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
   official catalogs one 29-column name used to size the column for all 382
   rows, and at 60 columns no row had room left for its description — the
   marketplace was cut to `clau…` — so a name past the cap is `…`-cut now,
-  whole in the facts under the list. On *All* and *Installed* the
-  **marketplace** is a column of its own, but only where the description
-  keeps 30 columns beside it (from about 112 columns on those catalogs);
-  narrower, the facts under the list name it for the highlighted row. What
-  follows the status is left out whole rather than cut to a stub — a
-  description gets at least eight columns or none — and a row never ends on
-  a column's padding. An installed plugin is `✔ enabled` (the one green
-  mark) or `◯ disabled` here, `✘ not loaded` (red) when a session cannot
-  load it; one that is not is `+ available`, or `– unavailable` when its
-  source is one this app does not fetch. An update opens the description on
-  an amber `▲ update ·`. Two rows of one name show their whole ids.
-  Installed plugins sort first, then by name — codex's order.
+  whole in the facts under the list. The **marketplace** is a column of its
+  own only where the listed plugins come from more than one — one
+  marketplace's plugins alone, a browse or the one added, need no column
+  repeating its name — and only where the description keeps 30 columns
+  beside it (from about 112 columns on those catalogs); narrower, the facts
+  under the list name it for the highlighted row. What follows the status
+  is left out whole rather than cut to a stub — a description gets at least
+  eight columns or none — and a row never ends on a column's padding. An
+  installed plugin is `✔ enabled` (the one green mark) or `◯ disabled`
+  here, `✘ not loaded` (red) when a session cannot load it; one that is not
+  is `+ available`, or `– unavailable` when its source is one this app does
+  not fetch. An update opens the description on an amber `▲ update ·`. Two
+  rows of one name show their whole ids. Installed plugins sort first, then
+  by name — codex's order.
 - **Under the list**, the highlighted row's description cut to one row
-  (`No description` for a plugin with none) over its facts — the id, the
-  version, what it is made of — **two rows at every selection**, so ↑/↓
+  (`No description` for one with none) over its facts — a plugin's id,
+  version and what it is made of — **two rows at every selection**, so ↑/↓
   never resize the page: wrapped whole, a three-row description gave way to
   a one-row one and the page's bottom rule jumped with every step — the
   official catalogs moved it from row 30 to 26 to 22 and back — each growth
   scrolling the conversation above the page. The whole description is on
-  the plugin's page. The *+ Add* tab's rows say the same two things: what a
-  catalog is and where it comes from; for the typed source, the forms it
-  takes and how to pin one.
-- **+ Add** is the field and the official catalogs under it: the `❯` line
-  takes a source (owner/repo, a git URL, a directory — Space types, a path
-  may hold one), and its rows are what Enter adds — the typed source first,
-  then Claude Code's and codex's catalogs (`SUGGESTED_MARKETPLACES`), one
-  already added marked `✔ added`, where Enter shows its tab. A success lands
-  on the new marketplace's tab.
+  the plugin's page.
 - **Search** matches the name, the id, the marketplace, the description and
-  the keywords, case-insensitively.
+  the keywords, case-insensitively; `@{marketplace}` lists one
+  marketplace's plugins, since the id ends in it.
 - **Keys.** ↑/↓ (wrapping), PageUp/PageDown, Home/End; Enter opens the row;
   Space turns an installed plugin on or off for this directory — the row
-  answers at once, the write follows; on a marketplace's tab **Ctrl+U**
-  updates it (a git one; a directory is always current) and **Ctrl+R**
-  removes it, asking once more and naming the plugins it would uninstall;
-  Esc clears the search, then closes; Ctrl+C closes. The hint names the
-  tab's keys and, on a narrow terminal, leaves out whole clauses — never the
-  key that closes the page — rather than ending on a cut word.
+  answers at once, the write follows; Esc clears the search, then closes;
+  Ctrl+C closes. The hint names the tab's keys and, on a narrow terminal,
+  leaves out whole clauses — never the key that closes the page — rather
+  than ending on a cut word.
+
+**The Marketplaces tab** lists, on the plugin rows' grammar, every added
+marketplace — `✔ 317 plugins`, or a red `✘ not read` with the reason under
+the list — then Claude Code's and Codex's official catalogs not added yet
+(`SUGGESTED_MARKETPLACES`), `+ available` under the names they will have,
+one Enter adding one; then, last and whatever the search, **`Add a
+marketplace…`**, the field for any other source:
+
+```
+────────────────────────────────────────────────────────────────────────────────
+  Plugins
+  Installed · Discover · Marketplaces
+
+  ❯
+
+  → claude-plugins-official   + available   Claude Code's official plugin direc…
+    openai-curated            + available   Codex's official plugin directory
+    Add a marketplace…                      owner/repo, git URL or directory
+    (1/3)
+
+    Claude Code's official plugin directory
+    github.com/anthropics/claude-plugins-official
+
+  ←/→ tabs · Enter to select · Esc to close
+────────────────────────────────────────────────────────────────────────────────
+```
+
+A marketplace's name is what its plugins' ids end in and the rows are few,
+so — unlike a plugin list's — its name column takes all it needs while a
+description keeps eight columns beside it. Under the list: what the
+highlighted marketplace is, over how many of its plugins are installed,
+what it skipped, how long ago it was read and where it comes from.
+
+**The add page** is that one field: what a marketplace is, the `❯` line —
+its dim `owner/repo` placeholder until something is typed, the caret in it
+— the forms a source takes (owner/repo, a git URL, a directory; Space
+types, since a path may hold one) and how to pin one (`owner/repo@ref`,
+`#ref` on any git URL). What the Marketplaces tab's search held comes along
+into it — often the source itself. Enter adds; a failure says why in red
+and keeps what was typed; a success lists the new marketplace's plugins on
+*Discover* (`❯ @demo`). Esc goes back to the row it was opened from.
+
+**A marketplace's page** is a plugin's page's twin: its name, then `✔ 317
+plugins · 2 installed · updated 16h ago` (or `✘ not read`), its description,
+its facts — source (a link), revision, where its copy is kept — why it could
+not be read and each entry it skipped, then **Browse its plugins** (*Discover*
+searched for `@{name}`), **Update** (a git one; a directory is read in place
+and always current), **Remove** — which asks once more, naming the plugins
+it would uninstall — and **Back to marketplaces**.
 
 **A plugin's page** is the `/mcp` server page's twin:
 
@@ -534,6 +580,12 @@ mid-turn like every other — codex's `/plugins`, a tab per marketplace.
   terminal, the list's rule, never losing `Esc to go back` (it was cut to
   `E…` at 40 columns).
 
+**The confirmation** — before an uninstall, and before a marketplace is
+removed with the plugins installed from it — highlights the answer the user
+just chose: the question is the safeguard, so Enter confirms it, and Esc or
+*Cancel* goes back. Highlighting *Cancel* meant an arrow key every time to
+do what the user had already picked.
+
 ### No flicker
 
 Acting on the page never moves it — the reported bug was Enter on
@@ -541,15 +593,19 @@ Acting on the page never moves it — the reported bug was Enter on
 over the page that pushed it down a row and, three seconds later, back up,
 each height change scrolling or blanking the bottom of a full screen. Now:
 
-- **what runs and what happened are said in the hint's own row**
-  (`status_row`): a job only once it has run `PLUGINS_JOB_DELAY` (400 ms) —
-  a toggle answers in milliseconds, and a line shown for one frame is the
-  flicker — then `Installing deploy… (4s · esc to cancel)`; what it did,
-  `✔ Disabled hookify in this directory`, until the next key; a failure in
-  red over that row, until the next key;
+- **a job is said in the hint's own row** (`status_row`), and only once it
+  has run `PLUGINS_JOB_DELAY` (400 ms) — a toggle answers in milliseconds,
+  and a line shown for one frame is the flicker — then `Installing
+  deploy… (4s · esc to cancel)`; a failure in red over that row, until the
+  next key;
+- **what went right is never said**: the row turns `◯ disabled`, the page
+  leads with `✔ enabled in this directory`, an add lists the marketplace's
+  plugins, a removed marketplace's row is gone. A `✔ Disabled hookify in
+  this directory` line in the hint's seat repeated what the row already
+  showed, and stood where the hint belonged;
 - **no toast is raised over an open page** — one goes up only for an answer
-  the page closed before taking, and a reload's plugin errors are said on
-  their rows;
+  the page closed before taking, where nothing else can say what it did,
+  and a reload's plugin errors are said on their rows;
 - **a reopened page opens on the catalog the session kept**, read again
   behind its rows — and the session reads it behind its first frame — so
   the page opens at its own height rather than on a placeholder the rows
@@ -569,7 +625,7 @@ nobody saw is a toast.
 
 On a short terminal the list page is a picker like any other and sheds rows
 down the picker ladder (`ui::plugins_view::list_page`, `docs/view-flow.md`
-*A page that sheds rows before it flows*): the highlighted plugin's
+*A page that sheds rows before it flows*): the highlighted row's
 description first, leaving its one-row facts; then the facts and the
 counter, the rows down to the compact three between the `↑`/`↓` slots, the
 header kept; then the header too, the **tab strip** kept — ←/→ still move

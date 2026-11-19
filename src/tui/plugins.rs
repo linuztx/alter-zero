@@ -292,10 +292,11 @@ impl Session<'_> {
     }
 
     /// A job answered: hand it to the page — which takes it only while it is
-    /// still the job the page waits on, and says what happened in its own
-    /// status row — and take any change into the session. What a page that
-    /// has closed did not take is a toast instead: never one over the page,
-    /// which would move it (docs/plugins.md *No flicker*).
+    /// still the job the page waits on, shows what changed in its rows and
+    /// says a failure in red — and take any change into the session. What a
+    /// page that has closed did not take is a toast instead, the one place
+    /// left to say what it did: never one over the page, which would move it
+    /// (docs/plugins.md *No flicker*).
     pub(crate) fn on_plugin_result(&mut self, result: PluginResult) {
         let PluginResult {
             round,

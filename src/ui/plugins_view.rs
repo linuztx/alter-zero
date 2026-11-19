@@ -1,20 +1,19 @@
-//! The inline `/plugins` page (`docs/plugins.md` *The `/plugins` page*) —
-//! codex's `/plugins` in this app's frame.
+//! The inline `/plugins` page (`docs/plugins.md` *The `/plugins` page*).
 //!
 //! The **list** is a search-line picker under the ask modal's chip strip of
-//! tabs — every plugin, the installed ones, a tab per marketplace (its own
-//! header saying where it comes from and what it skipped), and the add tab,
-//! whose field is the search line and whose rows are the official catalogs —
-//! shedding rows down the picker ladder on a short terminal so the search
-//! line and the highlighted row stay on screen (`docs/view-flow.md` *A page
-//! that sheds rows before it flows*). A **plugin's** page is the `/mcp`
-//! server page's twin — fact rows over numbered actions, bottom-anchored
-//! when taller than the terminal — and the **confirmation** is two actions
-//! under its question.
+//! three tabs — the installed plugins, every plugin the marketplaces list,
+//! the marketplaces themselves with the row that adds any other — shedding
+//! rows down the picker ladder on a short terminal so the search line and
+//! the highlighted row stay on screen (`docs/view-flow.md` *A page that
+//! sheds rows before it flows*). A **plugin's** or a **marketplace's** page
+//! is the `/mcp` server page's twin — fact rows over numbered actions,
+//! bottom-anchored when taller than the terminal — the **add** page is one
+//! field, and the **confirmation** is two actions under its question.
 //!
-//! **What runs and what happened are said in the hint's row** — a job once
-//! it has run `PLUGINS_JOB_DELAY`, a success until the next key — so acting
-//! on the page never moves it (`docs/plugins.md` *No flicker*).
+//! **A job is said in the hint's own row** once it has run
+//! `PLUGINS_JOB_DELAY`, and what went right is never said: the rows and
+//! pages show it — so acting on the page never moves it (`docs/plugins.md`
+//! *No flicker*).
 //!
 //! One builder, [`plugins_build`], makes every page *with its caret*, so the
 //! reserved height, the paint, the cursor seat and the flow all read the
@@ -23,6 +22,7 @@
 use std::collections::BTreeMap;
 
 use super::inline::wrap_inline;
+use super::layout::text_field_width;
 use super::mcp_view::{
     action_rows, field_line_at, field_lines_at, linked_field_lines_at, state_field_line_at,
     url_field_lines_at,
@@ -38,7 +38,8 @@ use super::wrap::{clamp_spans, cols, ellipsize};
 use super::*;
 
 use crate::app::{
-    AddRow, PluginsConfirm, PluginsMenu, PluginsPage, PluginsTab, format_elapsed, plugin_actions,
+    MarketplaceRow, PluginsConfirm, PluginsMenu, PluginsPage, PluginsTab, format_elapsed,
+    marketplace_actions, plugin_actions,
 };
 use crate::plugins::{CatalogMarketplace, CatalogPlugin, SOURCE_FORMS};
 
@@ -60,9 +61,8 @@ const ROW_TEXT_MIN: usize = 8;
 const ROW_MARKET_TEXT_MIN: usize = 30;
 
 /// A built page, and its caret on a page that is typed into — the list's
-/// search line, which is the add tab's field too — as `(column, page row)`.
-/// `None` on a page of actions, whose hidden cursor seats on its `❯`
-/// instead.
+/// search line, the add page's field — as `(column, page row)`. `None` on a
+/// page of actions, whose hidden cursor seats on its `❯` instead.
 pub(super) struct PluginsBuild {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) cursor: Option<(u16, usize)>,
@@ -150,57 +150,29 @@ fn fitted_hint(clauses: &[(&str, u8)], width: u16) -> Line<'static> {
     model_placeholder_row(&text(&kept), model_meta_color(), width)
 }
 
-/// The list's hint for its tab: a marketplace's tab leads on its own keys
-/// (Ctrl+U only for a git one, which is all an update can fetch), the add
-/// tab says how to add.
+/// The list's hint for its tab: a plugin tab's keys, or the Marketplaces
+/// tab's, whose rows open, add or ask for a source.
 fn list_hint(menu: &PluginsMenu, width: u16) -> Line<'static> {
-    let mut clauses = Vec::new();
-    match &menu.tab {
-        PluginsTab::Add => {
-            clauses.extend([
-                PLUGINS_HINT_TABS,
-                PLUGINS_HINT_TYPE,
-                PLUGINS_HINT_ADD,
-                PLUGINS_HINT_CLOSE,
-            ]);
-            return fitted_hint(&clauses, width);
-        }
-        PluginsTab::Marketplace(_) => {
-            if menu.current_marketplace().is_some_and(|market| market.git) {
-                clauses.push(PLUGINS_HINT_UPDATE);
-            }
-            clauses.push(PLUGINS_HINT_REMOVE);
-        }
-        PluginsTab::All | PluginsTab::Installed => {}
-    }
-    clauses.extend([
-        PLUGINS_HINT_TABS,
-        PLUGINS_HINT_OPEN,
-        PLUGINS_HINT_TOGGLE,
-        PLUGINS_HINT_CLOSE,
-    ]);
-    fitted_hint(&clauses, width)
+    let clauses: &[(&str, u8)] = match menu.tab {
+        PluginsTab::Marketplaces => &[PLUGINS_HINT_TABS, PLUGINS_HINT_SELECT, PLUGINS_HINT_CLOSE],
+        PluginsTab::Installed | PluginsTab::Discover => &[
+            PLUGINS_HINT_TABS,
+            PLUGINS_HINT_OPEN,
+            PLUGINS_HINT_TOGGLE,
+            PLUGINS_HINT_CLOSE,
+        ],
+    };
+    fitted_hint(clauses, width)
 }
 
 /// The page's one status row, in the hint's own seat so it never moves the
-/// page: the job running, once it has run long enough to be said; else what
-/// the last one did, until the next key; else `hint`.
+/// page: the job running, once it has run long enough to be said; else
+/// `hint`. What a job did is never said here — the rows and pages show it.
 fn status_row(menu: &PluginsMenu, hint: Line<'static>, width: u16) -> Line<'static> {
-    if let Some(job) = menu.job.as_ref().filter(|_| menu.job_shown()) {
-        return job_line(&job.label, menu.job_elapsed.as_secs(), width);
+    match menu.job.as_ref().filter(|_| menu.job_shown()) {
+        Some(job) => job_line(&job.label, menu.job_elapsed.as_secs(), width),
+        None => hint,
     }
-    if let Some(notice) = &menu.notice {
-        return clamp_spans(
-            vec![
-                Span::raw(MODEL_INDENT),
-                Span::styled(PLUGINS_ENABLED_MARK, Style::new().fg(model_active_color())),
-                Span::raw(" "),
-                Span::styled(notice.clone(), Style::new().fg(settings_value_color())),
-            ],
-            usize::from(width),
-        );
-    }
-    hint
 }
 
 /// The last failure, in red, wrapped — it is the instruction.
@@ -225,49 +197,30 @@ fn compact_status_row(menu: &PluginsMenu, hint: Line<'static>, width: u16) -> Li
 
 // ===== the list =====
 
-/// A tab's chip label: its name, and how many rows it would list once the
-/// catalog is read.
-fn tab_label(menu: &PluginsMenu, tab: &PluginsTab) -> String {
-    let catalog = menu.catalog.as_ref();
-    let (name, count) = match tab {
-        PluginsTab::All => (
-            PLUGINS_TAB_ALL.to_string(),
-            catalog.map(|c| c.plugins.len()),
-        ),
-        PluginsTab::Installed => (
-            PLUGINS_TAB_INSTALLED.to_string(),
-            catalog.map(crate::plugins::PluginCatalog::installed_count),
-        ),
-        PluginsTab::Marketplace(name) => (
-            name.clone(),
-            catalog.map(|c| {
-                c.plugins
-                    .iter()
-                    .filter(|p| p.id.marketplace == *name)
-                    .count()
-            }),
-        ),
-        PluginsTab::Add => (PLUGINS_TAB_ADD.to_string(), None),
-    };
-    match count {
-        Some(count) => format!(" {name} ({count}) "),
-        None => format!(" {name} "),
+/// A tab's name in the strip.
+const fn tab_label(tab: PluginsTab) -> &'static str {
+    match tab {
+        PluginsTab::Installed => PLUGINS_TAB_INSTALLED,
+        PluginsTab::Discover => PLUGINS_TAB_DISCOVER,
+        PluginsTab::Marketplaces => PLUGINS_TAB_MARKETPLACES,
     }
 }
 
-/// The tab strip: a chip per tab, the current one lit in the accent — the
-/// ask modal's strip. One too wide for the terminal shows a window around
-/// the current tab, a dim `‹`/`›` saying tabs are hidden on that side
-/// (codex's), so the current tab is always on screen.
+/// The tab strip: the three names on one quiet line, ` · ` between them —
+/// the current one in the accent and bold, the others dim — with no count
+/// and no chip, so the line is one width whatever is installed. One too
+/// wide for the terminal shows a window around the current tab, a dim
+/// `‹`/`›` saying tabs are hidden on that side, so the current tab is
+/// always on screen.
 fn tab_strip(menu: &PluginsMenu, width: u16) -> Line<'static> {
     let tabs = menu.tabs();
-    let labels: Vec<String> = tabs.iter().map(|tab| tab_label(menu, tab)).collect();
+    let labels: Vec<&'static str> = tabs.iter().map(|tab| tab_label(*tab)).collect();
     let current = tabs.iter().position(|tab| *tab == menu.tab).unwrap_or(0);
     let room = usize::from(width).saturating_sub(cols(MODEL_INDENT));
-    let gap = cols(ASK_CHIP_GAP);
+    let gap = cols(FOOTER_SEPARATOR);
     let span = |lo: usize, hi: usize| {
-        let chips: usize = labels[lo..=hi].iter().map(|label| cols(label)).sum();
-        let mut total = chips + gap * (hi - lo);
+        let names: usize = labels[lo..=hi].iter().map(|label| cols(label)).sum();
+        let mut total = names + gap * (hi - lo);
         if lo > 0 {
             total += cols(PLUGINS_STRIP_MORE_LEFT) + 1;
         }
@@ -292,9 +245,8 @@ fn tab_strip(menu: &PluginsMenu, width: u16) -> Line<'static> {
         }
     }
     let lit = Style::new()
-        .fg(ask_chip_current_fg())
-        .bg(ask_chip_current_bg());
-    let idle = Style::new().fg(ask_chip_color());
+        .fg(model_selected_color())
+        .add_modifier(Modifier::BOLD);
     let dim = Style::new().fg(model_meta_color());
     let mut spans = vec![Span::raw(MODEL_INDENT)];
     if lo > 0 {
@@ -302,12 +254,9 @@ fn tab_strip(menu: &PluginsMenu, width: u16) -> Line<'static> {
     }
     for (i, label) in labels.iter().enumerate().take(hi + 1).skip(lo) {
         if i > lo {
-            spans.push(Span::raw(ASK_CHIP_GAP));
+            spans.push(Span::styled(FOOTER_SEPARATOR, dim));
         }
-        spans.push(Span::styled(
-            label.clone(),
-            if i == current { lit } else { idle },
-        ));
+        spans.push(Span::styled(*label, if i == current { lit } else { dim }));
     }
     if hi + 1 < labels.len() {
         spans.push(Span::styled(format!(" {PLUGINS_STRIP_MORE_RIGHT}"), dim));
@@ -315,125 +264,45 @@ fn tab_strip(menu: &PluginsMenu, width: u16) -> Line<'static> {
     clamp_spans(spans, usize::from(width))
 }
 
-/// A marketplace's counts in one line: how many plugins it lists, how many
-/// are installed, how long ago it was read.
-fn market_counts(market: &CatalogMarketplace, now: i64) -> String {
-    let mut parts = vec![
-        counted(market.plugins, "plugin"),
-        format!("{} installed", market.installed),
-    ];
+/// A marketplace's facts in one line: how many of its plugins are
+/// installed, what it skipped, how long ago it was read, where it comes
+/// from.
+fn market_facts(market: &CatalogMarketplace, now: i64) -> String {
+    let mut parts = vec![format!("{} installed", market.installed)];
+    match market.notes.len() {
+        0 => {}
+        1 => parts.push("1 entry skipped".to_string()),
+        n => parts.push(format!("{n} entries skipped")),
+    }
     if let Some(at) = market.updated_at.filter(|_| now > 0) {
         parts.push(format!("updated {}", age_text(now - at)));
     }
+    parts.push(market.source.clone());
     parts.join(FOOTER_SEPARATOR)
 }
 
-/// Where a marketplace comes from in one line: its source, and the commit
-/// its checkout is at.
-fn market_source(market: &CatalogMarketplace) -> String {
-    match &market.revision {
-        Some(revision) => format!(
-            "{}{FOOTER_SEPARATOR}{}",
-            market.source,
-            revision.chars().take(7).collect::<String>()
-        ),
-        None => market.source.clone(),
-    }
+/// What a marketplace says it is: its description, else its owner — else,
+/// in a row, where it comes from.
+fn market_blurb(market: &CatalogMarketplace) -> Option<String> {
+    market
+        .description
+        .as_deref()
+        .map(flat)
+        .filter(|text| !text.is_empty())
+        .or_else(|| market.owner.as_ref().map(|owner| format!("By {owner}")))
 }
 
-/// The most rows a marketplace's skipped-entry note takes in its header.
-const MARKET_NOTE_MAX_ROWS: usize = 3;
+/// The most skipped-entry notes a marketplace's page lists before it
+/// counts the rest.
+const MARKET_NOTES_MAX: usize = 5;
 
-/// The current tab's dim subtitle and its count line — and, for a
-/// marketplace, why its catalog could not be read (red) or what it skipped.
-fn tab_header(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
-    let dim = model_meta_color();
-    let row = |text: &str, color: Color| model_placeholder_row(&flat(text), color, width);
-    let catalog = menu.catalog.as_ref();
-    match &menu.tab {
-        PluginsTab::All => {
-            let count = catalog.map(|catalog| match catalog.marketplaces.len() {
-                0 => "no marketplace added — add one under + Add".to_string(),
-                n => format!(
-                    "{} installed{FOOTER_SEPARATOR}{} in {}",
-                    catalog.installed_count(),
-                    counted(catalog.plugins.len(), "plugin"),
-                    counted(n, "marketplace")
-                ),
-            });
-            let mut lines = vec![row(PLUGINS_ALL_SUBTITLE, dim)];
-            lines.extend(count.map(|count| row(&count, dim)));
-            lines
-        }
-        PluginsTab::Installed => {
-            let count = catalog.map(|catalog| {
-                let on = catalog.plugins.iter().filter(|p| p.is_enabled()).count();
-                format!(
-                    "{} installed{FOOTER_SEPARATOR}{on} on in this directory",
-                    catalog.installed_count()
-                )
-            });
-            let mut lines = vec![row(PLUGINS_INSTALLED_SUBTITLE, dim)];
-            lines.extend(count.map(|count| row(&count, dim)));
-            lines
-        }
-        PluginsTab::Marketplace(_) => {
-            let Some(market) = menu.current_marketplace() else {
-                return Vec::new();
-            };
-            let subtitle = market
-                .description
-                .as_deref()
-                .filter(|d| !d.trim().is_empty())
-                .map_or_else(
-                    || match &market.owner {
-                        Some(owner) => format!("By {owner}"),
-                        None => format!("Plugins from {}", market.source),
-                    },
-                    str::to_string,
-                );
-            let mut lines = vec![row(&subtitle, dim)];
-            match &market.error {
-                Some(error) => lines.push(row(
-                    &format!("{PLUGINS_BROKEN_MARK} {error}"),
-                    toast_error_color(),
-                )),
-                None => lines.push(row(&market_counts(market, menu.now), dim)),
-            }
-            lines.push(row(&market_source(market), dim));
-            if let Some(first) = market.notes.first() {
-                let skipped = if market.notes.len() == 1 {
-                    "1 entry skipped".to_string()
-                } else {
-                    format!("{} entries skipped", market.notes.len())
-                };
-                // The first one's reason, whole (it is the fix) but bounded,
-                // without the parser's own `entry 4 skipped:` lead-in.
-                let reason = first
-                    .split_once(" skipped: ")
-                    .filter(|(lead, _)| lead.starts_with("entry "))
-                    .map_or(first.as_str(), |(_, reason)| reason);
-                let mut note = model_wrapped_rows(
-                    &format!("{skipped} — {reason}"),
-                    ask_warning_color(),
-                    width,
-                );
-                note.truncate(MARKET_NOTE_MAX_ROWS);
-                lines.extend(note);
-            }
-            lines
-        }
-        PluginsTab::Add => vec![row(PLUGINS_ADD_SUBTITLE, dim), row(PLUGINS_ADD_COUNT, dim)],
-    }
-}
-
-/// The list's header: the title, the tab's subtitle and counts, the notes
-/// about the whole page (plugins off for the session, a `plugins.json` that
-/// will not parse) — wrapped, since their tails are the fix — and the tab
-/// strip under a gap.
+/// The list's header: the title, the notes about the whole page (plugins
+/// off for the session, a `plugins.json` that will not parse) — wrapped,
+/// since their tails are the fix — and the tab strip under them, where a
+/// subtitle that only repeated the tab's name used to be. The same rows on
+/// every tab, so switching tabs never moves the search line.
 fn header_lines(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![super::header::page_title_line(PLUGINS_TITLE, width)];
-    lines.extend(tab_header(menu, width));
     if !menu.session_enabled {
         lines.extend(model_wrapped_rows(
             PLUGINS_SESSION_OFF,
@@ -444,7 +313,6 @@ fn header_lines(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
     if let Some(error) = menu.catalog.as_ref().and_then(|c| c.error.as_deref()) {
         lines.extend(model_wrapped_rows(error, toast_error_color(), width));
     }
-    lines.push(Line::default());
     lines.push(tab_strip(menu, width));
     lines
 }
@@ -517,8 +385,9 @@ fn row_names(rows: &[&CatalogPlugin]) -> Vec<String> {
 struct RowColumns {
     name: usize,
     status: usize,
-    /// The marketplace column: on the tabs that list every marketplace, and
-    /// only where the description keeps [`ROW_MARKET_TEXT_MIN`] beside it.
+    /// The marketplace column: where the rows come from more than one
+    /// marketplace, and only where the description keeps
+    /// [`ROW_MARKET_TEXT_MIN`] beside it.
     market: Option<usize>,
 }
 
@@ -527,12 +396,7 @@ struct RowColumns {
 /// the row has past its status — the descriptions keep the larger share,
 /// and a name past the cap is `…`-cut, whole in the facts under the list —
 /// and never so wide that the status mark loses its seat.
-fn row_columns(
-    rows: &[&CatalogPlugin],
-    names: &[String],
-    show_market: bool,
-    width: u16,
-) -> RowColumns {
+fn row_columns(rows: &[&CatalogPlugin], names: &[String], width: u16) -> RowColumns {
     let width = usize::from(width);
     let gap = SETTINGS_VALUE_GAP;
     let status = rows.iter().map(|p| status_cols(p)).max().unwrap_or(0);
@@ -542,7 +406,13 @@ fn row_columns(
         .min(width.saturating_sub(row_head_cols() + gap + 1))
         .max(1);
     let name = names.iter().map(|n| cols(n)).max().unwrap_or(0).min(cap);
-    let market = show_market
+    // One marketplace's plugins alone — a browse, or the one added — need
+    // no column repeating its name.
+    let mixed = rows.iter().any(|p| {
+        rows.first()
+            .is_some_and(|first| first.id.marketplace != p.id.marketplace)
+    });
+    let market = mixed
         .then(|| {
             rows.iter()
                 .map(|p| cols(&p.id.marketplace))
@@ -634,85 +504,166 @@ fn plugin_window(
     rows: &[&CatalogPlugin],
     selected: usize,
     max: usize,
-    show_market: bool,
     width: u16,
 ) -> (usize, Vec<Line<'static>>, usize) {
     let (above, range, below) = list_window(rows.len(), selected, max);
     let names = row_names(rows);
-    let columns = row_columns(rows, &names, show_market, width);
+    let columns = row_columns(rows, &names, width);
     let lines = range
         .map(|i| plugin_row(rows[i], &names[i], i == selected, columns, width))
         .collect();
     (above, lines, below)
 }
 
-/// The add tab's window: the typed source, then the official catalogs —
-/// `→ {source}  {✔ added}  {what it is}`, the sources and the marks each in
-/// their column.
-fn add_window(
+/// One row of the Marketplaces tab, before the window knows its columns:
+/// the name, the status (none on the add row) and what it is.
+struct MarketEntry {
+    name: String,
+    /// The mark and its colour, the words beside it and theirs.
+    status: Option<(&'static str, Color, String, Color)>,
+    description: String,
+}
+
+/// What `row` shows: an added marketplace as `✔ {n} plugins` (a red `✘ not
+/// read` when its catalog could not be read) beside what it is; an official
+/// one not added as `+ available`, under the name it will have; the add row
+/// as what its field takes.
+fn market_entry(menu: &PluginsMenu, row: &MarketplaceRow) -> MarketEntry {
+    let lit = settings_value_color();
+    match row {
+        MarketplaceRow::Market(name) => {
+            let Some(market) = menu.marketplace(name) else {
+                return MarketEntry {
+                    name: name.clone(),
+                    status: None,
+                    description: String::new(),
+                };
+            };
+            let status = if market.error.is_some() {
+                (
+                    PLUGINS_BROKEN_MARK,
+                    tool_fail_color(),
+                    PLUGINS_MARKET_BROKEN.to_string(),
+                    lit,
+                )
+            } else {
+                (
+                    PLUGINS_ENABLED_MARK,
+                    model_active_color(),
+                    counted(market.plugins, "plugin"),
+                    lit,
+                )
+            };
+            MarketEntry {
+                name: name.clone(),
+                status: Some(status),
+                description: market_blurb(market).unwrap_or_else(|| market.source.clone()),
+            }
+        }
+        MarketplaceRow::Suggestion(suggestion) => MarketEntry {
+            name: suggestion.name.to_string(),
+            status: Some((
+                PLUGINS_AVAILABLE_MARK,
+                model_meta_color(),
+                PLUGINS_AVAILABLE.to_string(),
+                settings_value_off_color(),
+            )),
+            description: suggestion.description.to_string(),
+        },
+        MarketplaceRow::Add => MarketEntry {
+            name: PLUGINS_ADD_ROW.to_string(),
+            status: None,
+            description: PLUGINS_ADD_ROW_DESCRIPTION.to_string(),
+        },
+    }
+}
+
+/// One Marketplaces row: `→ {name}  {mark} {status}  {description}`, the
+/// plugin rows' grammar on the columns `(name, status)` — the add row's
+/// status column blank — and what follows the status left out whole rather
+/// than cut to a stub.
+fn market_row(
+    entry: &MarketEntry,
+    selected: bool,
+    columns: (usize, usize),
+    width: u16,
+) -> Line<'static> {
+    let (name_width, status_width) = columns;
+    let name = ellipsize(&entry.name, name_width.max(1));
+    let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
+    let mut spans = marked_row_head(&name, selected);
+    let mut room = usize::from(width).saturating_sub(row_head_cols() + cols(&name));
+    // The padding before the next thing shown, pushed only once it is.
+    let mut gap = pad;
+    if let Some((mark, mark_color, word, word_color)) = &entry.status {
+        if room < gap + cols(mark) {
+            return Line::from(spans);
+        }
+        room -= gap + cols(mark);
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::styled(*mark, Style::new().fg(*mark_color)));
+        if room < 2 {
+            return Line::from(spans);
+        }
+        let word = ellipsize(word, room - 1);
+        room -= 1 + cols(&word);
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(word.clone(), Style::new().fg(*word_color)));
+        gap = status_width.saturating_sub(cols(mark) + 1 + cols(&word)) + SETTINGS_VALUE_GAP;
+    } else {
+        gap += status_width + SETTINGS_VALUE_GAP;
+    }
+    let description = flat(&entry.description);
+    let avail = room.saturating_sub(gap);
+    if !description.is_empty()
+        && room > gap
+        && (cols(&description) <= avail || avail >= ROW_TEXT_MIN)
+    {
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::styled(
+            ellipsize(&description, avail),
+            Style::new().fg(model_meta_color()),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The Marketplaces tab's window — `max` rows riding the selection — as how
+/// many rows it hides above, its rows and how many it hides below, every
+/// row on columns sized off them all. A marketplace's name is what its
+/// plugins' ids end in and the rows are few, so — unlike a plugin list's
+/// ([`row_columns`]) — the name column takes all it needs while a
+/// description keeps [`ROW_TEXT_MIN`] beside it.
+fn market_window(
     menu: &PluginsMenu,
-    rows: &[AddRow],
+    rows: &[MarketplaceRow],
     selected: usize,
     max: usize,
     width: u16,
 ) -> (usize, Vec<Line<'static>>, usize) {
     let (above, range, below) = list_window(rows.len(), selected, max);
-    let source = |row: &AddRow| match row {
-        AddRow::Typed(text) => text.clone(),
-        AddRow::Suggestion(suggestion) => suggestion.source.to_string(),
-    };
-    let added = format!("{PLUGINS_ENABLED_MARK} {PLUGINS_ADDED}");
-    let cap = usize::from(width)
-        .saturating_sub(row_head_cols() + SETTINGS_VALUE_GAP)
-        .clamp(1, 40);
-    let name_width = rows
+    let entries: Vec<MarketEntry> = rows.iter().map(|row| market_entry(menu, row)).collect();
+    let status = entries
         .iter()
-        .map(|row| cols(&source(row)))
+        .filter_map(|entry| entry.status.as_ref())
+        .map(|(mark, _, word, _)| cols(mark) + 1 + cols(word))
+        .max()
+        .unwrap_or(0);
+    let gap = SETTINGS_VALUE_GAP;
+    let past_status = usize::from(width).saturating_sub(row_head_cols() + gap + status + gap);
+    let cap = past_status
+        .saturating_sub(ROW_TEXT_MIN)
+        .clamp(NAME_COL_MIN, NAME_COL_MAX)
+        .min(usize::from(width).saturating_sub(row_head_cols() + gap + 1))
+        .max(1);
+    let name = entries
+        .iter()
+        .map(|entry| cols(&entry.name))
         .max()
         .unwrap_or(0)
         .min(cap);
-    let any_added = rows
-        .iter()
-        .any(|row| matches!(row, AddRow::Suggestion(s) if menu.is_added(s)));
     let lines = range
-        .map(|i| {
-            let row = &rows[i];
-            let name = ellipsize(&source(row), name_width.max(1));
-            let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
-            let mut spans = marked_row_head(&name, i == selected);
-            spans.push(Span::raw(" ".repeat(pad)));
-            let mut used = row_head_cols() + cols(&name) + pad;
-            let (is_added, description) = match row {
-                AddRow::Typed(_) => (false, PLUGINS_ADD_TYPED),
-                AddRow::Suggestion(suggestion) => {
-                    (menu.is_added(suggestion), suggestion.description)
-                }
-            };
-            if any_added {
-                if is_added {
-                    spans.push(Span::styled(
-                        PLUGINS_ENABLED_MARK,
-                        Style::new().fg(model_active_color()),
-                    ));
-                    spans.push(Span::styled(
-                        format!(" {PLUGINS_ADDED}"),
-                        Style::new().fg(settings_value_color()),
-                    ));
-                } else {
-                    spans.push(Span::raw(" ".repeat(cols(&added))));
-                }
-                spans.push(Span::raw(" ".repeat(SETTINGS_VALUE_GAP)));
-                used += cols(&added) + SETTINGS_VALUE_GAP;
-            }
-            let room = usize::from(width).saturating_sub(used);
-            if room > 0 {
-                spans.push(Span::styled(
-                    ellipsize(description, room),
-                    Style::new().fg(model_meta_color()),
-                ));
-            }
-            Line::from(spans)
-        })
+        .map(|i| market_row(&entries[i], i == selected, (name, status), width))
         .collect();
     (above, lines, below)
 }
@@ -734,25 +685,38 @@ fn plugin_facts(plugin: &CatalogPlugin) -> String {
 
 /// What the list says under itself about the highlighted row, in the same
 /// number of rows at every selection — so ↑/↓ never resize the page: the
-/// description cut to one row, when `describe` (`No description` for a
-/// plugin with none, rather than giving the row back), over the facts. On
-/// the add tab, what the highlighted source is and how it is written.
+/// description cut to one row, when `describe` (`No description` for one
+/// with none, rather than giving the row back), over the facts. On the
+/// Marketplaces tab: what a marketplace is (or why it could not be read)
+/// over its facts, where an official one comes from, how a source is
+/// written.
 fn detail_lines(
     menu: &PluginsMenu,
     selected: usize,
     describe: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let (description, facts) = if menu.tab == PluginsTab::Add {
-        match menu.add_rows().get(selected) {
-            Some(AddRow::Typed(_)) => (format!("Use {SOURCE_FORMS}"), PLUGINS_ADD_PIN.to_string()),
-            Some(AddRow::Suggestion(suggestion)) => (
-                suggestion.description.to_string(),
-                format!(
-                    "github.com/{}{FOOTER_SEPARATOR}its catalog is `{}`",
-                    suggestion.source, suggestion.name
+    let (description, facts) = if menu.tab == PluginsTab::Marketplaces {
+        match menu.marketplace_rows().get(selected) {
+            Some(MarketplaceRow::Market(name)) => match menu.marketplace(name) {
+                Some(market) => (
+                    market
+                        .error
+                        .as_ref()
+                        .map(|error| format!("{PLUGINS_BROKEN_MARK} {error}"))
+                        .or_else(|| market_blurb(market))
+                        .unwrap_or_else(|| PLUGINS_NO_DESCRIPTION.to_string()),
+                    market_facts(market, menu.now),
                 ),
+                None => return Vec::new(),
+            },
+            Some(MarketplaceRow::Suggestion(suggestion)) => (
+                suggestion.description.to_string(),
+                format!("github.com/{}", suggestion.source),
             ),
+            Some(MarketplaceRow::Add) => {
+                (format!("Use {SOURCE_FORMS}"), PLUGINS_ADD_PIN.to_string())
+            }
             None => return Vec::new(),
         }
     } else {
@@ -806,8 +770,8 @@ fn placeholder_lines(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
 /// The list page, the first of its pages that fits `height` rows
 /// ([`first_page_that_fits`]) — the picker ladder:
 ///
-/// 1. the **whole** page: the header (title, the tab's subtitle and counts,
-///    notes, tabs), the `❯` search line, five rows, the `(n/total)` counter,
+/// 1. the **whole** page: the header (title, notes, tabs), the `❯` search
+///    line, five rows, the `(n/total)` counter,
 ///    the highlighted row's description and its facts — a row each, so the
 ///    page is one height at every selection ([`detail_lines`]) — the last
 ///    failure, the status row;
@@ -870,13 +834,12 @@ fn list_page(menu: &PluginsMenu, width: u16, height: u16) -> Vec<Line<'static>> 
     }
     let selected = menu.selected.min(len - 1);
     let plugins = menu.plugin_rows();
-    let adds = menu.add_rows();
-    let show_market = matches!(menu.tab, PluginsTab::All | PluginsTab::Installed);
+    let markets = menu.marketplace_rows();
     let window = |max: usize| {
-        if menu.tab == PluginsTab::Add {
-            add_window(menu, &adds, selected, max, width)
+        if menu.tab == PluginsTab::Marketplaces {
+            market_window(menu, &markets, selected, max, width)
         } else {
-            plugin_window(&plugins, selected, max, show_market, width)
+            plugin_window(&plugins, selected, max, width)
         }
     };
     let whole = |describe: bool| {
@@ -1233,8 +1196,173 @@ fn plugin_page(app: &App, menu: &PluginsMenu, plugin: &CatalogPlugin, width: u16
     )
 }
 
-/// The question before something that cannot be undone, the safe answer
-/// highlighted when it opens.
+/// A marketplace's page: its name, then how many plugins it lists — or
+/// that it could not be read — beside how many are installed and how long
+/// ago it was read; its description, its addresses links; its facts —
+/// source, revision, where its copy is kept; why it could not be read and
+/// the entries it skipped; then the numbered actions it affords.
+fn marketplace_page(
+    app: &App,
+    menu: &PluginsMenu,
+    market: &CatalogMarketplace,
+    width: u16,
+) -> PluginsBuild {
+    let value = Style::new().fg(mcp_detail_value_color());
+    let names = Style::new().fg(mcp_detail_state_color());
+    let dim = Style::new().fg(model_meta_color());
+
+    let mut head = vec![super::header::page_title_line(&market.name, width)];
+    let state = if market.error.is_some() {
+        vec![
+            Span::styled(PLUGINS_BROKEN_MARK, Style::new().fg(tool_fail_color())),
+            Span::raw(" "),
+            Span::styled(PLUGINS_MARKET_BROKEN, names),
+        ]
+    } else {
+        vec![
+            Span::styled(PLUGINS_ENABLED_MARK, Style::new().fg(model_active_color())),
+            Span::raw(" "),
+            Span::styled(counted(market.plugins, "plugin"), names),
+        ]
+    };
+    let mut clauses = vec![state];
+    clauses.push(vec![Span::styled(
+        format!("{} installed", market.installed),
+        dim,
+    )]);
+    if let Some(at) = market.updated_at.filter(|_| menu.now > 0) {
+        clauses.push(vec![Span::styled(
+            format!("updated {}", age_text(menu.now - at)),
+            dim,
+        )]);
+    }
+    head.extend(clause_lines(clauses, width));
+    if let Some(blurb) = market_blurb(market) {
+        head.push(Line::default());
+        head.extend(model_linked_rows(&blurb, mcp_description_color(), width));
+    }
+
+    let mut facts = vec![Fact::Linked("Source:", market.source.clone(), value)];
+    if let Some(revision) = &market.revision {
+        facts.push(Fact::Line(
+            "Revision:",
+            revision.chars().take(12).collect(),
+            value,
+        ));
+    }
+    facts.push(Fact::Wrapped(
+        "Location:",
+        app.path_display()
+            .display(&market.root.display().to_string()),
+        value,
+    ));
+    let col = facts
+        .iter()
+        .map(|fact| cols(fact.label()))
+        .max()
+        .unwrap_or(0)
+        + FACT_LABEL_GAP;
+    let facts: Vec<Line<'static>> = facts
+        .into_iter()
+        .flat_map(|fact| fact.lines(col, width))
+        .collect();
+
+    let mut notes = Vec::new();
+    if let Some(error) = &market.error {
+        notes.extend(model_wrapped_rows(error, toast_error_color(), width));
+    }
+    for note in market.notes.iter().take(MARKET_NOTES_MAX) {
+        notes.extend(model_wrapped_rows(note, ask_warning_color(), width));
+    }
+    if market.notes.len() > MARKET_NOTES_MAX {
+        notes.push(model_placeholder_row(
+            &format!("… {} more skipped", market.notes.len() - MARKET_NOTES_MAX),
+            model_meta_color(),
+            width,
+        ));
+    }
+
+    let labels: Vec<&'static str> = marketplace_actions(market)
+        .into_iter()
+        .map(crate::app::MarketplaceAction::label)
+        .collect();
+    let [status, hint] = closing_blocks(menu, &PLUGINS_PAGE_HINT, width);
+    framed(
+        vec![
+            (head, None),
+            (facts, None),
+            (notes, None),
+            (action_rows(&labels, menu.selected, width), None),
+            status,
+            hint,
+        ],
+        width,
+    )
+}
+
+/// The add page: what a marketplace is, the one field — its dim
+/// placeholder until something is typed, then the text wrapped with the
+/// caret in it — the forms a source takes and how to pin one, the failure
+/// and the status row.
+fn add_page(menu: &PluginsMenu, width: u16) -> PluginsBuild {
+    let dim = model_meta_color();
+    let mut head = vec![super::header::page_title_line(PLUGINS_ADD_TITLE, width)];
+    head.extend(model_wrapped_rows(PLUGINS_ADD_BLURB, dim, width));
+    let lead = cols(MODEL_INDENT) + cols(MODEL_PROMPT);
+    let room = usize::from(width).saturating_sub(lead).max(1);
+    let prompt = Span::styled(MODEL_PROMPT, Style::new().fg(model_selected_color()));
+    let (field, caret) = if menu.input.is_empty() {
+        (
+            vec![Line::from(vec![
+                Span::raw(MODEL_INDENT),
+                prompt,
+                Span::styled(
+                    ellipsize(PLUGINS_ADD_PLACEHOLDER, room),
+                    Style::new().fg(dim),
+                ),
+            ])],
+            (lead, 0),
+        )
+    } else {
+        let wrap = text_field_width(u16::try_from(room).unwrap_or(u16::MAX));
+        let (row, col) = menu.input.cursor_row_col(wrap);
+        let rows = menu
+            .input
+            .display_rows(wrap)
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let lead_span = if i == 0 {
+                    prompt.clone()
+                } else {
+                    Span::raw(" ".repeat(cols(MODEL_PROMPT)))
+                };
+                Line::from(vec![
+                    Span::raw(MODEL_INDENT),
+                    lead_span,
+                    Span::styled(text, Style::new().fg(model_id_color())),
+                ])
+            })
+            .collect();
+        (rows, (lead + col, row))
+    };
+    let mut forms = model_wrapped_rows(&format!("Use {SOURCE_FORMS}."), dim, width);
+    forms.extend(model_wrapped_rows(PLUGINS_ADD_PIN, dim, width));
+    let [status, hint] = closing_blocks(menu, &PLUGINS_ADD_HINT, width);
+    framed(
+        vec![
+            (head, None),
+            (field, Some(caret)),
+            (forms, None),
+            status,
+            hint,
+        ],
+        width,
+    )
+}
+
+/// The question before something that cannot be undone — the answer the
+/// user just chose highlighted, so Enter confirms it and Esc goes back.
 fn confirm_page(menu: &PluginsMenu, confirm: &PluginsConfirm, width: u16) -> PluginsBuild {
     let (title, text, yes) = match confirm {
         PluginsConfirm::Uninstall(id) => (
@@ -1277,8 +1405,8 @@ fn confirm_page(menu: &PluginsMenu, confirm: &PluginsConfirm, width: u16) -> Plu
 /// taller than the terminal, their actions and status row staying on
 /// screen. `height` is the terminal's, or the region already reserved for
 /// the page, which builds the same page. Empty when the page is closed. A
-/// plugin's page whose plugin has just gone shows the list, as the page will
-/// once the answer that removed it is taken.
+/// page whose plugin or marketplace has just gone shows the list, as the
+/// page will once the answer that removed it is taken.
 pub(super) fn plugins_build(app: &App, width: u16, height: u16) -> PluginsBuild {
     let Some(menu) = app.plugins_menu.as_ref() else {
         return PluginsBuild {
@@ -1296,9 +1424,14 @@ pub(super) fn plugins_build(app: &App, width: u16, height: u16) -> PluginsBuild 
     };
     match &menu.page {
         PluginsPage::List => list(),
+        PluginsPage::Add => add_page(menu, width),
         PluginsPage::Confirm(confirm) => confirm_page(menu, confirm, width),
         PluginsPage::Plugin(id) => match menu.plugin(id) {
             Some(plugin) => plugin_page(app, menu, plugin, width),
+            None => list(),
+        },
+        PluginsPage::Marketplace(name) => match menu.marketplace(name) {
+            Some(market) => marketplace_page(app, menu, market, width),
             None => list(),
         },
     }
