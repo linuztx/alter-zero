@@ -98,6 +98,15 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Signing in to an MCP server no longer opens a browser by itself.**
+  The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
+  macOS) on the authorize URL, which over SSH, in a container or on a
+  headless machine failed silently or opened a browser somewhere else.
+  The page now shows the URL with `Open this URL in your browser to
+  authenticate (c to copy)`; click it, or press `c` and paste it. The
+  callback and the paste-the-redirect fallback work as before
+  (`docs/mcp.md`).
+
 - **Auto mode's safety check answers in JSON, and a reply that is not
   exactly a verdict is never acted on.** The classifier that reviews a
   command in your place used to answer `<block>yes</block>` or

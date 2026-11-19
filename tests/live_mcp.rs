@@ -114,7 +114,6 @@ fn connecting_server(name: &str, url: &str) -> McpManager {
             detach_helper: None,
             startup_timeout: Duration::from_secs(30),
             tool_timeout: Duration::from_secs(120),
-            open_browser: None,
             protected_env: Default::default(),
         },
     );

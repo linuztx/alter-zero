@@ -556,8 +556,8 @@ in `links.rs`. **Phase 149** runs the real flow against a stub server that
 demands OAuth (a 401, RFC 9728 and 8414 metadata, dynamic registration) in
 a 60-column pane, and reads off the raw stream an OSC 8 open carrying the
 whole authorize URL for every row the page paints it on — the URL the page
-spells, and the one a stand-in `xdg-open` was handed — with no open
-anywhere carrying a fragment of it.
+spells — with no open anywhere carrying a fragment of it, and a stand-in
+`xdg-open`/`open` on `PATH` proving no browser was launched.
 
 Labelled links have the same halves. `links.rs` holds the decision: every
 terminal on the list by each variable that names it, the ones kept off it,
