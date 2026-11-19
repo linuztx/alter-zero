@@ -689,9 +689,8 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
         title_line(&format!("Authenticating with {}…", server.name), width),
         Line::default(),
     ];
-    // Wrapped like its sibling notes — the three narrate one flow.
-    lines.extend(dim_wrapped(MCP_AUTH_BROWSER_NOTE, width));
-    lines.push(Line::default());
+    // Nothing is launched: the URL on this page is the way in, opened by
+    // hand (a click, or `c` and a paste).
     match &menu.auth.url {
         Some(url) => {
             lines.extend(dim_wrapped(MCP_AUTH_COPY_NOTE, width));
@@ -700,7 +699,7 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
             // and a terminal's own detection reads row text — the first row
             // opened a truncated URL and the rest were no links at all. Every
             // fragment carries the whole URL now, verbatim, so a click opens
-            // exactly what `c` copies and the browser was handed; the accent
+            // exactly what `c` copies; the accent
             // the page has always lit it in stays, underlined.
             lines.extend(model_url_rows(url, model_selected_color(), width));
         }

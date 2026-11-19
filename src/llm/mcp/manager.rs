@@ -86,9 +86,6 @@ pub struct McpSources {
     pub detach_helper: Option<PathBuf>,
     pub startup_timeout: Duration,
     pub tool_timeout: Duration,
-    /// What opens the authorize URL in a browser — `None` is the system
-    /// launcher; a test passes one that opens nothing.
-    pub open_browser: Option<fn(&str)>,
     /// The session's own credentials' variable names (its providers' API
     /// keys): a project's remote server may not have them expanded into its
     /// URL or headers ([`crate::mcp::resolve_config`]).
@@ -332,7 +329,6 @@ struct Inner {
     auth_flow: Option<AuthFlow>,
     /// The id the next sign-in gets.
     next_auth_flow: u64,
-    open_browser: fn(&str),
 }
 
 /// The sign-in a manager is running: its id (so a superseded flow ending
@@ -437,7 +433,6 @@ impl McpManager {
                 },
                 auth_flow: None,
                 next_auth_flow: 0,
-                open_browser: sources.open_browser.unwrap_or(open_browser),
             })),
             events,
         }
@@ -961,7 +956,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, challenge, auth_path, open_browser, configured) = {
+        let (url, challenge, auth_path, configured) = {
             let inner = self.lock();
             if !inner.active {
                 self.notify(McpEvent::AuthDone {
@@ -994,7 +989,6 @@ impl McpManager {
                 url,
                 server.challenge.clone(),
                 inner.auth_path.clone(),
-                inner.open_browser,
                 server
                     .resolved
                     .as_ref()
@@ -1061,7 +1055,6 @@ impl McpManager {
                 },
                 &paste_rx,
                 &progress,
-                &open_browser,
                 &cancel,
             );
             let current = {
@@ -1572,29 +1565,6 @@ fn persist_disabled(
         })?;
     super::files::write_config_file(path, &updated)
         .map_err(|e| format!("couldn't write {}: {e}", path.display()))
-}
-
-/// Open the system browser on the authorize URL — best-effort (`open` on
-/// macOS, `xdg-open` elsewhere; never `open` on Linux, where it is
-/// `openvt`); the URL is on screen either way. The launcher is waited for on
-/// a thread of its own, so it never lingers as a zombie for the session.
-fn open_browser(url: &str) {
-    let launcher = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let spawned = std::process::Command::new(launcher)
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Ok(mut child) = spawned {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
 }
 
 #[cfg(test)]
@@ -3992,8 +3962,6 @@ done
                 }],
                 project: "/proj".to_string(),
                 auth_path: Some(auth_path.to_path_buf()),
-                // Never a real browser from a test.
-                open_browser: Some(|_| {}),
                 ..Default::default()
             },
         );

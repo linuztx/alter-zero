@@ -1692,16 +1692,15 @@ pub fn provider_authorize_params(issuer: Option<&str>) -> Vec<(&'static str, &'s
 
 /// Run the whole interactive flow for `target`, blocking this (worker)
 /// thread: discovery → a client (the entry's pre-registered one, a reused
-/// one, or a registration) → browser/paste → exchange → persist.
-/// `paste_rx` delivers the user's pasted redirect URL; `open_browser` is the
-/// boundary's launcher (injected so tests need no display). `cancel` is
-/// checked between the steps, so an Esc during discovery never opens the
-/// browser.
+/// one, or a registration) → the authorize URL → callback/paste → exchange →
+/// persist. The URL is handed to `progress` and nothing else: no browser is
+/// launched, the user opens it from the auth page. `paste_rx` delivers the
+/// user's pasted redirect URL. `cancel` is checked between the steps, so an
+/// Esc during discovery never shows a URL.
 pub fn run_auth_flow(
     target: &SignIn<'_>,
     paste_rx: &mpsc::Receiver<String>,
     progress: &dyn AuthProgress,
-    open_browser: &dyn Fn(&str),
     cancel: &CancelToken,
 ) -> Result<(), String> {
     let SignIn {
@@ -1717,8 +1716,8 @@ pub fn run_auth_flow(
             Ok(())
         }
     };
-    // A grant with nowhere to go is a dead end — said before the browser
-    // opens, not after the user has signed in.
+    // A grant with nowhere to go is a dead end — said before the URL is
+    // shown, not after the user has signed in.
     if store_path.is_none() {
         return Err("there is no config directory to keep the grant in".to_string());
     }
@@ -1844,7 +1843,6 @@ pub fn run_auth_flow(
         }
     }
     progress.on_url(&authorize_url);
-    open_browser(&authorize_url);
     let rejected = |reason: &str| progress.on_paste_rejected(reason);
     let code = loopback::wait_for_code(
         &callback,
@@ -3110,16 +3108,30 @@ mod tests {
     }
 
     /// The flow's progress, captured: the authorize URL and every rejected
-    /// paste.
+    /// paste — and, with `approve` set, the user who opens that URL by hand
+    /// and approves with that code (the flow itself launches nothing).
     #[derive(Default)]
     struct Recorded {
         urls: std::sync::Mutex<Vec<String>>,
         rejected: std::sync::Mutex<Vec<String>>,
+        approve: Option<&'static str>,
+    }
+
+    impl Recorded {
+        fn approving(code: &'static str) -> Self {
+            Self {
+                approve: Some(code),
+                ..Self::default()
+            }
+        }
     }
 
     impl AuthProgress for std::sync::Arc<Recorded> {
         fn on_url(&self, url: &str) {
             self.urls.lock().unwrap().push(url.to_string());
+            if let Some(code) = self.approve {
+                approve(url, code);
+            }
         }
         fn on_paste_rejected(&self, reason: &str) {
             self.rejected.lock().unwrap().push(reason.to_string());
@@ -3288,44 +3300,42 @@ mod tests {
         fixture
     }
 
-    /// A browser that approves at once: it follows the authorize URL's
+    /// A user who approves at once: they follow the authorize URL's
     /// redirect back to the callback with `code`, the URL's own state, and
     /// no `iss` (this fixture's metadata doesn't advertise it).
-    fn approving_browser(code: &'static str) -> impl Fn(&str) {
-        move |authorize_url: &str| {
-            let redirect = redirect_param(authorize_url, "redirect_uri").expect("redirect_uri");
-            let state = redirect_param(authorize_url, "state").expect("state");
-            let port = url::Url::parse(&redirect).unwrap().port().expect("a port");
-            std::thread::spawn(move || {
-                let _ = hit(
-                    port,
-                    &format!(
-                        "GET /callback?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
-                        url_encode(&state)
-                    ),
-                );
-            });
-        }
+    fn approve(authorize_url: &str, code: &'static str) {
+        let redirect = redirect_param(authorize_url, "redirect_uri").expect("redirect_uri");
+        let state = redirect_param(authorize_url, "state").expect("state");
+        let port = url::Url::parse(&redirect).unwrap().port().expect("a port");
+        std::thread::spawn(move || {
+            let _ = hit(
+                port,
+                &format!(
+                    "GET /callback?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    url_encode(&state)
+                ),
+            );
+        });
     }
 
     fn sign_in(
         fixture: &AuthServerFixture,
         store: &Path,
-        browser: &dyn Fn(&str),
+        code: &'static str,
         cancel: &CancelToken,
     ) -> (Result<(), String>, std::sync::Arc<Recorded>) {
-        sign_in_with(fixture, store, browser, cancel, None)
+        sign_in_with(fixture, store, code, cancel, None)
     }
 
     fn sign_in_with(
         fixture: &AuthServerFixture,
         store: &Path,
-        browser: &dyn Fn(&str),
+        code: &'static str,
         cancel: &CancelToken,
         client: Option<&crate::mcp::OAuthClientConfig>,
     ) -> (Result<(), String>, std::sync::Arc<Recorded>) {
         let (_paste_tx, paste_rx) = mpsc::channel();
-        let progress = std::sync::Arc::new(Recorded::default());
+        let progress = std::sync::Arc::new(Recorded::approving(code));
         let server_url = format!("{}/mcp", fixture.base);
         let result = run_auth_flow(
             &SignIn {
@@ -3336,7 +3346,6 @@ mod tests {
             },
             &paste_rx,
             &progress,
-            browser,
             cancel,
         );
         (result, progress)
@@ -3367,13 +3376,8 @@ mod tests {
             callback_port: Some(port),
             scopes: Some("calendar openid".to_string()),
         };
-        let (result, progress) = sign_in_with(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-            Some(&client),
-        );
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
         result.expect("signed in");
         assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
         let url = progress.urls.lock().unwrap()[0].clone();
@@ -3410,13 +3414,8 @@ mod tests {
             callback_port: Some(port),
             ..Default::default()
         };
-        let (result, progress) = sign_in_with(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-            Some(&client),
-        );
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
         result.expect("signed in");
         assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
         assert_eq!(port_of(&progress.urls.lock().unwrap()[0]), port);
@@ -3429,12 +3428,7 @@ mod tests {
         let fixture = spawn_auth_server_with(false, None);
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let (result, _) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-        );
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
         let error = result.unwrap_err();
         assert!(
             error.contains("oauth.clientId") && error.contains("--client-id"),
@@ -3456,13 +3450,8 @@ mod tests {
             callback_port: Some(port),
             ..Default::default()
         };
-        let (result, progress) = sign_in_with(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-            Some(&client),
-        );
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
         let error = result.unwrap_err();
         assert!(error.contains(&port.to_string()), "{error}");
         assert!(progress.urls.lock().unwrap().is_empty());
@@ -3497,12 +3486,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
         let server = format!("{}/mcp", fixture.base);
-        let (result, progress) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("code-1"),
-            &CancelToken::new(),
-        );
+        let (result, progress) = sign_in(&fixture, &store, "code-1", &CancelToken::new());
         result.expect("signed in");
         assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
         let first_url = progress.urls.lock().unwrap()[0].clone();
@@ -3533,23 +3517,13 @@ mod tests {
             Some(format!("http://localhost:{port}/callback").as_str())
         );
         // Again: the same client, on the port it registered.
-        let (result, progress) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("code-2"),
-            &CancelToken::new(),
-        );
+        let (result, progress) = sign_in(&fixture, &store, "code-2", &CancelToken::new());
         result.expect("signed in again");
         assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
         assert_eq!(port_of(&progress.urls.lock().unwrap()[0]), port);
         // With that port taken, a new registration names the new one.
         let _squatter = TcpListener::bind(("127.0.0.1", port)).expect("take the port");
-        let (result, progress) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("code-3"),
-            &CancelToken::new(),
-        );
+        let (result, progress) = sign_in(&fixture, &store, "code-3", &CancelToken::new());
         result.expect("signed in on another port");
         assert_eq!(fixture.registrations.load(Ordering::SeqCst), 2);
         assert_ne!(port_of(&progress.urls.lock().unwrap()[0]), port);
@@ -3570,12 +3544,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
         let server = format!("{}/mcp", fixture.base);
-        let (result, _) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("code-1"),
-            &CancelToken::new(),
-        );
+        let (result, _) = sign_in(&fixture, &store, "code-1", &CancelToken::new());
         assert_eq!(result, Ok(()));
         refresh_grant(Some(&store), &server, None).expect("the renewal got through");
         let agents = fixture.agents.lock().unwrap();
@@ -3593,7 +3562,7 @@ mod tests {
     /// A registration names the scopes the sign-in is about to ask for. An
     /// authorization server that keeps a client to the scopes it registered
     /// with turns the authorize request away (`invalid_scope`) from one that
-    /// registered none — after the browser has opened; and with nothing to
+    /// registered none — after the user has opened the URL; and with nothing to
     /// ask for, the registration names none.
     #[test]
     fn a_registration_names_the_scopes_the_sign_in_asks_for() {
@@ -3602,7 +3571,7 @@ mod tests {
         let server_url = format!("{}/mcp", fixture.base);
         let run = |store: &Path, challenge: Option<&str>| {
             let (_paste_tx, paste_rx) = mpsc::channel();
-            let progress = std::sync::Arc::new(Recorded::default());
+            let progress = std::sync::Arc::new(Recorded::approving("code-1"));
             run_auth_flow(
                 &SignIn {
                     server_url: &server_url,
@@ -3612,7 +3581,6 @@ mod tests {
                 },
                 &paste_rx,
                 &progress,
-                &approving_browser("code-1"),
                 &CancelToken::new(),
             )
             .expect("signed in");
@@ -3661,12 +3629,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let (result, _) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-        );
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
         result.expect("signed in");
         let requests = fixture.token_requests.lock().unwrap();
         let (head, body) = &requests[0];
@@ -3687,12 +3650,7 @@ mod tests {
         )));
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let (result, _) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-        );
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
         result.expect("signed in");
         let requests = fixture.token_requests.lock().unwrap();
         let (head, body) = &requests[0];
@@ -3718,12 +3676,7 @@ mod tests {
         )));
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let (result, _) = sign_in(
-            &fixture,
-            &store,
-            &approving_browser("c"),
-            &CancelToken::new(),
-        );
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
         let error = result.expect_err("refused");
         assert!(
             error.contains("invalid_redirect_uri")
@@ -3755,25 +3708,21 @@ mod tests {
         );
     }
 
-    /// Esc during discovery means the browser never opens; and with nowhere
-    /// to keep the grant the flow says so before it does.
+    /// Esc during discovery means no authorize URL is ever shown; and with
+    /// nowhere to keep the grant the flow says so before it is.
     #[test]
-    fn a_sign_in_that_cannot_finish_never_opens_the_browser() {
+    fn a_sign_in_that_cannot_finish_never_shows_the_url() {
         let fixture = spawn_auth_server(None);
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let opened = std::sync::atomic::AtomicBool::new(false);
-        let browser = |_: &str| opened.store(true, std::sync::atomic::Ordering::SeqCst);
         let cancel = CancelToken::new();
         cancel.cancel();
-        let (result, _) = sign_in(&fixture, &store, &browser, &cancel);
+        let (result, progress) = sign_in(&fixture, &store, "c", &cancel);
         assert!(result.is_err());
-        assert!(
-            !opened.load(std::sync::atomic::Ordering::SeqCst),
-            "opened after Esc"
-        );
+        assert!(progress.urls.lock().unwrap().is_empty(), "shown after Esc");
         let (_paste_tx, paste_rx) = mpsc::channel();
         let server_url = format!("{}/mcp", fixture.base);
+        let progress = std::sync::Arc::new(Recorded::default());
         let result = run_auth_flow(
             &SignIn {
                 server_url: &server_url,
@@ -3782,14 +3731,13 @@ mod tests {
                 client: None,
             },
             &paste_rx,
-            &std::sync::Arc::new(Recorded::default()),
-            &browser,
+            &progress,
             &CancelToken::new(),
         );
         assert!(result.is_err());
         assert!(
-            !opened.load(std::sync::atomic::Ordering::SeqCst),
-            "opened with no store"
+            progress.urls.lock().unwrap().is_empty(),
+            "shown with no store"
         );
     }
 }

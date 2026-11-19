@@ -2368,9 +2368,8 @@ pub(super) const MCP_TOOL_FIELD_GAP: &str = " ";
 pub(super) const MCP_PARAM_BULLET: &str = "  ● ";
 pub(super) const MCP_PARAM_INDENT: &str = "    ";
 /// The auth page's fixed lines.
-pub(super) const MCP_AUTH_BROWSER_NOTE: &str = "*  A browser window will open for authentication";
 pub(super) const MCP_AUTH_COPY_NOTE: &str =
-    "If your browser doesn't open automatically, copy this URL manually (c to copy)";
+    "Open this URL in your browser to authenticate (c to copy)";
 pub(super) const MCP_AUTH_PASTE_NOTE: &str =
     "If the redirect page shows a connection error, paste the URL from your browser's address bar:";
 pub(super) const MCP_AUTH_PROMPT: &str = "URL > ";

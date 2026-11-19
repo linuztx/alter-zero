@@ -131,7 +131,6 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
         detach_helper: std::env::current_exe().ok(),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),
-        open_browser: None,
         protected_env,
     }
 }
