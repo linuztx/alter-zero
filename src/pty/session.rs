@@ -1689,20 +1689,23 @@ mod tests {
         // The running cell shows, as it happens, exactly what the look will
         // hand the model: lines out of the cursor's reach appended once, the
         // rows in reach replaced as they redraw (docs/interactive-shell.md).
+        // Each state stays on screen until the call has streamed it
+        // (`feed_shown`), so every one of them is a frame of its own.
         let io = Arc::new(SessionIo::new(true));
+        let shown = Arc::new(Shown::default());
         let since = io.begin_wait();
-        feed_paced(
+        feed_shown(
             &io,
+            &shown,
             &[
-                b"Downloading\r\n",
-                b"  10%",
-                b"\r  50%",
-                b"\r 100%\r\ndone\r\n$ ",
+                (b"Downloading\r\n", "Downloading"),
+                (b"  10%", "Downloading\n  10%"),
+                (b"\r  50%", "Downloading\n  50%"),
+                (b"\r 100%\r\ndone\r\n$ ", "Downloading\n 100%\ndone\n$"),
             ],
         );
         let mut view = String::new();
         let mut live_len = 0;
-        let mut frames = Vec::new();
         let end = io.wait(
             WaitKind::Launch,
             since,
@@ -1711,19 +1714,21 @@ mod tests {
             &never,
             &mut |settled, live| {
                 live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
-                frames.push(view.clone());
+                shown.push(&view);
             },
+        );
+        assert_eq!(
+            shown.frames(),
+            [
+                "Downloading",
+                "Downloading\n  10%",
+                "Downloading\n  50%",
+                "Downloading\n 100%\ndone\n$",
+            ],
+            "it streamed as the bar moved, each redrawn frame replacing the last"
         );
         assert_eq!(end, WaitEnd::Settled(Settle::Prompt));
         assert_eq!(view, "Downloading\n 100%\ndone\n$");
-        assert!(
-            frames.iter().any(|frame| frame == "Downloading\n  50%"),
-            "it streamed as the bar moved: {frames:?}"
-        );
-        assert!(
-            frames.iter().all(|frame| frame.matches('%').count() <= 1),
-            "a redrawn frame never lingers beside the next: {frames:?}"
-        );
         assert_eq!(
             io.look(
                 "s1",
@@ -2436,6 +2441,66 @@ mod tests {
             for chunk in chunks {
                 std::thread::sleep(BURST_SPAN + Duration::from_millis(50));
                 io.absorb(chunk);
+            }
+        });
+    }
+
+    /// The frames a waiting call streamed, for a stand-in monitor to wait on
+    /// ([`feed_shown`]).
+    #[derive(Default)]
+    struct Shown {
+        frames: Mutex<Vec<String>>,
+        changed: Condvar,
+    }
+
+    impl Shown {
+        fn push(&self, frame: &str) {
+            self.frames.lock().unwrap().push(frame.to_string());
+            self.changed.notify_all();
+        }
+
+        fn frames(&self) -> Vec<String> {
+            self.frames.lock().unwrap().clone()
+        }
+
+        /// Block until `frame` is the latest frame streamed, or [`LONG`] has
+        /// passed — a stall the test's own assertions then report.
+        fn wait_for(&self, frame: &str) {
+            let deadline = Instant::now() + LONG;
+            let mut frames = self.frames.lock().unwrap();
+            while frames.last().is_none_or(|shown| shown != frame) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                frames = self.changed.wait_timeout(frames, left).unwrap().0;
+            }
+        }
+    }
+
+    /// Feed `steps` from a stand-in monitor thread, a burst apart as
+    /// [`feed_paced`] does, each chunk written only once the call has
+    /// streamed the frame the one before it left on screen. The call samples
+    /// the session from its own thread, and a loaded runner can keep that
+    /// thread off its core for longer than a burst: a program that had moved
+    /// on meanwhile left that frame for nobody to see, and the test looking
+    /// for it failed though nothing streamed wrong.
+    fn feed_shown(
+        io: &Arc<SessionIo>,
+        shown: &Arc<Shown>,
+        steps: &'static [(&'static [u8], &'static str)],
+    ) {
+        let io = Arc::clone(io);
+        let shown = Arc::clone(shown);
+        std::thread::spawn(move || {
+            let mut on_screen: Option<&str> = None;
+            for &(chunk, frame) in steps {
+                std::thread::sleep(BURST_SPAN + Duration::from_millis(50));
+                if let Some(previous) = on_screen {
+                    shown.wait_for(previous);
+                }
+                io.absorb(chunk);
+                on_screen = Some(frame);
             }
         });
     }
