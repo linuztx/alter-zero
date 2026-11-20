@@ -18,6 +18,10 @@ use serde_json::Value;
 
 use super::files::{FileLock, LockMiss, write_private};
 use crate::llm::loopback::{self, CallbackServer, Expected, Pages};
+use crate::mcp::{
+    ClientNeed, ClientRequest, PreRegistered, StoredClient, callback_redirect, issuer_host,
+    preregistered_client,
+};
 use crate::stream::CancelToken;
 
 /// The whole interactive flow's budget — Claude Code's 5 minutes.
@@ -247,21 +251,24 @@ pub fn save_tokens(
     })
 }
 
-/// Keep — or, with `None`, forget — a pre-registered client's secret for
-/// `server_url` (`mcp add --client-secret`, `docs/mcp.md`): in the store's
+/// Keep — or, with `None`, forget — the pre-registered client kept for
+/// `server_url` (`docs/mcp.md` *Pre-registered clients*): in the store's
 /// `clients` section, owner-only and never in `mcp.json`, and apart from the
-/// login, so "Clear authentication" leaves the client the user configured.
+/// login, so "Clear authentication" leaves the client the user gave. One
+/// entry per server, replaced whole: a client entered in `/mcp`, or the
+/// secret alone of the client the server's entry names
+/// ([`save_client_secret`]).
 ///
 /// # Errors
-/// Nowhere to keep a secret, or a store that can't be read or written.
-pub fn save_client_secret(
+/// Nowhere to keep a client, or a store that can't be read or written.
+pub fn save_client(
     path: Option<&Path>,
     server_url: &str,
-    secret: Option<&str>,
+    client: Option<&StoredClient>,
 ) -> Result<(), String> {
     let Some(path) = path else {
-        return match secret {
-            Some(_) => Err("there is no config directory to keep the secret in".to_string()),
+        return match client {
+            Some(_) => Err("there is no config directory to keep the client in".to_string()),
             None => Ok(()),
         };
     };
@@ -275,12 +282,9 @@ pub fn save_client_secret(
             .entry("clients")
             .or_insert_with(|| Value::Object(Default::default()));
         let clients = clients.as_object_mut()?;
-        match secret {
-            Some(secret) => {
-                clients.insert(
-                    server_url.to_string(),
-                    serde_json::json!({ "client_secret": secret }),
-                );
+        match client {
+            Some(client) => {
+                clients.insert(server_url.to_string(), client.to_json());
             }
             None => {
                 clients.shift_remove(server_url);
@@ -293,18 +297,39 @@ pub fn save_client_secret(
     })
 }
 
-/// The pre-registered client secret kept for `server_url`, if any.
+/// The pre-registered client kept for `server_url`, if any: one entered in
+/// `/mcp`, or the secret kept for the client the server's entry names.
 #[must_use]
-pub fn load_client_secret(path: Option<&Path>, server_url: &str) -> Option<String> {
+pub fn load_client(path: Option<&Path>, server_url: &str) -> Option<StoredClient> {
     let contents = std::fs::read_to_string(path?).ok()?;
     let value: Value = serde_json::from_str(contents.trim()).ok()?;
-    value
-        .get("clients")?
-        .get(server_url)?
-        .get("client_secret")?
-        .as_str()
-        .filter(|secret| !secret.is_empty())
-        .map(str::to_string)
+    StoredClient::from_json(value.get("clients")?.get(server_url)?)
+}
+
+/// Keep — or, with `None`, forget — the secret of the client `server_url`'s
+/// entry names (`mcp add --client-secret`). It is a statement of its own:
+/// it replaces whatever client was kept for that address, so one entered in
+/// `/mcp` for an earlier entry never outlives it.
+///
+/// # Errors
+/// Nowhere to keep a secret, or a store that can't be read or written.
+pub fn save_client_secret(
+    path: Option<&Path>,
+    server_url: &str,
+    secret: Option<&str>,
+) -> Result<(), String> {
+    let client = secret.map(|secret| StoredClient {
+        client_secret: Some(secret.to_string()),
+        ..Default::default()
+    });
+    save_client(path, server_url, client.as_ref())
+        .map_err(|e| e.replace("to keep the client in", "to keep the secret in"))
+}
+
+/// The client secret kept for `server_url`, if any.
+#[must_use]
+pub fn load_client_secret(path: Option<&Path>, server_url: &str) -> Option<String> {
+    load_client(path, server_url)?.client_secret
 }
 
 /// Read-modify-write the store under its locks: `rewrite` gets the current
@@ -1186,8 +1211,9 @@ fn get_json_within(url: &str, timeout: Duration) -> Result<Value, String> {
         .map_err(|e| format!("bad JSON: {e}"))
 }
 
-/// POST a form and hand back `(status, body)` raw — the refresh path
-/// classifies the failure itself (`Err` only when no answer arrived at all).
+/// POST a form and hand back `(status, body)` raw — the exchange and the
+/// refresh each classify a refusal themselves (`Err` only when no answer
+/// arrived at all).
 /// `basic` is a client's HTTP Basic `Authorization` value
 /// ([`client_authentication`]).
 fn post_form_raw(
@@ -1209,14 +1235,6 @@ fn post_form_raw(
         .map_err(|e| format!("request failed: {}", crate::llm::transport_message(&e)))?;
     let status = response.status().as_u16();
     Ok((status, response.text().unwrap_or_default()))
-}
-
-fn post_form(url: &str, params: &[(String, String)], basic: Option<&str>) -> Result<Value, String> {
-    let (status, body) = post_form_raw(url, params, basic)?;
-    if !(200..300).contains(&status) {
-        return Err(oauth_error_detail(status, &body));
-    }
-    serde_json::from_str(&body).map_err(|e| format!("bad JSON: {e}"))
 }
 
 /// An OAuth error answer in words: the `error` and `error_description` of
@@ -1572,6 +1590,44 @@ pub fn register_client(
     supported_methods: &[String],
     scope: Option<&str>,
 ) -> Result<ClientIdentity, String> {
+    try_register_client(
+        registration_endpoint,
+        redirect_uri,
+        supported_methods,
+        scope,
+    )
+    .map_err(|error| match error {
+        RegistrationError::Refused(reason) => format!("registration failed: {reason}"),
+        RegistrationError::Failed(detail) => detail,
+    })
+}
+
+/// Why a registration produced no client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RegistrationError {
+    /// The authorization server answered and said no — its own reason. No
+    /// retry changes that: the sign-in's one way left is a client the user
+    /// created there.
+    Refused(String),
+    /// No usable answer — unreachable, busy, or not a registration: worth
+    /// trying again.
+    Failed(String),
+}
+
+impl From<String> for RegistrationError {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
+}
+
+/// [`register_client`], telling a refusal (a `4xx`, but for the two that
+/// only say "later") from a registration that merely failed.
+fn try_register_client(
+    registration_endpoint: &str,
+    redirect_uri: &str,
+    supported_methods: &[String],
+    scope: Option<&str>,
+) -> Result<ClientIdentity, RegistrationError> {
     let client = auth_client(HTTP_TIMEOUT)?;
     let method = registration_auth_method(supported_methods);
     let mut body = serde_json::json!({
@@ -1598,10 +1654,15 @@ pub fn register_client(
     let status = response.status().as_u16();
     let text = response.text().unwrap_or_default();
     if !(200..300).contains(&status) {
-        return Err(format!(
-            "registration failed: {}",
-            oauth_error_detail(status, &text)
-        ));
+        let detail = oauth_error_detail(status, &text);
+        // 408 and 429 are "not now", like a 5xx; any other 4xx is the
+        // server's decision about this app.
+        let refused = (400..500).contains(&status) && !matches!(status, 408 | 429);
+        return Err(if refused {
+            RegistrationError::Refused(detail)
+        } else {
+            RegistrationError::Failed(format!("registration failed: {detail}"))
+        });
     }
     let value: Value =
         serde_json::from_str(&text).map_err(|e| format!("registration: bad JSON: {e}"))?;
@@ -1654,9 +1715,86 @@ pub struct SignIn<'a> {
     pub server_url: &'a str,
     pub challenge: Option<&'a str>,
     pub store_path: Option<&'a Path>,
-    /// The entry's `oauth` block, its secret already resolved (the file's,
-    /// else the one kept with the tokens).
+    /// The entry's `oauth` block, as its file gives it. What the token store
+    /// keeps for the server — a client entered in `/mcp`, or the secret kept
+    /// for the entry's — the flow reads itself, beside the grant
+    /// ([`preregistered_client`] says which one signs in).
     pub client: Option<&'a crate::mcp::OAuthClientConfig>,
+    /// Stop once the authorization server is known and ask for a client,
+    /// whatever one is on hand: the user chose to enter one.
+    pub ask_client: bool,
+}
+
+/// How a sign-in ends short of a grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    /// It has no client to sign in as — the authorization server registers
+    /// none itself, or refused to — or the one it has was turned away, or
+    /// the user asked to enter one: the `/mcp` page asks for it
+    /// (`docs/mcp.md` *Pre-registered clients*).
+    NeedsClient(ClientRequest),
+    /// Anything else, in words.
+    Failed(String),
+}
+
+impl From<String> for AuthError {
+    fn from(detail: String) -> Self {
+        Self::Failed(detail)
+    }
+}
+
+/// Every way to give a sign-in its client — what a request says where no
+/// page is open to ask on.
+const WAYS_TO_GIVE_A_CLIENT: &str = "enter it under Authenticate in /mcp, or add it as \
+    oauth.clientId (and oauth.callbackPort, if its redirect URI names one) in the server's \
+    entry, or with `alter-zero mcp add --client-id … --client-secret`";
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let request = match self {
+            Self::Failed(detail) => return f.write_str(detail),
+            Self::NeedsClient(request) => request,
+        };
+        let server = issuer_host(&request.issuer);
+        match &request.need {
+            ClientNeed::NoRegistration => write!(
+                f,
+                "{server} registers no clients itself, so signing in needs an OAuth client you \
+                 create there: {WAYS_TO_GIVE_A_CLIENT}"
+            ),
+            ClientNeed::RegistrationRefused(reason) => write!(
+                f,
+                "{server} refused to register this app ({reason}), so signing in needs an OAuth \
+                 client you create there: {WAYS_TO_GIVE_A_CLIENT}"
+            ),
+            ClientNeed::Rejected(reason) => write!(
+                f,
+                "{server} turned the OAuth client away ({reason}) — check its client ID and secret"
+            ),
+            ClientNeed::Asked => write!(f, "an OAuth client for {server} is being entered"),
+        }
+    }
+}
+
+/// Did the token endpoint turn the **client** away, rather than the code or
+/// the request? RFC 6749 §5.2's `invalid_client` and `unauthorized_client`;
+/// and Google's `invalid_request` for a secret it was not sent, which names
+/// the missing parameter.
+fn client_rejected(body: &str) -> bool {
+    let parsed = serde_json::from_str::<Value>(body.trim()).ok();
+    let field = |key: &str| {
+        parsed
+            .as_ref()?
+            .get(key)?
+            .as_str()
+            .map(str::to_ascii_lowercase)
+    };
+    match field("error").as_deref() {
+        Some("invalid_client" | "unauthorized_client") => true,
+        Some("invalid_request") => field("error_description")
+            .is_some_and(|description| description.contains("client_secret")),
+        _ => false,
+    }
 }
 
 /// How a pre-registered client authenticates at the token endpoint: as a
@@ -1691,23 +1829,31 @@ pub fn provider_authorize_params(issuer: Option<&str>) -> Vec<(&'static str, &'s
 }
 
 /// Run the whole interactive flow for `target`, blocking this (worker)
-/// thread: discovery → a client (the entry's pre-registered one, a reused
-/// one, or a registration) → the authorize URL → callback/paste → exchange →
-/// persist. The URL is handed to `progress` and nothing else: no browser is
-/// launched, the user opens it from the auth page. `paste_rx` delivers the
-/// user's pasted redirect URL. `cancel` is checked between the steps, so an
-/// Esc during discovery never shows a URL.
+/// thread: discovery → a client (a pre-registered one — entered in `/mcp`,
+/// or the entry's — else a reused one, else a registration, else **ask the
+/// user**, the spec's order) → the authorize URL → callback/paste → exchange
+/// → persist. The URL is handed to `progress` and nothing else: no browser
+/// is launched, the user opens it from the auth page. `paste_rx` delivers
+/// the user's pasted redirect URL. `cancel` is checked between the steps, so
+/// an Esc during discovery never shows a URL.
+///
+/// # Errors
+/// [`AuthError::NeedsClient`] when the way forward is a client only the user
+/// can give — nothing registers one here, the one on hand was turned away,
+/// or they asked to enter one; [`AuthError::Failed`], with the reason, for
+/// every other end.
 pub fn run_auth_flow(
     target: &SignIn<'_>,
     paste_rx: &mpsc::Receiver<String>,
     progress: &dyn AuthProgress,
     cancel: &CancelToken,
-) -> Result<(), String> {
+) -> Result<(), AuthError> {
     let SignIn {
         server_url,
         challenge,
         store_path,
         client: configured,
+        ask_client,
     } = *target;
     let still_wanted = || {
         if cancel.is_cancelled() {
@@ -1719,11 +1865,37 @@ pub fn run_auth_flow(
     // A grant with nowhere to go is a dead end — said before the URL is
     // shown, not after the user has signed in.
     if store_path.is_none() {
-        return Err("there is no config directory to keep the grant in".to_string());
+        return Err("there is no config directory to keep the grant in"
+            .to_string()
+            .into());
     }
     let meta = discover(server_url, challenge)?;
     still_wanted()?;
     let stored = load_tokens(store_path, server_url);
+    // The pre-registered client: the one the user entered in `/mcp` for this
+    // authorization server, else the entry's own — read here, beside the
+    // grant, so what another session entered a moment ago counts.
+    let kept = load_client(store_path, server_url);
+    let preregistered = preregistered_client(configured, kept.as_ref(), meta.issuer.as_deref());
+    // What the page is asked for: the authorization server by its own name,
+    // why, and the client on hand for the form to start from.
+    let ask = |need: ClientNeed, from: Option<&PreRegistered>| {
+        AuthError::NeedsClient(ClientRequest {
+            issuer: meta
+                .issuer
+                .clone()
+                .unwrap_or_else(|| origin_of(&meta.authorization_endpoint)),
+            need,
+            client_id: from.map(|client| client.client_id.clone()),
+            has_secret: from.is_some_and(|client| client.client_secret.is_some()),
+            callback_port: from
+                .and_then(|client| client.callback_port)
+                .or_else(|| configured.and_then(|config| config.callback_port)),
+        })
+    };
+    if ask_client {
+        return Err(ask(ClientNeed::Asked, preregistered.as_ref()));
+    }
     // Re-authorizing asks for what was granted before *and* what the server
     // now wants — the step-up rule ("include these scopes alongside any
     // previously granted scopes"), so a scope upgrade never drops the rest;
@@ -1739,32 +1911,30 @@ pub fn run_auth_flow(
         Some(scopes) => Some(scopes),
         None => scope_union(&[meta.scopes.as_deref(), granted]),
     };
-    let (callback, redirect_uri, client) = match configured
-        .and_then(|config| Some((config, config.client_id.clone()?)))
-    {
+    // A fixed port is the one a provider was told: taken, the sign-in says
+    // so rather than listening where the redirect would never arrive.
+    let port_taken = |port: Option<u16>, error: String| match port {
+        Some(port) => format!("the callback port {port} isn't free: {error}"),
+        None => error,
+    };
+    let (callback, redirect_uri, client) = match &preregistered {
         // The client the user registered with the provider: on exactly the
         // port its redirect URI names — the provider was told that one —
         // else any (a native client takes any loopback port, RFC 8252).
-        Some((config, client_id)) => {
-            let ports = config
+        Some(chosen) => {
+            let ports = chosen
                 .callback_port
                 .map_or_else(|| vec![0; 9], |port| vec![port]);
-            let callback = CallbackServer::bind(&ports, "/callback").map_err(|e| {
-                match config.callback_port {
-                    Some(port) => {
-                        format!("the callback port {port} (oauth.callbackPort) isn't free: {e}")
-                    }
-                    None => e,
-                }
-            })?;
-            let redirect_uri = format!("http://localhost:{}/callback", callback.port);
+            let callback = CallbackServer::bind(&ports, "/callback")
+                .map_err(|e| port_taken(chosen.callback_port, e))?;
+            let redirect_uri = callback_redirect(Some(callback.port));
             let client = ClientIdentity {
-                client_id,
-                client_secret: config.client_secret.clone(),
+                client_id: chosen.client_id.clone(),
+                client_secret: chosen.client_secret.clone(),
                 redirect_uri: Some(redirect_uri.clone()),
                 auth_method: configured_auth_method(
                     &meta.token_auth_methods,
-                    config.client_secret.is_some(),
+                    chosen.client_secret.is_some(),
                 ),
             };
             (callback, redirect_uri, client)
@@ -1790,38 +1960,36 @@ pub fn run_auth_flow(
                     .chain(std::iter::repeat_n(0, 8))
                     .collect(),
             };
-            let callback = CallbackServer::bind(&ports, "/callback").map_err(|e| match fixed {
-                Some(port) => {
-                    format!("the callback port {port} (oauth.callbackPort) isn't free: {e}")
-                }
-                None => e,
-            })?;
-            let redirect_uri = format!("http://localhost:{}/callback", callback.port);
+            let callback =
+                CallbackServer::bind(&ports, "/callback").map_err(|e| port_taken(fixed, e))?;
+            let redirect_uri = callback_redirect(Some(callback.port));
             let client = match (reused, &meta.registration_endpoint) {
                 (Some(client), _)
                     if client.redirect_uri.as_deref() == Some(redirect_uri.as_str()) =>
                 {
                     client
                 }
-                (_, Some(endpoint)) => register_client(
+                (_, Some(endpoint)) => match try_register_client(
                     endpoint,
                     &redirect_uri,
                     &meta.token_auth_methods,
                     scopes.as_deref(),
-                )?,
+                ) {
+                    Ok(client) => client,
+                    // It registers clients and won't register this one:
+                    // the same one way left as a server that registers none.
+                    Err(RegistrationError::Refused(reason)) => {
+                        return Err(ask(ClientNeed::RegistrationRefused(reason), None));
+                    }
+                    Err(RegistrationError::Failed(detail)) => return Err(detail.into()),
+                },
                 // Nothing to register with: the old client on a new port is
                 // the one chance (an authorization server honouring RFC 8252
                 // §7.3 accepts it).
                 (Some(client), None) => client,
-                (None, None) => {
-                    return Err(format!(
-                        "{} registers no clients itself, so signing in needs the OAuth client \
-                         you created with the provider: add it as oauth.clientId (and \
-                         oauth.callbackPort, if its redirect URI names one) in the server's \
-                         entry, or with `alter-zero mcp add --client-id … --client-secret`",
-                        meta.issuer.as_deref().unwrap_or("The authorization server")
-                    ));
-                }
+                // Nothing registers a client here and none is on hand: the
+                // spec's last resort, the user's own.
+                (None, None) => return Err(ask(ClientNeed::NoRegistration, None)),
             };
             (callback, redirect_uri, client)
         }
@@ -1871,8 +2039,31 @@ pub fn run_auth_flow(
         ("resource".to_string(), meta.resource.clone()),
     ];
     params.extend(client_params);
-    let response = post_form(&meta.token_endpoint, &params, basic.as_deref())
+    let (status, body) = post_form_raw(&meta.token_endpoint, &params, basic.as_deref())
         .map_err(|e| format!("token exchange failed: {e}"))?;
+    if !(200..300).contains(&status) {
+        let detail = oauth_error_detail(status, &body);
+        // A pre-registered client turned away is the user's to put right —
+        // a wrong secret, an id the server does not know — so the page asks
+        // again, starting from it. One the flow registered itself is not:
+        // no form corrects that.
+        if let Some(chosen) = &preregistered
+            && client_rejected(&body)
+        {
+            // The pairing just refused is not one to offer to keep: the form
+            // starts from the id, and the secret is given again — or left
+            // out, for a client that turns out to be public and was turned
+            // away *for* presenting one.
+            let again = PreRegistered {
+                client_secret: None,
+                ..chosen.clone()
+            };
+            return Err(ask(ClientNeed::Rejected(detail), Some(&again)));
+        }
+        return Err(format!("token exchange failed: {detail}").into());
+    }
+    let response: Value =
+        serde_json::from_str(&body).map_err(|e| format!("token exchange failed: bad JSON: {e}"))?;
     let prior = StoredTokens {
         client_id: client.client_id,
         client_secret: client.client_secret,
@@ -1887,7 +2078,7 @@ pub fn run_auth_flow(
     let tokens = tokens_from_response(&response, &prior)
         .ok_or_else(|| "token response carried no access_token".to_string())?;
     save_tokens(store_path, server_url, Some(&tokens))
-        .map_err(|e| format!("signed in, but the grant couldn't be saved: {e}"))
+        .map_err(|e| format!("signed in, but the grant couldn't be saved: {e}").into())
 }
 
 #[cfg(test)]
@@ -2830,6 +3021,91 @@ mod tests {
         assert!(save_client_secret(None, server, Some("x")).is_err());
     }
 
+    /// A client entered in `/mcp` is kept the same way — the `clients`
+    /// section, owner-only, apart from the login — with its id, the port its
+    /// redirect names and the authorization server it is for.
+    #[test]
+    fn an_entered_client_is_kept_in_the_clients_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://calendarmcp.googleapis.com/mcp/v1";
+        let client = StoredClient {
+            client_id: Some("cid.apps.googleusercontent.com".to_string()),
+            client_secret: Some("s3cret".to_string()),
+            callback_port: Some(8976),
+            issuer: Some("https://accounts.google.com".to_string()),
+        };
+        save_client(Some(&path), server, Some(&client)).unwrap();
+        assert_eq!(load_client(Some(&path), server), Some(client.clone()));
+        assert_eq!(load_client(Some(&path), "https://other.test/mcp"), None);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["clients"][server],
+            serde_json::json!({
+                "client_id": "cid.apps.googleusercontent.com",
+                "client_secret": "s3cret",
+                "issuer": "https://accounts.google.com",
+                "callback_port": 8976
+            })
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the store is the owner's alone");
+        }
+        // Signing out leaves it; forgetting it leaves no empty section.
+        let login = StoredTokens {
+            access_token: "at".to_string(),
+            ..Default::default()
+        };
+        save_tokens(Some(&path), server, Some(&login)).unwrap();
+        save_tokens(Some(&path), server, None).unwrap();
+        assert_eq!(load_client(Some(&path), server), Some(client));
+        save_client(Some(&path), server, None).unwrap();
+        assert_eq!(load_client(Some(&path), server), None);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(written.get("clients").is_none(), "{written}");
+        // Nowhere to keep one is an error; nothing to forget is not.
+        assert!(save_client(None, server, Some(&StoredClient::default())).is_err());
+        assert!(save_client(None, server, None).is_ok());
+    }
+
+    /// `mcp add --client-secret` keeps the secret of the client its entry
+    /// names — a statement of its own, replacing whatever client was kept
+    /// for that address, so an entered one can't outlive it.
+    #[test]
+    fn a_secret_kept_for_an_entry_replaces_an_entered_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        save_client(
+            Some(&path),
+            server,
+            Some(&StoredClient {
+                client_id: Some("typed".to_string()),
+                client_secret: Some("old".to_string()),
+                callback_port: Some(8000),
+                issuer: Some("https://as.test".to_string()),
+            }),
+        )
+        .unwrap();
+        save_client_secret(Some(&path), server, Some("new")).unwrap();
+        assert_eq!(
+            load_client(Some(&path), server),
+            Some(StoredClient {
+                client_secret: Some("new".to_string()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            load_client_secret(Some(&path), server).as_deref(),
+            Some("new")
+        );
+    }
+
     /// A one-route token endpoint answering each request through `answer`
     /// (given the form body) with `(status, JSON body)`; its URL returned.
     fn spawn_token_endpoint(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> String {
@@ -3186,6 +3462,18 @@ mod tests {
         registration: bool,
         register_reply: Option<(u16, &'static str)>,
     ) -> AuthServerFixture {
+        spawn_auth_server_answering(gated, registration, register_reply, None)
+    }
+
+    /// [`spawn_auth_server_behind`], its token endpoint answering
+    /// `token_reply` in place of a grant — an authorization server turning
+    /// the client away when the code is redeemed.
+    fn spawn_auth_server_answering(
+        gated: bool,
+        registration: bool,
+        register_reply: Option<(u16, &'static str)>,
+        token_reply: Option<(u16, &'static str)>,
+    ) -> AuthServerFixture {
         use std::io::{BufRead, BufReader};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -3280,11 +3568,14 @@ mod tests {
                             .lock()
                             .unwrap()
                             .push((head.clone(), body.clone()));
-                        (
-                            200,
-                            r#"{"access_token":"at","refresh_token":"rt","expires_in":3600}"#
-                                .to_string(),
-                        )
+                        match token_reply {
+                            Some((status, reply)) => (status, reply.to_string()),
+                            None => (
+                                200,
+                                r#"{"access_token":"at","refresh_token":"rt","expires_in":3600}"#
+                                    .to_string(),
+                            ),
+                        }
                     }
                     _ => (404, String::new()),
                 };
@@ -3323,7 +3614,7 @@ mod tests {
         store: &Path,
         code: &'static str,
         cancel: &CancelToken,
-    ) -> (Result<(), String>, std::sync::Arc<Recorded>) {
+    ) -> (Result<(), AuthError>, std::sync::Arc<Recorded>) {
         sign_in_with(fixture, store, code, cancel, None)
     }
 
@@ -3333,7 +3624,20 @@ mod tests {
         code: &'static str,
         cancel: &CancelToken,
         client: Option<&crate::mcp::OAuthClientConfig>,
-    ) -> (Result<(), String>, std::sync::Arc<Recorded>) {
+    ) -> (Result<(), AuthError>, std::sync::Arc<Recorded>) {
+        sign_in_asking(fixture, store, code, cancel, client, false)
+    }
+
+    /// [`sign_in_with`], asking for a client first when `ask_client` — the
+    /// user chose to enter one.
+    fn sign_in_asking(
+        fixture: &AuthServerFixture,
+        store: &Path,
+        code: &'static str,
+        cancel: &CancelToken,
+        client: Option<&crate::mcp::OAuthClientConfig>,
+        ask_client: bool,
+    ) -> (Result<(), AuthError>, std::sync::Arc<Recorded>) {
         let (_paste_tx, paste_rx) = mpsc::channel();
         let progress = std::sync::Arc::new(Recorded::approving(code));
         let server_url = format!("{}/mcp", fixture.base);
@@ -3343,12 +3647,43 @@ mod tests {
                 challenge: None,
                 store_path: Some(store),
                 client,
+                ask_client,
             },
             &paste_rx,
             &progress,
             cancel,
         );
         (result, progress)
+    }
+
+    /// The client request a sign-in ended on.
+    fn asked(result: Result<(), AuthError>) -> ClientRequest {
+        match result {
+            Err(AuthError::NeedsClient(request)) => request,
+            other => panic!("the sign-in did not ask for a client: {other:?}"),
+        }
+    }
+
+    /// A client entered in `/mcp` for `fixture`'s authorization server, kept
+    /// in `store` under its server.
+    fn enter_client(fixture: &AuthServerFixture, store: &Path, client: StoredClient) {
+        save_client(
+            Some(store),
+            &format!("{}/mcp", fixture.base),
+            Some(&StoredClient {
+                issuer: client.issuer.or_else(|| Some(fixture.base.clone())),
+                ..client
+            }),
+        )
+        .expect("kept");
+    }
+
+    fn typed(id: &str, secret: Option<&str>) -> StoredClient {
+        StoredClient {
+            client_id: Some(id.to_string()),
+            client_secret: secret.map(str::to_string),
+            ..Default::default()
+        }
     }
 
     fn free_port() -> u16 {
@@ -3421,18 +3756,257 @@ mod tests {
         assert_eq!(port_of(&progress.urls.lock().unwrap()[0]), port);
     }
 
-    /// Without one, such a server's sign-in says how to add one, instead of
-    /// a dead end.
+    /// Without one, such a server's sign-in **asks for one** — the spec's
+    /// last resort, "prompt the user to enter the client information" — and
+    /// in words, where no page is open to ask on, says every way to give it.
     #[test]
-    fn no_registration_and_no_client_says_how_to_add_one() {
+    fn no_registration_and_no_client_asks_for_one() {
         let fixture = spawn_auth_server_with(false, None);
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
-        let error = result.unwrap_err();
+        let (result, progress) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        let error = result.clone().unwrap_err().to_string();
+        for way in ["/mcp", "oauth.clientId", "--client-id"] {
+            assert!(error.contains(way), "{way} missing from {error}");
+        }
+        assert_eq!(
+            asked(result),
+            ClientRequest {
+                issuer: fixture.base.clone(),
+                need: ClientNeed::NoRegistration,
+                client_id: None,
+                has_secret: false,
+                callback_port: None,
+            }
+        );
+        assert!(progress.urls.lock().unwrap().is_empty(), "no URL is shown");
+    }
+
+    /// A client entered in `/mcp` signs in exactly as an entry's does: its
+    /// id on the authorize URL, its secret at the token endpoint, kept with
+    /// the grant for the renewals — and nothing is registered.
+    #[test]
+    fn an_entered_client_signs_in_without_registration() {
+        use std::sync::atomic::Ordering;
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        enter_client(&fixture, &store, typed("typed-cid", Some("typed-secret")));
+        let (result, progress) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        result.expect("signed in");
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(
+            redirect_param(&url, "client_id").as_deref(),
+            Some("typed-cid")
+        );
+        let requests = fixture.token_requests.lock().unwrap();
+        let (_, body) = &requests[0];
         assert!(
-            error.contains("oauth.clientId") && error.contains("--client-id"),
-            "{error}"
+            body.contains("client_id=typed-cid") && body.contains("client_secret=typed-secret"),
+            "{body}"
+        );
+        let server = format!("{}/mcp", fixture.base);
+        let stored = load_tokens(Some(&store), &server).unwrap();
+        assert_eq!(stored.client_id, "typed-cid");
+        assert_eq!(stored.client_secret.as_deref(), Some("typed-secret"));
+        // The sign-in leaves the entered client where it was.
+        assert_eq!(
+            load_client(Some(&store), &server)
+                .unwrap()
+                .client_id
+                .as_deref(),
+            Some("typed-cid")
+        );
+    }
+
+    /// The port entered with a client is the one its redirect URI was
+    /// registered with: the sign-in listens there, or says it can't.
+    #[test]
+    fn an_entered_client_holds_its_callback_port() {
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        enter_client(
+            &fixture,
+            &store,
+            StoredClient {
+                callback_port: Some(port),
+                ..typed("typed-cid", None)
+            },
+        );
+        let (result, progress) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        result.expect("signed in");
+        assert_eq!(port_of(&progress.urls.lock().unwrap()[0]), port);
+        // A public client names itself and sends no secret.
+        let requests = fixture.token_requests.lock().unwrap();
+        let (_, body) = &requests[0];
+        assert!(
+            body.contains("client_id=typed-cid") && !body.contains("client_secret"),
+            "{body}"
+        );
+        drop(requests);
+        let _squatter = TcpListener::bind(("127.0.0.1", port)).expect("take the port");
+        let (result, progress) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(&port.to_string()), "{error}");
+        assert!(progress.urls.lock().unwrap().is_empty(), "no URL is shown");
+    }
+
+    /// A client is its authorization server's alone (the spec's binding):
+    /// one entered for another issuer is never presented here. Where this
+    /// server registers clients the sign-in registers afresh; where it
+    /// doesn't, it asks again, starting from nothing.
+    #[test]
+    fn an_entered_client_is_never_presented_to_another_authorization_server() {
+        use std::sync::atomic::Ordering;
+        let foreign = StoredClient {
+            issuer: Some("https://other.test".to_string()),
+            ..typed("foreign-cid", Some("foreign-secret"))
+        };
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        enter_client(&fixture, &store, foreign.clone());
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        result.expect("signed in");
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+        let requests = fixture.token_requests.lock().unwrap();
+        let (head, body) = &requests[0];
+        assert!(body.contains("client_id=cid-1"), "{body}");
+        assert!(
+            !body.contains("foreign") && !head.contains("foreign"),
+            "{head}{body}"
+        );
+        drop(requests);
+        let fixture = spawn_auth_server_with(false, None);
+        let store = dir.path().join("unregistering.json");
+        enter_client(&fixture, &store, foreign);
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        let request = asked(result);
+        assert_eq!(request.need, ClientNeed::NoRegistration);
+        assert_eq!(
+            request.client_id, None,
+            "another server's id is not offered"
+        );
+        assert!(fixture.token_requests.lock().unwrap().is_empty());
+    }
+
+    /// `Set OAuth client`: the user chose to enter one, so the sign-in stops
+    /// as soon as it knows the authorization server and asks — whatever the
+    /// server could have registered, and before anything is shown — handing
+    /// over the client in effect for the form to start from.
+    #[test]
+    fn a_sign_in_told_to_ask_stops_at_the_authorization_server() {
+        use std::sync::atomic::Ordering;
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let cancel = CancelToken::new();
+        let (result, progress) = sign_in_asking(&fixture, &store, "c", &cancel, None, true);
+        assert_eq!(
+            asked(result),
+            ClientRequest {
+                issuer: fixture.base.clone(),
+                need: ClientNeed::Asked,
+                client_id: None,
+                has_secret: false,
+                callback_port: None,
+            }
+        );
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+        assert!(progress.urls.lock().unwrap().is_empty());
+        // The entry's client, its secret kept by `mcp add --client-secret`.
+        let entry = crate::mcp::OAuthClientConfig {
+            client_id: Some("pre-cid".to_string()),
+            callback_port: Some(8976),
+            ..Default::default()
+        };
+        save_client_secret(Some(&store), &format!("{}/mcp", fixture.base), Some("kept")).unwrap();
+        let (result, _) = sign_in_asking(&fixture, &store, "c", &cancel, Some(&entry), true);
+        let request = asked(result);
+        assert_eq!(request.client_id.as_deref(), Some("pre-cid"));
+        assert!(request.has_secret);
+        assert_eq!(request.callback_port, Some(8976));
+        // An entered one, in its place.
+        enter_client(&fixture, &store, typed("typed-cid", None));
+        let (result, _) = sign_in_asking(&fixture, &store, "c", &cancel, Some(&entry), true);
+        let request = asked(result);
+        assert_eq!(request.client_id.as_deref(), Some("typed-cid"));
+        assert!(!request.has_secret);
+        assert_eq!(request.callback_port, Some(8976), "the entry's port holds");
+    }
+
+    /// An authorization server that turns the client away when the code is
+    /// redeemed — a wrong secret, a client it does not know — is asked for
+    /// the client again, with its own words: the form reopens on what was
+    /// entered. Any other refusal is a failure, and so is one of a client
+    /// the flow registered itself, which no form can correct.
+    #[test]
+    fn a_client_the_token_endpoint_turns_away_is_asked_for_again() {
+        let denied = Some((
+            401,
+            r#"{"error":"invalid_client","error_description":"The OAuth client was not found."}"#,
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = spawn_auth_server_answering(false, false, None, denied);
+        let store = dir.path().join("typed.json");
+        enter_client(&fixture, &store, typed("typed-cid", Some("wrong")));
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        let words = result.clone().unwrap_err().to_string();
+        assert!(words.contains("The OAuth client was not found."), "{words}");
+        let request = asked(result);
+        assert_eq!(
+            request.need,
+            ClientNeed::Rejected(
+                "HTTP 401: invalid_client: The OAuth client was not found.".to_string()
+            )
+        );
+        assert_eq!(request.client_id.as_deref(), Some("typed-cid"));
+        // The pairing the server just refused is not one to offer to keep:
+        // the secret is retyped — or left out, for a client that turns out
+        // to be public and was turned away *for* presenting one.
+        assert!(!request.has_secret);
+        // The entered client stays kept: the form starts from it.
+        assert!(load_client(Some(&store), &format!("{}/mcp", fixture.base)).is_some());
+        // Google's words for a secret it was not sent.
+        let fixture = spawn_auth_server_answering(
+            false,
+            false,
+            None,
+            Some((
+                400,
+                r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#,
+            )),
+        );
+        let store = dir.path().join("google.json");
+        enter_client(&fixture, &store, typed("typed-cid", None));
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        assert!(matches!(asked(result).need, ClientNeed::Rejected(_)));
+        // A refusal that is not about the client.
+        let fixture = spawn_auth_server_answering(
+            false,
+            false,
+            None,
+            Some((400, r#"{"error":"invalid_grant"}"#)),
+        );
+        let store = dir.path().join("grant.json");
+        enter_client(&fixture, &store, typed("typed-cid", Some("right")));
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        assert_eq!(
+            result,
+            Err(AuthError::Failed(
+                "token exchange failed: HTTP 400: invalid_grant".to_string()
+            ))
+        );
+        // A client the flow registered itself.
+        let fixture = spawn_auth_server_answering(false, true, None, denied);
+        let store = dir.path().join("registered.json");
+        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        assert!(
+            matches!(&result, Err(AuthError::Failed(detail)) if detail.contains("invalid_client")),
+            "{result:?}"
         );
     }
 
@@ -3452,7 +4026,7 @@ mod tests {
         };
         let (result, progress) =
             sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
-        let error = result.unwrap_err();
+        let error = result.unwrap_err().to_string();
         assert!(error.contains(&port.to_string()), "{error}");
         assert!(progress.urls.lock().unwrap().is_empty());
     }
@@ -3578,6 +4152,7 @@ mod tests {
                     challenge,
                     store_path: Some(store),
                     client: None,
+                    ask_client: false,
                 },
                 &paste_rx,
                 &progress,
@@ -3666,23 +4241,46 @@ mod tests {
         assert!(!body.contains("client_secret"), "{body}");
     }
 
-    /// The registration endpoint's own reason reaches the user (RFC 7591
-    /// §3.2.2), not a bare status.
+    /// An authorization server that offers registration and refuses this
+    /// app leaves the same one way in as one that offers none: the sign-in
+    /// asks for a client, carrying the registration endpoint's own reason
+    /// (RFC 7591 §3.2.2), not a bare status. A registration that merely
+    /// failed — the server down, or busy — is a failure to try again, never
+    /// a reason to ask for a client that would change nothing.
     #[test]
-    fn a_refused_registration_says_why() {
+    fn a_refused_registration_asks_for_a_client_and_says_why() {
         let fixture = spawn_auth_server(Some((
             400,
             r#"{"error":"invalid_redirect_uri","error_description":"loopback redirects are not allowed"}"#,
         )));
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
-        let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
-        let error = result.expect_err("refused");
+        let (result, progress) = sign_in(&fixture, &store, "c", &CancelToken::new());
+        let error = result.clone().expect_err("refused").to_string();
         assert!(
             error.contains("invalid_redirect_uri")
                 && error.contains("loopback redirects are not allowed"),
             "{error}"
         );
+        let request = asked(result);
+        assert_eq!(
+            request.need,
+            ClientNeed::RegistrationRefused(
+                "HTTP 400: invalid_redirect_uri: loopback redirects are not allowed".to_string()
+            )
+        );
+        assert_eq!(request.issuer, fixture.base);
+        assert!(progress.urls.lock().unwrap().is_empty());
+        for status in [503, 429] {
+            let fixture =
+                spawn_auth_server(Some((status, r#"{"error":"temporarily_unavailable"}"#)));
+            let store = dir.path().join(format!("busy-{status}.json"));
+            let (result, _) = sign_in(&fixture, &store, "c", &CancelToken::new());
+            assert!(
+                matches!(&result, Err(AuthError::Failed(detail)) if detail.contains("registration failed")),
+                "{status}: {result:?}"
+            );
+        }
     }
 
     /// A refusal that is a web page — a gateway's, not the authorization
@@ -3729,6 +4327,7 @@ mod tests {
                 challenge: None,
                 store_path: None,
                 client: None,
+                ask_client: false,
             },
             &paste_rx,
             &progress,

@@ -2,19 +2,73 @@
 //! a content-driven framed body ([`mcp_view_lines`] builds it line by line,
 //! so the height falls out as `lines.len()` and [`mcp_menu_height`] /
 //! [`render_mcp_menu`] can never disagree), the pages walking
-//! servers → server detail → tools → tool detail, plus the OAuth page.
+//! servers → server detail → tools → tool detail, plus the OAuth page — and
+//! the form that page becomes when a sign-in needs an OAuth client only the
+//! user can give, whose secret is **masked here, in the builder**: a flowed
+//! row is committed to real scrollback as text (the `/secrets` rule).
+//! [`mcp_build`] returns that form's caret seat with the lines, since three
+//! fields make "the row with the `❯`" a question the lines alone can't
+//! answer.
 
 use super::inline::wrap_inline;
 use super::menu::centered_window;
 use super::model_view::{
-    linked_segments, model_linked_rows, model_rule, model_url_rows, whole_url_run,
+    linked_segments, model_linked_rows, model_rule, model_url_rows, model_wrapped_rows,
+    whole_url_run,
 };
+use super::secrets_view::{form_field_line, text_rows};
 use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
-use crate::app::{McpMenu, McpPage, server_actions};
-use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name, wire_names};
+use crate::app::{McpClientField, McpClientForm, McpMenu, McpPage, server_actions};
+use crate::mcp::{
+    ClientNeed, ClientSource, McpServerSnapshot, McpServerStatus, callback_redirect, issuer_host,
+    parse_callback_port, tool_parameters, tool_wire_name, wire_names,
+};
+
+/// A built page: its lines, and the caret's `(column, row)` within them
+/// where the page seats one itself — the client form's focused field.
+/// `None` everywhere else: the menus seat on their `❯`, the auth page on its
+/// `URL >` field.
+pub(super) struct McpBuild {
+    pub(super) lines: Vec<Line<'static>>,
+    pub(super) cursor: Option<(u16, usize)>,
+}
+
+impl McpBuild {
+    /// A page with no caret of its own.
+    fn of(lines: Vec<Line<'static>>) -> Self {
+        Self {
+            lines,
+            cursor: None,
+        }
+    }
+}
+
+/// One block of a page and, when the caret sits in it, its
+/// `(column, row within the block)`.
+type Block = (Vec<Line<'static>>, Option<(u16, usize)>);
+
+/// `blocks` framed: a top rule, the blocks joined by exactly one blank row —
+/// an empty one skipped, so no two blank rows stack and none hugs a rule
+/// (`docs/view-flow.md`) — a bottom rule; and the caret's seat in the
+/// result, when one of the blocks holds it.
+fn framed(blocks: Vec<Block>, width: u16) -> McpBuild {
+    let mut lines = vec![model_rule(width)];
+    let mut cursor = None;
+    for (i, (block, seat)) in blocks.into_iter().filter(|b| !b.0.is_empty()).enumerate() {
+        if i > 0 {
+            lines.push(Line::default());
+        }
+        if let Some((col, row)) = seat {
+            cursor = Some((col, lines.len() + row));
+        }
+        lines.extend(block);
+    }
+    lines.push(model_rule(width));
+    McpBuild { lines, cursor }
+}
 
 /// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
 /// ([`ellipsize`] — a cut row says so, never a silent clip).
@@ -520,6 +574,20 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
             width,
         ));
     }
+    // The client it signs in as, and where that came from — never a secret:
+    // the snapshot carries none.
+    if let Some(client) = &server.client {
+        let source = match client.source {
+            ClientSource::Entered => MCP_CLIENT_ENTERED,
+            ClientSource::Config => MCP_CLIENT_FROM_CONFIG,
+        };
+        lines.extend(field_lines(
+            MCP_CLIENT_ROW_LABEL,
+            &format!("{} ({source})", client.client_id),
+            value,
+            width,
+        ));
+    }
     // The protocol revision the handshake settled on — a fact only a server
     // that actually initialized can report.
     if let Some(version) = server
@@ -825,30 +893,216 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     lines
 }
 
+/// The page the auth page shows while the manager finds who issues the
+/// client the user chose to enter: a wait, with nothing to type into.
+fn asking_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_CLIENT_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(dim_wrapped(&mcp_client_asking(&server.name), width));
+    lines.extend([
+        Line::default(),
+        dim_line(HOOKS_DETAIL_HINT, width),
+        model_rule(width),
+    ]);
+    lines
+}
+
+/// The client form (`docs/mcp.md` *Pre-registered clients*): who asks and
+/// why; the three fields — the id wrapped whole, the secret **masked**, the
+/// port — with the caret in the focused one; the redirect URI the sign-in
+/// will listen on, following the port as it is typed; the refusal in red
+/// when the last Enter was turned back; and the hint.
+fn client_form_blocks(form: &McpClientForm, server: &McpServerSnapshot, width: u16) -> Vec<Block> {
+    let dim = model_meta_color();
+    let ink = Style::new().fg(model_id_color());
+    let host = issuer_host(&form.request.issuer);
+    let head = vec![title_line(
+        &format!("{MCP_CLIENT_TITLE}{}", server.name),
+        width,
+    )];
+
+    // Why the form is up — the authorization server by the name a person
+    // knows it by — and, under it, that server's own words when it has any.
+    let (sentence, quoted) = match &form.request.need {
+        ClientNeed::NoRegistration => (format!("{host}{MCP_CLIENT_NO_REGISTRATION}"), None),
+        ClientNeed::RegistrationRefused(reason) => {
+            (format!("{host}{MCP_CLIENT_REFUSED}"), Some(reason))
+        }
+        ClientNeed::Rejected(reason) => (format!("{host}{MCP_CLIENT_REJECTED}"), Some(reason)),
+        ClientNeed::Asked => (format!("{MCP_CLIENT_ASKED}{host}."), None),
+    };
+    let mut why = dim_wrapped(&format!("{sentence} {MCP_CLIENT_KEPT_NOTE}"), width);
+    if let Some(reason) = quoted {
+        // A reason can name a page to act on (a console to enable something
+        // in): its URL is linked, the `/login` failures' rule.
+        why.extend(model_linked_rows(reason, error_color(), width));
+    }
+
+    let room = (width as usize)
+        .saturating_sub(usize::from(MCP_CLIENT_FIELD_COL))
+        .max(1);
+    let mut fields: Vec<Line<'static>> = Vec::new();
+    let mut caret = (0_usize, 0_usize);
+    let mut push_rows = |fields: &mut Vec<Line<'static>>,
+                         label: &str,
+                         field: McpClientField,
+                         rows: Vec<Vec<Span<'static>>>,
+                         seat: (usize, usize)| {
+        let focused = form.focus == field;
+        if focused {
+            caret = (seat.0, fields.len() + seat.1);
+        }
+        for (i, content) in rows.into_iter().enumerate() {
+            let label = (i == 0).then_some(label);
+            fields.push(form_field_line(
+                label,
+                MCP_CLIENT_LABEL_WIDTH,
+                focused,
+                content,
+                width,
+            ));
+        }
+    };
+
+    // The id wraps under itself: real ones run past seventy characters, and
+    // the tail is what tells two of them apart.
+    let (rows, seat) = text_rows(&form.client_id, MCP_CLIENT_ID_EMPTY, ink, room);
+    push_rows(
+        &mut fields,
+        MCP_CLIENT_ID_LABEL,
+        McpClientField::ClientId,
+        rows,
+        seat,
+    );
+
+    // The secret: never its text — one dot per character typed, capped at
+    // the field (one column kept for the caret), so a keystroke shows
+    // without the secret being readable. Empty, it says what empty does.
+    let typed = form.secret.char_count();
+    let (rows, seat) = if typed == 0 {
+        let hint = if form.keeps_secret() {
+            MCP_CLIENT_SECRET_KEEP
+        } else {
+            MCP_CLIENT_SECRET_EMPTY
+        };
+        (
+            vec![vec![Span::styled(
+                ellipsize(hint, room),
+                Style::new().fg(dim),
+            )]],
+            (0, 0),
+        )
+    } else {
+        let shown = typed.min(room.saturating_sub(1).max(1));
+        let mask: String = std::iter::repeat_n(LOGIN_MASK_CHAR, shown).collect();
+        (vec![vec![Span::styled(mask, ink)]], (shown, 0))
+    };
+    push_rows(
+        &mut fields,
+        MCP_CLIENT_SECRET_LABEL,
+        McpClientField::Secret,
+        rows,
+        seat,
+    );
+
+    let (rows, seat) = text_rows(&form.port, MCP_CLIENT_PORT_EMPTY, ink, room);
+    push_rows(
+        &mut fields,
+        MCP_CLIENT_PORT_LABEL,
+        McpClientField::Port,
+        rows,
+        seat,
+    );
+    let col = MCP_CLIENT_FIELD_COL.saturating_add(u16::try_from(caret.0).unwrap_or(u16::MAX));
+
+    // The redirect URI the sign-in will listen on — what a provider that
+    // matches redirects exactly must be told — following the port as typed:
+    // a port that is none stands in for nothing.
+    let port = parse_callback_port(form.port.text()).ok().flatten();
+    let label_cols = cols(MCP_CLIENT_REDIRECT_LABEL);
+    let uri_room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + label_cols)
+        .max(1) as u16;
+    let mut redirect: Vec<Line<'static>> = wrap_output(&callback_redirect(port), uri_room)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let label = if i == 0 {
+                MCP_CLIENT_REDIRECT_LABEL.to_string()
+            } else {
+                " ".repeat(label_cols)
+            };
+            Line::from(vec![
+                Span::raw(MODEL_INDENT),
+                Span::styled(label, Style::new().fg(dim)),
+                Span::styled(row, Style::new().fg(model_selected_color())),
+            ])
+        })
+        .collect();
+    let note = match port {
+        Some(_) => MCP_CLIENT_REDIRECT_NOTE.to_string(),
+        None => format!("{MCP_CLIENT_REDIRECT_NOTE} {MCP_CLIENT_ANY_PORT_NOTE}"),
+    };
+    redirect.extend(dim_wrapped(&note, width));
+
+    let mut blocks: Vec<Block> = vec![
+        (head, None),
+        (why, None),
+        (fields, Some((col, caret.1))),
+        (redirect, None),
+    ];
+    if let Some(error) = &form.error {
+        blocks.push((
+            model_wrapped_rows(
+                &format!("{SECRETS_ERROR_MARK}{error}"),
+                error_color(),
+                width,
+            ),
+            None,
+        ));
+    }
+    let hint = if form.focus == McpClientField::Port {
+        MCP_CLIENT_HINT_SAVE
+    } else {
+        MCP_CLIENT_HINT_NEXT
+    };
+    blocks.push((dim_wrapped(hint, width), None));
+    blocks
+}
+
+/// The framed page and, on the client form, its caret — what
+/// [`mcp_view_lines`] takes its lines from and `cursor_position` its seat.
+/// Empty when the menu is closed.
+pub(super) fn mcp_build(app: &App, width: u16) -> McpBuild {
+    let Some(menu) = &app.mcp_menu else {
+        return McpBuild::of(Vec::new());
+    };
+    // Derived, never stored: the `/settings` **MCP** row the session runs.
+    let mcp_on = app.settings().mcp_active();
+    let Some(server) = menu.current_server().filter(|_| menu.page != McpPage::List) else {
+        return McpBuild::of(list_lines(menu, mcp_on, width));
+    };
+    McpBuild::of(match &menu.page {
+        McpPage::List => unreachable!("matched above"),
+        McpPage::Server => server_lines(menu, server, width),
+        McpPage::Tools => tools_lines(menu, server, width),
+        McpPage::Tool { tool } => tool_lines_page(server, *tool, width),
+        McpPage::Auth => match &menu.auth.client {
+            Some(form) => return framed(client_form_blocks(form, server, width), width),
+            None if menu.auth.asking => asking_lines(server, width),
+            None => auth_lines(menu, server, width),
+        },
+    })
+}
+
 /// The whole framed body for the menu's current page — empty when the menu
 /// is closed. What [`render_mcp_menu`] paints and [`mcp_menu_height`] counts.
 #[must_use]
 pub fn mcp_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let Some(menu) = &app.mcp_menu else {
-        return Vec::new();
-    };
-    // Derived, never stored: the `/settings` **MCP** row the session runs.
-    let mcp_on = app.settings().mcp_active();
-    match &menu.page {
-        McpPage::List => list_lines(menu, mcp_on, width),
-        page => {
-            let Some(server) = menu.current_server() else {
-                return list_lines(menu, mcp_on, width);
-            };
-            match page {
-                McpPage::Server => server_lines(menu, server, width),
-                McpPage::Tools => tools_lines(menu, server, width),
-                McpPage::Tool { tool } => tool_lines_page(server, *tool, width),
-                McpPage::Auth => auth_lines(menu, server, width),
-                McpPage::List => unreachable!("matched above"),
-            }
-        }
-    }
+    mcp_build(app, width).lines
 }
 
 /// The inline live-region height when the `/mcp` manager is open, or `None`

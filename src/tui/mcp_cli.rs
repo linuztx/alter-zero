@@ -73,6 +73,25 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
                             if let Some(store) = store {
                                 println!("Client secret: kept in {}", store.display());
                             }
+                        } else if config
+                            .oauth()
+                            .is_some_and(|oauth| oauth.client_id.is_some())
+                        {
+                            // An entry naming its own client is the statement
+                            // about this address: a client entered in `/mcp`
+                            // for an earlier entry there would otherwise sign
+                            // in in its place, unseen (`docs/mcp.md`).
+                            let store = config::mcp_auth_path();
+                            let url = resolved_url(config);
+                            if alter_zero::llm::mcp::load_client(store.as_deref(), &url).is_some() {
+                                alter_zero::llm::mcp::save_client(store.as_deref(), &url, None)
+                                    .map_err(|e| {
+                                        format!(
+                                            "Added the server, but couldn't forget the client \
+                                             kept for its address: {e}"
+                                        )
+                                    })?;
+                            }
                         }
                         Ok(())
                     }
@@ -235,7 +254,36 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
             }
         }
     }
-    if let Some(oauth) = config.oauth() {
+    // What the token store keeps for the server's address: a client entered
+    // in `/mcp` — the one a sign-in uses, ahead of the entry's own — or the
+    // secret kept for the entry's (`docs/mcp.md` *Pre-registered clients*).
+    let kept = config.url().and_then(|_| {
+        alter_zero::llm::mcp::load_client(config::mcp_auth_path().as_deref(), &resolved_url(config))
+    });
+    let oauth = config.oauth();
+    if let Some(entered) = kept.as_ref().filter(|client| client.is_entered()) {
+        let id = entered.client_id.as_deref().unwrap_or_default();
+        println!("  OAuth client: {id} (entered in /mcp)");
+        if let Some(port) = entered
+            .callback_port
+            .or_else(|| oauth.and_then(|oauth| oauth.callback_port))
+        {
+            println!("  Callback port: {port}");
+        }
+        if let Some(scopes) = oauth.and_then(|oauth| oauth.scopes.as_ref()) {
+            println!("  Scopes: {scopes}");
+        }
+        // Where the secret is — never the secret.
+        if entered.client_secret.is_some() {
+            println!("  Client secret: kept with the tokens");
+        }
+        if let Some(own) = oauth
+            .and_then(|oauth| oauth.client_id.as_deref())
+            .filter(|own| *own != id)
+        {
+            println!("  The file's own client, {own}, is not used while that one is kept");
+        }
+    } else if let Some(oauth) = oauth {
         if let Some(id) = &oauth.client_id {
             println!("  OAuth client: {id}");
         }
@@ -246,11 +294,7 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
             println!("  Scopes: {scopes}");
         }
         // Where the secret is — never the secret.
-        let kept = alter_zero::llm::mcp::load_client_secret(
-            config::mcp_auth_path().as_deref(),
-            &resolved_url(config),
-        )
-        .is_some();
+        let kept = kept.is_some_and(|client| client.client_secret.is_some());
         match (&oauth.client_secret, kept) {
             (Some(_), _) => println!("  Client secret: ***** (in the file)"),
             (None, true) => println!("  Client secret: kept with the tokens"),

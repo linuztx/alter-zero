@@ -989,6 +989,7 @@ fn tall_mcp_server_app() -> App {
         },
         status: crate::mcp::McpServerStatus::Connected,
         auth: None,
+        client: None,
         identity: None,
         excluded: Vec::new(),
         tools: Vec::new(),

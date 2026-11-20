@@ -26,6 +26,7 @@ fn tall_mcp_app() -> App {
         },
         status: McpServerStatus::Connected,
         auth: None,
+        client: None,
         identity: None,
         excluded: Vec::new(),
         tools: vec![McpToolInfo {
@@ -57,6 +58,7 @@ fn tall_mcp_server_app(first_arg: &str) -> App {
         },
         status: McpServerStatus::Connected,
         auth: None,
+        client: None,
         identity: None,
         excluded: Vec::new(),
         tools: Vec::new(),

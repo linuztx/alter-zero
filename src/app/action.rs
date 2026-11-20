@@ -540,4 +540,19 @@ pub enum McpOp {
     /// Enter on the auth page's `URL >` field: hand the pasted redirect URL
     /// to the waiting flow.
     SubmitAuthUrl { text: String },
+    /// `Set OAuth client` / `Change OAuth client`: find the server's
+    /// authorization server and ask for a client — the auth page is already
+    /// up, and becomes the form when the request arrives on the MCP event
+    /// channel (`docs/mcp.md` *Pre-registered clients*).
+    AskAuthClient { server: String },
+    /// The client form, submitted: keep the client for the server and sign
+    /// in with it. Its secret is a [`SecretValue`](crate::secrets::SecretValue),
+    /// so the action prints without it.
+    SaveAuthClient {
+        server: String,
+        client: crate::mcp::EnteredClient,
+    },
+    /// `Forget OAuth client`: forget the client entered for the server, and
+    /// the login made with it.
+    ForgetClient { server: String },
 }

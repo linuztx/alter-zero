@@ -328,6 +328,17 @@ in **`src/llm/mcp/`**.
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,
   multi-line data, comment lines) shared by both HTTP transports; pure over
   `&str` pushes, tested without a socket.
+- `mcp::client` — the OAuth client a sign-in presents when the user
+  supplies one (*Pre-registered clients*, below): `StoredClient`, what the
+  token store keeps for a server (its `Debug` prints no secret);
+  `preregistered_client`, **which** of the entry's client and the kept one a
+  sign-in to a given authorization server uses; `stored_from_entered`, the
+  one entry a submitted form becomes; `ClientRequest`/`ClientNeed`, what the
+  flow asks the `/mcp` page for when it has none, and `EnteredClient`, what
+  the page's form hands back (its secret a `secrets::SecretValue`, so the
+  action carrying it prints without it); `McpClientInfo`, the client a
+  server's page names; and the small shared spellings — `issuers_match`,
+  `issuer_host`, `callback_redirect`, `parse_callback_port`.
 - `mcp::status` — what the UI consumes: `McpServerSnapshot { name, scope,
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
@@ -380,7 +391,7 @@ editable only by hand — a `NotAuthenticated` server affords `Authenticate`
 (reachable now from the connected and failed pages too, not only from
 needs-auth), and a header or a public server affords neither.
 
-### Servers that list their tools to anyone (Google's) — not supported yet
+### Servers that list their tools to anyone (Google's) — held for a sign-in
 
 Google's MCP servers (`drivemcp.googleapis.com`, `calendarmcp.googleapis.com`,
 `gmailmcp.googleapis.com`, …) answer the connect and list their tools without
@@ -392,15 +403,15 @@ registration, no client metadata documents — so this app can't sign in to
 them without an OAuth client the user creates in Google Cloud
 (*Pre-registered clients*, below).
 
-**Servers of this kind are not supported yet.** An anonymous connect to one
-(remote, no stored grant, no `Authorization` header) is **held**: it reads
-`△ needs authentication` and `Auth: ✘ not authenticated`, the connection is
-dropped, and none of its tools are offered to the model, the main session's
-or a subagent's, so neither are its instructions. The connect worker holds
-it when:
+An anonymous connect to a server of this kind (remote, no stored grant, no
+`Authorization` header) is **held**: it reads `△ needs authentication` and
+`Auth: ✘ not authenticated`, the connection is dropped, and none of its
+tools are offered to the model, the main session's or a subagent's, so
+neither are its instructions. The connect worker holds it when:
 
-- the entry names its own OAuth client (`oauth.clientId`) — a login the
-  user asked for, whatever the server lets through; or
+- an OAuth client is on hand for it — its entry's own (`oauth.clientId`),
+  or one entered in `/mcp` (`ServerState::client`) — a login the user asked
+  for, whatever the server lets through; or
 - `oauth::protected_without_registration` says so: the server publishes
   protected-resource metadata (RFC 9728, a document whose `resource` is its
   own) naming an authorization server whose metadata offers no
@@ -423,16 +434,16 @@ no apps would be held too. `live_google_servers_wait_for_sign_in_while_open_ones
 (`tests/live_mcp.rs`, ignored by default) checks both sides against the real
 servers.
 
-Pressing **Authenticate** on a held server with no client configured ends
-with the existing explanation: the provider registers no clients itself,
-so add one as `oauth.clientId` or with `alter-zero mcp add --client-id …
---client-secret`. Signing in with such a client is **experimental** — it
+Pressing **Authenticate** on a held server with no client on hand **asks
+for one**: the page becomes the client form (*The client form*, below) —
+the id, the secret, the callback port — and signs in with what it is given.
+Signing in to Google's with such a client is still **experimental**: it
 follows Google's published metadata (the trailing-slash issuer, the 401
 whose metadata URL names the tool rather than the server, the parameters
-that get a refresh token) but has not been tried end to end. Fuller support
-is future work: a guided client setup on the Authenticate page, Client ID
-Metadata Documents for the providers that offer them (Devin's), and a
-verified Google sign-in.
+that get a refresh token), and the form is driven end to end against a stub
+of that shape (`smoke.sh` Phase 162), but not against Google itself. What
+stays future work: Client ID Metadata Documents for the providers that
+offer them (Devin's), and a verified Google sign-in.
 
 `src/llm/mcp/` (boundary, verified hermetically against in-process fixtures —
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
@@ -758,8 +769,8 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   from a client that registered none.
   A refused registration or exchange carries the server's own `error` and
   `error_description` (`oauth_error_detail`) rather than a bare status, and
-  a server offering no registration says how to add a pre-registered
-  client (below).
+  a server offering no registration — or refusing this app's — **asks for
+  a pre-registered client** (below) instead of failing.
 
   **Pre-registered clients.** Some authorization servers register no
   clients at all — Google's, for its MCP servers (`calendarmcp.googleapis.com`
@@ -788,21 +799,115 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   owner-only, apart from the login so "Clear authentication" leaves it), and
   a `clientSecret` in the entry, `${VAR}`-expanded like the rest of it, is
   read too — under the same provider-key guard, which covers the `oauth`
-  values of a project's remote server. `run_auth_flow` (over a `SignIn`:
-  the server, its challenge, the store, this client) uses a configured
-  client ahead of any reused or registered one and never registers;
-  authenticates it as a public client without a secret, or with one in the
-  form body unless the server takes only HTTP Basic
-  (`configured_auth_method`); and stores the id and secret with the grant,
-  so a refresh presents them too. An authorization server with needs of its
-  own gets them on the authorize URL (`provider_authorize_params`): Google
-  issues a refresh token only for `access_type=offline` and re-issues one
-  only with `prompt=consent`, or the login lapses within the hour. A
-  server whose entry names a client waits for that login even when it let
-  an anonymous connect through (*Servers that list their tools to anyone*,
-  above), and signing in to Google's this way is **experimental**: it
-  follows Google's published metadata, but has not been tried end to end.
-  The review's `ServerParts` names an `oauth` change (`the OAuth client`).
+  values of a project's remote server.
+
+  **Or the user types it in `/mcp`.** The spec's registration order is a
+  pre-registered client, then a client metadata document, then dynamic
+  registration, then *"prompt the user to enter the client information if
+  no other option is available"* — and a config file is a poor prompt: the
+  user finds out a client is needed by pressing Authenticate, and a
+  project's or a plugin's entry is not theirs to write one into. So a
+  sign-in with no client to sign in as **asks the page** (`run_auth_flow`
+  ends in `AuthError::NeedsClient`, the manager sends
+  `McpEvent::AuthNeedsClient`, the auth page becomes *The client form*,
+  below), and what the form hands back is kept where the CLI's secret
+  already is — the token store's `clients` section, one entry per server
+  address, replaced whole (`mcp::StoredClient`, `oauth::save_client`):
+
+  ```json
+  "clients": {
+    "https://calendarmcp.googleapis.com/mcp/v1": {
+      "client_id": "123.apps.googleusercontent.com",
+      "client_secret": "GOCSPX-…",
+      "issuer": "https://accounts.google.com",
+      "callback_port": 8976
+    }
+  }
+  ```
+
+  An entry with a `client_id` is a client **entered** in `/mcp`; one with a
+  `client_secret` alone is the secret the CLI kept for the client the
+  server's *entry* names. The store, never an `mcp.json`: it is owner-only,
+  it is the one place every scope's server can be given a client, and
+  nothing written there changes a project server's reviewed fingerprint.
+
+  Which client a sign-in uses is one pure rule, `mcp::preregistered_client`
+  (the entry's `oauth`, the kept client, the issuer discovery found):
+
+  - **What was entered in `/mcp` wins** over the entry's own client. It is
+    what the user last said, and the only way a shared entry's client can
+    be replaced by one's own; the server's page says which is in effect
+    (`OAuth client: … (entered here)` / `(from its config)`), and `mcp get`
+    says so too, naming the file's own as not used.
+  - **It is its authorization server's alone.** It is kept with the
+    `issuer` it was entered for and never presented to another (the spec's
+    *authorization server binding*; `issuers_match` allows the one trailing
+    slash by which Google's two documents differ). Where discovery now
+    names another issuer the entered client is simply not on hand: the
+    entry's own signs in, or the server registers this app, or the page
+    asks again — starting from nothing, the old id never offered.
+  - Short of its own, it takes the entry's secret and port **when it is the
+    entry's own client** (the same id): `Change OAuth client` over a
+    configured client, to give it a port, must not cost it its secret.
+  - An entry's client takes the secret kept for it, and never an entered
+    client's — that one is another client's secret.
+
+  A submitted form becomes the one kept entry through
+  `mcp::stored_from_entered`, whose one subtlety is the secret: a provider
+  may show a secret **once**, so the form never loads a kept one back and a
+  field left empty **keeps** it — but only the secret that is this
+  client's (the same id, entered for the same authorization server, or the
+  one kept for the entry's client when the entry names this id). Change the
+  id and the empty field is a public client; the form's hint says which.
+
+  `run_auth_flow` (over a `SignIn`: the server, its challenge, the store,
+  the entry's `oauth`, and whether to ask) reads the kept client itself,
+  beside the grant, so what another session entered a moment ago counts. A
+  pre-registered client is used ahead of any reused or registered one and
+  nothing is registered; it authenticates as a public client without a
+  secret, or with one in the form body unless the server takes only HTTP
+  Basic (`configured_auth_method`); and its id and secret are stored with
+  the grant, so a refresh presents them too. The flow **asks**
+  (`ClientNeed`) in four cases, each of which the form words differently:
+
+  | `ClientNeed` | When |
+  |---|---|
+  | `NoRegistration` | no client on hand, none reusable, and the metadata offers no `registration_endpoint` |
+  | `RegistrationRefused(reason)` | the registration endpoint answered a `4xx` (but `408`/`429`, which only say "later", and a `5xx` stay failures to retry — a client would change nothing) |
+  | `Rejected(reason)` | the token endpoint turned a **pre-registered** client away: `invalid_client`, `unauthorized_client`, or Google's `invalid_request` naming `client_secret` |
+  | `Asked` | the user chose `Set OAuth client`: the flow stops as soon as it knows the authorization server, signing in to nothing |
+
+  A rejected client stays kept — the form reopens on its id — but the
+  request says **no secret is kept**: the pairing just refused is not one
+  to offer to keep, and the two corrections are both typed there, the right
+  secret, or none at all (Entra turns a *public* client away *for*
+  presenting a secret). A client the flow registered itself that is turned
+  away stays a failure: no form corrects that. Where no page is open to ask
+  on, `AuthError`'s own words say every way to give a client.
+
+  An authorization server with needs of its own gets them on the authorize
+  URL (`provider_authorize_params`): Google issues a refresh token only for
+  `access_type=offline` and re-issues one only with `prompt=consent`, or
+  the login lapses within the hour. A server with a client on hand waits
+  for that login even when it let an anonymous connect through (*Servers
+  that list their tools to anyone*, above), and signing in to Google's this
+  way is **experimental**: it follows Google's published metadata, but has
+  not been tried against Google end to end. The review's `ServerParts`
+  names an `oauth` change (`the OAuth client`) — an entry's, the only kind
+  a review sees.
+
+  **What was weighed and refused.** Writing the typed id into the user's
+  `mcp.json` (the CLI's place for it) would leave project and plugin
+  servers with nowhere to put one, re-render an entry lossily (no writer
+  edits an entry in place), and split one credential over two files.
+  Asking for a secret *before* the browser, whenever the metadata lists no
+  `none` method, turns away the public clients of servers whose metadata
+  merely omits it (Entra's does). A default callback port would collide
+  across sessions; the form asks instead, and shows the redirect URI either
+  way. And provider-specific setup steps on the page (which kind of Google
+  client to create) would be this app's guess at another product's
+  console — the page says what is true of every provider, the redirect URI
+  to register, and leaves the console to its own docs.
 
   **The sign-in's requests name this client too.** The metadata documents,
   the registration, the exchange and every renewal go out on
@@ -1191,8 +1296,9 @@ closing hint the way the Ctrl+O/Ctrl+D/`/resume` overlays do
 (`overlay_cursor_seat`'s rule), never on the framing rule under it: the
 far corner of the bottom rule is where an unconfigured `/mcp` used to send
 a kitty cursor animation on every open, `docs/view-flow.md`; the Auth
-page's `URL >` field is typed into, so its caret comes back — the
-amend-field exception) — ↑/↓ (wrapping at the ends)/digits/Enter/Esc, a selection-centred
+page's `URL >` field is typed into, and so is the client form that page
+becomes, so there the caret comes back — the amend-field exception) — ↑/↓
+(wrapping at the ends)/digits/Enter/Esc, a selection-centred
 window with `↑ N more above` / `↓ N more below` overflow markers, working
 mid-turn (the strip stays above it). Pages:
 
@@ -1208,7 +1314,10 @@ mid-turn (the strip stays above it). Pages:
    mark on one row. An empty list names both file paths — "why isn't my
    server here?" is its only question.
 2. **Server detail** — the fact rows the state affords: `Status:`, `Auth:`
-   (only when auth matters — the `auth_state` rule above), `Protocol:` (the
+   (only when auth matters — the `auth_state` rule above), `OAuth client:`
+   (the pre-registered client it signs in as, when one is on hand, and
+   where it came from — `… (entered here)` or `… (from its config)` — never
+   a secret: the snapshot carries none), `Protocol:` (the
    revision the era detection settled — `2026-07-28` on a modern server,
    whatever `initialize` negotiated on a legacy one; hidden until the server
    has initialized), URL-or-command, config location (+ capabilities and
@@ -1217,7 +1326,17 @@ mid-turn (the strip stays above it). Pages:
    `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
    `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
-   `Enable`; off (MCP off for the session, above) → `Disable`. When a fresh snapshot changes the list under the user the
+   `Enable`; off (MCP off for the session, above) → `Disable`. **Wherever a
+   sign-in can be made, the client to make it as can be given**, on the
+   rows right under the sign-in's own: `Set OAuth client` when none is on
+   hand, `Change OAuth client` when one is — the entry's included, to give
+   it a secret or a port — and `Forget OAuth client` for one entered here
+   (an entry's own is its file's to remove). The first two open the client
+   form; forgetting removes what the token store keeps for the server **and
+   the login made as that client** (`McpManager::forget_client`): the grant
+   holds its own copy of the id and secret, so a client that outlived its
+   forgetting would not be forgotten at all — a login made as another
+   client is left alone. When a fresh snapshot changes the list under the user the
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first
@@ -1258,6 +1377,73 @@ mid-turn (the strip stays above it). Pages:
    byte stream against a stub server that demands OAuth.
    Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
+
+   **The client form.** A sign-in with no client to sign in as — or `Set
+   OAuth client` / `Change OAuth client` — turns this page into a form, the
+   `/secrets` form's shape (`app::McpClientForm`, `ui::mcp_view`'s
+   `client_form_blocks`):
+
+   ```text
+   ────────────────────────────────────────────────────────────────
+     OAuth client for calendar
+
+     accounts.google.com registers no clients itself, so signing in
+     needs an OAuth client you create there. It is kept with your
+     logins on this machine, never in an mcp.json.
+
+     ❯ Client ID      123.apps.googleusercontent.com
+       Client secret  leave empty for a public client
+       Callback port  any free port
+
+     Redirect URI: http://localhost:PORT/callback
+     Register it with the client if the provider asks for a redirect
+     URI. PORT is any free port — set a callback port when the provider
+     needs the exact one.
+
+     Enter for the next field · Tab/↑↓ to move · Esc to go back
+   ────────────────────────────────────────────────────────────────
+   ```
+
+   - **Who asks, and why**, in the first paragraph: the authorization
+     server by the name a person knows it by (`issuer_host`), one sentence
+     per `ClientNeed`, and under it the server's own words when it has any
+     (a refused registration's, a rejected client's) — whole, in the
+     failures' colour, a URL in them linked.
+   - **Three fields, one required.** The id wraps under itself (real ones
+     run past seventy characters and the tail tells two apart); the secret
+     is **masked in the builder**, one dot a character and capped a column
+     short of the field — a flowed row is committed to real scrollback as
+     text, the `/secrets` rule — and lives in a `secrets::SecretValue`,
+     whose `Debug` says `<redacted>`, in the form and in the
+     `McpOp::SaveAuthClient` the boundary is handed; the port takes digits.
+     An empty optional field says what empty does: `leave empty for a
+     public client` — or `leave empty to keep the secret already kept` over
+     a client whose secret is kept, until the id is changed — and `any free
+     port`.
+   - **The redirect URI follows the port as it is typed**, since that row
+     is what the user copies into the provider's console: `PORT` stands in
+     until a port is a port, and the note under it then drops the sentence
+     about any free port.
+   - The `/secrets` grammar: typing goes to the focused field, Tab/↓ and
+     Shift+Tab/↑ move (wrapping), Enter moves on and **signs in from the
+     last field**, Ctrl+U empties the field, ←/→/Home/End/Delete move
+     through the id and the port (a mask has nothing to move through), a
+     paste lands in the focused field on one line — never in the redirect
+     field behind the form — and Esc goes back, cancelling nothing: the
+     sign-in that asked has already ended. A form the sign-in could not
+     use never leaves: `✗ Enter the client ID`, or the port's range, shows
+     under the fields with the focus on the one at fault.
+   - Submitting hands the client to the manager, which keeps it and signs
+     in at once; the page is the sign-in's again (`Preparing the
+     authorization request…`, then the URL). A client the token endpoint
+     turns away brings the form back on its id, with the reason.
+   - `Set OAuth client` opens the page **asking** first (`McpAuthView::asking`
+     — `Finding where {server} signs in…`, no field, no caret): the manager
+     runs discovery to learn which authorization server the client is for,
+     and the form arrives with that. Esc there calls the lookup off.
+   - The caret is the builder's to place (`mcp_build` returns it with the
+     lines, as `secrets_build` does): three fields make "the row with the
+     `❯`" a question the lines alone can't answer.
 
    **One sign-in at a time, and each knows whether it still is the one.**
    The manager keeps the running flow as an `AuthFlow` with an id; a second
@@ -1379,7 +1565,11 @@ or closing purge-rebuilds so no stale page text survives
 
 Ops dispatch as `Action::McpOp(op)` to `tui::mcp::Session::apply_mcp_op`,
 which runs connection work on worker threads and persists disabled state
-via the user-file read-modify-write; every completion reports on the MCP
+via the user-file read-modify-write — and hands the client form's three
+(`AskAuthClient`, `SaveAuthClient`, `ForgetClient`) to the manager's
+`ask_for_client`/`save_client`/`forget_client`, the first two on the
+sign-in's own worker, where the token store's write may wait on another
+session's; every completion reports on the MCP
 event channel, which re-injects the snapshot (`App::set_mcp_snapshot`) and
 schedules a frame — the picker is always looking at live state, and a
 pending row shows `… connecting` until its thread reports.
@@ -1412,7 +1602,8 @@ one asking for input anyway gets the recoverable red outcome naming what it
 asked for rather than a stalled turn. Response caching (`ttlMs`/`cacheScope`
 parse-through but nothing caches) and CIMD client registration (we are not a
 hosted client with an `https` client id — DCR, deprecated but retained, is
-our registration path) stay out with it.
+our registration path, and where a server offers neither the user's own
+client is asked for, the spec's last step) stay out with it.
 
 **A server that says its tools changed is listed again.** A
 `notifications/tools/list_changed` reaches the manager from wherever the
@@ -1487,7 +1678,17 @@ each **behind a gateway that answers any request naming no client with a
 them prove every request carries the `User-Agent`, whichever request it
 is. The same scripted server puts a gateway's `502`/`503` page, or a
 connection closed without a word, in the place of any answer it is told
-to, which is how a connect's retries are counted request by request. What
+to, which is how a connect's retries are counted request by request. The
+client form's whole path has the same fixtures — an authorization server
+with no registration endpoint, one refusing a registration, one whose token
+endpoint turns the client away — under `oauth`'s and the manager's tests
+(the request the flow ends on, the kept entry, the issuer binding, the
+forgetting), its state machine and rendering under `app::tests::mcp_menu`
+and `ui::tests::mcp_view`, and `smoke.sh` Phase 162 drives it on screen
+against a stub of that shape with `curl` as the browser: a wrong secret,
+the reopened form, the right one, the kept entry (owner-only, never in
+`mcp.json`), `mcp get`, a changed port, and the forgetting — and neither
+secret anywhere on screen, scrollback included. What
 those can't prove — that a real server's tools, descriptions and parallel
 batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
 like every other live test:

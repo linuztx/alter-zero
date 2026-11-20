@@ -100,9 +100,10 @@ alter-zero mcp list
   that broke Claude Code's own help example). Repeated keys: last wins.
 - **A pre-registered OAuth client** — for a server whose login provider
   registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
-  clients*; Google's servers are not supported yet, and signing in to them
-  this way is experimental, *Servers that list their tools to anyone*) —
-  is the flags other MCP clients' CLIs document:
+  clients*; signing in to Google's servers this way is experimental,
+  *Servers that list their tools to anyone*) — can be typed into `/mcp`,
+  which asks for one when a sign-in needs it, or given here, with the flags
+  other MCP clients' CLIs document:
   `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
   object (remote only; with a command they are a usage error), and
   `--client-secret` is a **switch**, never a value — `--client-secret=…`
@@ -118,6 +119,15 @@ alter-zero mcp list
   in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
   `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
   `***** (in the file)` for a `clientSecret` written there), never what.
+  A client **entered in `/mcp`** is kept in that same store, not in the
+  file, and is the one a sign-in uses: `get` names it — `OAuth client: …
+  (entered in /mcp)` — and, where the file names another, says that one is
+  not used. So an entry **added with its own client** (`--client-id`) is
+  the statement about its address: whatever client was kept there — one
+  entered for an earlier entry at that URL — is forgotten, by the secret
+  written now or, with no `--client-secret`, outright, rather than left to
+  sign in in the new client's place unseen. An entry added without a client
+  leaves what is kept alone.
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules

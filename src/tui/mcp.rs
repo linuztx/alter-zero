@@ -230,6 +230,22 @@ impl Session<'_> {
                 }
             }
             McpOp::SubmitAuthUrl { text } => manager.submit_auth_paste(&text),
+            // The client form (`docs/mcp.md` *Pre-registered clients*): the
+            // lookup, the keep-and-sign-in and their outcomes all run on
+            // the manager's worker and report on the event channel.
+            McpOp::AskAuthClient { server } => manager.ask_for_client(&server),
+            McpOp::SaveAuthClient { server, client } => manager.save_client(&server, client),
+            McpOp::ForgetClient { server } => match manager.forget_client(&server) {
+                Ok(true) => self.toast(
+                    format!("Forgot {server}'s OAuth client and signed out of it"),
+                    ToastKind::Info,
+                ),
+                Ok(false) => self.toast(format!("Forgot {server}'s OAuth client"), ToastKind::Info),
+                Err(error) => self.toast(
+                    format!("Couldn't forget {server}'s OAuth client: {error}"),
+                    ToastKind::Error,
+                ),
+            },
         }
     }
 
@@ -244,6 +260,15 @@ impl Session<'_> {
             }
             McpEvent::AuthPasteRejected { server, reason } => {
                 self.app.reject_mcp_auth_paste(&server, &reason);
+            }
+            // The sign-in has no client to sign in as: its page becomes the
+            // form that asks for one — or, the page left meanwhile, a toast
+            // says every way to give it.
+            McpEvent::AuthNeedsClient { server, request } => {
+                if !self.app.ask_mcp_client(&server, &request) {
+                    let needs = alter_zero::llm::mcp::AuthError::NeedsClient(request);
+                    self.toast(format!("{server}: {needs}"), ToastKind::Error);
+                }
             }
             McpEvent::AuthDone { server, ok, detail } => {
                 self.app.finish_mcp_auth(&server);

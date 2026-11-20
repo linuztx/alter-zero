@@ -5,6 +5,7 @@
 
 use serde_json::Value;
 
+use super::client::McpClientInfo;
 use super::config::{McpScope, McpServerConfig};
 use super::protocol::{ExcludedTool, McpToolInfo, ServerIdentity};
 
@@ -176,6 +177,10 @@ pub struct McpServerSnapshot {
     pub status: McpServerStatus,
     /// `None` for stdio (no auth row); `Some` for remote servers.
     pub auth: Option<McpAuthState>,
+    /// The pre-registered OAuth client it signs in as, when one is on hand
+    /// — entered in `/mcp`, or its entry's — and never a secret
+    /// (`docs/mcp.md` *Pre-registered clients*).
+    pub client: Option<McpClientInfo>,
     /// The server's identity once connected.
     pub identity: Option<ServerIdentity>,
     /// The tools the server listed, in the server's order.
@@ -289,6 +294,7 @@ mod tests {
             },
             status,
             auth: Some(McpAuthState::NotAuthenticated),
+            client: None,
             identity: None,
             excluded: Vec::new(),
             tools: (0..tools)

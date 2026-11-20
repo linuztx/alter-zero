@@ -14,6 +14,28 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/mcp` asks for the OAuth client a server can't register.** Some
+  sign-in providers register no apps themselves — Google's, for its MCP
+  servers — so signing in needs an OAuth client you create with them, and
+  the only places to put one were the config file and the `mcp add` flags:
+  Authenticate ended in an explanation. It now asks. The page becomes a
+  form — the client ID, the client secret (masked; optional, since a public
+  client has none) and the callback port (optional: any free port, unless
+  the provider needs the exact one) — over the redirect URI to register
+  with the provider, and signs in with what you give it. It asks too when a
+  server that does register apps refuses this one, and again, in the
+  provider's own words, when the client is turned away (a wrong secret).
+  The client is kept with your logins in `~/.alter-zero/mcp-auth.json` —
+  owner-only, never in an `mcp.json`, so a project's or a plugin's server
+  can be given one — and is used only with the sign-in provider it was
+  entered for. A server's page names the client it signs in as and where it
+  came from, and offers `Set OAuth client` / `Change OAuth client` (a
+  secret left empty keeps the one already kept, since some providers show
+  it once) and `Forget OAuth client`, which also signs out of the login
+  made with it. `mcp get` names a client entered this way, never its
+  secret, and an entry added with its own `--client-id` replaces one kept
+  for the same address (`docs/mcp.md`).
+
 - **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
   GitHub `owner/repo`, any git URL, or a directory — and install the plugins
   it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex

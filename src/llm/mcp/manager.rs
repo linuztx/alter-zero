@@ -45,6 +45,15 @@ pub enum McpEvent {
     /// sign-in's — and the flow keeps waiting: the auth page shows why and
     /// takes another paste.
     AuthPasteRejected { server: String, reason: String },
+    /// A sign-in has no client to sign in as, or the user asked to enter
+    /// one: the auth page becomes the form that asks for it, and what it
+    /// hands back comes in through [`McpManager::save_client`]
+    /// (`docs/mcp.md` *Pre-registered clients*). Sent in an outcome's place,
+    /// never beside one — asking is not failing.
+    AuthNeedsClient {
+        server: String,
+        request: crate::mcp::ClientRequest,
+    },
 }
 
 /// Why the session is holding a project server back
@@ -244,6 +253,11 @@ struct ServerState {
     /// reason, whoever asks it to connect.
     name_problem: Option<String>,
     has_tokens: bool,
+    /// The pre-registered OAuth client this server signs in as, when one is
+    /// on hand — what its page names and what holds an anonymous connect
+    /// for a sign-in. Read from the entry and the token store like
+    /// `has_tokens`, and again whenever either may have changed.
+    client: Option<crate::mcp::McpClientInfo>,
     /// The last 401's `WWW-Authenticate` challenge. Discovery runs blind
     /// without it: the challenge names the `resource_metadata` URL a server
     /// publishes off the well-known path, and the `scope` the resource
@@ -265,6 +279,16 @@ impl ServerState {
     /// couldn't be resolved.
     fn url(&self) -> Option<&str> {
         self.resolved.as_ref().ok()?.url()
+    }
+
+    /// The pre-registered client in effect for this server: the one
+    /// entered in `/mcp` and kept in the store at `auth_path`, else the one
+    /// its entry names ([`crate::mcp::client_in_effect`]).
+    fn client_in_effect(
+        &self,
+        auth_path: Option<&std::path::Path>,
+    ) -> Option<crate::mcp::McpClientInfo> {
+        client_in_effect(self.resolved.as_ref().ok()?, auth_path)
     }
 
     /// Why this server can't be connected at all, whoever asks: a name it
@@ -335,6 +359,17 @@ struct Inner {
     protected_env: std::collections::BTreeSet<String>,
 }
 
+/// The pre-registered client a remote `config` signs in as: the one kept in
+/// the token store at `auth_path` for its address, else its own `oauth`
+/// object's — `None` for a stdio server, which signs in to nothing.
+fn client_in_effect(
+    config: &McpServerConfig,
+    auth_path: Option<&std::path::Path>,
+) -> Option<crate::mcp::McpClientInfo> {
+    let kept = oauth::load_client(auth_path, config.url()?);
+    crate::mcp::client_in_effect(config.oauth(), kept.as_ref())
+}
+
 /// One server's state as declared: its config resolved — `${VAR}`s from the
 /// session's environment, unless the entry is to be used as written — and
 /// its starting status: held by the review, switched off by the user,
@@ -364,6 +399,10 @@ fn server_state(
         .ok()
         .and_then(McpServerConfig::url)
         .is_some_and(|url| oauth::load_tokens(auth_path, url).is_some());
+    let client = resolved
+        .as_ref()
+        .ok()
+        .and_then(|config| client_in_effect(config, auth_path));
     let blocked = name_problem
         .clone()
         .or_else(|| resolved.as_ref().err().cloned());
@@ -387,6 +426,7 @@ fn server_state(
         last_restart: None,
         name_problem,
         has_tokens,
+        client,
         challenge: None,
         generation: 0,
         relisting: false,
@@ -668,7 +708,7 @@ impl McpManager {
     /// Connect (or re-connect) one server on a worker thread — never one the
     /// review is holding, and nothing at all while MCP is off, whoever asks.
     fn spawn_connect(&self, name: &str) {
-        let (config, auth_path, cwd, timeout, generation) = {
+        let (config, auth_path, cwd, timeout, generation, names_client) = {
             let mut inner = self.lock();
             if inner.held.contains_key(name) {
                 return;
@@ -712,10 +752,14 @@ impl McpManager {
             server.has_tokens = server
                 .url()
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
+            // A client on hand — the entry's own, or one entered in `/mcp`
+            // — is a login the user asked for.
+            server.client = server.client_in_effect(auth_path.as_deref());
+            let names_client = server.client.is_some();
             let Ok(config) = server.resolved.clone() else {
                 return; // `blocked` said so above
             };
-            (config, auth_path, cwd, timeout, generation)
+            (config, auth_path, cwd, timeout, generation, names_client)
         };
         self.notify(McpEvent::Changed);
         let manager = self.clone();
@@ -736,9 +780,6 @@ impl McpManager {
             // `Authorization` header in the entry.
             let mut anonymous =
                 config.url().is_some() && bearer.is_none() && !config.has_auth_header();
-            let names_client = config
-                .oauth()
-                .is_some_and(|oauth| oauth.client_id.is_some());
             // Asked beside the handshake rather than after it, so a server
             // that publishes no metadata connects no slower.
             let probe = config
@@ -787,10 +828,11 @@ impl McpManager {
             }
             // An anonymous connect is no proof the calls will be served:
             // Google's MCP servers list their tools to anyone and refuse
-            // every call. A server whose entry names its OAuth client, or an
-            // OAuth resource whose authorization server can't register this
-            // app, waits for a sign-in instead of offering the model tools
-            // that only fail (`docs/mcp.md`).
+            // every call. A server with an OAuth client on hand (its
+            // entry's, or one entered in `/mcp`), or an OAuth resource whose
+            // authorization server can't register this app, waits for a
+            // sign-in instead of offering the model tools that only fail
+            // (`docs/mcp.md`).
             if result.is_ok()
                 && anonymous
                 && (names_client || probe.is_some_and(|probe| probe.join().unwrap_or(false)))
@@ -1087,8 +1129,38 @@ impl McpManager {
     /// ends it touches nothing of the new one's — its paste channel, its
     /// cancel, its page.
     ///
+    /// A sign-in with no client to sign in as — its authorization server
+    /// registers none itself, and none is on hand — ends in
+    /// [`McpEvent::AuthNeedsClient`] rather than an outcome: the page asks,
+    /// and [`save_client`] signs in with the answer.
+    ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
+    /// [`save_client`]: McpManager::save_client
     pub fn authenticate(&self, name: &str) {
+        self.sign_in(name, None, false);
+    }
+
+    /// `Set OAuth client` on a server's page: find its authorization server
+    /// and ask the page for a client ([`McpEvent::AuthNeedsClient`], carrying
+    /// the one in effect for the form to start from) — signing in to
+    /// nothing, whatever the server could have registered itself.
+    pub fn ask_for_client(&self, name: &str) {
+        self.sign_in(name, None, true);
+    }
+
+    /// The `/mcp` form's answer: keep `client` for the server — in the token
+    /// store, owner-only, bound to the authorization server it was entered
+    /// for, never in an `mcp.json` — and sign in with it. A client that
+    /// can't be kept fails the sign-in with the reason: the grant would
+    /// outlive a client nothing remembers.
+    pub fn save_client(&self, name: &str, client: crate::mcp::EnteredClient) {
+        self.sign_in(name, Some(client), false);
+    }
+
+    /// One sign-in on a worker thread: keep `entered` first when the form
+    /// handed one over, then run the flow — to its end, or, with
+    /// `ask_client`, only as far as knowing the authorization server.
+    fn sign_in(&self, name: &str, entered: Option<crate::mcp::EnteredClient>, ask_client: bool) {
         let (url, challenge, auth_path, configured) = {
             let inner = self.lock();
             if !inner.active {
@@ -1122,6 +1194,10 @@ impl McpManager {
                 url,
                 server.challenge.clone(),
                 inner.auth_path.clone(),
+                // The entry's pre-registered client, as its file gives it:
+                // what the token store keeps for the server — a client
+                // entered in `/mcp`, or the secret `mcp add --client-secret`
+                // kept — the flow reads itself.
                 server
                     .resolved
                     .as_ref()
@@ -1130,14 +1206,6 @@ impl McpManager {
                     .cloned(),
             )
         };
-        // The entry's pre-registered client, its secret the file's or the
-        // one `mcp add --client-secret` kept with the tokens.
-        let client = configured.map(|mut client| {
-            if client.client_secret.is_none() {
-                client.client_secret = oauth::load_client_secret(auth_path.as_deref(), &url);
-            }
-            client
-        });
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
         let id = {
@@ -1179,28 +1247,47 @@ impl McpManager {
                 manager: manager.clone(),
                 server: name.clone(),
             };
-            let result = oauth::run_auth_flow(
-                &oauth::SignIn {
-                    server_url: &url,
-                    challenge: challenge.as_deref(),
-                    store_path: auth_path.as_deref(),
-                    client: client.as_ref(),
-                },
-                &paste_rx,
-                &progress,
-                &cancel,
-            );
+            // The form's client is kept before anything is signed in to —
+            // here, on the worker: the store's write may wait on another
+            // session's.
+            let kept = entered.map_or(Ok(()), |entered| {
+                let stored = crate::mcp::stored_from_entered(
+                    &entered,
+                    oauth::load_client(auth_path.as_deref(), &url).as_ref(),
+                    configured.as_ref(),
+                );
+                oauth::save_client(auth_path.as_deref(), &url, Some(&stored))
+                    .map_err(|e| format!("couldn't keep the OAuth client: {e}"))
+            });
+            let result = kept.map_err(oauth::AuthError::Failed).and_then(|()| {
+                oauth::run_auth_flow(
+                    &oauth::SignIn {
+                        server_url: &url,
+                        challenge: challenge.as_deref(),
+                        store_path: auth_path.as_deref(),
+                        client: configured.as_ref(),
+                        ask_client,
+                    },
+                    &paste_rx,
+                    &progress,
+                    &cancel,
+                )
+            });
             let current = {
                 let mut inner = manager.lock();
                 let current = inner.auth_flow.as_ref().is_some_and(|flow| flow.id == id);
                 if current {
                     inner.auth_flow = None;
                 }
-                // A grant is a grant, whoever was waiting for it.
-                if result.is_ok()
-                    && let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name)
-                {
-                    server.has_tokens = true;
+                if let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) {
+                    // A grant is a grant, whoever was waiting for it.
+                    if result.is_ok() {
+                        server.has_tokens = true;
+                    }
+                    // What the store keeps for the server may have changed:
+                    // a client the form just handed over, or another
+                    // session's.
+                    server.client = server.client_in_effect(auth_path.as_deref());
                 }
                 current
             };
@@ -1215,13 +1302,79 @@ impl McpManager {
                 }
                 // The user's own Esc, or a newer flow's page: nothing to say.
                 Err(_) if !current || cancel.is_cancelled() => manager.notify(McpEvent::Changed),
-                Err(detail) => manager.notify(McpEvent::AuthDone {
+                // No client to sign in as: the page asks for one.
+                Err(oauth::AuthError::NeedsClient(request)) => {
+                    manager.notify(McpEvent::AuthNeedsClient {
+                        server: name.clone(),
+                        request,
+                    });
+                }
+                Err(oauth::AuthError::Failed(detail)) => manager.notify(McpEvent::AuthDone {
                     server: name.clone(),
                     ok: false,
                     detail,
                 }),
             }
         });
+    }
+
+    /// Forget the client entered in `/mcp` for a server (its page's `Forget
+    /// OAuth client`): what the token store keeps for it goes, and with it
+    /// the login made as that client — the grant keeps its own copy of the
+    /// id and secret, so a client that outlived its forgetting would not be
+    /// forgotten at all. `Ok(true)` when a login went too; a login made as
+    /// another client is left alone, and so is a server nothing was entered
+    /// for.
+    ///
+    /// # Errors
+    /// The store couldn't be rewritten — the client is still there, and
+    /// saying "forgotten" would be a lie.
+    pub fn forget_client(&self, name: &str) -> Result<bool, String> {
+        let (url, auth_path) = {
+            let inner = self.lock();
+            let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
+                return Ok(false);
+            };
+            (server.url().map(str::to_string), inner.auth_path.clone())
+        };
+        let Some(url) = url else {
+            return Ok(false);
+        };
+        // The store's I/O runs outside the manager's lock: its file lock may
+        // wait on another session's write.
+        let entered =
+            oauth::load_client(auth_path.as_deref(), &url).and_then(|client| client.client_id);
+        let Some(client_id) = entered else {
+            return Ok(false);
+        };
+        oauth::save_client(auth_path.as_deref(), &url, None)?;
+        let signed_out = oauth::load_tokens(auth_path.as_deref(), &url)
+            .is_some_and(|tokens| tokens.client_id == client_id);
+        if signed_out {
+            oauth::save_tokens(auth_path.as_deref(), &url, None)?;
+        }
+        let reconnect = {
+            let mut inner = self.lock();
+            let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
+                return Ok(signed_out);
+            };
+            server.client = server.client_in_effect(auth_path.as_deref());
+            if signed_out {
+                server.has_tokens = false;
+            }
+            // The live connection still carries the old bearer — the
+            // `clear_auth` rule.
+            signed_out
+                && matches!(
+                    server.status,
+                    McpServerStatus::Connected | McpServerStatus::Failed(_)
+                )
+        };
+        self.notify(McpEvent::Changed);
+        if reconnect {
+            self.spawn_connect(name);
+        }
+        Ok(signed_out)
     }
 
     /// Hand the running auth flow a pasted redirect URL (the `URL >`
@@ -1265,6 +1418,7 @@ impl McpManager {
                     server.has_tokens,
                     &server.status,
                 ),
+                client: server.client.clone(),
                 identity: server.identity.clone(),
                 tools: server.tools.clone(),
                 excluded: server.excluded.clone(),
@@ -2190,6 +2344,68 @@ done"#
         );
         assert!(offered_names(&manager).is_empty());
         manager.shutdown();
+    }
+
+    /// A client entered in `/mcp` asks for a login exactly as an entry's
+    /// does: its server waits for the sign-in, whatever it lets through.
+    #[test]
+    fn a_server_with_an_entered_client_waits_for_sign_in() {
+        let url = spawn_changing_http();
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        oauth::save_client(
+            Some(&store),
+            &url,
+            Some(&crate::mcp::StoredClient {
+                client_id: Some("typed-cid".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![http_entry("calendar", &url, None)],
+                project: "/proj".to_string(),
+                auth_path: Some(store),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_status(&manager, "calendar", |status| {
+            *status != McpServerStatus::Pending
+        });
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::NeedsAuth);
+        assert!(offered_names(&manager).is_empty());
+        manager.shutdown();
+    }
+
+    /// The server's page names the client it signs in as — an entry's own
+    /// here — and never a secret: the snapshot carries none.
+    #[test]
+    fn the_snapshot_names_an_entrys_client() {
+        let oauth = crate::mcp::OAuthClientConfig {
+            client_id: Some("from-config".to_string()),
+            client_secret: Some("in-file".to_string()),
+            ..Default::default()
+        };
+        let (manager, _rx) = manager_with(vec![http_entry(
+            "calendar",
+            "https://s.test/mcp",
+            Some(oauth),
+        )]);
+        assert_eq!(
+            manager.snapshot()[0].client,
+            Some(crate::mcp::McpClientInfo {
+                client_id: "from-config".to_string(),
+                source: crate::mcp::ClientSource::Config,
+            })
+        );
+        assert_eq!(
+            manager_with(vec![stdio_entry("fix")]).0.snapshot()[0].client,
+            None
+        );
     }
 
     /// The instructions the reminder carries: only a connected server with
@@ -4042,6 +4258,12 @@ done
     /// Everything else 404s — the reconnect after a sign-in fails, which no
     /// test here reads.
     fn spawn_signin_server() -> String {
+        spawn_signin_server_with(true)
+    }
+
+    /// [`spawn_signin_server`], offering dynamic registration only when
+    /// `registers` — Google's authorization server offers none.
+    fn spawn_signin_server_with(registers: bool) -> String {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -4073,7 +4295,12 @@ done
                         r#"{{"resource":"{served}/mcp","authorization_servers":["{served}"]}}"#
                     ),
                     "/.well-known/oauth-authorization-server" => format!(
-                        r#"{{"issuer":"{served}","authorization_endpoint":"{served}/authorize","token_endpoint":"{served}/token","registration_endpoint":"{served}/register","code_challenge_methods_supported":["S256"]}}"#
+                        r#"{{"issuer":"{served}","authorization_endpoint":"{served}/authorize","token_endpoint":"{served}/token",{registration}"code_challenge_methods_supported":["S256"]}}"#,
+                        registration = if registers {
+                            format!(r#""registration_endpoint":"{served}/register","#)
+                        } else {
+                            String::new()
+                        }
                     ),
                     "/register" => r#"{"client_id":"cid"}"#.to_string(),
                     "/token" => r#"{"access_token":"tok","refresh_token":"rt","expires_in":3600}"#
@@ -4199,6 +4426,241 @@ done
         let (ok, detail) =
             next_event(&mut rx, Duration::from_secs(5), auth_done).expect("the new one finishes");
         assert!(ok, "{detail}");
+        manager.shutdown();
+    }
+
+    fn needs_client(event: &McpEvent) -> Option<crate::mcp::ClientRequest> {
+        match event {
+            McpEvent::AuthNeedsClient { server, request } if server == "srv" => {
+                Some(request.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The redirect a user who approved `authorize_url` comes back with.
+    fn approved(authorize_url: &str) -> String {
+        format!(
+            "http://localhost:1/callback?code=c&state={}",
+            crate::llm::mcp::url_encode(
+                &crate::llm::mcp::redirect_param(authorize_url, "state").unwrap()
+            )
+        )
+    }
+
+    fn form_client(issuer: &str, id: &str, secret: Option<&str>) -> crate::mcp::EnteredClient {
+        crate::mcp::EnteredClient {
+            issuer: issuer.to_string(),
+            client_id: id.to_string(),
+            client_secret: secret.map(crate::secrets::SecretValue::new),
+            keep_secret: false,
+            callback_port: None,
+        }
+    }
+
+    /// The spec's last resort, end to end: a server whose authorization
+    /// server registers no clients **asks the page for one** instead of
+    /// failing, and the client the page hands back is kept — under the
+    /// server, for that authorization server — and signed in with at once.
+    #[test]
+    fn a_sign_in_with_no_client_asks_for_one_and_signs_in_with_what_was_entered() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let (manager, mut rx) = signin_manager(&base, &store);
+        let server = format!("{base}/mcp");
+        assert_eq!(manager.snapshot()[0].client, None);
+        manager.authenticate("srv");
+        let request =
+            next_event(&mut rx, Duration::from_secs(5), needs_client).expect("asked for a client");
+        assert_eq!(request.issuer, base);
+        assert_eq!(request.need, crate::mcp::ClientNeed::NoRegistration);
+        assert_eq!(request.client_id, None);
+        // Asking is not failing: no red outcome rides beside the request.
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(300), auth_done),
+            None
+        );
+        manager.save_client("srv", form_client(&base, "typed-cid", Some("s3cret")));
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        assert_eq!(
+            crate::llm::mcp::redirect_param(&url, "client_id").as_deref(),
+            Some("typed-cid")
+        );
+        manager.submit_auth_paste(&approved(&url));
+        let (ok, detail) =
+            next_event(&mut rx, Duration::from_secs(5), auth_done).expect("the sign-in finishes");
+        assert!(ok, "{detail}");
+        assert_eq!(
+            oauth::load_client(Some(&store), &server),
+            Some(crate::mcp::StoredClient {
+                client_id: Some("typed-cid".to_string()),
+                client_secret: Some("s3cret".to_string()),
+                callback_port: None,
+                issuer: Some(base.clone()),
+            })
+        );
+        assert_eq!(
+            oauth::load_tokens(Some(&store), &server).unwrap().client_id,
+            "typed-cid"
+        );
+        // The server's page names it, and where it came from.
+        assert_eq!(
+            manager.snapshot()[0].client,
+            Some(crate::mcp::McpClientInfo {
+                client_id: "typed-cid".to_string(),
+                source: crate::mcp::ClientSource::Entered,
+            })
+        );
+        manager.shutdown();
+    }
+
+    /// `Set OAuth client`: asking finds the authorization server and hands
+    /// the page the client in effect, signing in to nothing — even where the
+    /// server would have registered one itself.
+    #[test]
+    fn asking_for_a_client_signs_in_to_nothing() {
+        let base = spawn_signin_server();
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, mut rx) = signin_manager(&base, &dir.path().join("mcp-auth.json"));
+        manager.ask_for_client("srv");
+        let request =
+            next_event(&mut rx, Duration::from_secs(5), needs_client).expect("asked for a client");
+        assert_eq!(request.need, crate::mcp::ClientNeed::Asked);
+        assert_eq!(request.issuer, base);
+        assert_eq!(
+            next_event(&mut rx, Duration::from_millis(300), auth_url),
+            None,
+            "nothing is signed in to"
+        );
+        manager.shutdown();
+    }
+
+    /// A field left empty over a client whose secret is kept keeps it — a
+    /// provider may show a secret only once — and the store entry is the one
+    /// client: the port given now, the same secret.
+    #[test]
+    fn an_empty_secret_keeps_the_one_kept_for_the_same_client() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{base}/mcp");
+        oauth::save_client(
+            Some(&store),
+            &server,
+            Some(&crate::mcp::StoredClient {
+                client_id: Some("typed-cid".to_string()),
+                client_secret: Some("s3cret".to_string()),
+                callback_port: None,
+                issuer: Some(base.clone()),
+            }),
+        )
+        .unwrap();
+        let (manager, mut rx) = signin_manager(&base, &store);
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        manager.save_client(
+            "srv",
+            crate::mcp::EnteredClient {
+                keep_secret: true,
+                callback_port: Some(port),
+                ..form_client(&base, "typed-cid", None)
+            },
+        );
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        let redirect = crate::llm::mcp::redirect_param(&url, "redirect_uri").unwrap();
+        assert_eq!(redirect, format!("http://localhost:{port}/callback"));
+        let kept = oauth::load_client(Some(&store), &server).unwrap();
+        assert_eq!(kept.client_secret.as_deref(), Some("s3cret"));
+        assert_eq!(kept.callback_port, Some(port));
+        manager.shutdown();
+    }
+
+    /// A client that can't be kept is a sign-in that can't be made: the
+    /// reason reaches the page instead of a sign-in as nobody.
+    #[test]
+    fn a_client_that_cant_be_kept_fails_the_sign_in_with_the_reason() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        // A store that is a directory can be neither read nor written.
+        let store = dir.path().join("mcp-auth.json");
+        std::fs::create_dir(&store).unwrap();
+        let (manager, mut rx) = signin_manager(&base, &store);
+        manager.save_client("srv", form_client(&base, "typed-cid", Some("s3cret")));
+        let (ok, detail) =
+            next_event(&mut rx, Duration::from_secs(5), auth_done).expect("the outcome");
+        assert!(!ok);
+        assert!(
+            detail.contains("couldn't keep the OAuth client"),
+            "{detail}"
+        );
+        manager.shutdown();
+    }
+
+    /// `Forget OAuth client` removes what was entered and the login made
+    /// with it — the grant keeps its own copy of the id and secret, so a
+    /// client that outlived its forgetting would not be forgotten at all. A
+    /// login made as another client is not its to remove.
+    #[test]
+    fn forgetting_an_entered_client_forgets_the_sign_in_made_with_it() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{base}/mcp");
+        let keep = |id: &str| {
+            oauth::save_client(
+                Some(&store),
+                &server,
+                Some(&crate::mcp::StoredClient {
+                    client_id: Some(id.to_string()),
+                    client_secret: Some("s3cret".to_string()),
+                    callback_port: None,
+                    issuer: Some(base.clone()),
+                }),
+            )
+            .unwrap();
+        };
+        let grant = |client_id: &str| {
+            oauth::save_tokens(
+                Some(&store),
+                &server,
+                Some(&oauth::StoredTokens {
+                    access_token: "at".to_string(),
+                    client_id: client_id.to_string(),
+                    client_secret: Some("s3cret".to_string()),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        };
+        keep("typed-cid");
+        grant("typed-cid");
+        let (manager, _rx) = signin_manager(&base, &store);
+        assert!(manager.snapshot()[0].client.is_some());
+        assert_eq!(manager.forget_client("srv"), Ok(true), "signed out with it");
+        assert_eq!(oauth::load_client(Some(&store), &server), None);
+        assert!(oauth::load_tokens(Some(&store), &server).is_none());
+        let server_now = &manager.snapshot()[0];
+        assert_eq!(server_now.client, None);
+        assert_eq!(
+            server_now.auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        // Nothing entered: nothing to forget, and nothing is touched.
+        grant("someone-else");
+        assert_eq!(manager.forget_client("srv"), Ok(false));
+        assert!(oauth::load_tokens(Some(&store), &server).is_some());
+        // A login made as another client stays.
+        keep("typed-cid");
+        assert_eq!(manager.forget_client("srv"), Ok(false));
+        assert_eq!(oauth::load_client(Some(&store), &server), None);
+        assert_eq!(
+            oauth::load_tokens(Some(&store), &server).unwrap().client_id,
+            "someone-else"
+        );
         manager.shutdown();
     }
 

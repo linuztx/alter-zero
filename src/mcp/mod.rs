@@ -7,6 +7,9 @@
 //! vocabulary the UI renders. Every rule here is unit-testable from fixtures
 //! — the `hooks` split exactly.
 //!
+//! - `client`   — the OAuth client a sign-in presents when the user supplies
+//!   one: what the token store keeps, which one a sign-in uses, and what the
+//!   `/mcp` form is asked for and hands back.
 //! - `config`   — the `mcpServers` file parse, scopes, per-project disabled
 //!   sets (the `skills.json` pattern).
 //! - `names`    — wire names (`mcp__server__tool`), display names
@@ -19,6 +22,7 @@
 //! - `status`   — the per-server snapshot the UI consumes, glyphs/labels,
 //!   parameter listings, and the render-time argument pretty-printers.
 
+mod client;
 mod config;
 mod headers;
 mod instructions;
@@ -27,6 +31,11 @@ mod protocol;
 mod sse;
 mod status;
 
+pub use self::client::{
+    CALLBACK_PORT_PLACEHOLDER, ClientNeed, ClientRequest, ClientSource, EnteredClient,
+    McpClientInfo, PreRegistered, StoredClient, callback_redirect, client_in_effect, issuer_host,
+    issuers_match, parse_callback_port, preregistered_client, stored_from_entered,
+};
 pub use self::config::{
     McpFile, McpScope, McpServerConfig, McpServerEntry, McpWriteError, OAuthClientConfig,
     expand_config, expand_vars, merge_project_scopes, merge_scopes, parse_disabled, parse_mcp_file,

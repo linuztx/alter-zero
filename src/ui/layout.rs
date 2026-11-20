@@ -913,8 +913,12 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
+    // The `/mcp` auth page is typed into — its `URL >` field, or the client
+    // form it becomes — but not while it only waits to learn who issues the
+    // client the user chose to enter (`docs/mcp.md`).
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth;
+        return menu.page == crate::app::McpPage::Auth
+            && !(menu.auth.asking && menu.auth.client.is_none());
     }
     // The `/plugins` list's search line — the add tab's field too — and its
     // add page's field are typed into; its other pages are menus
@@ -1236,10 +1240,21 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the field's row **found** in the page the paint builds
     // (`view_prompt_row`'s rule): the notes under the field wrap with the
     // width, so a row counted up from the region's bottom landed under the
-    // field on a narrow terminal. See `docs/mcp.md`.
+    // field on a narrow terminal. The client form that page becomes reports
+    // its own seat. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
-        let lines = super::mcp_view::mcp_view_lines(app, area.width);
-        if menu.page == crate::app::McpPage::Auth {
+        let build = super::mcp_view::mcp_build(app, area.width);
+        let lines = build.lines;
+        // The client form puts the caret in its focused field, at the seat
+        // the builder reports — the `/secrets` form's rule.
+        if let Some((col, row)) = build.cursor {
+            let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+            let [_, body] = view_split(area, rows);
+            let x = area.x + col.min(area.width.saturating_sub(1));
+            let row = anchored_view_row(rows, body, u16::try_from(row).unwrap_or(u16::MAX));
+            return (x, view_cursor_y(area, body, row));
+        }
+        if menu.page == crate::app::McpPage::Auth && !menu.auth.asking {
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)

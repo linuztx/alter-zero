@@ -7,10 +7,10 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_SESSION_OFF,
-    MCP_TOOL_FIELD_GAP, error_color, mcp_description_color, mcp_detail_label_color,
-    mcp_detail_state_color, mcp_detail_value_color, model_meta_color, tool_fail_color,
-    tool_ok_color,
+    HOOKS_DETAIL_HINT, MCP_CLIENT_FIELD_COL, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT,
+    MCP_SESSION_OFF, MCP_TOOL_FIELD_GAP, error_color, mcp_description_color,
+    mcp_detail_label_color, mcp_detail_state_color, mcp_detail_value_color, model_meta_color,
+    model_selected_color, tool_fail_color, tool_ok_color,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -38,6 +38,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
         },
         status,
         auth,
+        client: None,
         identity: Some(crate::mcp::ServerIdentity {
             protocol_version: "2026-07-28".to_string(),
             name: name.to_string(),
@@ -236,7 +237,9 @@ fn the_server_detail_shows_facts_and_actions() {
     assert!(all.contains("https://linear.test/mcp"));
     assert!(all.contains("Config location:"));
     assert!(all.contains("1. Authenticate"));
-    assert!(all.contains("2. Disable"));
+    // The client to sign in as can be given right under the sign-in.
+    assert!(all.contains("2. Set OAuth client"));
+    assert!(all.contains("3. Disable"));
     assert!(all.contains("❯ 1. Authenticate"), "first action selected");
 }
 
@@ -1257,4 +1260,450 @@ fn a_stdio_servers_command_row_is_no_link() {
         "{:?}",
         link_targets(&lines)
     );
+}
+
+// ---------------------------------------------------------------------------
+// the OAuth client form (`docs/mcp.md` *Pre-registered clients*)
+
+use crate::app::McpClientField;
+use crate::mcp::{ClientNeed, ClientRequest, ClientSource, McpClientInfo};
+use crate::ui::wrap::cols;
+
+const GOOGLE: &str = "https://accounts.google.com";
+
+fn client_request(need: ClientNeed) -> ClientRequest {
+    ClientRequest {
+        issuer: GOOGLE.to_string(),
+        need,
+        ..Default::default()
+    }
+}
+
+/// linear's auth page, its sign-in having asked for a client.
+fn client_form_app(request: ClientRequest) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.ask_mcp_client("linear", &request));
+    app
+}
+
+fn type_into(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+}
+
+/// The caret `cursor_position` reports for the page at `width`, and the
+/// page's rows as text.
+fn caret_and_rows(app: &App, width: u16) -> ((u16, u16), Vec<String>) {
+    let lines = mcp_view_lines(app, width);
+    let area = Rect::new(0, 0, width, lines.len() as u16);
+    (
+        crate::ui::cursor_position(area, app),
+        lines.iter().map(plain).collect(),
+    )
+}
+
+#[test]
+fn the_client_form_says_who_asks_and_never_draws_the_secret() {
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    type_into(&mut app, "cid.apps.test");
+    app.on_key(key(KeyCode::Tab));
+    type_into(&mut app, "hunter2");
+    let rows = texts(&app);
+    let all = rows.join("\n");
+    assert!(all.contains("OAuth client for linear"), "{all}");
+    // The authorization server by the name a person knows it by, and why
+    // the form is up at all.
+    assert!(
+        all.contains("accounts.google.com registers no clients itself"),
+        "{all}"
+    );
+    assert!(all.contains("never in an mcp.json"), "{all}");
+    let field = |label: &str| {
+        rows.iter()
+            .find(|row| row.contains(label))
+            .unwrap_or_else(|| panic!("no {label} row in {all}"))
+            .clone()
+    };
+    assert!(field("Client ID").contains("cid.apps.test"));
+    // One dot a character: a keystroke shows, the secret does not.
+    assert!(field("Client secret").contains("•••••••"));
+    assert!(!field("Client secret").contains("••••••••"));
+    assert!(!all.contains("hunter2"), "the secret was drawn: {all}");
+    assert!(field("Callback port").contains("any free port"));
+    assert!(all.contains("Redirect URI: http://localhost:PORT/callback"));
+    // It is a form, not the sign-in's page: no redirect field, no URL note.
+    assert!(!all.contains("URL > "), "{all}");
+    assert!(!all.contains("Open this URL"), "{all}");
+    assert!(all.contains("Enter for the next field"), "{all}");
+    assert!(all.contains("Esc to go back"), "{all}");
+}
+
+#[test]
+fn the_form_says_why_it_asks() {
+    let reason = "HTTP 401: invalid_client: The OAuth client was not found.";
+    let refused = "HTTP 403: Forbidden: Dynamic client registration not enabled";
+    for (need, says, quotes) in [
+        (
+            ClientNeed::RegistrationRefused(refused.to_string()),
+            "accounts.google.com refused to register this app",
+            Some(refused),
+        ),
+        (
+            ClientNeed::Rejected(reason.to_string()),
+            "accounts.google.com turned this client away",
+            Some(reason),
+        ),
+        (
+            ClientNeed::Asked,
+            "Sign in as an OAuth client you created with accounts.google.com.",
+            None,
+        ),
+    ] {
+        for width in [40u16, 100] {
+            let app = client_form_app(client_request(need.clone()));
+            let lines = mcp_view_lines(&app, width);
+            let all = squashed(&lines.iter().map(plain).collect::<Vec<_>>());
+            assert!(
+                all.contains(&says.replace(' ', "")),
+                "{says} at {width}: {all}"
+            );
+            if let Some(quoted) = quotes {
+                // The server's own words, whole — wrapped, never cut — and
+                // in the failures' colour.
+                assert!(
+                    all.contains(&quoted.replace(' ', "")),
+                    "{quoted} at {width}: {all}"
+                );
+                let row = lines
+                    .iter()
+                    .find(|line| plain(line).contains("HTTP"))
+                    .expect("the reason's row");
+                assert!(
+                    row.spans.iter().any(|s| s.style.fg == Some(error_color())),
+                    "{row:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_redirect_names_the_port_typed() {
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    app.on_key(key(KeyCode::Up)); // → callback port
+    type_into(&mut app, "8976");
+    let all = texts(&app).join("\n");
+    assert!(
+        all.contains("Redirect URI: http://localhost:8976/callback"),
+        "{all}"
+    );
+    assert!(!all.contains("PORT"), "{all}");
+    // A port that is none stands in for nothing: the placeholder stays.
+    type_into(&mut app, "9");
+    let all = texts(&app).join("\n");
+    assert!(all.contains("http://localhost:PORT/callback"), "{all}");
+    // The address the user must copy into a console is the accent's.
+    let lines = mcp_view_lines(&app, 100);
+    let redirect = lines
+        .iter()
+        .find(|line| plain(line).contains("Redirect URI:"))
+        .unwrap();
+    assert_eq!(
+        redirect.spans.last().unwrap().style.fg,
+        Some(model_selected_color())
+    );
+}
+
+#[test]
+fn an_empty_secret_says_what_leaving_it_empty_does() {
+    let app = client_form_app(client_request(ClientNeed::NoRegistration));
+    assert!(
+        texts(&app)
+            .join("\n")
+            .contains("leave empty for a public client")
+    );
+    // Over a client whose secret is kept: empty keeps it, said in so many
+    // words — until the id is another's, when that secret is not its own.
+    let on_hand = ClientRequest {
+        client_id: Some("cid".to_string()),
+        has_secret: true,
+        ..client_request(ClientNeed::Asked)
+    };
+    let mut app = client_form_app(on_hand);
+    assert!(
+        texts(&app)
+            .join("\n")
+            .contains("leave empty to keep the secret already kept")
+    );
+    app.on_key(key(KeyCode::Up)); // → client id
+    type_into(&mut app, "2");
+    let all = texts(&app).join("\n");
+    assert!(all.contains("leave empty for a public client"), "{all}");
+}
+
+#[test]
+fn the_focused_field_wears_the_marker_and_holds_the_caret() {
+    for width in [40u16, 100] {
+        let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+        // The form is typed into: its caret shows.
+        assert!(crate::ui::cursor_visible(&app));
+        for (field, typed, label) in [
+            (McpClientField::ClientId, "cid", "Client ID"),
+            (McpClientField::Secret, "hunter2", "Client secret"),
+            (McpClientField::Port, "8976", "Callback port"),
+        ] {
+            let form = app.mcp_menu.as_ref().unwrap().auth.client.as_ref().unwrap();
+            assert_eq!(form.focus, field);
+            type_into(&mut app, typed);
+            let (caret, rows) = caret_and_rows(&app, width);
+            let row = rows
+                .iter()
+                .position(|row| row.contains(label))
+                .unwrap_or_else(|| panic!("no {label} row at {width}"));
+            assert!(
+                rows[row].trim_start().starts_with('❯'),
+                "{label} wears the marker at {width}: {:?}",
+                rows[row]
+            );
+            assert_eq!(
+                rows.iter()
+                    .filter(|r| r.trim_start().starts_with('❯'))
+                    .count(),
+                1,
+                "one field is focused at a time"
+            );
+            assert_eq!(
+                caret,
+                (MCP_CLIENT_FIELD_COL + typed.len() as u16, row as u16),
+                "the caret ends the {label} at {width}"
+            );
+            app.on_key(key(KeyCode::Tab));
+        }
+        // The caret follows the cursor back through a text field…
+        let (end, _) = caret_and_rows(&app, width);
+        app.on_key(key(KeyCode::Left));
+        let (moved, _) = caret_and_rows(&app, width);
+        assert_eq!(moved, (end.0 - 1, end.1));
+        // …and rests at the field's start while it is empty, over its hint.
+        let app = client_form_app(client_request(ClientNeed::NoRegistration));
+        let (caret, rows) = caret_and_rows(&app, width);
+        let row = rows.iter().position(|r| r.contains("Client ID")).unwrap();
+        assert_eq!(caret, (MCP_CLIENT_FIELD_COL, row as u16));
+    }
+}
+
+#[test]
+fn a_client_id_wider_than_its_field_wraps_and_the_caret_follows() {
+    // Real ids run past seventy characters: the tail is what tells two of
+    // them apart, so it wraps under itself instead of being cut.
+    let id = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com";
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    type_into(&mut app, id);
+    let width = 60u16;
+    let (caret, rows) = caret_and_rows(&app, width);
+    let first = rows.iter().position(|r| r.contains("Client ID")).unwrap();
+    let secret = rows
+        .iter()
+        .position(|r| r.contains("Client secret"))
+        .unwrap();
+    assert!(
+        secret - first > 1,
+        "the id took more than one row: {rows:?}"
+    );
+    let shown: String = rows[first..secret]
+        .iter()
+        .map(|row| {
+            row.chars()
+                .skip(usize::from(MCP_CLIENT_FIELD_COL))
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(shown, id, "every character of the id is on the page");
+    // The caret sits after the last character, on the id's last row.
+    let last = &rows[secret - 1];
+    assert_eq!(caret.1, (secret - 1) as u16);
+    assert_eq!(usize::from(caret.0), cols(last.trim_end()));
+    for row in &rows {
+        assert!(cols(row.trim_end()) <= usize::from(width), "{row:?}");
+    }
+}
+
+#[test]
+fn a_long_secret_stays_on_its_row_and_keeps_a_column_for_the_caret() {
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    app.on_key(key(KeyCode::Tab));
+    type_into(&mut app, &"x".repeat(200));
+    let width = 40u16;
+    let (caret, rows) = caret_and_rows(&app, width);
+    let row = rows
+        .iter()
+        .position(|r| r.contains("Client secret"))
+        .unwrap();
+    assert_eq!(caret.1, row as u16);
+    assert!(caret.0 < width, "the caret is on the page: {caret:?}");
+    assert!(
+        cols(rows[row].trim_end()) < usize::from(width),
+        "{:?}",
+        rows[row]
+    );
+    assert!(
+        rows[row + 1].contains("Callback port"),
+        "the mask never wraps"
+    );
+}
+
+#[test]
+fn a_refused_enter_shows_its_reason_under_the_fields() {
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    app.on_key(key(KeyCode::Up)); // → port, the last field
+    app.on_key(key(KeyCode::Enter));
+    let lines = mcp_view_lines(&app, 100);
+    let row = lines
+        .iter()
+        .find(|line| plain(line).contains("Enter the client ID"))
+        .expect("the refusal's row");
+    assert!(plain(row).trim_start().starts_with('✗'), "{row:?}");
+    assert!(
+        row.spans
+            .iter()
+            .all(|s| s.content.trim().is_empty() || s.style.fg == Some(error_color())),
+        "{row:?}"
+    );
+    // The last field's Enter is the one that signs in, and the hint says so.
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    app.on_key(key(KeyCode::Up));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Enter to sign in"), "{all}");
+}
+
+#[test]
+fn the_asking_page_waits_with_nothing_to_type_into() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear: [Authenticate, Set OAuth client, Disable]
+    app.on_key(key(KeyCode::Char('2')));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("OAuth client for linear"), "{all}");
+    assert!(all.contains("Finding where linear signs in…"), "{all}");
+    assert!(all.contains("Esc to go back"), "{all}");
+    assert!(!all.contains("URL > "), "{all}");
+    assert!(
+        !all.contains("Preparing the authorization request"),
+        "{all}"
+    );
+    // A wait, not a field: no caret.
+    assert!(!crate::ui::cursor_visible(&app));
+}
+
+#[test]
+fn the_client_form_hugs_its_frame_and_fits_the_width() {
+    let reason = "HTTP 401: invalid_client: The OAuth client was not found.";
+    let typed = {
+        let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+        type_into(
+            &mut app,
+            "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com",
+        );
+        app.on_key(key(KeyCode::Tab));
+        type_into(
+            &mut app,
+            "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hunter2hunter2",
+        );
+        app.on_key(key(KeyCode::Tab));
+        type_into(&mut app, "8976");
+        app
+    };
+    let refused = {
+        let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        app
+    };
+    let asking = {
+        let mut app = mcp_app();
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('2')));
+        app
+    };
+    for (what, app) in [
+        (
+            "the empty form",
+            client_form_app(client_request(ClientNeed::NoRegistration)),
+        ),
+        ("a filled form", typed),
+        ("a form refusing its Enter", refused),
+        (
+            "a form over a refused registration",
+            client_form_app(client_request(ClientNeed::RegistrationRefused(
+                reason.to_string(),
+            ))),
+        ),
+        (
+            "a form over a client turned away",
+            client_form_app(client_request(ClientNeed::Rejected(reason.to_string()))),
+        ),
+        (
+            "a form the user asked for",
+            client_form_app(client_request(ClientNeed::Asked)),
+        ),
+        ("the page asking who issues the client", asking),
+    ] {
+        for width in [40u16, 60, 100] {
+            let lines = mcp_view_lines(&app, width);
+            assert_frame_hugs_content(&format!("{what} at width {width}"), &lines);
+            let rows: Vec<String> = lines.iter().map(plain).collect();
+            for (i, row) in rows.iter().enumerate() {
+                assert!(
+                    cols(row.trim_end()) <= usize::from(width),
+                    "{what} at {width}: row {i} is too wide: {row:?}"
+                );
+                // No two blank rows stack: a page spends rows on content.
+                assert!(
+                    i == 0 || !(row.trim().is_empty() && rows[i - 1].trim().is_empty()),
+                    "{what} at {width}: two blank rows at {i}: {rows:?}"
+                );
+            }
+            // The height the region reserves is the page's own.
+            assert_eq!(
+                crate::ui::mcp_menu_height(&app, width, 200),
+                Some(lines.len() as u16)
+            );
+        }
+    }
+}
+
+#[test]
+fn the_server_page_names_its_client_and_where_it_came_from() {
+    let page = |client: Option<McpClientInfo>| {
+        let mut server = snapshot("calendar", McpScope::User, McpServerStatus::NeedsAuth);
+        server.client = client;
+        let mut app = App::new();
+        app.open_mcp_menu(vec![server]);
+        app.on_key(key(KeyCode::Enter));
+        texts(&app)
+    };
+    let row = |rows: &[String]| rows.iter().find(|r| r.contains("OAuth client:")).cloned();
+    assert_eq!(row(&page(None)), None, "no client, no row");
+    let entered = page(Some(McpClientInfo {
+        client_id: "cid.apps.test".to_string(),
+        source: ClientSource::Entered,
+    }));
+    let shown = row(&entered).expect("the client's row");
+    assert!(shown.contains("cid.apps.test (entered here)"), "{shown}");
+    // …and its page offers to change it and to forget it.
+    let all = entered.join("\n");
+    assert!(all.contains("Change OAuth client") && all.contains("Forget OAuth client"));
+    let from_config = page(Some(McpClientInfo {
+        client_id: "cid.apps.test".to_string(),
+        source: ClientSource::Config,
+    }));
+    let shown = row(&from_config).expect("the client's row");
+    assert!(shown.contains("cid.apps.test (from its config)"), "{shown}");
+    assert!(!from_config.join("\n").contains("Forget OAuth client"));
+    // A server with none offers to set one, under the sign-in.
+    assert!(page(None).join("\n").contains("2. Set OAuth client"));
 }

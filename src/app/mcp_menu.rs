@@ -1,7 +1,9 @@
 //! The `/mcp` manager (`docs/mcp.md`) — the sixth composer-replacing inline
-//! picker, and deliberately the hooks-menu twin: no text entry (except the
-//! auth page's `URL >` field), ↑/↓/digits/Enter/Esc, a page walk
-//! servers → server detail → tools → tool detail, plus the OAuth page.
+//! picker, and deliberately the hooks-menu twin: no text entry but on the
+//! auth page — its `URL >` field, and the form it becomes when a sign-in
+//! needs an OAuth client only the user can give ([`McpClientForm`]) —
+//! ↑/↓/digits/Enter/Esc, a page walk servers → server detail → tools → tool
+//! detail, plus the OAuth page.
 //!
 //! The pure core holds the boundary-injected snapshot
 //! ([`crate::mcp::McpServerSnapshot`] — the `open_skills_menu` seam) and the
@@ -12,7 +14,12 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::mcp::{McpAuthState, McpServerSnapshot, McpServerStatus};
+use crate::mcp::{
+    ClientRequest, ClientSource, EnteredClient, McpAuthState, McpServerSnapshot, McpServerStatus,
+    parse_callback_port,
+};
+use crate::secrets::SecretValue;
+use crate::textarea::TextArea;
 
 use super::{Action, App, McpOp, wrap_step};
 
@@ -38,6 +45,12 @@ pub enum McpServerAction {
     Authenticate,
     Reauthenticate,
     ClearAuth,
+    /// Give the sign-in an OAuth client — none is on hand.
+    SetClient,
+    /// Change the client on hand: the one entered here, or the entry's.
+    ChangeClient,
+    /// Forget the client entered here.
+    ForgetClient,
     Reconnect,
     Disable,
     Enable,
@@ -52,6 +65,9 @@ impl McpServerAction {
             Self::Authenticate => "Authenticate",
             Self::Reauthenticate => "Re-authenticate",
             Self::ClearAuth => "Clear authentication",
+            Self::SetClient => "Set OAuth client",
+            Self::ChangeClient => "Change OAuth client",
+            Self::ForgetClient => "Forget OAuth client",
             Self::Reconnect => "Reconnect",
             Self::Disable => "Disable",
             Self::Enable => "Enable",
@@ -68,12 +84,29 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     // server that never issued one can only be logged into, and a written-in
     // header or a public server affords neither — there is nothing stored to
     // re-run (`docs/mcp.md`).
+    // The client a sign-in is made as (`docs/mcp.md` *Pre-registered
+    // clients*): given — or changed — wherever a sign-in can be made, the
+    // spec's "prompt the user", one row under the sign-in itself. One entered
+    // here can be forgotten here; an entry's own is its file's to remove.
+    let client_actions = |out: &mut Vec<A>| match &server.client {
+        None => out.push(A::SetClient),
+        Some(client) => {
+            out.push(A::ChangeClient);
+            if client.source == ClientSource::Entered {
+                out.push(A::ForgetClient);
+            }
+        }
+    };
     let auth_actions = |out: &mut Vec<A>| match server.auth {
         Some(McpAuthState::Authenticated | McpAuthState::Expired) => {
             out.push(A::Reauthenticate);
             out.push(A::ClearAuth);
+            client_actions(out);
         }
-        Some(McpAuthState::NotAuthenticated) => out.push(A::Authenticate),
+        Some(McpAuthState::NotAuthenticated) => {
+            out.push(A::Authenticate);
+            client_actions(out);
+        }
         Some(McpAuthState::Header | McpAuthState::NotRequired) | None => {}
     };
     match &server.status {
@@ -87,6 +120,7 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
             if server.auth.is_some_and(McpAuthState::has_grant) {
                 out.push(A::ClearAuth);
             }
+            client_actions(&mut out);
             out.push(A::Disable);
             out
         }
@@ -122,7 +156,7 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
 }
 
 /// The auth page's live state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct McpAuthView {
     /// The authorize URL, once the flow's discovery produced it.
     pub url: Option<String>,
@@ -134,10 +168,221 @@ pub struct McpAuthView {
     /// Why the flow turned the last paste away — shown under the field until
     /// the URL is edited.
     pub error: Option<String>,
+    /// The page was opened to enter a client (`Set OAuth client`), and the
+    /// manager is finding the server's authorization server: nothing is
+    /// being signed in to, so the page offers no redirect field.
+    pub asking: bool,
+    /// The client form, while a sign-in waits on the user for an OAuth
+    /// client (`docs/mcp.md` *Pre-registered clients*).
+    pub client: Option<McpClientForm>,
+}
+
+/// Which field of the client form has the focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum McpClientField {
+    /// The client's id.
+    #[default]
+    ClientId,
+    /// Its secret — masked, and optional: a public client has none.
+    Secret,
+    /// The port its registered redirect URI names — optional: a native
+    /// client's provider takes any.
+    Port,
+}
+
+impl McpClientField {
+    /// The field after this one — Tab, ↓ and Enter's order, wrapping.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        match self {
+            Self::ClientId => Self::Secret,
+            Self::Secret => Self::Port,
+            Self::Port => Self::ClientId,
+        }
+    }
+
+    /// The field before this one — Shift+Tab and ↑, wrapping.
+    #[must_use]
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::ClientId => Self::Port,
+            Self::Secret => Self::ClientId,
+            Self::Port => Self::Secret,
+        }
+    }
+}
+
+/// The most characters a client id takes: real ones run to some seventy.
+const CLIENT_ID_MAX_CHARS: usize = 512;
+
+/// The most characters a client secret takes.
+const CLIENT_SECRET_MAX_CHARS: usize = 4096;
+
+/// A port number's digits.
+const PORT_MAX_DIGITS: usize = 5;
+
+/// The form the auth page becomes when a sign-in needs an OAuth client only
+/// the user can give — its authorization server registers none itself, or
+/// turned one away, or the user asked to enter one. The `/secrets` form's
+/// shape, for the same reasons: the fields are the form's own — never
+/// [`App::input`], which a modal can stash and a large paste collapses —
+/// and the secret lives in a [`SecretValue`], whose `Debug` says
+/// `<redacted>`. A kept secret is never loaded back: the field starts empty,
+/// and left empty keeps it ([`keeps_secret`](Self::keeps_secret)).
+#[derive(Debug, Clone, Default)]
+pub struct McpClientForm {
+    /// What the sign-in asked: the authorization server, why, and the client
+    /// on hand.
+    pub request: ClientRequest,
+    /// The field keys go to.
+    pub focus: McpClientField,
+    pub client_id: TextArea,
+    /// The secret typed so far — masked wherever it shows.
+    pub secret: SecretValue,
+    /// The callback port, as digits.
+    pub port: TextArea,
+    /// Why the last Enter was refused, shown in red under the fields.
+    pub error: Option<String>,
+}
+
+impl McpClientForm {
+    /// The form over what a sign-in asked: the client on hand filled in —
+    /// its id and its port, **not** its secret — and the focus on the first
+    /// thing still to give.
+    fn over(request: ClientRequest) -> Self {
+        Self {
+            focus: if request.client_id.is_some() {
+                McpClientField::Secret
+            } else {
+                McpClientField::ClientId
+            },
+            client_id: TextArea::from_text(request.client_id.as_deref().unwrap_or_default()),
+            port: TextArea::from_text(
+                &request
+                    .callback_port
+                    .map(|port| port.to_string())
+                    .unwrap_or_default(),
+            ),
+            request,
+            ..Self::default()
+        }
+    }
+
+    /// Would the secret field, left as it is, keep the secret already kept?
+    /// Only while it is empty over the client that secret is kept for: a
+    /// provider may show a secret once, so re-entering the id or the port
+    /// must not cost it — and another id's secret is not this one's.
+    #[must_use]
+    pub fn keeps_secret(&self) -> bool {
+        self.secret.is_empty()
+            && self.request.has_secret
+            && self.request.client_id.as_deref() == Some(self.client_id.text().trim())
+    }
+
+    /// The client the form submits — or what is wrong with it, and the field
+    /// at fault.
+    fn entered(&self) -> Result<EnteredClient, (McpClientField, String)> {
+        let client_id = self.client_id.text().trim();
+        if client_id.is_empty() {
+            return Err((McpClientField::ClientId, "Enter the client ID".to_string()));
+        }
+        let callback_port =
+            parse_callback_port(self.port.text()).map_err(|e| (McpClientField::Port, e))?;
+        let secret = self.secret.expose().trim();
+        Ok(EnteredClient {
+            issuer: self.request.issuer.clone(),
+            client_id: client_id.to_string(),
+            client_secret: (!secret.is_empty()).then(|| SecretValue::new(secret)),
+            keep_secret: self.keeps_secret(),
+            callback_port,
+        })
+    }
+
+    /// Type `c` into the focused field: anything but a control character
+    /// into the id and the secret, digits into the port.
+    fn type_char(&mut self, c: char) {
+        match self.focus {
+            McpClientField::ClientId => {
+                if !c.is_control() && self.client_id.text().chars().count() < CLIENT_ID_MAX_CHARS {
+                    self.client_id.insert_char(c);
+                }
+            }
+            McpClientField::Secret => {
+                if !c.is_control() && self.secret.char_count() < CLIENT_SECRET_MAX_CHARS {
+                    self.secret.push(c);
+                }
+            }
+            McpClientField::Port => {
+                if c.is_ascii_digit() && self.port.text().chars().count() < PORT_MAX_DIGITS {
+                    self.port.insert_char(c);
+                }
+            }
+        }
+    }
+
+    /// Paste `text` into the focused field — a console's copy button brings
+    /// a line break along, so the id and the secret land on one line,
+    /// trimmed, and the port as its digits.
+    fn paste(&mut self, text: &str) {
+        let line: String = text.chars().filter(|c| !c.is_control()).collect();
+        let line = line.trim();
+        match self.focus {
+            McpClientField::ClientId => {
+                let room =
+                    CLIENT_ID_MAX_CHARS.saturating_sub(self.client_id.text().chars().count());
+                self.client_id
+                    .insert_str(&line.chars().take(room).collect::<String>());
+            }
+            McpClientField::Secret => {
+                let room = CLIENT_SECRET_MAX_CHARS.saturating_sub(self.secret.char_count());
+                self.secret
+                    .push_str(&line.chars().take(room).collect::<String>());
+            }
+            McpClientField::Port => {
+                let room = PORT_MAX_DIGITS.saturating_sub(self.port.text().chars().count());
+                let digits: String = line
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .take(room)
+                    .collect();
+                self.port.insert_str(&digits);
+            }
+        }
+    }
+
+    /// Backspace in the focused field.
+    fn backspace(&mut self) {
+        match self.focus {
+            McpClientField::ClientId => self.client_id.delete_backward(),
+            McpClientField::Secret => {
+                self.secret.pop();
+            }
+            McpClientField::Port => self.port.delete_backward(),
+        }
+    }
+
+    /// Ctrl+U: empty the focused field.
+    fn clear_focused(&mut self) {
+        match self.focus {
+            McpClientField::ClientId => self.client_id.clear(),
+            McpClientField::Secret => self.secret.clear(),
+            McpClientField::Port => self.port.clear(),
+        }
+    }
+
+    /// The focused text field's editor — `None` on the secret, which takes
+    /// no cursor motion (a mask has nothing to move through).
+    fn focused_text(&mut self) -> Option<&mut TextArea> {
+        match self.focus {
+            McpClientField::ClientId => Some(&mut self.client_id),
+            McpClientField::Secret => None,
+            McpClientField::Port => Some(&mut self.port),
+        }
+    }
 }
 
 /// The open `/mcp` menu.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct McpMenu {
     /// The boundary-injected snapshot, in declaration order (project scope
     /// first — the merge's order).
@@ -249,6 +494,25 @@ impl App {
         {
             menu.auth.url = Some(url.to_string());
         }
+    }
+
+    /// `server`'s sign-in asks for an OAuth client — it has none to sign in
+    /// as, or the user asked to enter one: its auth page becomes the form,
+    /// over the client on hand. `false` when that page is not the one open —
+    /// the user left it, or it is another server's — and the boundary says
+    /// it in a toast instead.
+    pub fn ask_mcp_client(&mut self, server: &str, request: &ClientRequest) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
+            return false;
+        }
+        menu.auth = McpAuthView {
+            client: Some(McpClientForm::over(request.clone())),
+            ..McpAuthView::default()
+        };
+        true
     }
 
     /// `server`'s auth flow finished — its auth page closes back to the
@@ -373,6 +637,21 @@ impl App {
                     menu.auth = McpAuthView::default();
                     Action::McpOp(McpOp::Authenticate { server: name })
                 }
+                // The same page a sign-in opens — asking, not signing in:
+                // the form arrives once the manager knows who issues the
+                // client.
+                McpServerAction::SetClient | McpServerAction::ChangeClient => {
+                    menu.page = McpPage::Auth;
+                    menu.selected = 0;
+                    menu.auth = McpAuthView {
+                        asking: true,
+                        ..McpAuthView::default()
+                    };
+                    Action::McpOp(McpOp::AskAuthClient { server: name })
+                }
+                McpServerAction::ForgetClient => {
+                    Action::McpOp(McpOp::ForgetClient { server: name })
+                }
                 McpServerAction::ClearAuth => Action::McpOp(McpOp::ClearAuth { server: name }),
                 McpServerAction::Reconnect => Action::McpOp(McpOp::Reconnect { server: name }),
                 McpServerAction::Disable => Action::McpOp(McpOp::SetDisabled {
@@ -442,6 +721,14 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
         };
+        if menu.auth.client.is_some() {
+            return self.on_key_mcp_client(key);
+        }
+        // Asked to enter a client, the manager still finding who issues it:
+        // nothing to type into yet, and Esc calls the lookup off.
+        if menu.auth.asking && key.code != KeyCode::Esc {
+            return Action::None;
+        }
         match key.code {
             KeyCode::Esc => {
                 menu.page = McpPage::Server;
@@ -478,12 +765,103 @@ impl App {
         Action::None
     }
 
-    /// Route a bracketed paste into the auth page's `URL >` field (the
-    /// redirect URL is long — pasting is the point).
+    /// The client form's keys (`docs/mcp.md` *Pre-registered clients*) —
+    /// the `/secrets` form's grammar: typing goes to the focused field (the
+    /// secret masked, the port digits), Tab/↓ and Shift+Tab/↑ move, Enter
+    /// moves on and signs in from the last field, Ctrl+U empties the field,
+    /// Esc goes back. A form the sign-in could not use never leaves: the
+    /// reason shows under the fields and the focus goes to the one at fault.
+    fn on_key_mcp_client(&mut self, key: KeyEvent) -> Action {
+        let Some(menu) = &mut self.mcp_menu else {
+            return Action::None;
+        };
+        // Esc cancels nothing: the sign-in that asked has already ended.
+        if key.code == KeyCode::Esc {
+            menu.page = McpPage::Server;
+            menu.selected = 0;
+            menu.auth = McpAuthView::default();
+            return Action::None;
+        }
+        let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
+            return Action::None;
+        };
+        let Some(form) = &mut menu.auth.client else {
+            return Action::None;
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let plain = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Tab | KeyCode::Down => form.focus = form.focus.next(),
+            KeyCode::BackTab | KeyCode::Up => form.focus = form.focus.prev(),
+            KeyCode::Enter if form.focus != McpClientField::Port => {
+                form.focus = form.focus.next();
+            }
+            KeyCode::Enter => match form.entered() {
+                Ok(client) => {
+                    // The page is the sign-in's again: the manager keeps the
+                    // client and starts over with it.
+                    menu.auth = McpAuthView::default();
+                    return Action::McpOp(McpOp::SaveAuthClient { server, client });
+                }
+                Err((field, reason)) => {
+                    form.focus = field;
+                    form.error = Some(reason);
+                }
+            },
+            KeyCode::Char('u') if ctrl => {
+                form.clear_focused();
+                form.error = None;
+            }
+            KeyCode::Char(c) if plain => {
+                form.type_char(c);
+                form.error = None;
+            }
+            KeyCode::Backspace => {
+                form.backspace();
+                form.error = None;
+            }
+            KeyCode::Left => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_left),
+            KeyCode::Right => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_right),
+            KeyCode::Home => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_home),
+            KeyCode::End => form.focused_text().into_iter().for_each(TextArea::move_end),
+            KeyCode::Delete => {
+                if let Some(text) = form.focused_text() {
+                    text.delete_forward();
+                    form.error = None;
+                }
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// Route a bracketed paste into the auth page: the client form's focused
+    /// field while the form is up — never the redirect field behind it —
+    /// else the `URL >` field (the redirect URL is long — pasting is the
+    /// point). `false` where there is nothing to paste into.
     pub fn paste_into_mcp_auth(&mut self, text: &str) -> bool {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
         {
+            if let Some(form) = &mut menu.auth.client {
+                form.paste(text);
+                form.error = None;
+                return true;
+            }
+            if menu.auth.asking {
+                return false;
+            }
             menu.auth
                 .input
                 .push_str(text.replace(['\n', '\r'], "").trim());

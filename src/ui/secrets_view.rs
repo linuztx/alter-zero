@@ -221,6 +221,19 @@ fn field_line(
     content: Vec<Span<'static>>,
     width: u16,
 ) -> Line<'static> {
+    form_field_line(label, SECRETS_LABEL_WIDTH, focused, content, width)
+}
+
+/// [`field_line`] over a label column `label_width` wide — the row every
+/// form of this dress is made of (the `/mcp` client form's too): the indent,
+/// the focus marker, the label padded to its column, then `content`.
+pub(super) fn form_field_line(
+    label: Option<&str>,
+    label_width: usize,
+    focused: bool,
+    content: Vec<Span<'static>>,
+    width: u16,
+) -> Line<'static> {
     let accent = Style::new().fg(model_selected_color());
     let mut spans = vec![Span::raw(MODEL_INDENT)];
     match label {
@@ -232,11 +245,11 @@ fn field_line(
             };
             spans.push(Span::styled(marker, accent));
             spans.push(Span::styled(
-                format!("{label:<width$}", width = SECRETS_LABEL_WIDTH),
+                format!("{label:<width$}", width = label_width),
                 style,
             ));
         }
-        None => spans.push(Span::raw(" ".repeat(2 + SECRETS_LABEL_WIDTH))),
+        None => spans.push(Span::raw(" ".repeat(2 + label_width))),
     }
     spans.extend(content);
     clamp_spans(spans, width as usize)
@@ -245,7 +258,7 @@ fn field_line(
 /// A text field's rows — its text wrapped to the field (one column kept for
 /// the caret, `text_field_width`), or the dim `empty` hint — and the caret's
 /// `(column, row)` within them.
-fn text_rows(
+pub(super) fn text_rows(
     area: &TextArea,
     empty: &str,
     style: Style,

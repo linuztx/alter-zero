@@ -4,7 +4,7 @@
 //! `ALTER_ZERO_MCP_FILE` pointed into a per-test temp dir. Offline and
 //! deterministic: nothing connects; the commands are file surgery + print.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// The TUI binary this test run just built.
@@ -275,4 +275,138 @@ fn siblings_survive_and_an_empty_file_reports_where_to_add() {
         "{text}"
     );
     assert!(text.contains("mcp add <name> --url <url>"), "{text}");
+}
+
+/// Run `alter-zero mcp …` with the whole config home at `dir` — the user
+/// file at `{dir}/mcp.json`, the token store at `{dir}/mcp-auth.json` — so a
+/// test that reads what is kept for a server never reads the real one.
+fn mcp_in(dir: &PathBuf, args: &[&str]) -> Output {
+    Command::new(bin())
+        .arg("mcp")
+        .args(args)
+        .env_remove("ALTER_ZERO_MCP_FILE")
+        .env_remove("MCP_CLIENT_SECRET")
+        .env("ALTER_ZERO_CONFIG_DIR", dir)
+        .output()
+        .expect("binary runs")
+}
+
+/// Write `{dir}/mcp-auth.json` with `client` kept for `server`.
+fn keep_client(dir: &Path, server: &str, client: serde_json::Value) {
+    let store = serde_json::json!({ "clients": { server: client } });
+    std::fs::write(dir.join("mcp-auth.json"), store.to_string()).expect("store written");
+}
+
+fn kept_clients(dir: &Path) -> serde_json::Value {
+    std::fs::read_to_string(dir.join("mcp-auth.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|store| store.get("clients").cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// A client entered in `/mcp` lives in the token store, not the file: `get`
+/// names it — it is the one a sign-in uses — says a secret is kept, and
+/// never prints one.
+#[test]
+fn get_names_a_client_entered_in_mcp_and_never_its_secret() {
+    let (dir, _file) = scratch("get_entered_client");
+    let server = "https://calendarmcp.googleapis.com/mcp/v1";
+    let out = mcp_in(&dir, &["add", "calendar", "--url", server]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Nothing kept: nothing said about a client.
+    let text = stdout(&mcp_in(&dir, &["get", "calendar"]));
+    assert!(!text.contains("OAuth client"), "{text}");
+    keep_client(
+        &dir,
+        server,
+        serde_json::json!({
+            "client_id": "typed.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-hunter2",
+            "callback_port": 8976,
+            "issuer": "https://accounts.google.com"
+        }),
+    );
+    let out = mcp_in(&dir, &["get", "calendar"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("OAuth client: typed.apps.googleusercontent.com (entered in /mcp)"),
+        "{text}"
+    );
+    assert!(text.contains("Callback port: 8976"), "{text}");
+    assert!(
+        text.contains("Client secret: kept with the tokens"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("GOCSPX-hunter2"),
+        "the secret was printed: {text}"
+    );
+}
+
+/// Where the file names its own client too, `get` says which one signs in —
+/// the entered one — rather than leaving the file's to be assumed.
+#[test]
+fn get_says_an_entered_client_stands_in_for_the_files_own() {
+    let (dir, _file) = scratch("get_entered_over_config");
+    let server = "https://s.test/mcp";
+    let out = mcp_in(
+        &dir,
+        &["add", "srv", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    keep_client(&dir, server, serde_json::json!({"client_id": "typed"}));
+    let text = stdout(&mcp_in(&dir, &["get", "srv"]));
+    assert!(
+        text.contains("OAuth client: typed (entered in /mcp)"),
+        "{text}"
+    );
+    assert!(text.contains("from-file"), "{text}");
+    assert!(text.contains("not used"), "{text}");
+    // The secret kept for the file's own client still reads as it did.
+    keep_client(&dir, server, serde_json::json!({"client_secret": "shh"}));
+    let text = stdout(&mcp_in(&dir, &["get", "srv"]));
+    assert!(text.contains("OAuth client: from-file\n"), "{text}");
+    assert!(
+        text.contains("Client secret: kept with the tokens"),
+        "{text}"
+    );
+    assert!(!text.contains("shh"), "{text}");
+}
+
+/// An entry added with its own client is the statement about that address:
+/// a client entered in `/mcp` for an earlier entry there would otherwise
+/// sign in in its place, unseen. One added without a client leaves what is
+/// kept alone.
+#[test]
+fn add_with_its_own_client_forgets_one_kept_for_the_address() {
+    let (dir, _file) = scratch("add_forgets_entered");
+    let server = "https://s.test/mcp";
+    let typed = serde_json::json!({"client_id": "typed", "client_secret": "old"});
+    keep_client(&dir, server, typed.clone());
+    let out = mcp_in(&dir, &["add", "plain", "--url", server]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(kept_clients(&dir)[server], typed, "a plain add keeps it");
+    let out = mcp_in(
+        &dir,
+        &["add", "own", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        kept_clients(&dir).get(server).is_none(),
+        "the entered client outlived the entry that names its own: {}",
+        kept_clients(&dir)
+    );
+    // Nothing kept and no store at all: nothing is created for it.
+    let (dir, _file) = scratch("add_forgets_nothing");
+    let out = mcp_in(
+        &dir,
+        &["add", "own", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !dir.join("mcp-auth.json").exists(),
+        "an empty store was written"
+    );
 }

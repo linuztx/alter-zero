@@ -2378,6 +2378,69 @@ pub(super) const MCP_AUTH_RETURN_NOTE: &str =
 pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
 pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
 
+/// The client form the auth page becomes when a sign-in needs an OAuth
+/// client only the user can give (`docs/mcp.md` *Pre-registered clients*) —
+/// the `/secrets` form's dress: the focused field wears the `❯` marker, an
+/// empty one its dim hint, the secret a mask.
+///
+/// The page's headline, before the server's name.
+pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
+/// Why the form is up — after the authorization server's host…
+pub(super) const MCP_CLIENT_NO_REGISTRATION: &str =
+    " registers no clients itself, so signing in needs an OAuth client you create there.";
+pub(super) const MCP_CLIENT_REFUSED: &str =
+    " refused to register this app, so signing in needs an OAuth client you create there.";
+pub(super) const MCP_CLIENT_REJECTED: &str = " turned this client away — check its ID and secret.";
+/// …and before it, when the user chose to enter one.
+pub(super) const MCP_CLIENT_ASKED: &str = "Sign in as an OAuth client you created with ";
+/// Where what is typed goes — said on the page that asks for a secret.
+pub(super) const MCP_CLIENT_KEPT_NOTE: &str =
+    "It is kept with your logins on this machine, never in an mcp.json.";
+/// What the page says while the manager finds who issues the client.
+pub(super) fn mcp_client_asking(server: &str) -> String {
+    format!("Finding where {server} signs in…")
+}
+
+/// The form's field labels, padded to one column ([`MCP_CLIENT_LABEL_WIDTH`]).
+pub(super) const MCP_CLIENT_ID_LABEL: &str = "Client ID";
+pub(super) const MCP_CLIENT_SECRET_LABEL: &str = "Client secret";
+pub(super) const MCP_CLIENT_PORT_LABEL: &str = "Callback port";
+
+/// The label column's width: the longest label and a two-column gap.
+pub(super) const MCP_CLIENT_LABEL_WIDTH: usize = 15;
+
+/// The column every field's text starts at — the indent, the focus marker
+/// and the label column. The form's caret is seated from it.
+pub(super) const MCP_CLIENT_FIELD_COL: u16 = 2 + 2 + MCP_CLIENT_LABEL_WIDTH as u16;
+
+/// What an empty field shows, dim, where its text will go: the two optional
+/// ones say what leaving them empty does.
+pub(super) const MCP_CLIENT_ID_EMPTY: &str = "type or paste the client ID";
+pub(super) const MCP_CLIENT_SECRET_EMPTY: &str = "leave empty for a public client";
+pub(super) const MCP_CLIENT_SECRET_KEEP: &str = "leave empty to keep the secret already kept";
+pub(super) const MCP_CLIENT_PORT_EMPTY: &str = "any free port";
+
+/// The redirect URI the sign-in will listen on — what a provider that
+/// matches redirect URIs exactly must be told — and what to do with it.
+pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI: ";
+pub(super) const MCP_CLIENT_REDIRECT_NOTE: &str =
+    "Register it with the client if the provider asks for a redirect URI.";
+/// …and, while no port is fixed, what stands in for it.
+pub(super) const MCP_CLIENT_ANY_PORT_NOTE: &str =
+    "PORT is any free port — set a callback port when the provider needs the exact one.";
+
+/// The form's dim key hints: on the id and the secret, then on the last
+/// field, where Enter signs in.
+pub(super) const MCP_CLIENT_HINT_NEXT: &str =
+    "Enter for the next field · Tab/↑↓ to move · Esc to go back";
+pub(super) const MCP_CLIENT_HINT_SAVE: &str = "Enter to sign in · Tab/↑↓ to move · Esc to go back";
+
+/// The server page's row naming the client it signs in as, and the words
+/// for where that client came from.
+pub(super) const MCP_CLIENT_ROW_LABEL: &str = "OAuth client:";
+pub(super) const MCP_CLIENT_ENTERED: &str = "entered here";
+pub(super) const MCP_CLIENT_FROM_CONFIG: &str = "from its config";
+
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =
     "To modify or remove this hook, edit hooks.json directly or ask alter-zero to help.";
