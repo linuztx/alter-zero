@@ -193,8 +193,9 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
         })
     );
     assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
-    // The finished flow closes the page back to the server detail.
-    app.finish_mcp_auth("linear");
+    // The finished flow closes the page back to the server detail — and
+    // keeps nothing on it: the outcome is the boundary's toast.
+    assert!(!app.finish_mcp_auth("linear", None));
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -393,9 +394,9 @@ fn a_finished_sign_in_closes_only_its_own_page() {
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter));
     app.on_key(key(KeyCode::Enter)); // linear's Authenticate
-    app.finish_mcp_auth("deepwiki");
+    app.finish_mcp_auth("deepwiki", None);
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
-    app.finish_mcp_auth("linear");
+    app.finish_mcp_auth("linear", None);
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -835,6 +836,91 @@ fn forget_oauth_client_dispatches_with_the_server_name() {
         app.on_key(key(KeyCode::Char('2'))),
         Action::McpOp(McpOp::AskAuthClient {
             server: "l".to_string()
+        })
+    );
+}
+
+// ---------------------------------------------------------------------------
+// a failed sign-in (`docs/mcp.md` *A sign-in that failed*)
+
+const REFUSAL: &str = "token exchange failed: HTTP 400: redirect_uri_mismatch: The redirect URI \
+    in the request did not match a registered redirect URI.";
+
+/// A failed sign-in **stays on its page** — the reason whole, where a
+/// one-row toast cut it at the terminal's width and closed the page that
+/// explained it — and the page is a reason to read, not a field: nothing
+/// types into it, Enter tries again, Esc goes back.
+#[test]
+fn a_failed_sign_in_keeps_its_reason_on_the_page() {
+    let mut app = on_auth_page();
+    app.set_mcp_auth_url("linear", "https://as.test/authorize?x=1");
+    assert!(
+        app.finish_mcp_auth("linear", Some(REFUSAL)),
+        "the page took it"
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.failure.as_deref(), Some(REFUSAL));
+    assert_eq!(menu.auth.url, None, "the dead sign-in's URL is gone");
+    // No field behind the reason: keys and pastes land nowhere, and `c` has
+    // no URL to copy.
+    type_text(&mut app, "c x");
+    assert!(!app.paste_into_mcp_auth("https://x/cb?code=1"));
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert_eq!(auth.input, "");
+    assert!(auth.failure.is_some());
+    // Enter tries again: the same sign-in, on a page that is waiting anew.
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: "linear".to_string()
+        })
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.failure, None);
+    // Esc goes back, and cancels nothing: the sign-in has already ended.
+    app.finish_mcp_auth("linear", Some(REFUSAL));
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Server);
+    assert_eq!(menu.auth.failure, None);
+}
+
+/// A failure only its own open page can take: another server's, or one
+/// whose page the user left, is the boundary's to say in a toast.
+#[test]
+fn a_failure_no_open_page_takes_is_left_to_the_toast() {
+    let mut app = on_auth_page();
+    assert!(!app.finish_mcp_auth("deepwiki", Some(REFUSAL)));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.failure, None);
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.finish_mcp_auth("linear", Some(REFUSAL)));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+    let mut closed = App::new();
+    assert!(!closed.finish_mcp_auth("linear", Some(REFUSAL)));
+}
+
+/// The form's own sign-in failing — a client that could not be kept, a
+/// callback port already taken — lands on the same page, and the retry is
+/// the sign-in again, with the client that was kept.
+#[test]
+fn a_failure_after_the_form_shows_on_its_page() {
+    let mut app = on_client_form(request(ClientNeed::NoRegistration));
+    type_text(&mut app, "cid");
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient { .. })
+    ));
+    assert!(app.finish_mcp_auth("linear", Some("the callback port 8976 isn't free")));
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert!(menu.auth.failure.is_some() && menu.auth.client.is_none());
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: "linear".to_string()
         })
     );
 }

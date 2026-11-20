@@ -2377,6 +2377,10 @@ pub(super) const MCP_AUTH_RETURN_NOTE: &str =
     "Return here after authenticating in your browser. Press Esc to go back.";
 pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
 pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
+/// The auth page of a sign-in that failed: its headline, before the server's
+/// name, over the reason — and how to go on from it.
+pub(super) const MCP_AUTH_FAILED_TITLE: &str = "Couldn't authenticate with ";
+pub(super) const MCP_AUTH_RETRY_HINT: &str = "Enter to try again · Esc to go back";
 
 /// The client form the auth page becomes when a sign-in needs an OAuth
 /// client only the user can give (`docs/mcp.md` *Pre-registered clients*) —

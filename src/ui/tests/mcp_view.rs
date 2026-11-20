@@ -1707,3 +1707,81 @@ fn the_server_page_names_its_client_and_where_it_came_from() {
     // A server with none offers to set one, under the sign-in.
     assert!(page(None).join("\n").contains("2. Set OAuth client"));
 }
+
+// ---------------------------------------------------------------------------
+// a failed sign-in (`docs/mcp.md` *A sign-in that failed*)
+
+/// linear's auth page, its sign-in having failed with `reason`.
+fn failed_sign_in(reason: &str) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.finish_mcp_auth("linear", Some(reason)));
+    app
+}
+
+#[test]
+fn a_failed_sign_in_shows_its_whole_reason_and_how_to_try_again() {
+    // The length of the reasons a user giving a sign-in their own client
+    // meets — and exactly what a one-row toast cut at the width.
+    let reason = "token exchange failed: HTTP 400: redirect_uri_mismatch: The redirect URI in \
+        the request, http://localhost:8976/callback, does not match the ones authorized for \
+        the OAuth client.";
+    let app = failed_sign_in(reason);
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let rows: Vec<String> = lines.iter().map(plain).collect();
+        let all = rows.join("\n");
+        assert!(all.contains("Couldn't authenticate with linear"), "{all}");
+        // Every word of it, wrapped, never cut.
+        assert!(
+            squashed(&rows).contains(&reason.replace(' ', "")),
+            "the reason was cut at width {width}: {all}"
+        );
+        assert!(all.contains("Enter to try again"), "{all}");
+        assert!(all.contains("Esc to go back"), "{all}");
+        // A reason to read, not the sign-in's page: no URL note, no field.
+        assert!(!all.contains("URL > "), "{all}");
+        assert!(!all.contains("Authenticating with"), "{all}");
+        assert!(
+            !all.contains("Preparing the authorization request"),
+            "{all}"
+        );
+        // In the failures' colour.
+        let painted: Vec<&Span<'static>> = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .filter(|span| span.style.fg == Some(error_color()) && !span.content.trim().is_empty())
+            .collect();
+        assert!(!painted.is_empty(), "the reason is painted as a failure");
+        assert_frame_hugs_content(&format!("a failed sign-in at width {width}"), &lines);
+        for row in &rows {
+            assert!(cols(row.trim_end()) <= usize::from(width), "{row:?}");
+        }
+        assert_eq!(
+            crate::ui::mcp_menu_height(&app, width, 200),
+            Some(lines.len() as u16)
+        );
+    }
+    // Nothing to type into: no caret.
+    assert!(!crate::ui::cursor_visible(&app));
+}
+
+#[test]
+fn a_failed_sign_ins_reason_links_a_url_it_names() {
+    // A reason can name a page to act on — a console to enable an API in —
+    // and it is what the user acts on next: the URL is a link, whole behind
+    // every wrapped piece (the `/login` failures' rule).
+    let help = "https://console.cloud.google.com/apis/library/calendar.googleapis.com";
+    let app = failed_sign_in(&format!(
+        "the API is not enabled: enable it at {help} and retry"
+    ));
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        assert_eq!(
+            link_targets(&lines),
+            vec![help.to_string()],
+            "width {width}"
+        );
+    }
+}

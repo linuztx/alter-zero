@@ -175,6 +175,10 @@ pub struct McpAuthView {
     /// The client form, while a sign-in waits on the user for an OAuth
     /// client (`docs/mcp.md` *Pre-registered clients*).
     pub client: Option<McpClientForm>,
+    /// Why the sign-in failed — the page then shows the reason whole, in
+    /// place of the URL and the field: an explanation is never closed away
+    /// with the page it explains, and a one-row toast cut it at the width.
+    pub failure: Option<String>,
 }
 
 /// Which field of the client form has the focus.
@@ -515,17 +519,35 @@ impl App {
         true
     }
 
-    /// `server`'s auth flow finished — its auth page closes back to the
-    /// server's detail (the boundary raises the outcome toast beside this).
-    /// Another server's page is left alone.
-    pub fn finish_mcp_auth(&mut self, server: &str) {
-        if let Some(menu) = &mut self.mcp_menu
-            && menu.page == McpPage::Auth
-            && menu.current_server().is_some_and(|s| s.name == server)
-        {
-            menu.page = McpPage::Server;
-            menu.selected = 0;
-            menu.auth = McpAuthView::default();
+    /// `server`'s sign-in finished. A success closes its auth page back to
+    /// the server's detail, and the boundary raises the toast. A `failure`
+    /// **stays on the page** — the reason whole, Enter to try again, Esc
+    /// back — and the page reports having taken it (`true`), so nothing is
+    /// toasted over it: a sign-in's reasons run to a paragraph (a refused
+    /// redirect, a client that could not be kept) and a toast row cut them
+    /// at the terminal's width while closing the page that explained them.
+    /// Another server's page, or none open, takes nothing (`false`).
+    pub fn finish_mcp_auth(&mut self, server: &str, failure: Option<&str>) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
+            return false;
+        }
+        match failure {
+            Some(reason) => {
+                menu.auth = McpAuthView {
+                    failure: Some(reason.to_string()),
+                    ..McpAuthView::default()
+                };
+                true
+            }
+            None => {
+                menu.page = McpPage::Server;
+                menu.selected = 0;
+                menu.auth = McpAuthView::default();
+                false
+            }
         }
     }
 
@@ -724,6 +746,27 @@ impl App {
         if menu.auth.client.is_some() {
             return self.on_key_mcp_client(key);
         }
+        // A failed sign-in's page is a reason to read, not a field: Enter
+        // tries again, Esc goes back — cancelling nothing, since the
+        // sign-in has already ended.
+        if menu.auth.failure.is_some() {
+            match key.code {
+                KeyCode::Enter => {
+                    let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
+                        return Action::None;
+                    };
+                    menu.auth = McpAuthView::default();
+                    return Action::McpOp(McpOp::Authenticate { server });
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    menu.page = McpPage::Server;
+                    menu.selected = 0;
+                    menu.auth = McpAuthView::default();
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
         // Asked to enter a client, the manager still finding who issues it:
         // nothing to type into yet, and Esc calls the lookup off.
         if menu.auth.asking && key.code != KeyCode::Esc {
@@ -859,7 +902,7 @@ impl App {
                 form.error = None;
                 return true;
             }
-            if menu.auth.asking {
+            if menu.auth.asking || menu.auth.failure.is_some() {
                 return false;
             }
             menu.auth

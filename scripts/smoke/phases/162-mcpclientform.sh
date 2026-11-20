@@ -30,7 +30,12 @@ smoke_begin
 # - Change OAuth client reopens the form on what is kept, a secret left
 #   empty keeping the one kept, a callback port typed there moving the
 #   redirect to exactly that port;
-# - Forget OAuth client removes it and the login made with it.
+# - Forget OAuth client removes it and the login made with it;
+# - a sign-in that FAILS keeps its reason on the page it was started from
+#   (docs/mcp.md *A sign-in that failed*): a client given a callback port
+#   something else is listening on cannot be signed in with, and the page
+#   says so whole — it used to close under a one-row toast cut at the
+#   terminal's width — with Enter trying again once the port is free.
 #
 # Through all of it neither secret may appear on screen, scrollback included.
 S162="${S}_mcpclientform"
@@ -345,4 +350,60 @@ assert not kept.get("clients"), kept
 assert not kept.get("servers"), kept
 PY
 never_shows_a_secret "after forgetting"
+
+# A sign-in that fails: Set OAuth client gives the server a client whose
+# callback port is TAKEN. The sign-in cannot listen there — and the reason
+# stays on its page, whole, instead of closing it under a toast.
+SQUAT_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+python3 -c 'import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen()
+time.sleep(300)' "$SQUAT_PORT" &
+SQUAT_PID="$!"
+smoke_on_exit kill "$SQUAT_PID"
+port_taken() { python3 -c "import socket; socket.create_connection(('127.0.0.1', $SQUAT_PORT), 0.2)" 2>/dev/null; }
+poll 5 port_taken || fail "the port squatter never came up on $SQUAT_PORT"
+keys "$S162" 2 # Set OAuth client
+wait_for 15 "$S162" -F "Sign in as an OAuth client you created with" ||
+	fail "Set OAuth client did not open the form"
+type_text "$S162" "$CLIENT_ID"
+sleep "$SMOKE_TYPE_SETTLE"
+keys "$S162" Enter
+wait_for 5 "$S162" -F "❯ Client secret" || fail "Enter did not move to the secret field"
+paste "$SECRET"
+sleep "$SMOKE_TYPE_SETTLE"
+keys "$S162" Enter
+wait_for 5 "$S162" -F "❯ Callback port" || fail "Enter did not move to the callback port"
+type_text "$S162" "$SQUAT_PORT"
+wait_for 5 "$S162" -F "http://localhost:$SQUAT_PORT/callback" || fail "the redirect did not follow the taken port"
+keys "$S162" Enter
+failed="$(wait_pane 15 "$S162" -F "Couldn't authenticate with stub")" || {
+	dump "the page after the sign-in failed" "$failed"
+	fail "a failed sign-in did not keep its page"
+}
+dump "the failed sign-in's page" "$failed"
+expect_has "$failed" -F "the callback port $SQUAT_PORT isn't free" "the page does not carry the whole reason"
+expect_has "$failed" -F "Enter to try again · Esc to go back" "the page does not say how to go on"
+expect_lacks "$failed" -F "URL > " "the failed page still shows the sign-in's redirect field"
+expect_lacks "$failed" -F "stub: the callback port" "the reason was toasted over the page that shows it"
+never_shows_a_secret "the failed sign-in"
+
+# The port freed, Enter tries again — with the client that was kept — and
+# the sign-in listens on exactly that port.
+kill "$SQUAT_PID" 2>/dev/null
+wait "$SQUAT_PID" 2>/dev/null || true
+port_free() { ! port_taken; }
+poll 5 port_free || fail "the squatted port was never released"
+keys "$S162" Enter
+auth_url=""
+poll 15 read_url || {
+	dump "the page after trying again" "$(pane "$S162")"
+	fail "Enter on the failed page did not start the sign-in again"
+}
+expect_has "$auth_url" -F "client_id=$CLIENT_ID" "the retry did not sign in as the kept client"
+expect_has "$auth_url" -F "localhost%3A$SQUAT_PORT%2Fcallback" "the retry did not listen on the kept callback port"
+keys "$S162" Escape
+wait_for 5 "$S162" -F "$CLIENT_ID (entered here)" || fail "Esc did not return to the server page naming the kept client"
 tmux kill-session -t "$S162" 2>/dev/null

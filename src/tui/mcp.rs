@@ -270,19 +270,17 @@ impl Session<'_> {
                     self.toast(format!("{server}: {needs}"), ToastKind::Error);
                 }
             }
+            // A success closes the auth page under a toast. A failure
+            // stays on that page, whole — a toast row cut it at the width —
+            // and is toasted only when the page was left meanwhile.
             McpEvent::AuthDone { server, ok, detail } => {
-                self.app.finish_mcp_auth(&server);
-                let kind = if ok {
-                    ToastKind::Info
-                } else {
-                    ToastKind::Error
-                };
-                let text = if ok {
-                    detail
-                } else {
-                    format!("{server}: {detail}")
-                };
-                self.toast(text, kind);
+                let failure = (!ok).then_some(detail.as_str());
+                let on_page = self.app.finish_mcp_auth(&server, failure);
+                if ok {
+                    self.toast(detail, ToastKind::Info);
+                } else if !on_page {
+                    self.toast(format!("{server}: {detail}"), ToastKind::Error);
+                }
             }
         }
         self.app.update_mcp_snapshot(self.mcp.snapshot());

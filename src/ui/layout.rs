@@ -915,10 +915,12 @@ pub fn cursor_visible(app: &App) -> bool {
     }
     // The `/mcp` auth page is typed into — its `URL >` field, or the client
     // form it becomes — but not while it only waits to learn who issues the
-    // client the user chose to enter (`docs/mcp.md`).
+    // client the user chose to enter, nor once the sign-in has failed and
+    // the page is a reason to read (`docs/mcp.md`).
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth
-            && !(menu.auth.asking && menu.auth.client.is_none());
+        let field =
+            menu.auth.client.is_some() || !(menu.auth.asking || menu.auth.failure.is_some());
+        return menu.page == crate::app::McpPage::Auth && field;
     }
     // The `/plugins` list's search line — the add tab's field too — and its
     // add page's field are typed into; its other pages are menus
@@ -1254,7 +1256,10 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             let row = anchored_view_row(rows, body, u16::try_from(row).unwrap_or(u16::MAX));
             return (x, view_cursor_y(area, body, row));
         }
-        if menu.page == crate::app::McpPage::Auth && !menu.auth.asking {
+        if menu.page == crate::app::McpPage::Auth
+            && !menu.auth.asking
+            && menu.auth.failure.is_none()
+        {
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)

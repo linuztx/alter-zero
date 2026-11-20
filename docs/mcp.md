@@ -1375,8 +1375,28 @@ mid-turn (the strip stays above it). Pages:
    accent and gains an underline; a URL inside a rejected paste's reason is
    linked the same way. `smoke.sh` Phase 149 reads the link off the raw
    byte stream against a stub server that demands OAuth.
-   Esc backs out; the result lands as a toast + the server list
-   re-sorting itself.
+   Esc backs out; a success lands as a toast on the server's page, its
+   row re-deriving itself.
+
+   **A sign-in that failed stays on this page.** It used to close the page
+   and leave a toast — one row, cut at the terminal's width, gone in
+   seconds — which is the wrong place for exactly the reasons a sign-in
+   fails with: `token exchange failed: HTTP 400: redirect_uri_mismatch: …`,
+   `the callback port 8976 isn't free: …`, `couldn't keep the OAuth
+   client: …` are sentences the user has to read whole and act on, and the
+   page that explained what was being attempted was closed with them. A
+   failure now replaces the page's contents (`McpAuthView::failure`,
+   `mcp_view`'s `failed_lines`): the headline `Couldn't authenticate with
+   {server}`, the reason **whole** — wrapped, in the failures' colour, a
+   URL in it a link, since a reason can name the page to act on — and
+   `Enter to try again · Esc to go back`. It is a reason to read, not a
+   field: no caret, nothing types into it, a paste lands nowhere; Enter
+   dispatches the same `McpOp::Authenticate` (so a client the form just
+   kept is the one tried again), and Esc cancels nothing, the sign-in
+   having ended. `App::finish_mcp_auth` says whether the page took the
+   failure, and the boundary toasts it only when it didn't — the user left
+   the page, or it is another server's — the `/login` device page's rule:
+   an explanation is never closed away with the page it explains.
 
    **The client form.** A sign-in with no client to sign in as — or `Set
    OAuth client` / `Change OAuth client` — turns this page into a form, the

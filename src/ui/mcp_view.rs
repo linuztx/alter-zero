@@ -893,6 +893,23 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     lines
 }
 
+/// The auth page of a sign-in that failed: the reason **whole** — wrapped,
+/// never cut, a URL in it a link (it may name the page to act on) — in the
+/// failures' colour, over how to go on. A reason to read, with no field
+/// behind it.
+fn failed_lines(server: &McpServerSnapshot, reason: &str, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_AUTH_FAILED_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(model_linked_rows(reason, error_color(), width));
+    lines.push(Line::default());
+    lines.extend(dim_wrapped(MCP_AUTH_RETRY_HINT, width));
+    lines.push(model_rule(width));
+    lines
+}
+
 /// The page the auth page shows while the manager finds who issues the
 /// client the user chose to enter: a wait, with nothing to type into.
 fn asking_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
@@ -1090,10 +1107,11 @@ pub(super) fn mcp_build(app: &App, width: u16) -> McpBuild {
         McpPage::Server => server_lines(menu, server, width),
         McpPage::Tools => tools_lines(menu, server, width),
         McpPage::Tool { tool } => tool_lines_page(server, *tool, width),
-        McpPage::Auth => match &menu.auth.client {
-            Some(form) => return framed(client_form_blocks(form, server, width), width),
-            None if menu.auth.asking => asking_lines(server, width),
-            None => auth_lines(menu, server, width),
+        McpPage::Auth => match (&menu.auth.client, &menu.auth.failure) {
+            (Some(form), _) => return framed(client_form_blocks(form, server, width), width),
+            (None, Some(reason)) => failed_lines(server, reason, width),
+            (None, None) if menu.auth.asking => asking_lines(server, width),
+            (None, None) => auth_lines(menu, server, width),
         },
     })
 }

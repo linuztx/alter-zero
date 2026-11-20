@@ -237,6 +237,15 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A failed MCP sign-in says why on the page, in full.** When Authenticate
+  failed, `/mcp` closed the sign-in page and showed the reason as a toast:
+  one row, cut at the terminal's width, gone after a few seconds. A reason
+  such as a redirect URI the provider does not accept, or a callback port
+  something else is using, lost its second half. The reason now stays on
+  the page it belongs to, whole, with any link in it clickable; Enter tries
+  again and Esc goes back. A toast is used only if you have already left
+  the page.
+
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
   Requests to a remote MCP server carried no `User-Agent`, and a gateway's
   stock firewall rules turn such a request away before the server sees it.
