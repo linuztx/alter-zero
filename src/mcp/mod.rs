@@ -60,5 +60,5 @@ pub use self::protocol::{
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{
     McpAuthState, McpClientRequest, McpServerSnapshot, McpServerStatus, ToolParameter, auth_state,
-    issuer_host, oauth_redirect_uri, pretty_args, tool_parameters,
+    issuer_display, issuer_host, oauth_redirect_uri, pretty_args, tool_parameters,
 };

@@ -260,6 +260,23 @@ pub fn issuer_host(issuer: &str) -> String {
         .unwrap_or_else(|| issuer.to_string())
 }
 
+/// An issuer as the client form shows it: exactly as given, except that a
+/// URL carrying a user name or password is shown without them — so
+/// `https://accounts.google.com@evil.example` reads `https://evil.example/`,
+/// the host its token endpoint is really on. Text that is no URL is shown as
+/// written, and an ordinary issuer is never normalised.
+#[must_use]
+pub fn issuer_display(issuer: &str) -> String {
+    match url::Url::parse(issuer) {
+        Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        _ => issuer.to_string(),
+    }
+}
+
 /// One `Parameters:` row of the tool detail page, derived from the tool's
 /// input schema: `{name} ({required|optional}): {type} - {description}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -520,6 +537,31 @@ mod tests {
 
     /// A provider is named by its host, the name a person knows it by; an
     /// issuer that is no URL reads as written.
+    #[test]
+    fn an_issuer_is_shown_whole_without_user_info() {
+        for ordinary in [
+            "https://accounts.google.com",
+            "https://accounts.google.com/",
+            "https://login.example.com:8443/tenant/v2.0",
+            "HTTPS://Login.Example.com/Tenant",
+        ] {
+            assert_eq!(issuer_display(ordinary), ordinary);
+        }
+        assert_eq!(
+            issuer_display("https://accounts.google.com@evil.example"),
+            "https://evil.example/"
+        );
+        assert_eq!(
+            issuer_display("https://accounts.google.com:pw@evil.example/tenant"),
+            "https://evil.example/tenant"
+        );
+        assert_eq!(
+            issuer_display("https://:secret@evil.example"),
+            "https://evil.example/"
+        );
+        assert_eq!(issuer_display("not a url"), "not a url");
+    }
+
     #[test]
     fn an_issuer_is_named_by_its_host() {
         assert_eq!(

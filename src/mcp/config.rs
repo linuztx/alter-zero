@@ -503,8 +503,8 @@ fn parse_scopes(value: Option<&Value>, key: &str) -> Result<Option<String>, Stri
     Ok(scopes.filter(|scopes| !scopes.is_empty()))
 }
 
-/// Check a `callbackUrl`: a loopback `http` address with a path and nothing
-/// else — the redirect URI a native client registers (RFC 8252 §7.3).
+/// Check a `callbackUrl`: a loopback `http` address and its path (the root
+/// one included — no path at all is `/`) and nothing else — the redirect URI a native client registers (RFC 8252 §7.3).
 /// Returns the port it names, if any.
 fn check_callback_url(url: &str, key: &str) -> Result<Option<u16>, String> {
     let bad = |what: &str| format!("\"oauth.{key}\" {what}");
@@ -531,9 +531,6 @@ fn check_callback_url(url: &str, key: &str) -> Result<Option<u16>, String> {
     }
     if parsed.fragment().is_some() {
         return Err(bad("must not carry a fragment"));
-    }
-    if parsed.path().is_empty() || parsed.path() == "/" {
-        return Err(bad("must name the callback's path"));
     }
     Ok(parsed.port())
 }
@@ -1906,6 +1903,8 @@ mod tests {
             "http://127.0.0.1:5555/callback/abc",
             "http://localhost/cb",
             "http://[::1]:7000/oauth/callback",
+            "http://127.0.0.1:5555/",
+            "http://127.0.0.1:5555",
         ] {
             let config = parse_server_entry(&format!(
                 r#"{{"url":"https://x/mcp","oauth":{{"clientId":"c","callbackUrl":"{url}"}}}}"#
@@ -1927,8 +1926,6 @@ mod tests {
         for (url, needle) in [
             ("https://127.0.0.1:5555/cb", "http"),
             ("http://example.com:5555/cb", "loopback"),
-            ("http://127.0.0.1:5555", "path"),
-            ("http://127.0.0.1:5555/", "path"),
             ("http://127.0.0.1:5555/cb?x=1", "query"),
             ("http://127.0.0.1:5555/cb#f", "fragment"),
             ("http://me@127.0.0.1:5555/cb", "user"),

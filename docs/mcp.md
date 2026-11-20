@@ -826,9 +826,9 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     for one on the `/mcp` page where it can't, on the entry's
     `callbackPort` and asking for its scopes, whichever client signs in.
   - `callbackUrl` is the whole redirect URI the entry's client registered
-    — `http://` on `localhost`, `127.0.0.1` or `[::1]`, with a path, and
-    no query, fragment or user info; anything else is an entry error, and
-    so is a port in it that `callbackPort` contradicts. It applies only
+    — `http://` on `localhost`, `127.0.0.1` or `[::1]`, on any path (the
+    root `/` included, and no path at all is `/`), and no query, fragment
+    or user info; anything else is an entry error, and so is a port in it that `callbackPort` contradicts. It applies only
     when the entry's own client signs in: the redirect URI sent on the
     authorize URL and at the token exchange is that URL as written (the
     bound port added when it names none), the listener binds
@@ -1441,7 +1441,10 @@ mid-turn (the strip stays above it). Pages:
    The page states **facts and fields, nothing else**. MCP returns no
    description of a provider, so the form invents none: no sentence about
    why a client is needed, no pointer to one provider's console. The facts
-   are the **issuer**, exactly as discovery gave it (`McpClientForm::issuer`,
+   are the **issuer**, as discovery gave it but with any user name or
+   password left out (`mcp::issuer_display` — so
+   `https://accounts.google.com@evil.example` reads `https://evil.example/`,
+   the host a secret typed here would go to; `McpClientForm::issuer`,
    the row omitted when no sign-in has seen the server), and right under
    it, one block with it, the **redirect URI** to register — before the
    fields, since it is what the user needs while creating the client. The

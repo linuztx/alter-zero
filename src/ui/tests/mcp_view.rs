@@ -1486,6 +1486,23 @@ fn the_client_form_never_draws_the_secret() {
     }
 }
 
+/// An issuer dressed up with a user name — `accounts.google.com@` in front
+/// of the real host — is shown without it, so the row names the host the
+/// secret would go to.
+#[test]
+fn an_issuer_dressed_up_with_user_info_shows_its_real_host() {
+    let request = McpClientRequest {
+        issuer: "https://accounts.google.com@evil.example".to_string(),
+        ..client_request()
+    };
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&client_form_app(&request), width);
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(!all.contains("accounts.google.com"), "{all}");
+        assert!(all.contains("https://evil.example/"), "{all}");
+    }
+}
+
 /// A Google issuer gets no text of its own: its page is any issuer's page
 /// with the issuer's name in it, and links nowhere.
 #[test]

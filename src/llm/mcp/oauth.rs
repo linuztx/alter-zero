@@ -1863,8 +1863,9 @@ fn bind_callback(
     path: &str,
 ) -> Result<CallbackServer, String> {
     match exact {
-        Some(port) => bind_exactly(port, path)
-            .map_err(|e| format!("the callback port {port} (oauth.callbackPort) isn't free: {e}")),
+        Some(port) => bind_exactly(port, path).map_err(|e| {
+            format!("the callback port {port} this server's entry names isn't free: {e}")
+        }),
         None => CallbackServer::bind(preferred, path.to_string()),
     }
 }
@@ -4491,6 +4492,78 @@ mod tests {
             let stored = load_tokens(Some(&store), &format!("{}/mcp", fixture.base)).unwrap();
             assert_eq!(stored.redirect_uri.as_deref(), Some(expected.as_str()));
         }
+    }
+
+    /// A port the entry names that is taken is said as the entry's, naming
+    /// no key — it may have come from `callbackUrl` as well as
+    /// `callbackPort`.
+    #[test]
+    fn a_taken_entry_port_is_named_without_a_key() {
+        let holder = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let Err(error) = bind_callback(Some(port), &[0], "/callback") else {
+            panic!("the port is taken");
+        };
+        assert!(
+            error.starts_with(&format!(
+                "the callback port {port} this server's entry names isn't free: "
+            )),
+            "{error}"
+        );
+        assert!(!error.contains("oauth."), "{error}");
+    }
+
+    /// A redirect URI registered at the root is a real one: a sign-in whose
+    /// entry names a root-path `callbackUrl` is answered on `/`, where
+    /// `/callback` is then a stray.
+    #[test]
+    fn a_root_path_callback_url_is_answered_on_the_root() {
+        let port = free_port();
+        let config = crate::mcp::OAuthClientConfig {
+            client_id: Some("pre-cid".to_string()),
+            client_secret: Some("pre-secret".to_string()),
+            callback_url: Some(format!("http://127.0.0.1:{port}/")),
+            ..Default::default()
+        };
+        assert_eq!(config.callback_path(), "/");
+        let callback =
+            bind_callback(config.exact_port(), &[0], &config.callback_path()).expect("bind");
+        assert_eq!(callback.port, port);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(loopback::wait_for_code(
+                &callback,
+                &Expected {
+                    state: "s1",
+                    issuer: None,
+                    iss_required: false,
+                },
+                &MCP_PAGES,
+                Duration::from_secs(10),
+                None,
+                &CancelToken::new(),
+            ));
+        });
+        let stray = hit(port, "GET /callback?code=c1&state=s1 HTTP/1.1\r\n\r\n");
+        assert!(stray.starts_with("HTTP/1.1 404"), "{stray}");
+        let real = hit(port, "GET /?code=c1&state=s1 HTTP/1.1\r\n\r\n");
+        assert!(real.starts_with("HTTP/1.1 200"), "{real}");
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(3)).unwrap().ok(),
+            Some("c1".to_string())
+        );
+        // And a whole sign-in through it lands.
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&config));
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(
+            redirect_param(&url, "redirect_uri").as_deref(),
+            Some(format!("http://127.0.0.1:{port}/").as_str())
+        );
     }
 
     /// A `callbackUrl` is the entry's own client's: a client entered in

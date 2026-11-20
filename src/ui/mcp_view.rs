@@ -966,7 +966,7 @@ fn client_form_lines(
     if !form.issuer.is_empty() {
         facts.extend(client_fact_rows(
             MCP_CLIENT_ISSUER_LABEL,
-            &form.issuer,
+            &crate::mcp::issuer_display(&form.issuer),
             Style::new().fg(model_id_color()),
             width,
         ));
