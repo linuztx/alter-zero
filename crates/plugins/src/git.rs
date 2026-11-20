@@ -5,10 +5,13 @@
 //! process links nothing. What this module adds around it:
 //!
 //! - **no prompt can reach the TUI.** `GIT_TERMINAL_PROMPT=0` stops git's
-//!   own, `ssh -oBatchMode=yes` ssh's, stdin is closed, and the process is
-//!   built by an **injected** [`CommandBuilder`] — the app passes one over
-//!   its tty-detach tiers (`docs/tty-detach.md`), so a passphrase prompt on
-//!   `/dev/tty` fails in a captured error;
+//!   own, askpass is refused (`SSH_ASKPASS_REQUIRE=never`), stdin is closed,
+//!   and the process is built by an **injected** [`CommandBuilder`] — the
+//!   app passes one over its tty-detach tiers (`docs/tty-detach.md`), so a
+//!   passphrase prompt on `/dev/tty` fails in a captured error. A
+//!   `GIT_SSH_COMMAND` of the user's own is kept, with `-oBatchMode=yes`
+//!   after it; none is set where they have none, since that would override
+//!   their `core.sshCommand`;
 //! - **no transport but the ordinary ones** (`GIT_ALLOW_PROTOCOL`): `ext::`
 //!   runs a command named in the URL;
 //! - **no repository but the one asked for**: the variables that redirect
@@ -138,6 +141,18 @@ pub fn plain_command(argv: &[OsString]) -> Command {
         command.process_group(0);
     }
     command
+}
+
+/// The `GIT_SSH_COMMAND` a child is given, from the user's own: theirs with
+/// `-oBatchMode=yes` after it, so the key or jump host it names still
+/// applies and ssh is only told not to ask. `None` leaves the variable as
+/// it is — unset, where setting one would override the `core.sshCommand`
+/// and `GIT_SSH` a private repository may depend on; nothing can prompt
+/// there either, since the child has no terminal and askpass is refused.
+fn ssh_command(existing: Option<OsString>) -> Option<OsString> {
+    let mut command = existing.filter(|value| !value.to_string_lossy().trim().is_empty())?;
+    command.push(" -oBatchMode=yes");
+    Some(command)
 }
 
 /// Kill `child`'s whole process group (it leads one — [`CommandBuilder`]'s
@@ -280,11 +295,13 @@ impl GitRunner {
             .stderr(Stdio::piped())
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "never")
-            .env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
             .env("SSH_ASKPASS_REQUIRE", "never")
             .env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS)
             .env("GIT_OPTIONAL_LOCKS", "0")
             .env("LC_ALL", "C");
+        if let Some(ssh) = ssh_command(std::env::var_os("GIT_SSH_COMMAND")) {
+            command.env("GIT_SSH_COMMAND", ssh);
+        }
         for variable in REDIRECTING_VARIABLES {
             command.env_remove(variable);
         }
@@ -617,6 +634,23 @@ mod tests {
         assert_eq!(git_timeout(Some("12")), Duration::from_secs(12));
         assert_eq!(git_timeout(Some("0")), DEFAULT_GIT_TIMEOUT);
         assert_eq!(git_timeout(Some("x")), DEFAULT_GIT_TIMEOUT);
+    }
+
+    #[test]
+    fn the_user_s_own_ssh_command_is_kept_and_only_told_not_to_prompt() {
+        // Their own command (a key, a jump host) still runs, with BatchMode
+        // after it: ssh takes the first value an option is given, so a
+        // BatchMode of their own still wins.
+        assert_eq!(
+            ssh_command(Some(OsString::from("ssh -i ~/.ssh/work"))),
+            Some(OsString::from("ssh -i ~/.ssh/work -oBatchMode=yes"))
+        );
+        // With none set the variable is left alone: setting it would
+        // override `core.sshCommand` and `GIT_SSH`, which the user's
+        // private repositories may depend on. Nothing can prompt anyway —
+        // the child has no terminal and askpass is refused.
+        assert_eq!(ssh_command(None), None);
+        assert_eq!(ssh_command(Some(OsString::from("  "))), None);
     }
 
     #[test]

@@ -392,8 +392,11 @@ as written but never followed as a path.
 Nothing is linked in: `git` on `PATH` is run as a child (`plugins::git`),
 which costs this process no memory and no binary size. Every invocation is
 hardened the same way — no terminal to prompt on (`GIT_TERMINAL_PROMPT=0`,
-`ssh -oBatchMode=yes`, stdin closed, the tty-detach chain of
-`docs/tty-detach.md`), the caller's repository out of the picture
+askpass refused, stdin closed, the tty-detach chain of
+`docs/tty-detach.md`; a `GIT_SSH_COMMAND` of the user's own is kept with
+`-oBatchMode=yes` after it, and none is set where they have none, since
+that would override their `core.sshCommand`), the caller's repository out
+of the picture
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and their kin removed,
 `-c safe.bareRepository=explicit`, `-c core.fsmonitor=false`), the `ext`
 transport held out (`GIT_ALLOW_PROTOCOL`), output captured into a bounded
