@@ -666,6 +666,7 @@ impl PluginStore {
             let shown = self.shown(&known.source);
             let is_local = matches!(known.source, MarketplaceSource::Local { .. });
             let mut market = CatalogMarketplace {
+                skipped: Vec::new(),
                 name: known.name.clone().unwrap_or_else(|| shown.clone()),
                 title: String::new(),
                 source: shown.clone(),
@@ -724,6 +725,7 @@ impl PluginStore {
         let update_available =
             record.is_some_and(|record| update_available(market, &entry.source, record));
         let mut plugin = CatalogPlugin {
+            installed_version: None,
             name: entry.name,
             display_name: entry.display_name,
             marketplace: index,
@@ -776,6 +778,7 @@ impl PluginStore {
                 .position(|m| m.name == id.marketplace)
                 .unwrap_or_else(|| {
                     catalog.marketplaces.push(CatalogMarketplace {
+                        skipped: Vec::new(),
                         name: id.marketplace.clone(),
                         title: id.marketplace.clone(),
                         source: id.marketplace.clone(),
@@ -794,6 +797,7 @@ impl PluginStore {
         if !local.is_empty() {
             let index = catalog.marketplaces.len();
             catalog.marketplaces.push(CatalogMarketplace {
+                skipped: Vec::new(),
                 name: LOCAL_MARKETPLACE.to_string(),
                 title: LOCAL_TITLE.to_string(),
                 source: LOCAL_SOURCE.to_string(),
@@ -900,6 +904,7 @@ impl PluginStore {
             _ => None,
         });
         let mut detail = PluginDetail {
+            installed_version: None,
             id: id.clone(),
             display_name: entry.display_name.clone(),
             description: entry_description.unwrap_or_default(),
@@ -943,6 +948,7 @@ impl PluginStore {
         data: &Path,
     ) -> PluginDetail {
         let mut detail = PluginDetail {
+            installed_version: None,
             id: id.clone(),
             display_name: None,
             description: record.description.clone().unwrap_or_default(),
@@ -1501,6 +1507,7 @@ fn apply_layout(detail: &mut PluginDetail, layout: PluginLayout, warnings: &mut 
 /// A catalog row for an installed plugin no marketplace lists.
 fn recorded_plugin(id: &PluginId, record: &PluginRecord, marketplace: usize) -> CatalogPlugin {
     CatalogPlugin {
+        installed_version: None,
         name: id.name.clone(),
         display_name: None,
         marketplace,

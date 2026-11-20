@@ -10,6 +10,7 @@ use crate::plugins::manifest::ManifestFormat;
 
 fn marketplace(name: &str, source: &str) -> CatalogMarketplace {
     CatalogMarketplace {
+        skipped: Vec::new(),
         name: name.to_string(),
         title: name.to_string(),
         source: source.to_string(),
@@ -25,6 +26,7 @@ fn marketplace(name: &str, source: &str) -> CatalogMarketplace {
 
 fn plugin(name: &str, marketplace: usize, status: PluginStatus) -> CatalogPlugin {
     CatalogPlugin {
+        installed_version: None,
         name: name.to_string(),
         display_name: None,
         marketplace,
@@ -68,6 +70,7 @@ fn id(name: &str, marketplace: &str) -> PluginId {
 
 fn detail(name: &str, status: PluginStatus) -> PluginDetail {
     PluginDetail {
+        installed_version: None,
         id: id(name, "claude-plugins-official"),
         display_name: None,
         description: format!("What {name} does, at length"),
@@ -853,6 +856,7 @@ fn the_marketplace_page_offers_fetch_update_or_read_again() {
     let mut fresh = catalog();
     fresh.marketplaces[1].fetched = false;
     fresh.marketplaces.push(CatalogMarketplace {
+        skipped: Vec::new(),
         is_local: true,
         is_default: false,
         ..marketplace("team", "~/work/team-plugins")
@@ -1075,6 +1079,7 @@ fn a_removed_marketplace_and_the_folder_one_offer_only_their_plugins() {
     let (mut app, round) = browsing();
     let mut fresh = catalog();
     fresh.marketplaces.push(CatalogMarketplace {
+        skipped: Vec::new(),
         fetched: false,
         updated: None,
         error: Some("removed — its installed plugins stay".to_string()),
@@ -1082,6 +1087,7 @@ fn a_removed_marketplace_and_the_folder_one_offer_only_their_plugins() {
         ..marketplace("old-market", "acme/old")
     });
     fresh.marketplaces.push(CatalogMarketplace {
+        skipped: Vec::new(),
         is_local: true,
         is_default: false,
         updated: None,

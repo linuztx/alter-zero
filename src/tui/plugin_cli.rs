@@ -1720,6 +1720,7 @@ mod tests {
 
     fn catalog() -> PluginCatalog {
         let market = |name: &str| CatalogMarketplace {
+            skipped: Vec::new(),
             name: name.into(),
             title: name.into(),
             source: format!("acme/{name}"),
@@ -1732,6 +1733,7 @@ mod tests {
             error: None,
         };
         let plugin = |name: &str, status, description: &str| CatalogPlugin {
+            installed_version: None,
             name: name.into(),
             display_name: None,
             marketplace: 0,
@@ -1799,6 +1801,7 @@ mod tests {
 
     fn detail() -> PluginDetail {
         PluginDetail {
+            installed_version: None,
             id: id("code-review@official"),
             display_name: None,
             description: "Automated code review for pull requests using several agents".into(),

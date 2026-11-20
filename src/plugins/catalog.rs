@@ -48,6 +48,10 @@ pub struct CatalogMarketplace {
     pub revision: Option<String>,
     /// Why its manifest could not be read.
     pub error: Option<String>,
+    /// Entries its manifest lists that could not be read as plugins, one
+    /// sentence each (`日本語 — a plugin name is ASCII letters, digits, ., _
+    /// and - only`). Empty when every entry was read.
+    pub skipped: Vec<String>,
 }
 
 /// One plugin row.
@@ -61,6 +65,10 @@ pub struct CatalogPlugin {
     pub category: Option<String>,
     pub author: Option<String>,
     pub version: Option<String>,
+    /// The version recorded when it was installed — `None` when it is not
+    /// installed or named none. [`Self::version`] is what the marketplace
+    /// offers now, so the two differ while an update waits.
+    pub installed_version: Option<String>,
     pub status: PluginStatus,
     pub update_available: bool,
 }
@@ -187,6 +195,9 @@ pub struct PluginDetail {
     /// The long description when there is one.
     pub description: String,
     pub version: Option<String>,
+    /// The version recorded when it was installed, as
+    /// [`CatalogPlugin::installed_version`].
+    pub installed_version: Option<String>,
     pub author: Option<String>,
     pub category: Option<String>,
     pub homepage: Option<String>,
@@ -260,6 +271,7 @@ mod tests {
 
     fn marketplace(name: &str) -> CatalogMarketplace {
         CatalogMarketplace {
+            skipped: Vec::new(),
             name: name.into(),
             title: name.into(),
             source: format!("o/{name}"),
@@ -280,6 +292,7 @@ mod tests {
         description: &str,
     ) -> CatalogPlugin {
         CatalogPlugin {
+            installed_version: None,
             name: name.into(),
             display_name: None,
             marketplace,

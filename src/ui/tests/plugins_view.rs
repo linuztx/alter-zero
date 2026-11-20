@@ -34,6 +34,7 @@ const NOW: i64 = 1_763_650_000;
 
 fn market(name: &str, source: &str, plugins_updated_ago: i64) -> CatalogMarketplace {
     CatalogMarketplace {
+        skipped: Vec::new(),
         name: name.to_string(),
         title: name.to_string(),
         source: source.to_string(),
@@ -49,6 +50,7 @@ fn market(name: &str, source: &str, plugins_updated_ago: i64) -> CatalogMarketpl
 
 fn plug(name: &str, marketplace: usize, status: PluginStatus, description: &str) -> CatalogPlugin {
     CatalogPlugin {
+        installed_version: None,
         name: name.to_string(),
         display_name: None,
         marketplace,
@@ -172,6 +174,7 @@ fn id(name: &str, marketplace: &str) -> PluginId {
 /// A detail with every field.
 pub(super) fn full_detail() -> PluginDetail {
     PluginDetail {
+        installed_version: None,
         id: id("code-review", "claude-plugins-official"),
         display_name: None,
         description: "Automated code review for pull requests using multiple specialized agents with confidence-based scoring to filter false positives.".to_string(),
@@ -208,6 +211,7 @@ pub(super) fn full_detail() -> PluginDetail {
 /// components until it is installed.
 fn remote_detail() -> PluginDetail {
     PluginDetail {
+        installed_version: None,
         id: id("github", "claude-plugins-official"),
         display_name: Some("GitHub".to_string()),
         status: PluginStatus::Available,
@@ -223,6 +227,7 @@ fn remote_detail() -> PluginDetail {
 /// One that can't be installed here.
 fn blocked_detail() -> PluginDetail {
     PluginDetail {
+        installed_version: None,
         id: id("emoji-tools", "claude-plugins-official"),
         status: PluginStatus::Unsupported,
         blocked: Some("npm sources are not supported".to_string()),
@@ -258,6 +263,7 @@ pub(super) fn on_plugin(detail: Option<Result<PluginDetail, String>>) -> App {
                 id: subject,
                 result: result.map(|d| {
                     Box::new(PluginDetail {
+                        installed_version: None,
                         id: id("code-review", "claude-plugins-official"),
                         ..d
                     })
@@ -352,6 +358,7 @@ pub(super) fn states() -> Vec<(&'static str, App)> {
     press(&mut app, KeyCode::Char('3'));
     states.push(("plugin: uninstall armed", app));
     let mut app = on_plugin(Some(Ok(PluginDetail {
+        installed_version: None,
         status: PluginStatus::Available,
         ..full_detail()
     })));
@@ -772,6 +779,7 @@ fn the_plugin_page_states_status_facts_and_actions() {
 #[test]
 fn a_plugin_not_installed_says_what_will_ask_for_review_and_one_elsewhere_says_later() {
     let app = on_plugin(Some(Ok(PluginDetail {
+        installed_version: None,
         status: PluginStatus::Available,
         ..full_detail()
     })));
@@ -1078,6 +1086,7 @@ fn a_removed_marketplace_reads_dim_as_removed_never_as_a_failed_fetch() {
     let (mut app, round) = browsing();
     let mut fresh = catalog();
     fresh.marketplaces.push(CatalogMarketplace {
+        skipped: Vec::new(),
         fetched: false,
         updated: None,
         error: Some("removed — its installed plugins stay".to_string()),
