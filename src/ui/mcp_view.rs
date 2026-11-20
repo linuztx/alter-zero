@@ -882,34 +882,49 @@ fn client_field_row(
     ])
 }
 
-/// The redirect URI rows: the address the sign-in will send for the port
-/// typed — beside its label where the row holds both, under it where it
-/// doesn't, so a narrow terminal never breaks the address mid-way — or what
-/// to do while the port is no port; then the note saying what it is for.
-fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
-    let label = Style::new().fg(mcp_detail_label_color());
-    let mut lines = Vec::new();
-    match form.redirect_uri() {
-        Some(uri) => {
-            let address = Style::new().fg(model_selected_color());
-            let beside = cols(MODEL_INDENT) + cols(MCP_CLIENT_REDIRECT_LABEL) + cols(&uri);
-            if beside <= usize::from(width) {
-                lines.push(Line::from(vec![
-                    Span::raw(MODEL_INDENT),
-                    Span::styled(MCP_CLIENT_REDIRECT_LABEL, label),
-                    Span::styled(uri, address),
-                ]));
-            } else {
-                lines.push(mcp_line(MCP_CLIENT_REDIRECT_LABEL.trim_end(), label, width));
-                let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
-                lines.extend(wrap_output(&uri, room).into_iter().map(|row| {
-                    Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, address)])
-                }));
-            }
-        }
-        None => lines.push(Line::from(vec![
+/// One labelled fact row: `value` beside its label where the row holds
+/// both, under it where it doesn't — so a narrow terminal never breaks an
+/// address mid-way beside the label.
+fn client_fact_rows(
+    label: &'static str,
+    value: &str,
+    ink: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let label_ink = Style::new().fg(mcp_detail_label_color());
+    if cols(MODEL_INDENT) + cols(label) + cols(value) <= usize::from(width) {
+        return vec![Line::from(vec![
             Span::raw(MODEL_INDENT),
-            Span::styled(MCP_CLIENT_REDIRECT_LABEL, label),
+            Span::styled(label, label_ink),
+            Span::styled(value.to_string(), ink),
+        ])];
+    }
+    let mut lines = vec![mcp_line(label.trim_end(), label_ink, width)];
+    let room = usize::from(width).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    lines.extend(
+        wrap_output(value, room)
+            .into_iter()
+            .map(|row| Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, ink)])),
+    );
+    lines
+}
+
+/// The redirect URI rows: the address the sign-in will send for the port
+/// typed, or what to do while the port is no port.
+fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
+    match form.redirect_uri() {
+        Some(uri) => client_fact_rows(
+            MCP_CLIENT_REDIRECT_LABEL,
+            &uri,
+            Style::new().fg(model_selected_color()),
+            width,
+        ),
+        None => vec![Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(
+                MCP_CLIENT_REDIRECT_LABEL,
+                Style::new().fg(mcp_detail_label_color()),
+            ),
             Span::styled(
                 ellipsize(
                     MCP_CLIENT_REDIRECT_UNSET,
@@ -919,17 +934,16 @@ fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> 
                 ),
                 Style::new().fg(model_meta_color()),
             ),
-        ])),
+        ])],
     }
-    lines.extend(dim_wrapped(MCP_CLIENT_REDIRECT_NOTE, width));
-    lines
 }
 
-/// The client form (`docs/mcp.md` *Pre-registered clients*): why it is
-/// asked — the sign-in's own reason first, when it is back — who issues the
-/// client, the redirect URI to register with it, the fields, what stopped
-/// the last submit, and the keys. An entry's own client is shown, not
-/// asked for: its secret is the one field, and its port its entry's.
+/// The client form (`docs/mcp.md` *Pre-registered clients*): facts and
+/// fields only — the sign-in's own reason, when the form is back; the
+/// issuer as discovery gave it over the redirect URI to register, one
+/// block; the fields; what stopped the last submit; the keys. An entry's
+/// own client is shown, not asked for: its secret is the one field, and its
+/// port its entry's.
 fn client_form_lines(
     form: &McpClientForm,
     server: &McpServerSnapshot,
@@ -944,37 +958,29 @@ fn client_form_lines(
     if let Some(reason) = &form.reason {
         lines.extend(model_linked_rows(reason, error_color(), width));
     }
-    // The reason a form is back says enough over a client already on hand
-    // ("turned this client away"); everywhere else the page says why a
-    // client is asked for at all.
-    let explained = form.reason.is_some() && form.on_hand;
-    if fixed && !explained {
-        lines.extend(dim_wrapped(MCP_CLIENT_SECRET_NOTE, width));
-    } else if !explained {
-        let host = crate::mcp::issuer_host(&form.issuer);
-        let host = if host.is_empty() {
-            MCP_CLIENT_UNKNOWN_ISSUER
-        } else {
-            host.as_str()
-        };
-        lines.extend(dim_wrapped(&format!("{host}{MCP_CLIENT_NOTE}"), width));
-        if host == "accounts.google.com" {
-            lines.extend(model_linked_rows(
-                MCP_CLIENT_GOOGLE_HINT,
-                model_meta_color(),
-                width,
-            ));
-        }
-    }
     // The address to register: always for a client entered here, and for an
     // entry's own only where the entry pins the port — one that takes any
     // free port has no address to show.
     let redirect = !fixed || form.redirect_uri().is_some();
-    if redirect {
-        lines.push(Line::default());
-        lines.extend(client_redirect_rows(form, width));
+    let mut facts = Vec::new();
+    if !form.issuer.is_empty() {
+        facts.extend(client_fact_rows(
+            MCP_CLIENT_ISSUER_LABEL,
+            &form.issuer,
+            Style::new().fg(model_id_color()),
+            width,
+        ));
     }
-    lines.push(Line::default());
+    if redirect {
+        facts.extend(client_redirect_rows(form, width));
+    }
+    if form.reason.is_some() && !facts.is_empty() {
+        lines.push(Line::default());
+    }
+    if form.reason.is_some() || !facts.is_empty() {
+        lines.extend(facts);
+        lines.push(Line::default());
+    }
     if !fixed {
         lines.push(client_field_row(form, McpClientField::Port, "", width));
     }

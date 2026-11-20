@@ -1363,21 +1363,27 @@ fn field_row(lines: &[Line<'static>], prompt: &str) -> (usize, String) {
     (row, plain(&lines[row]))
 }
 
-/// The form says who issues the client and why it is asked for, the
-/// redirect URI to register with it, the three fields in page order, and
-/// its keys — in place of the URL and its paste field.
+/// The form shows facts and fields only: the issuer as discovery gave it
+/// over the redirect URI to register — one block, no row between — the
+/// three fields in page order, and its keys, in place of the URL and its
+/// paste field. MCP describes no provider, so the page describes none.
 #[test]
-fn the_client_form_says_who_issues_the_client_and_what_to_register() {
+fn the_client_form_shows_the_issuer_and_the_redirect_uri_to_register() {
     let app = client_form_app(&client_request());
     let lines = mcp_view_lines(&app, 100);
     let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     assert!(all.contains("OAuth client for linear"), "{all}");
-    assert!(
-        all.contains("login.example.com doesn't register this app by itself"),
-        "{all}"
+    let issuer = lines
+        .iter()
+        .position(|l| plain(l).trim_end() == "  Issuer:        https://login.example.com")
+        .unwrap_or_else(|| panic!("no issuer row: {all}"));
+    assert_eq!(
+        plain(&lines[issuer + 1]).trim_end(),
+        "  Redirect URI:  http://localhost:8976/callback",
+        "the redirect URI sits right under the issuer"
     );
-    assert!(all.contains("Redirect URI:"), "{all}");
-    assert!(all.contains("http://localhost:8976/callback"), "{all}");
+    assert!(!all.contains("doesn't register"), "{all}");
+    assert!(!all.contains("Add it to the client"), "{all}");
     let (port, port_text) = field_row(&lines, MCP_CLIENT_PORT_PROMPT);
     let (id, _) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
     let (secret, _) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
@@ -1396,8 +1402,48 @@ fn the_client_form_says_who_issues_the_client_and_what_to_register() {
         !all.contains("Preparing the authorization request"),
         "{all}"
     );
-    // No provider-specific pointer for a provider it knows nothing about.
-    assert!(!all.contains("console.cloud.google.com"), "{all}");
+}
+
+/// Every row of the form is a fact or a field: the title, the sign-in's own
+/// reason, the issuer, the redirect URI, the fields, what stopped a submit,
+/// and the keys. Nothing written for one provider or another.
+#[test]
+fn the_client_form_says_nothing_but_facts_and_fields() {
+    let reason = "login.example.com wouldn't register this app (HTTP 403).";
+    let mut stopped = client_form_app(&McpClientRequest {
+        reason: Some(reason.to_string()),
+        ..client_request()
+    });
+    stopped.on_key(key(KeyCode::Tab));
+    stopped.on_key(key(KeyCode::Enter)); // no client id: an error row
+    let lines = mcp_view_lines(&stopped, 100);
+    let error = stopped
+        .mcp_menu
+        .as_ref()
+        .unwrap()
+        .auth
+        .client
+        .as_ref()
+        .unwrap()
+        .error
+        .clone()
+        .expect("a submit with no id is stopped");
+    for line in &lines {
+        let text = plain(line);
+        let text = text.trim();
+        let known = text.is_empty()
+            || text.starts_with('─')
+            || text == "OAuth client for linear"
+            || text == reason
+            || text == error
+            || text.starts_with("Issuer:")
+            || text.starts_with("Redirect URI:")
+            || text.starts_with("Callback port >")
+            || text.starts_with("Client ID     >")
+            || text.starts_with("Client secret >")
+            || text.starts_with("Tab to switch fields");
+        assert!(known, "a row that is no fact and no field: {text:?}");
+    }
 }
 
 /// The redirect URI on the page is the one the port typed makes — what the
@@ -1439,38 +1485,33 @@ fn the_client_form_never_draws_the_secret() {
     }
 }
 
-/// Google's sign-in is the case the form exists for: the page points at
-/// the console where its clients are made, as a link.
+/// A Google issuer gets no text of its own: its page is any issuer's page
+/// with the issuer's name in it, and links nowhere.
 #[test]
-fn google_is_pointed_at_its_console() {
-    let request = McpClientRequest {
+fn a_google_issuer_gets_no_text_of_its_own() {
+    let google = McpClientRequest {
         issuer: "https://accounts.google.com".to_string(),
         ..client_request()
     };
-    let app = client_form_app(&request);
     for width in [40u16, 100] {
-        let lines = mcp_view_lines(&app, width);
+        let lines = mcp_view_lines(&client_form_app(&google), width);
+        let other = mcp_view_lines(&client_form_app(&client_request()), width);
         let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(all.contains("https://accounts.google.com"), "{all}");
+        assert!(!all.contains("console"), "{all}");
         assert!(
-            all.contains("accounts.google.com doesn't register"),
-            "{all}"
-        );
-        assert!(
-            link_targets(&lines)
-                .iter()
-                .any(|url| url == "https://console.cloud.google.com/apis/credentials"),
+            link_targets(&lines).is_empty(),
             "{:?}",
             link_targets(&lines)
         );
+        let swapped = other
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("https://login.example.com", "https://accounts.google.com");
+        assert_eq!(all, swapped, "at width {width}");
     }
-    // The entry's own client was made already: no pointer to make one.
-    let fixed = McpClientRequest {
-        client_id: Some("file-cid".to_string()),
-        fixed_id: true,
-        ..request
-    };
-    let all = texts(&client_form_app(&fixed)).join("\n");
-    assert!(!all.contains("console.cloud.google.com"), "{all}");
 }
 
 /// A server whose entry names its client shows the id — it is how the user
@@ -1489,7 +1530,11 @@ fn a_configured_client_shows_its_id_and_asks_only_for_the_secret() {
     let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
     let (_, id) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
     assert!(id.contains("file-cid.apps.example"), "{id:?}");
-    assert!(all.contains("names its OAuth client"), "{all}");
+    assert!(
+        all.contains("Issuer:        https://login.example.com"),
+        "{all}"
+    );
+    assert!(!all.contains("names its OAuth client"), "{all}");
     assert!(
         !lines
             .iter()
@@ -1507,6 +1552,10 @@ fn a_configured_client_shows_its_id_and_asks_only_for_the_secret() {
     let all = texts(&client_form_app(&any_port)).join("\n");
     assert!(!all.contains("Redirect URI"), "{all}");
     assert!(!all.contains("ctrl+y"), "{all}");
+    assert!(
+        all.contains("Issuer:        https://login.example.com"),
+        "{all}"
+    );
 }
 
 /// A form that is back says why — the sign-in's own words, in the error
@@ -1558,33 +1607,31 @@ fn a_form_that_is_back_says_why_in_red() {
     );
 }
 
-/// The reason a form is back stands alone over a client already on hand —
-/// "turned this client away" needs no reminder that a client is needed —
-/// while a refused registration, which leaves no client at all, still says
-/// what to do about it.
+/// The reason a form is back stands over the issuer and the redirect URI,
+/// a blank row between them, and an unknown issuer leaves no row behind.
 #[test]
-fn the_reason_stands_alone_over_a_client_already_on_hand() {
+fn the_reason_stands_over_the_issuer_and_an_unknown_issuer_has_no_row() {
     let refused = McpClientRequest {
         client_id: Some("typed-cid".to_string()),
         has_secret: true,
         reason: Some("login.example.com turned this client away (HTTP 401).".to_string()),
         ..client_request()
     };
-    let mut app = client_form_app(&refused);
-    let all = texts(&app).join("\n");
-    assert!(all.contains("turned this client away"), "{all}");
-    assert!(!all.contains("doesn't register this app"), "{all}");
-    // Editing the id never brings the note back mid-typing.
-    app.on_key(key(KeyCode::Up));
-    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-    assert!(!texts(&app).join("\n").contains("doesn't register this app"));
-    let no_registration = McpClientRequest {
-        reason: Some("login.example.com wouldn't register this app (HTTP 403).".to_string()),
+    let lines = mcp_view_lines(&client_form_app(&refused), 100);
+    let rows: Vec<String> = lines.iter().map(|l| plain(l).trim().to_string()).collect();
+    let reason = rows
+        .iter()
+        .position(|t| t.contains("turned this client away"))
+        .unwrap();
+    assert_eq!(rows[reason + 1], "", "{rows:?}");
+    assert!(rows[reason + 2].starts_with("Issuer:"), "{rows:?}");
+    let unknown = McpClientRequest {
+        issuer: String::new(),
         ..client_request()
     };
-    let all = texts(&client_form_app(&no_registration)).join("\n");
-    assert!(all.contains("wouldn't register this app"), "{all}");
-    assert!(all.contains("doesn't register this app by itself"), "{all}");
+    let all = texts(&client_form_app(&unknown)).join("\n");
+    assert!(!all.contains("Issuer"), "{all}");
+    assert!(all.contains("Redirect URI:"), "{all}");
 }
 
 /// An empty secret field says what leaving it empty means: the kept secret
@@ -1741,6 +1788,41 @@ fn the_client_form_hugs_its_frame() {
             }),
         ),
         (
+            "the client form with no issuer",
+            with(McpClientRequest {
+                issuer: String::new(),
+                ..client_request()
+            }),
+        ),
+        (
+            "the client form with a reason and no issuer",
+            with(McpClientRequest {
+                issuer: String::new(),
+                reason: Some("login.example.com wouldn't register this app.".to_string()),
+                ..client_request()
+            }),
+        ),
+        (
+            "the secret-only form with a reason and no port",
+            with(McpClientRequest {
+                client_id: Some("file-cid".to_string()),
+                fixed_id: true,
+                callback_port: None,
+                reason: Some("login.example.com turned this client away.".to_string()),
+                ..client_request()
+            }),
+        ),
+        (
+            "the secret-only form with no issuer and no port",
+            with(McpClientRequest {
+                issuer: String::new(),
+                client_id: Some("file-cid".to_string()),
+                fixed_id: true,
+                callback_port: None,
+                ..client_request()
+            }),
+        ),
+        (
             "the secret-only form with no issuer",
             with(McpClientRequest {
                 issuer: String::new(),
@@ -1753,6 +1835,13 @@ fn the_client_form_hugs_its_frame() {
         for width in [40u16, 100] {
             let lines = mcp_view_lines(&app, width);
             assert_frame_hugs_content(&format!("{what} at width {width}"), &lines);
+            // Never two blank rows in a row.
+            let blank: Vec<bool> = lines.iter().map(|l| plain(l).trim().is_empty()).collect();
+            assert!(
+                !blank.windows(2).any(|w| w[0] && w[1]),
+                "{what} at width {width}: {:?}",
+                lines.iter().map(plain).collect::<Vec<_>>()
+            );
             // No row is wider than the page: nothing is cut by the paint.
             for line in &lines {
                 assert!(

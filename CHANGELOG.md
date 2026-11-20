@@ -20,10 +20,10 @@ release heading when a version is cut.
   provider. That client could only be written into `mcp.json` or passed to
   `alter-zero mcp add --client-id … --client-secret`, and pressing
   **Authenticate** without one ended on a one-line error naming config keys.
-  The page now turns into a form. It names the provider, shows the redirect
-  URI to register with the client (it follows the callback port as you
-  change it, and Ctrl+Y copies it), and takes the client ID and its secret,
-  which is only ever drawn as dots. The same form appears when a provider
+  The page now turns into a form of facts and fields: the issuer, as the
+  server's metadata names it, and the redirect URI to register with the
+  client (it follows the callback port as you change it, and Ctrl+Y copies
+  it), over the client ID and its secret, which is only ever drawn as dots. The same form appears when a provider
   refuses to register the app. What you enter is kept with the server's
   tokens — owner-only, never written to a config file, and only ever
   presented to the provider it was entered for — so it works alike for a

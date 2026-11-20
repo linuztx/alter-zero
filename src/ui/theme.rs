@@ -2384,24 +2384,15 @@ pub(super) const MCP_AUTH_FAILED_HINT: &str = "Enter to try again · Esc to go b
 /// The auth page's client form, shown when the authorization server
 /// registers no client for this app or turned the user's own away
 /// (`docs/mcp.md` *Pre-registered clients*). The title leads the server's
-/// name; [`MCP_CLIENT_NOTE`] follows the issuer's host, which reads as
-/// [`MCP_CLIENT_UNKNOWN_ISSUER`] when no sign-in has seen it.
+/// name. The page states facts and asks for fields — MCP describes no
+/// provider, so it describes none.
 pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
-pub(super) const MCP_CLIENT_NOTE: &str =
-    " doesn't register this app by itself, so signing in needs an OAuth client you create there.";
-pub(super) const MCP_CLIENT_UNKNOWN_ISSUER: &str = "The sign-in provider";
-pub(super) const MCP_CLIENT_SECRET_NOTE: &str =
-    "This server's entry names its OAuth client, so only the client's secret is asked for.";
-/// Where Google's clients are made, and which redirect URI each kind wants
-/// — its sign-in is the case the form exists for.
-pub(super) const MCP_CLIENT_GOOGLE_HINT: &str = "Create one at \
-    https://console.cloud.google.com/apis/credentials — an OAuth client ID. A Desktop app \
-    client needs no redirect URI registered; a Web application client needs the one below.";
-/// The redirect URI row: its label, the note under it, and what stands in
-/// for the address while the port typed is no port.
+/// The issuer row's label — the authorization server as discovery named it
+/// — padded to the redirect URI label's width so the two values line up.
+pub(super) const MCP_CLIENT_ISSUER_LABEL: &str = "Issuer:        ";
+/// The redirect URI row: its label, and what stands in for the address
+/// while the port typed is no port.
 pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI:  ";
-pub(super) const MCP_CLIENT_REDIRECT_NOTE: &str =
-    "Add it to the client where the provider asks for a redirect URI.";
 pub(super) const MCP_CLIENT_REDIRECT_UNSET: &str = "set the callback port";
 /// The form's three prompts, padded to one width so the values line up —
 /// each a span of its own, which is how the caret finds its field's row.

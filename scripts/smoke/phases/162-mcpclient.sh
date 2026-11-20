@@ -7,7 +7,7 @@ smoke_begin
 # The /mcp CLIENT FORM (docs/mcp.md *Pre-registered clients*). A server whose
 # authorization server registers no clients itself — Google's, for its MCP
 # servers — used to end Authenticate on a toast telling the user to edit a
-# file. The auth page now turns into a form: the redirect URI to register, a
+# file. The auth page now turns into a form: the issuer, the redirect URI to register, a
 # callback port, a client ID, a masked secret.
 #
 # A stub remote MCP server demands OAuth (a 401 naming its RFC 9728
@@ -192,7 +192,8 @@ fi
 form="$(pane "$S162")"
 note "the client form"
 printf '%s\n' "$form"
-expect_has "$form" -F "127.0.0.1 doesn't register this app by itself" "the form does not say who issues the client, or why"
+expect_has "$form" -F "Issuer:        $AUTH_BASE" "the form does not show the issuer as discovery named it"
+expect_lacks "$form" -F "doesn't register this app" "the form still describes the provider"
 expect_has "$form" -F "Redirect URI:  http://localhost:8976/callback" "the form does not show the redirect URI on the default port"
 expect_has "$form" -F "Callback port > 8976" "the port field is not prefilled"
 expect_has "$form" -F "Client ID     >" "the client ID field is missing"

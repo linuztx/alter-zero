@@ -212,9 +212,6 @@ pub struct McpClientForm {
     pub port: String,
     /// A secret is already kept for this client: an empty field keeps it.
     pub has_secret: bool,
-    /// The form opened over a client already on hand — to change it, or
-    /// because it was turned away — rather than asking for the first one.
-    pub on_hand: bool,
     /// The field taking keys.
     pub field: McpClientField,
     /// Why the form is back — the authorization server turned the client
@@ -240,7 +237,6 @@ impl McpClientForm {
             } else {
                 McpClientField::Secret
             },
-            on_hand: !known.is_empty(),
             client_id: if fixed { String::new() } else { known },
             secret: SecretValue::default(),
             port: request

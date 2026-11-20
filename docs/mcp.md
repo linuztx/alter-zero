@@ -1386,12 +1386,8 @@ mid-turn (the strip stays above it). Pages:
    ```
    OAuth client for calendar
 
-   accounts.google.com doesn't register this app by itself, so signing in
-   needs an OAuth client you create there.
-   Create one at https://console.cloud.google.com/apis/credentials — …
-
+   Issuer:        https://accounts.google.com
    Redirect URI:  http://localhost:8976/callback
-   Add it to the client where the provider asks for a redirect URI.
 
    Callback port > 8976
    Client ID     > 123.apps.googleusercontent.com
@@ -1400,19 +1396,19 @@ mid-turn (the strip stays above it). Pages:
    Tab to switch fields · Enter to continue · ctrl+y to copy the redirect URI · Esc to go back
    ```
 
-   It says **who issues the client and why it is asked for** (the issuer's
-   host, `mcp::issuer_host` — a provider is known by its host, and the host
-   parse is what keeps `https://accounts.google.com@evil.example` reading
-   `evil.example`), and — when the form is back — the sign-in's own reason
-   first, in the error colour, standing alone over a client already on hand
-   (`McpClientForm::on_hand`: "turned this client away" needs no reminder
-   that a client is needed). The **redirect URI comes before the fields**,
-   since it is what the user needs while creating the client, and it
-   **follows the port as it is typed**; while the port is no port the row
-   says so rather than showing an address that would not be used. Google's
-   sign-in gets one more line, a link to the console where its clients are
-   made and which kind wants the redirect URI registered — the case the form
-   exists for; no other provider is guessed at.
+   The page states **facts and fields, nothing else**. MCP returns no
+   description of a provider, so the form invents none: no sentence about
+   why a client is needed, no pointer to one provider's console. The facts
+   are the **issuer**, exactly as discovery gave it (`McpClientForm::issuer`,
+   the row omitted when no sign-in has seen the server), and right under
+   it, one block with it, the **redirect URI** to register — before the
+   fields, since it is what the user needs while creating the client. The
+   redirect URI **follows the port as it is typed**; while the port is no
+   port the row says so rather than showing an address that would not be
+   used. Each sits beside its label where the row holds both and under it
+   otherwise, so a narrow terminal never breaks an address beside a label.
+   When the form is back, the sign-in's own reason comes first, in the
+   error colour, a blank row above the issuer.
 
    The fields sit in page order — port, id, secret — with the caret
    starting on the first one still to give: the id, or the secret when the
