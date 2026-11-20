@@ -480,6 +480,74 @@ fn codexs_spelling_of_streamable_http_is_read() {
     ));
 }
 
+/// The one legacy server `body` declares, read without a note.
+fn legacy_one(body: &str) -> McpServerConfig {
+    let mcp = legacy(body);
+    assert!(mcp.notes.is_empty(), "{:?}", mcp.notes);
+    assert_eq!(mcp.servers.len(), 1);
+    mcp.servers.into_iter().next().unwrap().config
+}
+
+/// A codex catalog's entry for a Google server: its scopes at the top
+/// level and an `oauth` block of unfilled `<…>` slots. It names no client —
+/// the `/mcp` client form asks for one — while its port and scopes stand.
+#[test]
+fn a_codex_entry_with_template_credentials_names_no_client() {
+    let config = legacy_one(
+        r#"{"mcpServers":{"mail":{"type":"http","url":"https://mailmcp.example.test/mcp/v1",
+        "scopes":["https://scopes.example.test/a","https://scopes.example.test/b","https://scopes.example.test/c","https://scopes.example.test/d","https://scopes.example.test/e"],
+        "oauth":{"callback_port":12798,"client_id":"<MAIL_PUBLIC_CLIENT_ID>","client_secret":"<MAIL_CLIENT_SECRET>"}}}}"#,
+    );
+    assert!(config.is_remote());
+    assert_eq!(
+        config.oauth(),
+        Some(&crate::mcp::OAuthClientConfig {
+            callback_port: Some(12798),
+            scopes: Some(
+                "https://scopes.example.test/a https://scopes.example.test/b \
+                 https://scopes.example.test/c https://scopes.example.test/d \
+                 https://scopes.example.test/e"
+                    .to_string()
+            ),
+            ..Default::default()
+        })
+    );
+}
+
+/// A codex catalog's entry that does name its client — id, secret, port
+/// and the redirect URI it registered — keeps all four.
+#[test]
+fn a_codex_entry_naming_its_client_keeps_all_four() {
+    let config = legacy_one(
+        r#"{"code":{"type":"http","url":"https://code.example.test/mcp",
+        "oauth":{"client_id":"made-up-id","client_secret":"made-up-secret","callback_port":5555,
+        "callback_url":"http://127.0.0.1:5555/callback/made-up-id"}}}"#,
+    );
+    assert_eq!(
+        config.oauth(),
+        Some(&crate::mcp::OAuthClientConfig {
+            client_id: Some("made-up-id".to_string()),
+            client_secret: Some("made-up-secret".to_string()),
+            callback_port: Some(5555),
+            callback_url: Some("http://127.0.0.1:5555/callback/made-up-id".to_string()),
+            scopes: None,
+        })
+    );
+}
+
+/// An entry whose only client field is a template slot names no client.
+#[test]
+fn a_codex_entry_with_only_a_template_client_id_names_no_client() {
+    let config = legacy_one(
+        r#"{"base":{"type":"http","url":"https://base.example.test/mcp","oauth":{"client_id":"<BASE_CLIENT_ID>"}}}"#,
+    );
+    assert_eq!(
+        config.oauth(),
+        Some(&crate::mcp::OAuthClientConfig::default())
+    );
+    assert_eq!(config.oauth().and_then(|o| o.client_id.as_deref()), None);
+}
+
 #[test]
 fn a_legacy_entry_that_will_not_parse_is_said_and_its_siblings_stay() {
     let mcp = legacy(

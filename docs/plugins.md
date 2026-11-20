@@ -174,6 +174,16 @@ no plugin's server can take the name of one the user configured or another
 plugin's. A stdio server's `${CLAUDE_PROJECT_DIR}` is the session's directory
 (an Agent Plugin's entry expands nothing but its two variables, §9.2).
 
+A codex plugin's `.mcp.json` is read by the same parser as the user's own
+file, so its spellings are read as well: `type: "streamable_http"`, the
+snake_case `oauth` keys (`client_id`, `client_secret`, `callback_port`,
+`callback_url`) and `scopes` at the entry's top level (`docs/mcp.md`
+*Pre-registered clients*). A catalog that ships a client as an unfilled
+template slot — `"client_id": "<GMAIL_PUBLIC_CLIENT_ID>"` — names no client,
+so `/mcp` asks for one when the server is authenticated, prefilled with the
+entry's callback port; the entry's scopes are what the sign-in asks for.
+`oauth_resource` is ignored.
+
 **Hooks** have their plugin's directories substituted into the command —
 `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and the Agent Plugins
 spellings — and exported to it too, Claude Code's rule

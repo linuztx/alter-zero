@@ -806,6 +806,44 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   follows Google's published metadata, but has not been tried end to end.
   The review's `ServerParts` names an `oauth` change (`the OAuth client`).
 
+  **Other clients' spellings.** One parser reads every file — the user's
+  own `mcp.json`, a project's, a plugin's — so each spelling below works
+  in all of them:
+
+  - Each `oauth` field is read under its camelCase name or codex's
+    snake_case one: `clientId`/`client_id`, `clientSecret`/`client_secret`,
+    `callbackPort`/`callback_port`, `callbackUrl`/`callback_url`. Where an
+    entry has both spellings of one field, the camelCase one is read, and
+    an error names the key as it was written. Rendered back, an entry uses
+    camelCase.
+  - `scopes` may sit at the entry's top level, where codex puts it. It is
+    read when the `oauth` block names none, and an entry with top-level
+    `scopes` and no `oauth` block gets one holding just them.
+  - A `clientId` or `clientSecret` whose whole value is wrapped in `<` …
+    `>` (`<GMAIL_PUBLIC_CLIENT_ID>`, `<your-client-id>`) is a template's
+    unfilled slot and is read as not given (`is_placeholder`). Such an
+    entry names no client: the sign-in registers one where it can and asks
+    for one on the `/mcp` page where it can't, on the entry's
+    `callbackPort` and asking for its scopes, whichever client signs in.
+  - `callbackUrl` is the whole redirect URI the entry's client registered
+    — `http://` on `localhost`, `127.0.0.1` or `[::1]`, with a path, and
+    no query, fragment or user info; anything else is an entry error, and
+    so is a port in it that `callbackPort` contradicts. It applies only
+    when the entry's own client signs in: the redirect URI sent on the
+    authorize URL and at the token exchange is that URL as written (the
+    bound port added when it names none), the listener binds
+    `callbackPort`, else the URL's port, else any free one, and the
+    callback is answered on the URL's path
+    (`OAuthClientConfig::redirect_uri_on`, `callback_path`). The grant
+    keeps it as its `redirect_uri`, the secret-only form shows it, and
+    `mcp get` prints it. A client entered in `/mcp` or registered by this
+    app keeps `http://localhost:{port}/callback`.
+  - `"type": "streamable_http"` is `http`.
+
+  An entry's top-level `oauth_resource` is ignored on purpose: the spec
+  binds the RFC 8707 `resource` to the MCP server's own URL, and the sign-in
+  already derives it from discovery and checks it there (`discover`).
+
   **The client form — a client entered in `/mcp`.** The spec's registration
   order ends on *"prompt the user to enter the client information if no
   other option is available"*, and the file and the command line were the

@@ -231,6 +231,10 @@ pub struct McpClientRequest {
     /// [`oauth_redirect_uri`] of it. `None` when the sign-in takes any free
     /// port (a configured client whose entry names no `callbackPort`).
     pub callback_port: Option<u16>,
+    /// The redirect URI the entry's own client registered, where its entry
+    /// names one (`oauth.callbackUrl`) — what the form shows in place of
+    /// [`oauth_redirect_uri`] of the port. `None` otherwise.
+    pub redirect_uri: Option<String>,
     /// Why the client on hand was not enough — turned away by the
     /// authorization server, its port taken — in words for the page.
     pub reason: Option<String>,

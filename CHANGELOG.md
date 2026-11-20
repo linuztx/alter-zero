@@ -36,6 +36,20 @@ release heading when a version is cut.
   secret**. `alter-zero mcp get` names a client entered this way too
   (`docs/mcp.md`).
 
+- **MCP entries written the way codex writes them.** An entry's `oauth`
+  block is read under codex's snake_case keys too (`client_id`,
+  `client_secret`, `callback_port`, `callback_url`), `scopes` may sit at the
+  top of the entry, and `"type": "streamable_http"` is `http` — in your own
+  `mcp.json`, a project's and a plugin's alike. A client ID or secret left
+  as a template slot such as `<GMAIL_PUBLIC_CLIENT_ID>` counts as not given,
+  so a codex plugin's Gmail, Calendar or Drive server asks for an OAuth
+  client in `/mcp` on the entry's callback port and signs in with the
+  entry's scopes. `callbackUrl` names the exact redirect URI an entry's own
+  client registered; it is sent as written and the callback is answered on
+  its path. A server you already approved in the startup review whose entry
+  carries any of these keys is asked about once more, since the keys now
+  change what it signs in with (`docs/mcp.md`).
+
 - **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
   GitHub `owner/repo`, any git URL, or a directory — and install the plugins
   it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex

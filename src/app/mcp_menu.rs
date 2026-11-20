@@ -205,6 +205,9 @@ pub struct McpClientForm {
     /// The server entry's own client id, when only its secret is asked for:
     /// shown, never a field.
     pub fixed_client_id: Option<String>,
+    /// The redirect URI that entry names for its client (`callbackUrl`),
+    /// shown in place of the one the port makes.
+    pub fixed_redirect_uri: Option<String>,
     pub client_id: String,
     pub secret: SecretValue,
     /// The callback port as typed — the redirect URI on the page follows it.
@@ -232,6 +235,7 @@ impl McpClientForm {
         Self {
             issuer: request.issuer.clone(),
             fixed_client_id: fixed.then(|| known.clone()),
+            fixed_redirect_uri: request.redirect_uri.clone().filter(|_| fixed),
             field: if known.is_empty() {
                 McpClientField::ClientId
             } else {
@@ -315,12 +319,15 @@ impl McpClientForm {
         self.port.parse::<u16>().ok().filter(|port| *port != 0)
     }
 
-    /// The redirect URI the sign-in will send for the port typed — what a
-    /// provider that matches redirect URIs exactly must have registered.
-    /// `None` while the port is no port, or the sign-in takes any.
+    /// The redirect URI the sign-in will send — the one an entry names for
+    /// its own client, else the one for the port typed: what a provider
+    /// that matches redirect URIs exactly must have registered. `None`
+    /// while the port is no port, or the sign-in takes any.
     #[must_use]
     pub fn redirect_uri(&self) -> Option<String> {
-        self.callback_port().map(crate::mcp::oauth_redirect_uri)
+        self.fixed_redirect_uri
+            .clone()
+            .or_else(|| self.callback_port().map(crate::mcp::oauth_redirect_uri))
     }
 
     /// The client the form holds, checked — or the field at fault and what

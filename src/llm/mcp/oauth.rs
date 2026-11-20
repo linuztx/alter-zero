@@ -1841,11 +1841,11 @@ fn redirect_port(redirect_uri: &str) -> Option<u16> {
 const PORT_HANDOFF_WAIT: Duration = Duration::from_millis(400);
 
 /// Bind the callback on exactly `port` — the one a provider was told —
-/// waiting [`PORT_HANDOFF_WAIT`] for it to come free.
-fn bind_exactly(port: u16) -> Result<CallbackServer, String> {
+/// waiting [`PORT_HANDOFF_WAIT`] for it to come free, answering on `path`.
+fn bind_exactly(port: u16, path: &str) -> Result<CallbackServer, String> {
     let until = Instant::now() + PORT_HANDOFF_WAIT;
     loop {
-        match CallbackServer::bind(&[port], "/callback") {
+        match CallbackServer::bind(&[port], path.to_string()) {
             Ok(callback) => return Ok(callback),
             Err(error) if Instant::now() >= until => return Err(error),
             Err(_) => std::thread::sleep(Duration::from_millis(25)),
@@ -1855,12 +1855,17 @@ fn bind_exactly(port: u16) -> Result<CallbackServer, String> {
 
 /// Bind the callback for a sign-in whose entry may name its port: exactly
 /// that one — failing with it named, since the provider was told that
-/// redirect URI — else the first of `preferred` that is free.
-fn bind_callback(exact: Option<u16>, preferred: &[u16]) -> Result<CallbackServer, String> {
+/// redirect URI — else the first of `preferred` that is free; answering on
+/// `path`.
+fn bind_callback(
+    exact: Option<u16>,
+    preferred: &[u16],
+    path: &str,
+) -> Result<CallbackServer, String> {
     match exact {
-        Some(port) => bind_exactly(port)
+        Some(port) => bind_exactly(port, path)
             .map_err(|e| format!("the callback port {port} (oauth.callbackPort) isn't free: {e}")),
-        None => CallbackServer::bind(preferred, "/callback"),
+        None => CallbackServer::bind(preferred, path.to_string()),
     }
 }
 
@@ -2049,7 +2054,12 @@ pub fn client_request_for(
             has_secret: own.is_some_and(|kept| kept.client_secret.is_some()),
             client_id: Some(client_id),
             fixed_id: true,
-            callback_port: config.callback_port,
+            callback_port: config.exact_port(),
+            redirect_uri: config
+                .callback_url
+                .is_some()
+                .then(|| config.registered_redirect_uri())
+                .flatten(),
             reason: None,
         });
     }
@@ -2065,6 +2075,7 @@ pub fn client_request_for(
                 .or(configured.and_then(|config| config.callback_port))
                 .unwrap_or(DEFAULT_CALLBACK_PORT),
         ),
+        redirect_uri: None,
         reason: None,
     })
 }
@@ -2088,6 +2099,12 @@ pub fn client_summary(
         (Some(id), _) => {
             lines.push(format!("OAuth client: {id}"));
             lines.extend(entry_port.map(|port| format!("Callback port: {port}")));
+            lines.extend(
+                configured
+                    .filter(|config| config.callback_url.is_some())
+                    .and_then(crate::mcp::OAuthClientConfig::registered_redirect_uri)
+                    .map(|uri| format!("Redirect URI: {uri}")),
+            );
         }
         (None, Some(id)) => {
             lines.push(format!("OAuth client: {id} (entered in /mcp)"));
@@ -2212,6 +2229,7 @@ pub fn run_auth_flow(
             fixed_id,
             has_secret,
             callback_port,
+            redirect_uri: None,
             reason,
         })
     };
@@ -2233,8 +2251,10 @@ pub fn run_auth_flow(
                 false,
             ),
         };
-        let callback = bind_callback(config.callback_port, &[0; 9])?;
-        let redirect_uri = crate::mcp::oauth_redirect_uri(callback.port);
+        // The redirect URI its entry names (`callbackUrl`), the bound port
+        // added where it names none, answered on its own path.
+        let callback = bind_callback(config.exact_port(), &[0; 9], &config.callback_path())?;
+        let redirect_uri = config.redirect_uri_on(callback.port);
         let client = ClientIdentity {
             client_id,
             auth_method: configured_auth_method(&meta.token_auth_methods, client_secret.is_some()),
@@ -2258,7 +2278,7 @@ pub fn run_auth_flow(
             .callback_port
             .or(entry_port)
             .unwrap_or(DEFAULT_CALLBACK_PORT);
-        let callback = bind_exactly(port).map_err(|_| {
+        let callback = bind_exactly(port, "/callback").map_err(|_| {
             ask(
                 Some(client_id.clone()),
                 false,
@@ -2298,7 +2318,7 @@ pub fn run_auth_flow(
             .into_iter()
             .chain(std::iter::repeat_n(0, 8))
             .collect();
-        let callback = bind_callback(entry_port, &ports)?;
+        let callback = bind_callback(entry_port, &ports, "/callback")?;
         let redirect_uri = crate::mcp::oauth_redirect_uri(callback.port);
         // The port a client entered next would sign in on — what the form
         // shows as its redirect URI.
@@ -2416,16 +2436,24 @@ pub fn run_auth_flow(
                     ));
                 }
                 ClientSource::Configured { file_secret: false } => {
-                    return Err(ask(
+                    let mut request = ask(
                         Some(client.client_id),
                         true,
                         has_secret,
-                        entry_port,
+                        configured.and_then(crate::mcp::OAuthClientConfig::exact_port),
                         Some(format!(
                             "{host} turned away the client this server's entry names — enter \
                              its secret. ({detail})"
                         )),
-                    ));
+                    );
+                    // The redirect URI the entry names is the one to show.
+                    if let (AuthError::NeedsClient(request), Some(config)) = (
+                        &mut request,
+                        configured.filter(|c| c.callback_url.is_some()),
+                    ) {
+                        request.redirect_uri = config.registered_redirect_uri();
+                    }
+                    return Err(request);
                 }
                 ClientSource::Configured { file_secret: true } => {
                     return Err(format!(
@@ -3517,6 +3545,7 @@ mod tests {
                 fixed_id: false,
                 has_secret: true,
                 callback_port: Some(9001),
+                redirect_uri: None,
                 reason: None,
             })
         );
@@ -4167,12 +4196,14 @@ mod tests {
     fn approve(authorize_url: &str, code: &'static str) {
         let redirect = redirect_param(authorize_url, "redirect_uri").expect("redirect_uri");
         let state = redirect_param(authorize_url, "state").expect("state");
-        let port = url::Url::parse(&redirect).unwrap().port().expect("a port");
+        let redirect = url::Url::parse(&redirect).unwrap();
+        let port = redirect.port().expect("a port");
+        let path = redirect.path().to_string();
         std::thread::spawn(move || {
             let _ = hit(
                 port,
                 &format!(
-                    "GET /callback?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    "GET {path}?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
                     url_encode(&state)
                 ),
             );
@@ -4248,6 +4279,7 @@ mod tests {
             client_id: Some("pre-cid".to_string()),
             client_secret: Some("pre-secret".to_string()),
             callback_port: Some(port),
+            callback_url: None,
             scopes: Some("calendar openid".to_string()),
         };
         let (result, progress) =
@@ -4316,6 +4348,7 @@ mod tests {
                 fixed_id: false,
                 has_secret: false,
                 callback_port: Some(DEFAULT_CALLBACK_PORT),
+                redirect_uri: None,
                 reason: None,
             }
         );
@@ -4327,6 +4360,223 @@ mod tests {
                 && words.contains("--client-id"),
             "{words}"
         );
+    }
+
+    /// An entry whose `oauth` block names no client — a template's unfilled
+    /// slots dropped, a port and scopes left — asks for one on its port,
+    /// and whichever client then signs in does so on that port and asks
+    /// for the entry's scopes, at a registration too.
+    #[test]
+    fn an_entry_naming_no_client_keeps_its_port_and_scopes() {
+        use std::sync::atomic::Ordering;
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let port = free_port();
+        let config = crate::mcp::OAuthClientConfig {
+            callback_port: Some(port),
+            scopes: Some("mail.read mail.send".to_string()),
+            ..Default::default()
+        };
+        let (result, _) =
+            sign_in_outcome(&fixture, &store, "c", &CancelToken::new(), Some(&config));
+        let Err(AuthError::NeedsClient(request)) = result else {
+            panic!("expected a request for a client, got {result:?}");
+        };
+        assert_eq!(request.callback_port, Some(port));
+        assert!(!request.fixed_id && request.client_id.is_none());
+        assert_eq!(request.redirect_uri, None);
+        // The form, prefilled with that port, keeps the client entered.
+        let client = StoredClient {
+            client_id: Some("typed-cid".to_string()),
+            client_secret: None,
+            callback_port: request.callback_port,
+            issuer: Some(request.issuer.clone()),
+        };
+        save_client(Some(&store), &server, Some(&client)).unwrap();
+        let (result, progress) =
+            sign_in_outcome(&fixture, &store, "c", &CancelToken::new(), Some(&config));
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(port_of(&url), port);
+        assert_eq!(
+            redirect_param(&url, "redirect_uri").as_deref(),
+            Some(crate::mcp::oauth_redirect_uri(port).as_str())
+        );
+        assert_eq!(
+            redirect_param(&url, "client_id").as_deref(),
+            Some("typed-cid")
+        );
+        assert_eq!(
+            redirect_param(&url, "scope").as_deref(),
+            Some("mail.read mail.send")
+        );
+        // A server that registers clients is asked for the same scopes.
+        let registering = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let config = crate::mcp::OAuthClientConfig {
+            callback_port: Some(port),
+            ..config
+        };
+        let (result, progress) = sign_in_with(
+            &registering,
+            &store,
+            "c",
+            &CancelToken::new(),
+            Some(&config),
+        );
+        result.expect("signed in");
+        assert_eq!(registering.registrations.load(Ordering::SeqCst), 1);
+        let registered = registering.registered.lock().unwrap()[0].clone();
+        assert!(registered.contains("mail.read mail.send"), "{registered}");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(port_of(&url), port);
+        assert_eq!(
+            redirect_param(&url, "scope").as_deref(),
+            Some("mail.read mail.send")
+        );
+    }
+
+    /// The entry's own client sends the redirect URI its entry names
+    /// (`callbackUrl`) — on the authorize URL, at the token exchange, and
+    /// kept with the grant — listening on its port and answering on its
+    /// path.
+    #[test]
+    fn an_entrys_callback_url_is_the_redirect_uri_its_client_sends() {
+        let fixture = spawn_auth_server_with(false, None);
+        let port = free_port();
+        let cases = [
+            (
+                Some(format!("http://127.0.0.1:{port}/callback/made-up-id")),
+                None,
+            ),
+            (
+                Some("http://localhost/cb/made-up-id".to_string()),
+                Some(port),
+            ),
+            (Some("http://localhost/cb/made-up-id".to_string()), None),
+        ];
+        for (callback_url, callback_port) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("mcp-auth.json");
+            let config = crate::mcp::OAuthClientConfig {
+                client_id: Some("pre-cid".to_string()),
+                client_secret: Some("pre-secret".to_string()),
+                callback_port,
+                callback_url: callback_url.clone(),
+                scopes: None,
+            };
+            let (result, progress) =
+                sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&config));
+            result.unwrap_or_else(|e| panic!("{callback_url:?}: {e}"));
+            let url = progress.urls.lock().unwrap()[0].clone();
+            let sent = redirect_param(&url, "redirect_uri").unwrap();
+            let bound = port_of(&url);
+            if callback_port.is_some() || callback_url.as_deref().unwrap().contains("127.0.0.1") {
+                assert_eq!(bound, port, "{callback_url:?}");
+            }
+            let expected = config.redirect_uri_on(bound);
+            assert_eq!(sent, expected);
+            assert!(sent.ends_with("/made-up-id") && sent.contains(&format!(":{bound}/")));
+            let requests = fixture.token_requests.lock().unwrap();
+            let (_, body) = requests.last().unwrap();
+            assert!(
+                body.contains(&format!("redirect_uri={}", url_encode(&expected))),
+                "{body}"
+            );
+            drop(requests);
+            let stored = load_tokens(Some(&store), &format!("{}/mcp", fixture.base)).unwrap();
+            assert_eq!(stored.redirect_uri.as_deref(), Some(expected.as_str()));
+        }
+    }
+
+    /// A `callbackUrl` is the entry's own client's: a client entered in
+    /// `/mcp` keeps the standard redirect URI on its own port.
+    #[test]
+    fn a_callback_url_is_never_sent_for_an_entered_client() {
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let port = free_port();
+        save_client(Some(&store), &server, Some(&entered(&fixture, port))).unwrap();
+        let config = crate::mcp::OAuthClientConfig {
+            callback_port: Some(port),
+            callback_url: Some(format!("http://127.0.0.1:{port}/elsewhere")),
+            ..Default::default()
+        };
+        let (result, progress) =
+            sign_in_outcome(&fixture, &store, "c", &CancelToken::new(), Some(&config));
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(
+            redirect_param(&url, "redirect_uri").as_deref(),
+            Some(crate::mcp::oauth_redirect_uri(port).as_str())
+        );
+    }
+
+    /// Where the entry's own client is asked for its secret — from the
+    /// server's page or after a refusal — the redirect URI the request
+    /// carries is the one its entry names; and `mcp get` says it.
+    #[test]
+    fn the_entrys_redirect_uri_is_the_one_shown() {
+        let configured = crate::mcp::OAuthClientConfig {
+            client_id: Some("file-cid".to_string()),
+            callback_url: Some("http://127.0.0.1:5555/callback/file-cid".to_string()),
+            ..Default::default()
+        };
+        let request = client_request_for(Some(&configured), None).unwrap();
+        assert_eq!(request.callback_port, Some(5555));
+        assert_eq!(
+            request.redirect_uri.as_deref(),
+            Some("http://127.0.0.1:5555/callback/file-cid")
+        );
+        assert!(
+            client_summary(Some(&configured), None)
+                .contains(&"Redirect URI: http://127.0.0.1:5555/callback/file-cid".to_string()),
+            "{:?}",
+            client_summary(Some(&configured), None)
+        );
+        // An entry naming no URL carries none: the form's own rule stands.
+        let plain = crate::mcp::OAuthClientConfig {
+            callback_url: None,
+            callback_port: Some(8080),
+            ..configured.clone()
+        };
+        assert_eq!(
+            client_request_for(Some(&plain), None).unwrap().redirect_uri,
+            None
+        );
+        // Turned away for want of a secret, the request says it too.
+        let fixture = spawn_auth_server_with(false, None);
+        *fixture.token_reply.lock().unwrap() = Some((
+            400,
+            r#"{"error":"invalid_request","error_description":"client_secret is missing."}"#,
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let url = format!("http://127.0.0.1:{port}/callback/file-cid");
+        let configured = crate::mcp::OAuthClientConfig {
+            callback_url: Some(url.clone()),
+            ..configured
+        };
+        let (result, _) = sign_in_outcome(
+            &fixture,
+            &store,
+            "c",
+            &CancelToken::new(),
+            Some(&configured),
+        );
+        let Err(AuthError::NeedsClient(request)) = result else {
+            panic!("expected a request for the secret, got {result:?}");
+        };
+        assert!(request.fixed_id);
+        assert_eq!(request.callback_port, Some(port));
+        assert_eq!(request.redirect_uri.as_deref(), Some(url.as_str()));
     }
 
     fn entered(fixture: &AuthServerFixture, port: u16) -> StoredClient {

@@ -496,6 +496,7 @@ fn client_request() -> McpClientRequest {
         fixed_id: false,
         has_secret: false,
         callback_port: Some(8976),
+        redirect_uri: None,
         reason: None,
     }
 }
@@ -820,6 +821,31 @@ fn ctrl_y_copies_the_redirect_uri_the_form_shows() {
     app.on_key(key(KeyCode::Down));
     type_text(&mut app, "y");
     assert_eq!(form(&app).client_id, "y");
+}
+
+/// An entry whose own client names its redirect URI (`callbackUrl`) is
+/// asked for its secret beside that very URI — the one the sign-in sends —
+/// and Ctrl+Y copies it.
+#[test]
+fn the_entrys_own_redirect_uri_is_the_one_the_form_names() {
+    let request = McpClientRequest {
+        client_id: Some("file-cid".to_string()),
+        fixed_id: true,
+        callback_port: Some(5555),
+        redirect_uri: Some("http://127.0.0.1:5555/callback/file-cid".to_string()),
+        ..client_request()
+    };
+    let mut app = form_app(&request);
+    assert_eq!(
+        form(&app).redirect_uri().as_deref(),
+        Some("http://127.0.0.1:5555/callback/file-cid")
+    );
+    assert_eq!(
+        app.on_key(ctrl('y')),
+        Action::McpOp(McpOp::CopyRedirectUri {
+            uri: "http://127.0.0.1:5555/callback/file-cid".to_string()
+        })
+    );
 }
 
 /// A paste lands in the focused field: line breaks dropped and the ends

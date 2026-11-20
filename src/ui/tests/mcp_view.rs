@@ -1335,6 +1335,7 @@ fn client_request() -> McpClientRequest {
         fixed_id: false,
         has_secret: false,
         callback_port: Some(8976),
+        redirect_uri: None,
         reason: None,
     }
 }
@@ -1556,6 +1557,25 @@ fn a_configured_client_shows_its_id_and_asks_only_for_the_secret() {
         all.contains("Issuer:        https://login.example.com"),
         "{all}"
     );
+}
+
+/// The entry's own client is shown beside the redirect URI its entry
+/// names, not one made up from the port.
+#[test]
+fn a_configured_client_shows_the_redirect_uri_its_entry_names() {
+    let request = McpClientRequest {
+        client_id: Some("file-cid".to_string()),
+        fixed_id: true,
+        callback_port: Some(5555),
+        redirect_uri: Some("http://127.0.0.1:5555/callback/file-cid".to_string()),
+        ..client_request()
+    };
+    let all = texts(&client_form_app(&request)).join("\n");
+    assert!(
+        all.contains("Redirect URI:  http://127.0.0.1:5555/callback/file-cid"),
+        "{all}"
+    );
+    assert!(!all.contains("localhost:5555"), "{all}");
 }
 
 /// A form that is back says why — the sign-in's own words, in the error

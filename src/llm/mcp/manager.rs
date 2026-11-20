@@ -4579,6 +4579,82 @@ done
         manager.shutdown();
     }
 
+    /// A plugin's server whose entry is codex-shaped — its scopes at the top
+    /// level, an `oauth` block of a port and unfilled `<…>` client slots —
+    /// asks for a client on the entry's port, then signs in with the one
+    /// entered there on that port, asking for the entry's scopes, and keeps
+    /// it under the server's URL like any other scope's.
+    #[test]
+    fn a_plugin_server_naming_no_client_asks_and_signs_in_on_its_port() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let config = crate::mcp::parse_server_entry(&format!(
+            r#"{{"type":"http","url":"{base}/mcp","scopes":["mail.read","mail.send"],
+            "oauth":{{"callback_port":{port},"client_id":"<MAIL_CLIENT_ID>","client_secret":"<MAIL_CLIENT_SECRET>"}}}}"#
+        ))
+        .unwrap();
+        let name = crate::plugins::plugin_server_name("mail", "mail");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                project: "/proj".to_string(),
+                auth_path: Some(store.clone()),
+                ..Default::default()
+            },
+        );
+        let refused = manager.set_plugin_servers(
+            vec![McpServerEntry {
+                name: name.clone(),
+                config,
+                scope: McpScope::Plugin,
+                config_path: "/plugins/installed/m/mail/.mcp.json".to_string(),
+                literal: false,
+            }],
+            BTreeMap::new(),
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        manager.authenticate(&name);
+        let request =
+            next_event(&mut rx, Duration::from_secs(5), needs_client).expect("asks for a client");
+        assert_eq!(request.callback_port, Some(port));
+        assert!(!request.fixed_id && request.client_id.is_none());
+        assert_eq!(manager.client_request(&name), None, "no client on hand yet");
+        manager.save_client(&name, &entered(&request.issuer, "typed-cid", None, port));
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        let param = |key| crate::llm::mcp::redirect_param(&url, key);
+        assert_eq!(param("client_id").as_deref(), Some("typed-cid"));
+        assert_eq!(
+            param("redirect_uri").as_deref(),
+            Some(crate::mcp::oauth_redirect_uri(port).as_str())
+        );
+        assert_eq!(param("scope").as_deref(), Some("mail.read mail.send"));
+        assert_eq!(
+            oauth::load_client(Some(&store), &format!("{base}/mcp")),
+            Some(oauth::StoredClient {
+                client_id: Some("typed-cid".to_string()),
+                client_secret: None,
+                callback_port: Some(port),
+                issuer: Some(base.clone()),
+            })
+        );
+        let snapshot = manager.snapshot();
+        let server = snapshot.iter().find(|s| s.name == name).unwrap();
+        assert_eq!(server.kept_client.as_deref(), Some("typed-cid"));
+        // The server page now offers to change it, prefilled the same way.
+        let again = manager.client_request(&name).expect("the client on hand");
+        assert_eq!(again.client_id.as_deref(), Some("typed-cid"));
+        assert_eq!(again.callback_port, Some(port));
+        assert!(!again.fixed_id);
+        manager.submit_auth_paste(&redirect_for(&url));
+        let (ok, detail) =
+            next_event(&mut rx, Duration::from_secs(5), auth_done).expect("the sign-in finishes");
+        assert!(ok, "{detail}");
+        manager.shutdown();
+    }
+
     /// An entered client the authorization server turns away asks again,
     /// with what was entered and the server's reason. Entered again with no
     /// secret typed, the client keeps the one it had; another client with
@@ -4697,6 +4773,7 @@ done
                 fixed_id: false,
                 has_secret: true,
                 callback_port: Some(9001),
+                redirect_uri: None,
                 reason: None,
             })
         );
