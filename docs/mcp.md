@@ -1412,14 +1412,14 @@ mid-turn (the strip stays above it). Pages:
      needs an OAuth client you create there. It is kept with your
      logins on this machine, never in an mcp.json.
 
-     ❯ Client ID      123.apps.googleusercontent.com
-       Client secret  leave empty for a public client
-       Callback port  any free port
-
      Redirect URI: http://localhost:PORT/callback
      Register it with the client if the provider asks for a redirect
      URI. PORT is any free port — set a callback port when the provider
      needs the exact one.
+
+     ❯ Client ID      123.apps.googleusercontent.com
+       Client secret  leave empty for a public client
+       Callback port  any free port
 
      Enter for the next field · Tab/↑↓ to move · Esc to go back
    ────────────────────────────────────────────────────────────────
@@ -1444,7 +1444,16 @@ mid-turn (the strip stays above it). Pages:
    - **The redirect URI follows the port as it is typed**, since that row
      is what the user copies into the provider's console: `PORT` stands in
      until a port is a port, and the note under it then drops the sentence
-     about any free port.
+     about any free port. It reads **before** the fields — it is what the
+     client is created with, and the client is what the fields take.
+   - **The fields are the page's tail**, over nothing but the hint (and a
+     refusal, when there is one). Every framed page is bottom-anchored
+     (`docs/view-flow.md`), so the tail is what a short terminal keeps:
+     with the redirect note under them, an eight-row pane showed the note
+     and typed into fields it had scrolled away. Seven rows now hold all
+     three, the hint and the rule — the `/secrets` form's reason for
+     needing no shedding ladder, a focused field that sits where the anchor
+     keeps it.
    - The `/secrets` grammar: typing goes to the focused field, Tab/↓ and
      Shift+Tab/↑ move (wrapping), Enter moves on and **signs in from the
      last field**, Ctrl+U empties the field, ←/→/Home/End/Delete move

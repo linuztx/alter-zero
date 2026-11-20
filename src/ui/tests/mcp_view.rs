@@ -1558,6 +1558,75 @@ fn a_long_secret_stays_on_its_row_and_keeps_a_column_for_the_caret() {
 }
 
 #[test]
+fn the_fields_stay_on_screen_on_a_short_terminal() {
+    // The page is bottom-anchored (docs/view-flow.md): what a short terminal
+    // keeps is the page's tail, so the fields ARE the tail — under what to
+    // register, over nothing but the hint. They used to sit above the
+    // redirect note, and an eight-row pane showed the note and typed into
+    // fields it had scrolled away.
+    let width = 80u16;
+    let on_screen = |app: &App, height: u16| -> (Vec<String>, (u16, u16)) {
+        assert!(
+            mcp_view_lines(app, width).len() > usize::from(height),
+            "the page overflows the area"
+        );
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        render_mcp_menu(area, &mut buf, app);
+        (
+            (0..height).map(|y| row(&buf, y, width)).collect(),
+            crate::ui::cursor_position(area, app),
+        )
+    };
+    let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
+    type_into(&mut app, "cid");
+    // Seven rows: the three fields, a blank row, the hint, the closing rule.
+    let (shown, (x, y)) = on_screen(&app, 7);
+    for label in ["Client ID", "Client secret", "Callback port"] {
+        assert!(
+            shown.iter().any(|r| r.contains(label)),
+            "{label} is off screen: {shown:?}"
+        );
+    }
+    assert!(
+        shown.iter().any(|r| r.contains("Enter for the next field")),
+        "{shown:?}"
+    );
+    // The caret is on the focused field's own row, as painted.
+    assert!(
+        shown[usize::from(y)].contains("Client ID"),
+        "the caret is on {:?}",
+        shown[usize::from(y)]
+    );
+    assert_eq!(x, MCP_CLIENT_FIELD_COL + 3);
+    // A refusal takes its rows under the fields without pushing one off.
+    let mut refused = client_form_app(client_request(ClientNeed::NoRegistration));
+    refused.on_key(key(KeyCode::Up));
+    refused.on_key(key(KeyCode::Enter));
+    let (shown, (_, y)) = on_screen(&refused, 9);
+    for label in [
+        "Client ID",
+        "Client secret",
+        "Callback port",
+        "Enter the client ID",
+    ] {
+        assert!(
+            shown.iter().any(|r| r.contains(label)),
+            "{label} is off screen: {shown:?}"
+        );
+    }
+    assert!(shown[usize::from(y)].contains("Client ID"), "{shown:?}");
+    // What to register reads before the fields it is registered for.
+    let rows = texts(&app);
+    let at = |text: &str| rows.iter().position(|r| r.contains(text)).unwrap();
+    assert!(at("Redirect URI:") < at("Client ID"), "{rows:?}");
+    assert!(
+        at("registers no clients itself") < at("Redirect URI:"),
+        "{rows:?}"
+    );
+}
+
+#[test]
 fn a_refused_enter_shows_its_reason_under_the_fields() {
     let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
     app.on_key(key(KeyCode::Up)); // → port, the last field

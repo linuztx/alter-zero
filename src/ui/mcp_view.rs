@@ -928,10 +928,13 @@ fn asking_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The client form (`docs/mcp.md` *Pre-registered clients*): who asks and
-/// why; the three fields — the id wrapped whole, the secret **masked**, the
-/// port — with the caret in the focused one; the redirect URI the sign-in
-/// will listen on, following the port as it is typed; the refusal in red
-/// when the last Enter was turned back; and the hint.
+/// why; the redirect URI the sign-in will listen on — what to register,
+/// following the port as it is typed; the three fields — the id wrapped
+/// whole, the secret **masked**, the port — with the caret in the focused
+/// one; the refusal in red when the last Enter was turned back; and the
+/// hint. The fields come **last**, over nothing but the hint: the page is
+/// bottom-anchored, so its tail is what a short terminal keeps, and a form
+/// whose fields had scrolled away is typed into blind.
 fn client_form_blocks(form: &McpClientForm, server: &McpServerSnapshot, width: u16) -> Vec<Block> {
     let dim = model_meta_color();
     let ink = Style::new().fg(model_id_color());
@@ -1068,8 +1071,8 @@ fn client_form_blocks(form: &McpClientForm, server: &McpServerSnapshot, width: u
     let mut blocks: Vec<Block> = vec![
         (head, None),
         (why, None),
-        (fields, Some((col, caret.1))),
         (redirect, None),
+        (fields, Some((col, caret.1))),
     ];
     if let Some(error) = &form.error {
         blocks.push((

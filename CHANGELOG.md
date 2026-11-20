@@ -21,7 +21,7 @@ release heading when a version is cut.
   Authenticate ended in an explanation. It now asks. The page becomes a
   form — the client ID, the client secret (masked; optional, since a public
   client has none) and the callback port (optional: any free port, unless
-  the provider needs the exact one) — over the redirect URI to register
+  the provider needs the exact one) — under the redirect URI to register
   with the provider, and signs in with what you give it. It asks too when a
   server that does register apps refuses this one, and again, in the
   provider's own words, when the client is turned away (a wrong secret).
