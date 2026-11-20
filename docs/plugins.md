@@ -315,7 +315,9 @@ They are one Enter away on the page's `+ Add` tab and one flag away in the
 shell (`plugin marketplace add --defaults`); installing
 `plugin@claude-plugins-official` adds that marketplace on the way.
 `ALTER_ZERO_PLUGIN_MARKETPLACES` replaces the offered list for a run (the
-smoke suite points it at local repositories).
+smoke suite points it at local repositories): comma-separated sources, an
+item optionally `name=source` so an install naming that marketplace can add
+it on the way.
 
 ### On disk
 
@@ -346,18 +348,20 @@ about the copy and lives in the registry.
 {
   "marketplaces": {
     "claude-plugins-official": {
-      "source": { "kind": "git", "url": "https://github.com/anthropics/claude-plugins-official.git" },
+      "source": "anthropics/claude-plugins-official",
       "revision": "1a2b3c4d…",
-      "updated_at": 1795180000
+      "updated": 1795180000
     },
-    "team": { "source": { "kind": "local", "path": "/home/me/team-plugins" } }
+    "team": { "source": "/home/me/team-plugins" }
   },
   "plugins": {
     "hookify@claude-plugins-official": {
       "version": "0.1.1",
       "revision": "9c1e0b4…",
-      "installed_at": 1795180100
-    }
+      "offered": "0.1.1",
+      "installed": 1795180100
+    },
+    "lint@team": { "root": "/home/me/team-plugins/lint" }
   },
   "projects": {
     "/home/me/work/api": { "disabled": ["hookify@claude-plugins-official"] }
@@ -376,7 +380,12 @@ that moment, written through a temp file and a rename, unknown keys kept,
 and a file that will not parse is **never written over** — the session runs
 with no plugins and says so. `revision` is what the copy was made from: the
 commit of an external source, the **tree** of a plugin kept in its
-marketplace (`git rev-parse HEAD:<path>`).
+marketplace (`git rev-parse HEAD:<path>`). A marketplace's `source` is what
+was typed, normalised so it parses back to itself (`owner/repo`, the git
+URL, the absolute folder), with a git source's `ref` beside it; `offered` is
+the version the catalog entry offered at install; `root` the folder a
+plugin loads from in place. A marketplace key that is no plain name is kept
+as written but never followed as a path.
 
 ### Fetching — `git` as a child process
 
@@ -411,7 +420,8 @@ fetched.
   installed).
 - **A plugin in a repository of its own** is fetched into a staging
   repository at exactly the commit the marketplace names: `init`,
-  `remote add`, `sparse-checkout set <subdir>` when there is one,
+  `remote add`, a sparse-checkout pattern file naming `<subdir>` when there
+  is one (written, never passed on a command line),
   `fetch --depth 1 origin <sha|ref|HEAD>`, `checkout FETCH_HEAD`, and a
   check that a pinned `sha` is what was checked out.
 
@@ -428,8 +438,9 @@ fetched.
    loads in place — into `plugins/staging/`, then rename it into
    `plugins/installed/{marketplace}/{plugin}/`, over the old copy on an
    update (moved aside first and put back if the rename fails). Regular
-   files and directories only; `.git` is left behind; a symlink is kept only
-   when it resolves inside the plugin; the copy stops at 20 000 entries or
+   files and directories only; `.git` is left behind; a symlink that
+   resolves inside the plugin is copied as what it points at, one that
+   leaves it is skipped and noted; the copy stops at 20 000 entries or
    256 MiB. When the entry declares components or the plugin has no
    manifest of its own, the entry is saved beside the copy as
    `.alter-zero-entry.json`.
@@ -443,8 +454,9 @@ An **update** is the same steps; the data directory is never touched. What
 marketplace by its files (the tree), one pinned to a commit by the commit,
 one from a repository of its own by the entry's version against the version
 the entry **offered at install** (never the manifest's, which may say
-another and would read as an update forever); one loaded in place is always
-current.
+another and would read as an update forever) — or, when neither side names
+a version, by the remote's head commit (`git ls-remote`); one loaded in
+place is always current.
 
 Uninstalling removes the copy, the data directory, the record and the trust
 records. **Removing a marketplace uninstalls the plugins installed from
@@ -504,7 +516,14 @@ marketplace's catalog behind the first frame and kept it so the page could
 open on it; that is the thing this one does not do.
 
 - **Startup**: one bounded read of `plugins.json`, typed, no `Value` tree.
-  No catalog, no thread, no `git`.
+  No catalog, no thread, no `git`. The entry point is one small function,
+  `plugins::startup_plugins`: with no `plugins.json` it returns after one
+  failed `open`, having touched no other plugin code (no store, no parser,
+  no directory probe) — the earlier version idled 1.4–1.6 MB above the
+  baseline with no plugins at all, nearly all of it code pages faulted in by
+  plugin code called from scattered places at startup. Classifying a root
+  and reading manifests (`plugins::load_enabled`) is reached only when the
+  registry lists a plugin that is on in this directory.
 - **A catalog** is read only when `/plugins` opens (or a CLI command runs):
   streamed off the file through `serde_json::from_reader` over a
   `Read::take` cap (8 MiB) into typed records naming only the fields the
@@ -518,6 +537,21 @@ open on it; that is the thing this one does not do.
 - **The worker thread** that waits on `git` builds nothing large (a new
   thread is a new arena): results cross back as small typed values.
 - No new dependency, no static table of references.
+- **The core is a crate of its own**, `crates/plugins` (`alter-zero-plugins`,
+  re-exported as `alter_zero::plugins`). Measured on the earlier version:
+  every plugin module inside the main crate — the store, the components
+  reader, the page, ~367 kB — was 100% resident at idle without ever being
+  executed, with ~290 kB of `alloc`/`core`/`serde` instantiations beside it,
+  because code inside the main crate is interleaved with hot code at a finer
+  grain than the kernel's 64 kB fault-around windows. A cold dependency
+  crate's code and its own monomorphisations are one contiguous block —
+  `rustls`, `ring`, `x11rb` measure 0% resident at idle in both the release
+  and the dist profile — so this one costs an idle session nothing. It
+  depends on nothing of the app's: cancellation is its own `CancelToken`,
+  an MCP server is its own `ServerTransport`, and `git` is spawned through
+  an injected `CommandBuilder` (the app passes one over its tty-detach
+  tiers); what it returns is paths and plain data, and the surface the main
+  crate touches is concrete, non-generic functions.
 
 `scripts/smoke` holds it: an idle session with an empty config home, one
 with marketplaces added and nothing installed, and one that opened and
@@ -639,15 +673,18 @@ of it — which is what makes every smoke phase start with no plugins.
 
 | Where | What |
 | --- | --- |
-| `src/plugins/manifest.rs` | classify a plugin root; the legacy manifest; display metadata |
-| `src/plugins/agent_plugins.rs` | Agent Plugins 1.0.0: the closed manifest, the name grammar, `mcp.json` |
-| `src/plugins/marketplace.rs` | the catalog, streamed into typed records; reserved names |
-| `src/plugins/source.rs` | what the user types to add a marketplace |
-| `src/plugins/state.rs` | `plugins.json`, ids, the offered marketplaces |
-| `src/plugins/layout.rs` | the paths under the plugins home |
-| `src/plugins/components.rs` | what an installed plugin contributes, and its summary |
-| `src/plugins/git.rs` | the hardened, bounded, cancellable `git` runner |
-| `src/plugins/store.rs` | add / update / remove a marketplace; install / update / uninstall / toggle |
+| `crates/plugins/` | the plugin core, the crate `alter-zero-plugins` (re-exported as `alter_zero::plugins`): depends on nothing of the app's |
+| `crates/plugins/src/cancel.rs` | the cancellation flag a long operation polls (the app bridges its turn token to it) |
+| `crates/plugins/src/mcp.rs` | a plugin server's transport as plain data (`ServerTransport`), the legacy `.mcp.json` entry reader; the app converts to `mcp::McpServerConfig` |
+| `crates/plugins/src/manifest.rs` | classify a plugin root; the legacy manifest; display metadata |
+| `crates/plugins/src/agent_plugins.rs` | Agent Plugins 1.0.0: the closed manifest, the name grammar, `mcp.json` |
+| `crates/plugins/src/marketplace.rs` | the catalog, streamed into typed records; reserved names |
+| `crates/plugins/src/source.rs` | what the user types to add a marketplace |
+| `crates/plugins/src/state.rs` | `plugins.json`, ids, the offered marketplaces |
+| `crates/plugins/src/layout.rs` | the paths under the plugins home |
+| `crates/plugins/src/components.rs` | what an installed plugin contributes (skills, commands as skills, agents, hooks, MCP servers by Claude Code's names), its summary, and the `git ls-tree` preview |
+| `crates/plugins/src/git.rs` | the hardened, bounded, cancellable `git` runner |
+| `crates/plugins/src/store.rs` | add / update / remove a marketplace; install / update / uninstall / toggle; `startup_plugins` (reads `plugins.json` alone) and `load_enabled` (each plugin's own files) |
 | `src/app/plugins_menu.rs` | the page's pure state and keys |
 | `src/ui/plugins_view.rs` | the page's one line builder |
 | `src/tui/plugins.rs` | the page's boundary: the worker, the operations, the snapshot |
@@ -657,11 +694,11 @@ of it — which is what makes every smoke phase start with no plugins.
 
 ## Testing
 
-- `cargo test --lib plugins::` — the formats (every manifest rule of the
+- `cargo test -p alter-zero-plugins` — the formats (every manifest rule of the
   specification has a test named for its section), the catalog reader
   against both real manifests' shapes, the source grammar, the state file,
   the path math.
-- `cargo test --test plugin_store` — the store against local `git`
+- `cargo test -p alter-zero-plugins --test store` — the store against local `git`
   repositories: add, update, install each source form, a pinned `sha`
   mismatch, a cancelled clone, an uninstall; no network.
 - `cargo test --test plugin_cli` — the real binary over a temp config home.

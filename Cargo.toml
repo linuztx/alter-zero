@@ -14,6 +14,11 @@ repository = "https://github.com/linuztx/alter-zero"
 name = "alter-zero"
 path = "src/main.rs"
 
+[workspace]
+members = ["crates/plugins"]
+exclude = ["vendor"]
+default-members = [".", "crates/plugins"]
+
 [dependencies]
 # Default features off: `all-widgets` is only the calendar widget, which
 # drags the whole `time` family into every build, and `macros` is
@@ -182,6 +187,11 @@ syntect = { version = "5", default-features = false, features = ["parsing", "reg
 # 11.x line: it depends on `ratatui ^0.30.1`, the exact version this crate
 # uses, so the `Buffer`/`Cell` types are the same ones.
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
+
+# Plugins (docs/plugins.md): a crate of its own because a cold
+# dependency crate's code is one contiguous block an idle session never
+# faults in, where the same code inside this crate is resident.
+alter-zero-plugins = { path = "crates/plugins" }
 
 # Linux only: the two clipboard backends arboard itself is built on, reached
 # directly for one operation arboard has no API for — reading the clipboard's

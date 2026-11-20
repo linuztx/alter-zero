@@ -1,0 +1,25 @@
+[package]
+name = "alter-zero-plugins"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Alter Zero's plugin core: the three plugin formats, marketplace catalogs, plugins.json, the git runner and the store."
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+url = "2"
+# Staging directories for clones and copies (removed when dropped).
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+# Killing a git child's whole process group on cancel or timeout.
+rustix = { version = "1", features = ["process", "termios", "fs", "pty", "event"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"

@@ -27,6 +27,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "alter-zero"
 version = "0.19.0"
 dependencies = [
+ "alter-zero-plugins",
  "arboard",
  "chrono",
  "crossterm",
@@ -54,6 +55,17 @@ dependencies = [
  "vte",
  "wl-clipboard-rs",
  "x11rb",
+]
+
+[[package]]
+name = "alter-zero-plugins"
+version = "0.0.0"
+dependencies = [
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

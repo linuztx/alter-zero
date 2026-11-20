@@ -72,6 +72,11 @@
 //! - [`permission`]  — tool permission requests: the pure prompt vocabulary
 //!   (titles, options, command scopes, session rules) and the gate the backend
 //!   thread blocks on while the user decides (see `docs/permissions.md`).
+//! - [`plugins`]     — plugins and marketplaces: the three manifest formats
+//!   (Agent Plugins 1.0.0, Claude Code, Codex), the streamed catalog reader,
+//!   `plugins.json`, the hardened `git` runner and the store that installs,
+//!   updates and toggles; startup reads `plugins.json` alone (see
+//!   `docs/plugins.md`).
 //! - [`project_doc`] — AGENTS.md discovery: codex's project doc collected
 //!   root→cwd under a 32 KiB cap and rendered, one `Contents of {path}`
 //!   block per file, as the `<system-reminder>`'s instructions section (see
@@ -199,3 +204,8 @@ pub mod tokens;
 pub mod trust;
 pub mod ui;
 pub mod update;
+
+/// The plugin core (`docs/plugins.md`), a crate of its own so that its code
+/// is one contiguous block an idle session never faults in — inside this
+/// crate it would be interleaved with hot code and resident (*Memory*).
+pub use alter_zero_plugins as plugins;

@@ -1,0 +1,1394 @@
+//! Marketplace catalogs (`docs/plugins.md` *Marketplaces*): the
+//! `marketplace.json` both references write, each entry's `source`, the git
+//! URL spellings a source may use, and the names reserved for the official
+//! catalogs.
+//!
+//! A catalog can list hundreds of plugins (Anthropic's lists over three
+//! hundred in 192 KB), so it is **streamed**: [`read_catalog`] runs
+//! `serde_json::from_reader` over a [`Read::take`] cap into typed records
+//! naming only the fields `/plugins` shows — every field read leniently, so
+//! a wrong type costs that field, not the catalog — and the `plugins` array
+//! is taken one entry at a time, each entry's text held only while it is
+//! decoded. No `Value` tree of the document is ever built, and no buffer of
+//! the whole body (`docs/memory.md` *The rule*).
+//!
+//! A catalog's `ref`, `sha`, `url` and subdirectory reach `git` as
+//! arguments, so each is read as what it must be — an option-shaped one is
+//! refused — and the entry that fails is skipped with the reason.
+
+use std::fmt;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
+
+use super::manifest::PluginMetadata;
+use super::source::{github_shorthand, github_url};
+use super::state::validate_name;
+
+/// Where a marketplace root's catalog is looked for, first found wins.
+pub const MARKETPLACE_MANIFESTS: [&str; 3] = [
+    ".agents/plugins/marketplace.json",
+    ".claude-plugin/marketplace.json",
+    ".cursor-plugin/marketplace.json",
+];
+/// The most of a catalog file read.
+pub const CATALOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Where an entry's description is cut.
+pub const DESCRIPTION_MAX_CHARS: usize = 2_000;
+
+/// The marketplace names Claude Code reserves for Anthropic's catalogs: only
+/// `github.com/anthropics/` may serve one.
+pub const ANTHROPIC_RESERVED: &[&str] = &[
+    "claude-code-marketplace",
+    "claude-code-plugins",
+    "claude-plugins-official",
+    "anthropic-marketplace",
+    "anthropic-plugins",
+    "agent-skills",
+    "anthropic-agent-skills",
+    "life-sciences",
+    "knowledge-work-plugins",
+    "claude-for-legal",
+    "claude-for-financial-services",
+    "financial-services-plugins",
+    "first-party-plugins",
+    "claude-tag-plugins",
+    "claude-community",
+    "claude-plugins-community",
+    "healthcare",
+    "anthropic-plugin-directory",
+    "claude-plugin-directory",
+];
+
+/// The marketplace names codex reserves for OpenAI's catalogs: only
+/// `github.com/openai/` may serve one.
+pub const OPENAI_RESERVED: &[&str] = &[
+    "openai-curated",
+    "openai-api-curated",
+    "openai-bundled",
+    "openai-bundled-alpha",
+    "openai-primary-runtime",
+];
+
+/// The component keys of an entry that stands in for a manifest, and the
+/// ones this client names as not used.
+const MANIFEST_KEYS: [&str; 9] = [
+    "skills",
+    "commands",
+    "agents",
+    "hooks",
+    "mcpServers",
+    "lspServers",
+    "outputStyles",
+    "userConfig",
+    "channels",
+];
+
+/// Where an entry's plugin comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginSource {
+    /// A directory of the marketplace, `/`-joined and clean (`""` is the
+    /// marketplace root itself).
+    Local {
+        /// The path under the marketplace root.
+        path: String,
+    },
+    /// `{"source": "github", "repo": "owner/repo"}`.
+    GitHub {
+        /// `owner`.
+        owner: String,
+        /// `repo`.
+        repo: String,
+        /// The branch or tag.
+        git_ref: Option<String>,
+        /// The pinned commit.
+        sha: Option<String>,
+    },
+    /// `url` (optionally a subdirectory) or `git-subdir`.
+    Git {
+        /// The repository.
+        url: String,
+        /// A subdirectory of it.
+        path: Option<String>,
+        /// The branch or tag.
+        git_ref: Option<String>,
+        /// The pinned commit.
+        sha: Option<String>,
+    },
+}
+
+impl PluginSource {
+    /// The clone URL of a git source (`None` for a local one), GitHub repos
+    /// resolved against `github_base`.
+    #[must_use]
+    pub fn git_url(&self, github_base: &str) -> Option<String> {
+        match self {
+            Self::Local { .. } => None,
+            Self::GitHub { owner, repo, .. } => Some(github_url(github_base, owner, repo)),
+            Self::Git { url, .. } => Some(url.clone()),
+        }
+    }
+
+    /// The pinned commit, when there is one.
+    #[must_use]
+    pub fn sha(&self) -> Option<&str> {
+        match self {
+            Self::Local { .. } => None,
+            Self::GitHub { sha, .. } | Self::Git { sha, .. } => sha.as_deref(),
+        }
+    }
+
+    /// The source in one line.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let pin = |git_ref: &Option<String>, sha: &Option<String>| match (git_ref, sha) {
+            (_, Some(sha)) => format!(" @ {}", &sha[..sha.len().min(12)]),
+            (Some(r), None) => format!(" @ {r}"),
+            (None, None) => String::new(),
+        };
+        match self {
+            Self::Local { path } if path.is_empty() => "the marketplace itself".into(),
+            Self::Local { path } => format!("./{path}"),
+            Self::GitHub {
+                owner,
+                repo,
+                git_ref,
+                sha,
+            } => format!("{owner}/{repo}{}", pin(git_ref, sha)),
+            Self::Git {
+                url,
+                path,
+                git_ref,
+                sha,
+            } => {
+                let sub = path.as_ref().map(|p| format!(" · {p}")).unwrap_or_default();
+                format!("{url}{sub}{}", pin(git_ref, sha))
+            }
+        }
+    }
+}
+
+/// One plugin a catalog lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogEntry {
+    /// The entry's name — the first half of the plugin's id.
+    pub name: String,
+    /// Where it comes from; `None` when it cannot be installed here.
+    pub source: Option<PluginSource>,
+    /// Why it cannot be installed here (an unsupported source, a policy).
+    pub unavailable: Option<String>,
+    /// `displayName` / `interface.displayName`.
+    pub display_name: Option<String>,
+    /// `description` / `interface.shortDescription`, cut at
+    /// [`DESCRIPTION_MAX_CHARS`].
+    pub description: Option<String>,
+    /// `version`.
+    pub version: Option<String>,
+    /// `author.name` (or `author` as a string).
+    pub author: Option<String>,
+    /// `category`.
+    pub category: Option<String>,
+    /// `homepage`.
+    pub homepage: Option<String>,
+    /// `keywords` and `tags`.
+    pub keywords: Vec<String>,
+    /// The entry's component keys as one JSON object's text — the manifest
+    /// of a plugin directory that has none. Kept only when present.
+    pub manifest_fields: Option<String>,
+}
+
+impl CatalogEntry {
+    /// The entry as a manifest document — its display fields and its
+    /// component keys — what is saved beside an installed copy.
+    #[must_use]
+    pub fn manifest_text(&self) -> String {
+        let mut object = match &self.manifest_fields {
+            Some(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                .unwrap_or_default(),
+            None => serde_json::Map::new(),
+        };
+        object.insert("name".into(), self.name.clone().into());
+        for (key, value) in [
+            ("displayName", &self.display_name),
+            ("description", &self.description),
+            ("version", &self.version),
+            ("category", &self.category),
+            ("homepage", &self.homepage),
+            ("author", &self.author),
+        ] {
+            if let Some(value) = value {
+                object.insert(key.into(), value.clone().into());
+            }
+        }
+        if !self.keywords.is_empty() {
+            object.insert("keywords".into(), self.keywords.clone().into());
+        }
+        serde_json::Value::Object(object).to_string()
+    }
+
+    /// Does the entry declare components of its own?
+    #[must_use]
+    pub fn declares_components(&self) -> bool {
+        self.manifest_fields.is_some()
+    }
+}
+
+/// A catalog, read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    /// The marketplace's own name — its identity, never the URL's.
+    pub name: String,
+    /// `interface.displayName`.
+    pub display_name: Option<String>,
+    /// `description` / `metadata.description`.
+    pub description: Option<String>,
+    /// `owner.name`.
+    pub owner: Option<String>,
+    /// The entries that could be read, in catalog order.
+    pub entries: Vec<CatalogEntry>,
+    /// The entries skipped, each with its reason.
+    pub notices: Vec<String>,
+}
+
+impl Catalog {
+    /// The entry named `name`.
+    #[must_use]
+    pub fn entry(&self, name: &str) -> Option<&CatalogEntry> {
+        self.entries.iter().find(|e| e.name == name)
+    }
+}
+
+/// Why a catalog cannot be read at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogError(pub String);
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CatalogError {}
+
+// ===== lenient field types =====
+
+/// A string, or nothing when the field holds anything else.
+#[derive(Debug, Default)]
+struct Text(Option<String>);
+
+impl<'de> Deserialize<'de> for Text {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Text;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Text, E> {
+                let v = v.trim();
+                Ok(Text((!v.is_empty()).then(|| v.to_string())))
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Text, E> {
+                Ok(Text(None))
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Text, E> {
+                Ok(Text(None))
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Text, E> {
+                Ok(Text(None))
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Text, E> {
+                Ok(Text(None))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Text, E> {
+                Ok(Text(None))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Text, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Text(None))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Text, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Text(None))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// A list of strings (other items skipped), or nothing.
+#[derive(Debug, Default)]
+struct Texts(Vec<String>);
+
+impl<'de> Deserialize<'de> for Texts {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Texts;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Texts, A::Error> {
+                let mut out = Vec::new();
+                while let Some(item) = seq.next_element::<Text>()? {
+                    out.extend(item.0);
+                }
+                Ok(Texts(out))
+            }
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Texts, E> {
+                Ok(Texts(Vec::new()))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Texts, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Texts(Vec::new()))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// An object's `name` string (or the value itself when it is a string), or
+/// nothing — `owner`, `author`.
+#[derive(Debug, Default)]
+struct Person(Option<String>);
+
+impl<'de> Deserialize<'de> for Person {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Person;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Person, A::Error> {
+                let mut name = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "name" {
+                        name = map.next_value::<Text>()?.0;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(Person(name))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Person, E> {
+                Ok(Person(Text::visit(v)))
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Person, E> {
+                Ok(Person(None))
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Person, E> {
+                Ok(Person(None))
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Person, E> {
+                Ok(Person(None))
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Person, E> {
+                Ok(Person(None))
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Person, E> {
+                Ok(Person(None))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Person, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Person(None))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl Text {
+    fn visit(v: &str) -> Option<String> {
+        let v = v.trim();
+        (!v.is_empty()).then(|| v.to_string())
+    }
+}
+
+/// The sub-object fields a catalog's top level is read for.
+#[derive(Debug, Default)]
+struct Nested {
+    display_name: Option<String>,
+    description: Option<String>,
+    plugin_root: Option<String>,
+    installation: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Nested {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Nested;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Nested, A::Error> {
+                let mut out = Nested::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "displayName" => out.display_name = map.next_value::<Text>()?.0,
+                        "description" | "shortDescription" => {
+                            let text = map.next_value::<Text>()?.0;
+                            if out.description.is_none() {
+                                out.description = text;
+                            }
+                        }
+                        "pluginRoot" => out.plugin_root = map.next_value::<Text>()?.0,
+                        "installation" => out.installation = map.next_value::<Text>()?.0,
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_unit<E: de::Error>(self) -> Result<Nested, E> {
+                Ok(Nested::default())
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Nested, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Nested::default())
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// One entry as the catalog wrote it, its source not yet resolved (the
+/// marketplace's `pluginRoot` may come after `plugins`).
+#[derive(Debug)]
+struct PendingEntry {
+    entry: CatalogEntry,
+    source: Result<RawSource, String>,
+}
+
+#[derive(Debug)]
+enum RawSource {
+    Path(String),
+    Object {
+        kind: String,
+        path: Option<String>,
+        url: Option<String>,
+        repo: Option<String>,
+        git_ref: Option<String>,
+        sha: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+struct RawEntry<'a> {
+    #[serde(default)]
+    name: Text,
+    #[serde(borrow, default)]
+    source: Option<&'a RawValue>,
+    #[serde(default)]
+    description: Text,
+    #[serde(default)]
+    version: Text,
+    #[serde(default)]
+    category: Text,
+    #[serde(default)]
+    homepage: Text,
+    #[serde(default, rename = "displayName")]
+    display_name: Text,
+    #[serde(default)]
+    author: Person,
+    #[serde(default)]
+    keywords: Texts,
+    #[serde(default)]
+    tags: Texts,
+    #[serde(default)]
+    interface: Nested,
+    #[serde(default)]
+    policy: Nested,
+}
+
+#[derive(Deserialize)]
+struct RawSourceObject {
+    #[serde(default)]
+    source: Text,
+    #[serde(default)]
+    path: Text,
+    #[serde(default)]
+    url: Text,
+    #[serde(default)]
+    repo: Text,
+    #[serde(default, rename = "ref")]
+    git_ref: Text,
+    #[serde(default)]
+    sha: Text,
+}
+
+fn cut(text: Option<String>) -> Option<String> {
+    text.map(|t| match t.char_indices().nth(DESCRIPTION_MAX_CHARS) {
+        Some((at, _)) => format!("{}…", &t[..at]),
+        None => t,
+    })
+}
+
+/// Decode one entry's text; `Err` is the reason it is skipped.
+fn pending_entry(text: &str) -> Result<PendingEntry, String> {
+    let raw: RawEntry<'_> =
+        serde_json::from_str(text).map_err(|_| "it is not an object".to_string())?;
+    let name = raw.name.0.ok_or("it has no \"name\"")?;
+    validate_name(&name).map_err(|why| format!("\"{name}\" is not a usable plugin name: {why}"))?;
+    let source = match raw.source {
+        None => Err(format!("\"{name}\" has no \"source\"")),
+        Some(source) => raw_source(source).map_err(|why| format!("\"{name}\": {why}")),
+    };
+    let fields: Vec<(String, &RawValue)> =
+        super::agent_plugins::ordered_members(text).unwrap_or_default();
+    let declared: Vec<String> = fields
+        .iter()
+        .filter(|(key, value)| MANIFEST_KEYS.contains(&key.as_str()) && value.get() != "null")
+        .map(|(key, value)| {
+            format!(
+                "{}:{}",
+                serde_json::to_string(key).unwrap_or_default(),
+                value.get()
+            )
+        })
+        .collect();
+    let mut keywords = raw.keywords.0;
+    keywords.extend(raw.tags.0);
+    let unavailable = (raw.policy.installation.as_deref() == Some("NOT_AVAILABLE"))
+        .then(|| "the marketplace marks it not available".to_string());
+    Ok(PendingEntry {
+        entry: CatalogEntry {
+            name,
+            source: None,
+            unavailable,
+            display_name: raw.display_name.0.or(raw.interface.display_name),
+            description: cut(raw.description.0.or(raw.interface.description)),
+            version: raw.version.0,
+            author: raw.author.0,
+            category: raw.category.0,
+            homepage: raw.homepage.0,
+            keywords,
+            manifest_fields: (!declared.is_empty()).then(|| format!("{{{}}}", declared.join(","))),
+        },
+        source,
+    })
+}
+
+fn raw_source(raw: &RawValue) -> Result<RawSource, String> {
+    if let Ok(path) = serde_json::from_str::<String>(raw.get()) {
+        return Ok(RawSource::Path(path));
+    }
+    let object: RawSourceObject = serde_json::from_str(raw.get())
+        .map_err(|_| "its \"source\" must be a path or an object".to_string())?;
+    if !raw.get().trim_start().starts_with('{') {
+        return Err("its \"source\" must be a path or an object".into());
+    }
+    Ok(RawSource::Object {
+        kind: object.source.0.ok_or("its \"source\" names no type")?,
+        path: object.path.0,
+        url: object.url.0,
+        repo: object.repo.0,
+        git_ref: object.git_ref.0,
+        sha: object.sha.0,
+    })
+}
+
+/// A relative path as clean `/`-joined components.
+///
+/// # Errors
+/// A backslash, an absolute path, or a `..`.
+pub fn clean_relative(path: &str) -> Result<String, String> {
+    if path.contains('\\') {
+        return Err("a path must use forward slashes".into());
+    }
+    if path.starts_with('/') {
+        return Err("a path must be relative".into());
+    }
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => return Err("a path must not contain \"..\"".into()),
+            part if part.starts_with('-') => {
+                return Err(format!(
+                    "a path segment may not start with '-' (\"{part}\")"
+                ));
+            }
+            part => parts.push(part),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+/// A `ref` as git reads it: a branch or tag name, never an option.
+///
+/// # Errors
+/// Anything that is not a plain ref name.
+pub fn checked_ref(name: Option<String>) -> Result<Option<String>, String> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let plain = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-' | '@' | '+'));
+    if !plain || name.starts_with(['-', '+', '/']) || name.contains("..") || name.contains("@{") {
+        return Err(format!("\"ref\" \"{name}\" is not a branch or tag name"));
+    }
+    Ok(Some(name))
+}
+
+/// A `sha` as git reads it: 7 to 40 hex digits, lowercased.
+///
+/// # Errors
+/// Anything else.
+pub fn checked_sha(sha: Option<String>) -> Result<Option<String>, String> {
+    let Some(sha) = sha else {
+        return Ok(None);
+    };
+    if !(7..=40).contains(&sha.len()) || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("\"sha\" \"{sha}\" is not a commit id"));
+    }
+    Ok(Some(sha.to_ascii_lowercase()))
+}
+
+/// A catalog's git URL as git may be handed it: `https`, `http`, `ssh`,
+/// `git` or `file` URLs, `user@host:path`, an absolute path, or `owner/repo`
+/// (GitHub). Never an option, never a transport helper (`ext::…`).
+///
+/// # Errors
+/// Anything else.
+pub fn normalize_git_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let invalid = || format!("\"{url}\" is not a git repository address");
+    if url.is_empty()
+        || url.starts_with('-')
+        || url.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(invalid());
+    }
+    if let Some((scheme, rest)) = url.split_once("://") {
+        if !matches!(scheme, "https" | "http" | "ssh" | "git" | "file") || rest.is_empty() {
+            return Err(invalid());
+        }
+        return Ok(url.trim_end_matches('/').to_string());
+    }
+    if let Some((host, path)) = url.split_once(':') {
+        if host.contains('@') && !host.contains('/') && !path.is_empty() && !path.starts_with(':') {
+            return Ok(url.to_string());
+        }
+        return Err(invalid());
+    }
+    if url.starts_with('/') {
+        return Ok(url.to_string());
+    }
+    github_shorthand(url)
+        .map(|(owner, repo)| {
+            github_url(
+                super::source::GITHUB_BASE,
+                owner,
+                repo.trim_end_matches(".git"),
+            )
+        })
+        .ok_or_else(invalid)
+}
+
+fn local_source(path: &str, plugin_root: Option<&str>) -> Result<PluginSource, String> {
+    let path = path.trim();
+    let clean = match path {
+        "" => return Err("its source path is empty".into()),
+        "." | "./" => String::new(),
+        path if path.starts_with("./") => clean_relative(&path[2..])?,
+        path if !path.contains(['/', '\\']) && path != ".." => match plugin_root {
+            Some("") => clean_relative(path)?,
+            Some(root) => clean_relative(&format!("{root}/{path}"))?,
+            None => {
+                return Err(format!(
+                    "source path \"{path}\" must start with ./ (a bare name needs metadata.pluginRoot)"
+                ));
+            }
+        },
+        path => return Err(format!("source path \"{path}\" must start with ./")),
+    };
+    Ok(PluginSource::Local { path: clean })
+}
+
+/// Resolve an entry's source; `Ok(Err(reason))` is an entry that is listed
+/// but cannot be installed here, `Err` one that is skipped.
+fn resolve_source(
+    raw: RawSource,
+    plugin_root: Option<&str>,
+) -> Result<Result<PluginSource, String>, String> {
+    let (kind, path, url, repo, git_ref, sha) = match raw {
+        RawSource::Path(path) => return local_source(&path, plugin_root).map(Ok),
+        RawSource::Object {
+            kind,
+            path,
+            url,
+            repo,
+            git_ref,
+            sha,
+        } => (kind, path, url, repo, git_ref, sha),
+    };
+    let subdir = |required: bool| -> Result<Option<String>, String> {
+        match &path {
+            Some(path) => {
+                let clean = clean_relative(path.strip_prefix("./").unwrap_or(path))?;
+                if clean.is_empty() {
+                    return Err("its \"path\" is empty".into());
+                }
+                Ok(Some(clean))
+            }
+            None if required => Err("a git-subdir source needs a \"path\"".into()),
+            None => Ok(None),
+        }
+    };
+    Ok(Ok(match kind.as_str() {
+        "local" => {
+            return local_source(
+                path.as_deref().ok_or("a local source needs a \"path\"")?,
+                plugin_root,
+            )
+            .map(Ok);
+        }
+        "github" => {
+            let repo = repo.ok_or("a github source needs a \"repo\"")?;
+            let (owner, name) = github_shorthand(&repo)
+                .filter(|(owner, _)| !owner.starts_with('-'))
+                .ok_or_else(|| format!("\"repo\" \"{repo}\" is not owner/repo"))?;
+            PluginSource::GitHub {
+                owner: owner.to_string(),
+                repo: name.trim_end_matches(".git").to_string(),
+                git_ref: checked_ref(git_ref)?,
+                sha: checked_sha(sha)?,
+            }
+        }
+        "url" | "git-subdir" => PluginSource::Git {
+            url: normalize_git_url(
+                url.as_deref()
+                    .ok_or_else(|| format!("a {kind} source needs a \"url\""))?,
+            )?,
+            path: subdir(kind == "git-subdir")?,
+            git_ref: checked_ref(git_ref)?,
+            sha: checked_sha(sha)?,
+        },
+        "npm" => return Ok(Err("npm sources are not supported".into())),
+        "archive" => return Ok(Err("archive sources are not supported".into())),
+        "command" => {
+            return Ok(Err(
+                "a command source would run a shell command to find the plugin, which this client never does"
+                    .into(),
+            ));
+        }
+        other => return Ok(Err(format!("source type \"{other}\" is not supported"))),
+    }))
+}
+
+/// The `plugins` array, taken one entry at a time.
+struct Entries(Vec<PendingEntry>, Vec<String>);
+
+impl<'de> Deserialize<'de> for Entries {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Entries;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a list of plugins")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Entries, A::Error> {
+                let mut out = Entries(Vec::new(), Vec::new());
+                let mut index = 0;
+                while let Some(raw) = seq.next_element::<Box<RawValue>>()? {
+                    index += 1;
+                    match pending_entry(raw.get()) {
+                        Ok(entry) if out.0.iter().any(|e| e.entry.name == entry.entry.name) => {
+                            out.1.push(format!(
+                                "plugin \"{}\" is listed twice; the first entry is used",
+                                entry.entry.name
+                            ));
+                        }
+                        Ok(entry) => out.0.push(entry),
+                        Err(why) => out.1.push(format!("entry {index} skipped: {why}")),
+                    }
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_seq(V)
+    }
+}
+
+#[derive(Deserialize)]
+struct RawCatalog {
+    #[serde(default)]
+    name: Text,
+    #[serde(default)]
+    description: Text,
+    #[serde(default)]
+    owner: Person,
+    #[serde(default)]
+    interface: Nested,
+    #[serde(default)]
+    metadata: Nested,
+    #[serde(default)]
+    plugins: Option<Entries>,
+}
+
+/// Read a catalog off `reader`, bounded at [`CATALOG_MAX_BYTES`].
+///
+/// # Errors
+/// Not JSON, no usable `name`, no `plugins` list, or a read past the cap.
+pub fn read_catalog(reader: impl Read) -> Result<Catalog, CatalogError> {
+    let bounded = BufReader::new(reader.take(CATALOG_MAX_BYTES));
+    let raw: RawCatalog = serde_json::from_reader(bounded)
+        .map_err(|e| CatalogError(format!("the catalog is not valid: {e}")))?;
+    let name = raw
+        .name
+        .0
+        .ok_or_else(|| CatalogError("the catalog has no \"name\"".into()))?;
+    validate_name(&name).map_err(|why| {
+        CatalogError(format!(
+            "the catalog's name \"{name}\" is not usable: {why}"
+        ))
+    })?;
+    let Entries(pending, mut notices) = raw
+        .plugins
+        .ok_or_else(|| CatalogError("the catalog has no \"plugins\" list".into()))?;
+    let plugin_root = raw
+        .metadata
+        .plugin_root
+        .as_deref()
+        .and_then(|root| clean_relative(root.strip_prefix("./").unwrap_or(root)).ok());
+    let mut entries = Vec::with_capacity(pending.len());
+    for PendingEntry { mut entry, source } in pending {
+        match source.and_then(|raw| resolve_source(raw, plugin_root.as_deref())) {
+            Ok(Ok(source)) => entry.source = Some(source),
+            Ok(Err(reason)) => entry.unavailable = Some(reason),
+            Err(why) => {
+                notices.push(format!("entry \"{}\" skipped: {why}", entry.name));
+                continue;
+            }
+        }
+        entries.push(entry);
+    }
+    Ok(Catalog {
+        name,
+        display_name: raw.interface.display_name,
+        description: raw.description.0.or(raw.metadata.description),
+        owner: raw.owner.0,
+        entries,
+        notices,
+    })
+}
+
+/// The first catalog file under a marketplace root.
+#[must_use]
+pub fn find_catalog(root: &Path) -> Option<PathBuf> {
+    MARKETPLACE_MANIFESTS
+        .iter()
+        .map(|rel| root.join(rel))
+        .find(|path| path.is_file())
+}
+
+/// [`read_catalog`] over a file, the file named in the error.
+///
+/// # Errors
+/// The file cannot be opened, or [`read_catalog`]'s.
+pub fn read_catalog_file(path: &Path) -> Result<Catalog, CatalogError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| CatalogError(format!("{} could not be read: {e}", path.display())))?;
+    read_catalog(file).map_err(|e| CatalogError(format!("{}: {e}", path.display())))
+}
+
+/// A marketplace of one: a source with no catalog but a plugin manifest at
+/// its root is a marketplace named after its plugin, else after its
+/// repository (`fallback`).
+///
+/// # Errors
+/// Neither name is usable — a manifest naming itself `../../.ssh` is
+/// refused before any path is made of it.
+pub fn single_plugin_catalog(
+    metadata: &PluginMetadata,
+    fallback: &str,
+) -> Result<Catalog, CatalogError> {
+    let name = if metadata.name.is_empty() {
+        fallback.to_string()
+    } else {
+        metadata.name.clone()
+    };
+    validate_name(&name).map_err(|why| {
+        CatalogError(format!(
+            "the plugin's name \"{name}\" cannot name a marketplace: {why}"
+        ))
+    })?;
+    Ok(Catalog {
+        name: name.clone(),
+        display_name: metadata.display_name.clone(),
+        description: metadata.description.clone(),
+        owner: metadata.author.clone(),
+        entries: vec![CatalogEntry {
+            name,
+            source: Some(PluginSource::Local {
+                path: String::new(),
+            }),
+            unavailable: None,
+            display_name: metadata.display_name.clone(),
+            description: cut(metadata.description.clone()),
+            version: metadata.version.clone(),
+            author: metadata.author.clone(),
+            category: metadata.category.clone(),
+            homepage: metadata.homepage.clone(),
+            keywords: metadata.keywords.clone(),
+            manifest_fields: None,
+        }],
+        notices: Vec::new(),
+    })
+}
+
+/// A repository's name as a marketplace name: `…/my-tool.git` → `my-tool`;
+/// `marketplace` when nothing usable is left.
+#[must_use]
+pub fn repository_name(url: &str) -> String {
+    let last = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':', '\\'])
+        .next()
+        .unwrap_or_default();
+    let stem = last.strip_suffix(".git").unwrap_or(last);
+    let plain: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let plain = plain.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if validate_name(plain).is_ok() {
+        plain.to_string()
+    } else {
+        "marketplace".to_string()
+    }
+}
+
+fn reserved_spelling(name: &str) -> String {
+    name.trim_end_matches('.')
+        .chars()
+        .map(|c| {
+            if c == '.' || c == '_' {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// The GitHub account a git URL is on, lowercased.
+#[must_use]
+pub fn github_owner(url: &str) -> Option<String> {
+    let rest = [
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|prefix| url.strip_prefix(prefix))
+    .or_else(|| url.strip_prefix("git@github.com:"))?;
+    let owner = rest.split('/').next()?;
+    (!owner.is_empty()).then(|| owner.to_ascii_lowercase())
+}
+
+/// Refuse a reserved marketplace name (or another spelling of one — case,
+/// `.` or `_` for `-`, a trailing `.`) unless the catalog comes from its
+/// owner's GitHub organisation. `git_url` is `None` for a local folder.
+///
+/// # Errors
+/// The name is reserved and the source is not its owner's.
+pub fn check_reserved(name: &str, git_url: Option<&str>) -> Result<(), String> {
+    let spelled = reserved_spelling(name);
+    let (reserved, owner) = if let Some(r) = ANTHROPIC_RESERVED.iter().find(|r| **r == spelled) {
+        (*r, "anthropics")
+    } else if let Some(r) = OPENAI_RESERVED.iter().find(|r| **r == spelled) {
+        (*r, "openai")
+    } else {
+        return Ok(());
+    };
+    if git_url.and_then(github_owner).as_deref() == Some(owner) {
+        return Ok(());
+    }
+    let respelled = if reserved == name {
+        String::new()
+    } else {
+        format!(" (another spelling of \"{reserved}\")")
+    };
+    Err(format!(
+        "\"{name}\"{respelled} is a reserved marketplace name; it can only come from github.com/{owner}/"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog(text: &str) -> Catalog {
+        read_catalog(text.as_bytes()).unwrap()
+    }
+
+    /// The shape of `anthropics/claude-plugins-official`: `$schema`,
+    /// `owner`, `renames`, string and object sources of every kind.
+    const CLAUDE_SHAPED: &str = r#"{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-plugins-official",
+  "description": "Directory of popular Claude Code extensions",
+  "owner": {"name": "Anthropic", "email": "support@anthropic.com"},
+  "renames": {"old": "new"},
+  "plugins": [
+    {"name": "agent-sdk-dev", "description": "Development kit", "author": {"name": "Anthropic"},
+     "source": "./plugins/agent-sdk-dev", "category": "development", "homepage": "https://h"},
+    {"name": "42crunch", "description": "Audit APIs", "category": "security",
+     "source": {"source": "git-subdir", "url": "https://github.com/42Crunch-AI/claude-plugins.git",
+                "path": "plugins/api-security", "ref": "main", "sha": "09BF1539d41f9ff355ba3eb5d05d4a75813423bb"}},
+    {"name": "atomic-agents", "source": {"source": "url", "url": "https://github.com/x/atomic.git",
+     "path": "claude-plugin", "sha": "09bf1539d41f9ff355ba3eb5d05d4a75813423bb"}},
+    {"name": "adlc", "source": {"source": "url", "url": "https://github.com/S/adlc.git",
+     "sha": "09bf1539d41f9ff355ba3eb5d05d4a75813423bb"}},
+    {"name": "rust-analyzer-lsp", "strict": false, "source": "./plugins/rust-analyzer-lsp",
+     "lspServers": {"rust": {"command": "rust-analyzer"}}},
+    {"name": "learn-with-coursera", "strict": false, "skills": ["./skills/a"],
+     "source": {"source": "git-subdir", "url": "https://github.com/c/c.git", "path": "p", "sha": "abcdef1"}},
+    {"name": "xcode", "displayName": "Xcode", "source": {"source": "command", "command": "xcrun x", "mode": "link"}}
+  ]
+}"#;
+
+    /// The shape of `openai/plugins`: `interface`, `policy`, `local`
+    /// objects, unpinned remote sources, no descriptions.
+    const OPENAI_SHAPED: &str = r#"{
+  "name": "openai-curated",
+  "interface": {"displayName": "Codex official"},
+  "plugins": [
+    {"name": "linear", "source": {"source": "local", "path": "./plugins/linear"},
+     "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "hidden", "source": {"source": "local", "path": "./plugins/hidden"},
+     "policy": {"installation": "NOT_AVAILABLE"}, "category": "Productivity"},
+    {"name": "crowdstrike", "source": {"source": "url", "url": "https://github.com/CrowdStrike/foundry-skills.git"},
+     "policy": {"installation": "AVAILABLE", "products": ["CODEX"]}, "category": "Security",
+     "interface": {"displayName": "CrowdStrike"}},
+    {"name": "qodo", "source": {"source": "git-subdir", "url": "https://github.com/qodo-ai/qodo-skills.git",
+     "path": "codex-packages/qodo"}, "category": "Developer Tools"}
+  ]
+}"#;
+
+    #[test]
+    fn the_claude_shaped_catalog_reads_every_source_form() {
+        let c = catalog(CLAUDE_SHAPED);
+        assert_eq!(c.name, "claude-plugins-official");
+        assert_eq!(c.owner.as_deref(), Some("Anthropic"));
+        assert_eq!(c.entries.len(), 7, "{:?}", c.notices);
+        assert_eq!(
+            c.entry("agent-sdk-dev").unwrap().source,
+            Some(PluginSource::Local {
+                path: "plugins/agent-sdk-dev".into()
+            })
+        );
+        assert_eq!(
+            c.entry("agent-sdk-dev").unwrap().author.as_deref(),
+            Some("Anthropic")
+        );
+        match c.entry("42crunch").unwrap().source.as_ref().unwrap() {
+            PluginSource::Git {
+                url,
+                path,
+                git_ref,
+                sha,
+            } => {
+                assert_eq!(url, "https://github.com/42Crunch-AI/claude-plugins.git");
+                assert_eq!(path.as_deref(), Some("plugins/api-security"));
+                assert_eq!(git_ref.as_deref(), Some("main"));
+                assert_eq!(
+                    sha.as_deref(),
+                    Some("09bf1539d41f9ff355ba3eb5d05d4a75813423bb")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            c.entry("atomic-agents").unwrap().source,
+            Some(PluginSource::Git { path: Some(_), .. })
+        ));
+        let lsp = c.entry("rust-analyzer-lsp").unwrap();
+        assert!(
+            lsp.manifest_fields
+                .as_deref()
+                .unwrap()
+                .contains("lspServers")
+        );
+        assert!(
+            c.entry("learn-with-coursera")
+                .unwrap()
+                .declares_components()
+        );
+        let xcode = c.entry("xcode").unwrap();
+        assert!(xcode.source.is_none());
+        assert!(xcode.unavailable.as_deref().unwrap().contains("command"));
+        assert_eq!(xcode.display_name.as_deref(), Some("Xcode"));
+    }
+
+    #[test]
+    fn the_openai_shaped_catalog_reads_local_objects_policies_and_interfaces() {
+        let c = catalog(OPENAI_SHAPED);
+        assert_eq!(c.name, "openai-curated");
+        assert_eq!(c.display_name.as_deref(), Some("Codex official"));
+        assert_eq!(c.entries.len(), 4);
+        assert_eq!(
+            c.entry("linear").unwrap().category.as_deref(),
+            Some("Productivity")
+        );
+        assert!(c.entry("linear").unwrap().unavailable.is_none());
+        assert!(c.entry("hidden").unwrap().unavailable.is_some());
+        assert_eq!(
+            c.entry("crowdstrike").unwrap().display_name.as_deref(),
+            Some("CrowdStrike")
+        );
+        assert!(matches!(
+            c.entry("qodo").unwrap().source,
+            Some(PluginSource::Git { path: Some(ref p), sha: None, .. }) if p == "codex-packages/qodo"
+        ));
+    }
+
+    #[test]
+    fn a_github_source_and_a_plugin_root_are_read() {
+        let c = catalog(
+            r#"{"name": "m", "plugins": [
+                {"name": "a", "source": {"source": "github", "repo": "o/r", "ref": "v1"}},
+                {"name": "b", "source": "bare"}],
+                "metadata": {"pluginRoot": "./plugins"}}"#,
+        );
+        assert_eq!(
+            c.entry("a")
+                .unwrap()
+                .source
+                .as_ref()
+                .unwrap()
+                .git_url("file:///gh/"),
+            Some("file:///gh/o/r.git".into())
+        );
+        assert_eq!(
+            c.entry("b").unwrap().source,
+            Some(PluginSource::Local {
+                path: "plugins/bare".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_bad_entry_is_skipped_with_its_reason_and_the_rest_load() {
+        let c = catalog(
+            r#"{"name": "m", "plugins": [
+                3,
+                {"source": "./x"},
+                {"name": "../../.ssh", "source": "./x"},
+                {"name": "noslash", "source": "x"},
+                {"name": "climb", "source": "./../x"},
+                {"name": "opt", "source": {"source": "url", "url": "https://h/r.git", "ref": "--upload-pack=evil"}},
+                {"name": "badsha", "source": {"source": "url", "url": "https://h/r.git", "sha": "xyz"}},
+                {"name": "ext", "source": {"source": "url", "url": "ext::sh -c touch% /tmp/x"}},
+                {"name": "dash", "source": {"source": "url", "url": "-oProxyCommand=x"}},
+                {"name": "subopt", "source": {"source": "git-subdir", "url": "https://h/r.git", "path": "--x"}},
+                {"name": "ok", "source": "./ok", "description": 7, "keywords": ["k", 1]},
+                {"name": "ok", "source": "./dup"}
+            ]}"#,
+        );
+        assert_eq!(c.entries.len(), 1, "{:?}", c.notices);
+        assert_eq!(c.entries[0].keywords, ["k"]);
+        assert_eq!(c.entries[0].description, None);
+        assert_eq!(c.notices.len(), 11, "{:?}", c.notices);
+        assert!(
+            c.notices.iter().any(|n| n.contains("--upload-pack")),
+            "{:?}",
+            c.notices
+        );
+        assert!(c.notices.iter().any(|n| n.contains("twice")));
+    }
+
+    #[test]
+    fn a_catalog_without_a_usable_name_or_plugin_list_is_refused() {
+        for bad in [
+            "{",
+            "[]",
+            r#"{"plugins": []}"#,
+            r#"{"name": "../x", "plugins": []}"#,
+            r#"{"name": "m"}"#,
+            r#"{"name": "m", "plugins": {}}"#,
+        ] {
+            assert!(read_catalog(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_long_description_is_cut() {
+        let long = "x".repeat(DESCRIPTION_MAX_CHARS + 50);
+        let c = catalog(&format!(
+            r#"{{"name": "m", "plugins": [{{"name": "a", "source": "./a", "description": "{long}"}}]}}"#
+        ));
+        assert_eq!(
+            c.entries[0].description.as_ref().unwrap().chars().count(),
+            DESCRIPTION_MAX_CHARS + 1
+        );
+    }
+
+    #[test]
+    fn the_read_stops_at_the_cap() {
+        let huge = std::io::repeat(b' ').take(CATALOG_MAX_BYTES + 10);
+        let err = read_catalog(huge).unwrap_err();
+        assert!(err.to_string().contains("not valid"), "{err}");
+    }
+
+    #[test]
+    fn an_entry_becomes_a_manifest_document() {
+        let c = catalog(
+            r#"{"name": "m", "plugins": [{"name": "a", "source": "./a", "version": "2",
+                "author": {"name": "Ann"}, "skills": ["./s"], "hooks": {"Stop": []}}]}"#,
+        );
+        let text = c.entries[0].manifest_text();
+        let manifest = crate::manifest::parse_legacy(&text, "entry").unwrap();
+        assert_eq!(manifest.metadata.name, "a");
+        assert_eq!(manifest.metadata.version.as_deref(), Some("2"));
+        assert_eq!(manifest.metadata.author.as_deref(), Some("Ann"));
+        assert_eq!(manifest.components.skills, ["./s"]);
+        assert_eq!(manifest.components.hooks.len(), 1);
+    }
+
+    #[test]
+    fn git_urls_are_normalized_and_options_refused() {
+        assert_eq!(
+            normalize_git_url("o/r").unwrap(),
+            "https://github.com/o/r.git"
+        );
+        assert_eq!(
+            normalize_git_url("https://x.org/r.git/").unwrap(),
+            "https://x.org/r.git"
+        );
+        assert_eq!(normalize_git_url("git@h:o/r.git").unwrap(), "git@h:o/r.git");
+        assert_eq!(
+            normalize_git_url("file:///srv/r.git").unwrap(),
+            "file:///srv/r.git"
+        );
+        for bad in ["", "-u", "ext::sh", "fd::3", "ftp://x/r", "a b", "o/r/x"] {
+            assert!(normalize_git_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn refs_and_shas_are_read_as_what_they_must_be() {
+        assert_eq!(
+            checked_ref(Some("release/v1.2".into())).unwrap().as_deref(),
+            Some("release/v1.2")
+        );
+        for bad in ["-x", "+x", "a..b", "a@{1}", "a b", "/x"] {
+            assert!(checked_ref(Some(bad.into())).is_err(), "{bad}");
+        }
+        assert_eq!(
+            checked_sha(Some("ABCDEF1".into())).unwrap().as_deref(),
+            Some("abcdef1")
+        );
+        for bad in ["abc", "g123456", &"a".repeat(41)] {
+            assert!(checked_sha(Some(bad.into())).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn reserved_names_come_only_from_their_owners() {
+        let anthropic = "https://github.com/anthropics/claude-plugins-official.git";
+        assert!(check_reserved("claude-plugins-official", Some(anthropic)).is_ok());
+        assert!(
+            check_reserved(
+                "claude-plugins-official",
+                Some("https://github.com/evil/x.git")
+            )
+            .is_err()
+        );
+        assert!(check_reserved("claude-plugins-official", None).is_err());
+        let respelled =
+            check_reserved("Claude.Plugins_Official.", Some("git@github.com:evil/x")).unwrap_err();
+        assert!(respelled.contains("another spelling"), "{respelled}");
+        assert!(
+            check_reserved("openai-curated", Some("git@github.com:openai/plugins.git")).is_ok()
+        );
+        assert!(
+            check_reserved(
+                "openai-curated",
+                Some("https://gitlab.com/openai/plugins.git")
+            )
+            .is_err()
+        );
+        assert!(check_reserved("team", None).is_ok());
+    }
+
+    #[test]
+    fn a_repository_names_a_nameless_marketplace() {
+        assert_eq!(
+            repository_name("https://github.com/o/my-tool.git"),
+            "my-tool"
+        );
+        assert_eq!(repository_name("git@h:o/x_y"), "x_y");
+        assert_eq!(repository_name("/srv/"), "srv");
+        assert_eq!(repository_name("https://h/..."), "marketplace");
+    }
+
+    #[test]
+    fn a_marketplace_of_one_is_named_after_its_plugin() {
+        let meta = PluginMetadata {
+            name: "solo".into(),
+            version: Some("1".into()),
+            ..PluginMetadata::default()
+        };
+        let c = single_plugin_catalog(&meta, "repo").unwrap();
+        assert_eq!(c.name, "solo");
+        assert_eq!(
+            c.entries[0].source,
+            Some(PluginSource::Local {
+                path: String::new()
+            })
+        );
+        let nameless = single_plugin_catalog(&PluginMetadata::default(), "repo").unwrap();
+        assert_eq!(nameless.name, "repo");
+        let hostile = PluginMetadata {
+            name: "../../../.ssh".into(),
+            ..PluginMetadata::default()
+        };
+        assert!(single_plugin_catalog(&hostile, "repo").is_err());
+    }
+}

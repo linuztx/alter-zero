@@ -220,6 +220,16 @@ use alter_zero::stream::{
     turn_events,
 };
 
+// --- `plugins` — the plugin core, a crate of its own (docs/plugins.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::plugins::{
+    PluginStore,
+    PluginsLayout,
+    load_enabled,
+    startup_plugins,
+};
+
 // --- `skills` — the `Skill` tool's pure model (docs/skills.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
