@@ -336,12 +336,10 @@ impl<'t> Session<'t> {
         let hooks_path = config::user_hooks_path();
         let (user_hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
         // The installed plugins' hooks and MCP servers (docs/plugins.md): a
-        // third layer read once here, held for the same review. With no
-        // `plugins.json` this is one failed open and nothing else.
-        let plugin_home = config::config_home();
-        // TODO(merge): take the session's PluginSnapshot instead of reading the file again
-        let launch_plugins = super::trust::plugins_at_launch(plugin_home.as_deref());
-        let plugin_layer = super::trust::load_plugin_layer(plugin_home.as_deref(), &launch_plugins);
+        // third layer held for the same review, built from the snapshot read
+        // above — with no plugin installed there is nothing here to read.
+        let plugin_layer =
+            super::trust::load_plugin_layer(config::config_home().as_deref(), &plugins.plugins);
         let (trust, trust_error) = super::trust::TrustState::load(
             hooks_path.map(|path| (path, user_hooks_file)),
             super::trust::load_project_layer(&cwd),

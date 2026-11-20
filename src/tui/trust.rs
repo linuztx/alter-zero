@@ -565,41 +565,6 @@ fn parse_mcp_document(text: &str) -> Result<mcp::McpFile, String> {
 /// past it is reported, never half-read.
 const PLUGIN_FILE_MAX_BYTES: u64 = 1024 * 1024;
 
-/// The enabled plugins as the session launches with them
-/// (`docs/plugins.md`): `plugins.json` read and its enabled records
-/// resolved under `{config_home}/plugins`. Empty — after one failed open,
-/// and nothing allocated — when there is no `plugins.json`, and empty
-/// without reading anything under `ALTER_ZERO_PLUGINS=0` or with no config
-/// home. A file that will not parse is empty too: its toast is the plugin
-/// snapshot's.
-pub(crate) fn plugins_at_launch(config_home: Option<&Path>) -> Vec<EnabledPlugin> {
-    plugins_from(config_home, config::env_flag("ALTER_ZERO_PLUGINS"))
-}
-
-/// [`plugins_at_launch`] with the switch passed in.
-fn plugins_from(config_home: Option<&Path>, enabled: bool) -> Vec<EnabledPlugin> {
-    use std::io::Read;
-    let Some(home) = config_home.filter(|_| enabled) else {
-        return Vec::new();
-    };
-    let Ok(file) = std::fs::File::open(alter_zero::plugins::state_path(home)) else {
-        return Vec::new();
-    };
-    let mut text = String::new();
-    let read = file
-        .take(PLUGIN_FILE_MAX_BYTES + 1)
-        .read_to_string(&mut text);
-    if read.is_err() || text.len() as u64 > PLUGIN_FILE_MAX_BYTES {
-        return Vec::new();
-    }
-    match alter_zero::plugins::PluginsFile::parse(&text) {
-        Ok(state) => {
-            alter_zero::plugins::enabled_plugins(&state, &alter_zero::plugins::plugins_root(home))
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
 /// Read each enabled plugin's generated hooks and MCP files — once, at
 /// bootstrap, like the project layer: a plugin installed, changed or removed
 /// mid-session counts from the next launch (`docs/plugins.md`). `None` when
@@ -860,6 +825,14 @@ mod tests {
     use super::*;
     use alter_zero::plugins::{EnabledPlugin, GENERATED_HOOKS, GENERATED_MCP, PluginId};
 
+    /// The enabled plugins a launch finds under `home`: the session's own
+    /// snapshot, which is what bootstrap hands this layer.
+    fn enabled_plugins(home: &Path) -> Vec<EnabledPlugin> {
+        alter_zero::llm::plugin::PluginSnapshot::load(Some(home))
+            .0
+            .plugins
+    }
+
     const PLUGINS_ROOT: &str = "/home/u/.alter-zero/plugins";
 
     fn plugin_path(name: &str, file: &str) -> PathBuf {
@@ -1038,7 +1011,7 @@ mod tests {
             r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./p.sh"}]}]}}"#,
         )
         .unwrap();
-        let plugins = plugins_from(Some(home.path()), true);
+        let plugins = enabled_plugins(home.path());
         let state = TrustState {
             plugins: load_plugin_layer(Some(home.path()), &plugins),
             ..TrustState::default()
@@ -1059,31 +1032,13 @@ mod tests {
     #[test]
     fn no_plugins_is_no_layer_and_nothing_read() {
         let home = tempfile::tempdir().unwrap();
-        assert!(plugins_from(Some(home.path()), true).is_empty());
-        assert!(plugins_from(None, true).is_empty());
+        assert!(enabled_plugins(home.path()).is_empty());
         assert!(load_plugin_layer(Some(home.path()), &[]).is_none());
         assert!(
             TrustState::default()
                 .plugin_label(Path::new("/x"))
                 .is_none()
         );
-    }
-
-    #[test]
-    fn the_enabled_plugins_are_read_from_plugins_json_unless_switched_off() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::write(
-            home.path().join("plugins.json"),
-            r#"{"plugins": {"review@m": {"enabled": true, "hooks": true},
-                "off@m": {"enabled": false, "hooks": true}}}"#,
-        )
-        .unwrap();
-        let plugins: Vec<EnabledPlugin> = plugins_from(Some(home.path()), true);
-        assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].id.to_string(), "review@m");
-        assert!(plugins_from(Some(home.path()), false).is_empty());
-        std::fs::write(home.path().join("plugins.json"), "{not json").unwrap();
-        assert!(plugins_from(Some(home.path()), true).is_empty());
     }
 
     #[test]
@@ -1095,7 +1050,7 @@ mod tests {
                 "bad@m": {"enabled": true, "hooks": true}}}"#,
         )
         .unwrap();
-        let plugins = plugins_from(Some(home.path()), true);
+        let plugins = enabled_plugins(home.path());
         let root = alter_zero::plugins::plugins_root(home.path());
         for (name, hooks) in [("good", r#"{"hooks": {}}"#), ("bad", "{broken")] {
             let dir = root.join("cache/m").join(name).join(".alter-zero-plugin");
