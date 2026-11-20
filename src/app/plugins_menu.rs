@@ -773,10 +773,10 @@ impl App {
         self.skill_picker = None;
         self.backtrack = Backtrack::default();
         self.plugins_rounds += 1;
-        self.plugins_menu = Some(PluginsMenu {
+        self.plugins_menu = Some(Box::new(PluginsMenu {
             round: self.plugins_rounds,
             ..PluginsMenu::default()
-        });
+        }));
         self.plugins_rounds
     }
 

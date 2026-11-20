@@ -359,7 +359,10 @@ impl App {
             && (self.turn_active()
                 || self.background_view.is_some()
                 || self.spinner_picker.is_some()
-                || self.plugins_menu.as_ref().is_some_and(PluginsMenu::is_busy)
+                || self
+                    .plugins_menu
+                    .as_deref()
+                    .is_some_and(PluginsMenu::is_busy)
                 || !self.agents().is_empty())
     }
 

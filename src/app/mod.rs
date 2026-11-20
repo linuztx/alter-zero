@@ -595,8 +595,10 @@ pub struct App {
     /// catalog it was browsing, which is never kept past the page
     /// (`docs/plugins.md` *Memory*). The `/skills` menu's sibling over the
     /// marketplaces' plugins, its answers arriving from the boundary's
-    /// worker as [`PluginEvent`]s.
-    pub plugins_menu: Option<PluginsMenu>,
+    /// worker as [`PluginEvent`]s. Boxed: its state is a kilobyte, and an
+    /// `App` is moved through several frames on its way to the loop, so a
+    /// session that never opens the page carries a pointer for it.
+    pub plugins_menu: Option<Box<PluginsMenu>>,
     /// The last `/plugins` round handed out — kept here rather than on the
     /// page, so an answer for a page closed and reopened since can never
     /// name the new page's round (the `/usage` rule).
