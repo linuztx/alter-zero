@@ -11,7 +11,7 @@ of the box and more are added by source:
 ```
 $ alter-zero plugin install frontend-design@claude-plugins-official
 Fetching anthropics/claude-plugins-official…
-Installed frontend-design@claude-plugins-official (v1.0.0)
+Installed frontend-design@claude-plugins-official (v1.1.1)
   1 skill is ready for your next message.
 
 $ alter-zero plugin marketplace add acme/agent-plugins
@@ -319,7 +319,9 @@ A fresh session's resident memory is a feature of this app
 4. **The catalog lives only while the page is open**; closing `/plugins`
    drops it.
 5. **A still page writes and schedules nothing**; it asks for frames only
-   while a fetch or an operation is running.
+   while a fetch or an operation is running. Even the channel its workers
+   answer on is created the first time the page opens, so a session that
+   never opens it allocates nothing for it.
 
 ## Deliberately not doing
 
@@ -337,6 +339,37 @@ A fresh session's resident memory is a feature of this app
   project's (`docs/project-config.md`), so the review is always the door.
 - **`!` shell expansion and `@file` attachment in a command's body.** The
   template is submitted as written; the model can run what it names.
+
+## Settings
+
+- `ALTER_ZERO_PLUGINS` — `0`/`false`/`no`/`off` loads no plugin for a run
+  (nothing is read, not even `plugins.json`); the page and the command
+  family still manage what is installed.
+- `ALTER_ZERO_PLUGIN_MARKETPLACES` — replaces the two default marketplaces:
+  whitespace-separated sources, or `none` for no defaults. The smoke suite
+  exports `none`, so no phase can reach the network.
+- `ALTER_ZERO_CONFIG_DIR` moves `plugins.json` and `plugins/` with the rest
+  of the config home.
+
+## Testing
+
+- `cargo test --lib -- plugins:: llm::plugin` — the formats, the transforms
+  (their output parsed back by the real hooks and MCP parsers), `git` and
+  the filesystem primitives against repositories made in temp dirs, the
+  layout reader, the session's snapshot and discovery.
+- `cargo test --test plugin_store` — the store end to end over local
+  `file://` repositories built by `tests/support/plugin_fixtures.rs`:
+  marketplaces added, updated, renamed, removed and restored; installs from
+  every source kind; a failure leaving the previous install untouched.
+- `cargo test --test plugin_cli` — the command family through the real
+  binary (`docs/plugin-cli.md`).
+- `cargo test --test plugin_catalog_memory` — reading a marketplace and
+  dropping it leaves no resident growth worth the name.
+- `scripts/smoke.sh 162` — the page in a real terminal against fixture
+  marketplaces: the fetch on first open, search, a plugin's page, install,
+  enable and disable, uninstall, adding and removing a marketplace, and a
+  14-row terminal.
+- Nothing in the suite reaches the network.
 
 ## Module layout
 
