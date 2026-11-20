@@ -151,6 +151,14 @@ pub fn read_bounded(path: &Path) -> Result<String, ManifestError> {
         path: path.to_path_buf(),
         error: error.to_string(),
     };
+    // Checked before the open: opening a FIFO a plugin folder holds would
+    // block until something wrote to it.
+    if !fs::metadata(path).map_err(unreadable)?.is_file() {
+        return Err(ManifestError::Unreadable {
+            path: path.to_path_buf(),
+            error: "it is not a regular file".into(),
+        });
+    }
     let file = fs::File::open(path).map_err(unreadable)?;
     let mut text = String::new();
     file.take(MANIFEST_MAX_BYTES)
@@ -255,6 +263,33 @@ pub struct PluginMetadata {
 }
 
 impl PluginMetadata {
+    /// Every display field cleaned of control characters
+    /// ([`crate::text::clean_display`]) — what a manifest says about itself
+    /// is printed by the CLI and the page. The name is left alone: it is
+    /// validated as a path segment, and cleaning could make a refused one
+    /// pass.
+    pub fn clean(&mut self) {
+        use crate::text::{cleaned, cleaned_opt, cleaned_paragraphs};
+        self.description = cleaned_paragraphs(self.description.take());
+        for field in [
+            &mut self.version,
+            &mut self.display_name,
+            &mut self.author,
+            &mut self.developer,
+            &mut self.category,
+            &mut self.homepage,
+            &mut self.repository,
+            &mut self.license,
+        ] {
+            *field = cleaned_opt(field.take());
+        }
+        self.keywords = std::mem::take(&mut self.keywords)
+            .into_iter()
+            .map(cleaned)
+            .filter(|k| !k.trim().is_empty())
+            .collect();
+    }
+
     /// `other`'s fields wherever this one has none (the name included when
     /// this one's is empty).
     pub fn fill_from(&mut self, other: &Self) {
@@ -413,6 +448,7 @@ pub fn parse_legacy(text: &str, label: &str) -> Result<LegacyManifest, String> {
         .or_else(|| fields.get("tags"))
         .and_then(|raw| serde_json::from_str::<Vec<String>>(raw.get()).ok())
         .unwrap_or_default();
+    meta.clean();
 
     let mut notice = |key: &str, shape: &str| {
         out.notices
@@ -604,6 +640,7 @@ pub fn load_manifest(root: &Path, fallback_name: &str) -> Result<PluginManifest,
     if out.metadata.name.is_empty() {
         out.metadata.name = fallback_name.to_string();
     }
+    out.metadata.clean();
     Ok(out)
 }
 
@@ -648,6 +685,24 @@ pub fn resolve_lenient(path: &Path) -> Option<PathBuf> {
         rest.push(name);
         existing = existing.parent()?;
     }
+}
+
+/// Every spelling a plugin directory's trust records may be keyed under:
+/// `dir` as given, and resolved through the filesystem
+/// ([`resolve_lenient`]) — a plugin is loaded from its canonical root, so
+/// its hooks and servers are keyed by that, while the store names the
+/// directory under the config home as it was configured (through a symlink
+/// such as Silverblue's `/home -> /var/home`, or relative). A directory an
+/// uninstall just removed still resolves through its parent.
+#[must_use]
+pub fn trust_forms(dir: &Path) -> Vec<PathBuf> {
+    let mut forms = vec![dir.to_path_buf()];
+    if let Some(resolved) = resolve_lenient(dir)
+        && resolved != dir
+    {
+        forms.push(resolved);
+    }
+    forms
 }
 
 /// `candidate` resolved through the filesystem, when it stays inside
@@ -841,6 +896,71 @@ mod tests {
         assert!(matches!(classify(root), Err(ManifestError::Concealed(_))));
         let message = classify(root).unwrap_err().to_string();
         assert!(message.contains("symlink"), "{message}");
+    }
+
+    /// A directory reached through a symlink is forgotten under its
+    /// resolved spelling too, whether it still exists or not.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_is_forgotten_under_its_resolved_spelling_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap().join("real");
+        fs::create_dir_all(real.join("installed/m/p")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(
+            trust_forms(&link.join("installed/m/p")),
+            [link.join("installed/m/p"), real.join("installed/m/p")]
+        );
+        // Removed by an uninstall: still resolved through its parent.
+        assert_eq!(
+            trust_forms(&link.join("installed/m/gone")),
+            [link.join("installed/m/gone"), real.join("installed/m/gone")]
+        );
+        assert_eq!(trust_forms(&real), std::slice::from_ref(&real));
+    }
+
+    /// A plugin's file that is not a regular file — a FIFO in a plugin
+    /// loaded in place, which `open` would block on forever — is refused
+    /// before it is opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_bounded_read_refuses_what_is_not_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("hooks.json");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            return;
+        }
+        let error = read_bounded(&fifo).unwrap_err().to_string();
+        assert!(error.contains("not a regular file"), "{error}");
+        assert!(read_bounded(dir.path()).is_err());
+    }
+
+    /// A manifest is somebody else's text: what it says about itself is
+    /// cleaned of escape sequences as it is read.
+    #[test]
+    fn display_metadata_is_cleaned_of_control_characters() {
+        let m = parse_legacy(
+            r#"{"name": "p", "description": "d\u001b]52;c;AAAA\u0007\nx",
+                "displayName": "D\u202e", "version": "1\u009b", "author": {"name": "A\u001b"},
+                "category": "c\u0000", "homepage": "h\u0007", "license": "L\u001b",
+                "repository": "r\u0007", "keywords": ["k\u001b", "\u0007"],
+                "interface": {"developerName": "dev\u001b"}}"#,
+            "plugin.json",
+        )
+        .unwrap()
+        .metadata;
+        assert_eq!(m.description.as_deref(), Some("d]52;c;AAAA\nx"));
+        assert_eq!(m.display_name.as_deref(), Some("D"));
+        assert_eq!(m.version.as_deref(), Some("1"));
+        assert_eq!(m.author.as_deref(), Some("A"));
+        assert_eq!(m.category.as_deref(), Some("c"));
+        assert_eq!(m.homepage.as_deref(), Some("h"));
+        assert_eq!(m.license.as_deref(), Some("L"));
+        assert_eq!(m.repository.as_deref(), Some("r"));
+        assert_eq!(m.developer.as_deref(), Some("dev"));
+        assert_eq!(m.keywords, ["k"]);
     }
 
     #[test]

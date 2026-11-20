@@ -534,3 +534,35 @@ fn a_plugins_servers_are_said_to_come_from_the_plugins() {
         "{page:#?}"
     );
 }
+
+/// A plugin's server that reads the user's environment says which
+/// variables on its row (`docs/plugins.md` *Nothing runs unseen*), under the
+/// headers it names, and the page still hugs its frame.
+#[test]
+fn a_plugin_servers_environment_line_is_drawn_under_its_headers() {
+    let page = ReviewPage::new(
+        ReviewKind::McpServers,
+        vec![ReviewSection {
+            scope: Some("Plugin web@m".to_string()),
+            path: "~/.alter-zero/plugins/installed/m/web/.mcp.json".to_string(),
+            items: vec![server(
+                "plugin:web:remote",
+                "http",
+                &[
+                    "https://h.test/mcp",
+                    "headers  X-Debug",
+                    "reads from your environment: GITHUB_TOKEN",
+                ],
+            )],
+        }],
+    );
+    let app = review_app(vec![page]);
+    let texts = texts(&app, 80, TALL);
+    let headers = find(&texts, "headers  X-Debug");
+    let reads = find(&texts, "reads from your environment: GITHUB_TOKEN");
+    assert!(headers < reads, "{texts:#?}");
+    assert_frame_hugs_content(
+        "a plugin server's page",
+        &config_review_lines(&app, 80, TALL),
+    );
+}

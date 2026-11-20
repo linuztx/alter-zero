@@ -24,6 +24,8 @@
 //! - `mcp`        — a plugin server's transport as plain data, and the
 //!   legacy `.mcp.json` entry reader.
 //! - `cancel`     — the cancellation flag long operations poll.
+//! - `text`       — display text from a catalog, a manifest or `git`
+//!   cleaned of control characters before anything prints it.
 //! - `cli`        — the `alter-zero plugin …` commands: the work, the
 //!   wording and the `--json` shapes (`docs/plugin-cli.md`).
 //! - `page`       — the `/plugins` page: its state, its keys and its
@@ -50,6 +52,7 @@ pub mod page;
 pub mod source;
 pub mod state;
 pub mod store;
+pub mod text;
 
 pub use self::agent_plugins::{
     AGENT_PLUGINS_SCHEMA_PREFIX, AGENT_PLUGINS_VERSION, ApAuthor, ApManifest, ApManifestError,
@@ -79,7 +82,7 @@ pub use self::manifest::{
     ComponentDecls, ENTRY_FILE, EXTENSION_NAMESPACE, HookDecl, LEGACY_MANIFEST_DIRS,
     LegacyManifest, MANIFEST_MAX_BYTES, ManifestError, ManifestFormat, ManifestLocation, McpDecl,
     PluginManifest, PluginMetadata, ROOT_MANIFEST, classify, component_path, load_manifest,
-    parse_legacy, read_bounded, resolve_inside, resolve_lenient,
+    parse_legacy, read_bounded, resolve_inside, resolve_lenient, trust_forms,
 };
 pub use self::marketplace::{
     ANTHROPIC_RESERVED, CATALOG_MAX_BYTES, Catalog, CatalogEntry, CatalogError, CatalogHeader,
@@ -102,5 +105,7 @@ pub use self::state::{
 pub use self::store::{
     AddedMarketplace, CopyLimits, EnabledPlugin, InstallOutcome, LoadedPlugins, MarketplaceListing,
     MarketplaceUpdate, PLUGINS_ENV, PluginError, PluginStore, PluginUpdate, RemovedMarketplace,
-    StartupPlugins, UninstallOutcome, UpdateStatus, load_enabled, plugins_enabled, startup_plugins,
+    StartupPlugins, UninstallOutcome, UpdateStatus, load_enabled, plugins_enabled, reinstalled,
+    startup_plugins,
 };
+pub use self::text::{clean_display, clean_paragraphs, cleaned, cleaned_opt, cleaned_paragraphs};

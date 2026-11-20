@@ -180,6 +180,7 @@ pub fn error_message(stderr: &[u8]) -> String {
         .filter(|line| !line.is_empty() && !line.starts_with("hint:"))
         .collect::<Vec<_>>()
         .join(" ");
+    let said = crate::text::cleaned(said);
     let count = said.chars().count();
     if count > 400 {
         format!("…{}", said.chars().skip(count - 400).collect::<String>())
@@ -298,6 +299,9 @@ impl GitRunner {
             .env("SSH_ASKPASS_REQUIRE", "never")
             .env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS)
             .env("GIT_OPTIONAL_LOCKS", "0")
+            // A user's global git-lfs smudge filter would otherwise run on
+            // whatever a fetched repository's `.gitattributes` routes to it.
+            .env("GIT_LFS_SKIP_SMUDGE", "1")
             .env("LC_ALL", "C");
         if let Some(ssh) = ssh_command(std::env::var_os("GIT_SSH_COMMAND")) {
             command.env("GIT_SSH_COMMAND", ssh);
@@ -660,6 +664,31 @@ mod tests {
         let message = error_message(long.as_bytes());
         assert_eq!(message.chars().count(), 401);
         assert!(message.starts_with('…'));
+    }
+
+    /// What git says about a hostile remote reaches the terminal: never an
+    /// escape sequence of the remote's.
+    #[test]
+    fn the_error_message_carries_no_control_characters() {
+        let said = error_message(b"fatal: \x1b]52;c;AAAA\x07bad \xc2\x9b2J\n");
+        assert_eq!(said, "fatal: ]52;c;AAAAbad 2J");
+    }
+
+    /// A user's global git-lfs smudge filter never runs on a fetched
+    /// repository's `.gitattributes`.
+    #[test]
+    fn every_child_skips_the_lfs_smudge_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = runner()
+            .run_program(
+                "sh",
+                tmp.path(),
+                &["-c", "printf %s \"$GIT_LFS_SKIP_SMUDGE\""],
+                "sh",
+                &CancelToken::new(),
+            )
+            .unwrap();
+        assert_eq!(out, "1");
     }
 
     #[test]

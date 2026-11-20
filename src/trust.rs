@@ -642,6 +642,30 @@ impl TrustFile {
         before != self.hooks.len() + self.mcp.len()
     }
 
+    /// Make what is decided about the files under `dir` what `disk` says —
+    /// `trust.json` as it is on disk now. A session takes a plugin it did
+    /// not load before this way (`docs/plugins.md` *Nothing runs unseen*):
+    /// another process may have reinstalled it, and forgotten its records,
+    /// since this session read the store, so the session's own older copy
+    /// of them must not stand. Lexical, like [`TrustFile::forget_under`].
+    /// Whether anything changed.
+    pub fn adopt_under(&mut self, dir: &Path, disk: &Self) -> bool {
+        let under = |key: &String| {
+            let path = key.split_once('#').map_or(key.as_str(), |(path, _)| path);
+            Path::new(path).starts_with(dir)
+        };
+        let before = (self.hooks.clone(), self.mcp.clone());
+        self.hooks.retain(|key, _| !under(key));
+        self.mcp.retain(|key, _| !under(key));
+        for (key, hooks) in disk.hooks.iter().filter(|(key, _)| under(key)) {
+            self.hooks.insert(key.clone(), hooks.clone());
+        }
+        for (key, servers) in disk.mcp.iter().filter(|(key, _)| under(key)) {
+            self.mcp.insert(key.clone(), servers.clone());
+        }
+        before != (self.hooks.clone(), self.mcp.clone())
+    }
+
     /// Carry the `/trust` era's approvals over for the project at `root`
     /// (`docs/config-review.md`). `/trust` approved a project's files whole,
     /// pinned to their bytes; a file it approved at exactly its current
@@ -1743,6 +1767,26 @@ mod plugin_tests {
             store.record_servers(path, &server, &[("s".to_string(), true)]);
         }
         store
+    }
+
+    /// A plugin a session takes in takes what `trust.json` says about it
+    /// now — another process may have forgotten what this session still
+    /// remembers — and nothing else moves.
+    #[test]
+    fn adopting_a_directory_takes_what_the_disk_says_about_it_alone() {
+        let mut session = store_with(&[
+            "/cfg/plugins/installed/m/p/hooks/hooks.json",
+            "/cfg/plugins/installed/m/q/hooks/hooks.json",
+        ]);
+        let disk = store_with(&["/cfg/plugins/installed/m/q/hooks/hooks.json"]);
+        assert!(session.adopt_under(Path::new("/cfg/plugins/installed/m/p"), &disk));
+        assert_eq!(session.hooks.len(), 1);
+        assert_eq!(session.mcp.len(), 1);
+        assert!(!session.adopt_under(Path::new("/cfg/plugins/installed/m/q"), &disk));
+        // And what the disk has under it arrives.
+        let mut empty = TrustFile::default();
+        assert!(empty.adopt_under(Path::new("/cfg/plugins/installed/m/q"), &disk));
+        assert_eq!(empty, disk);
     }
 
     /// An install forgets what was decided about the plugin's files —

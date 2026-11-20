@@ -51,8 +51,13 @@ cat >"$PR_PLUGIN/hooks/start.sh" <<'SH'
 cat > /dev/null
 echo started >> "$CLAUDE_PLUGIN_DATA/started"
 SH
+# And UserPromptSubmit, whose script a reinstall from the command line
+# changes under the same command line.
+printf '#!/bin/sh\ncat > /dev/null\necho one >> "$CLAUDE_PLUGIN_DATA/prompted"\n' >"$PR_PLUGIN/hooks/prompt.sh"
 cat >"$PR_PLUGIN/hooks/hooks.json" <<'JSON'
-{ "hooks": { "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/start.sh\"" } ] } ] } }
+{ "hooks": {
+  "SessionStart": [ { "hooks": [ { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/start.sh\"" } ] } ],
+  "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt.sh\"" } ] } ] } }
 JSON
 # A scripted stdio MCP server (Phase 83's).
 cat >"$PR_PLUGIN/server.sh" <<'MCPSRV'
@@ -172,6 +177,29 @@ for expect in "hello:greet" "hello:hi" "hello:reviewer"; do
 done
 keys "$S162" C-d
 sleep 0.4
+
+# --- reinstalled by another process, with a changed hook script under the
+# same command line: the open session forgets its approval at the next turn
+# start (docs/plugins.md *Nothing runs unseen*) — the hook does not run, and
+# the review asks again.
+wait_file 10 "$PR_DATA/prompted" -F one || fail "the trusted UserPromptSubmit hook never fired"
+printf '#!/bin/sh\ncat > /dev/null\necho two >> "$CLAUDE_PLUGIN_DATA/prompted"\n' >"$PR_PLUGIN/hooks/prompt.sh"
+(cd "$PR_WORK" && env $PR_ENV "$BIN_ABS" plugin install hello@demo >/dev/null 2>&1) ||
+	fail "the command-line reinstall failed"
+submit "$S162" "after the reinstall"
+pr_again="$(wait_pane 10 "$S162" -F "Esc to continue without trusting")" ||
+	fail "the reinstalled plugin's hook was not taken back to the review"
+dump "the review after a reinstall elsewhere" "$pr_again"
+expect_has "$pr_again" -F "/plugins/hello/hooks/prompt.sh" "the review does not ask about the reinstalled plugin's hook"
+sleep 1
+grep -q two "$PR_DATA/prompted" && fail "the reinstalled plugin's changed hook ran under its old approval"
+keys "$S162" Escape
+sleep 0.6
+# Its server was forgotten with it: its page follows, and is declined too.
+if pane "$S162" | grep -qF "found in your plugins"; then
+	keys "$S162" Escape
+fi
+wait_for 10 "$S162" -E '^❯' || fail "the composer never came back after the second review"
 
 # --- /skills lists them
 pr_open "/skills"

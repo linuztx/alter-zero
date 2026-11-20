@@ -25,8 +25,9 @@ use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 
 use super::manifest::PluginMetadata;
-use super::source::{github_shorthand, github_url};
+use super::source::{github_shorthand, github_url, is_plain_url_path, url_path};
 use super::state::validate_name;
+use super::text::{cleaned, cleaned_opt, cleaned_paragraphs};
 
 /// Where a marketplace root's catalog is looked for, first found wins.
 pub const MARKETPLACE_MANIFESTS: [&str; 3] = [
@@ -36,6 +37,11 @@ pub const MARKETPLACE_MANIFESTS: [&str; 3] = [
 ];
 /// The most of a catalog file read.
 pub const CATALOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// The most entries of one catalog read; the rest are one notice. The
+/// official catalogs list a few hundred.
+pub const CATALOG_MAX_ENTRIES: usize = 5_000;
+/// The most notices one catalog keeps; the rest are counted in one more.
+pub const CATALOG_MAX_NOTICES: usize = 100;
 /// Where an entry's description is cut.
 pub const DESCRIPTION_MAX_CHARS: usize = 2_000;
 
@@ -584,6 +590,11 @@ fn pending_entry(text: &str) -> Result<PendingEntry, String> {
         .collect();
     let mut keywords = raw.keywords.0;
     keywords.extend(raw.tags.0);
+    let keywords = keywords
+        .into_iter()
+        .map(cleaned)
+        .filter(|k| !k.trim().is_empty())
+        .collect();
     let unavailable = (raw.policy.installation.as_deref() == Some("NOT_AVAILABLE"))
         .then(|| "the marketplace marks it not available".to_string());
     Ok(PendingEntry {
@@ -591,12 +602,14 @@ fn pending_entry(text: &str) -> Result<PendingEntry, String> {
             name,
             source: None,
             unavailable,
-            display_name: raw.display_name.0.or(raw.interface.display_name),
-            description: cut(raw.description.0.or(raw.interface.description)),
-            version: raw.version.0,
-            author: raw.author.0,
-            category: raw.category.0,
-            homepage: raw.homepage.0,
+            display_name: cleaned_opt(raw.display_name.0.or(raw.interface.display_name)),
+            description: cut(cleaned_paragraphs(
+                raw.description.0.or(raw.interface.description),
+            )),
+            version: cleaned_opt(raw.version.0),
+            author: cleaned_opt(raw.author.0),
+            category: cleaned_opt(raw.category.0),
+            homepage: cleaned_opt(raw.homepage.0),
             keywords,
             manifest_fields: (!declared.is_empty()).then(|| format!("{{{}}}", declared.join(","))),
         },
@@ -667,7 +680,9 @@ pub fn checked_ref(name: Option<String>) -> Result<Option<String>, String> {
     Ok(Some(name))
 }
 
-/// A `sha` as git reads it: 7 to 40 hex digits, lowercased.
+/// A pinned `sha`: the whole 40-digit commit id, lowercased. A prefix is
+/// refused — the plugin repository's owner can push a second commit that
+/// starts with it.
 ///
 /// # Errors
 /// Anything else.
@@ -675,7 +690,7 @@ pub fn checked_sha(sha: Option<String>) -> Result<Option<String>, String> {
     let Some(sha) = sha else {
         return Ok(None);
     };
-    if !(7..=40).contains(&sha.len()) || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("\"sha\" \"{sha}\" is not a commit id"));
     }
     Ok(Some(sha.to_ascii_lowercase()))
@@ -695,6 +710,13 @@ pub fn normalize_git_url(url: &str) -> Result<String, String> {
         || url.chars().any(|c| c.is_whitespace() || c.is_control())
     {
         return Err(invalid());
+    }
+    if (url.contains("://") || url.contains(':') || url.starts_with('/'))
+        && !is_plain_url_path(url_path(url).unwrap_or(url))
+    {
+        return Err(format!(
+            "\"{url}\" names its repository with a \".\", \"..\" or empty path segment, or a %-escape"
+        ));
     }
     if let Some((scheme, rest)) = url.split_once("://") {
         if !matches!(scheme, "https" | "http" | "ssh" | "git" | "file") || rest.is_empty() {
@@ -759,6 +781,14 @@ fn resolve_source(
             sha,
         } => (kind, path, url, repo, git_ref, sha),
     };
+    if let Some(pin) = &sha
+        && pin.len() < 40
+        && pin.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Ok(Err(format!(
+            "its pinned \"sha\" \"{pin}\" is a prefix; only a full 40-digit commit id is trusted"
+        )));
+    }
     let subdir = |required: bool| -> Result<Option<String>, String> {
         match &path {
             Some(path) => {
@@ -850,6 +880,12 @@ fn needs_plugin_root(source: &Result<RawSource, String>) -> bool {
 /// The state one pass over a catalog keeps: its top-level fields as they
 /// are met, the names handed over (for duplicates), and the few entries
 /// that wait for a `pluginRoot` named after the list.
+///
+/// Bounded whatever the catalog says: [`CATALOG_MAX_ENTRIES`] elements
+/// read, [`CATALOG_MAX_NOTICES`] notices kept, and a duplicate found in
+/// constant time — a hash of each case-folded name, confirmed against the
+/// names buffer only on a hit — since a catalog of a hundred thousand
+/// entries is a few megabytes and the page reads catalogs on the UI loop.
 struct Stream<'f> {
     on_entry: &'f mut dyn FnMut(usize, CatalogEntry),
     name: Option<String>,
@@ -860,8 +896,25 @@ struct Stream<'f> {
     plugins_seen: bool,
     /// Every name taken, `\n`-separated — one buffer, not a set of strings.
     names: String,
+    /// The case-folded hash of every name in `names`.
+    hashes: std::collections::HashSet<u64>,
     waiting: Vec<(usize, PendingEntry)>,
     notices: Vec<String>,
+    /// Notices past [`CATALOG_MAX_NOTICES`], counted.
+    notices_dropped: usize,
+    /// Elements past [`CATALOG_MAX_ENTRIES`], counted and never decoded.
+    entries_dropped: usize,
+}
+
+/// A name's hash with ASCII case folded (names are ASCII): `Lint` and
+/// `lint` are one directory on a case-insensitive filesystem.
+fn folded_hash(name: &str) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for b in name.bytes() {
+        hasher.write_u8(b.to_ascii_lowercase());
+    }
+    hasher.finish()
 }
 
 impl Stream<'_> {
@@ -871,8 +924,37 @@ impl Stream<'_> {
             .and_then(|metadata| metadata.plugin_root.as_deref())
     }
 
-    fn taken(&self, name: &str) -> bool {
-        self.names.split('\n').any(|taken| taken == name)
+    /// The name already handed over that `name` is a spelling of, if any.
+    fn taken(&self, name: &str) -> Option<&str> {
+        if !self.hashes.contains(&folded_hash(name)) {
+            return None;
+        }
+        self.names
+            .split('\n')
+            .find(|taken| taken.eq_ignore_ascii_case(name))
+    }
+
+    /// Keep a notice, or count it once [`CATALOG_MAX_NOTICES`] are kept.
+    fn notice(&mut self, make: impl FnOnce() -> String) {
+        if self.notices.len() < CATALOG_MAX_NOTICES {
+            self.notices.push(make());
+        } else {
+            self.notices_dropped += 1;
+        }
+    }
+
+    /// The counts of what was not kept, one notice each.
+    fn close_notices(&mut self) {
+        if self.notices_dropped > 0 {
+            self.notices
+                .push(format!("… and {} more", self.notices_dropped));
+        }
+        if self.entries_dropped > 0 {
+            self.notices.push(format!(
+                "{} more entries were not read: a catalog lists at most {CATALOG_MAX_ENTRIES}",
+                self.entries_dropped
+            ));
+        }
     }
 
     /// One element of `plugins`, at `index`: handed over, skipped with its
@@ -882,22 +964,27 @@ impl Stream<'_> {
         let pending = match pending_entry(text) {
             Ok(pending) => pending,
             Err(why) => {
-                self.notices
-                    .push(format!("entry {} skipped: {why}", index + 1));
+                self.notice(|| format!("entry {} skipped: {why}", index + 1));
                 return;
             }
         };
-        if self.taken(&pending.entry.name) {
-            self.notices.push(format!(
-                "plugin \"{}\" is listed twice; the first entry is used",
-                pending.entry.name
-            ));
+        if let Some(first) = self.taken(&pending.entry.name) {
+            let message = if first == pending.entry.name {
+                format!("plugin \"{first}\" is listed twice; the first entry is used",)
+            } else {
+                format!(
+                    "plugin \"{}\" is listed again as \"{first}\" in another case; the first entry is used",
+                    pending.entry.name
+                )
+            };
+            self.notice(|| message);
             return;
         }
         if !self.names.is_empty() {
             self.names.push('\n');
         }
         self.names.push_str(&pending.entry.name);
+        self.hashes.insert(folded_hash(&pending.entry.name));
         if self.metadata.is_none() && needs_plugin_root(&pending.source) {
             self.waiting.push((index, pending));
         } else {
@@ -914,8 +1001,7 @@ impl Stream<'_> {
             Ok(Ok(source)) => entry.source = Some(source),
             Ok(Err(reason)) => entry.unavailable = Some(reason),
             Err(why) => {
-                self.notices
-                    .push(format!("entry \"{}\" skipped: {why}", entry.name));
+                self.notice(|| format!("entry \"{}\" skipped: {why}", entry.name));
                 return;
             }
         }
@@ -982,9 +1068,16 @@ impl<'de> Visitor<'de> for Plugins<'_, '_> {
         let stream = self.0;
         stream.plugins_seen = true;
         let mut index = 0;
-        while let Some(raw) = seq.next_element::<Box<RawValue>>()? {
+        while index < CATALOG_MAX_ENTRIES {
+            let Some(raw) = seq.next_element::<Box<RawValue>>()? else {
+                return Ok(());
+            };
             stream.element(index, raw.get());
             index += 1;
+        }
+        // Past the cap the rest is skipped unread, only counted.
+        while seq.next_element::<IgnoredAny>()?.is_some() {
+            stream.entries_dropped += 1;
         }
         Ok(())
     }
@@ -1017,8 +1110,11 @@ pub fn stream_catalog(
         metadata: None,
         plugins_seen: false,
         names: String::new(),
+        hashes: std::collections::HashSet::new(),
         waiting: Vec::new(),
         notices: Vec::new(),
+        notices_dropped: 0,
+        entries_dropped: 0,
     };
     let bounded = BufReader::new(reader.take(CATALOG_MAX_BYTES));
     let mut de = serde_json::Deserializer::from_reader(bounded);
@@ -1041,11 +1137,12 @@ pub fn stream_catalog(
         stream.resolve(index, pending);
     }
     let metadata = stream.metadata.take().unwrap_or_default();
+    stream.close_notices();
     Ok(CatalogHeader {
         name,
-        display_name: stream.interface.display_name.take(),
-        description: stream.description.take().or(metadata.description),
-        owner: stream.owner.take(),
+        display_name: cleaned_opt(stream.interface.display_name.take()),
+        description: cleaned_paragraphs(stream.description.take().or(metadata.description)),
+        owner: cleaned_opt(stream.owner.take()),
         notices: std::mem::take(&mut stream.notices),
     })
 }
@@ -1188,17 +1285,21 @@ fn reserved_spelling(name: &str) -> String {
 }
 
 /// The GitHub account a git URL is on, lowercased.
+///
+/// Only over a transport that authenticates GitHub — `https://`, `ssh://`
+/// or `git@github.com:` — and only for a path git fetches as written
+/// ([`is_plain_url_path`]): plain `http://` and `git://` can be answered by
+/// anyone on the way, and a `..` makes the owner read here and the owner
+/// fetched from two different accounts.
 #[must_use]
 pub fn github_owner(url: &str) -> Option<String> {
-    let rest = [
-        "https://github.com/",
-        "http://github.com/",
-        "ssh://git@github.com/",
-        "git://github.com/",
-    ]
-    .iter()
-    .find_map(|prefix| url.strip_prefix(prefix))
-    .or_else(|| url.strip_prefix("git@github.com:"))?;
+    let rest = ["https://github.com/", "ssh://git@github.com/"]
+        .iter()
+        .find_map(|prefix| url.strip_prefix(prefix))
+        .or_else(|| url.strip_prefix("git@github.com:"))?;
+    if !is_plain_url_path(rest) {
+        return None;
+    }
     let owner = rest.split('/').next()?;
     (!owner.is_empty()).then(|| owner.to_ascii_lowercase())
 }
@@ -1327,11 +1428,11 @@ mod tests {
                 .unwrap()
                 .contains("lspServers")
         );
-        assert!(
-            c.entry("learn-with-coursera")
-                .unwrap()
-                .declares_components()
-        );
+        let coursera = c.entry("learn-with-coursera").unwrap();
+        assert!(coursera.declares_components());
+        // Its pin is a 7-digit prefix: listed, not installable.
+        assert!(coursera.source.is_none());
+        assert!(coursera.unavailable.as_deref().unwrap().contains("prefix"));
         let xcode = c.entry("xcode").unwrap();
         assert!(xcode.source.is_none());
         assert!(xcode.unavailable.as_deref().unwrap().contains("command"));
@@ -1413,6 +1514,157 @@ mod tests {
             c.notices
         );
         assert!(c.notices.iter().any(|n| n.contains("twice")));
+    }
+
+    /// A catalog is somebody else's text: an escape sequence in what it
+    /// says about a plugin never reaches the terminal.
+    #[test]
+    fn display_text_is_cleaned_of_control_characters_as_it_is_read() {
+        let c = catalog(
+            r#"{"name": "m", "description": "M\u001b[2J", "owner": "O\u0007",
+                "plugins": [{"name": "p", "source": "./p",
+                "description": "evil\u001b]52;c;AAAA\u0007 line\ntwo",
+                "displayName": "D\u202e", "version": "1\u009b", "author": "A\u001b",
+                "category": "c\u0000", "homepage": "https://h\u001b]8;;x\u0007",
+                "keywords": ["k\u001b"]}]}"#,
+        );
+        let e = &c.entries[0];
+        assert_eq!(e.description.as_deref(), Some("evil]52;c;AAAA line\ntwo"));
+        assert_eq!(e.display_name.as_deref(), Some("D"));
+        assert_eq!(e.version.as_deref(), Some("1"));
+        assert_eq!(e.author.as_deref(), Some("A"));
+        assert_eq!(e.category.as_deref(), Some("c"));
+        assert_eq!(e.homepage.as_deref(), Some("https://h]8;;x"));
+        assert_eq!(e.keywords, ["k"]);
+        assert_eq!(c.description.as_deref(), Some("M[2J"));
+        assert_eq!(c.owner.as_deref(), Some("O"));
+    }
+
+    /// Names that differ only by case are one directory on a
+    /// case-insensitive filesystem: the second is a duplicate, and the first
+    /// keeps its spelling.
+    #[test]
+    fn a_name_listed_twice_in_another_case_is_a_duplicate() {
+        let c = catalog(
+            r#"{"name": "m", "plugins": [
+                {"name": "lint", "source": "./a"},
+                {"name": "Lint", "source": "./b"},
+                {"name": "LINT", "source": "./c"},
+                {"name": "other", "source": "./d"}]}"#,
+        );
+        let names: Vec<&str> = c.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["lint", "other"]);
+        assert_eq!(c.notices.len(), 2, "{:?}", c.notices);
+        assert!(c.notices[0].contains("\"Lint\""), "{:?}", c.notices);
+    }
+
+    /// A catalog of tens of thousands of entries is read in linear time and
+    /// bounded: past [`CATALOG_MAX_ENTRIES`] the rest is one notice, and the
+    /// notices themselves stop at [`CATALOG_MAX_NOTICES`] and one more.
+    #[test]
+    fn a_huge_catalog_is_capped_in_entries_and_in_notices() {
+        let mut text = String::from(r#"{"name": "m", "plugins": ["#);
+        let total = CATALOG_MAX_ENTRIES + 700;
+        for i in 0..total {
+            if i > 0 {
+                text.push(',');
+            }
+            if i % 10 == 0 {
+                text.push('3');
+            } else {
+                text.push_str(&format!(r#"{{"name": "p{i}", "source": "./p"}}"#));
+            }
+        }
+        text.push_str("]}");
+        let c = catalog(&text);
+        let bad = CATALOG_MAX_ENTRIES / 10;
+        assert_eq!(c.entries.len(), CATALOG_MAX_ENTRIES - bad);
+        assert_eq!(
+            c.notices.len(),
+            CATALOG_MAX_NOTICES + 2,
+            "{:?}",
+            c.notices.last()
+        );
+        assert!(
+            c.notices[CATALOG_MAX_NOTICES].contains(&format!("{} more", bad - CATALOG_MAX_NOTICES)),
+            "{:?}",
+            &c.notices[CATALOG_MAX_NOTICES..]
+        );
+        assert!(
+            c.notices
+                .last()
+                .unwrap()
+                .contains(&format!("{} more entries", total - CATALOG_MAX_ENTRIES)),
+            "{:?}",
+            c.notices.last()
+        );
+    }
+
+    /// A pinned commit is the whole id: a prefix is something the plugin
+    /// repository's owner could make a second commit match.
+    #[test]
+    fn a_pinned_sha_must_be_the_full_commit_id() {
+        let full = "09bf1539d41f9ff355ba3eb5d05d4a75813423bb";
+        assert_eq!(
+            checked_sha(Some(full.to_uppercase())).unwrap().as_deref(),
+            Some(full)
+        );
+        assert!(checked_sha(Some("abcdef1".into())).is_err());
+        let c = catalog(
+            r#"{"name": "m", "plugins": [{"name": "short", "source":
+                {"source": "url", "url": "https://h/r.git", "sha": "abcdef1"}}]}"#,
+        );
+        let short = c.entry("short").expect("listed, not skipped");
+        assert!(short.source.is_none());
+        assert!(
+            short.unavailable.as_deref().unwrap().contains("40"),
+            "{:?}",
+            short.unavailable
+        );
+    }
+
+    /// A dot segment or an escape in a URL's path is refused before git (or
+    /// the reserved-name check) reads it: libcurl collapses `/../`, so the
+    /// text and the fetch would name different repositories.
+    #[test]
+    fn a_git_url_with_a_dot_segment_or_an_escape_in_its_path_is_refused() {
+        for bad in [
+            "https://github.com/anthropics/../evil/claude-plugins-official",
+            "https://github.com/anthropics/./x",
+            "https://github.com/anthropics//x",
+            "https://github.com/anthropics/%2e%2e/evil/x",
+            "https://github.com/anthr%6fpics/x",
+            "git@github.com:anthropics/../evil/x",
+            "ssh://git@github.com/anthropics/../evil/x",
+        ] {
+            assert!(normalize_git_url(bad).is_err(), "{bad}");
+        }
+        assert!(normalize_git_url("https://github.com/anthropics/x.git").is_ok());
+        assert!(normalize_git_url("https://h/r.git/").is_ok());
+    }
+
+    /// Only an authenticated transport names the official owner: plain
+    /// `http://` and `git://` can be answered by anyone on the path.
+    #[test]
+    fn the_reserved_names_need_an_authenticated_url_on_the_owners_account() {
+        let name = "claude-plugins-official";
+        for good in [
+            "https://github.com/anthropics/claude-plugins-official.git",
+            "ssh://git@github.com/anthropics/claude-plugins-official.git",
+            "git@github.com:anthropics/claude-plugins-official.git",
+        ] {
+            assert!(check_reserved(name, Some(good)).is_ok(), "{good}");
+        }
+        for bad in [
+            "http://github.com/anthropics/claude-plugins-official.git",
+            "git://github.com/anthropics/claude-plugins-official.git",
+            "https://github.com/anthropics/../evil/claude-plugins-official",
+            "https://github.com/anthropics/%2e%2e/evil/x",
+            "git@github.com:anthropics/../evil/x",
+        ] {
+            assert!(check_reserved(name, Some(bad)).is_err(), "{bad}");
+            assert_eq!(github_owner(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -1625,10 +1877,12 @@ mod tests {
             assert!(checked_ref(Some(bad.into())).is_err(), "{bad}");
         }
         assert_eq!(
-            checked_sha(Some("ABCDEF1".into())).unwrap().as_deref(),
-            Some("abcdef1")
+            checked_sha(Some("ABCDEF1".repeat(5) + "ABCDE"))
+                .unwrap()
+                .as_deref(),
+            Some("abcdef1abcdef1abcdef1abcdef1abcdef1abcde")
         );
-        for bad in ["abc", "g123456", &"a".repeat(41)] {
+        for bad in ["abc", "abcdef1", "g123456", &"a".repeat(41)] {
             assert!(checked_sha(Some(bad.into())).is_err(), "{bad}");
         }
     }

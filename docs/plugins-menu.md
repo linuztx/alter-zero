@@ -347,8 +347,12 @@ Two halves, so the app's crate stays a forwarder and the logic is tested:
   installed plugin is its update (`Updated hello 1.0.0 → 1.1.0`, or `is up
   to date` with nothing to reload). `forget` is the plugin directories whose
   trust is dropped (installed, updated, uninstalled — a removed
-  marketplace's); `reload` is set whenever what the session loads may have
-  changed.
+  marketplace's) — on a failure too, every directory whose files the
+  operation may have replaced, with `reload` set; `reload` is set whenever
+  what the session loads may have changed.
+- `may_replace(store, &op) -> Vec<PathBuf>` — the directories an operation
+  could touch, read before it runs: what a failed uninstall or marketplace
+  removal, and a worker that panics, still forget.
 
 **In the app** (`src/tui/plugins.rs`, `#[cold]`, reached only with the
 page), over one channel (`PluginsBoundary`, boxed events — all an idle
@@ -365,7 +369,8 @@ session holds):
   cancelled or not. An answer the
   page does not take is a toast only once the page has closed; one Esc let
   go of while the page stayed open just updates its rows. Then, when
-  `reload`, `reload_plugins(&forget)`. A worker that panics still answers.
+  `reload`, `reload_plugins(&forget)`. A worker that panics still answers —
+  with `forget` set to what `may_replace` read before it ran, and a reload.
   `Inspect` runs the same way (a preview may run `git`) and lands with
   `supply_plugin_contents`; after a job, a plugin page whose contents it
   dropped is read again (a fresh snapshot keeps what was read only for rows

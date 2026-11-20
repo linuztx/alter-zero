@@ -84,6 +84,29 @@ fn is_url(text: &str) -> bool {
         .any(|scheme| text.starts_with(scheme))
 }
 
+/// A URL's path as git will fetch exactly what it says: no empty, `.` or
+/// `..` segment (libcurl collapses `/../` before it asks the server, so
+/// `github.com/anthropics/../evil/x` reads as one account and fetches from
+/// another) and no percent-escape (which hides either). `path` is what
+/// follows the host, a leading `/` and trailing `/`s allowed.
+#[must_use]
+pub fn is_plain_url_path(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    let path = path.strip_prefix('/').unwrap_or(path);
+    !path.contains('%')
+        && (path.is_empty() || path.split('/').all(|seg| !matches!(seg, "" | "." | "..")))
+}
+
+/// The path of a git URL — `scheme://host/path` or `user@host:path` — for
+/// [`is_plain_url_path`]; `None` when it is neither shape.
+#[must_use]
+pub fn url_path(url: &str) -> Option<&str> {
+    if let Some((_, rest)) = url.split_once("://") {
+        return Some(rest.find('/').map_or("", |at| &rest[at..]));
+    }
+    url.split_once(':').map(|(_, path)| path)
+}
+
 /// `user@host:path` — git's scp-like ssh syntax.
 fn is_scp_like(text: &str) -> bool {
     let Some((user_host, path)) = text.split_once(':') else {
@@ -162,6 +185,12 @@ pub fn parse_marketplace_source(
         });
     }
     let source = if is_url(body) || is_scp_like(body) {
+        if !url_path(body).is_some_and(is_plain_url_path) {
+            return Err(SourceError(format!(
+                "\"{body}\" names its repository with a \".\", \"..\" or empty path segment, \
+                 or a %-escape; write the path out plainly"
+            )));
+        }
         MarketplaceSource::Git {
             url: body.trim_end_matches('/').to_string(),
         }
@@ -352,6 +381,27 @@ mod tests {
             err.to_string().contains("only for a git marketplace"),
             "{err}"
         );
+    }
+
+    /// What git would fetch is what the URL says: a dot segment or an
+    /// escape in its path is refused before anything is cloned.
+    #[test]
+    fn a_url_whose_path_git_would_rewrite_is_refused() {
+        for bad in [
+            "https://github.com/anthropics/../evil/claude-plugins-official",
+            "https://github.com/a/./b",
+            "https://github.com/a//b",
+            "https://github.com/a/%2e%2e/b",
+            "git@github.com:anthropics/../evil/x",
+        ] {
+            let error = parse(bad).unwrap_err();
+            assert!(error.0.contains("plainly"), "{bad}: {error}");
+        }
+        assert!(parse("https://github.com/a/b/").is_ok());
+        assert!(is_plain_url_path("/a/b.git/"));
+        assert!(!is_plain_url_path("/a/../b"));
+        assert_eq!(url_path("https://h/a/b"), Some("/a/b"));
+        assert_eq!(url_path("git@h:a/b"), Some("a/b"));
     }
 
     #[test]

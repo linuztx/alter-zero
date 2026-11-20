@@ -336,6 +336,62 @@ fn a_git_marketplace_updates_and_forgets_the_trust_of_what_changed() {
     assert!(!copy.exists());
 }
 
+/// A config home reached through a symlink (Fedora Silverblue's `/home ->
+/// /var/home`, a stow-managed `~/.alter-zero`): the review keys trust by the
+/// plugin's resolved path, and an update or an uninstall still forgets it.
+#[cfg(unix)]
+#[test]
+fn trust_is_forgotten_under_a_config_home_reached_through_a_symlink() {
+    if !has_git() {
+        return;
+    }
+    let mut s = scratch("symlinked-home");
+    let real = s.dir.join("real-config");
+    std::fs::create_dir_all(&real).expect("real config");
+    let link = s.dir.join("config-link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+    s.config = link;
+    let repo = s.dir.join("repo");
+    let url = git_marketplace(&repo, "gitdemo");
+    s.ok(&["marketplace", "add", &url]);
+    s.ok(&["install", "hello"]);
+    // Keyed as the review keys it: under the resolved copy.
+    let hooks = real.join("plugins/installed/gitdemo/hello/hooks/hooks.json");
+    let trust = real.join("trust.json");
+    let seed = || {
+        write(
+            &real,
+            "trust.json",
+            &format!(
+                r#"{{"hooks":{{"{}":[{{"event":"Stop","matcher":"","command":"true"}}]}}}}"#,
+                hooks.display()
+            ),
+        );
+    };
+    seed();
+    write(
+        &repo,
+        "plugins/hello/.claude-plugin/plugin.json",
+        r#"{"name":"hello","version":"1.1.0"}"#,
+    );
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "two"]);
+    let out = s.ok(&["update", "hello"]);
+    assert!(out.starts_with("hello@gitdemo  1.0.0 → 1.1.0\n"), "{out}");
+    let text = std::fs::read_to_string(&trust).expect("trust.json");
+    assert!(
+        !text.contains(&hooks.display().to_string()),
+        "forgotten after the update: {text}"
+    );
+    seed();
+    s.ok(&["uninstall", "hello@gitdemo"]);
+    let text = std::fs::read_to_string(&trust).expect("trust.json");
+    assert!(
+        !text.contains(&hooks.display().to_string()),
+        "forgotten after the uninstall: {text}"
+    );
+}
+
 #[test]
 fn the_offered_defaults_are_added_on_demand_and_on_the_way() {
     if !has_git() {

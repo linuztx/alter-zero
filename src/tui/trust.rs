@@ -376,6 +376,15 @@ impl TrustState {
             {
                 detail.push(format!("cwd  {}", cwd.display()));
             }
+            // What a plugin's server reads from the user's environment is
+            // sent where the server says — a header's value to its host — and
+            // the rows above show header names only: name the variables.
+            if let Some(line) = plugin
+                .and_then(|file| file.servers.iter().find(|s| s.name == review.name))
+                .and_then(|server| environment_line(&review.config, server.launch.literal))
+            {
+                detail.push(line);
+            }
             let item = ReviewItem {
                 title: format!("{} · {}", review.name, review.config.transport_label()),
                 detail,
@@ -455,8 +464,34 @@ impl TrustState {
     /// plugin's cache directory — in the session's copy and in
     /// `trust.json` (`docs/plugins.md` *Installing*).
     pub(crate) fn forget_under(&mut self, dir: &Path) -> Result<(), String> {
-        self.store.forget_under(dir);
+        for form in alter_zero::plugins::trust_forms(dir) {
+            self.store.forget_under(&form);
+        }
         forget_plugin_trust(self.store_path.as_deref(), dir)
+    }
+
+    /// Take what `trust.json` says **now** about the files under `dir`
+    /// (every spelling of it) into the session's copy — for a plugin the
+    /// session loads that it did not load before: another process may have
+    /// reinstalled it and forgotten its records since this session read the
+    /// store, and the session's older copy of them must not stand. A store
+    /// that cannot be read or will not parse forgets them instead — failing
+    /// closed. With no store, the session's own decisions stand.
+    pub(crate) fn adopt_under(&mut self, dir: &Path) {
+        let Some(path) = self.store_path.as_deref() else {
+            return;
+        };
+        let disk = match std::fs::read_to_string(path) {
+            Ok(text) => TrustFile::parse(&text).ok(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(TrustFile::default()),
+            Err(_) => None,
+        };
+        for form in alter_zero::plugins::trust_forms(dir) {
+            match &disk {
+                Some(disk) => self.store.adopt_under(&form, disk),
+                None => self.store.forget_under(&form),
+            };
+        }
     }
 
     /// Apply `change` to the session's copy, then record it in `trust.json`.
@@ -493,9 +528,17 @@ fn plugins_only(mut page: ReviewPage) -> Option<ReviewPage> {
 /// read-modify-write as every decision. Callable before the TUI boots
 /// (`alter-zero plugin install`): `store_path` is
 /// `config::trust_json_path()`. `Ok` with nowhere to write.
+///
+/// Under every spelling of `dir` (`plugins::trust_forms`): the records are
+/// keyed by the plugin's resolved root, the directory named as the config
+/// home spells it, and a symlink between the two must not leave an updated
+/// plugin its old approval.
 pub(crate) fn forget_plugin_trust(store_path: Option<&Path>, dir: &Path) -> Result<(), String> {
+    let forms = alter_zero::plugins::trust_forms(dir);
     persist_at(store_path, |store| {
-        store.forget_under(dir);
+        for form in &forms {
+            store.forget_under(form);
+        }
     })
 }
 
@@ -521,6 +564,20 @@ fn persist_at(path: Option<&Path>, change: impl FnOnce(&mut TrustFile)) -> Resul
             format!("Could not save trust.json: {err} — this choice lasts this session only")
         })
     }
+}
+
+/// The review row naming the environment variables a plugin's server
+/// reads, its own four path variables aside; `None` when it reads none, or
+/// expands nothing at all (`literal`, an Agent Plugins `mcp.json`).
+fn environment_line(config: &mcp::McpServerConfig, literal: bool) -> Option<String> {
+    if literal {
+        return None;
+    }
+    let names: Vec<String> = mcp::env_references(config)
+        .into_iter()
+        .filter(|name| !mcp::PLUGIN_ENV_VARS.contains(&name.as_str()))
+        .collect();
+    (!names.is_empty()).then(|| format!("reads from your environment: {}", names.join(", ")))
 }
 
 /// A server's detail rows on the review: its command line or URL, then for
@@ -973,6 +1030,55 @@ mod plugin_tests {
         assert!(state.server_reviews()[0].trust.approved());
         state.forget_under(Path::new("/cache/db")).unwrap();
         assert!(state.server_reviews()[0].trust.needs_review());
+    }
+
+    /// A plugin's server that reads the user's environment says which
+    /// variables on the review — a header's value goes to the server's
+    /// host, and the review shows header names only. The plugin's own path
+    /// variables are not the user's.
+    #[test]
+    fn a_plugins_server_names_the_environment_it_reads() {
+        let root = Path::new("/cache/web");
+        let file = mcp::PluginMcpFile::parse_legacy(
+            "web@m",
+            "web",
+            root.join(".mcp.json"),
+            r#"{"remote":{"type":"http","url":"https://h.test/${REGION:-eu}",
+                "headers":{"X-Debug":"${GITHUB_TOKEN}","X-Key":"${EXA_API_KEY}"}},
+                "local":{"command":"${CLAUDE_PLUGIN_ROOT}/srv","args":["${PLUGIN_DATA}"]}}"#,
+            root,
+            Path::new("/data/web"),
+        );
+        let mut state = TrustState::default();
+        state.set_plugin_mcp(vec![file]);
+        let names = [
+            "plugin:web:remote".to_string(),
+            "plugin:web:local".to_string(),
+        ];
+        let page = state.mcp_page(&names, None).expect("waiting for review");
+        let detail = |name: &str| {
+            page.sections[0]
+                .items
+                .iter()
+                .find(|item| item.title.starts_with(name))
+                .expect("an item")
+                .detail
+                .clone()
+        };
+        assert!(
+            detail("plugin:web:remote").contains(
+                &"reads from your environment: REGION, GITHUB_TOKEN, EXA_API_KEY".to_string()
+            ),
+            "{:?}",
+            detail("plugin:web:remote")
+        );
+        assert!(
+            !detail("plugin:web:local")
+                .iter()
+                .any(|line| line.starts_with("reads from")),
+            "{:?}",
+            detail("plugin:web:local")
+        );
     }
 
     /// The review a plugin change opens asks only about the plugins' files.

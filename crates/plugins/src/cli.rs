@@ -195,10 +195,16 @@ impl Status {
 /// the way when the spec names one, install, and say what arrived.
 pub fn install(store: &PluginStore, spec: &str, io: &mut Output<'_>) -> CommandOutcome {
     let cancel = CancelToken::new();
-    let result = store.install(spec, &mut io.progress(), &cancel);
+    let (result, replaced) = store.install_tracked(spec, &mut io.progress(), &cancel);
     let outcome = match result {
         Ok(outcome) => outcome,
-        Err(error) => return io.fail(error),
+        // Files it moved in before it failed are reviewed again too.
+        Err(error) => {
+            return CommandOutcome {
+                forget_trust: replaced,
+                ..io.fail(error)
+            };
+        }
     };
     if let Some(name) = &outcome.added_marketplace {
         io.say(format!("Added marketplace {name} on the way"));
@@ -237,10 +243,13 @@ pub fn install(store: &PluginStore, spec: &str, io: &mut Output<'_>) -> CommandO
 
 /// `plugin uninstall <plugin>[@<marketplace>]`.
 pub fn uninstall(store: &PluginStore, spec: &str, io: &mut Output<'_>) -> CommandOutcome {
-    let result = store
-        .resolve_installed(spec)
-        .and_then(|id| store.uninstall(&id));
-    match result {
+    let id = match store.resolve_installed(spec) {
+        Ok(id) => id,
+        Err(error) => return io.fail(error),
+    };
+    // Read first: an uninstall that fails part way may have removed files.
+    let at_risk = store.plugin_dir_of(&id);
+    match store.uninstall(&id) {
         Ok(outcome) => {
             if outcome.in_place {
                 io.say(format!(
@@ -257,7 +266,10 @@ pub fn uninstall(store: &PluginStore, spec: &str, io: &mut Output<'_>) -> Comman
                 review: false,
             }
         }
-        Err(error) => io.fail(error),
+        Err(error) => CommandOutcome {
+            forget_trust: vec![at_risk],
+            ..io.fail(error)
+        },
     }
 }
 
@@ -298,10 +310,17 @@ pub fn update(
     io: &mut Output<'_>,
 ) -> CommandOutcome {
     let cancel = CancelToken::new();
-    let result = store.update(spec, &mut io.progress(), &cancel);
+    let (result, replaced) = store.update_tracked(spec, &mut io.progress(), &cancel);
     let updates = match result {
         Ok(updates) => updates,
-        Err(error) => return io.fail(error),
+        // The plugins reinstalled before the failure, and the one it failed
+        // on once its new files were in, are reviewed again too.
+        Err(error) => {
+            return CommandOutcome {
+                forget_trust: replaced,
+                ..io.fail(error)
+            };
+        }
     };
     if updates.is_empty() {
         io.say("No plugins installed");
@@ -1091,6 +1110,10 @@ pub fn marketplace_update(
 /// `plugin marketplace remove <name>`: the marketplace and every plugin
 /// installed from it, named.
 pub fn marketplace_remove(store: &PluginStore, name: &str, io: &mut Output<'_>) -> CommandOutcome {
+    let at_risk = crate::page::may_replace(
+        store,
+        &crate::page::PluginOp::RemoveMarketplace(name.into()),
+    );
     match store.remove_marketplace(name) {
         Ok(removed) => {
             if removed.uninstalled.is_empty() {
@@ -1118,7 +1141,10 @@ pub fn marketplace_remove(store: &PluginStore, name: &str, io: &mut Output<'_>) 
                 review: false,
             }
         }
-        Err(error) => io.fail(error),
+        Err(error) => CommandOutcome {
+            forget_trust: at_risk,
+            ..io.fail(error)
+        },
     }
 }
 
@@ -1359,6 +1385,29 @@ mod tests {
         let (_, err, outcome) = run(|io| set_enabled(&f.store, "guard", &f.project, true, io));
         assert_eq!(outcome.code, 1);
         assert_eq!(err, "alter-zero plugin: guard is not installed\n");
+    }
+
+    /// An escape sequence in a catalog's description never reaches the
+    /// terminal through `list --available`.
+    #[test]
+    fn a_catalog_description_prints_without_its_escape_sequences() {
+        let f = fixture(Vec::new());
+        let market = f.root.join("market");
+        write(
+            &market,
+            ".claude-plugin/marketplace.json",
+            r#"{"name":"demo","plugins":[{"name":"evil","source":"./evil",
+               "description":"\u001b]52;c;AAAA\u0007Copies"}]}"#,
+        );
+        write(
+            &market,
+            "evil/.claude-plugin/plugin.json",
+            r#"{"name":"evil"}"#,
+        );
+        run(|io| marketplace_add(&f.store, &market.to_string_lossy(), None, io));
+        let (out, _, _) = run(|io| list(&f.store, &f.project, true, false, io));
+        assert!(out.contains("]52;c;AAAACopies"), "{out}");
+        assert!(!out.contains(['\u{1b}', '\u{7}']), "{out:?}");
     }
 
     #[test]
@@ -1625,6 +1674,37 @@ mod tests {
         assert_eq!(outcome.forget_trust.len(), 1);
         let (out, _, _) = run(|io| marketplace_list(&f.store, false, u64::MAX, io));
         assert!(out.contains("3 plugins · 2 installed · updated "), "{out}");
+    }
+
+    /// A command that fails after it replaced a plugin's files still hands
+    /// the directory back, so its trust is forgotten all the same.
+    #[test]
+    fn a_failure_after_new_files_are_in_place_still_forgets_their_trust() {
+        if !has_git() {
+            return;
+        }
+        let f = fixture(Vec::new());
+        let url = git_marketplace(&f.root);
+        run(|io| marketplace_add(&f.store, &url, None, io));
+        run(|io| install(&f.store, "hello", io));
+        let id = PluginId::parse("hello@gitdemo").unwrap();
+        let dir = f.store.layout().installed_dir(&id);
+        let data = f.store.layout().data_dir(&id);
+        std::fs::remove_dir_all(&data).unwrap();
+        std::fs::write(&data, "in the way").unwrap();
+        let (_, err, outcome) = run(|io| install(&f.store, "hello", io));
+        assert_eq!(outcome.code, 1, "{err}");
+        assert_eq!(outcome.forget_trust, std::slice::from_ref(&dir));
+        let repo = f.root.join("repo");
+        write(
+            &repo,
+            "plugins/hello/.claude-plugin/plugin.json",
+            r#"{"name":"hello","version":"1.1.0"}"#,
+        );
+        git(&repo, &["commit", "-qam", "two"]);
+        let (_, err, outcome) = run(|io| update(&f.store, None, &f.project, io));
+        assert_eq!(outcome.code, 1, "{err}");
+        assert_eq!(outcome.forget_trust, [dir]);
     }
 
     #[test]

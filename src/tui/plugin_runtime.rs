@@ -185,7 +185,9 @@ fn convert(
     };
     for source in &plugin.hooks {
         let parsed = match source {
-            HookSource::File(path) => std::fs::read_to_string(path)
+            // Bounded, and only a regular file: a plugin loaded in place can
+            // hold a FIFO, which an open would wait on forever.
+            HookSource::File(path) => pl::read_bounded(path)
                 .map_err(|err| err.to_string())
                 .and_then(|text| hooks::PluginHooks::parse(owner.clone(), path.clone(), &text)),
             HookSource::Inline { origin, json } => {
@@ -280,20 +282,46 @@ impl Session<'_> {
     /// trust records are to be dropped first (what was installed, updated
     /// or removed), so what they bring is reviewed again.
     ///
+    /// Also called at every turn start (`docs/plugins.md` *Nothing runs
+    /// unseen*): another process — `alter-zero plugin update`, another
+    /// session's page — forgets a reinstalled plugin's trust in
+    /// `trust.json` only, so the session tells a reinstall by the stamp
+    /// `plugins.json` keeps ([`pl::reinstalled`]) and forgets that plugin's
+    /// trust itself; a plugin it loads that it did not load before takes
+    /// what `trust.json` says about it now, not the session's older copy.
+    ///
     /// When the set is what it was and nothing is to be forgotten, this is
-    /// one read of `plugins.json`. Otherwise skills and agents are walked
-    /// again at once, and hooks and servers go through
-    /// [`Session::set_plugin_contributions`]: trust forgotten, hooks
+    /// one read of `plugins.json` (one failed `open` with none). Otherwise
+    /// skills and agents are walked again at once, and hooks and servers go
+    /// through [`Session::set_plugin_contributions`]: trust forgotten, hooks
     /// rebound, servers swapped live, the review opened on what is new.
     #[cold]
     #[inline(never)]
     pub(crate) fn reload_plugins(&mut self, forget: &[PathBuf]) {
-        let startup = self
-            .plugins
+        let startup = self.read_startup_plugins();
+        self.reload_from(&startup, forget, true);
+    }
+
+    /// The turn start's [`Session::reload_plugins`]: the same check, except
+    /// that a `plugins.json` that will not read changes nothing here — it
+    /// was said when it broke (or at the page), and saying it again at
+    /// every turn would be noise.
+    pub(crate) fn check_plugins(&mut self) {
+        let startup = self.read_startup_plugins();
+        self.reload_from(&startup, &[], false);
+    }
+
+    fn read_startup_plugins(&self) -> pl::StartupPlugins {
+        self.plugins
             .layout
             .as_ref()
             .map(|layout| pl::startup_plugins(layout, &self.cwd))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reload_from(&mut self, startup: &pl::StartupPlugins, forget: &[PathBuf], on_error: bool) {
         let on = pl::plugins_enabled(std::env::var(pl::PLUGINS_ENV).ok().as_deref());
         let enabled: &[pl::EnabledPlugin] = if on { &startup.enabled } else { &[] };
         let before: &[pl::EnabledPlugin] = self
@@ -301,10 +329,24 @@ impl Session<'_> {
             .loaded
             .as_ref()
             .map_or(&[], |loaded| &loaded.enabled);
-        if forget.is_empty() && enabled == before && startup.error.is_none() {
+        if forget.is_empty() && enabled == before && (startup.error.is_none() || !on_error) {
             return;
         }
-        let (runtime, load) = load(self.plugins.layout.take(), &startup, &self.cwd);
+        let mut forget = forget.to_vec();
+        for dir in pl::reinstalled(before, enabled) {
+            if !forget.contains(&dir) {
+                forget.push(dir);
+            }
+        }
+        let fresh: Vec<PathBuf> = enabled
+            .iter()
+            .filter(|plugin| !before.iter().any(|old| old.id == plugin.id))
+            .map(|plugin| plugin.root.clone())
+            .collect();
+        for dir in &fresh {
+            self.trust.adopt_under(dir);
+        }
+        let (runtime, load) = load(self.plugins.layout.take(), startup, &self.cwd);
         self.plugins = runtime;
         // An open `/plugins` page says it on the plugin's own row (`✘ not
         // loaded`): a toast over the page would move it.
@@ -315,7 +357,7 @@ impl Session<'_> {
         }
         self.rescan_skills();
         self.rescan_agents();
-        self.set_plugin_contributions(load.hooks, load.mcp, forget);
+        self.set_plugin_contributions(load.hooks, load.mcp, &forget);
     }
 }
 

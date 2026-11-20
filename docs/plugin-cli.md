@@ -209,8 +209,13 @@ is a router:
   grammar arm; then, for every directory in `forget_trust`,
   `trust::forget_plugin_trust(config::trust_json_path(), dir)` — an
   install, an update or an uninstall is always reviewed again, so the
-  records keyed under its files go (a failure to forget is a failure: exit
-  1).
+  records keyed under its files go, under the directory's spelling as
+  configured and as resolved through the filesystem (a symlink in the
+  config home's path), and **on a failure too** — `forget_trust` then names
+  every directory whose files the command may already have replaced (an
+  install failing after its copy moved in, the plugins an `update` of all
+  reinstalled before one failed, an uninstall or a marketplace removal that
+  failed part way). A failure to forget is a failure: exit 1.
 
 The **exit-code contract**, the `mcp` family's:
 

@@ -750,6 +750,27 @@ pub fn expand_config(
     ))
 }
 
+/// The environment variables an entry reads when it is launched: every
+/// `${NAME}` and `${NAME:-default}` [`expand_config`] would look up, each
+/// once, in the order met. The startup review names them for a plugin's
+/// server (`docs/plugins.md` *Nothing runs unseen*): a header such as
+/// `"X-Debug": "${GITHUB_TOKEN}"` sends that value to the server's host, and
+/// the review shows header names, never values.
+#[must_use]
+pub fn env_references(config: &McpServerConfig) -> Vec<String> {
+    let seen = std::cell::RefCell::new(Vec::<String>::new());
+    let lookup = |name: &str| {
+        let mut seen = seen.borrow_mut();
+        if !seen.iter().any(|known| known == name) {
+            seen.push(name.to_string());
+        }
+        Some(String::new())
+    };
+    // Every reference is "set" here, so this cannot fail.
+    let _ = expand_config(config, &lookup);
+    seen.into_inner()
+}
+
 /// An `oauth` block with its client id, secret and scopes expanded.
 fn expand_oauth(
     oauth: &OAuthClientConfig,
@@ -1409,6 +1430,40 @@ mod tests {
         let mut missing = Vec::new();
         assert_eq!(expand_vars("${B:-${A}}", &env, &mut missing), "${A}");
         assert!(missing.is_empty());
+    }
+
+    /// The variables an entry reads from the environment, as the expansion
+    /// reads them: braced names with or without a default, in every value
+    /// a launch expands, each once, in order — never a bare `$NAME`, a key,
+    /// or a reference inside a default.
+    #[test]
+    fn an_entry_names_the_variables_it_reads() {
+        let remote = McpServerConfig::Http {
+            url: "https://${HOST:-h.test}/mcp?k=$NOPE".to_string(),
+            headers: [
+                ("X-Debug".to_string(), "${GITHUB_TOKEN}".to_string()),
+                (
+                    "${KEY_NAME}".to_string(),
+                    "a ${EXA_API_KEY} ${GITHUB_TOKEN}".to_string(),
+                ),
+            ]
+            .into(),
+            sse_fallback: false,
+            oauth: Some(OAuthClientConfig {
+                client_secret: Some("${SECRET:-${INNER}}".to_string()),
+                ..OAuthClientConfig::default()
+            }),
+        };
+        assert_eq!(
+            env_references(&remote),
+            ["HOST", "EXA_API_KEY", "GITHUB_TOKEN", "SECRET"]
+        );
+        let local = McpServerConfig::Stdio {
+            command: "${BIN}".to_string(),
+            args: vec!["--x=${ARG}".to_string()],
+            env: [("TOKEN".to_string(), "${TOKEN}".to_string())].into(),
+        };
+        assert_eq!(env_references(&local), ["BIN", "ARG", "TOKEN"]);
     }
 
     /// Every value a launch reads is expanded — a stdio server's command,

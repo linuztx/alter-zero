@@ -261,7 +261,13 @@ A marketplace root holds one catalog, the first that exists of
 never derived from the URL — and it becomes a directory, so it must be a
 plain name (letters, digits, `.`, `_`, `-`; a manifest naming itself
 `../../.ssh` is refused before any path is made of it). Adding a second
-source under a name already in use is refused.
+source under a name already in use is refused — and so is one whose name
+differs from an added one **only by case** (`Team` beside `team`), naming
+both: on a case-insensitive filesystem (macOS, Windows) the two are one
+folder, and the second would overwrite the first's checkout. The same rule
+holds inside a catalog (`Lint` listed after `lint` is a duplicate) and for
+the plugins installed from one marketplace. Nothing is lowercased: a name
+keeps the spelling it was added with.
 
 A source with **no catalog but a plugin manifest at its root is a
 marketplace of one**, named after its plugin (a nameless one after its
@@ -273,7 +279,28 @@ Claude Code reserves for its publisher's marketplaces
 (`claude-plugins-official` and the rest) come only from
 `github.com/anthropics/`, the names Codex reserves (`openai-curated`, …)
 only from `github.com/openai/`, compared without regard to case or
-punctuation.
+punctuation. Only an authenticated transport counts — `https://`,
+`ssh://git@github.com/` or `git@github.com:` (never plain `http://` or
+`git://`, which anyone on the way can answer) — and only a URL whose path
+git fetches as written: a git URL with a `.`, `..` or empty path segment or
+a `%`-escape in its path is refused outright, wherever it is typed or
+listed, since libcurl collapses `/../` before it asks the server and
+`github.com/anthropics/../evil/x` would read as one account and fetch from
+another.
+
+**Bounded, and printable.** A catalog is read in one pass that stays linear
+however large it is — a duplicate is found through a hash of each
+case-folded name, confirmed against the names already met only on a hit —
+reading at most 5 000 entries (the rest summarized in one notice) and
+keeping at most 100 notices (then one `… and N more`), since the page reads
+catalogs on the UI loop. Every display string a catalog or a manifest gives
+(a description, a display name, an author, a category, a homepage, a
+version, keywords) and `git`'s own error text are cleaned where they are
+decoded (`plugins::text`): C0 and C1 controls, DEL and the Unicode bidi
+controls are dropped — a description's line breaks kept, a tab a space,
+every other field's line break a space — so an OSC 52, OSC 8 or CSI sequence
+in somebody's catalog never reaches the terminal through the CLI or the
+page. `--json` output is serde's, escaped already.
 
 | Read from the catalog | |
 | --- | --- |
@@ -292,7 +319,11 @@ catalog still loads. An entry's `source`:
 | `npm`, `archive`, `command`, anything else | **no** — listed, marked unavailable with the reason; `command` would run a shell command at install and every launch |
 
 `policy.installation: "NOT_AVAILABLE"` makes an entry unavailable too. A
-`sha` wins over a `ref`, and the checkout must land on it. A catalog's
+`sha` wins over a `ref`, and the checkout must land on it. A pinned `sha`
+must be the **whole** 40-digit commit id (as every official entry's is): a
+prefix is something the plugin repository's owner could make a second
+commit match, so an entry pinned to one is listed unavailable with the
+reason. A catalog's
 `ref`, `sha`, URL and subfolder reach `git` as arguments, so each is read as
 what it must be — a branch or tag name, a commit id, a URL, a relative path
 — and an entry whose value could be read as an option (`--upload-pack=…`)
@@ -399,7 +430,9 @@ that would override their `core.sshCommand`), the caller's repository out
 of the picture
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and their kin removed,
 `-c safe.bareRepository=explicit`, `-c core.fsmonitor=false`), the `ext`
-transport held out (`GIT_ALLOW_PROTOCOL`), output captured into a bounded
+transport held out (`GIT_ALLOW_PROTOCOL`), a user's global git-lfs smudge
+filter kept off a fetched repository's `.gitattributes`
+(`GIT_LFS_SKIP_SMUDGE=1`), output captured into a bounded
 buffer whose tail is the error message, a timeout, and the operation's
 `CancelToken` polled every 20 ms so Esc kills the child. No submodules are
 fetched.
@@ -450,7 +483,19 @@ fetched.
 5. Record it in `plugins.json` with its version and revision.
 6. **Forget every trust record under the plugin's directory**
    (`trust.json`'s hooks and MCP entries are keyed by file path), so an
-   install or an update is always reviewed again.
+   install or an update is always reviewed again. The records are keyed by
+   the plugin's **resolved** root (it is loaded through `canonicalize`),
+   so the directory is forgotten under its spelling as configured and as
+   resolved through the filesystem (`plugins::trust_forms` — a symlink in
+   the config home's path, such as Silverblue's `/home -> /var/home`, or a
+   relative `ALTER_ZERO_CONFIG_DIR`, would otherwise forget nothing), a
+   directory an uninstall just removed resolved through its parent.
+   **A failure forgets too**: an install that fails once its new copy is
+   moved in, an update of several plugins that fails part way, an
+   uninstall or a marketplace removal that fails, and a `/plugins` worker
+   that dies all hand back every directory whose files may have changed
+   (`PluginStore::install_tracked` / `update_tracked`,
+   `page::may_replace`) — over-forgetting being the safe direction.
 
 An **update** is the same steps; the data directory is never touched. What
 "has an update" means depends on the source: a plugin kept in its
@@ -479,7 +524,20 @@ definition), and nothing for a plugin that is off.
 
 The set is taken again whenever this session changes it (an install, an
 update, an uninstall, a toggle — from `/plugins`) and when `/plugins` is
-opened (another process may have installed something). Skills and agents
+opened (another process may have installed something) — and checked at
+every turn start, beside the skills rescan, for one cheap reason: another
+process (`alter-zero plugin update`, a second session's `/plugins`) forgets
+a reinstalled plugin's trust in `trust.json` only, and this session's copy
+of the store would otherwise run the new files under the old approval
+until a restart. `plugins.json` records each plugin's install stamp and
+revision; the startup read carries them (`EnabledPlugin::installed`,
+`::revision`), and a plugin whose stamp, revision or version moved since
+the session loaded it is reinstalled (`plugins::reinstalled`): its
+directory is forgotten in the session too, so its hooks and servers go back
+to waiting for the review. A plugin the session loads that it did not load
+before takes what `trust.json` says about it **now** rather than the
+session's older copy. With nothing changed the check is one read of
+`plugins.json`, one failed `open` with none. Skills and agents
 follow at once; hooks are rebound through `set_hooks_file`; MCP servers are
 swapped in the running manager; and when the change brought hooks or
 servers that are not yet trusted, the review opens on them
@@ -520,7 +578,22 @@ user has seen it — is kept without a second mechanism:
 - A `command` plugin source, `allowed-tools`, `bin/` on the `PATH`,
   monitors and in-process mods are **never run**.
 - `${VAR}` expansion cannot carry a provider key into a plugin's remote
-  server (the project-scope protection).
+  server (the project-scope protection), and every other variable a
+  plugin's server reads is **named on the review**: its row says `reads
+  from your environment: GITHUB_TOKEN, EXA_API_KEY` (the names in its URL,
+  headers, args, env values and `oauth` fields, the plugin's own four path
+  variables aside), since a header such as `"X-Debug": "${GITHUB_TOKEN}"`
+  sends that value to the server's host and the review shows header names,
+  never values. `${VAR}` in a header is also how a plugin's server gets its
+  own API key, so it is shown, not refused.
+- **A reinstall elsewhere is noticed**: a plugin updated by another
+  process goes back to the review at this session's next turn (*Loading
+  into a session*), never running its new files under the old approval.
+- **What a plugin says is printed clean**: no control or bidi character of
+  a catalog's, a manifest's or `git`'s reaches the terminal (*Marketplaces*).
+- A plugin's hooks file, and a manifest's `mcpServers` file, are read
+  bounded and only when they are regular files — a plugin loaded in place
+  can hold a FIFO, which an `open` would wait on forever.
 - Skills, commands and agents are inert text: what they ask the model to do
   still meets the permission gate.
 - Installing from the shell asks nothing: the hooks and servers wait for
@@ -717,6 +790,13 @@ of it — which is what makes every smoke phase start with no plugins.
   refused as an unsupported version until it is published and supported.
 - **Codex's MCP extras** (`oauth_resource`, `scopes`, `env_vars`, the
   timeouts) are ignored; a stdio child already inherits the environment.
+- **Stricter than the references** on what a catalog may say: a `sha`
+  prefix is unavailable rather than trusted, a URL with a dot segment or a
+  `%`-escape in its path is refused, a reserved name needs `https`/`ssh`,
+  names differing only by case are one name, and a catalog is read up to
+  5 000 entries.
+- **A reinstall mid-turn** by another process is noticed at the next turn
+  start, not by a hook already running in this one.
 
 ## Module layout
 

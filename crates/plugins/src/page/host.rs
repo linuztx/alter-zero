@@ -25,7 +25,7 @@ use crate::cancel::CancelToken;
 use crate::components::PluginComponents;
 use crate::marketplace::{CatalogEntry, PluginSource};
 use crate::state::{PluginId, PluginRecord, PluginsFile};
-use crate::store::{PluginStore, UpdateStatus};
+use crate::store::{PluginError, PluginStore, UpdateStatus};
 
 /// What the `+ Add` tab says about the two official catalogs, by source.
 const KNOWN_CATALOGS: [(&str, &str); 2] = [
@@ -419,8 +419,32 @@ fn counted(n: usize, noun: &str) -> String {
     }
 }
 
+/// The plugin directories `op` could replace or remove files in, read
+/// before it runs: what a failure — or a worker that dies on the way — must
+/// still forget the trust of. Over-counting is the safe direction: a
+/// plugin forgotten for nothing is only reviewed once more.
+#[must_use]
+pub fn may_replace(store: &PluginStore, op: &PluginOp) -> Vec<PathBuf> {
+    match op {
+        PluginOp::Install(id) | PluginOp::Uninstall(id) => vec![store.plugin_dir_of(id)],
+        PluginOp::RemoveMarketplace(name) => store
+            .plugins_of_marketplace(name)
+            .unwrap_or_default()
+            .iter()
+            .map(|id| store.plugin_dir_of(id))
+            .collect(),
+        PluginOp::Refresh
+        | PluginOp::Inspect(_)
+        | PluginOp::SetEnabled { .. }
+        | PluginOp::AddMarketplace(_)
+        | PluginOp::UpdateMarketplace(_) => Vec::new(),
+    }
+}
+
 /// Run `op` — any but [`PluginOp::Inspect`], which is [`contents`] — and
-/// say what it did, what trust to forget and whether to reload.
+/// say what it did, what trust to forget and whether to reload. A failure
+/// still forgets (and reloads) every directory whose files it may have
+/// replaced.
 pub fn run_op(
     store: &PluginStore,
     project: &Path,
@@ -437,6 +461,11 @@ pub fn run_op(
         forget: Vec::new(),
         reload: false,
     };
+    let failed = |error: PluginError, forget: Vec<PathBuf>| OpResult {
+        outcome: Err(error.to_string()),
+        reload: !forget.is_empty(),
+        forget,
+    };
     match op {
         PluginOp::Refresh | PluginOp::Inspect(_) => quiet(Ok(PluginDone::default())),
         PluginOp::Install(id) => {
@@ -445,7 +474,9 @@ pub fn run_op(
                 Err(error) => return quiet(Err(error.to_string())),
             };
             if installed {
-                return match store.update(Some(&id.to_string()), progress, cancel) {
+                let (result, replaced) =
+                    store.update_tracked(Some(&id.to_string()), progress, cancel);
+                return match result {
                     Ok(updates) => {
                         let mut result = quiet(Ok(said(format!("{} is up to date", id.name))));
                         for update in updates {
@@ -458,26 +489,32 @@ pub fn run_op(
                         }
                         result
                     }
-                    Err(error) => quiet(Err(error.to_string())),
+                    Err(error) => failed(error, replaced),
                 };
             }
-            match store.install(&id.to_string(), progress, cancel) {
+            let (result, replaced) = store.install_tracked(&id.to_string(), progress, cancel);
+            match result {
                 Ok(outcome) => OpResult {
                     outcome: Ok(said(format!("Installed {}", id.name))),
                     forget: vec![outcome.plugin_dir],
                     reload: true,
                 },
-                Err(error) => quiet(Err(error.to_string())),
+                Err(error) => failed(error, replaced),
             }
         }
-        PluginOp::Uninstall(id) => match store.uninstall(id) {
-            Ok(outcome) => OpResult {
-                outcome: Ok(said(format!("Uninstalled {}", id.name))),
-                forget: vec![outcome.plugin_dir],
-                reload: true,
-            },
-            Err(error) => quiet(Err(error.to_string())),
-        },
+        PluginOp::Uninstall(id) => {
+            let at_risk = may_replace(store, op);
+            match store.uninstall(id) {
+                Ok(outcome) => OpResult {
+                    outcome: Ok(said(format!("Uninstalled {}", id.name))),
+                    forget: vec![outcome.plugin_dir],
+                    reload: true,
+                },
+                // Not installed: nothing was touched.
+                Err(error @ PluginError::NotInstalled(_)) => failed(error, Vec::new()),
+                Err(error) => failed(error, at_risk),
+            }
+        }
         PluginOp::SetEnabled { id, enabled } => match store.set_enabled(project, id, *enabled) {
             Ok(()) => OpResult {
                 outcome: Ok(said(format!(
@@ -528,25 +565,28 @@ pub fn run_op(
             }
             Err(error) => quiet(Err(error.to_string())),
         },
-        PluginOp::RemoveMarketplace(name) => match store.remove_marketplace(name) {
-            Ok(removed) => {
-                let n = removed.uninstalled.len();
-                OpResult {
-                    outcome: Ok(said(if n == 0 {
-                        format!("Removed {name}")
-                    } else {
-                        format!("Removed {name} and uninstalled {}", counted(n, "plugin"))
-                    })),
-                    reload: n > 0,
-                    forget: removed
-                        .uninstalled
-                        .into_iter()
-                        .map(|(_, dir)| dir)
-                        .collect(),
+        PluginOp::RemoveMarketplace(name) => {
+            let at_risk = may_replace(store, op);
+            match store.remove_marketplace(name) {
+                Err(error) => failed(error, at_risk),
+                Ok(removed) => {
+                    let n = removed.uninstalled.len();
+                    OpResult {
+                        outcome: Ok(said(if n == 0 {
+                            format!("Removed {name}")
+                        } else {
+                            format!("Removed {name} and uninstalled {}", counted(n, "plugin"))
+                        })),
+                        reload: n > 0,
+                        forget: removed
+                            .uninstalled
+                            .into_iter()
+                            .map(|(_, dir)| dir)
+                            .collect(),
+                    }
                 }
             }
-            Err(error) => quiet(Err(error.to_string())),
-        },
+        }
     }
 }
 
@@ -746,6 +786,27 @@ mod tests {
         assert!(npm.unavailable.is_some(), "{npm:?}");
     }
 
+    /// The page's rows carry no escape sequence of the catalog's.
+    #[test]
+    fn a_snapshot_row_carries_no_escape_sequence() {
+        let f = fixture(Vec::new());
+        let market = f.root.join("market");
+        write(
+            &market,
+            ".claude-plugin/marketplace.json",
+            r#"{"name":"demo","plugins":[{"name":"evil","source":"./evil",
+               "description":"\u001b]52;c;AAAA\u0007Copies"}]}"#,
+        );
+        write(
+            &market,
+            "evil/.claude-plugin/plugin.json",
+            r#"{"name":"evil"}"#,
+        );
+        op(&f, PluginOp::AddMarketplace(market.display().to_string()));
+        let evil = row(&snap(&f), "evil@demo");
+        assert_eq!(evil.description.as_deref(), Some("]52;c;AAAACopies"));
+    }
+
     #[test]
     fn install_toggle_and_uninstall_reload_and_forget_the_plugin_dir() {
         let f = with_demo();
@@ -933,6 +994,51 @@ mod tests {
         );
         assert!(result.outcome.is_err());
         assert!(snap(&f).marketplaces.is_empty());
+    }
+
+    /// An install or update that fails once its new files are in place
+    /// still forgets their trust and reloads; and what an operation could
+    /// touch is known before it runs, for a worker that dies on the way.
+    #[test]
+    fn a_failure_after_new_files_are_in_place_forgets_and_reloads() {
+        if !has_git() {
+            return;
+        }
+        let f = fixture(Vec::new());
+        let repo = f.root.join("repo");
+        marketplace(&repo, "gitdemo");
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "one"]);
+        op(
+            &f,
+            PluginOp::AddMarketplace(format!("file://{}", repo.display())),
+        );
+        let hello = id("hello@gitdemo");
+        let dir = f.store.layout().installed_dir(&hello);
+        assert_eq!(
+            may_replace(&f.store, &PluginOp::Install(hello.clone())),
+            std::slice::from_ref(&dir)
+        );
+        assert!(may_replace(&f.store, &PluginOp::Refresh).is_empty());
+        op(&f, PluginOp::Install(hello.clone()));
+        assert_eq!(
+            may_replace(&f.store, &PluginOp::RemoveMarketplace("gitdemo".into())),
+            std::slice::from_ref(&dir)
+        );
+        let data = f.store.layout().data_dir(&hello);
+        std::fs::remove_dir_all(&data).unwrap();
+        std::fs::write(&data, "in the way").unwrap();
+        write(
+            &repo,
+            "plugins/hello/.claude-plugin/plugin.json",
+            r#"{"name":"hello","version":"1.1.0"}"#,
+        );
+        git(&repo, &["commit", "-qam", "two"]);
+        let failed = op(&f, PluginOp::Install(hello));
+        assert!(failed.outcome.is_err(), "{failed:?}");
+        assert_eq!(failed.forget, [dir]);
+        assert!(failed.reload);
     }
 
     #[test]

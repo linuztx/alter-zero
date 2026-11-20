@@ -11,7 +11,7 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-pub use host::{OpResult, contents, run_op, snapshot};
+pub use host::{OpResult, contents, may_replace, run_op, snapshot};
 pub use rows::{ListMark, PluginList, PluginRef};
 pub use state::{
     AddRow, ComponentSummary, InstalledState, KeyOutcome, LineField, MarketplaceRow,

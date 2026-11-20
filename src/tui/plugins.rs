@@ -229,12 +229,16 @@ impl Session<'_> {
         let cancel = CancelToken::new();
         self.plugins_page.job = Some((round, cancel.clone()));
         std::thread::spawn(move || {
+            // Read before anything runs: a worker that dies part way may
+            // already have replaced files, and what it could have touched
+            // is forgotten then — over-forgetting is the safe direction.
+            let at_risk = page::may_replace(&store, &op);
             let _answer = AnswerOnPanic {
                 tx: tx.clone(),
                 answer: Some(PluginEvent::Done {
                     round,
                     outcome: Err(WORKER_CRASHED.to_string()),
-                    forget: Vec::new(),
+                    forget: at_risk,
                     // It may have changed something before it stopped.
                     reload: true,
                 }),

@@ -35,8 +35,8 @@ use super::source::{
     GITHUB_BASE, MarketplaceSource, MarketplaceSpec, SourceError, parse_marketplace_source,
 };
 use super::state::{
-    DefaultMarketplace, MarketplaceRecord, PluginId, PluginRecord, PluginSpec, PluginsFile,
-    StateParseError, default_marketplaces, update_state,
+    DefaultMarketplace, MarketplaceRecord, PLUGINS_FILE_MAX_BYTES, PluginId, PluginRecord,
+    PluginSpec, PluginsFile, StateParseError, default_marketplaces, update_state,
 };
 
 /// The variable whose `0` loads no plugin for a run.
@@ -109,6 +109,17 @@ pub enum PluginError {
         /// The source it is added from.
         source: String,
     },
+    /// A marketplace or a plugin whose name differs from one already there
+    /// only by case: on a case-insensitive filesystem the two would share
+    /// one directory.
+    CaseClash {
+        /// `"marketplace"` or `"plugin"`.
+        kind: &'static str,
+        /// The name asked for.
+        name: String,
+        /// The one already there, in its own spelling.
+        existing: String,
+    },
     /// The name is reserved for an official catalog.
     Reserved(String),
     /// No marketplace of that name is added (or offered).
@@ -172,6 +183,22 @@ impl fmt::Display for PluginError {
                 f,
                 "a marketplace named {name} is already added from {source}; remove it first"
             ),
+            Self::CaseClash {
+                kind,
+                name,
+                existing,
+            } => {
+                let (there, undo) = if *kind == "marketplace" {
+                    ("added", "remove")
+                } else {
+                    ("installed", "uninstall")
+                };
+                write!(
+                    f,
+                    "{kind} {existing} is already {there}, and {name} differs from it only by case, \
+                     so the two would share one folder; {undo} {existing} first"
+                )
+            }
             Self::Reserved(why) => f.write_str(why),
             Self::NoSuchMarketplace(name) => write!(
                 f,
@@ -374,6 +401,46 @@ pub struct EnabledPlugin {
     pub data_dir: PathBuf,
     /// Its recorded version.
     pub version: Option<String>,
+    /// What its copy was made from (`plugins.json`'s `revision`).
+    pub revision: Option<String>,
+    /// When it was installed or last updated (`plugins.json`'s
+    /// `installed`) — with `revision` and `version`, what tells a session
+    /// that another process reinstalled it ([`reinstalled`]).
+    pub installed: Option<u64>,
+}
+
+/// The plugins in `now` that a session loaded as `before` but that were
+/// installed again since — by `alter-zero plugin update` or another
+/// session's `/plugins`, which forget their trust on disk only: their
+/// directories, whose trust the session must forget too, so their hooks
+/// and servers go back to waiting for the review (`docs/plugins.md`
+/// *Nothing runs unseen*). A plugin is reinstalled when its install stamp,
+/// revision, version or root moved. One the session did not load, or no
+/// longer lists, is not.
+#[must_use]
+pub fn reinstalled(before: &[EnabledPlugin], now: &[EnabledPlugin]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for plugin in now {
+        let Some(old) = before.iter().find(|old| old.id == plugin.id) else {
+            continue;
+        };
+        if (&old.installed, &old.revision, &old.version, &old.root)
+            == (
+                &plugin.installed,
+                &plugin.revision,
+                &plugin.version,
+                &plugin.root,
+            )
+        {
+            continue;
+        }
+        for dir in [&plugin.root, &old.root] {
+            if !out.contains(dir) {
+                out.push(dir.clone());
+            }
+        }
+    }
+    out
 }
 
 /// The startup read: which plugins are on in this directory.
@@ -443,6 +510,8 @@ fn read_startup(file: std::fs::File, layout: &PluginsLayout, project: &Path) -> 
                 .map_or_else(|| layout.installed_dir(&id), PathBuf::from),
             data_dir: layout.data_dir(&id),
             version: record.version,
+            revision: record.revision,
+            installed: record.installed,
             id,
         });
     }
@@ -563,14 +632,24 @@ impl PluginStore {
 
     // ===== plugins.json =====
 
+    /// `plugins.json`'s text, bounded at [`PLUGINS_FILE_MAX_BYTES`] like the
+    /// startup read — a file past it reads cut short, so it will not parse
+    /// and is never written over.
     fn state_text(&self) -> Result<String, PluginError> {
-        match std::fs::read_to_string(self.layout.state_file()) {
-            Ok(text) => Ok(text),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-            Err(err) => Err(io(format!("read {}", self.layout.state_file().display()))(
-                err,
-            )),
-        }
+        let path = self.layout.state_file();
+        let failed = |err| io(format!("read {}", path.display()))(err);
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(err) => return Err(failed(err)),
+        };
+        let mut text = String::new();
+        std::io::Read::read_to_string(
+            &mut std::io::Read::take(file, PLUGINS_FILE_MAX_BYTES),
+            &mut text,
+        )
+        .map_err(failed)?;
+        Ok(text)
     }
 
     /// `plugins.json` as it is now.
@@ -840,6 +919,17 @@ impl PluginStore {
         let canonical_url = spec.source.clone_url(GITHUB_BASE);
         check_reserved(&name, canonical_url.as_deref()).map_err(PluginError::Reserved)?;
         let record_source = spec.source.record();
+        if let Some(existing) = state
+            .marketplaces
+            .keys()
+            .find(|added| **added != name && added.eq_ignore_ascii_case(&name))
+        {
+            return Err(PluginError::CaseClash {
+                kind: "marketplace",
+                name,
+                existing: existing.clone(),
+            });
+        }
         if let Some(existing) = state.marketplaces.get(&name) {
             if existing.source != record_source || existing.git_ref != spec.git_ref {
                 return Err(PluginError::NameTaken {
@@ -1119,6 +1209,21 @@ impl PluginStore {
             .map_err(|e| manifest_error(id, &e))
     }
 
+    /// The directory an installed plugin loads from — its own folder for
+    /// one loaded in place — else where a copy of it would be installed:
+    /// what its trust records are forgotten under.
+    #[must_use]
+    pub fn plugin_dir_of(&self, id: &PluginId) -> PathBuf {
+        match self
+            .state()
+            .ok()
+            .and_then(|state| state.plugin(id).cloned())
+        {
+            Some(record) => self.plugin_dir(id, &record),
+            None => self.layout.installed_dir(id),
+        }
+    }
+
     fn plugin_dir(&self, id: &PluginId, record: &PluginRecord) -> PathBuf {
         record
             .root
@@ -1143,6 +1248,32 @@ impl PluginStore {
         progress: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<InstallOutcome, PluginError> {
+        self.install_tracked(spec, progress, cancel).0
+    }
+
+    /// [`PluginStore::install`], and beside its result — success or failure
+    /// — every plugin directory whose files it replaced, or may have: a
+    /// failure after the new copy is moved in still leaves new files there,
+    /// and their trust has to be forgotten all the same (`docs/plugins.md`
+    /// *Installing*).
+    pub fn install_tracked(
+        &self,
+        spec: &str,
+        progress: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> (Result<InstallOutcome, PluginError>, Vec<PathBuf>) {
+        let mut replaced = Vec::new();
+        let result = self.install_into(spec, progress, cancel, &mut replaced);
+        (result, replaced)
+    }
+
+    fn install_into(
+        &self,
+        spec: &str,
+        progress: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+        replaced: &mut Vec<PathBuf>,
+    ) -> Result<InstallOutcome, PluginError> {
         let id = self.resolve_available(spec)?;
         let mut added_marketplace = None;
         if !self.state()?.marketplaces.contains_key(&id.marketplace) {
@@ -1158,7 +1289,7 @@ impl PluginStore {
             }
             added_marketplace = Some(added.name);
         }
-        let mut outcome = self.install_id(&id, progress, cancel)?;
+        let mut outcome = self.install_id(&id, progress, cancel, replaced)?;
         outcome.added_marketplace = added_marketplace;
         Ok(outcome)
     }
@@ -1168,7 +1299,19 @@ impl PluginStore {
         id: &PluginId,
         progress: &mut dyn FnMut(&str),
         cancel: &CancelToken,
+        touched: &mut Vec<PathBuf>,
     ) -> Result<InstallOutcome, PluginError> {
+        if let Some(existing) = self.state()?.installed().into_iter().find(|other| {
+            other.marketplace == id.marketplace
+                && other.name != id.name
+                && other.name.eq_ignore_ascii_case(&id.name)
+        }) {
+            return Err(PluginError::CaseClash {
+                kind: "plugin",
+                name: id.to_string(),
+                existing: existing.to_string(),
+            });
+        }
         let catalog = self.catalog(&id.marketplace)?;
         let entry = catalog
             .entry(&id.name)
@@ -1219,6 +1362,10 @@ impl PluginStore {
                 return Err(PluginError::Cancelled);
             }
             let dest = self.layout.installed_dir(id);
+            // From here on the files may be new, whatever follows.
+            if !touched.contains(&dest) {
+                touched.push(dest.clone());
+            }
             put_in_place(&copy, &dest, &self.layout)?;
             (dest, notices)
         };
@@ -1421,6 +1568,31 @@ impl PluginStore {
         progress: &mut dyn FnMut(&str),
         cancel: &CancelToken,
     ) -> Result<Vec<PluginUpdate>, PluginError> {
+        self.update_tracked(spec, progress, cancel).0
+    }
+
+    /// [`PluginStore::update`], and beside its result — success or failure
+    /// — every plugin directory whose files it replaced, or may have: the
+    /// plugins reinstalled before a failure, and the one it failed on once
+    /// its new copy was moved in.
+    pub fn update_tracked(
+        &self,
+        spec: Option<&str>,
+        progress: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+    ) -> (Result<Vec<PluginUpdate>, PluginError>, Vec<PathBuf>) {
+        let mut replaced = Vec::new();
+        let result = self.update_into(spec, progress, cancel, &mut replaced);
+        (result, replaced)
+    }
+
+    fn update_into(
+        &self,
+        spec: Option<&str>,
+        progress: &mut dyn FnMut(&str),
+        cancel: &CancelToken,
+        replaced: &mut Vec<PathBuf>,
+    ) -> Result<Vec<PluginUpdate>, PluginError> {
         let targets = match spec {
             Some(spec) => vec![self.resolve_installed(spec)?],
             None => self.state()?.installed(),
@@ -1464,7 +1636,7 @@ impl PluginStore {
                 });
                 continue;
             }
-            let installed = self.install_id(&id, progress, cancel)?;
+            let installed = self.install_id(&id, progress, cancel, replaced)?;
             let label = |version: &Option<String>, revision: &Option<String>| {
                 version
                     .clone()
@@ -1769,6 +1941,23 @@ mod tests {
         );
     }
 
+    /// Every read of `plugins.json` is bounded like the startup read: one
+    /// past the cap does not parse, and so is never written over.
+    #[test]
+    fn plugins_json_past_the_cap_is_refused_not_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = PluginsLayout::for_config_home(dir.path());
+        let big = format!(
+            r#"{{"plugins": {{}}, "pad": "{}"}}"#,
+            "x".repeat(usize::try_from(PLUGINS_FILE_MAX_BYTES).unwrap())
+        );
+        std::fs::write(layout.state_file(), &big).unwrap();
+        let store = PluginStore::new(layout.clone());
+        assert!(store.state().is_err());
+        assert!(store.record(|_| {}).is_err());
+        assert_eq!(std::fs::read_to_string(layout.state_file()).unwrap(), big);
+    }
+
     #[test]
     fn the_startup_read_with_no_file_is_empty_and_touches_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -1805,6 +1994,48 @@ mod tests {
         assert!(broken.error.unwrap().contains("plugins.json"));
     }
 
+    /// What changes on every install and update is read at startup, so a
+    /// session can tell a plugin another process reinstalled from the one
+    /// it loaded: that plugin's directory — and only that — is to be
+    /// forgotten.
+    #[test]
+    fn a_plugin_reinstalled_since_it_was_loaded_is_told_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = PluginsLayout::for_config_home(dir.path());
+        let write = |a: &str| {
+            std::fs::write(
+                layout.state_file(),
+                format!(
+                    r#"{{"plugins": {{"a@m": {a}, "b@m": {{"installed": 5, "revision": "r"}}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(r#"{"version": "1", "revision": "aaa", "installed": 10}"#);
+        let before = startup_plugins(&layout, Path::new("/p")).enabled;
+        assert_eq!(before[0].revision.as_deref(), Some("aaa"));
+        assert_eq!(before[0].installed, Some(10));
+        assert!(reinstalled(&before, &before).is_empty());
+        let a_dir = layout.installed_dir(&PluginId::parse("a@m").unwrap());
+        for changed in [
+            r#"{"version": "1", "revision": "aaa", "installed": 11}"#,
+            r#"{"version": "1", "revision": "bbb", "installed": 10}"#,
+            r#"{"version": "2", "revision": "aaa", "installed": 10}"#,
+        ] {
+            write(changed);
+            let now = startup_plugins(&layout, Path::new("/p")).enabled;
+            assert_eq!(
+                reinstalled(&before, &now),
+                std::slice::from_ref(&a_dir),
+                "{changed}"
+            );
+        }
+        // One the session never loaded is not "reinstalled", and one it
+        // loaded that is gone is not either.
+        assert!(reinstalled(&before[1..], &before[..1]).is_empty());
+        assert!(reinstalled(&before, &[]).is_empty());
+    }
+
     #[test]
     fn of_two_enabled_plugins_of_one_name_the_first_loads() {
         let dir = tempfile::tempdir().unwrap();
@@ -1823,6 +2054,8 @@ mod tests {
             data_dir: dir.path().join("data").join(id),
             root,
             version: None,
+            revision: None,
+            installed: None,
         };
         let startup = StartupPlugins {
             enabled: vec![enabled("x@a", mk("one")), enabled("y@b", mk("two"))],

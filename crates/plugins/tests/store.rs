@@ -997,3 +997,141 @@ fn the_snapshot_read_time_over_a_recorded_config_home() {
         times[2]
     );
 }
+
+/// Two names that differ only by case are one directory on a
+/// case-insensitive filesystem (macOS, Windows): a marketplace or a plugin
+/// so named is refused, naming the one already there, which keeps its
+/// spelling.
+#[test]
+fn names_that_differ_only_by_case_are_refused() {
+    if !has_git() {
+        return;
+    }
+    let f = fixture();
+    let lower = f.base.join("lower");
+    let upper = f.base.join("upper");
+    write(
+        &lower,
+        ".claude-plugin/marketplace.json",
+        &catalog("team", r#"{"name": "lint", "source": "./lint"}"#),
+    );
+    write(
+        &lower,
+        "lint/.claude-plugin/plugin.json",
+        r#"{"name": "lint"}"#,
+    );
+    write(
+        &upper,
+        ".claude-plugin/marketplace.json",
+        &catalog("Team", ""),
+    );
+    f.store
+        .add_marketplace("./lower", None, &mut quiet(), &CancelToken::new())
+        .unwrap();
+    let err = f
+        .store
+        .add_marketplace("./upper", None, &mut quiet(), &CancelToken::new())
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, PluginError::CaseClash { .. }), "{err}");
+    assert!(text.contains("Team") && text.contains("team"), "{text}");
+    assert!(!f.store.state().unwrap().marketplaces.contains_key("Team"));
+
+    f.store
+        .install("lint@team", &mut quiet(), &CancelToken::new())
+        .unwrap();
+    // The catalog now spells it otherwise.
+    write(
+        &lower,
+        ".claude-plugin/marketplace.json",
+        &catalog("team", r#"{"name": "Lint", "source": "./lint"}"#),
+    );
+    let err = f
+        .store
+        .install("Lint@team", &mut quiet(), &CancelToken::new())
+        .unwrap_err();
+    let text = err.to_string();
+    assert!(matches!(err, PluginError::CaseClash { .. }), "{err}");
+    assert!(text.contains("lint@team"), "{text}");
+    assert!(f.store.state().unwrap().plugin(&id("Lint@team")).is_none());
+}
+
+/// Every directory whose files an install or an update replaced is named,
+/// on success and on failure alike — its trust has to be forgotten either
+/// way, and a failure part way through an update of several plugins must
+/// not lose the ones already reinstalled.
+#[test]
+fn a_failure_part_way_still_names_every_directory_it_replaced() {
+    if !has_git() {
+        return;
+    }
+    let f = fixture();
+    let upstream = f.base.join("upstream");
+    repo(
+        &upstream,
+        &[
+            (
+                ".claude-plugin/marketplace.json",
+                &catalog(
+                    "acme",
+                    r#"{"name": "a", "source": "./a"}, {"name": "b", "source": "./b"}"#,
+                ),
+            ),
+            (
+                "a/.claude-plugin/plugin.json",
+                r#"{"name": "a", "version": "1"}"#,
+            ),
+            (
+                "b/.claude-plugin/plugin.json",
+                r#"{"name": "b", "version": "1"}"#,
+            ),
+        ],
+    );
+    f.store
+        .add_marketplace(&url(&upstream), None, &mut quiet(), &CancelToken::new())
+        .unwrap();
+    for spec in ["a@acme", "b@acme"] {
+        f.store
+            .install(spec, &mut quiet(), &CancelToken::new())
+            .unwrap();
+    }
+    commit(
+        &upstream,
+        &[
+            (
+                "a/.claude-plugin/plugin.json",
+                r#"{"name": "a", "version": "2"}"#,
+            ),
+            (
+                "b/.claude-plugin/plugin.json",
+                r#"{"name": "b", "version": "2"}"#,
+            ),
+        ],
+    );
+    // b's data directory cannot be made: its install fails after its new
+    // files are in place.
+    let data = f.store.layout().data_dir(&id("b@acme"));
+    std::fs::remove_dir_all(&data).unwrap();
+    std::fs::write(&data, "in the way").unwrap();
+    let a_dir = f.store.layout().installed_dir(&id("a@acme"));
+    let b_dir = f.store.layout().installed_dir(&id("b@acme"));
+
+    let (result, replaced) = f
+        .store
+        .update_tracked(None, &mut quiet(), &CancelToken::new());
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(replaced, [a_dir.clone(), b_dir.clone()]);
+
+    let (result, replaced) = f
+        .store
+        .install_tracked("b@acme", &mut quiet(), &CancelToken::new());
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(replaced, std::slice::from_ref(&b_dir));
+
+    std::fs::remove_file(&data).unwrap();
+    let (result, replaced) = f
+        .store
+        .install_tracked("b@acme", &mut quiet(), &CancelToken::new());
+    assert_eq!(result.unwrap().plugin_dir, b_dir);
+    assert_eq!(replaced, [b_dir]);
+}
