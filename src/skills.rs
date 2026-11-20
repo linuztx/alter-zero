@@ -89,8 +89,186 @@ pub struct SkillMetadata {
     /// The skill's own directory: the body's `Base directory` header and the
     /// `${…SKILL_DIR}` expansion.
     pub dir: PathBuf,
-    /// The `SKILL.md` itself.
+    /// The `SKILL.md` itself — or, for a plugin's command, the command's own
+    /// markdown file.
     pub path: PathBuf,
+    /// The installed plugin this skill came from — `None` for every skill
+    /// found under an ordinary root.
+    pub plugin: Option<SkillPlugin>,
+}
+
+impl SkillMetadata {
+    /// The text a load hands the model: [`render_skill_body`], plus — for a
+    /// plugin skill — `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` and
+    /// `${CLAUDE_PLUGIN_DATA}`/`${PLUGIN_DATA}` expanded to its plugin's
+    /// directories (`docs/skills.md` *Plugins*). An ordinary skill's body
+    /// keeps those tokens as written.
+    ///
+    /// A plugin's **command** is one markdown file, its directory the file's
+    /// folder, so a second header line names the file: two commands of one
+    /// folder must open differently, since that opening is what
+    /// [`crate::llm::skill::LoadedSkills`] recognises a load by.
+    #[inline]
+    #[must_use]
+    pub fn render_body(&self, body: &str) -> String {
+        match &self.plugin {
+            None => render_skill_body(&self.dir, body),
+            Some(plugin) => self.render_plugin_body(plugin, body),
+        }
+    }
+
+    /// [`render_body`](Self::render_body) for a plugin's skill — out of line
+    /// and cold, so a session with no plugins never touches it.
+    #[cold]
+    fn render_plugin_body(&self, plugin: &SkillPlugin, body: &str) -> String {
+        let root = plugin.root.display().to_string();
+        let data = plugin.data.display().to_string();
+        let body = body
+            .replace("${CLAUDE_PLUGIN_ROOT}", &root)
+            .replace("${PLUGIN_ROOT}", &root)
+            .replace("${CLAUDE_PLUGIN_DATA}", &data)
+            .replace("${PLUGIN_DATA}", &data);
+        if !plugin.command {
+            return render_skill_body(&self.dir, &body);
+        }
+        render_skill_body(
+            &self.dir,
+            &format!("Command file: {}\n\n{body}", self.path.display()),
+        )
+    }
+}
+
+// ===== plugin skills (docs/plugins.md, docs/skills.md *Plugins*) =====
+
+/// What separates a plugin's name from the skill (or agent, or command) it
+/// contributes: `superpowers:brainstorming` — Claude Code's spelling.
+pub const PLUGIN_NAMESPACE_SEPARATOR: char = ':';
+
+/// The plugin a skill came from: its namespace (the plugin's manifest name),
+/// the two directories its body's placeholders name, and whether it is a
+/// command file rather than a `SKILL.md` folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillPlugin {
+    /// The plugin's name — the part in front of the `:`.
+    pub namespace: String,
+    /// The installed plugin's own directory (`${CLAUDE_PLUGIN_ROOT}`).
+    pub root: PathBuf,
+    /// The plugin's persistent data directory (`${CLAUDE_PLUGIN_DATA}`).
+    pub data: PathBuf,
+    /// One of the plugin's commands — a skill of one markdown file.
+    pub command: bool,
+}
+
+/// One of a plugin's commands, as the plugin layer hands it in: a plugin
+/// command **is a skill** (`docs/plugins.md`), one markdown file standing
+/// for a `SKILL.md`. The caller names it — `plugin[:sub]:command` — and the
+/// walk reads only its description.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCommandSource {
+    /// The whole skill name, `namespace:…:command`.
+    pub name: String,
+    /// The command's markdown file.
+    pub path: PathBuf,
+}
+
+/// One enabled plugin's skills, as the plugin layer hands them to the walk
+/// ([`crate::llm::skill::load_skills`]): plain data, so this module never
+/// reads a manifest. `skills_dir` holds `<name>/SKILL.md` folders, read like
+/// any other skill root; every skill found there is registered as
+/// `namespace:name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginSkillSource {
+    /// The plugin's name, stamped in front of each of its skills.
+    pub namespace: String,
+    /// The directory holding the plugin's `<name>/SKILL.md` folders — the
+    /// plugin may have none, and an absent directory is no error.
+    pub skills_dir: PathBuf,
+    /// The plugin's commands, each a skill of one file, registered after
+    /// its skills directory's.
+    pub commands: Vec<PluginCommandSource>,
+    /// The plugin's own directory — `${CLAUDE_PLUGIN_ROOT}`.
+    pub plugin_root: PathBuf,
+    /// The plugin's data directory — `${CLAUDE_PLUGIN_DATA}`.
+    pub plugin_data: PathBuf,
+}
+
+/// Is `namespace` usable as a plugin's prefix? Lowercase letters, digits,
+/// `-`, `_` and `.` (Agent Plugins allows dots), non-empty — and never a
+/// `:`, which would make the name it prefixes ambiguous to split.
+///
+/// # Errors
+/// Returns the reason the namespace was refused.
+pub fn validate_plugin_namespace(namespace: &str) -> Result<(), String> {
+    if namespace.is_empty() {
+        return Err("empty".to_string());
+    }
+    if !namespace
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("expected lowercase letters, digits, `-`, `_` and `.`".to_string());
+    }
+    Ok(())
+}
+
+/// `namespace:name` — how a plugin's skill or agent is registered.
+#[must_use]
+pub fn namespaced_name(namespace: &str, name: &str) -> String {
+    format!("{namespace}{PLUGIN_NAMESPACE_SEPARATOR}{name}")
+}
+
+/// The part of a (possibly namespaced) name after its last `:` — what a bare
+/// lookup compares against.
+#[must_use]
+pub fn last_name_segment(name: &str) -> &str {
+    name.rsplit(PLUGIN_NAMESPACE_SEPARATOR)
+        .next()
+        .unwrap_or(name)
+}
+
+/// The body of a plugin's skill or command: the file minus any frontmatter,
+/// blank lines trimmed — and nothing rewritten. A plugin's file was
+/// validated by its own, looser rule at discovery (a command may carry no
+/// frontmatter at all), so a load takes only its body.
+#[must_use]
+pub fn skill_body(contents: &str) -> String {
+    let body = frontmatter::split(contents).map_or_else(|| contents.to_string(), |(_, body)| body);
+    body.trim_matches(['\n', '\r']).trim().to_string()
+}
+
+/// A plugin command's description: the frontmatter's `description`, else
+/// the body's first non-blank line, capped like any skill's. `None` for a
+/// file that says nothing at all.
+#[must_use]
+pub fn command_description(contents: &str) -> Option<String> {
+    let fields = frontmatter::split(contents)
+        .map(|(block, _)| frontmatter::scalars(&block))
+        .unwrap_or_default();
+    let description = frontmatter::field(&fields, "description")
+        .map(str::to_string)
+        .or_else(|| {
+            skill_body(contents)
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(str::to_string)
+        })?;
+    Some(frontmatter::truncate_chars(
+        &description,
+        MAX_LISTING_DESC_CHARS,
+    ))
+}
+
+/// What [`SkillRegistry::resolve`] made of a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillLookup {
+    /// The one enabled skill the name selects.
+    Found(SkillMetadata),
+    /// A bare name several enabled plugins provide — their whole names, so
+    /// the model can call again with the one it means.
+    Ambiguous(Vec<String>),
+    /// Nothing enabled answers to it.
+    Missing,
 }
 
 /// A `SKILL.md` that could not be read, parsed, or validated. Collected
@@ -377,6 +555,23 @@ fn is_mention_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
+/// Does the character at byte `i` of `text` (`c`) belong to a mention run?
+/// A name character always does; a `:` (the plugin separator) or a `.` (a
+/// dotted plugin name) only when a name character follows it — so
+/// `$superpowers:brainstorming` is one mention while `$dataviz:` and
+/// `$dataviz.` end before their punctuation, and a mention never ends on it.
+#[inline]
+fn continues_mention(text: &str, i: usize, c: char) -> bool {
+    if is_mention_name_char(c) {
+        return true;
+    }
+    (c == PLUGIN_NAMESPACE_SEPARATOR || c == '.')
+        && text[i + c.len_utf8()..]
+            .chars()
+            .next()
+            .is_some_and(is_mention_name_char)
+}
+
 /// The `$`-skill mention at `cursor` in `text`, if the cursor sits in one.
 ///
 /// The grammar is codex's: the `$` must open its whitespace-delimited word
@@ -393,9 +588,13 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     let run_start = text[..cursor]
         .char_indices()
         .rev()
-        .take_while(|&(_, c)| is_mention_name_char(c))
+        .take_while(|&(i, c)| continues_mention(text, i, c))
         .last()
         .map_or(cursor, |(i, _)| i);
+    // A run opens on a name character: `$:x` is no mention.
+    if run_start < cursor && !text[run_start..].starts_with(is_mention_name_char) {
+        return None;
+    }
     // …the character just before the run must be the `$` — found by char
     // boundary, never byte arithmetic: with a multi-byte char there (typing
     // `—` puts the cursor right after one), `run_start - 1` lands inside it
@@ -416,7 +615,7 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     // The mention extends forward to the first non-name character.
     let end = text[cursor..]
         .char_indices()
-        .find(|&(_, c)| !is_mention_name_char(c))
+        .find(|&(i, c)| !continues_mention(text, cursor + i, c))
         .map_or(text.len(), |(i, _)| cursor + i);
     Some(MentionToken {
         range: prefix_start..end,
@@ -431,6 +630,11 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
 /// separately whether the picker opens, so the two are testable apart.
 #[must_use]
 pub fn shell_flavored_query(query: &str) -> bool {
+    // `$HOME:bin` is a path list, not a plugin skill: judge the part in
+    // front of a `:` on its own.
+    if let Some((head, _)) = query.split_once(PLUGIN_NAMESPACE_SEPARATOR) {
+        return shell_flavored_query(head);
+    }
     if query.is_empty() {
         return false;
     }
@@ -580,17 +784,43 @@ impl SkillRegistry {
     /// bare name. A disabled skill is not found — so a model that remembers
     /// the name from an earlier turn gets the recoverable "unknown skill"
     /// error rather than loading something the user turned off.
+    ///
+    /// A plugin's skill answers to its whole `plugin:skill` name, and to the
+    /// bare `skill` too when it is the only enabled plugin skill of that name
+    /// and no ordinary skill is called that ([`resolve`](Self::resolve)).
     #[must_use]
     pub fn find(&self, name: &str) -> Option<SkillMetadata> {
+        match self.resolve(name) {
+            SkillLookup::Found(skill) => Some(skill),
+            SkillLookup::Ambiguous(_) | SkillLookup::Missing => None,
+        }
+    }
+
+    /// [`find`](Self::find), telling a miss from an ambiguity.
+    ///
+    /// The exact name (case-folded) wins first. Failing that, a bare name —
+    /// one with no `:` — selects the enabled plugin skill whose last segment
+    /// it is, when exactly one plugin provides it **and** no ordinary skill,
+    /// enabled or not, has that name: turning your own `review` off must not
+    /// quietly hand the name to a plugin's. Several providers make it
+    /// [`SkillLookup::Ambiguous`], naming each.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> SkillLookup {
         let wanted = name.trim().trim_start_matches('/').trim().to_lowercase();
         let state = self.lock();
-        state
+        let enabled = |skill: &&SkillMetadata| !state.disabled.contains(&skill.name);
+        if let Some(skill) = state
             .skills
             .iter()
-            .find(|skill| {
-                skill.name.to_lowercase() == wanted && !state.disabled.contains(&skill.name)
-            })
-            .cloned()
+            .filter(enabled)
+            .find(|skill| skill.name.to_lowercase() == wanted)
+        {
+            return SkillLookup::Found(skill.clone());
+        }
+        if !state.skills.iter().any(|skill| skill.plugin.is_some()) {
+            return SkillLookup::Missing;
+        }
+        bare_plugin_skill(&state, &wanted)
     }
 
     /// Every **enabled** skill's name, in order — the "did you mean" list an
@@ -630,6 +860,34 @@ impl SkillRegistry {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// [`SkillRegistry::resolve`]'s bare-name fallback — reached only when some
+/// plugin skill is installed, and kept out of line (`#[cold]`) so a session
+/// with none never touches it.
+#[cold]
+fn bare_plugin_skill(state: &RegistryState, wanted: &str) -> SkillLookup {
+    if wanted.contains(PLUGIN_NAMESPACE_SEPARATOR)
+        || state
+            .skills
+            .iter()
+            .any(|skill| skill.plugin.is_none() && skill.name.to_lowercase() == wanted)
+    {
+        return SkillLookup::Missing;
+    }
+    let candidates: Vec<&SkillMetadata> = state
+        .skills
+        .iter()
+        .filter(|skill| !state.disabled.contains(&skill.name))
+        .filter(|skill| {
+            skill.plugin.is_some() && last_name_segment(&skill.name).to_lowercase() == wanted
+        })
+        .collect();
+    match candidates.as_slice() {
+        [] => SkillLookup::Missing,
+        [one] => SkillLookup::Found((*one).clone()),
+        several => SkillLookup::Ambiguous(several.iter().map(|skill| skill.name.clone()).collect()),
     }
 }
 
@@ -842,6 +1100,7 @@ mod tests {
             description: description.to_string(),
             dir: PathBuf::from("/skills").join(name),
             path: PathBuf::from("/skills").join(name).join(SKILL_FILE_NAME),
+            plugin: None,
         }
     }
 
@@ -1309,5 +1568,282 @@ mod tests {
         let fresh = unreported_errors(&reported, &[err("/a/SKILL.md"), err("/b/SKILL.md")]);
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].path, PathBuf::from("/b/SKILL.md"));
+    }
+
+    // ===== plugin skills (docs/plugins.md, docs/skills.md *Plugins*) =====
+
+    fn plugin_meta(namespace: &str, skill: &str, description: &str) -> SkillMetadata {
+        let root = PathBuf::from("/plugins").join(namespace);
+        let dir = root.join("skills").join(skill);
+        SkillMetadata {
+            name: namespaced_name(namespace, skill),
+            description: description.to_string(),
+            path: dir.join(SKILL_FILE_NAME),
+            dir,
+            plugin: Some(SkillPlugin {
+                namespace: namespace.to_string(),
+                root: root.clone(),
+                data: PathBuf::from("/data").join(namespace),
+                command: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_plugin_namespace_takes_lowercase_digits_dashes_underscores_and_dots() {
+        for good in ["superpowers", "frontend-design", "my_plugin2", "acme.tools"] {
+            assert!(validate_plugin_namespace(good).is_ok(), "{good}");
+        }
+        for bad in ["", "Superpowers", "a:b", "a b", "a/b", "é"] {
+            assert!(validate_plugin_namespace(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(namespaced_name("acme.tools", "lint"), "acme.tools:lint");
+    }
+
+    #[test]
+    fn a_plugin_skill_body_expands_the_plugin_placeholders() {
+        let skill = plugin_meta("hookify", "writing-rules", "d");
+        let rendered = skill.render_body(
+            "run ${CLAUDE_PLUGIN_ROOT}/a, ${PLUGIN_ROOT}/b, \
+             ${CLAUDE_PLUGIN_DATA}/c, ${PLUGIN_DATA}/d, ${CLAUDE_SKILL_DIR}/e",
+        );
+        assert_eq!(
+            rendered,
+            "Base directory for this skill: /plugins/hookify/skills/writing-rules\n\n\
+             run /plugins/hookify/a, /plugins/hookify/b, /data/hookify/c, /data/hookify/d, \
+             /plugins/hookify/skills/writing-rules/e"
+        );
+        // `!`cmd`` is text: nothing in a body is ever run by the loader.
+        assert!(
+            skill
+                .render_body("!`git status`")
+                .ends_with("!`git status`")
+        );
+    }
+
+    #[test]
+    fn an_ordinary_skill_leaves_the_plugin_placeholders_alone() {
+        // Only a plugin has a root to put there; anywhere else the token is
+        // the author's own text.
+        let body = "see ${CLAUDE_PLUGIN_ROOT} and ${PLUGIN_DATA}";
+        let rendered = meta("pdf", "d").render_body(body);
+        assert!(rendered.ends_with(body), "{rendered}");
+        assert_eq!(rendered, render_skill_body(Path::new("/skills/pdf"), body));
+    }
+
+    #[test]
+    fn a_namespaced_skill_is_found_by_its_whole_name_case_folded() {
+        let registry = SkillRegistry::new(vec![
+            meta("commit", "d"),
+            plugin_meta("superpowers", "brainstorming", "d"),
+        ]);
+        for wanted in [
+            "superpowers:brainstorming",
+            "Superpowers:Brainstorming",
+            " /superpowers:brainstorming ",
+        ] {
+            assert_eq!(
+                registry.find(wanted).map(|skill| skill.name),
+                Some("superpowers:brainstorming".to_string()),
+                "{wanted}"
+            );
+        }
+        assert!(registry.find("other:brainstorming").is_none());
+    }
+
+    #[test]
+    fn a_bare_name_resolves_when_exactly_one_plugin_provides_it() {
+        let registry = SkillRegistry::new(vec![
+            meta("commit", "d"),
+            plugin_meta("superpowers", "brainstorming", "d"),
+        ]);
+        assert_eq!(
+            registry.find("Brainstorming").map(|skill| skill.name),
+            Some("superpowers:brainstorming".to_string())
+        );
+        // The segment is the whole last segment, never a suffix of it.
+        assert!(registry.find("storming").is_none());
+    }
+
+    #[test]
+    fn an_ordinary_skill_owns_its_bare_name_even_while_disabled() {
+        let registry = SkillRegistry::new(vec![
+            meta("review", "mine"),
+            plugin_meta("toolkit", "review", "theirs"),
+        ]);
+        assert_eq!(
+            registry.find("review").map(|skill| skill.name),
+            Some("review".to_string())
+        );
+        // Turning your own `review` off must not quietly hand the name to a
+        // plugin's: the model gets the miss, and the plugin's stays reachable
+        // by its whole name.
+        registry.set_disabled(["review".to_string()].into_iter().collect());
+        assert!(registry.find("review").is_none());
+        assert!(registry.find("toolkit:review").is_some());
+    }
+
+    #[test]
+    fn a_bare_name_two_plugins_provide_is_ambiguous_and_names_both() {
+        let registry = SkillRegistry::new(vec![
+            plugin_meta("alpha", "review", "d"),
+            plugin_meta("beta", "review", "d"),
+        ]);
+        assert!(registry.find("review").is_none());
+        assert_eq!(
+            registry.resolve("review"),
+            SkillLookup::Ambiguous(vec!["alpha:review".to_string(), "beta:review".to_string()])
+        );
+        assert_eq!(registry.resolve("nothing"), SkillLookup::Missing);
+        // A disabled provider is no candidate: the other one resolves alone.
+        registry.set_disabled(["alpha:review".to_string()].into_iter().collect());
+        assert_eq!(
+            registry.find("review").map(|skill| skill.name),
+            Some("beta:review".to_string())
+        );
+    }
+
+    #[test]
+    fn the_listing_names_a_plugin_skill_by_its_namespaced_name() {
+        let skills = [
+            meta("commit", "Create a git commit"),
+            plugin_meta("superpowers", "brainstorming", "Explore ideas first"),
+        ];
+        assert_eq!(
+            skill_listing(&skills, DEFAULT_LISTING_BUDGET),
+            "- commit: Create a git commit\n- superpowers:brainstorming: Explore ideas first"
+        );
+        // Over budget it degrades to names, the namespace kept.
+        assert_eq!(
+            skill_listing(&skills, 10),
+            "- commit\n- superpowers:brainstorming"
+        );
+    }
+
+    #[test]
+    fn a_namespaced_skill_toggles_and_persists_by_its_whole_name() {
+        let registry = SkillRegistry::new(vec![plugin_meta("superpowers", "brainstorming", "d")]);
+        assert!(!registry.toggle("superpowers:brainstorming"));
+        assert!(!registry.has_enabled());
+        let mut file = SkillsFile::default();
+        file.record("/work", &registry.disabled());
+        let back = SkillsFile::parse(&file.to_json());
+        assert_eq!(
+            back.disabled_for("/work"),
+            ["superpowers:brainstorming".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn a_mention_runs_through_a_namespace() {
+        let text = "use $superpowers:brainstorming now";
+        let t = mention_token(text, 20).expect("token");
+        assert_eq!(t.query, "superpowers:brainstorming");
+        assert_eq!(t.range, 4..30);
+        // A dotted namespace is one name too.
+        let t = mention_token("$acme.tools:lint", 16).expect("token");
+        assert_eq!(t.query, "acme.tools:lint");
+    }
+
+    #[test]
+    fn a_mention_never_ends_on_a_colon_or_a_dot() {
+        // A `:` or `.` continues a name only when a name character follows
+        // it, so sentence punctuation stays out of the mention.
+        let t = mention_token("try $dataviz: it charts", 12).expect("token");
+        assert_eq!(t.query, "dataviz");
+        assert_eq!(t.range, 4..12);
+        assert!(mention_token("try $dataviz: it", 13).is_none());
+        let t = mention_token("use $dataviz.", 12).expect("token");
+        assert_eq!(t.query, "dataviz");
+        assert_eq!(t.range, 4..12);
+        assert!(mention_token("use $dataviz.", 13).is_none());
+        // `::` is not a separator: the mention ends before it.
+        assert_eq!(mention_token("$a::b", 2).expect("token").range, 0..2);
+        // A colon right after the `$` opens nothing.
+        assert!(mention_token("$:x", 3).is_none());
+    }
+
+    #[test]
+    fn shell_text_with_a_colon_stays_closed() {
+        // `$PATH:/usr/bin` never reaches the colon (a `/` follows it), and a
+        // known variable in front of a name-shaped tail is still shell.
+        let t = mention_token("echo $PATH:/usr/bin", 10).expect("token");
+        assert_eq!(t.query, "PATH");
+        assert!(shell_flavored_query(&t.query));
+        assert!(shell_flavored_query("HOME:bin"));
+        assert!(shell_flavored_query("1:x"));
+        assert!(!shell_flavored_query("superpowers:brainstorming"));
+    }
+
+    #[test]
+    fn a_bare_query_ranks_a_namespaced_skill() {
+        let skills = [
+            meta("dataviz", "d"),
+            plugin_meta("superpowers", "brainstorming", "d"),
+        ];
+        let ranked = rank_skills("brainstorm", &skills);
+        assert_eq!(ranked.len(), 1, "{ranked:?}");
+        assert_eq!(ranked[0].name, "superpowers:brainstorming");
+    }
+
+    fn command_meta(name: &str, file: &str) -> SkillMetadata {
+        let path = PathBuf::from("/plugins/commit-commands/commands").join(file);
+        SkillMetadata {
+            name: name.to_string(),
+            description: "d".to_string(),
+            dir: path.parent().expect("a folder").to_path_buf(),
+            path,
+            plugin: Some(SkillPlugin {
+                namespace: "commit-commands".to_string(),
+                root: PathBuf::from("/plugins/commit-commands"),
+                data: PathBuf::from("/data/commit-commands"),
+                command: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_command_is_based_at_its_folder_and_names_its_own_file() {
+        let commit = command_meta("commit-commands:commit", "commit.md");
+        assert_eq!(
+            commit.render_body("Run !`git status` with $ARGUMENTS in ${CLAUDE_SKILL_DIR}."),
+            "Base directory for this skill: /plugins/commit-commands/commands\n\n\
+             Command file: /plugins/commit-commands/commands/commit.md\n\n\
+             Run !`git status` with $ARGUMENTS in /plugins/commit-commands/commands."
+        );
+        // Two commands of one folder open differently: what tells their
+        // loads apart.
+        let push = command_meta("commit-commands:push", "push.md");
+        assert!(!commit.render_body("").starts_with(&push.render_body("")));
+        assert!(!push.render_body("").starts_with(&commit.render_body("")));
+    }
+
+    #[test]
+    fn a_command_description_is_its_frontmatters_else_its_first_line() {
+        assert_eq!(
+            command_description("---\ndescription: Make a commit\n---\n\nBody\n").as_deref(),
+            Some("Make a commit")
+        );
+        assert_eq!(
+            command_description("---\nallowed-tools: Bash\n---\n\n\n  Create a PR.  \nMore\n")
+                .as_deref(),
+            Some("Create a PR.")
+        );
+        assert_eq!(
+            command_description("No frontmatter at all.\n").as_deref(),
+            Some("No frontmatter at all.")
+        );
+        assert_eq!(command_description("---\nx: y\n---\n\n   \n"), None);
+    }
+
+    #[test]
+    fn a_plugin_skill_body_is_the_file_minus_any_frontmatter() {
+        assert_eq!(
+            skill_body("---\ndescription: d\n---\n\nDo $ARGUMENTS.\n"),
+            "Do $ARGUMENTS."
+        );
+        assert_eq!(skill_body("\nJust text.\n\n"), "Just text.");
     }
 }

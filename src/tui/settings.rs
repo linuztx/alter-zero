@@ -116,7 +116,7 @@ impl Session<'_> {
     /// arrived a turn late, which reads exactly like the rescan not working.
     pub(crate) fn rescan_skills(&mut self) {
         let (skills, errors) =
-            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
+            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref(), &[]);
         self.skill_registry.replace(skills);
         self.sync_setting_availability();
         self.sync_listings();
@@ -142,8 +142,11 @@ impl Session<'_> {
     /// depend on which types exist (the tool set does not name them — the
     /// reminder does).
     pub(crate) fn rescan_agents(&mut self) {
-        let (agents, errors) =
-            alter_zero::llm::subagent::load_agents(&self.cwd, config::config_home().as_deref());
+        let (agents, errors) = alter_zero::llm::subagent::load_agents(
+            &self.cwd,
+            config::config_home().as_deref(),
+            &[],
+        );
         self.subagents.replace(agents);
         self.sync_listings();
         let fresh = alter_zero::subagents::unreported_errors(&self.reported_agent_errors, &errors);

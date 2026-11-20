@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use super::tools::{ToolCallRequest, ToolOutcome};
 use super::{ChatMessage, MessageContent};
 use crate::skills::{
-    SKILL_FILE_NAME, SKILL_LOADED_DISPLAY, SkillError, SkillMetadata, SkillRegistry, parse_skill,
-    render_skill_body,
+    PLUGIN_NAMESPACE_SEPARATOR, PluginCommandSource, PluginSkillSource, SKILL_FILE_NAME,
+    SKILL_LOADED_DISPLAY, SkillError, SkillLookup, SkillMetadata, SkillPlugin, SkillRegistry,
+    command_description, namespaced_name, parse_skill, validate_plugin_namespace,
 };
 
 /// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
@@ -219,72 +220,217 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
     let mut skills: Vec<SkillMetadata> = Vec::new();
     let mut errors = Vec::new();
     for root in roots {
-        let Ok(entries) = std::fs::read_dir(root) else {
+        walk_root(root, None, &mut skills, &mut errors);
+    }
+    (skills, errors)
+}
+
+/// Walk the installed plugins' skills (`docs/skills.md` *Plugins*): each
+/// source's `<skills_dir>/<name>/SKILL.md` — immediate children only, parsed
+/// by the same rule as any root — registered as `namespace:name`, the
+/// frontmatter `name` replacing the last segment; then its commands, each a
+/// skill of one file under the name the caller gave it
+/// ([`PluginCommandSource`]).
+///
+/// A source whose namespace [`validate_plugin_namespace`] refuses is
+/// reported once against its skills directory and contributes nothing; the
+/// first source to claim a whole name wins it, as the first root does.
+#[cold]
+#[must_use]
+pub fn discover_plugin_skills(
+    sources: &[PluginSkillSource],
+) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    let mut skills: Vec<SkillMetadata> = Vec::new();
+    let mut errors = Vec::new();
+    for source in sources {
+        if let Err(reason) = validate_plugin_namespace(&source.namespace) {
+            errors.push(SkillError {
+                path: source.skills_dir.clone(),
+                message: format!("invalid plugin name `{}`: {reason}", source.namespace),
+            });
             continue;
+        }
+        let mut plugin = SkillPlugin {
+            namespace: source.namespace.clone(),
+            root: source.plugin_root.clone(),
+            data: source.plugin_data.clone(),
+            command: false,
         };
-        // `read_dir` order is filesystem-defined; sort so a session's listing
-        // (and so its prompt-cache prefix) is stable across runs.
-        let mut dirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            let path = dir.join(SKILL_FILE_NAME);
-            if !path.is_file() {
-                continue;
-            }
-            let default_name = dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_string();
-            let contents = match std::fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(err) => {
-                    errors.push(SkillError {
-                        path,
-                        message: err.to_string(),
-                    });
-                    continue;
-                }
-            };
-            match parse_skill(&contents, &default_name) {
-                Ok(parsed) => {
-                    // First root wins: a later root's same-named skill is
-                    // shadowed, not a duplicate row in the listing.
-                    if skills.iter().any(|skill| skill.name == parsed.name) {
-                        continue;
-                    }
-                    skills.push(SkillMetadata {
-                        name: parsed.name,
-                        description: parsed.description,
-                        dir,
-                        path,
-                    });
-                }
-                Err(err) => errors.push(SkillError {
-                    path,
-                    message: err.to_string(),
-                }),
+        walk_root(&source.skills_dir, Some(&plugin), &mut skills, &mut errors);
+        plugin.command = true;
+        for command in &source.commands {
+            match plugin_command(command, &plugin) {
+                Ok(skill) if skills.iter().any(|taken| taken.name == skill.name) => {}
+                Ok(skill) => skills.push(skill),
+                Err(error) => errors.push(error),
             }
         }
     }
     (skills, errors)
 }
 
+/// One command file as a skill: its name checked (the plugin's namespace,
+/// then `:`-joined segments of `[A-Za-z0-9_-]`), its description read off
+/// the file ([`command_description`]), its directory the file's folder.
+fn plugin_command(
+    command: &PluginCommandSource,
+    plugin: &SkillPlugin,
+) -> Result<SkillMetadata, SkillError> {
+    let refuse = |message: String| SkillError {
+        path: command.path.clone(),
+        message,
+    };
+    let segments = command
+        .name
+        .strip_prefix(plugin.namespace.as_str())
+        .and_then(|rest| rest.strip_prefix(PLUGIN_NAMESPACE_SEPARATOR));
+    let usable = segments.is_some_and(|rest| {
+        rest.split(PLUGIN_NAMESPACE_SEPARATOR).all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
+    });
+    if !usable {
+        return Err(refuse(format!(
+            "invalid command name `{}`: expected `{}:` then `:`-joined letters, digits, `-` and `_`",
+            command.name, plugin.namespace
+        )));
+    }
+    let contents = std::fs::read_to_string(&command.path).map_err(|err| refuse(err.to_string()))?;
+    let description = command_description(&contents)
+        .ok_or_else(|| refuse("an empty command file".to_string()))?;
+    Ok(SkillMetadata {
+        name: command.name.clone(),
+        description,
+        dir: command
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+        path: command.path.clone(),
+        plugin: Some(plugin.clone()),
+    })
+}
+
+/// The ordinary walk's result with the plugins' skills **appended** — after
+/// every ordinary root, so a user's or a project's own skill is never
+/// shadowed by a plugin's (a namespaced name cannot collide with an
+/// ordinary one anyway: an ordinary name has no `:`). Empty `plugins` is the
+/// input unchanged, with no I/O.
+#[cold]
+#[must_use]
+pub fn with_plugin_skills(
+    found: (Vec<SkillMetadata>, Vec<SkillError>),
+    plugins: &[PluginSkillSource],
+) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    let (mut skills, mut errors) = found;
+    if plugins.is_empty() {
+        return (skills, errors);
+    }
+    let (plugin_skills, plugin_errors) = discover_plugin_skills(plugins);
+    for skill in plugin_skills {
+        if !skills.iter().any(|taken| taken.name == skill.name) {
+            skills.push(skill);
+        }
+    }
+    errors.extend(plugin_errors);
+    (skills, errors)
+}
+
+/// One root's `<name>/SKILL.md` folders onto `skills`, a name already there
+/// shadowing the newcomer. `plugin` stamps the namespace and the plugin's
+/// directories on each skill found.
+#[inline]
+fn walk_root(
+    root: &Path,
+    plugin: Option<&SkillPlugin>,
+    skills: &mut Vec<SkillMetadata>,
+    errors: &mut Vec<SkillError>,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    // `read_dir` order is filesystem-defined; sort so a session's listing
+    // (and so its prompt-cache prefix) is stable across runs.
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let path = dir.join(SKILL_FILE_NAME);
+        if !path.is_file() {
+            continue;
+        }
+        let default_name = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                errors.push(SkillError {
+                    path,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        match parse_skill(&contents, &default_name) {
+            Ok(parsed) => {
+                let name = match plugin {
+                    Some(plugin) => namespaced_name(&plugin.namespace, &parsed.name),
+                    None => parsed.name,
+                };
+                // First root wins: a later root's same-named skill is
+                // shadowed, not a duplicate row in the listing.
+                if skills.iter().any(|skill| skill.name == name) {
+                    continue;
+                }
+                skills.push(SkillMetadata {
+                    name,
+                    description: parsed.description,
+                    dir,
+                    path,
+                    plugin: plugin.cloned(),
+                });
+            }
+            Err(err) => errors.push(SkillError {
+                path,
+                message: err.to_string(),
+            }),
+        }
+    }
+}
+
 /// [`discover_skills`] over the roots this environment resolves to —
 /// `ALTER_ZERO_SKILLS_DIR` alone when it is set, else the project's, the
-/// config home's, and `$HOME`'s. `config_home` is passed in rather than read
+/// config home's, and `$HOME`'s — then the enabled plugins' skills after
+/// them ([`with_plugin_skills`]). `config_home` is passed in rather than read
 /// here so the override that moves it (`ALTER_ZERO_CONFIG_DIR`) resolves once,
 /// at the boundary, the way `llm::hooks::hooks_file_path` takes it.
+///
+/// `plugins` is a separate input with its own gate upstream, so
+/// `ALTER_ZERO_SKILLS_DIR` — which replaces the *ordinary* roots — does not
+/// suppress it; a hermetic run passes an empty slice.
 #[must_use]
 pub fn load_skills(
     cwd: &Path,
     config_home: Option<&Path>,
+    plugins: &[PluginSkillSource],
 ) -> (Vec<SkillMetadata>, Vec<SkillError>) {
-    discover_skills(&resolved_skill_roots(cwd, config_home))
+    let found = discover_skills(&resolved_skill_roots(cwd, config_home));
+    // Checked here, inline, so a session with no plugins runs no plugin code
+    // at all — not even a call that finds the list empty (`docs/memory.md`:
+    // every code page touched at startup stays resident).
+    if plugins.is_empty() {
+        return found;
+    }
+    with_plugin_skills(found, plugins)
 }
 
 /// The roots this environment resolves to — [`skill_roots`] with the two
@@ -334,7 +480,10 @@ struct SkillArgs {
 /// have independent contexts, and compaction or a rewind can remove a body.
 #[derive(Debug, Default)]
 pub struct LoadedSkills {
-    directories: BTreeSet<PathBuf>,
+    /// The file each loaded body was read from — a `SKILL.md`, or a plugin
+    /// command's own markdown. The file rather than its directory, since a
+    /// plugin's commands may share one.
+    files: BTreeSet<PathBuf>,
 }
 
 impl LoadedSkills {
@@ -352,9 +501,9 @@ impl LoadedSkills {
             .snapshot()
             .into_iter()
             .map(|skill| {
-                let header = render_skill_body(&skill.dir, "");
+                let header = skill.render_body("");
                 let redacted = secrets.map(|secrets| secrets.redact(&header));
-                (skill.dir, header, redacted)
+                (skill.path, header, redacted)
             })
             .collect();
         let mut loaded = Self::default();
@@ -374,7 +523,7 @@ impl LoadedSkills {
                 && pending.remove(id)
                 && let MessageContent::Text(text) = &message.content
             {
-                for (dir, header, redacted) in &headers {
+                for (file, header, redacted) in &headers {
                     // The executor masks results before recording them. Keep
                     // the raw form too, for loads predating a secret's addition.
                     if text.starts_with(header)
@@ -382,7 +531,7 @@ impl LoadedSkills {
                             .as_ref()
                             .is_some_and(|header| text.starts_with(header))
                     {
-                        loaded.directories.insert(dir.clone());
+                        loaded.files.insert(file.clone());
                     }
                 }
             }
@@ -412,10 +561,16 @@ pub fn run_skill_tool(
         Ok(args) => args,
         Err(err) => return ToolOutcome::error(format!("Invalid skill arguments: {err}")),
     };
-    let Some(skill) = registry.find(&args.skill) else {
-        return ToolOutcome::error(unknown_skill_message(&args.skill, &registry.names()));
+    let skill = match registry.resolve(&args.skill) {
+        SkillLookup::Found(skill) => skill,
+        SkillLookup::Ambiguous(candidates) => {
+            return ToolOutcome::error(ambiguous_skill_message(&args.skill, &candidates));
+        }
+        SkillLookup::Missing => {
+            return ToolOutcome::error(unknown_skill_message(&args.skill, &registry.names()));
+        }
     };
-    if loaded.directories.contains(&skill.dir) {
+    if loaded.files.contains(&skill.path) {
         return ToolOutcome::ok(format!(
             "Skill {} is already loaded. Follow its instructions; do not load it again.",
             skill.name
@@ -432,15 +587,36 @@ pub fn run_skill_tool(
     };
     // Read fresh on the first load into this context. A failed read or parse
     // must remain retryable; only a successfully rendered body marks a load.
-    let body = match parse_skill(&contents, &skill.name) {
-        Ok(parsed) => parsed.body,
-        Err(err) => {
-            return ToolOutcome::error(format!("Skill {} could not be loaded: {err}", skill.name));
+    let body = if skill.plugin.is_some() {
+        // A plugin's skill was checked by its own, looser rule when it was
+        // discovered (a command may carry no frontmatter at all), and its
+        // name is namespaced — so only the body is taken here.
+        crate::skills::skill_body(&contents)
+    } else {
+        match parse_skill(&contents, &skill.name) {
+            Ok(parsed) => parsed.body,
+            Err(err) => {
+                return ToolOutcome::error(format!(
+                    "Skill {} could not be loaded: {err}",
+                    skill.name
+                ));
+            }
         }
     };
-    let rendered = render_skill_body(&skill.dir, &body);
-    loaded.directories.insert(skill.dir);
+    let rendered = skill.render_body(&body);
+    loaded.files.insert(skill.path);
     ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(rendered)
+}
+
+/// The recoverable error a bare name several plugins provide resolves with:
+/// every whole name, so the model can call again with the one it means.
+fn ambiguous_skill_message(wanted: &str, candidates: &[String]) -> String {
+    format!(
+        "Skill {} is provided by more than one plugin: {}. \
+         Call the skill tool again with one of these names.",
+        wanted.trim(),
+        candidates.join(", ")
+    )
 }
 
 /// The recoverable error an unknown skill name resolves with.
@@ -457,6 +633,7 @@ fn unknown_skill_message(wanted: &str, available: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::render_skill_body;
 
     fn write_skill(root: &Path, name: &str, contents: &str) {
         let dir = root.join(name);
@@ -1560,5 +1737,355 @@ mod tests {
         let kept = std::fs::read_to_string(root.join("skill-creator").join(SKILL_FILE_NAME))
             .expect("read");
         assert!(kept.contains("my own body"), "the edit survives: {kept}");
+    }
+
+    // ===== plugin skills (docs/skills.md *Plugins*) =====
+
+    fn plugin_source(root: &Path, namespace: &str) -> PluginSkillSource {
+        PluginSkillSource {
+            namespace: namespace.to_string(),
+            skills_dir: root.join("skills"),
+            commands: Vec::new(),
+            plugin_root: root.to_path_buf(),
+            plugin_data: root.join("data"),
+        }
+    }
+
+    #[test]
+    fn a_plugin_skill_is_registered_under_its_namespace() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        let skills_dir = plugin.path().join("skills");
+        write_skill(&skills_dir, "brainstorming", &skill_md("Ideas.", "Body."));
+        // The frontmatter `name` replaces the last segment, the prefix stays.
+        write_skill(
+            &skills_dir,
+            "writing",
+            "---\nname: writing-plans\ndescription: Plans.\n---\nB\n",
+        );
+        // Immediate children only: a SKILL.md two levels down is not one.
+        write_skill(&skills_dir.join("nested"), "deep", &skill_md("Deep.", "B"));
+
+        let (skills, errors) =
+            discover_plugin_skills(&[plugin_source(plugin.path(), "superpowers")]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["superpowers:brainstorming", "superpowers:writing-plans"]
+        );
+        let stamped = skills[0].plugin.as_ref().expect("a plugin skill");
+        assert_eq!(stamped.namespace, "superpowers");
+        assert_eq!(stamped.root, plugin.path());
+        assert_eq!(stamped.data, plugin.path().join("data"));
+        assert_eq!(skills[0].dir, skills_dir.join("brainstorming"));
+    }
+
+    #[test]
+    fn plugin_skills_come_after_every_ordinary_root() {
+        let own = tempfile::tempdir().expect("tempdir");
+        let plugin = tempfile::tempdir().expect("tempdir");
+        write_skill(own.path(), "review", &skill_md("Mine.", "M"));
+        write_skill(
+            &plugin.path().join("skills"),
+            "review",
+            &skill_md("Theirs.", "T"),
+        );
+        write_skill(
+            &plugin.path().join("skills"),
+            "lint",
+            &skill_md("Lint.", "L"),
+        );
+
+        let (skills, errors) = with_plugin_skills(
+            discover_skills(&[own.path().to_path_buf()]),
+            &[plugin_source(plugin.path(), "toolkit")],
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["review", "toolkit:lint", "toolkit:review"]);
+        // …so the bare name is still the user's own.
+        let registry = SkillRegistry::new(skills);
+        assert_eq!(registry.find("review").expect("found").description, "Mine.");
+    }
+
+    #[test]
+    fn no_plugin_sources_change_nothing() {
+        let own = tempfile::tempdir().expect("tempdir");
+        write_skill(own.path(), "commit", &skill_md("Commit.", "b"));
+        let found = discover_skills(&[own.path().to_path_buf()]);
+        assert_eq!(with_plugin_skills(found.clone(), &[]), found);
+    }
+
+    #[test]
+    fn the_first_plugin_to_claim_a_namespaced_name_wins() {
+        let first = tempfile::tempdir().expect("tempdir");
+        let second = tempfile::tempdir().expect("tempdir");
+        write_skill(&first.path().join("skills"), "x", &skill_md("First.", "1"));
+        write_skill(
+            &second.path().join("skills"),
+            "x",
+            &skill_md("Second.", "2"),
+        );
+        let (skills, _) = discover_plugin_skills(&[
+            plugin_source(first.path(), "dup"),
+            plugin_source(second.path(), "dup"),
+        ]);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].description, "First.");
+    }
+
+    #[test]
+    fn a_plugin_with_an_unusable_name_is_reported_not_loaded() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        write_skill(&plugin.path().join("skills"), "x", &skill_md("X.", "b"));
+        write_skill(
+            &plugin.path().join("skills"),
+            "Bad Name",
+            &skill_md("Y.", "b"),
+        );
+        let (skills, errors) = discover_plugin_skills(&[
+            plugin_source(plugin.path(), "Not:Ok"),
+            plugin_source(plugin.path(), "ok"),
+        ]);
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["ok:x"],
+            "the frontmatter rule still applies per skill"
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].message.contains("Not:Ok"), "{errors:?}");
+        assert!(errors[1].path.ends_with("Bad Name/SKILL.md"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_plugin_skill_loads_with_its_placeholders_expanded() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        write_skill(
+            &plugin.path().join("skills"),
+            "rules",
+            &skill_md(
+                "Rules.",
+                "run ${CLAUDE_PLUGIN_ROOT}/x.py into ${PLUGIN_DATA}",
+            ),
+        );
+        let (skills, _) = discover_plugin_skills(&[plugin_source(plugin.path(), "hookify")]);
+        let registry = SkillRegistry::new(skills);
+        let mut loaded = LoadedSkills::default();
+        let outcome = run_skill_tool(
+            &registry,
+            &mut loaded,
+            &call(r#"{"skill":"hookify:rules"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("the body");
+        let expected = format!(
+            "run {}/x.py into {}",
+            plugin.path().display(),
+            plugin.path().join("data").display()
+        );
+        assert!(body.ends_with(&expected), "{body}");
+        // The bare name is the same skill, so it is already loaded.
+        let again = run_skill_tool(&registry, &mut loaded, &call(r#"{"skill":"rules"}"#));
+        assert_eq!(
+            again.output,
+            "Skill hookify:rules is already loaded. Follow its instructions; do not load it again."
+        );
+    }
+
+    #[test]
+    fn a_resumed_plugin_skill_load_still_counts_as_loaded() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        write_skill(
+            &plugin.path().join("skills"),
+            "rules",
+            &skill_md("R.", "${PLUGIN_ROOT}"),
+        );
+        let (skills, _) = discover_plugin_skills(&[plugin_source(plugin.path(), "hookify")]);
+        let registry = SkillRegistry::new(skills);
+        let first = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"hookify:rules"}"#),
+        );
+        let request = call(r#"{"skill":"hookify:rules"}"#);
+        let messages = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![super::super::ToolCallSpec::function(
+                    "c",
+                    crate::skills::SKILL_TOOL_NAME,
+                    &request.arguments,
+                )],
+            ),
+            ChatMessage::tool_result("c", first.context.expect("body")),
+        ];
+        let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+        let again = run_skill_tool(
+            &registry,
+            &mut loaded,
+            &call(r#"{"skill":"hookify:rules"}"#),
+        );
+        assert!(again.context.is_none(), "{}", again.output);
+    }
+
+    #[test]
+    fn an_ambiguous_bare_name_names_every_plugin_that_provides_it() {
+        let alpha = tempfile::tempdir().expect("tempdir");
+        let beta = tempfile::tempdir().expect("tempdir");
+        write_skill(&alpha.path().join("skills"), "review", &skill_md("A.", "a"));
+        write_skill(&beta.path().join("skills"), "review", &skill_md("B.", "b"));
+        let (skills, _) = discover_plugin_skills(&[
+            plugin_source(alpha.path(), "alpha"),
+            plugin_source(beta.path(), "beta"),
+        ]);
+        let outcome = run_skill_tool(
+            &SkillRegistry::new(skills),
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"review"}"#),
+        );
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.output,
+            "Skill review is provided by more than one plugin: alpha:review, beta:review. \
+             Call the skill tool again with one of these names."
+        );
+    }
+
+    fn with_commands(root: &Path, namespace: &str, commands: &[(&str, &str)]) -> PluginSkillSource {
+        PluginSkillSource {
+            commands: commands
+                .iter()
+                .map(|(name, file)| PluginCommandSource {
+                    name: (*name).to_string(),
+                    path: root.join("commands").join(file),
+                })
+                .collect(),
+            ..plugin_source(root, namespace)
+        }
+    }
+
+    #[test]
+    fn a_plugin_command_is_a_skill_of_one_file() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        let commands = plugin.path().join("commands");
+        std::fs::create_dir_all(commands.join("git")).expect("mkdir");
+        std::fs::write(
+            commands.join("commit.md"),
+            "---\nallowed-tools: Bash(git add:*)\ndescription: Create a git commit\n---\n\n\
+             ## Context\n\n- Current status: !`git status`\n\nCommit $ARGUMENTS.\n",
+        )
+        .expect("write");
+        std::fs::write(commands.join("git/push.md"), "\nPush the branch.\n").expect("write");
+        write_skill(
+            &plugin.path().join("skills"),
+            "style",
+            &skill_md("Style.", "S"),
+        );
+
+        let (skills, errors) = discover_plugin_skills(&[with_commands(
+            plugin.path(),
+            "commit-commands",
+            &[
+                ("commit-commands:commit", "commit.md"),
+                ("commit-commands:git:push", "git/push.md"),
+            ],
+        )]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rows: Vec<(&str, &str)> = skills
+            .iter()
+            .map(|s| (s.name.as_str(), s.description.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("commit-commands:style", "Style."),
+                ("commit-commands:commit", "Create a git commit"),
+                ("commit-commands:git:push", "Push the branch."),
+            ]
+        );
+        assert_eq!(skills[1].dir, commands);
+        assert_eq!(skills[1].path, commands.join("commit.md"));
+
+        // The body is the file as written: nothing in it runs or is filled.
+        let registry = SkillRegistry::new(skills);
+        let mut loaded = LoadedSkills::default();
+        let outcome = run_skill_tool(&registry, &mut loaded, &call(r#"{"skill":"commit"}"#));
+        assert!(outcome.ok, "{}", outcome.output);
+        let body = outcome.context.expect("the body");
+        assert!(body.contains(&format!(
+            "Command file: {}",
+            commands.join("commit.md").display()
+        )));
+        assert!(
+            body.ends_with("- Current status: !`git status`\n\nCommit $ARGUMENTS."),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn two_commands_of_one_folder_load_independently() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        let commands = plugin.path().join("commands");
+        std::fs::create_dir_all(&commands).expect("mkdir");
+        std::fs::write(commands.join("a.md"), "A.\n").expect("write");
+        std::fs::write(commands.join("b.md"), "B.\n").expect("write");
+        let (skills, _) = discover_plugin_skills(&[with_commands(
+            plugin.path(),
+            "p",
+            &[("p:a", "a.md"), ("p:b", "b.md")],
+        )]);
+        let registry = SkillRegistry::new(skills);
+        let first = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"p:a"}"#),
+        );
+        let request = call(r#"{"skill":"p:a"}"#);
+        let messages = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![super::super::ToolCallSpec::function(
+                    "c",
+                    crate::skills::SKILL_TOOL_NAME,
+                    &request.arguments,
+                )],
+            ),
+            ChatMessage::tool_result("c", first.context.expect("body")),
+        ];
+        let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+        assert!(
+            run_skill_tool(&registry, &mut loaded, &request)
+                .context
+                .is_none()
+        );
+        let b = run_skill_tool(&registry, &mut loaded, &call(r#"{"skill":"p:b"}"#));
+        assert!(b.context.expect("b is not loaded yet").ends_with("B."));
+    }
+
+    #[test]
+    fn a_command_with_an_unusable_name_or_no_text_is_reported() {
+        let plugin = tempfile::tempdir().expect("tempdir");
+        let commands = plugin.path().join("commands");
+        std::fs::create_dir_all(&commands).expect("mkdir");
+        std::fs::write(commands.join("ok.md"), "Fine.\n").expect("write");
+        std::fs::write(commands.join("empty.md"), "---\nx: y\n---\n").expect("write");
+        let (skills, errors) = discover_plugin_skills(&[with_commands(
+            plugin.path(),
+            "p",
+            &[
+                ("p:ok", "ok.md"),
+                ("other:ok", "ok.md"),
+                ("p:bad name", "ok.md"),
+                ("p:", "ok.md"),
+                ("p:empty", "empty.md"),
+                ("p:gone", "gone.md"),
+            ],
+        )]);
+        assert_eq!(
+            skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["p:ok"]
+        );
+        assert_eq!(errors.len(), 5, "{errors:?}");
     }
 }

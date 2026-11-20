@@ -13,6 +13,7 @@ fn skill(name: &str, description: &str) -> SkillMetadata {
         path: std::path::PathBuf::from("/skills")
             .join(name)
             .join(crate::skills::SKILL_FILE_NAME),
+        plugin: None,
     }
 }
 
@@ -280,4 +281,31 @@ fn the_palette_wins_over_the_skill_picker() {
     type_str(&mut app, "/qu");
     assert!(app.command_menu.is_some());
     assert!(app.skill_picker.is_none());
+}
+
+// ===== plugin skills (docs/skill-mentions.md *Plugins*) =====
+
+#[test]
+fn a_namespaced_skill_is_completed_whole_and_reopens_through_its_colon() {
+    let mut app = App::new();
+    app.set_skills(vec![
+        skill("dataviz", "Charts and dashboards"),
+        skill("superpowers:brainstorming", "Explore ideas first"),
+    ]);
+    // A bare query finds it, and the accept writes the whole name.
+    type_str(&mut app, "try $brain");
+    let names: Vec<String> = app.skill_matches().into_iter().map(|m| m.name).collect();
+    assert_eq!(names, vec!["superpowers:brainstorming".to_string()]);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.input.text(), "try $superpowers:brainstorming ");
+
+    // Typed by hand: the `:` alone ends the mention for a keystroke, the
+    // next name character carries it on with the namespace in the query.
+    let mut app = App::new();
+    app.set_skills(vec![skill("superpowers:brainstorming", "d")]);
+    type_str(&mut app, "$superpowers:b");
+    assert!(app.skill_band_active());
+    assert_eq!(app.skill_matches().len(), 1);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.input.text(), "$superpowers:brainstorming ");
 }

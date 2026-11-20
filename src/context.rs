@@ -2707,6 +2707,24 @@ mod tests {
     }
 
     #[test]
+    fn a_namespaced_skill_call_replays_with_its_whole_name() {
+        // A plugin's skill is `plugin:skill` (docs/skills.md *Plugins*): the
+        // `:` is ordinary JSON string content and survives the replay.
+        let history = vec![tool(
+            "Skill",
+            "superpowers:brainstorming",
+            crate::skills::SKILL_LOADED_DISPLAY,
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[0].tool_calls[0].arguments,
+            r#"{"skill":"superpowers:brainstorming"}"#
+        );
+    }
+
+    #[test]
     fn the_listings_follow_the_instructions_inside_the_one_reminder() {
         // One block, sections in a fixed order — the project instructions,
         // then the skills and agent-type listings: every section is

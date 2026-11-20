@@ -8,7 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::subagents::{
-    AGENT_FILE_EXT, AGENTS_DIR_NAME, AgentDefinition, AgentFileError, parse_agent,
+    AGENT_FILE_EXT, AGENTS_DIR_NAME, AgentDefinition, AgentFileError, PLUGIN_AGENT_MAX_DEPTH,
+    PluginAgentSource, parse_agent, parse_plugin_agent, validate_agent_name,
 };
 
 /// The built-in types, embedded so they exist before anything is written to
@@ -214,6 +215,137 @@ pub fn discover_agents(roots: &[PathBuf]) -> (Vec<AgentDefinition>, Vec<AgentFil
     (agents, errors)
 }
 
+/// Walk the installed plugins' agents directories (`docs/subagents.md`
+/// *Plugins*): every `*.md` under each source's `agents_dir`, read with
+/// [`parse_plugin_agent`] and registered as `namespace:name`, a subfolder
+/// adding a `:`-joined segment down to [`PLUGIN_AGENT_MAX_DEPTH`]. Within a
+/// directory its files come first, then its subfolders, each sorted.
+///
+/// A namespace [`crate::skills::validate_plugin_namespace`] refuses, and a
+/// subfolder whose name could not be a segment, are reported and skipped;
+/// hidden folders are skipped silently. The first source to claim a whole
+/// name wins it.
+#[cold]
+#[must_use]
+pub fn discover_plugin_agents(
+    sources: &[PluginAgentSource],
+) -> (Vec<AgentDefinition>, Vec<AgentFileError>) {
+    let mut agents: Vec<AgentDefinition> = Vec::new();
+    let mut errors = Vec::new();
+    for source in sources {
+        if let Err(reason) = crate::skills::validate_plugin_namespace(&source.namespace) {
+            errors.push(AgentFileError {
+                path: source.agents_dir.clone(),
+                message: format!("invalid plugin name `{}`: {reason}", source.namespace),
+            });
+            continue;
+        }
+        walk_plugin_dir(
+            &source.agents_dir,
+            &source.namespace,
+            &source.namespace,
+            0,
+            &mut agents,
+            &mut errors,
+        );
+    }
+    (agents, errors)
+}
+
+/// One plugin directory's agent files, then its subfolders: `prefix` is the
+/// namespace plus the segments of the folders above, `depth` how many.
+fn walk_plugin_dir(
+    dir: &Path,
+    plugin: &str,
+    prefix: &str,
+    depth: usize,
+    agents: &mut Vec<AgentDefinition>,
+    errors: &mut Vec<AgentFileError>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    let (folders, files): (Vec<PathBuf>, Vec<PathBuf>) =
+        paths.into_iter().partition(|path| path.is_dir());
+    for path in files.into_iter().filter(|path| {
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(AGENT_FILE_EXT))
+    }) {
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(err) => {
+                errors.push(AgentFileError {
+                    path,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        match parse_plugin_agent(&contents, &file_stem(&path), plugin) {
+            Ok(mut parsed) => {
+                parsed.name = crate::skills::namespaced_name(prefix, &parsed.name);
+                if agents.iter().any(|agent| agent.name == parsed.name) {
+                    continue;
+                }
+                parsed.path = Some(path);
+                agents.push(parsed);
+            }
+            Err(err) => errors.push(AgentFileError {
+                path,
+                message: err.to_string(),
+            }),
+        }
+    }
+    if depth >= PLUGIN_AGENT_MAX_DEPTH {
+        return;
+    }
+    for folder in folders {
+        let segment = folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if segment.starts_with('.') {
+            continue;
+        }
+        if let Err(reason) = validate_agent_name(&segment) {
+            errors.push(AgentFileError {
+                path: folder,
+                message: format!("invalid agent folder name: {reason}"),
+            });
+            continue;
+        }
+        let prefix = crate::skills::namespaced_name(prefix, &segment);
+        walk_plugin_dir(&folder, plugin, &prefix, depth + 1, agents, errors);
+    }
+}
+
+/// The ordinary walk's result with the plugins' agents **appended** — after
+/// every root, so a user's or a project's own type is never shadowed, and
+/// before [`with_builtins`] adds the embedded fallbacks. Empty `plugins` is
+/// the input unchanged, with no I/O.
+#[cold]
+#[must_use]
+pub fn with_plugin_agents(
+    found: (Vec<AgentDefinition>, Vec<AgentFileError>),
+    plugins: &[PluginAgentSource],
+) -> (Vec<AgentDefinition>, Vec<AgentFileError>) {
+    let (mut agents, mut errors) = found;
+    if plugins.is_empty() {
+        return (agents, errors);
+    }
+    let (plugin_agents, plugin_errors) = discover_plugin_agents(plugins);
+    for agent in plugin_agents {
+        if !agents.iter().any(|taken| taken.name == agent.name) {
+            agents.push(agent);
+        }
+    }
+    errors.extend(plugin_errors);
+    (agents, errors)
+}
+
 /// Append the [`builtin_agents`] the walk did not find, at the **end** — the
 /// lowest precedence, so a file always wins over the copy in the binary.
 ///
@@ -235,14 +367,25 @@ pub fn with_builtins(
 }
 
 /// The definitions this environment resolves to: the walk over
-/// [`resolved_agent_roots`], backed by the embedded defaults. What the
+/// [`resolved_agent_roots`], then the enabled plugins' agents
+/// ([`with_plugin_agents`]), backed by the embedded defaults. What the
 /// bootstrap and the per-turn rescan both call.
+///
+/// `plugins` is a separate input with its own gate upstream, so
+/// `ALTER_ZERO_AGENTS_DIR` — which replaces the *ordinary* roots — does not
+/// suppress it; a hermetic run passes an empty slice.
 #[must_use]
 pub fn load_agents(
     cwd: &Path,
     config_home: Option<&Path>,
+    plugins: &[PluginAgentSource],
 ) -> (Vec<AgentDefinition>, Vec<AgentFileError>) {
-    with_builtins(discover_agents(&resolved_agent_roots(cwd, config_home)))
+    let found = discover_agents(&resolved_agent_roots(cwd, config_home));
+    // Checked inline, so a session with no plugins runs no plugin code.
+    if plugins.is_empty() {
+        return with_builtins(found);
+    }
+    with_builtins(with_plugin_agents(found, plugins))
 }
 
 #[cfg(test)]
@@ -442,5 +585,128 @@ mod tests {
             "the found one keeps precedence; the missing one is appended"
         );
         assert_eq!(agents[0].description, "Mine.");
+    }
+
+    // ===== plugin agents (docs/subagents.md *Plugins*) =====
+
+    fn write(path: &std::path::Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn source(dir: &std::path::Path, namespace: &str) -> PluginAgentSource {
+        PluginAgentSource {
+            namespace: namespace.to_string(),
+            agents_dir: dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn a_plugin_agent_is_registered_under_its_namespace_and_subfolders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        write(
+            &dir.join("code-explorer.md"),
+            "---\nname: code-explorer\ndescription: Explores.\nmodel: sonnet\ntools: Glob, Grep, Read\n---\nGo.\n",
+        );
+        write(
+            &dir.join("review/security.md"),
+            "---\ndescription: Sec.\n---\n",
+        );
+        write(
+            &dir.join("a/b/c/too-deep.md"),
+            "---\ndescription: Deep.\n---\n",
+        );
+        write(&dir.join("a/b/fine.md"), "---\ndescription: Fine.\n---\n");
+        write(&dir.join("notes.txt"), "not an agent");
+
+        let (agents, errors) = discover_plugin_agents(&[source(&dir, "feature-dev")]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "feature-dev:code-explorer",
+                "feature-dev:a:b:fine",
+                "feature-dev:review:security",
+            ]
+        );
+        assert_eq!(
+            agents[0].model,
+            AgentModel::Inherit,
+            "the plugin's model is ignored"
+        );
+        assert_eq!(agents[0].tools.summary(), "Bash, Read");
+        assert_eq!(
+            agents[0].path.as_deref(),
+            Some(dir.join("code-explorer.md").as_path())
+        );
+    }
+
+    #[test]
+    fn plugin_agents_come_after_every_root_and_before_the_builtins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let own = tmp.path().join("own");
+        let plugin = tmp.path().join("plugin");
+        write(&own.join("reviewer.md"), "---\ndescription: Mine.\n---\n");
+        write(
+            &plugin.join("reviewer.md"),
+            "---\ndescription: Theirs.\n---\n",
+        );
+        let (agents, errors) = with_builtins(with_plugin_agents(
+            discover_agents(&[own]),
+            &[source(&plugin, "toolkit")],
+        ));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec![
+                "reviewer",
+                "toolkit:reviewer",
+                crate::agents::GENERAL_PURPOSE,
+                "explore"
+            ]
+        );
+        let registry = crate::subagents::SubagentRegistry::new(agents);
+        assert_eq!(
+            registry.find("reviewer").map(|a| a.description),
+            Some("Mine.".to_string())
+        );
+    }
+
+    #[test]
+    fn no_plugin_agent_sources_change_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("x.md"), "---\ndescription: X.\n---\n");
+        let found = discover_agents(&[tmp.path().to_path_buf()]);
+        assert_eq!(with_plugin_agents(found.clone(), &[]), found);
+    }
+
+    #[test]
+    fn a_plugin_agent_without_frontmatter_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("helper.md"), "You help.\n");
+        let (agents, errors) = discover_plugin_agents(&[source(tmp.path(), "hookify")]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(agents[0].name, "hookify:helper");
+        assert_eq!(agents[0].description, "Agent from the hookify plugin");
+    }
+
+    #[test]
+    fn a_plugin_with_an_unusable_name_or_folder_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("ok.md"), "---\ndescription: d\n---\n");
+        write(
+            &tmp.path().join("bad folder/x.md"),
+            "---\ndescription: d\n---\n",
+        );
+        let (agents, errors) =
+            discover_plugin_agents(&[source(tmp.path(), "Bad:Name"), source(tmp.path(), "p")]);
+        assert_eq!(
+            agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["p:ok"]
+        );
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors[0].message.contains("Bad:Name"), "{errors:?}");
+        assert!(errors[1].path.ends_with("bad folder"), "{errors:?}");
     }
 }

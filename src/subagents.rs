@@ -189,6 +189,7 @@ impl AgentTools {
     pub fn summary(&self) -> String {
         match self {
             Self::All => ALL_TOOLS.to_string(),
+            Self::Only(entries) if entries.is_empty() => "none".to_string(),
             Self::Only(entries) => entries.join(", "),
         }
     }
@@ -318,6 +319,121 @@ pub fn parse_agent(contents: &str, default_name: &str) -> Result<AgentDefinition
         system_prompt: (!body.is_empty()).then_some(body),
         // The walk stamps the file it read this from; a built-in keeps
         // `None`, which is what `is_builtin` reads.
+        path: None,
+    })
+}
+
+// ===== plugin agents (docs/plugins.md, docs/subagents.md *Plugins*) =====
+
+/// One enabled plugin's agents, as the plugin layer hands them to the walk
+/// ([`crate::llm::subagent::load_agents`]): plain data, so this module never
+/// reads a manifest. Every `*.md` under `agents_dir` is a definition
+/// registered as `namespace:name` — a subfolder adding its own segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginAgentSource {
+    /// The plugin's name, stamped in front of each of its agents.
+    pub namespace: String,
+    /// The directory holding the plugin's agent files.
+    pub agents_dir: PathBuf,
+}
+
+/// How many subfolders deep a plugin's agents are looked for: each adds a
+/// `:`-joined segment to the name, and a bound keeps a stray tree (a
+/// vendored `node_modules`) from costing a turn a walk of its own.
+pub const PLUGIN_AGENT_MAX_DEPTH: usize = 2;
+
+/// The description a plugin agent whose frontmatter will not parse, or names
+/// none, carries — Claude Code's wording.
+#[must_use]
+pub fn plugin_agent_description(plugin: &str) -> String {
+    format!("Agent from the {plugin} plugin")
+}
+
+/// A plugin agent's `tools:` line, read in Claude Code's vocabulary
+/// (`docs/subagents.md` *Plugins*):
+///
+/// - a tool this client has under the same name grants itself (`Read`,
+///   `Write`, `Edit`, `Bash`, `Skill`), as do the two that are another
+///   spelling of one (`MultiEdit` is `Edit`, `NotebookRead` is `Read`), and
+///   an `mcp__…` name is kept as the MCP wire name it is;
+/// - the search tools this client serves through the shell — `Grep`, `Glob`,
+///   `LS` — grant `Bash`, as do `BashOutput` and `KillShell`/`KillBash`,
+///   whose counterparts (`bashwait`, `bashkill`) a `Bash` grant brings along;
+/// - a permission-rule spelling (`Bash(git diff:*)`) grants the tool it
+///   names, the rule itself unread;
+/// - anything else (`WebFetch`, `TodoWrite`, `NotebookEdit`, `Task`, …) has
+///   no counterpart and is dropped.
+///
+/// Matching is case-insensitive and each tool is listed once.
+///
+/// An explicit list nothing survives is an allowlist that **matches
+/// nothing** — the truth about what that agent can use here (its listing
+/// row says `Tools: none`); no list, or `*`, is every tool, as for any agent.
+#[must_use]
+pub fn plugin_agent_tools(value: &str) -> AgentTools {
+    let AgentTools::Only(entries) = AgentTools::parse(value) else {
+        return AgentTools::All;
+    };
+    let mut mapped: Vec<String> = Vec::new();
+    for entry in &entries {
+        let tool = entry.split('(').next().unwrap_or_default().trim();
+        let lower = tool.to_ascii_lowercase();
+        let granted = match lower.as_str() {
+            "read" | "notebookread" => "Read",
+            "write" => "Write",
+            "edit" | "multiedit" => "Edit",
+            "bash" | "grep" | "glob" | "ls" | "bashoutput" | "killshell" | "killbash" => "Bash",
+            "skill" => "Skill",
+            _ if lower.starts_with(crate::mcp::MCP_TOOL_PREFIX) => tool,
+            _ => continue,
+        };
+        if !mapped.iter().any(|seen| seen == granted) {
+            mapped.push(granted.to_string());
+        }
+    }
+    AgentTools::Only(mapped)
+}
+
+/// Parse one of a plugin's agent files (`docs/subagents.md` *Plugins*). The
+/// name is the bare one — the walk stamps the namespace — and three things
+/// differ from [`parse_agent`]:
+///
+/// - `model:` is **ignored**: the agent inherits the session's model, since a
+///   Claude alias (`sonnet`) means nothing on another provider;
+/// - `tools:` is read by [`plugin_agent_tools`];
+/// - a file with no frontmatter, or none naming a description, still loads,
+///   described as [`plugin_agent_description`] — Claude Code's rule — the
+///   whole file its prompt when there is no frontmatter at all.
+///
+/// Unknown keys (`color`, `effort`, `maxTurns`, …) are ignored.
+///
+/// # Errors
+/// [`AgentParseError::InvalidName`] when the resolved name is unusable.
+pub fn parse_plugin_agent(
+    contents: &str,
+    default_name: &str,
+    plugin: &str,
+) -> Result<AgentDefinition, AgentParseError> {
+    let (fields, body) = match frontmatter::split(contents) {
+        Some((block, body)) => (frontmatter::scalars(&block), body),
+        None => (Vec::new(), contents.to_string()),
+    };
+    let name = frontmatter::field(&fields, "name")
+        .map(str::to_string)
+        .unwrap_or_else(|| default_name.to_string());
+    validate_agent_name(&name).map_err(AgentParseError::InvalidName)?;
+    let description = frontmatter::field(&fields, "description")
+        .map_or_else(|| plugin_agent_description(plugin), str::to_string);
+    let body = body.trim_matches(['\n', '\r']).trim().to_string();
+    Ok(AgentDefinition {
+        name,
+        description: frontmatter::truncate_chars(
+            &description,
+            crate::skills::MAX_LISTING_DESC_CHARS,
+        ),
+        model: AgentModel::Inherit,
+        tools: frontmatter::field(&fields, "tools").map_or(AgentTools::All, plugin_agent_tools),
+        system_prompt: (!body.is_empty()).then_some(body),
         path: None,
     })
 }
@@ -511,6 +627,23 @@ pub fn withheld_tool_message(tool: &str, agent_type: &str) -> String {
 /// the launcher that builds a run out of one, and the loop that renders the
 /// listing — [`crate::skills::SkillRegistry`]'s shape: one lock, cloned by
 /// handle, so a per-turn rescan is a `replace` everyone already sees.
+/// [`SubagentRegistry::find`]'s bare-name fallback: the one plugin agent
+/// whose last segment is `wanted`. Reached only when a plugin agent is
+/// installed, and out of line so a session with none never touches it.
+#[cold]
+fn bare_plugin_agent(agents: &[AgentDefinition], wanted: &str) -> Option<AgentDefinition> {
+    let mut candidates = agents.iter().filter(|agent| {
+        agent
+            .name
+            .contains(crate::skills::PLUGIN_NAMESPACE_SEPARATOR)
+            && crate::skills::last_name_segment(&agent.name).to_ascii_lowercase() == wanted
+    });
+    match (candidates.next(), candidates.next()) {
+        (Some(agent), None) => Some(agent.clone()),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SubagentRegistry {
     state: Arc<Mutex<Vec<AgentDefinition>>>,
@@ -538,13 +671,32 @@ impl SubagentRegistry {
 
     /// The definition `name` selects, tolerating case and stray whitespace:
     /// the model writes the type back from a listing it read a turn ago.
+    ///
+    /// A plugin's agent answers to its whole `plugin:agent` name, and to the
+    /// bare last segment too when exactly one plugin agent ends in it and no
+    /// ordinary agent is called that — so a type the model names without its
+    /// plugin still launches, and two plugins' same-named agents stay a miss
+    /// whose message lists both whole names.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<AgentDefinition> {
         let wanted = name.trim().to_ascii_lowercase();
-        self.lock()
+        let agents = self.lock();
+        if let Some(agent) = agents
             .iter()
             .find(|agent| agent.name.to_ascii_lowercase() == wanted)
-            .cloned()
+        {
+            return Some(agent.clone());
+        }
+        if wanted.contains(crate::skills::PLUGIN_NAMESPACE_SEPARATOR)
+            || !agents.iter().any(|agent| {
+                agent
+                    .name
+                    .contains(crate::skills::PLUGIN_NAMESPACE_SEPARATOR)
+            })
+        {
+            return None;
+        }
+        bare_plugin_agent(&agents, &wanted)
     }
 
     /// Every type's name, in order — what an unknown-type error lists.
@@ -999,5 +1151,168 @@ mod tests {
             unknown_agent_message("x", &[]),
             "Unknown agent type \"x\": no agent types are available."
         );
+    }
+
+    // ===== plugin agents (docs/subagents.md *Plugins*) =====
+
+    fn plugin_def(name: &str) -> AgentDefinition {
+        AgentDefinition {
+            name: name.to_string(),
+            description: "d".to_string(),
+            model: AgentModel::Inherit,
+            tools: AgentTools::All,
+            system_prompt: None,
+            path: Some(PathBuf::from("/plugins/x.md")),
+        }
+    }
+
+    #[test]
+    fn a_plugin_agent_ignores_its_model_and_keeps_the_rest() {
+        let def = parse_plugin_agent(
+            "---\nname: code-reviewer\ndescription: Reviews code.\nmodel: sonnet\n\
+             color: red\neffort: high\nmaxTurns: 4\n---\n\nYou review.\n",
+            "file-stem",
+            "pr-review-toolkit",
+        )
+        .expect("parses");
+        assert_eq!(def.name, "code-reviewer");
+        assert_eq!(def.description, "Reviews code.");
+        assert_eq!(
+            def.model,
+            AgentModel::Inherit,
+            "a Claude alias means nothing here"
+        );
+        assert_eq!(def.tools, AgentTools::All);
+        assert_eq!(def.system_prompt.as_deref(), Some("You review."));
+    }
+
+    #[test]
+    fn a_plugin_agent_whose_frontmatter_will_not_parse_still_loads() {
+        // Claude Code's rule: the file is still an agent, described by its
+        // plugin, its name the file's.
+        let def = parse_plugin_agent("Just a prompt, no frontmatter.\n", "helper", "hookify")
+            .expect("loads");
+        assert_eq!(def.name, "helper");
+        assert_eq!(def.description, "Agent from the hookify plugin");
+        assert_eq!(
+            def.system_prompt.as_deref(),
+            Some("Just a prompt, no frontmatter.")
+        );
+        let def = parse_plugin_agent("---\nname: x\n---\nBody\n", "x", "hookify").expect("loads");
+        assert_eq!(def.description, "Agent from the hookify plugin");
+    }
+
+    #[test]
+    fn a_plugin_agent_name_is_still_validated() {
+        assert!(matches!(
+            parse_plugin_agent("---\nname: no spaces\ndescription: d\n---\n", "x", "p"),
+            Err(AgentParseError::InvalidName(_))
+        ));
+    }
+
+    #[test]
+    fn plugin_tools_are_read_in_claude_codes_vocabulary() {
+        let only =
+            |names: &[&str]| AgentTools::Only(names.iter().map(|n| (*n).to_string()).collect());
+        // Same name here → itself; the shell-served search tools → Bash;
+        // no counterpart → dropped; duplicates folded.
+        assert_eq!(
+            plugin_agent_tools(
+                "Glob, Grep, LS, Read, NotebookRead, WebFetch, TodoWrite, WebSearch, KillShell, BashOutput"
+            ),
+            only(&["Bash", "Read"])
+        );
+        assert_eq!(
+            plugin_agent_tools("Read, Write, Edit, Bash, Skill"),
+            only(&["Read", "Write", "Edit", "Bash", "Skill"])
+        );
+        // A permission-rule spelling grants the tool it names.
+        assert_eq!(
+            plugin_agent_tools("Bash(git diff:*), Read"),
+            only(&["Bash", "Read"])
+        );
+        // MCP tools keep their wire names.
+        assert_eq!(
+            plugin_agent_tools("mcp__github__get_pr, Read"),
+            only(&["mcp__github__get_pr", "Read"])
+        );
+        assert_eq!(
+            plugin_agent_tools("MultiEdit, Edit, NotebookRead"),
+            only(&["Edit", "Read"])
+        );
+        // An explicit list nothing survives matches nothing — the truth.
+        let none = plugin_agent_tools("WebFetch, TodoWrite, Task");
+        assert_eq!(none, only(&[]));
+        assert!(!none.allows("bash") && !none.allows("read"));
+        assert!(!none.reaches_secrets());
+        assert_eq!(none.summary(), "none");
+        // No list, or `*`, is every tool, as for any agent.
+        assert_eq!(plugin_agent_tools(""), AgentTools::All);
+        assert_eq!(plugin_agent_tools("*"), AgentTools::All);
+        assert_eq!(plugin_agent_tools("Read, *"), AgentTools::All);
+        // The mapped list does what it says.
+        let tools = plugin_agent_tools("Glob, Grep, Read");
+        assert!(tools.allows("bash") && tools.allows("read") && tools.allows("bashwait"));
+        assert!(!tools.allows("write") && !tools.allows("edit"));
+    }
+
+    #[test]
+    fn a_plugin_agents_tools_line_is_mapped_at_parse() {
+        let def = parse_plugin_agent(
+            "---\nname: explorer\ndescription: d\ntools: Glob, Grep, LS, Read, WebFetch\n---\n",
+            "explorer",
+            "feature-dev",
+        )
+        .expect("parses");
+        assert_eq!(def.tools.summary(), "Bash, Read");
+    }
+
+    #[test]
+    fn a_namespaced_agent_is_found_whole_or_by_a_unique_bare_name() {
+        let registry = SubagentRegistry::new(vec![
+            plugin_def("feature-dev:code-explorer"),
+            plugin_def("pr-review-toolkit:code-reviewer"),
+            plugin_def("feature-dev:code-reviewer"),
+        ]);
+        assert_eq!(
+            registry.find("Feature-Dev:Code-Explorer").map(|a| a.name),
+            Some("feature-dev:code-explorer".to_string())
+        );
+        assert_eq!(
+            registry.find("code-explorer").map(|a| a.name),
+            Some("feature-dev:code-explorer".to_string())
+        );
+        // Two plugins name it: a miss, and the miss lists the whole names.
+        assert!(registry.find("code-reviewer").is_none());
+        let message = unknown_agent_message("code-reviewer", &registry.names());
+        assert!(
+            message.contains("pr-review-toolkit:code-reviewer, feature-dev:code-reviewer"),
+            "{message}"
+        );
+        // The last segment of a nested name is what a bare name matches.
+        let nested = SubagentRegistry::new(vec![plugin_def("p:review:security")]);
+        assert_eq!(
+            nested.find("security").map(|a| a.name),
+            Some("p:review:security".to_string())
+        );
+        assert!(nested.find("review").is_none());
+    }
+
+    #[test]
+    fn an_ordinary_agent_owns_its_bare_name() {
+        let mut ordinary = plugin_def("reviewer");
+        ordinary.description = "mine".to_string();
+        let registry = SubagentRegistry::new(vec![ordinary, plugin_def("p:reviewer")]);
+        assert_eq!(
+            registry.find("reviewer").map(|a| a.description),
+            Some("mine".to_string())
+        );
+        assert!(registry.find("p:reviewer").is_some());
+    }
+
+    #[test]
+    fn the_roster_names_plugin_agents_by_their_namespaced_names() {
+        let listing = agent_listing(&[plugin_def("feature-dev:code-explorer")], 8_000);
+        assert_eq!(listing, "- feature-dev:code-explorer: d (Tools: *)");
     }
 }

@@ -195,6 +195,49 @@ re-rendered in the same pass, and a file that stopped parsing reports once
 per path (`unreported_errors`, re-seeded each pass so a file fixed and
 re-broken reports again).
 
+## Plugins
+
+An installed plugin's agents (`docs/plugins.md`) are handed in as
+`subagents::PluginAgentSource { namespace, agents_dir }` — the namespace the
+plugin's manifest name;
+`llm::subagent::load_agents(cwd, config_home, plugins)` appends them after
+every root and before the built-in fallbacks (`with_plugin_agents`, then
+`with_builtins`). An empty slice is the old walk exactly. The rules:
+
+- **Discovery.** Every `*.md` under `agents_dir`, recursively: a subfolder
+  adds a `:`-joined segment (`plugin:review:security`) down to
+  `PLUGIN_AGENT_MAX_DEPTH` (2) folders; a directory's files come before its
+  subfolders, each sorted; hidden folders are skipped and a folder whose
+  name could not be a segment is reported. The namespace follows the skills'
+  rule (`skills::validate_plugin_namespace`).
+- **Parsing** (`parse_plugin_agent`). `model:` is **ignored** — the agent
+  inherits the session's model, since a Claude alias (`sonnet`) means
+  nothing on another provider. A file with no frontmatter, or one naming no
+  description, still loads as `Agent from the <plugin> plugin` (Claude
+  Code's rule; with no frontmatter the whole file is the prompt). Unknown
+  keys — `color`, `effort`, `maxTurns`, `disallowedTools` — are ignored;
+  note that ignoring `disallowedTools` grants rather than withholds.
+- **`tools:`** (`plugin_agent_tools`), read in Claude Code's vocabulary and
+  translated truthfully: `Read`, `Write`, `Edit`, `Bash`, `Skill` grant
+  themselves (`MultiEdit` is `Edit`, `NotebookRead` is `Read`); `Grep`,
+  `Glob` and `LS` — served here through the shell — grant `Bash`, as do
+  `BashOutput` and `KillShell`/`KillBash` (a `Bash` grant carries
+  `bashwait`/`bashkill` along); an
+  `mcp__…` name is kept verbatim; a permission-rule spelling
+  (`Bash(git diff:*)`) grants the tool it names; anything else (`WebFetch`,
+  `TodoWrite`, `NotebookEdit`, `Task`, …) is dropped. An explicit list
+  nothing survives is an allowlist that **matches nothing** — what that
+  agent can actually use here — and its roster row says `Tools: none`; no
+  list, or `*`, is every tool. As with a project's agents there is no
+  review: every call still meets the permission gate.
+- **Lookup.** `SubagentRegistry::find` matches the whole name first; a bare
+  name then selects the plugin agent whose last segment it is when exactly
+  one does (an ordinary agent of that name already won the exact match).
+  Two plugins' same-named agents stay a miss, and the unknown-type message
+  lists every whole name.
+- **The roster** in the `<system-reminder>` shows the namespaced names
+  inside the same shared 1% budget.
+
 ## Layout
 
 | | |

@@ -282,7 +282,7 @@ impl<'t> Session<'t> {
             None => Vec::new(),
         };
         let (found_skills, walk_errors) =
-            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
+            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref(), &[]);
         skill_errors.extend(walk_errors);
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
         // …and this project's saved on/off choices from `skills.json`, applied
@@ -306,7 +306,7 @@ impl<'t> Session<'t> {
                 None => Vec::new(),
             };
         let (found_agents, walk_errors) =
-            alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref());
+            alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref(), &[]);
         agent_errors.extend(walk_errors);
         let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
 

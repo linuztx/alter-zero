@@ -880,6 +880,64 @@ The signature is the useful probe: it is *in the skill body and nowhere else*,
 so its presence proves the body reached the model and its absence proves it
 didn't — better evidence than the cell, which only shows what the TUI drew.
 
+## Plugins
+
+An installed plugin's skills (`docs/plugins.md`) are handed to the walk as
+plain data — `skills::PluginSkillSource { namespace, skills_dir, commands,
+plugin_root, plugin_data }` — by the plugin layer; this module never reads a
+manifest. `llm::skill::load_skills(cwd, config_home, plugins)` runs the
+ordinary roots, then `with_plugin_skills` appends each source's
+`<skills_dir>/<name>/SKILL.md` folders (immediate children only, parsed by
+the same rule) as **`namespace:name`** — the namespace the plugin's
+manifest name, the frontmatter `name` replacing the last segment, Claude
+Code's spelling — then its commands. The rules:
+
+- **A plugin command is a skill.** Each `PluginCommandSource { name, path }`
+  is one markdown file standing for a `SKILL.md`, under the whole name the
+  caller gives it (`plugin[:sub]:command` — the plugin layer walks
+  `commands/`). Its description is the frontmatter's, else the body's first
+  non-blank line (`skills::command_description`); a file saying nothing is
+  reported. Its directory is the file's folder, and its rendered body opens
+  with a second line, `Command file: {path}`, so two commands of one folder
+  load independently. The body is returned as written (`skills::skill_body`
+  — the frontmatter stripped): `$ARGUMENTS` and `` !`cmd` `` stay for the
+  model to read. The "already loaded" identity is the **file** (`path`), for
+  folder skills and commands alike.
+
+- **Order.** Plugin skills come after every ordinary root, so a user's or a
+  project's own skill is never shadowed; among plugins the first source to
+  claim a whole name wins. `ALTER_ZERO_SKILLS_DIR` replaces only the
+  ordinary roots — plugin sources are a separate input with their own gate
+  upstream. An empty slice is the old walk exactly, with no extra I/O.
+- **Names.** The namespace is lowercase letters, digits, `-`, `_` and `.`
+  (`skills::validate_plugin_namespace`); a refused one is reported against
+  its skills directory and contributes nothing. The frontmatter name is
+  still checked by `validate_skill_name`.
+- **Lookup.** `SkillRegistry::resolve` (and `find` over it) matches the
+  whole name first, case-folded. A bare `skill` then selects the enabled
+  plugin skill whose last segment it is — when exactly one plugin provides
+  it **and** no ordinary skill, enabled or not, has that name (turning your
+  own `review` off must not quietly hand the name to a plugin's). Several
+  providers are `SkillLookup::Ambiguous`, and the tool's red result names
+  each whole name so the model can call again.
+- **The body.** `SkillMetadata::render_body` expands `${CLAUDE_PLUGIN_ROOT}`,
+  `${PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${PLUGIN_DATA}` for a
+  plugin skill, beside `${…SKILL_DIR}`; an ordinary skill keeps those tokens
+  as written. Nothing else changes: `` !`cmd` `` stays text and
+  `allowed-tools` grants nothing.
+- **Everything else is by name.** The listing (`- superpowers:brainstorming:
+  …`, the same 1% budget — many plugins degrade it to names sooner), the
+  `/skills` rows and `skills.json`'s disabled set, the `$` picker
+  (`docs/skill-mentions.md` *Plugins*), the replayed `{"skill":
+  "plugin:name"}`, and the "already loaded" identity (the directory, as
+  ever). The hooks matcher matches the *tool* (`Skill`), never the skill
+  name, so it is unaffected.
+- **Memory.** A plugin skill keeps what an ordinary one keeps — name,
+  capped description, two paths — plus its `SkillPlugin` (namespace, root,
+  data); never its body. A plugin skill's body is taken at load with
+  `skill_body` rather than re-validated by `parse_skill`, since its name is
+  namespaced and a command may carry no frontmatter.
+
 ## Settings
 
 `/settings` gains a **Skills** row (`SettingKey::Skills`): on by default,

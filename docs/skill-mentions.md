@@ -227,3 +227,20 @@ whole round trip with no network.
   `live_dollar_mention_loads_the_mentioned_skill` (an explicit
   `Use $mixology — …`) and `live_an_embedded_mention_still_loads_the_skill`
   (the name dropped mid-sentence, nothing else asking for a load).
+
+## Plugins
+
+A plugin's skill is named `plugin:skill` (`docs/skills.md` *Plugins*), and a
+plugin name may hold dots, so the mention run also crosses a `:` or a `.` —
+**only when a name character follows it**. `$superpowers:brainstorming` and
+`$acme.tools:lint` are each one mention, while `$dataviz:` and `$dataviz.`
+end before their punctuation: a mention never ends on either, and sentence
+punctuation stays out of the replaced range. A run never opens on one
+(`$:x` is no mention), and `::` is no separator. Typing the `:` itself
+closes the band for that keystroke; the next name character reopens it.
+
+The shell-flavoured guard judges the part in front of a `:` on its own, so
+`$HOME:bin` and `$1:x` stay closed (`$PATH:/usr/bin` never reaches the
+colon at all). The fuzzy rank runs on the whole name, so `$brainstorm`
+finds `superpowers:brainstorming`, and the model's `skill` call with a bare
+name resolves when exactly one plugin provides it.

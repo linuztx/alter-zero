@@ -2692,6 +2692,7 @@ mod tests {
             description: "Charts.".to_string(),
             dir: std::path::PathBuf::from("/skills/dataviz"),
             path: std::path::PathBuf::from("/skills/dataviz/SKILL.md"),
+            plugin: None,
         }]);
         let defs = crate::subagents::SubagentRegistry::new(vec![
             crate::subagents::parse_agent(
@@ -2830,6 +2831,7 @@ mod tests {
             description: "d".to_string(),
             dir: std::path::PathBuf::from("/s/commit"),
             path: std::path::PathBuf::from("/s/commit/SKILL.md"),
+            plugin: None,
         }]);
         assert!(
             LlmBackend::configure(ModelConfig::fallback(), None, true)
@@ -2857,6 +2859,7 @@ mod tests {
             description: "Write a commit message".to_string(),
             dir: std::path::PathBuf::from("/s/commit"),
             path: std::path::PathBuf::from("/s/commit/SKILL.md"),
+            plugin: None,
         }]);
         let reminder = subagent_briefing(Some(&registry), None, "").expect("a reminder");
         assert!(reminder.contains("<system-reminder>"), "{reminder}");

@@ -12,6 +12,7 @@ fn meta(name: &str, description: &str) -> SkillMetadata {
         description: description.to_string(),
         dir: PathBuf::from("/skills").join(name),
         path: PathBuf::from("/skills").join(name).join("SKILL.md"),
+        plugin: None,
     }
 }
 
@@ -264,5 +265,32 @@ fn arrows_wrap_the_selection_at_both_ends() {
         app.skills_menu.as_ref().unwrap().selected,
         0,
         "Down from the last row wraps back to the first"
+    );
+}
+
+#[test]
+fn a_namespaced_skill_lists_searches_and_toggles_by_its_whole_name() {
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![
+            meta("commit", "d"),
+            meta("superpowers:brainstorming", "Explore ideas first"),
+        ],
+        BTreeSet::new(),
+        true,
+        Vec::new(),
+    );
+    for c in "powers:".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let rows = app.skill_menu_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].name, "superpowers:brainstorming");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::SkillToggled {
+            name: "superpowers:brainstorming".to_string(),
+            enabled: false,
+        }
     );
 }
