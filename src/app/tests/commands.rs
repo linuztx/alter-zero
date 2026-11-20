@@ -794,3 +794,22 @@ fn only_the_last_plugin_prompt_is_mapped_back() {
     assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
     assert_eq!(app.input.text(), "first");
 }
+
+#[test]
+fn images_attached_to_a_plugin_invocation_travel_with_its_turn() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/code-review:review look at ");
+    app.attach_image(std::path::PathBuf::from("/tmp/shot.png"));
+    assert!(matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunPluginCommand { .. }
+    ));
+    assert!(app.take_discarded_images().is_empty(), "nothing deleted");
+    assert_eq!(
+        app.take_submission_images(),
+        [(
+            "[Image #1]".to_string(),
+            std::path::PathBuf::from("/tmp/shot.png")
+        )]
+    );
+}

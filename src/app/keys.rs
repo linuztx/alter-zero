@@ -412,6 +412,10 @@ impl App {
                     if self.turn_active() {
                         return Action::Toast(Self::plugin_busy_notice(&name));
                     }
+                    // Its attachments ride the turn as Submit's do: staged
+                    // before take_input, which would otherwise discard them
+                    // while the prompt still names them (docs/image-paste.md).
+                    self.submission_images = std::mem::take(&mut self.images);
                     let text = self.take_input();
                     self.file_search = None;
                     self.skill_picker = None;
