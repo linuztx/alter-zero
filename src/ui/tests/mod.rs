@@ -494,6 +494,20 @@ pub(super) fn assert_sheds_to_its_search_line(
     highlighted: &str,
     hint: &str,
 ) {
+    assert_sheds_keeping_reserved_rows(page, query, highlighted, hint, false);
+}
+
+/// [`assert_sheds_to_its_search_line`] for a page that keeps its height as
+/// a search narrows its list — `/plugins`, whose window holds blank rows
+/// where the rows it reserved are not matched: with `reserved_blanks`, blank
+/// rows may stack (inside the page, never against a rule).
+pub(super) fn assert_sheds_keeping_reserved_rows(
+    page: impl Fn(u16) -> Vec<String>,
+    query: &str,
+    highlighted: &str,
+    hint: &str,
+    reserved_blanks: bool,
+) {
     let search = format!("  ❯ {query}");
     let search = search.trim_end();
     for height in 1..=30_u16 {
@@ -522,9 +536,10 @@ pub(super) fn assert_sheds_to_its_search_line(
             );
         }
         assert!(
-            texts
-                .windows(2)
-                .all(|pair| !(pair[0].is_empty() && pair[1].is_empty())),
+            reserved_blanks
+                || texts
+                    .windows(2)
+                    .all(|pair| !(pair[0].is_empty() && pair[1].is_empty())),
             "{height} rows: two blank rows stack: {texts:#?}"
         );
         let hugs = |rule: Option<&String>, next: Option<&String>| {

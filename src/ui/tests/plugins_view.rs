@@ -11,7 +11,7 @@ use crate::ui::theme::{
 };
 use alter_zero_plugins::page::{
     ComponentSummary, InstalledState, MarketplaceRow, MarketplaceSuggestion, PLUGINS_JOB_DELAY,
-    PluginContents, PluginDone, PluginId, PluginRow, PluginsScreen, PluginsSnapshot, PluginsTab,
+    PluginContents, PluginDone, PluginId, PluginRow, PluginsScreen, PluginsTab, SnapshotRows,
 };
 
 const TALL: u16 = 200;
@@ -90,12 +90,12 @@ fn suggestions() -> Vec<MarketplaceSuggestion> {
     .collect()
 }
 
-fn catalog() -> PluginsSnapshot {
+fn catalog() -> SnapshotRows {
     let mut deploy = plugin("deploy@team", None);
     deploy.description = Some("Ships builds to staging".to_string());
     let mut npm = plugin("npm-thing@team", None);
     npm.unavailable = Some("npm sources are not supported".to_string());
-    PluginsSnapshot {
+    SnapshotRows {
         marketplaces: vec![market("team", true), market("local", false)],
         plugins: vec![
             plugin("hookify@team", Some(true)),
@@ -110,9 +110,9 @@ fn catalog() -> PluginsSnapshot {
 }
 
 /// The page open over `catalog`.
-fn open_with(catalog: PluginsSnapshot) -> App {
+fn open_with(catalog: SnapshotRows) -> App {
     let mut app = App::new();
-    app.open_plugins_menu(catalog);
+    app.open_plugins_menu(catalog.into());
     app
 }
 
@@ -205,13 +205,13 @@ fn cols_before(row: &str, needle: &str) -> usize {
 /// A catalog shaped like the official ones: two marketplaces with long
 /// names, a few long plugin names among short ones, and descriptions of
 /// every length.
-fn official_like() -> PluginsSnapshot {
+fn official_like() -> SnapshotRows {
     let described = |key: &str, text: &str| {
         let mut plugin = plugin(key, None);
         plugin.description = Some(text.to_string());
         plugin
     };
-    PluginsSnapshot {
+    SnapshotRows {
         marketplaces: vec![
             market("claude-plugins-official", true),
             market("openai-curated", true),
@@ -533,7 +533,7 @@ fn toggling_a_plugin_never_moves_the_page() {
     let round = app.plugins_job_round().unwrap();
     app.finish_plugin_job(
         round,
-        Some(catalog()),
+        Some(catalog().into()),
         &Ok(PluginDone {
             message: "Disabled hookify in this directory".to_string(),
             marketplace: None,
@@ -553,7 +553,7 @@ fn toggling_a_plugin_never_moves_the_page() {
     let round = app.plugins_job_round().unwrap();
     app.finish_plugin_job(
         round,
-        Some(catalog()),
+        Some(catalog().into()),
         &Ok(PluginDone {
             message: "Disabled hookify in this directory".to_string(),
             marketplace: None,
@@ -577,7 +577,7 @@ fn a_failure_is_said_in_red_on_the_page() {
     let round = app.plugins_job_round().unwrap();
     app.finish_plugin_job(
         round,
-        Some(catalog()),
+        Some(catalog().into()),
         &Err("could not save plugins.json".to_string()),
     );
     let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
@@ -604,7 +604,7 @@ fn a_failure_is_said_in_red_on_the_page() {
     press(&mut app, KeyCode::Char(' '));
     let round = app.plugins_job_round().unwrap();
     let long = "the marketplace could not be read because ".repeat(6);
-    app.finish_plugin_job(round, Some(catalog()), &Err(long));
+    app.finish_plugin_job(round, Some(catalog().into()), &Err(long));
     let failed = page(&app);
     assert_eq!(failed.len(), before.len(), "{failed:#?}");
     assert!(failed[hint_row].ends_with('…'), "{failed:#?}");
@@ -673,11 +673,11 @@ fn two_plugins_of_one_name_name_their_marketplaces() {
 
 #[test]
 fn an_empty_tab_names_where_to_go() {
-    let mut app = open_with(PluginsSnapshot {
+    let mut app = open_with(SnapshotRows {
         marketplaces: vec![market("team", true)],
         plugins: vec![plugin("deploy@team", None)],
         session_enabled: true,
-        ..PluginsSnapshot::default()
+        ..SnapshotRows::default()
     });
     press(&mut app, KeyCode::Right);
     assert_eq!(the_page(&app).tab, PluginsTab::Installed);
@@ -687,10 +687,10 @@ fn an_empty_tab_names_where_to_go() {
 
 #[test]
 fn the_header_says_when_plugins_are_off_or_the_registry_is_broken() {
-    let app = open_with(PluginsSnapshot {
+    let app = open_with(SnapshotRows {
         error: Some("plugins.json will not parse (EOF) — fix or remove it".to_string()),
         session_enabled: false,
-        ..PluginsSnapshot::default()
+        ..SnapshotRows::default()
     });
     let texts = page(&app);
     assert!(
@@ -727,11 +727,14 @@ fn a_short_terminal_sheds_rows_down_to_the_search_line() {
     for c in "zzz".chars() {
         press(&mut app, KeyCode::Char(c));
     }
-    assert_sheds_to_its_search_line(
+    // The window keeps the rows it reserved for the tab's plugins, blank,
+    // so the search never changes the page's height.
+    assert_sheds_keeping_reserved_rows(
         |height| page_at(&app, 80, height),
         "zzz",
         "No matching plugins",
         "←/→ tabs",
+        true,
     );
 }
 
@@ -963,7 +966,7 @@ fn a_plugin_whose_contents_are_not_read_yet_warns_all_the_same() {
 }
 
 /// [`catalog`] with `deploy` bringing one skill and nothing that runs.
-fn catalog_with_skills_only_deploy() -> PluginsSnapshot {
+fn catalog_with_skills_only_deploy() -> SnapshotRows {
     let mut catalog = catalog();
     catalog.plugins[2].contents = PluginContents::Known(ComponentSummary {
         skills: vec!["deploy:ship".to_string()],
@@ -1263,10 +1266,10 @@ fn every_screen() -> Vec<(String, App)> {
     press(&mut app, KeyCode::Enter);
     assert_eq!(the_page(&app).screen, PluginsScreen::Add);
     out.push(("the add page".into(), app));
-    let mut app = open_with(PluginsSnapshot {
+    let mut app = open_with(SnapshotRows {
         suggestions: suggestions(),
         session_enabled: true,
-        ..PluginsSnapshot::default()
+        ..SnapshotRows::default()
     });
     out.push(("a first open, nothing added".into(), app.clone_page_app()));
     press(&mut app, KeyCode::Left);
@@ -1530,10 +1533,10 @@ fn print_the_pages_at_100_columns() {
     show("All", &app);
     press(&mut app, KeyCode::Enter);
     show("a plugin's page", &app);
-    let empty = open_with(PluginsSnapshot {
+    let empty = open_with(SnapshotRows {
         suggestions: suggestions(),
         session_enabled: true,
-        ..PluginsSnapshot::default()
+        ..SnapshotRows::default()
     });
     show("a first open (+ Add)", &empty);
     let mut busy = plugins_app();
@@ -1543,4 +1546,119 @@ fn print_the_pages_at_100_columns() {
     busy.set_plugins_clock(0, std::time::Duration::from_secs(3));
     show("a job running", &busy);
     println!("{out}");
+}
+
+/// A catalog of `n` listed plugins in `team` (none installed) and one
+/// installed plugin, `hookify@team`.
+fn many(n: usize) -> SnapshotRows {
+    let mut catalog = catalog();
+    catalog.plugins = (0..n)
+        .map(|i| plugin(&format!("p{i:02}@team"), None))
+        .collect();
+    catalog.plugins.push(plugin("hookify@team", Some(true)));
+    catalog
+}
+
+/// The list rows of a page: the rows between the search line and the
+/// counter.
+fn list_rows_of(texts: &[String]) -> usize {
+    let search = texts
+        .iter()
+        .position(|t| t.starts_with("  ❯"))
+        .expect("search");
+    let counter = texts
+        .iter()
+        .position(|t| t.trim_start().starts_with('(') && t.trim_end().ends_with(')'))
+        .expect("counter");
+    texts[search + 1..counter]
+        .iter()
+        .filter(|t| !t.trim().is_empty())
+        .count()
+}
+
+#[test]
+fn the_whole_list_shows_ten_rows_where_there_is_room_and_five_on_the_next_rung() {
+    let mut app = open_with(many(30));
+    press(&mut app, KeyCode::Left); // Installed → All
+    assert_eq!(the_page(&app).tab, PluginsTab::All);
+    let tall = page_at(&app, 80, TALL);
+    assert_eq!(list_rows_of(&tall), 10, "{tall:#?}");
+    // One row short of the ten-row page: the five-row page, description
+    // kept.
+    let short = page_at(&app, 80, u16::try_from(tall.len() - 1).unwrap());
+    assert_eq!(list_rows_of(&short), 5, "{short:#?}");
+    assert_eq!(short.len(), tall.len() - 5);
+    assert!(has(&short, "What p00@team does"), "{short:#?}");
+    // A tab listing fewer than ten shows them all and no blank block.
+    press(&mut app, KeyCode::Right); // All → Installed
+    let installed = page_at(&app, 80, TALL);
+    assert_eq!(list_rows_of(&installed), 1, "{installed:#?}");
+}
+
+#[test]
+fn typing_never_changes_the_pages_height() {
+    let mut app = open_with(many(30));
+    press(&mut app, KeyCode::Left); // All
+    for height in [TALL, 24, 20] {
+        let mut heights = vec![page_at(&app, 80, height).len()];
+        // `p1` matches ten, `p12` one, `p123` none.
+        for c in "p123".chars() {
+            press(&mut app, KeyCode::Char(c));
+            heights.push(page_at(&app, 80, height).len());
+        }
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace);
+            heights.push(page_at(&app, 80, height).len());
+        }
+        assert!(
+            heights.windows(2).all(|pair| pair[0] == pair[1]),
+            "{height} rows: {heights:?}"
+        );
+    }
+}
+
+#[test]
+fn a_search_that_matches_only_elsewhere_says_where() {
+    let mut app = open_with(many(3));
+    assert_eq!(the_page(&app).tab, PluginsTab::Installed);
+    for c in "p0".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let texts = page(&app);
+    assert!(
+        has(&texts, "No matching plugins here — 3 in All"),
+        "{texts:#?}"
+    );
+    // On All itself, or for a search nothing matches, the plain wording.
+    press(&mut app, KeyCode::Left);
+    assert_eq!(the_page(&app).tab, PluginsTab::All);
+    press(&mut app, KeyCode::Char('z'));
+    let texts = page(&app);
+    assert!(has(&texts, "No matching plugins"), "{texts:#?}");
+    assert!(!has(&texts, " in All"), "{texts:#?}");
+}
+
+#[test]
+fn the_count_elsewhere_is_over_all_with_the_same_search() {
+    let mut catalog = many(3);
+    catalog.marketplaces.push(market("other", true));
+    catalog.plugins.push(plugin("p01@other", None));
+    let mut app = open_with(catalog);
+    // The `other` marketplace's tab: `p00` matches nothing there, one
+    // plugin in All; `p0` matches its own row.
+    while the_page(&app).tab != PluginsTab::Marketplace("other".into()) {
+        press(&mut app, KeyCode::Right);
+    }
+    for c in "p00".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert!(
+        has(&page(&app), "No matching plugins here — 1 in All"),
+        "{:#?}",
+        page(&app)
+    );
+    assert_eq!(the_page(&app).matches_in_all(), 1);
+    press(&mut app, KeyCode::Backspace);
+    // `p0` matches p00, p01, p02 in team and p01 in other.
+    assert_eq!(the_page(&app).matches_in_all(), 4);
 }

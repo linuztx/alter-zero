@@ -813,100 +813,272 @@ fn resolve_source(
     }))
 }
 
-/// The `plugins` array, taken one entry at a time.
-struct Entries(Vec<PendingEntry>, Vec<String>);
+/// What a catalog says about itself — everything but its entries, which
+/// [`stream_catalog`] hands over one at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogHeader {
+    /// The marketplace's own name.
+    pub name: String,
+    /// `interface.displayName`.
+    pub display_name: Option<String>,
+    /// `description` / `metadata.description`.
+    pub description: Option<String>,
+    /// `owner.name`.
+    pub owner: Option<String>,
+    /// The entries skipped, each with its reason.
+    pub notices: Vec<String>,
+}
 
-impl<'de> Deserialize<'de> for Entries {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = Entries;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a list of plugins")
+/// A source path that only `metadata.pluginRoot` can resolve — a bare name.
+fn needs_plugin_root(source: &Result<RawSource, String>) -> bool {
+    let path = match source {
+        Ok(RawSource::Path(path)) => path,
+        Ok(RawSource::Object {
+            kind,
+            path: Some(path),
+            ..
+        }) if kind == "local" => path,
+        _ => return false,
+    };
+    let path = path.trim();
+    !path.is_empty()
+        && !matches!(path, "." | "./" | "..")
+        && !path.starts_with("./")
+        && !path.contains(['/', '\\'])
+}
+
+/// The state one pass over a catalog keeps: its top-level fields as they
+/// are met, the names handed over (for duplicates), and the few entries
+/// that wait for a `pluginRoot` named after the list.
+struct Stream<'f> {
+    on_entry: &'f mut dyn FnMut(usize, CatalogEntry),
+    name: Option<String>,
+    description: Option<String>,
+    owner: Option<String>,
+    interface: Nested,
+    metadata: Option<Nested>,
+    plugins_seen: bool,
+    /// Every name taken, `\n`-separated — one buffer, not a set of strings.
+    names: String,
+    waiting: Vec<(usize, PendingEntry)>,
+    notices: Vec<String>,
+}
+
+impl Stream<'_> {
+    fn plugin_root(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.plugin_root.as_deref())
+    }
+
+    fn taken(&self, name: &str) -> bool {
+        self.names.split('\n').any(|taken| taken == name)
+    }
+
+    /// One element of `plugins`, at `index`: handed over, skipped with its
+    /// reason, or — a bare source with no `pluginRoot` met yet — kept until
+    /// the document ends.
+    fn element(&mut self, index: usize, text: &str) {
+        let pending = match pending_entry(text) {
+            Ok(pending) => pending,
+            Err(why) => {
+                self.notices
+                    .push(format!("entry {} skipped: {why}", index + 1));
+                return;
             }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Entries, A::Error> {
-                let mut out = Entries(Vec::new(), Vec::new());
-                let mut index = 0;
-                while let Some(raw) = seq.next_element::<Box<RawValue>>()? {
-                    index += 1;
-                    match pending_entry(raw.get()) {
-                        Ok(entry) if out.0.iter().any(|e| e.entry.name == entry.entry.name) => {
-                            out.1.push(format!(
-                                "plugin \"{}\" is listed twice; the first entry is used",
-                                entry.entry.name
-                            ));
-                        }
-                        Ok(entry) => out.0.push(entry),
-                        Err(why) => out.1.push(format!("entry {index} skipped: {why}")),
-                    }
-                }
-                Ok(out)
+        };
+        if self.taken(&pending.entry.name) {
+            self.notices.push(format!(
+                "plugin \"{}\" is listed twice; the first entry is used",
+                pending.entry.name
+            ));
+            return;
+        }
+        if !self.names.is_empty() {
+            self.names.push('\n');
+        }
+        self.names.push_str(&pending.entry.name);
+        if self.metadata.is_none() && needs_plugin_root(&pending.source) {
+            self.waiting.push((index, pending));
+        } else {
+            self.resolve(index, pending);
+        }
+    }
+
+    /// Resolve an entry's source against the `pluginRoot` known now, and
+    /// hand it over — or skip it, saying why.
+    fn resolve(&mut self, index: usize, pending: PendingEntry) {
+        let PendingEntry { mut entry, source } = pending;
+        let root = self.plugin_root().map(str::to_string);
+        match source.and_then(|raw| resolve_source(raw, root.as_deref())) {
+            Ok(Ok(source)) => entry.source = Some(source),
+            Ok(Err(reason)) => entry.unavailable = Some(reason),
+            Err(why) => {
+                self.notices
+                    .push(format!("entry \"{}\" skipped: {why}", entry.name));
+                return;
             }
         }
-        d.deserialize_seq(V)
+        (self.on_entry)(index, entry);
     }
 }
 
-#[derive(Deserialize)]
-struct RawCatalog {
-    #[serde(default)]
-    name: Text,
-    #[serde(default)]
-    description: Text,
-    #[serde(default)]
-    owner: Person,
-    #[serde(default)]
-    interface: Nested,
-    #[serde(default)]
-    metadata: Nested,
-    #[serde(default)]
-    plugins: Option<Entries>,
+/// The document's top level, read into a [`Stream`].
+struct Top<'s, 'f>(&'s mut Stream<'f>);
+
+impl<'de> de::DeserializeSeed<'de> for Top<'_, '_> {
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_map(self)
+    }
 }
 
-/// Read a catalog off `reader`, bounded at [`CATALOG_MAX_BYTES`].
+impl<'de> Visitor<'de> for Top<'_, '_> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a marketplace catalog object")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let stream = self.0;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => stream.name = map.next_value::<Text>()?.0,
+                "description" => stream.description = map.next_value::<Text>()?.0,
+                "owner" => stream.owner = map.next_value::<Person>()?.0,
+                "interface" => stream.interface = map.next_value()?,
+                "metadata" => stream.metadata = Some(map.next_value()?),
+                "plugins" if stream.plugins_seen => {
+                    return Err(de::Error::duplicate_field("plugins"));
+                }
+                "plugins" => map.next_value_seed(Plugins(&mut *stream))?,
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The `plugins` list, each element handed to the [`Stream`] as it is read.
+struct Plugins<'s, 'f>(&'s mut Stream<'f>);
+
+impl<'de> de::DeserializeSeed<'de> for Plugins<'_, '_> {
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<(), D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Plugins<'_, '_> {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a list of plugins")
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+        let stream = self.0;
+        stream.plugins_seen = true;
+        let mut index = 0;
+        while let Some(raw) = seq.next_element::<Box<RawValue>>()? {
+            stream.element(index, raw.get());
+            index += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Read a catalog off `reader`, bounded at [`CATALOG_MAX_BYTES`], handing
+/// each usable entry to `on_entry` — with its index in the `plugins` list —
+/// **as it is read**, and returning the catalog's header. Each entry is
+/// decoded and validated by [`read_catalog`]'s rules (which is this, its
+/// entries collected), so no more of the catalog than one entry is held at
+/// a time; the exception is an entry whose bare source names a directory
+/// under a `metadata.pluginRoot` the document has not reached yet, handed
+/// over once the document ends.
+///
+/// On an error, whatever was handed over belongs to a catalog that is not
+/// valid: the caller drops it.
 ///
 /// # Errors
 /// Not JSON, no usable `name`, no `plugins` list, or a read past the cap.
-pub fn read_catalog(reader: impl Read) -> Result<Catalog, CatalogError> {
+pub fn stream_catalog(
+    reader: impl Read,
+    on_entry: &mut dyn FnMut(usize, CatalogEntry),
+) -> Result<CatalogHeader, CatalogError> {
+    let mut stream = Stream {
+        on_entry,
+        name: None,
+        description: None,
+        owner: None,
+        interface: Nested::default(),
+        metadata: None,
+        plugins_seen: false,
+        names: String::new(),
+        waiting: Vec::new(),
+        notices: Vec::new(),
+    };
     let bounded = BufReader::new(reader.take(CATALOG_MAX_BYTES));
-    let raw: RawCatalog = serde_json::from_reader(bounded)
+    let mut de = serde_json::Deserializer::from_reader(bounded);
+    de::DeserializeSeed::deserialize(Top(&mut stream), &mut de)
+        .and_then(|()| de.end())
         .map_err(|e| CatalogError(format!("the catalog is not valid: {e}")))?;
-    let name = raw
+    let name = stream
         .name
-        .0
+        .take()
         .ok_or_else(|| CatalogError("the catalog has no \"name\"".into()))?;
     validate_name(&name).map_err(|why| {
         CatalogError(format!(
             "the catalog's name \"{name}\" is not usable: {why}"
         ))
     })?;
-    let Entries(pending, mut notices) = raw
-        .plugins
-        .ok_or_else(|| CatalogError("the catalog has no \"plugins\" list".into()))?;
-    let plugin_root = raw
-        .metadata
-        .plugin_root
-        .as_deref()
-        .and_then(|root| clean_relative(root.strip_prefix("./").unwrap_or(root)).ok());
-    let mut entries = Vec::with_capacity(pending.len());
-    for PendingEntry { mut entry, source } in pending {
-        match source.and_then(|raw| resolve_source(raw, plugin_root.as_deref())) {
-            Ok(Ok(source)) => entry.source = Some(source),
-            Ok(Err(reason)) => entry.unavailable = Some(reason),
-            Err(why) => {
-                notices.push(format!("entry \"{}\" skipped: {why}", entry.name));
-                continue;
-            }
-        }
-        entries.push(entry);
+    if !stream.plugins_seen {
+        return Err(CatalogError("the catalog has no \"plugins\" list".into()));
     }
-    Ok(Catalog {
+    for (index, pending) in std::mem::take(&mut stream.waiting) {
+        stream.resolve(index, pending);
+    }
+    let metadata = stream.metadata.take().unwrap_or_default();
+    Ok(CatalogHeader {
         name,
-        display_name: raw.interface.display_name,
-        description: raw.description.0.or(raw.metadata.description),
-        owner: raw.owner.0,
-        entries,
-        notices,
+        display_name: stream.interface.display_name.take(),
+        description: stream.description.take().or(metadata.description),
+        owner: stream.owner.take(),
+        notices: std::mem::take(&mut stream.notices),
+    })
+}
+
+/// [`stream_catalog`] over a file, the file named in the error.
+///
+/// # Errors
+/// The file cannot be opened, or [`stream_catalog`]'s.
+pub fn stream_catalog_file(
+    path: &Path,
+    on_entry: &mut dyn FnMut(usize, CatalogEntry),
+) -> Result<CatalogHeader, CatalogError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| CatalogError(format!("{} could not be read: {e}", path.display())))?;
+    stream_catalog(file, on_entry).map_err(|e| CatalogError(format!("{}: {e}", path.display())))
+}
+
+/// Read a catalog off `reader`, bounded at [`CATALOG_MAX_BYTES`]:
+/// [`stream_catalog`], its entries collected in catalog order.
+///
+/// # Errors
+/// [`stream_catalog`]'s.
+pub fn read_catalog(reader: impl Read) -> Result<Catalog, CatalogError> {
+    let mut entries: Vec<(usize, CatalogEntry)> = Vec::new();
+    let header = stream_catalog(reader, &mut |index, entry| entries.push((index, entry)))?;
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(Catalog {
+        name: header.name,
+        display_name: header.display_name,
+        description: header.description,
+        owner: header.owner,
+        entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+        notices: header.notices,
     })
 }
 
@@ -1253,6 +1425,138 @@ mod tests {
             r#"{"name": "m"}"#,
             r#"{"name": "m", "plugins": {}}"#,
         ] {
+            assert!(read_catalog(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    /// Every entry a stream hands over, with its catalog index.
+    fn streamed(
+        text: &str,
+    ) -> (
+        Result<CatalogHeader, CatalogError>,
+        Vec<(usize, CatalogEntry)>,
+    ) {
+        let mut got = Vec::new();
+        let header = stream_catalog(text.as_bytes(), &mut |i, entry| got.push((i, entry)));
+        (header, got)
+    }
+
+    #[test]
+    fn a_stream_hands_over_what_read_catalog_returns_entry_for_entry() {
+        for text in [CLAUDE_SHAPED, OPENAI_SHAPED] {
+            let whole = catalog(text);
+            let (header, got) = streamed(text);
+            let header = header.unwrap();
+            assert_eq!(header.name, whole.name);
+            assert_eq!(header.display_name, whole.display_name);
+            assert_eq!(header.description, whole.description);
+            assert_eq!(header.owner, whole.owner);
+            assert_eq!(header.notices, whole.notices);
+            let entries: Vec<CatalogEntry> = got.iter().map(|(_, e)| e.clone()).collect();
+            assert_eq!(entries, whole.entries);
+            // In catalog order, each with its index in the `plugins` list.
+            let indexes: Vec<usize> = got.iter().map(|(i, _)| *i).collect();
+            assert!(indexes.windows(2).all(|w| w[0] < w[1]), "{indexes:?}");
+        }
+    }
+
+    #[test]
+    fn a_stream_with_a_broken_entry_still_yields_the_others_with_a_notice() {
+        let (header, got) = streamed(
+            r#"{"name": "m", "plugins": [
+                {"name": "a", "source": "./a"},
+                {"name": "../../.ssh", "source": "./x"},
+                7,
+                {"name": "b", "source": {"source": "npm", "package": "x"}},
+                {"name": "c", "source": "./c"}]}"#,
+        );
+        let header = header.unwrap();
+        let names: Vec<(usize, &str)> = got.iter().map(|(i, e)| (*i, e.name.as_str())).collect();
+        assert_eq!(names, [(0, "a"), (3, "b"), (4, "c")]);
+        assert!(
+            got[1].1.unavailable.is_some(),
+            "an unsupported source is listed, unavailable"
+        );
+        assert_eq!(header.notices.len(), 2, "{:?}", header.notices);
+        assert!(
+            header.notices[0].starts_with("entry 2 skipped"),
+            "{:?}",
+            header.notices
+        );
+        assert!(
+            header.notices[1].starts_with("entry 3 skipped"),
+            "{:?}",
+            header.notices
+        );
+    }
+
+    #[test]
+    fn a_stream_hands_each_entry_over_as_it_is_read() {
+        // The document breaks off after two entries: both were already
+        // handed over when the error is found.
+        let (header, got) = streamed(
+            r#"{"name": "m", "plugins": [{"name": "a", "source": "./a"}, {"name": "b", "source": "./b"}, {"#,
+        );
+        assert!(header.is_err());
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn a_bare_source_waits_for_a_plugin_root_named_after_the_list() {
+        let (header, got) = streamed(
+            r#"{"name": "m", "plugins": [
+                {"name": "b", "source": "bare"},
+                {"name": "a", "source": "./a"}],
+                "metadata": {"pluginRoot": "./plugins"}}"#,
+        );
+        assert!(header.unwrap().notices.is_empty());
+        let got: Vec<(usize, &str, Option<PluginSource>)> = got
+            .iter()
+            .map(|(i, e)| (*i, e.name.as_str(), e.source.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (1, "a", Some(PluginSource::Local { path: "a".into() })),
+                (
+                    0,
+                    "b",
+                    Some(PluginSource::Local {
+                        path: "plugins/bare".into()
+                    })
+                ),
+            ]
+        );
+        // With none named at all, it is skipped, saying why.
+        let (header, got) =
+            streamed(r#"{"name": "m", "plugins": [{"name": "b", "source": "bare"}]}"#);
+        assert!(got.is_empty());
+        assert!(header.unwrap().notices[0].contains("pluginRoot"));
+        // A root named before the list resolves it at once.
+        let (_, got) = streamed(
+            r#"{"name": "m", "metadata": {"pluginRoot": "p"}, "plugins": [{"name": "b", "source": "bare"}]}"#,
+        );
+        assert_eq!(
+            got[0].1.source,
+            Some(PluginSource::Local {
+                path: "p/bare".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_stream_refuses_what_read_catalog_refuses() {
+        for bad in [
+            "{",
+            "[]",
+            r#"{"plugins": []}"#,
+            r#"{"name": "../x", "plugins": []}"#,
+            r#"{"name": "m"}"#,
+            r#"{"name": "m", "plugins": null}"#,
+            r#"{"name": "m", "plugins": {}}"#,
+            r#"{"name": "m", "plugins": []} trailing"#,
+        ] {
+            assert!(streamed(bad).0.is_err(), "{bad}");
             assert!(read_catalog(bad.as_bytes()).is_err(), "{bad}");
         }
     }

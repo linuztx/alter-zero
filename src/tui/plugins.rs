@@ -51,10 +51,11 @@ use super::plugin_cli::plugin_store;
 pub(crate) enum PluginEvent {
     /// A job's word on where it is (`Cloning …`).
     Step { round: u64, step: String },
-    /// A job is done: the snapshot read after it, and what it did.
+    /// A job is done: what it did. (The snapshot after it is read on the
+    /// loop as this lands — never on the worker, whose thread arena would
+    /// keep what the read once held.)
     Done {
         round: u64,
-        snapshot: Option<PluginsSnapshot>,
         outcome: Result<PluginDone, String>,
         forget: Vec<PathBuf>,
         reload: bool,
@@ -164,6 +165,19 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
+    /// The snapshot over the open page's store, read now — `None` with no
+    /// page open (or no store).
+    fn read_plugins_snapshot(&self) -> Option<PluginsSnapshot> {
+        self.app.plugins_menu.as_ref()?;
+        let open = self.plugins_page.open.as_ref()?;
+        Some(page::snapshot(
+            &open.store,
+            &self.cwd,
+            home().as_deref(),
+            session_enabled(),
+        ))
+    }
+
     /// The page closed (or is about to reopen): stop its job and its reads,
     /// and drop the store.
     pub(crate) fn close_plugins_page(&mut self) {
@@ -214,13 +228,11 @@ impl Session<'_> {
         self.cancel_plugin_job();
         let cancel = CancelToken::new();
         self.plugins_page.job = Some((round, cancel.clone()));
-        let enabled = session_enabled();
         std::thread::spawn(move || {
             let _answer = AnswerOnPanic {
                 tx: tx.clone(),
                 answer: Some(PluginEvent::Done {
                     round,
-                    snapshot: None,
                     outcome: Err(WORKER_CRASHED.to_string()),
                     forget: Vec::new(),
                     // It may have changed something before it stopped.
@@ -235,12 +247,8 @@ impl Session<'_> {
                 }));
             };
             let result = page::run_op(&store, &project, &op, &mut progress, &cancel);
-            // Read whatever the operation left, cancelled or not: the page
-            // shows what is on disk now.
-            let snapshot = page::snapshot(&store, &project, home().as_deref(), enabled);
             let _ = tx.send(Box::new(PluginEvent::Done {
                 round,
-                snapshot: Some(snapshot),
                 outcome: result.outcome,
                 forget: result.forget,
                 reload: result.reload,
@@ -270,7 +278,6 @@ impl Session<'_> {
             }
             PluginEvent::Done {
                 round,
-                snapshot,
                 outcome,
                 forget,
                 reload,
@@ -283,24 +290,23 @@ impl Session<'_> {
                 {
                     self.plugins_page.job = None;
                 }
-                let open = self.app.plugins_menu.is_some();
-                let late = (open && snapshot.is_some())
-                    .then(|| snapshot.clone())
-                    .flatten();
-                if !self.app.finish_plugin_job(round, snapshot, &outcome) {
-                    if let Some(snapshot) = late {
-                        // Esc let go of it and it ran to its end anyway: the
-                        // rows show what is on disk now — never a toast over
-                        // the page.
-                        self.app.update_plugins_snapshot(snapshot);
-                    } else if !open {
-                        match &outcome {
-                            Ok(done) if !done.message.is_empty() => {
-                                self.toast(done.message.clone(), ToastKind::Info);
-                            }
-                            Err(error) => self.toast(error.clone(), ToastKind::Error),
-                            Ok(_) => {}
+                // What the operation left on disk, cancelled or not — read
+                // here, on the loop, and only for a page still open.
+                let snapshot = self.read_plugins_snapshot();
+                if self.app.plugins_job_round() == Some(round) {
+                    self.app.finish_plugin_job(round, snapshot, &outcome);
+                } else if let Some(snapshot) = snapshot {
+                    // Esc let go of it and it ran to its end anyway: the
+                    // rows show what is on disk now — never a toast over the
+                    // page.
+                    self.app.update_plugins_snapshot(snapshot);
+                } else {
+                    match &outcome {
+                        Ok(done) if !done.message.is_empty() => {
+                            self.toast(done.message.clone(), ToastKind::Info);
                         }
+                        Err(error) => self.toast(error.clone(), ToastKind::Error),
+                        Ok(_) => {}
                     }
                 }
                 if reload {

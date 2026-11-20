@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::rows::PluginList;
 use super::state::{
     ComponentSummary, InstalledState, MarketplaceRow, MarketplaceSuggestion, PluginContents,
     PluginDone, PluginOp, PluginRow, PluginsSnapshot,
@@ -84,55 +85,9 @@ pub fn snapshot(
     };
     let project_key = project.to_string_lossy();
     let installed = Installed::read(store, &state, project, &project_key, home);
-    for (name, record) in &state.marketplaces {
-        let mut row = MarketplaceRow {
-            name: name.clone(),
-            source: if Path::new(&record.source).is_absolute() {
-                tilde(Path::new(&record.source), home)
-            } else {
-                record.source.clone()
-            },
-            git: !Path::new(&record.source).is_absolute(),
-            revision: record.revision.clone(),
-            updated_at: record.updated.and_then(|t| i64::try_from(t).ok()),
-            installed: state.plugins_of(name).len(),
-            ..MarketplaceRow::default()
-        };
-        match store.catalog(name) {
-            Ok(catalog) => {
-                row.description = catalog.description;
-                row.owner = catalog.owner;
-                row.plugins = catalog.entries.len();
-                row.notes = catalog.notices;
-                out.plugins.reserve(catalog.entries.len());
-                for entry in &catalog.entries {
-                    let Ok(id) = PluginId::new(&entry.name, name) else {
-                        continue;
-                    };
-                    let mut plugin = listed_row(id, entry);
-                    if let Some(found) = installed.take(&plugin.id) {
-                        let record = state.plugin(&found.id);
-                        found.fill(&mut plugin, record, Some(entry));
-                    }
-                    out.plugins.push(plugin);
-                }
-            }
-            Err(error) => row.error = Some(error.to_string()),
-        }
-        out.marketplaces.push(row);
-    }
-    // Installed, and listed by no catalog that reads — still here, so they
-    // can be turned off and uninstalled.
-    for found in installed.rest() {
-        let mut plugin = PluginRow {
-            id: found.id.clone(),
-            unavailable: Some(format!("{} no longer lists it", found.id.marketplace)),
-            ..PluginRow::default()
-        };
-        let record = state.plugin(&found.id);
-        found.fill(&mut plugin, record, None);
-        out.plugins.push(plugin);
-    }
+    let mut list = PluginList::new();
+    out.marketplaces = build_rows(store, &state, &installed, home, &mut list);
+    out.plugins = list;
     if let Ok(listings) = store.list_marketplaces() {
         out.suggestions = listings
             .into_iter()
@@ -149,6 +104,88 @@ pub fn snapshot(
             .collect();
     }
     out
+}
+
+/// Every plugin row the snapshot lists, packed onto `list` — each catalog one
+/// entry at a time (decoded, pushed, dropped; never held whole), then the
+/// installed plugins no catalog that reads lists — and the marketplaces'
+/// rows.
+fn build_rows(
+    store: &PluginStore,
+    state: &PluginsFile,
+    installed: &Installed,
+    home: Option<&Path>,
+    list: &mut PluginList,
+) -> Vec<MarketplaceRow> {
+    let mut markets = Vec::with_capacity(state.marketplaces.len());
+    let mut listed = vec![false; installed.found.len()];
+    for (name, record) in &state.marketplaces {
+        let mut row = MarketplaceRow {
+            name: name.clone(),
+            source: if Path::new(&record.source).is_absolute() {
+                tilde(Path::new(&record.source), home)
+            } else {
+                record.source.clone()
+            },
+            git: !Path::new(&record.source).is_absolute(),
+            revision: record.revision.clone(),
+            updated_at: record.updated.and_then(|t| i64::try_from(t).ok()),
+            installed: state.plugins_of(name).len(),
+            ..MarketplaceRow::default()
+        };
+        let mark = list.mark();
+        let mut entries = 0;
+        let mut claimed = Vec::new();
+        let read = store.catalog_entries(name, &mut |_, entry| {
+            entries += 1;
+            let Ok(id) = PluginId::new(&entry.name, name) else {
+                return;
+            };
+            let mut plugin = listed_row(id, &entry);
+            if let Some(at) = installed.position(&plugin.id) {
+                let record = state.plugin(&plugin.id);
+                installed.found[at].fill(&mut plugin, record, Some(&entry));
+                claimed.push(at);
+            }
+            list.push(plugin);
+        });
+        match read {
+            Ok(header) => {
+                row.description = header.description;
+                row.owner = header.owner;
+                row.plugins = entries;
+                row.notes = header.notices;
+                for at in claimed {
+                    listed[at] = true;
+                }
+            }
+            // What it handed over before it failed is dropped; its installed
+            // plugins stay unlisted, below.
+            Err(error) => {
+                list.truncate(mark);
+                row.error = Some(error.to_string());
+            }
+        }
+        markets.push(row);
+    }
+    // Installed, and listed by no catalog that reads — still here, so they
+    // can be turned off and uninstalled.
+    for (found, _) in installed
+        .found
+        .iter()
+        .zip(&listed)
+        .filter(|(_, listed)| !**listed)
+    {
+        let mut plugin = PluginRow {
+            id: found.id.clone(),
+            unavailable: Some(format!("{} no longer lists it", found.id.marketplace)),
+            ..PluginRow::default()
+        };
+        let record = state.plugin(&found.id);
+        found.fill(&mut plugin, record, None);
+        list.push(plugin);
+    }
+    markets
 }
 
 /// A listed plugin's row, before anything about its installed copy.
@@ -179,7 +216,7 @@ fn listed_row(id: PluginId, entry: &CatalogEntry) -> PluginRow {
 
 /// The installed plugins as the page shows them, read once per snapshot.
 struct Installed {
-    found: std::cell::RefCell<Vec<Option<Found>>>,
+    found: Vec<Found>,
 }
 
 /// One installed plugin: its state here, and what its manifest says.
@@ -248,26 +285,14 @@ impl Installed {
                 }
                 Err(error) => item.state.error = Some(error.to_string()),
             }
-            found.push(Some(item));
+            found.push(item);
         }
-        Self {
-            found: std::cell::RefCell::new(found),
-        }
+        Self { found }
     }
 
-    /// The installed plugin `id`, taken out (so [`rest`](Self::rest) is
-    /// what no catalog listed).
-    fn take(&self, id: &PluginId) -> Option<Found> {
-        self.found
-            .borrow_mut()
-            .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|found| found.id == *id))
-            .and_then(Option::take)
-    }
-
-    /// What was never taken.
-    fn rest(self) -> impl Iterator<Item = Found> {
-        self.found.into_inner().into_iter().flatten()
+    /// Where the installed plugin `id` is.
+    fn position(&self, id: &PluginId) -> Option<usize> {
+        self.found.iter().position(|found| found.id == *id)
     }
 }
 
@@ -276,20 +301,24 @@ impl Found {
     /// manifest's words over the catalog's, and whether `entry` now offers
     /// something newer.
     fn fill(
-        self,
+        &self,
         plugin: &mut PluginRow,
         record: Option<&PluginRecord>,
         entry: Option<&CatalogEntry>,
     ) {
-        let mut state = self.state;
+        let mut state = self.state.clone();
         if let (Some(record), Some(entry)) = (record, entry) {
             state.update = has_update(record, entry);
         }
         plugin.installed = Some(state);
-        plugin.format = self.format;
-        plugin.display_name = self.display_name.or(plugin.display_name.take());
-        plugin.description = self.description.or(plugin.description.take());
-        plugin.notes = self.notes;
+        plugin.format.clone_from(&self.format);
+        if self.display_name.is_some() {
+            plugin.display_name.clone_from(&self.display_name);
+        }
+        if self.description.is_some() {
+            plugin.description.clone_from(&self.description);
+        }
+        plugin.notes.clone_from(&self.notes);
     }
 }
 
@@ -634,12 +663,13 @@ mod tests {
         snapshot(&f.store, &f.project, Some(&f.root), true)
     }
 
-    fn row<'a>(snapshot: &'a PluginsSnapshot, key: &str) -> &'a PluginRow {
+    fn row(snapshot: &PluginsSnapshot, key: &str) -> PluginRow {
         snapshot
             .plugins
             .iter()
-            .find(|p| p.id.to_string() == key)
+            .find(|p| p.id().to_string() == key)
             .unwrap_or_else(|| panic!("no row {key}: {snapshot:#?}"))
+            .to_row()
     }
 
     /// A folder marketplace `demo` added through the page's own operation.
@@ -823,6 +853,24 @@ mod tests {
         assert_eq!(s.marketplaces.len(), 1);
         assert!(s.marketplaces[0].error.is_some());
         assert!(s.plugins.is_empty());
+    }
+
+    #[test]
+    fn a_catalog_broken_part_way_keeps_none_of_its_rows_but_its_installed_plugins() {
+        let f = with_demo();
+        op(&f, PluginOp::Install(id("hello@demo")));
+        // Two whole entries, then the document breaks off.
+        write(
+            &f.root.join("market"),
+            ".claude-plugin/marketplace.json",
+            r#"{"name":"demo","plugins":[{"name":"hello","source":"./plugins/hello"},{"name":"guard","source":"./plugins/guard"},{"#,
+        );
+        let s = snap(&f);
+        assert!(s.marketplaces[0].error.is_some());
+        let rows: Vec<String> = s.plugins.iter().map(|p| p.id().to_string()).collect();
+        assert_eq!(rows, ["hello@demo"], "only the installed plugin, unlisted");
+        assert!(row(&s, "hello@demo").unavailable.is_some());
+        assert!(row(&s, "hello@demo").installed.is_some());
     }
 
     #[test]

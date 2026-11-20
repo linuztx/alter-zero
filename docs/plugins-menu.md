@@ -200,9 +200,14 @@ row `Installing deploy — wait for it, or Esc to cancel`.
   over the facts (id · version · what it is made of) — so ↑/↓ never resize
   the page.
 - **Search** matches name, id, marketplace, display name, description,
-  category and keywords; every word of the query must match. It survives a
-  move between the plugin tabs and is cleared entering or leaving `+ Add`,
-  whose `❯` line is a source field.
+  category and keywords; every word of the query must match, compared in
+  place (no lowercase copy of a row is made, per keystroke or ever). It
+  survives a move between the plugin tabs and is cleared entering or
+  leaving `+ Add`, whose `❯` line is a source field. A search that matches
+  nothing on Installed or a marketplace's tab but something in All says so
+  on its row — `No matching plugins here — 1 in All`, counted over All with
+  the same search — so ←/→ is the next key; it never switches tab by
+  itself.
 - **`+ Add`**: the typed source first, then the official catalogs (`✔ added`
   on one already added, where Enter shows its tab), and last while nothing
   is typed `Add a marketplace…`, which opens the one-field add page. A
@@ -249,16 +254,62 @@ all otherwise.
 ### Terminal size
 
 The list pages are pickers and shed rows down the family ladder, never
-flowing: the description row, then the facts and the counter (compact
-window between `↑`/`↓` slots, header kept), then the header (the tab strip
-kept, since ←/→ still move), then the compact rungs down to the search line
-alone. A plugin's page, a confirmation and the add page bottom-anchor
+flowing: a **ten-row** window where the terminal has room (the `/theme`
+picker's), then the five-row page, then the description row, then the facts
+and the counter (compact window between `↑`/`↓` slots, header kept), then
+the header (the tab strip kept, since ←/→ still move), then the compact
+rungs down to the search line alone. **The page is one height on a given
+terminal while scrolling or typing**: a window holds as many rows as the
+tab lists with no search (up to its size) and keeps them, blank, when a
+search matches fewer; a search that matches nothing says so inside that
+same window, the counter's and the detail's rows kept blank — so the rung
+that fits never depends on the selection or the search. The name column is
+sized off the whole filtered list, not the window. A plugin's page, a confirmation and the add page bottom-anchor
 instead, their actions and status row on screen while the top flows
 (signed on its rows — the job clock ticks only on the status row, which is
 always painted). Every page hugs its rules at every height; the reserved
 height is the built line count; the caret is found in the built page
 (search line, add field) and hidden elsewhere, the hidden cursor seated on
 the highlighted `❯`.
+
+## The snapshot's shape
+
+`PluginsSnapshot::plugins` is a `PluginList`, **packed**
+(`crates/plugins/src/page/rows.rs`): one text buffer every row's strings
+are appended to (keywords `\n`-joined — they are only searched), and one
+`Vec` of fixed-size rows holding spans into it; what a row owns beyond text
+— an installed plugin's state, the contents read for its page, notes — is
+one optional box, absent on the plain listed row. A snapshot of 382 plugins
+is a handful of allocations (~93 kB of text, ~40 kB of rows), where the
+owned rows were some ten thousand small ones. The page reads a row through
+`PluginRef`, a `Copy` view over the list and an index whose methods are
+named after the owned row's fields; the owned `PluginRow` stays the input
+form a host pushes (and `SnapshotRows`, the owned snapshot, what tests
+build and `.into()` packs).
+
+It is built **one catalog entry at a time** (`marketplace::stream_catalog`,
+`PluginStore::catalog_entries`): a serde visitor over the bounded reader
+hands each `plugins` element — decoded and validated by `read_catalog`'s
+own rules, which is now this with the entries collected — to the builder,
+which packs it and drops it; no catalog is ever held whole. (An entry whose
+bare source needs a `metadata.pluginRoot` the document has not reached yet
+waits for the end of the document — the one case anything is held.) A
+catalog that fails part way is truncated back off the list.
+
+**Why**: glibc keeps what a heap of small interleaved allocations once
+held (`docs/memory.md` *The rule*). The owned rows left +656 kB after the
+first open and close of 382 plugins and grew to +1 024 kB over four cycles;
+packed, +288–296 kB after the first, settling within a few tens of kB.
+What remains is one copy of the packed data (the frame buffers that grow to
+the page's height after it are allocated above it, so it is reused, not
+returned) plus what any tall page costs (`/settings`: +156 kB). Exact
+sizing by a counting pass, compacting into exact buffers and reserving
+large buffers to be mapped were each measured and made it worse — glibc's
+dynamic mmap threshold sends the second same-size request to the heap.
+
+The snapshot after an operation is read **on the loop** as the answer
+arrives, and only for a page still open — never on the worker, whose
+thread arena would keep what the read once held.
 
 ## The boundary
 
@@ -304,8 +355,9 @@ session holds):
   No config home: the page opens with that as its `error`. The store lives
   while the page is open and is dropped when it closes.
 - **Run**: one job at a time on a thread with the crate's `CancelToken`; its
-  progress lines go to `report_plugin_step`, its answer — with the snapshot
-  read after it, cancelled or not — to `finish_plugin_job`. An answer the
+  progress lines go to `report_plugin_step`, its answer to
+  `finish_plugin_job` with the snapshot read on the loop as it lands,
+  cancelled or not. An answer the
   page does not take is a toast only once the page has closed; one Esc let
   go of while the page stayed open just updates its rows. Then, when
   `reload`, `reload_plugins(&forget)`. A worker that panics still answers.

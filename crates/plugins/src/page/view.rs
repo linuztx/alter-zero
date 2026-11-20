@@ -34,8 +34,9 @@ use std::ops::Range;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::rows::PluginRef;
 use super::state::{
-    AddRow, MarketplaceRow, PluginAction, PluginContents, PluginRow, PluginsConfirm, PluginsPage,
+    AddRow, MarketplaceRow, PluginAction, PluginContents, PluginsConfirm, PluginsPage,
     PluginsScreen, PluginsTab, plugin_actions,
 };
 
@@ -111,7 +112,10 @@ pub trait PageKit {
     fn chip_gap(&self) -> &'static str;
     /// The gap between a list's columns.
     fn value_gap(&self) -> usize;
-    /// How many rows a whole list page shows.
+    /// How many rows a whole list page shows where the terminal has room —
+    /// the `/theme` picker's ten-row window.
+    fn tall_list_rows(&self) -> usize;
+    /// How many rows the next rung down shows — the picker family's five.
     fn list_rows(&self) -> usize;
     /// A colour by role.
     fn color(&self, role: KitColor) -> Color;
@@ -297,6 +301,8 @@ const PLUGINS_ADD_HINT: [(&str, u8); 2] = [("Enter to add", 1), ("Esc to go back
 /// The list's placeholders: a search matching nothing, and the two empty
 /// tabs — each naming where to go next.
 const PLUGINS_NO_MATCH: &str = "No matching plugins";
+/// Between the no-match row and where the search does match.
+const SEP_DASH: &str = " — ";
 const PLUGINS_NONE_INSTALLED: &str =
     "No plugins installed yet — find one under All, or add a marketplace under + Add.";
 const PLUGINS_NONE_LISTED: &str = "No plugins listed yet — add a marketplace under + Add.";
@@ -466,7 +472,7 @@ fn list_hint(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Line<'static>
     clauses.extend([PLUGINS_HINT_TABS, PLUGINS_HINT_OPEN]);
     if menu
         .highlighted_plugin()
-        .is_some_and(|plugin| plugin.installed.is_some())
+        .is_some_and(|plugin| plugin.installed().is_some())
     {
         clauses.push(PLUGINS_HINT_TOGGLE);
     }
@@ -512,7 +518,7 @@ fn tab_label(menu: &PluginsPage, tab: &PluginsTab) -> String {
         ),
         PluginsTab::Marketplace(name) => (
             name.clone(),
-            Some(plugins.iter().filter(|p| p.id.marketplace == *name).count()),
+            Some(plugins.iter().filter(|p| p.marketplace() == *name).count()),
         ),
         PluginsTab::Add => (PLUGINS_TAB_ADD.to_string(), None),
     };
@@ -709,11 +715,11 @@ fn header_lines(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Vec<Line<'
 /// word keeps the `/settings` two-tone, light for a plugin that is in use.
 fn plugin_status(
     kit: &dyn PageKit,
-    plugin: &PluginRow,
+    plugin: PluginRef<'_>,
 ) -> (&'static str, Color, &'static str, Color) {
     let lit = kit.color(KitColor::ValueOn);
     let off = kit.color(KitColor::ValueOff);
-    match &plugin.installed {
+    match plugin.installed() {
         Some(state) if state.error.is_some() => (
             PLUGINS_BROKEN_MARK,
             kit.color(KitColor::Fail),
@@ -732,7 +738,7 @@ fn plugin_status(
             PLUGINS_DISABLED,
             off,
         ),
-        None if plugin.unavailable.is_some() => (
+        None if plugin.unavailable().is_some() => (
             PLUGINS_UNAVAILABLE_MARK,
             kit.color(KitColor::Meta),
             PLUGINS_UNAVAILABLE,
@@ -748,7 +754,7 @@ fn plugin_status(
 }
 
 /// A status's whole width: the mark, the space, the word.
-fn status_cols(kit: &dyn PageKit, plugin: &PluginRow) -> usize {
+fn status_cols(kit: &dyn PageKit, plugin: PluginRef<'_>) -> usize {
     let (mark, _, word, _) = plugin_status(kit, plugin);
     kit.cols(mark) + 1 + kit.cols(word)
 }
@@ -756,17 +762,17 @@ fn status_cols(kit: &dyn PageKit, plugin: &PluginRow) -> usize {
 /// The name each row shows: the plugin's own — or, where two listed rows
 /// share one (the same plugin in two marketplaces), the whole
 /// `name@marketplace`, so the two can be told apart.
-fn row_names(rows: &[&PluginRow]) -> Vec<String> {
+fn row_names(rows: &[PluginRef<'_>]) -> Vec<String> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     for plugin in rows {
-        *seen.entry(plugin.id.name.as_str()).or_default() += 1;
+        *seen.entry(plugin.name()).or_default() += 1;
     }
     rows.iter()
         .map(|plugin| {
-            if seen[plugin.id.name.as_str()] > 1 {
-                plugin.id.to_string()
+            if seen[plugin.name()] > 1 {
+                plugin.id().to_string()
             } else {
-                plugin.id.name.clone()
+                plugin.name().to_string()
             }
         })
         .collect()
@@ -789,10 +795,15 @@ struct RowColumns {
 /// the row has past its status — the descriptions keep the larger share,
 /// and a name past the cap is `…`-cut, whole in the facts under the list —
 /// and never so wide that the status mark loses its seat.
-fn row_columns(kit: &dyn PageKit, rows: &[&PluginRow], names: &[String], width: u16) -> RowColumns {
+fn row_columns(
+    kit: &dyn PageKit,
+    rows: &[PluginRef<'_>],
+    names: &[String],
+    width: u16,
+) -> RowColumns {
     let width = usize::from(width);
     let gap = kit.value_gap();
-    let status = rows.iter().map(|p| status_cols(kit, p)).max().unwrap_or(0);
+    let status = rows.iter().map(|p| status_cols(kit, *p)).max().unwrap_or(0);
     let past_status = width.saturating_sub(kit.row_head_cols() + gap + status + gap);
     let cap = (past_status * 2 / 5)
         .clamp(PLUGINS_NAME_COL_MIN, PLUGINS_NAME_COL_MAX)
@@ -808,12 +819,12 @@ fn row_columns(kit: &dyn PageKit, rows: &[&PluginRow], names: &[String], width: 
     // marketplace added — need no column repeating its name.
     let mixed = rows.iter().any(|p| {
         rows.first()
-            .is_some_and(|first| first.id.marketplace != p.id.marketplace)
+            .is_some_and(|first| first.marketplace() != p.marketplace())
     });
     let market = mixed
         .then(|| {
             rows.iter()
-                .map(|p| kit.cols(&p.id.marketplace))
+                .map(|p| kit.cols(p.marketplace()))
                 .max()
                 .unwrap_or(0)
         })
@@ -835,7 +846,7 @@ fn row_columns(kit: &dyn PageKit, rows: &[&PluginRow], names: &[String], width: 
 /// A row never ends on a column's padding.
 fn plugin_row(
     kit: &dyn PageKit,
-    plugin: &PluginRow,
+    plugin: PluginRef<'_>,
     name: &str,
     selected: bool,
     columns: RowColumns,
@@ -866,14 +877,14 @@ fn plugin_row(
         && room > gap
     {
         room -= gap;
-        let market = kit.ellipsize(&plugin.id.marketplace, market_width.min(room).max(1));
+        let market = kit.ellipsize(plugin.marketplace(), market_width.min(room).max(1));
         room -= kit.cols(&market);
         spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::styled(market.clone(), dim));
         gap = market_width.saturating_sub(kit.cols(&market)) + kit.value_gap();
     }
     let mut lead = "";
-    if plugin.installed.as_ref().is_some_and(|state| state.update) {
+    if plugin.installed().is_some_and(|state| state.update) {
         let update = format!("{PLUGINS_UPDATE_MARK} {PLUGINS_UPDATE_WORD}");
         if room >= gap + kit.cols(&update) {
             room -= gap + kit.cols(&update);
@@ -887,8 +898,7 @@ fn plugin_row(
         }
     }
     if let Some(description) = plugin
-        .description
-        .as_deref()
+        .description()
         .map(flat)
         .filter(|text| !text.is_empty())
     {
@@ -911,7 +921,7 @@ fn plugin_row(
 /// hides below, every row on the columns of [`row_columns`].
 fn plugin_window(
     kit: &dyn PageKit,
-    rows: &[&PluginRow],
+    rows: &[PluginRef<'_>],
     selected: usize,
     max: usize,
     width: u16,
@@ -1010,13 +1020,13 @@ fn add_window(
 
 /// A plugin's facts in one line: its id, version and what it is made of —
 /// or, for one that cannot be installed, why.
-fn plugin_facts(plugin: &PluginRow) -> String {
-    let mut parts = vec![plugin.id.to_string()];
+fn plugin_facts(plugin: PluginRef<'_>) -> String {
+    let mut parts = vec![plugin.id().to_string()];
     if let Some(version) = plugin.shown_version() {
         parts.push(version_label(version));
     }
-    match (&plugin.unavailable, plugin.summary()) {
-        (Some(reason), _) if plugin.installed.is_none() => parts.push(flat(reason)),
+    match (plugin.unavailable(), plugin.summary()) {
+        (Some(reason), _) if plugin.installed().is_none() => parts.push(flat(reason)),
         (_, Some(summary)) => parts.push(summary.line()),
         _ => {}
     }
@@ -1058,12 +1068,11 @@ fn detail_lines(
         match menu.plugin_rows().get(selected) {
             Some(plugin) => (
                 plugin
-                    .description
-                    .as_deref()
+                    .description()
                     .map(flat)
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| PLUGINS_NO_DESCRIPTION.to_string()),
-                plugin_facts(plugin),
+                plugin_facts(*plugin),
             ),
             None => return Vec::new(),
         }
@@ -1081,7 +1090,18 @@ fn detail_lines(
 fn placeholder_lines(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Vec<Line<'static>> {
     let dim = kit.color(KitColor::Meta);
     if !menu.query.trim().is_empty() {
-        vec![kit.placeholder_row(PLUGINS_NO_MATCH, dim, width)]
+        // Nothing here, something elsewhere: say where, so ←/→ is the
+        // obvious next key — never "there is no such plugin".
+        let elsewhere = match menu.tab {
+            PluginsTab::All | PluginsTab::Add => 0,
+            _ => menu.matches_in_all(),
+        };
+        let text = if elsewhere > 0 {
+            format!("{PLUGINS_NO_MATCH} here{SEP_DASH}{elsewhere} in {PLUGINS_TAB_ALL}")
+        } else {
+            PLUGINS_NO_MATCH.to_string()
+        };
+        vec![kit.placeholder_row(&text, dim, width)]
     } else if menu.tab == PluginsTab::Installed {
         kit.wrapped_rows(PLUGINS_NONE_INSTALLED, dim, width)
     } else {
@@ -1093,17 +1113,26 @@ fn placeholder_lines(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Vec<L
 /// ([`first_page_that_fits`]) — the picker ladder:
 ///
 /// 1. the **whole** page: the header (title, the tab's subtitle and counts,
-///    notes, tabs), the `❯` search line, five rows, the `(n/total)` counter,
-///    the highlighted row's description and its facts — a row each, so the
-///    page is one height at every selection ([`detail_lines`]) — the last
-///    failure, the status row;
-/// 2. the whole page with the description gone, its facts kept;
-/// 3. the **compact** page with the header kept: three rows between the
+///    notes, tabs), the `❯` search line, a window of ten rows (the
+///    `/theme` picker's), the `(n/total)` counter, the highlighted row's
+///    description and its facts — a row each ([`detail_lines`]) — and the
+///    status row;
+/// 2. the same with a window of five rows;
+/// 3. the five-row page with the description gone, its facts kept;
+/// 4. the **compact** page with the header kept: three rows between the
 ///    reserved `↑`/`↓` slots ([`compact_page_with_header`]);
-/// 4. the compact page under the **tab strip** alone — the tabs outlast
+/// 5. the compact page under the **tab strip** alone — the tabs outlast
 ///    the title, since ←/→ still move between them;
-/// 5. the header-less compact page and its rungs ([`compact_page`]), down
+/// 6. the header-less compact page and its rungs ([`compact_page`]), down
 ///    to the search line alone.
+///
+/// **One height while scrolling or typing.** A window holds as many rows
+/// as the tab lists with no search, up to its size ([`PluginsPage::tab_total`]),
+/// padded when the search matches fewer; a search that matches nothing
+/// says so inside that same window, the counter's and the detail's rows
+/// kept blank. So which rung fits never depends on the selection or the
+/// search, and the page never changes height under a keystroke. The name
+/// column is sized off the whole filtered list, not the window.
 ///
 /// The status row is always one row in the hint's seat (`status_row`):
 /// what runs and what happened never move the page.
@@ -1120,7 +1149,10 @@ fn list_page(kit: &dyn PageKit, menu: &PluginsPage, width: u16, height: u16) -> 
     };
 
     let len = menu.row_count();
-    if len == 0 {
+    let total = menu.tab_total();
+    if total == 0 {
+        // The tab lists nothing at all (nothing installed, nothing added):
+        // its placeholder, which no keystroke on this tab changes.
         let block = placeholder_lines(kit, menu, width);
         let window = |max| kit.placeholder_window(&block, max);
         return kit.first_page_that_fits(
@@ -1137,20 +1169,36 @@ fn list_page(kit: &dyn PageKit, menu: &PluginsPage, width: u16, height: u16) -> 
             ],
         );
     }
-    let selected = menu.selected.min(len - 1);
+    let selected = menu.selected.min(len.saturating_sub(1));
     let plugins = menu.plugin_rows();
     let adds = menu.add_rows();
+    let placeholder = (len == 0).then(|| placeholder_lines(kit, menu, width));
     let window = |max: usize| {
-        if menu.tab == PluginsTab::Add {
+        if let Some(block) = &placeholder {
+            kit.placeholder_window(block, max)
+        } else if menu.tab == PluginsTab::Add {
             add_window(kit, menu, &adds, selected, max, width)
         } else {
             plugin_window(kit, &plugins, selected, max, width)
         }
     };
-    let whole = |describe: bool| {
-        let (_, rows, _) = window(kit.list_rows());
+    let whole = |size: usize, describe: bool| {
+        let slots = size.min(total);
         let mut body = vec![Line::default()];
+        let (_, mut rows, _) = match &placeholder {
+            Some(block) => (0, block.iter().take(slots).cloned().collect(), 0),
+            None => window(slots),
+        };
+        rows.resize(slots, Line::default());
         body.extend(rows);
+        if placeholder.is_some() {
+            // The counter's row and the detail's, kept, blank.
+            body.push(Line::default());
+            body.push(Line::default());
+            body.extend((0..1 + usize::from(describe)).map(|_| Line::default()));
+            body.push(Line::default());
+            return body;
+        }
         body.push(kit.counter(selected, len));
         body.push(Line::default());
         let detail = detail_lines(kit, menu, selected, describe, width);
@@ -1160,11 +1208,14 @@ fn list_page(kit: &dyn PageKit, menu: &PluginsPage, width: u16, height: u16) -> 
         }
         body
     };
+    let tall = kit.tall_list_rows();
+    let short = kit.list_rows();
     kit.first_page_that_fits(
         height,
         &[
-            &|| page(whole(true)),
-            &|| page(whole(false)),
+            &|| page(whole(tall, true)),
+            &|| page(whole(short, true)),
+            &|| page(whole(short, false)),
             &|| kit.compact_page_with_header(&header, &search, &window, &compact_tail, width),
             &|| kit.compact_page_with_header(&tabs, &search, &window, &compact_tail, width),
             &|| kit.compact_page(height, &search, &window, &compact_tail, width),
@@ -1254,8 +1305,8 @@ fn action_rows(
 
 /// The state that leads the line under a plugin's name: the mark in its
 /// state's colour over what the state means here.
-fn plugin_state(kit: &dyn PageKit, plugin: &PluginRow) -> (&'static str, Color, &'static str) {
-    match &plugin.installed {
+fn plugin_state(kit: &dyn PageKit, plugin: PluginRef<'_>) -> (&'static str, Color, &'static str) {
+    match plugin.installed() {
         Some(state) if state.error.is_some() => (
             PLUGINS_BROKEN_MARK,
             kit.color(KitColor::Fail),
@@ -1271,7 +1322,7 @@ fn plugin_state(kit: &dyn PageKit, plugin: &PluginRow) -> (&'static str, Color, 
             kit.color(KitColor::Meta),
             "disabled in this directory",
         ),
-        None if plugin.unavailable.is_some() => (
+        None if plugin.unavailable().is_some() => (
             PLUGINS_UNAVAILABLE_MARK,
             kit.color(KitColor::Meta),
             "cannot be installed",
@@ -1472,10 +1523,10 @@ fn clause_lines(
 /// reviewed before they run — then what it carries that is not used here;
 /// or one `Contents:` row while it is read, for one read only once it is
 /// installed, for a read that failed, for one with nothing usable here.
-fn contents_facts(kit: &dyn PageKit, plugin: &PluginRow) -> Vec<Fact> {
+fn contents_facts(kit: &dyn PageKit, plugin: PluginRef<'_>) -> Vec<Fact> {
     let value = Style::new().fg(kit.color(KitColor::Value));
     let names = Style::new().fg(kit.color(KitColor::State));
-    let summary = match &plugin.contents {
+    let summary = match plugin.contents() {
         PluginContents::NotRead => {
             let reading = PLUGINS_CONTENTS_READING.to_string();
             return vec![Fact::Line("Contents:", reading, value)];
@@ -1546,7 +1597,12 @@ fn contents_facts(kit: &dyn PageKit, plugin: &PluginRow) -> Vec<Fact> {
 /// or was not loaded, the trust warning for one not installed that runs or
 /// may run something, what reading it said; then the numbered actions its
 /// state affords.
-fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width: u16) -> PageBuild {
+fn plugin_page(
+    kit: &dyn PageKit,
+    menu: &PluginsPage,
+    plugin: PluginRef<'_>,
+    width: u16,
+) -> PageBuild {
     let value = Style::new().fg(kit.color(KitColor::Value));
     let names = Style::new().fg(kit.color(KitColor::State));
     let dim = Style::new().fg(kit.color(KitColor::Meta));
@@ -1559,27 +1615,23 @@ fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width:
             Span::raw(" "),
             Span::styled(state, names),
         ],
-        vec![Span::styled(plugin.id.to_string(), dim)],
+        vec![Span::styled(plugin.id().to_string(), dim)],
     ];
     if let Some(version) = plugin.shown_version() {
         clauses.push(vec![Span::styled(version_label(version), dim)]);
     }
-    if let Some(author) = &plugin.author {
+    if let Some(author) = plugin.author() {
         clauses.push(vec![Span::styled(format!("by {author}"), dim)]);
     }
     head.extend(clause_lines(kit, clauses, width));
-    if let Some(description) = plugin
-        .description
-        .as_deref()
-        .filter(|d| !d.trim().is_empty())
-    {
+    if let Some(description) = plugin.description().filter(|d| !d.trim().is_empty()) {
         head.push(Line::default());
         head.extend(kit.linked_rows(description, kit.color(KitColor::Description), width));
     }
 
     let mut facts = Vec::new();
-    if plugin.installed.as_ref().is_some_and(|state| state.update) {
-        let offered = plugin.version.as_deref().map_or_else(
+    if plugin.installed().is_some_and(|state| state.update) {
+        let offered = plugin.version().map_or_else(
             || "a newer copy is available".to_string(),
             |version| format!("{} is available", version_label(version)),
         );
@@ -1590,24 +1642,23 @@ fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width:
             offered,
         ));
     }
-    if let Some(format) = &plugin.format {
-        facts.push(Fact::Line("Format:", format.clone(), value));
+    if let Some(format) = plugin.format() {
+        facts.push(Fact::Line("Format:", format.to_string(), value));
     }
-    facts.push(Fact::Linked("Source:", plugin.source.clone(), value));
+    facts.push(Fact::Linked("Source:", plugin.source().to_string(), value));
     // Loaded in place: its folder in its marketplace is the plugin.
     if let Some(folder) = plugin
-        .installed
-        .as_ref()
+        .installed()
         .filter(|state| state.in_place)
         .and_then(|state| state.loads_from.clone())
     {
         facts.push(Fact::Wrapped("Loads from:", folder, value));
     }
-    if let Some(homepage) = &plugin.homepage {
-        facts.push(Fact::Url("Homepage:", homepage.clone(), value));
+    if let Some(homepage) = plugin.homepage() {
+        facts.push(Fact::Url("Homepage:", homepage.to_string(), value));
     }
-    if let Some(category) = &plugin.category {
-        facts.push(Fact::Line("Category:", category.clone(), value));
+    if let Some(category) = plugin.category() {
+        facts.push(Fact::Line("Category:", category.to_string(), value));
     }
     facts.extend(contents_facts(kit, plugin));
     let col = facts
@@ -1622,24 +1673,24 @@ fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width:
         .collect();
 
     let mut notes = Vec::new();
-    if let Some(error) = plugin.installed.as_ref().and_then(|s| s.error.as_deref()) {
+    if let Some(error) = plugin.installed().and_then(|s| s.error.as_deref()) {
         notes.extend(kit.wrapped_rows(error, kit.color(KitColor::Error), width));
     }
-    if let Some(reason) = &plugin.unavailable {
+    if let Some(reason) = plugin.unavailable() {
         notes.extend(kit.wrapped_rows(&capitalized(reason), kit.color(KitColor::Meta), width));
     }
     // Not installed, so not yet reviewed: one that runs something — or whose
     // contents are read only once it is installed, or could not be read —
     // warns before Install.
-    let warns = match &plugin.contents {
+    let warns = match plugin.contents() {
         PluginContents::Known(summary) => summary.runs_code(),
         PluginContents::Unknown | PluginContents::Unreadable(_) => true,
         PluginContents::NotRead => false,
     };
-    if plugin.installed.is_none() && plugin.unavailable.is_none() && warns {
+    if plugin.installed().is_none() && plugin.unavailable().is_none() && warns {
         notes.extend(kit.wrapped_rows(PLUGINS_TRUST_NOTE, kit.color(KitColor::Meta), width));
     }
-    for note in &plugin.notes {
+    for note in plugin.notes() {
         notes.extend(kit.wrapped_rows(note, kit.color(KitColor::Meta), width));
     }
 

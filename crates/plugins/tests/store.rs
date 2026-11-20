@@ -942,3 +942,58 @@ fn the_real_marketplaces_read_and_their_plugins_install() {
     }
     assert_eq!(loaded.plugins.len() + loaded.not_loaded.len(), 16);
 }
+
+/// The real catalogs, opt-in (`ALTER_ZERO_REAL_MARKETPLACES`): the entry at
+/// a time reader hands over exactly what `read_catalog` returns, entry for
+/// entry, in order.
+#[test]
+fn the_real_catalogs_stream_entry_for_entry_as_they_read() {
+    let Some(repos) = std::env::var_os("ALTER_ZERO_REAL_MARKETPLACES") else {
+        return;
+    };
+    let repos = PathBuf::from(repos);
+    for (dir, count) in [("claude-plugins-official", 317), ("openai-plugins", 65)] {
+        let path = alter_zero_plugins::find_catalog(&repos.join(dir)).expect("a catalog");
+        let whole = alter_zero_plugins::read_catalog_file(&path).expect("it reads");
+        let mut streamed = Vec::new();
+        let header = alter_zero_plugins::stream_catalog_file(&path, &mut |index, entry| {
+            streamed.push((index, entry));
+        })
+        .expect("it streams");
+        assert_eq!(whole.entries.len(), count, "{dir}");
+        assert_eq!(header.name, whole.name);
+        assert_eq!(header.notices, whole.notices);
+        assert!(
+            streamed.windows(2).all(|w| w[0].0 < w[1].0),
+            "{dir}: in order"
+        );
+        let entries: Vec<_> = streamed.into_iter().map(|(_, entry)| entry).collect();
+        assert_eq!(entries, whole.entries, "{dir}");
+    }
+}
+
+/// How long the `/plugins` snapshot takes to read, opt-in:
+/// `ALTER_ZERO_PLUGINS_SNAPSHOT_HOME` names a config home whose
+/// `plugins.json` records the marketplaces to read (`--nocapture` prints
+/// the median of five reads).
+#[test]
+fn the_snapshot_read_time_over_a_recorded_config_home() {
+    let Some(home) = std::env::var_os("ALTER_ZERO_PLUGINS_SNAPSHOT_HOME") else {
+        return;
+    };
+    let store = PluginStore::new(PluginsLayout::for_config_home(Path::new(&home)));
+    let mut times = Vec::new();
+    let mut rows = 0;
+    for _ in 0..5 {
+        let started = std::time::Instant::now();
+        let snapshot = alter_zero_plugins::page::snapshot(&store, Path::new("/"), None, true);
+        times.push(started.elapsed());
+        rows = snapshot.plugins.len();
+        assert!(snapshot.marketplaces.iter().all(|m| m.error.is_none()));
+    }
+    times.sort();
+    println!(
+        "snapshot of {rows} plugins: median {:?} (of {times:?})",
+        times[2]
+    );
+}

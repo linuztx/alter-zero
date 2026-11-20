@@ -81,10 +81,11 @@ pub use self::manifest::{
     parse_legacy, read_bounded, resolve_inside, resolve_lenient,
 };
 pub use self::marketplace::{
-    ANTHROPIC_RESERVED, CATALOG_MAX_BYTES, Catalog, CatalogEntry, CatalogError,
+    ANTHROPIC_RESERVED, CATALOG_MAX_BYTES, Catalog, CatalogEntry, CatalogError, CatalogHeader,
     DESCRIPTION_MAX_CHARS, MARKETPLACE_MANIFESTS, OPENAI_RESERVED, PluginSource, check_reserved,
     checked_ref, checked_sha, clean_relative, find_catalog, github_owner, normalize_git_url,
-    read_catalog, read_catalog_file, repository_name, single_plugin_catalog,
+    read_catalog, read_catalog_file, repository_name, single_plugin_catalog, stream_catalog,
+    stream_catalog_file,
 };
 pub use self::mcp::{LegacyEntry, ServerTransport, parse_legacy_entry};
 pub use self::page::{PageKit, PluginOp, PluginsPage, PluginsSnapshot};

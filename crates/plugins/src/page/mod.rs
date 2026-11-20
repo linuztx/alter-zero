@@ -4,6 +4,7 @@
 //! drops it when it closes.
 
 mod host;
+mod rows;
 mod state;
 mod view;
 
@@ -11,10 +12,11 @@ mod view;
 mod tests;
 
 pub use host::{OpResult, contents, run_op, snapshot};
+pub use rows::{ListMark, PluginList, PluginRef};
 pub use state::{
     AddRow, ComponentSummary, InstalledState, KeyOutcome, LineField, MarketplaceRow,
     MarketplaceSuggestion, PLUGINS_JOB_DELAY, PluginAction, PluginContents, PluginDone, PluginId,
     PluginJob, PluginOp, PluginRow, PluginsConfirm, PluginsPage, PluginsScreen, PluginsSnapshot,
-    PluginsTab, plugin_actions,
+    PluginsTab, SnapshotRows, plugin_actions,
 };
 pub use view::{KitColor, PageBuild, PageKit};

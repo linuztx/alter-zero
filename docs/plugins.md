@@ -548,10 +548,12 @@ open on it; that is the thing this one does not do.
   streamed off the file through `serde_json::from_reader` over a
   `Read::take` cap (8 MiB) into typed records naming only the fields the
   page shows — never the 192 KB body in one buffer, never a tree of it —
-  with descriptions cut at 2 000 characters. It is read on the loop (two
-  catalogs are a few milliseconds), so the page's first frame already has
-  its rows and there is no placeholder for them to push away; it is dropped
-  when the page closes.
+  with descriptions cut at 2 000 characters — and, for the page, **one
+  entry at a time** (`stream_catalog`), each packed into the snapshot's one
+  text buffer and one row table and dropped (`docs/plugins-menu.md` *The
+  snapshot's shape*). It is read on the loop (two catalogs are 4–7 ms), so
+  the page's first frame already has its rows and there is no placeholder
+  for them to push away; it is dropped when the page closes.
 - **Fetching** is a child process; its output is captured into a few
   kilobytes.
 - **The worker thread** that waits on `git` builds nothing large (a new

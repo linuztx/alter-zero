@@ -5,11 +5,11 @@
 //! two read-only views.
 
 use super::*;
-use alter_zero_plugins::page::{PluginDone, PluginsSnapshot};
+use alter_zero_plugins::page::{PluginDone, SnapshotRows};
 
-fn catalog() -> PluginsSnapshot {
+fn catalog() -> SnapshotRows {
     use alter_zero_plugins::page::{InstalledState, MarketplaceRow, PluginId, PluginRow};
-    PluginsSnapshot {
+    SnapshotRows {
         marketplaces: vec![MarketplaceRow {
             name: "team".to_string(),
             ..MarketplaceRow::default()
@@ -23,13 +23,13 @@ fn catalog() -> PluginsSnapshot {
             ..PluginRow::default()
         }],
         session_enabled: true,
-        ..PluginsSnapshot::default()
+        ..SnapshotRows::default()
     }
 }
 
 fn plugins_app() -> App {
     let mut app = App::new();
-    app.open_plugins_menu(catalog());
+    app.open_plugins_menu(catalog().into());
     app
 }
 
@@ -56,16 +56,16 @@ fn closing_drops_the_snapshot_and_a_late_answer_is_dropped() {
     };
     app.close_plugins_menu();
     assert!(app.plugins_menu.is_none());
-    assert!(!app.finish_plugin_job(first, Some(catalog()), &Ok(PluginDone::default())));
-    app.open_plugins_menu(catalog());
-    assert!(!app.finish_plugin_job(first, Some(catalog()), &Ok(PluginDone::default())));
+    assert!(!app.finish_plugin_job(first, Some(catalog().into()), &Ok(PluginDone::default())));
+    app.open_plugins_menu(catalog().into());
+    assert!(!app.finish_plugin_job(first, Some(catalog().into()), &Ok(PluginDone::default())));
     let Action::PluginOp { round: second, .. } = app.on_key(key(KeyCode::Char(' '))) else {
         panic!("a toggle is a job");
     };
     assert_ne!(first, second);
-    assert!(app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
+    assert!(app.finish_plugin_job(second, Some(catalog().into()), &Ok(PluginDone::default())));
     assert!(
-        !app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())),
+        !app.finish_plugin_job(second, Some(catalog().into()), &Ok(PluginDone::default())),
         "an answer is taken once"
     );
 }

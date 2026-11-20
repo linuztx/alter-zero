@@ -7,7 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::{
     AddRow, ComponentSummary, InstalledState, KeyOutcome, MarketplaceRow, MarketplaceSuggestion,
     PLUGINS_JOB_DELAY, PluginAction, PluginContents, PluginDone, PluginId, PluginOp, PluginRow,
-    PluginsConfirm, PluginsPage, PluginsScreen, PluginsSnapshot, PluginsTab, plugin_actions,
+    PluginsConfirm, PluginsPage, PluginsScreen, PluginsTab, SnapshotRows, plugin_actions,
 };
 
 fn id(key: &str) -> PluginId {
@@ -64,8 +64,14 @@ fn suggestions() -> Vec<MarketplaceSuggestion> {
     .collect()
 }
 
-fn catalog() -> PluginsSnapshot {
-    PluginsSnapshot {
+/// [`plugin_actions`] for one owned row.
+fn actions(row: &PluginRow) -> Vec<PluginAction> {
+    let list = super::PluginList::from(vec![row.clone()]);
+    plugin_actions(list.get(0).expect("the row"))
+}
+
+fn catalog() -> SnapshotRows {
+    SnapshotRows {
         marketplaces: vec![market("team", true), market("local", false)],
         plugins: vec![
             plugin("hookify@team", Some(true)),
@@ -109,7 +115,7 @@ fn menu(page: &PluginsPage) -> &PluginsPage {
 fn rows(page: &PluginsPage) -> Vec<String> {
     page.plugin_rows()
         .iter()
-        .map(|p| p.id.to_string())
+        .map(|p| p.id().to_string())
         .collect()
 }
 
@@ -117,13 +123,13 @@ fn rows(page: &PluginsPage) -> Vec<String> {
 fn finish(
     app: &mut PluginsPage,
     action: KeyOutcome,
-    catalog: PluginsSnapshot,
+    catalog: SnapshotRows,
     outcome: Result<PluginDone, String>,
 ) -> PluginOp {
     let KeyOutcome::Op { op, round } = action else {
         panic!("{action:?}");
     };
-    assert!(app.finish_job(round, Some(catalog), &outcome));
+    assert!(app.finish_job(round, Some(catalog.into()), &outcome));
     op
 }
 
@@ -143,7 +149,7 @@ fn the_tabs_are_all_installed_each_marketplace_and_add() {
         ]
     );
     // Nothing added: the fixed tabs alone.
-    let app = PluginsPage::open(PluginsSnapshot::default(), 0);
+    let app = PluginsPage::open(SnapshotRows::default(), 0);
     assert_eq!(
         menu(&app).tabs(),
         [PluginsTab::All, PluginsTab::Installed, PluginsTab::Add]
@@ -167,7 +173,7 @@ fn the_page_opens_on_its_snapshot_on_the_tab_with_something_on_it() {
     assert_eq!(menu(&app).tab, PluginsTab::All);
 
     // Nothing at all: where a marketplace is added.
-    let app = PluginsPage::open(PluginsSnapshot::default(), 0);
+    let app = PluginsPage::open(SnapshotRows::default(), 0);
     assert_eq!(menu(&app).tab, PluginsTab::Add);
 }
 
@@ -254,7 +260,7 @@ fn space_turns_an_installed_plugin_on_or_off_at_once() {
         menu(&app).error.as_deref(),
         Some("Disabling hookify — wait for it, or Esc to cancel")
     );
-    assert!(menu(&app).plugin_rows()[1].installed.is_some());
+    assert!(menu(&app).plugin_rows()[1].installed().is_some());
     assert!(!menu(&app).plugin_rows()[1].is_enabled(), "lint stays off");
 }
 
@@ -268,7 +274,7 @@ fn a_failure_is_said_on_the_page_until_the_next_key() {
     let KeyOutcome::Op { round, .. } = action else {
         panic!("{action:?}");
     };
-    app.finish_job(round, Some(catalog()), &Err("disk full".to_string()));
+    app.finish_job(round, Some(catalog().into()), &Err("disk full".to_string()));
     assert_eq!(menu(&app).error.as_deref(), Some("disk full"));
     app.on_key(key(KeyCode::Up));
     assert_eq!(menu(&app).error, None);
@@ -292,7 +298,7 @@ fn esc_stops_a_running_job_before_anything_else() {
     assert_eq!(app.on_key(key(KeyCode::Esc)), KeyOutcome::CancelJob);
     assert_eq!(app.job_round(), None, "the page let go of it");
     // Its answer, when it comes, is no longer the page's.
-    assert!(!app.finish_job(round, Some(catalog()), &Err("cancelled".to_string())));
+    assert!(!app.finish_job(round, Some(catalog().into()), &Err("cancelled".to_string())));
     assert_eq!(menu(&app).error, None);
     assert_eq!(app.on_key(ctrl('c')), KeyOutcome::Close);
 }
@@ -301,7 +307,7 @@ fn esc_stops_a_running_job_before_anything_else() {
 fn a_plugin_page_offers_what_its_state_affords() {
     let installed = plugin("a@m", Some(true));
     assert_eq!(
-        plugin_actions(&installed),
+        actions(&installed),
         [
             PluginAction::Disable,
             PluginAction::Update,
@@ -310,22 +316,22 @@ fn a_plugin_page_offers_what_its_state_affords() {
         ]
     );
     let off = plugin("a@m", Some(false));
-    assert_eq!(plugin_actions(&off)[0], PluginAction::Enable);
+    assert_eq!(actions(&off)[0], PluginAction::Enable);
     let available = plugin("a@m", None);
     assert_eq!(
-        plugin_actions(&available),
+        actions(&available),
         [PluginAction::Install, PluginAction::Back]
     );
     let mut unavailable = plugin("a@m", None);
     unavailable.unavailable = Some("npm sources are not supported".to_string());
-    assert_eq!(plugin_actions(&unavailable), [PluginAction::Back]);
+    assert_eq!(actions(&unavailable), [PluginAction::Back]);
     let mut orphan = plugin("a@m", Some(true));
     orphan.unavailable = Some("its marketplace no longer lists it".to_string());
-    assert!(!plugin_actions(&orphan).contains(&PluginAction::Update));
+    assert!(!actions(&orphan).contains(&PluginAction::Update));
     // Loaded in place, it is always current: nothing to update.
     let mut in_place = plugin("a@m", Some(true));
     in_place.installed.as_mut().unwrap().in_place = true;
-    assert!(!plugin_actions(&in_place).contains(&PluginAction::Update));
+    assert!(!actions(&in_place).contains(&PluginAction::Update));
 }
 
 #[test]
@@ -695,7 +701,7 @@ fn a_plugins_page_asks_for_its_contents_once_and_takes_the_answer() {
     assert!(app.supply_contents(&deploy, PluginContents::Known(preview.clone())));
     assert_eq!(menu(&app).inspecting, None);
     assert_eq!(
-        menu(&app).plugin(&deploy).unwrap().contents,
+        menu(&app).plugin(&deploy).unwrap().contents().clone(),
         PluginContents::Known(preview.clone())
     );
     // A snapshot read since (when the page opened) keeps what was learnt.
@@ -703,7 +709,7 @@ fn a_plugins_page_asks_for_its_contents_once_and_takes_the_answer() {
     again.plugins[2].contents = PluginContents::NotRead;
     app.update_snapshot(again);
     assert_eq!(
-        menu(&app).plugin(&deploy).unwrap().contents,
+        menu(&app).plugin(&deploy).unwrap().contents().clone(),
         PluginContents::Known(preview)
     );
     // Back, and in again: nothing more to ask.
@@ -729,7 +735,7 @@ fn an_install_reads_the_plugins_contents_again() {
     assert!(app.finish_job(round, None, &Ok(PluginDone::default())));
     let deploy = id("deploy@team");
     assert_eq!(
-        menu(&app).plugin(&deploy).unwrap().contents,
+        menu(&app).plugin(&deploy).unwrap().contents().clone(),
         PluginContents::NotRead
     );
     assert_eq!(app.pending_inspect(), Some(deploy));
@@ -784,7 +790,7 @@ fn an_update_leads_a_plugins_actions_when_there_is_one() {
     let mut stale = plugin("a@m", Some(true));
     stale.installed.as_mut().unwrap().update = true;
     assert_eq!(
-        plugin_actions(&stale),
+        actions(&stale),
         [
             PluginAction::Update,
             PluginAction::Disable,
@@ -892,10 +898,10 @@ fn a_fresh_snapshot_drops_a_preview_once_the_plugin_is_installed() {
     let mut other = plugin("lint@acme", None);
     other.contents = PluginContents::NotRead;
     let mut page = PluginsPage::open(
-        PluginsSnapshot {
+        SnapshotRows {
             marketplaces: vec![market("acme", true)],
             plugins: vec![listed.clone(), other.clone()],
-            ..PluginsSnapshot::default()
+            ..SnapshotRows::default()
         },
         0,
     );
@@ -908,19 +914,27 @@ fn a_fresh_snapshot_drops_a_preview_once_the_plugin_is_installed() {
     };
     let mut now = listed;
     now.installed = Some(installed(true));
-    assert!(page.finish_job(
-        round,
-        Some(PluginsSnapshot {
-            marketplaces: vec![market("acme", true)],
-            plugins: vec![now, other],
-            ..PluginsSnapshot::default()
-        }),
-        &Ok(PluginDone::default()),
-    ));
+    assert!(
+        page.finish_job(
+            round,
+            Some(
+                SnapshotRows {
+                    marketplaces: vec![market("acme", true)],
+                    plugins: vec![now, other],
+                    ..SnapshotRows::default()
+                }
+                .into()
+            ),
+            &Ok(PluginDone::default()),
+        )
+    );
     assert_eq!(
-        page.plugin(&id("deploy@acme")).unwrap().contents,
+        page.plugin(&id("deploy@acme")).unwrap().contents().clone(),
         PluginContents::NotRead
     );
     assert_eq!(page.pending_inspect(), Some(id("deploy@acme")));
-    assert_eq!(page.plugin(&id("lint@acme")).unwrap().contents, preview);
+    assert_eq!(
+        page.plugin(&id("lint@acme")).unwrap().contents().clone(),
+        preview
+    );
 }

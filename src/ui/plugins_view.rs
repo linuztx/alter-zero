@@ -80,6 +80,10 @@ impl PageKit for FamilyKit {
         SETTINGS_VALUE_GAP
     }
 
+    fn tall_list_rows(&self) -> usize {
+        usize::from(THEME_MENU_MAX_ROWS)
+    }
+
     fn list_rows(&self) -> usize {
         usize::from(SETTINGS_MENU_MAX_ROWS)
     }

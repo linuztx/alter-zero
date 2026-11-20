@@ -33,6 +33,8 @@ use unicode_width::UnicodeWidthChar;
 
 pub use crate::state::PluginId;
 
+use super::rows::{PluginList, PluginRef};
+
 /// How many rows PageUp/PageDown move a list — the main crate's
 /// `TOOL_VIEW_PAGE`, the picker family's page.
 const PAGE_STEP: usize = 10;
@@ -287,8 +289,9 @@ pub struct PluginsSnapshot {
     /// The added marketplaces, in tab order.
     pub marketplaces: Vec<MarketplaceRow>,
     /// Every plugin of every added marketplace, in any order (the page sorts
-    /// installed first, then by name).
-    pub plugins: Vec<PluginRow>,
+    /// installed first, then by name) — packed, a handful of allocations
+    /// whatever their number (`rows`).
+    pub plugins: PluginList,
     /// The official catalogs `+ Add` offers.
     pub suggestions: Vec<MarketplaceSuggestion>,
     /// Why the plugin state could not be read, when it could not.
@@ -304,8 +307,31 @@ impl PluginsSnapshot {
     pub fn installed_count(&self) -> usize {
         self.plugins
             .iter()
-            .filter(|p| p.installed.is_some())
+            .filter(|p| p.installed().is_some())
             .count()
+    }
+}
+
+/// A snapshot in its owned form — the rows as [`PluginRow`]s — for a host
+/// or a test that builds one by hand; `.into()` packs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotRows {
+    pub marketplaces: Vec<MarketplaceRow>,
+    pub plugins: Vec<PluginRow>,
+    pub suggestions: Vec<MarketplaceSuggestion>,
+    pub error: Option<String>,
+    pub session_enabled: bool,
+}
+
+impl From<SnapshotRows> for PluginsSnapshot {
+    fn from(rows: SnapshotRows) -> Self {
+        Self {
+            marketplaces: rows.marketplaces,
+            plugins: rows.plugins.into(),
+            suggestions: rows.suggestions,
+            error: rows.error,
+            session_enabled: rows.session_enabled,
+        }
     }
 }
 
@@ -354,14 +380,14 @@ impl PluginAction {
 /// first, `Back to plugins` last. One loaded in place is always current: it
 /// has no update; one with an update leads on it.
 #[must_use]
-pub fn plugin_actions(plugin: &PluginRow) -> Vec<PluginAction> {
+pub fn plugin_actions(plugin: PluginRef<'_>) -> Vec<PluginAction> {
     use PluginAction as A;
-    match &plugin.installed {
-        None if plugin.unavailable.is_none() => vec![A::Install, A::Back],
+    match plugin.installed() {
+        None if plugin.unavailable().is_none() => vec![A::Install, A::Back],
         None => vec![A::Back],
         Some(state) => {
             let toggle = if state.enabled { A::Disable } else { A::Enable };
-            let can_update = plugin.unavailable.is_none() && !state.in_place;
+            let can_update = plugin.unavailable().is_none() && !state.in_place;
             let mut out = Vec::with_capacity(4);
             if can_update && state.update {
                 out.extend([A::Update, toggle]);
@@ -543,26 +569,25 @@ impl PluginsPage {
     /// The plugins the current tab lists, matching the search — installed
     /// first, then by name (codex's order); none on the add tab.
     #[must_use]
-    pub fn plugin_rows(&self) -> Vec<&PluginRow> {
+    ///
+    /// Derived per call, nothing kept: the filter and the order compare in
+    /// place, without a lowercase copy of any row.
+    pub fn plugin_rows(&self) -> Vec<PluginRef<'_>> {
         let query = self.query.trim().to_lowercase();
-        let mut rows: Vec<&PluginRow> = self
+        let mut rows: Vec<PluginRef<'_>> = self
             .snapshot
             .plugins
             .iter()
-            .filter(|plugin| match &self.tab {
-                PluginsTab::All => true,
-                PluginsTab::Installed => plugin.installed.is_some(),
-                PluginsTab::Marketplace(name) => plugin.id.marketplace == *name,
-                PluginsTab::Add => false,
-            })
-            .filter(|plugin| query.is_empty() || matches_query(plugin, &query))
+            .filter(|plugin| lists(&self.tab, *plugin))
+            .filter(|plugin| query.is_empty() || matches_query(*plugin, &query))
             .collect();
         rows.sort_by(|a, b| {
-            b.installed
+            b.installed()
                 .is_some()
-                .cmp(&a.installed.is_some())
-                .then_with(|| a.id.name.to_lowercase().cmp(&b.id.name.to_lowercase()))
-                .then_with(|| a.id.cmp(&b.id))
+                .cmp(&a.installed().is_some())
+                .then_with(|| cmp_ignoring_case(a.name(), b.name()))
+                .then_with(|| a.name().cmp(b.name()))
+                .then_with(|| a.marketplace().cmp(b.marketplace()))
         });
         rows
     }
@@ -597,6 +622,38 @@ impl PluginsPage {
         rows
     }
 
+    /// How many rows the current tab lists with no search — what its window
+    /// is sized to, so typing never changes the page's height.
+    #[must_use]
+    pub fn tab_total(&self) -> usize {
+        match self.tab {
+            // The typed source takes the place of the row for any other.
+            PluginsTab::Add => self.snapshot.suggestions.len() + 1,
+            _ => self
+                .snapshot
+                .plugins
+                .iter()
+                .filter(|plugin| lists(&self.tab, *plugin))
+                .count(),
+        }
+    }
+
+    /// How many plugins of every tab the search matches — what a tab whose
+    /// rows it does not match points to (`No matching plugins here — 1 in
+    /// All`). Zero with no search.
+    #[must_use]
+    pub fn matches_in_all(&self) -> usize {
+        let query = self.query.trim().to_lowercase();
+        if query.is_empty() {
+            return 0;
+        }
+        self.snapshot
+            .plugins
+            .iter()
+            .filter(|plugin| matches_query(*plugin, &query))
+            .count()
+    }
+
     /// How many rows the current tab shows.
     #[must_use]
     pub fn row_count(&self) -> usize {
@@ -608,8 +665,8 @@ impl PluginsPage {
 
     /// The plugin of `id` in the snapshot.
     #[must_use]
-    pub fn plugin(&self, id: &PluginId) -> Option<&PluginRow> {
-        self.snapshot.plugins.iter().find(|plugin| plugin.id == *id)
+    pub fn plugin(&self, id: &PluginId) -> Option<PluginRef<'_>> {
+        self.snapshot.plugins.find(id)
     }
 
     /// The marketplace `name` in the snapshot.
@@ -644,7 +701,7 @@ impl PluginsPage {
 
     /// The highlighted plugin of the list, when a plugin tab is showing one.
     #[must_use]
-    pub fn highlighted_plugin(&self) -> Option<&PluginRow> {
+    pub fn highlighted_plugin(&self) -> Option<PluginRef<'_>> {
         if self.screen != PluginsScreen::List {
             return None;
         }
@@ -705,34 +762,79 @@ impl PluginsPage {
     /// Move the plugin `id`'s row on or off in the page's own copy — the
     /// row answers at once; the registry write follows.
     fn set_row_enabled(&mut self, id: &PluginId, enabled: bool) {
-        if let Some(state) = self
-            .snapshot
-            .plugins
-            .iter_mut()
-            .find(|plugin| plugin.id == *id)
-            .and_then(|plugin| plugin.installed.as_mut())
+        if let Some(at) = self.snapshot.plugins.position(id)
+            && let Some(state) = self.snapshot.plugins.installed_mut(at)
         {
             state.enabled = enabled;
         }
     }
 }
 
+/// Does `tab` list `plugin` (before any search)?
+fn lists(tab: &PluginsTab, plugin: PluginRef<'_>) -> bool {
+    match tab {
+        PluginsTab::All => true,
+        PluginsTab::Installed => plugin.installed().is_some(),
+        PluginsTab::Marketplace(name) => plugin.marketplace() == name,
+        PluginsTab::Add => false,
+    }
+}
+
 /// Does `plugin` match the lowercased `query` — by name, id, marketplace,
 /// display name, description, category or keyword? Every word of it must.
-fn matches_query(plugin: &PluginRow, query: &str) -> bool {
-    let haystack = [
-        Some(plugin.id.to_string()),
-        plugin.display_name.clone(),
-        plugin.description.clone(),
-        plugin.category.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(plugin.keywords.iter().cloned())
-    .collect::<Vec<_>>()
-    .join("\n")
-    .to_lowercase();
-    query.split_whitespace().all(|word| haystack.contains(word))
+fn matches_query(plugin: PluginRef<'_>, query: &str) -> bool {
+    query.split_whitespace().all(|word| {
+        let id = match word.split_once('@') {
+            Some((name, marketplace)) => {
+                ends_with_ignoring_case(plugin.name(), name)
+                    && starts_with_ignoring_case(plugin.marketplace(), marketplace)
+            }
+            None => false,
+        };
+        id || [
+            Some(plugin.name()),
+            Some(plugin.marketplace()),
+            plugin.display_name(),
+            plugin.description(),
+            plugin.category(),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(plugin.keywords())
+        .any(|field| contains_ignoring_case(field, word))
+    })
+}
+
+/// `text` lowercased, a character at a time — no copy.
+fn lower(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.chars().flat_map(char::to_lowercase)
+}
+
+/// The two in order, ignoring case.
+fn cmp_ignoring_case(a: &str, b: &str) -> std::cmp::Ordering {
+    lower(a).cmp(lower(b))
+}
+
+/// Does `text` start with the lowercased `prefix`, ignoring case?
+fn starts_with_ignoring_case(text: &str, prefix: &str) -> bool {
+    let mut text = lower(text);
+    prefix.chars().all(|c| text.next() == Some(c))
+}
+
+/// Does `text` end with the lowercased `suffix`, ignoring case?
+fn ends_with_ignoring_case(text: &str, suffix: &str) -> bool {
+    suffix.is_empty()
+        || text
+            .char_indices()
+            .any(|(at, _)| lower(&text[at..]).eq(suffix.chars()))
+}
+
+/// Does `text` hold the lowercased `word`, ignoring case?
+fn contains_ignoring_case(text: &str, word: &str) -> bool {
+    word.is_empty()
+        || text
+            .char_indices()
+            .any(|(at, _)| starts_with_ignoring_case(&text[at..], word))
 }
 
 /// The tab a page opens on: what is installed; else everything there is;
@@ -890,7 +992,8 @@ impl PluginsPage {
     /// *Installed* when anything is, else *All*, else `+ Add`. Its jobs'
     /// rounds continue from `round_base`.
     #[must_use]
-    pub fn open(snapshot: PluginsSnapshot, round_base: u64) -> Self {
+    pub fn open(snapshot: impl Into<PluginsSnapshot>, round_base: u64) -> Self {
+        let snapshot = snapshot.into();
         let tab = first_tab(&snapshot);
         Self {
             snapshot,
@@ -913,25 +1016,28 @@ impl PluginsPage {
     /// is the one they were read from (not installed then and now, or the
     /// same version installed). A tab or a page whose subject is gone comes
     /// back to the list.
-    pub fn update_snapshot(&mut self, snapshot: PluginsSnapshot) {
-        let highlighted = self.highlighted_plugin().map(|plugin| plugin.id.clone());
+    pub fn update_snapshot(&mut self, snapshot: impl Into<PluginsSnapshot>) {
+        let snapshot = snapshot.into();
+        let highlighted = self.highlighted_plugin().map(|plugin| plugin.id());
         // What a row held is what its copy held: a preview read before an
         // install, or the copy before an update, is not carried over.
-        let copy =
-            |plugin: &PluginRow| plugin.installed.as_ref().map(|state| state.version.clone());
+        let copy = |plugin: PluginRef<'_>| plugin.installed().map(|state| state.version.clone());
         let known: Vec<(PluginId, Option<Option<String>>, PluginContents)> = self
             .snapshot
             .plugins
             .iter()
-            .filter(|plugin| plugin.contents != PluginContents::NotRead)
-            .map(|plugin| (plugin.id.clone(), copy(plugin), plugin.contents.clone()))
+            .filter(|plugin| *plugin.contents() != PluginContents::NotRead)
+            .map(|plugin| (plugin.id(), copy(plugin), plugin.contents().clone()))
             .collect();
         self.snapshot = snapshot;
         for (id, was, contents) in known {
-            if let Some(plugin) = self.snapshot.plugins.iter_mut().find(|plugin| {
-                plugin.id == id && plugin.contents == PluginContents::NotRead && copy(plugin) == was
-            }) {
-                plugin.contents = contents;
+            let at = self.snapshot.plugins.iter().position(|plugin| {
+                plugin.is(&id)
+                    && *plugin.contents() == PluginContents::NotRead
+                    && copy(plugin) == was
+            });
+            if let Some(at) = at {
+                self.snapshot.plugins.set_contents(at, contents);
             }
         }
         self.settle(highlighted.as_ref());
@@ -944,10 +1050,10 @@ impl PluginsPage {
         if self.inspecting.as_ref() == Some(id) {
             self.inspecting = None;
         }
-        let Some(plugin) = self.snapshot.plugins.iter_mut().find(|p| p.id == *id) else {
+        let Some(at) = self.snapshot.plugins.position(id) else {
             return false;
         };
-        plugin.contents = contents;
+        self.snapshot.plugins.set_contents(at, contents);
         true
     }
 
@@ -960,7 +1066,7 @@ impl PluginsPage {
             return None;
         };
         let plugin = self.plugin(id)?;
-        (plugin.contents == PluginContents::NotRead && self.inspecting.as_ref() != Some(id))
+        (*plugin.contents() == PluginContents::NotRead && self.inspecting.as_ref() != Some(id))
             .then(|| id.clone())
     }
 
@@ -1013,7 +1119,7 @@ impl PluginsPage {
             return KeyOutcome::None;
         }
         let installed = match &op {
-            PluginOp::Install(id) => self.plugin(id).is_some_and(|p| p.installed.is_some()),
+            PluginOp::Install(id) => self.plugin(id).is_some_and(|p| p.installed().is_some()),
             _ => false,
         };
         self.rounds += 1;
@@ -1079,9 +1185,11 @@ impl PluginsPage {
                 // can say it holds: read it again.
                 if let PluginOp::Install(id) | PluginOp::Uninstall(id) = &job.op
                     && !fresh
-                    && let Some(plugin) = self.snapshot.plugins.iter_mut().find(|p| p.id == *id)
+                    && let Some(at) = self.snapshot.plugins.position(id)
                 {
-                    plugin.contents = PluginContents::NotRead;
+                    self.snapshot
+                        .plugins
+                        .set_contents(at, PluginContents::NotRead);
                 }
             }
         }
@@ -1106,7 +1214,7 @@ impl PluginsPage {
         }
         if self.screen == PluginsScreen::List
             && let Some(id) = highlighted
-            && let Some(at) = self.plugin_rows().iter().position(|p| p.id == *id)
+            && let Some(at) = self.plugin_rows().iter().position(|p| p.is(id))
         {
             self.selected = at;
         }
@@ -1191,8 +1299,8 @@ impl PluginsPage {
             KeyCode::Enter => {
                 self.list_selected = self.selected;
                 if let Some(plugin) = self.highlighted_plugin() {
-                    let id = plugin.id.clone();
-                    let unread = plugin.contents == PluginContents::NotRead;
+                    let id = plugin.id();
+                    let unread = *plugin.contents() == PluginContents::NotRead;
                     self.screen = PluginsScreen::Plugin(id.clone());
                     self.selected = 0;
                     if unread {
@@ -1203,8 +1311,8 @@ impl PluginsPage {
             // Space types on the add tab — a path may hold one.
             KeyCode::Char(' ') if !adding => {
                 let toggle = self.highlighted_plugin().and_then(|plugin| {
-                    plugin.installed.as_ref().map(|state| PluginOp::SetEnabled {
-                        id: plugin.id.clone(),
+                    plugin.installed().map(|state| PluginOp::SetEnabled {
+                        id: plugin.id(),
                         enabled: !state.enabled,
                     })
                 });
@@ -1252,8 +1360,8 @@ impl PluginsPage {
             .snapshot
             .plugins
             .iter()
-            .filter(|plugin| plugin.installed.is_some() && plugin.id.marketplace == name)
-            .map(|plugin| plugin.id.name.clone())
+            .filter(|plugin| plugin.installed().is_some() && plugin.marketplace() == name)
+            .map(|plugin| plugin.name().to_string())
             .collect();
         self.list_selected = self.selected;
         self.screen = PluginsScreen::Confirm(PluginsConfirm::RemoveMarketplace { name, plugins });
@@ -1294,7 +1402,7 @@ impl PluginsPage {
     /// opened from; else on the row the page was opened from.
     fn back_to_list(&mut self) {
         let subject = match &self.screen {
-            PluginsScreen::Plugin(id) => self.plugin_rows().iter().position(|p| p.id == *id),
+            PluginsScreen::Plugin(id) => self.plugin_rows().iter().position(|p| p.is(id)),
             PluginsScreen::Add => self.add_rows().iter().position(|row| *row == AddRow::Other),
             _ => None,
         };
@@ -1330,11 +1438,11 @@ impl PluginsPage {
             self.back_to_list();
             return KeyOutcome::None;
         }
-        let Some(plugin) = self.plugin(id).cloned() else {
+        let Some(plugin) = self.plugin(id) else {
             self.back_to_list();
             return KeyOutcome::None;
         };
-        let actions = plugin_actions(&plugin);
+        let actions = plugin_actions(plugin);
         let Some(index) = self.chosen_action(key, actions.len()) else {
             return KeyOutcome::None;
         };

@@ -28,8 +28,8 @@ use super::manifest::{
     ENTRY_FILE, ManifestError, ManifestFormat, classify, load_manifest, resolve_inside,
 };
 use super::marketplace::{
-    Catalog, CatalogEntry, CatalogError, PluginSource, check_reserved, find_catalog,
-    read_catalog_file, repository_name, single_plugin_catalog,
+    Catalog, CatalogEntry, CatalogError, CatalogHeader, PluginSource, check_reserved, find_catalog,
+    read_catalog_file, repository_name, single_plugin_catalog, stream_catalog_file,
 };
 use super::source::{
     GITHUB_BASE, MarketplaceSource, MarketplaceSpec, SourceError, parse_marketplace_source,
@@ -698,6 +698,58 @@ impl PluginStore {
             });
         }
         Ok(catalog)
+    }
+
+    /// [`catalog`](Self::catalog) one entry at a time: each usable entry of
+    /// an added marketplace's catalog handed to `on_entry` (with its index
+    /// in the catalog) as it is read, and the catalog's header returned —
+    /// what the `/plugins` page's snapshot is built from, so no catalog is
+    /// ever held whole. On an error, what was handed over is to be dropped.
+    ///
+    /// # Errors
+    /// [`catalog`](Self::catalog)'s.
+    pub fn catalog_entries(
+        &self,
+        name: &str,
+        on_entry: &mut dyn FnMut(usize, CatalogEntry),
+    ) -> Result<CatalogHeader, PluginError> {
+        let root = self.marketplace_root(name)?;
+        let header = match find_catalog(&root) {
+            Some(path) => {
+                stream_catalog_file(&path, on_entry).map_err(|e| PluginError::Catalog {
+                    marketplace: name.to_string(),
+                    error: PluginError::Catalog {
+                        marketplace: root.display().to_string(),
+                        error: e.0,
+                    }
+                    .to_string(),
+                })?
+            }
+            // A marketplace of one: there is one entry to hand over.
+            None => {
+                let catalog = self.catalog(name)?;
+                for (index, entry) in catalog.entries.into_iter().enumerate() {
+                    on_entry(index, entry);
+                }
+                return Ok(CatalogHeader {
+                    name: catalog.name,
+                    display_name: catalog.display_name,
+                    description: catalog.description,
+                    owner: catalog.owner,
+                    notices: catalog.notices,
+                });
+            }
+        };
+        if header.name != name {
+            return Err(PluginError::Catalog {
+                marketplace: name.to_string(),
+                error: format!(
+                    "it is now named {}; remove it and add it again",
+                    header.name
+                ),
+            });
+        }
+        Ok(header)
     }
 
     /// Add a marketplace from what the user typed (`owner/repo`, a git URL,
