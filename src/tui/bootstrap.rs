@@ -675,6 +675,7 @@ impl<'t> Session<'t> {
             mcp: mcp_manager,
             trust,
             plugins,
+            plugins_page: super::plugins::PluginsBoundary::new(),
             held_prompt: None,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
@@ -1140,6 +1141,8 @@ impl<'t> Session<'t> {
         // reads likewise.
         self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
+        // …and the /plugins page's job, which kills its git child.
+        self.close_plugins_page();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`
         // (docs/background.md) — and cancel every subagent (their threads observe

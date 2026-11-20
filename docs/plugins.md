@@ -705,9 +705,11 @@ of it — which is what makes every smoke phase start with no plugins.
 | `crates/plugins/src/components.rs` | what an installed plugin contributes (skills, commands as skills, agents, hooks, MCP servers by Claude Code's names), its summary, and the `git ls-tree` preview |
 | `crates/plugins/src/git.rs` | the hardened, bounded, cancellable `git` runner |
 | `crates/plugins/src/store.rs` | add / update / remove a marketplace; install / update / uninstall / toggle; `startup_plugins` (reads `plugins.json` alone) and `load_enabled` (each plugin's own files) |
-| `src/app/plugins_menu.rs` | the page's pure state and keys |
+| `crates/plugins/src/page/` | the page's state, keys and view (`docs/plugins-menu.md`) |
+| `src/app/plugins_menu.rs` | the page's shim in `App`: open, close, forward |
 | `src/ui/plugins_view.rs` | the page's one line builder |
-| `src/tui/plugins.rs` | the page's boundary: the worker, the operations, the snapshot |
+| `crates/plugins/src/page/host.rs` | the page's work over the store: the snapshot, a plugin's contents, every operation (`docs/plugins-menu.md` *The boundary*) |
+| `src/tui/plugins.rs` | the page's boundary: the store while open, a thread per operation, Esc's cancel, the reload after a change |
 | `src/tui/plugin_runtime.rs` | plugins on in this directory → skills, agents, hooks, MCP; reload |
 | `src/tui/plugin_cli.rs` | the `plugin` command family |
 | `src/cli.rs` | its grammar and help pages |

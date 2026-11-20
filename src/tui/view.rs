@@ -57,11 +57,6 @@ const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// picker left open shows them within this long (`docs/model-cache.md`).
 const MODEL_PICKER_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How often an open `/plugins` page redraws while a job runs: often enough
-/// that its line appears near the 400 ms it waits for and its seconds tick
-/// on time, a sixth of the status chain's rate (`docs/plugins-menu.md`).
-const PLUGINS_JOB_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
-
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
 /// rewind) re-renders into scrollback. A purge drops the terminal's own
 /// scrollback, so the whole conversation is rebuilt from history — capped here
@@ -1013,9 +1008,7 @@ impl Session<'_> {
         // A `/plugins` job keeps a slow chain of its own: its line appears
         // once the job has run 400 ms and then counts seconds — never the
         // status chain's thirty frames a second (docs/plugins-menu.md).
-        if self.app.plugins_menu_ticks() {
-            self.frame.schedule_frame_in(PLUGINS_JOB_TICK_INTERVAL);
-        }
+        self.tick_plugins_page();
         Ok(())
     }
 

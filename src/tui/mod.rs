@@ -55,7 +55,7 @@
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
-//! | [`plugins`] | The `/plugins` page's boundary: the snapshot it opens on, its operations and their answers — a stub until the plugin library is connected (`docs/plugins-menu.md`). |
+//! | [`plugins`] | The `/plugins` page's boundary: the store it opens over, the snapshot, each operation on a worker, the answers and the session reload after them (`docs/plugins-menu.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list / usage / transcript-render jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
@@ -383,6 +383,9 @@ pub(crate) struct Session<'t> {
     /// the skill and agent sources the per-turn rescans walk — nothing
     /// loaded while no plugin is on.
     plugins: plugin_runtime::PluginRuntime,
+    /// The `/plugins` page's channel, and its store and job while it is open
+    /// (`docs/plugins-menu.md` *The boundary*).
+    plugins_page: plugins::PluginsBoundary,
     /// A `[PROMPT]` from the command line, held while the startup review
     /// asks what may run, so the first turn starts with its answers
     /// (`docs/config-review.md`).

@@ -568,6 +568,11 @@ fn toggling_a_plugin_never_moves_the_page() {
 #[test]
 fn a_failure_is_said_in_red_on_the_page() {
     let mut app = plugins_app();
+    let before = page(&app);
+    let hint_row = before
+        .iter()
+        .position(|t| t.contains("←/→ tabs"))
+        .expect("the hint");
     press(&mut app, KeyCode::Char(' '));
     let round = app.plugins_job_round().unwrap();
     app.finish_plugin_job(
@@ -587,6 +592,25 @@ fn a_failure_is_said_in_red_on_the_page() {
             .any(|span| span.style.fg == Some(toast_error_color()))
     );
     assert_frame_hugs_content("a failure", &lines);
+    // Said in the hint's own row: the page does not move.
+    let failed = page(&app);
+    assert_eq!(failed.len(), before.len(), "{failed:#?}");
+    assert!(
+        failed[hint_row].contains("could not save plugins.json"),
+        "{failed:#?}"
+    );
+    // A failure longer than the row is cut there, never wrapped onto more.
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Char(' '));
+    let round = app.plugins_job_round().unwrap();
+    let long = "the marketplace could not be read because ".repeat(6);
+    app.finish_plugin_job(round, Some(catalog()), &Err(long));
+    let failed = page(&app);
+    assert_eq!(failed.len(), before.len(), "{failed:#?}");
+    assert!(failed[hint_row].ends_with('…'), "{failed:#?}");
+    // The next key brings the hint back.
+    press(&mut app, KeyCode::Down);
+    assert!(page(&app)[hint_row].contains("←/→ tabs"));
 }
 
 #[test]
@@ -1370,7 +1394,9 @@ fn the_caret_shows_only_where_text_is_typed_and_sits_in_the_field() {
 #[test]
 fn a_wide_name_keeps_the_columns_in_line() {
     let mut catalog = catalog();
-    let mut wide = plugin("漢字ツール@team", Some(true));
+    // A plugin's name is ASCII (the id grammar); its display name need not be.
+    let mut wide = plugin("kanji-tool@team", Some(true));
+    wide.display_name = Some("漢字ツール".to_string());
     wide.description = Some("絵文字 🎉 and CJK in the description".to_string());
     catalog.plugins.push(wide);
     let mut app = open_with(catalog);
@@ -1381,7 +1407,7 @@ fn a_wide_name_keeps_the_columns_in_line() {
         let before = &row[..row.find(['✔', '◯', '+', '–']).expect("a mark")];
         crate::ui::wrap::cols(before)
     };
-    assert_eq!(status_at("漢字ツール"), status_at("hookify"), "{texts:#?}");
+    assert_eq!(status_at("kanji-tool"), status_at("hookify"), "{texts:#?}");
     assert_eq!(status_at("deploy"), status_at("hookify"), "{texts:#?}");
     for row in &texts {
         assert!(crate::ui::wrap::cols(row) <= 100, "{row:?}");

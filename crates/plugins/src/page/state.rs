@@ -909,25 +909,28 @@ impl PluginsPage {
 
     /// Replace the snapshot in place — the host read it again — keeping the
     /// tab, the search, the screen and the highlighted row's plugin; and
-    /// the contents learnt since the page opened. A tab or a page whose
-    /// subject is gone comes back to the list.
+    /// the contents learnt since the page opened, of every row whose copy
+    /// is the one they were read from (not installed then and now, or the
+    /// same version installed). A tab or a page whose subject is gone comes
+    /// back to the list.
     pub fn update_snapshot(&mut self, snapshot: PluginsSnapshot) {
         let highlighted = self.highlighted_plugin().map(|plugin| plugin.id.clone());
-        let known: Vec<(PluginId, PluginContents)> = self
+        // What a row held is what its copy held: a preview read before an
+        // install, or the copy before an update, is not carried over.
+        let copy =
+            |plugin: &PluginRow| plugin.installed.as_ref().map(|state| state.version.clone());
+        let known: Vec<(PluginId, Option<Option<String>>, PluginContents)> = self
             .snapshot
             .plugins
             .iter()
             .filter(|plugin| plugin.contents != PluginContents::NotRead)
-            .map(|plugin| (plugin.id.clone(), plugin.contents.clone()))
+            .map(|plugin| (plugin.id.clone(), copy(plugin), plugin.contents.clone()))
             .collect();
         self.snapshot = snapshot;
-        for (id, contents) in known {
-            if let Some(plugin) = self
-                .snapshot
-                .plugins
-                .iter_mut()
-                .find(|plugin| plugin.id == id && plugin.contents == PluginContents::NotRead)
-            {
+        for (id, was, contents) in known {
+            if let Some(plugin) = self.snapshot.plugins.iter_mut().find(|plugin| {
+                plugin.id == id && plugin.contents == PluginContents::NotRead && copy(plugin) == was
+            }) {
                 plugin.contents = contents;
             }
         }

@@ -287,8 +287,6 @@ impl Session<'_> {
     /// rebound, servers swapped live, the review opened on what is new.
     #[cold]
     #[inline(never)]
-    // Reached from the `/plugins` page's boundary, which is not written yet.
-    #[allow(dead_code)]
     pub(crate) fn reload_plugins(&mut self, forget: &[PathBuf]) {
         let startup = self
             .plugins
@@ -308,8 +306,12 @@ impl Session<'_> {
         }
         let (runtime, load) = load(self.plugins.layout.take(), &startup, &self.cwd);
         self.plugins = runtime;
-        for notice in load.notices {
-            self.toast(notice, ToastKind::Error);
+        // An open `/plugins` page says it on the plugin's own row (`✘ not
+        // loaded`): a toast over the page would move it.
+        if self.app.plugins_menu.is_none() {
+            for notice in load.notices {
+                self.toast(notice, ToastKind::Error);
+            }
         }
         self.rescan_skills();
         self.rescan_agents();

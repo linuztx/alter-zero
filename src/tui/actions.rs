@@ -328,7 +328,8 @@ impl Session<'_> {
             Action::OpenPluginsMenu => self.open_plugins_menu(),
             // The page closed (Esc on its list, Ctrl+C anywhere) or Esc let go
             // of its job: stop the job, if one runs (docs/plugins-menu.md).
-            Action::ClosePluginsMenu | Action::CancelPluginJob => self.cancel_plugin_job(),
+            Action::ClosePluginsMenu => self.close_plugins_page(),
+            Action::CancelPluginJob => self.cancel_plugin_job(),
             Action::PluginOp { op, round } => self.run_plugin_op(op, round),
             Action::ReviewAnswered(answer) => self.apply_review_answer(answer),
             Action::SetHookTrust {

@@ -875,3 +875,52 @@ fn a_reopened_page_continues_its_rounds() {
     assert_eq!(round, 42);
     assert_eq!(page.last_round(), 42);
 }
+
+/// A preview read before an install is not what the installed copy holds:
+/// the fresh snapshot an install answers with drops it, so the open page
+/// asks for the installed contents. Contents of a row whose installed state
+/// did not change are kept.
+#[test]
+fn a_fresh_snapshot_drops_a_preview_once_the_plugin_is_installed() {
+    let preview = PluginContents::Known(ComponentSummary {
+        preview: true,
+        has_hooks: true,
+        ..ComponentSummary::default()
+    });
+    let mut listed = plugin("deploy@acme", None);
+    listed.contents = PluginContents::NotRead;
+    let mut other = plugin("lint@acme", None);
+    other.contents = PluginContents::NotRead;
+    let mut page = PluginsPage::open(
+        PluginsSnapshot {
+            marketplaces: vec![market("acme", true)],
+            plugins: vec![listed.clone(), other.clone()],
+            ..PluginsSnapshot::default()
+        },
+        0,
+    );
+    page.supply_contents(&id("deploy@acme"), preview.clone());
+    page.supply_contents(&id("lint@acme"), preview.clone());
+    page.screen = PluginsScreen::Plugin(id("deploy@acme"));
+    page.selected = 0;
+    let KeyOutcome::Op { round, .. } = page.on_key(key(KeyCode::Enter)) else {
+        panic!("an op");
+    };
+    let mut now = listed;
+    now.installed = Some(installed(true));
+    assert!(page.finish_job(
+        round,
+        Some(PluginsSnapshot {
+            marketplaces: vec![market("acme", true)],
+            plugins: vec![now, other],
+            ..PluginsSnapshot::default()
+        }),
+        &Ok(PluginDone::default()),
+    ));
+    assert_eq!(
+        page.plugin(&id("deploy@acme")).unwrap().contents,
+        PluginContents::NotRead
+    );
+    assert_eq!(page.pending_inspect(), Some(id("deploy@acme")));
+    assert_eq!(page.plugin(&id("lint@acme")).unwrap().contents, preview);
+}

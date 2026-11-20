@@ -72,7 +72,8 @@ Option<Box<PluginsPage>>` (one pointer while closed) and `App::plugin_rounds`;
 `src/app/plugins_menu.rs` opens, closes and forwards; `src/ui/plugins_view.rs`
 is the kit plus `plugins_build` / `plugins_view_lines` /
 `plugins_menu_height` / `render_plugins_menu`; `src/tui/plugins.rs` is the
-boundary (a stub today, below).
+boundary (below), and what it does with the store is the crate's own
+`page::{snapshot, contents, run_op}` (`crates/plugins/src/page/host.rs`).
 
 ## The contract
 
@@ -239,8 +240,11 @@ Acting on the page never moves it. A job is said in the hint's own row and
 only once it has run `PLUGINS_JOB_DELAY` (400 ms): `Disabling hookify…
 writing plugins.json (4s · esc to cancel)`. What went right is never said —
 the row, the counts, the plugin page's state line, the new tab show it. A
-failure is said in red until the next key. No toast is raised over an open
-page. A slow chain of 200 ms frames runs only while a job does.
+failure is said in red **in the hint's own row**, cut to that row with `…`,
+until the next key brings the hint back — it never adds rows above it. No
+toast is raised over an open page. While a job runs the page asks for one
+frame when it has run `PLUGINS_JOB_DELAY` and then one a second; nothing at
+all otherwise.
 
 ### Terminal size
 
@@ -256,17 +260,76 @@ height is the built line count; the caret is found in the built page
 (search line, add field) and hidden elsewhere, the hidden cursor seated on
 the highlighted `❯`.
 
-## The boundary today
+## The boundary
 
-`src/tui/plugins.rs` is a stub until the plugin library is wired in: it
-opens the page over an empty snapshot offering the two official catalogs,
-answers `Inspect` with `Unreadable("Plugins are not connected yet …")` and
-every job with that failure. The glue replaces its three methods
-(`open_plugins_menu`, `run_plugin_op`, `cancel_plugin_job`); nothing else in
-the main crate needs to change for the page.
+Two halves, so the app's crate stays a forwarder and the logic is tested:
+
+**In the crate** (`crates/plugins/src/page/host.rs`), plain functions over a
+`PluginStore`, unit-tested against folder and `file://` git marketplaces:
+
+- `snapshot(store, project, home, session_enabled) -> PluginsSnapshot` —
+  `plugins.json`, each added marketplace's catalog and each installed
+  plugin's manifest, **no `git`**: the added marketplaces in `plugins.json`'s
+  order (a catalog that will not read is its marketplace's `error`, what it
+  skipped its `notes`); every listed plugin (no source, or one this app
+  cannot fetch, is `unavailable` with the reason); each installed one with
+  its state in `project` — on or off here, `✘ not loaded` with the manifest's
+  refusal or with the enabled plugin before it that already loaded under its
+  name, loaded in place with where from (`~`-relative), and `update` decided
+  the cheap way (a pinned commit the record does not start with, or a
+  version other than the one offered at install; `plugin update` and Ctrl+U
+  ask `git` exactly); installed plugins no catalog lists any more, kept so
+  they can be turned off and uninstalled; the offered marketplaces not yet
+  added as `suggestions` (the two official ones described); a `plugins.json`
+  that will not parse as the snapshot's `error`. Contents stay `NotRead`.
+- `contents(store, &id, project, cancel) -> PluginContents` — an installed
+  plugin read as a session loads it; a listed one previewed (`Known` with
+  `preview: true`, from `git ls-tree` in a git marketplace), `Unknown` when
+  its files are elsewhere, `Unreadable` with the store's sentence.
+- `run_op(store, project, &op, progress, cancel) -> OpResult { outcome,
+  forget, reload }` — every operation but `Inspect`. `Install` on an
+  installed plugin is its update (`Updated hello 1.0.0 → 1.1.0`, or `is up
+  to date` with nothing to reload). `forget` is the plugin directories whose
+  trust is dropped (installed, updated, uninstalled — a removed
+  marketplace's); `reload` is set whenever what the session loads may have
+  changed.
+
+**In the app** (`src/tui/plugins.rs`, `#[cold]`, reached only with the
+page), over one channel (`PluginsBoundary`, boxed events — all an idle
+session holds):
+
+- **Open**: `reload_plugins(&[])` first (another process may have changed
+  what is on), then the store (`plugin_cli::plugin_store`) and the snapshot,
+  read on the loop — 4–7 ms over the two official catalogs (382 plugins).
+  No config home: the page opens with that as its `error`. The store lives
+  while the page is open and is dropped when it closes.
+- **Run**: one job at a time on a thread with the crate's `CancelToken`; its
+  progress lines go to `report_plugin_step`, its answer — with the snapshot
+  read after it, cancelled or not — to `finish_plugin_job`. An answer the
+  page does not take is a toast only once the page has closed; one Esc let
+  go of while the page stayed open just updates its rows. Then, when
+  `reload`, `reload_plugins(&forget)`. A worker that panics still answers.
+  `Inspect` runs the same way (a preview may run `git`) and lands with
+  `supply_plugin_contents`; after a job, a plugin page whose contents it
+  dropped is read again (a fresh snapshot keeps what was read only for rows
+  whose copy did not change, so an install replaces the preview).
+- **Stop**: Esc on a job, the page closing and the quit cancel it, which
+  kills the git child's process group; nothing waits on the thread.
+- **No toasts over the page**: `reload_plugins` keeps its load notices to
+  itself while the page is open — the row says `✘ not loaded`.
+
+**Install → review → page.** An install that brings hooks or servers ends in
+`reload_plugins`, whose `set_plugin_contributions` opens the startup
+review's pages on what is new: the review takes the screen over the page
+(the modal outranks it), the plugin's data directory exists and nothing of
+it has run; answering returns to the plugin's page, which by then shows the
+installed copy (`Format:`, its hook events and server names). Smoke Phase
+163 drives it.
 
 ## Testing
 
+- `cargo test -p alter-zero-plugins page::host` — the boundary's functions
+  against real folder and git marketplaces.
 - `cargo test -p alter-zero-plugins page::` — the state machine: tabs,
   search, rounds and stale answers, the optimistic toggle and its revert,
   Inspect, the action sets, confirmations, the add field, the line editor.
@@ -275,3 +338,7 @@ the main crate needs to change for the page.
   frame at 40–120 columns, reserving the rows it paints at heights 1–40, the
   lists never flowing, the caret, wide glyphs, the columns, the job line, a
   printout (`print_the_pages_at_100_columns -- --nocapture`).
+- `scripts/smoke.sh 163` — the page on the real store, offline: add,
+  install, the review over the page, the `$` picker, Space, a failure on the
+  hint's row, a folder marketplace removed with its plugin, Esc killing a
+  fetch, uninstall, and `plugin list` agreeing.

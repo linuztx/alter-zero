@@ -475,48 +475,26 @@ fn list_hint(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Line<'static>
 }
 
 /// The page's one status row, in the hint's own seat so it never moves the
-/// page: the job running, once it has run long enough to be said; else
-/// `hint`. What a job did is never said here — the rows and pages show it.
+/// page: the job running, once it has run long enough to be said; else the
+/// last failure, in red, cut to the row (the next key brings the hint
+/// back); else `hint`. What a job did is never said here — the rows and
+/// pages show it.
 fn status_row(
     kit: &dyn PageKit,
     menu: &PluginsPage,
     hint: Line<'static>,
     width: u16,
 ) -> Line<'static> {
-    match menu.job.as_ref().filter(|_| menu.job_shown()) {
-        Some(job) => job_line(
+    match (menu.job.as_ref().filter(|_| menu.job_shown()), &menu.error) {
+        (Some(job), _) => job_line(
             kit,
             &job.label,
             job.step.as_deref(),
             menu.job_elapsed().as_secs(),
             width,
         ),
-        None => hint,
-    }
-}
-
-/// The last failure, in red, wrapped — it is the instruction.
-fn error_lines(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> Vec<Line<'static>> {
-    menu.error
-        .as_deref()
-        .map(|error| kit.wrapped_rows(error, kit.color(KitColor::Error), width))
-        .unwrap_or_default()
-}
-
-/// The status row for a page with no room for the failure's own block (the
-/// compact rungs): the failure in its seat, cut to one row, above all but
-/// a job that is being said.
-fn compact_status_row(
-    kit: &dyn PageKit,
-    menu: &PluginsPage,
-    hint: Line<'static>,
-    width: u16,
-) -> Line<'static> {
-    match &menu.error {
-        Some(error) if !menu.job_shown() => {
-            kit.placeholder_row(&flat(error), kit.color(KitColor::Error), width)
-        }
-        _ => status_row(kit, menu, hint, width),
+        (None, Some(error)) => kit.placeholder_row(&flat(error), kit.color(KitColor::Error), width),
+        (None, None) => hint,
     }
 }
 
@@ -1134,12 +1112,8 @@ fn list_page(kit: &dyn PageKit, menu: &PluginsPage, width: u16, height: u16) -> 
     let tabs = [tab_strip(kit, menu, width)];
     let search = kit.search_line(&menu.query);
     let hint = list_hint(kit, menu, width);
-    let mut tail = error_lines(kit, menu, width);
-    if !tail.is_empty() {
-        tail.push(Line::default());
-    }
-    tail.push(status_row(kit, menu, hint.clone(), width));
-    let compact_tail = [compact_status_row(kit, menu, hint, width)];
+    let tail = [status_row(kit, menu, hint, width)];
+    let compact_tail = tail.clone();
     let page = |mut body: Vec<Line<'static>>| {
         body.extend(tail.iter().cloned());
         kit.picker_page(&header, &search, body, width)
@@ -1223,20 +1197,17 @@ fn framed(kit: &dyn PageKit, blocks: Vec<Block>, width: u16) -> PageBuild {
     PageBuild { lines, cursor }
 }
 
-/// A page's closing blocks: why the last job failed, then the status row —
-/// the job or the key hint, in one seat, so acting on the page never moves
-/// it. The hint is its `clauses`, fitted to the width.
-fn closing_blocks(
+/// A page's closing block: the status row — the job, the failure or the
+/// key hint, in one seat, so acting on the page never moves it. The hint is
+/// its `clauses`, fitted to the width.
+fn closing_block(
     kit: &dyn PageKit,
     menu: &PluginsPage,
     clauses: &[(&str, u8)],
     width: u16,
-) -> [Block; 2] {
+) -> Block {
     let hint = fitted_hint(kit, clauses, width);
-    [
-        (error_lines(kit, menu, width), None),
-        (vec![status_row(kit, menu, hint, width)], None),
-    ]
+    (vec![status_row(kit, menu, hint, width)], None)
 }
 
 /// The numbered action rows (`❯ 1. Install`) — `/mcp`'s: the accent `❯` and
@@ -1676,7 +1647,7 @@ fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width:
         .into_iter()
         .map(PluginAction::label)
         .collect();
-    let [status, hint] = closing_blocks(kit, menu, &PLUGINS_PAGE_HINT, width);
+    let status = closing_block(kit, menu, &PLUGINS_PAGE_HINT, width);
     framed(
         kit,
         vec![
@@ -1685,7 +1656,6 @@ fn plugin_page(kit: &dyn PageKit, menu: &PluginsPage, plugin: &PluginRow, width:
             (notes, None),
             (action_rows(kit, &labels, menu.selected, width), None),
             status,
-            hint,
         ],
         width,
     )
@@ -1737,16 +1707,10 @@ fn add_page(kit: &dyn PageKit, menu: &PluginsPage, width: u16) -> PageBuild {
     };
     let mut forms = kit.wrapped_rows(&format!("Use {PLUGINS_SOURCE_FORMS}."), dim, width);
     forms.extend(kit.wrapped_rows(PLUGINS_ADD_PIN, dim, width));
-    let [status, hint] = closing_blocks(kit, menu, &PLUGINS_ADD_HINT, width);
+    let status = closing_block(kit, menu, &PLUGINS_ADD_HINT, width);
     framed(
         kit,
-        vec![
-            (head, None),
-            (field, Some(caret)),
-            (forms, None),
-            status,
-            hint,
-        ],
+        vec![(head, None), (field, Some(caret)), (forms, None), status],
         width,
     )
 }
@@ -1781,7 +1745,7 @@ fn confirm_page(
     };
     let mut head = vec![kit.title(&title, width)];
     head.extend(kit.wrapped_rows(&text, kit.color(KitColor::Meta), width));
-    let [status, hint] = closing_blocks(kit, menu, &PLUGINS_CONFIRM_HINT, width);
+    let status = closing_block(kit, menu, &PLUGINS_CONFIRM_HINT, width);
     framed(
         kit,
         vec![
@@ -1791,7 +1755,6 @@ fn confirm_page(
                 None,
             ),
             status,
-            hint,
         ],
         width,
     )
