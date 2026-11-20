@@ -14,6 +14,11 @@
 //! - [`background`]  — background shell processes: the registry behind
 //!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
 //!   `docs/background.md`).
+//! - [`builtin`]     — built-in files that follow the release: the manifest
+//!   of what the app wrote into a seeded root, the legacy table, and the
+//!   per-file decision to seed, replace, keep or retire a built-in skill or
+//!   agent file (pure; the file I/O is [`llm::builtin`] — see
+//!   `docs/builtin-updates.md`).
 //! - [`checkpoint`]  — per-turn working-directory snapshots in an isolated git
 //!   store so `/resume` and the Esc-Esc backtrack can reset the code, not just
 //!   the transcript (pure mapping + boundary store; see `docs/checkpoint.md`).
@@ -156,6 +161,7 @@ pub mod agents;
 pub mod app;
 pub mod ask;
 pub mod background;
+pub mod builtin;
 pub mod checkpoint;
 pub mod cli;
 pub mod clipboard;

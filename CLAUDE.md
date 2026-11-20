@@ -48,6 +48,7 @@ docker/run.sh [--engine podman] [DIR]       # create the container: DIR at /work
 python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts under a stub engine: no engine, no network
 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # the web-search skill's scripts, offline (docs/skills.md)
 JINA_WEB_SEARCH_LIVE=1 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # plus one real search per Jina engine
+scripts/builtin-legacy.sh > prompts/builtin-legacy.sha256   # regenerate the frozen legacy table of built-in file digests from git history (needs a full clone; docs/builtin-updates.md)
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
 (cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/aur.md)
 (cd aur/alter-zero-bin && makepkg -Cf && namcap PKGBUILD alter-zero-bin-*.pkg.tar.zst)   # the AUR binary package: the release's own Linux archive, repackaged
@@ -268,7 +269,7 @@ symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catche
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `builtin`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -1828,9 +1829,10 @@ a `tools:` allowlist (omit for all; `Bash, Read, Skill, mcp__deepwiki__*` —
 capitalized built-ins, MCP wire names, a trailing `*` globbing a server), over
 an optional body that **replaces the persona** for that type while the
 environment/scratchpad blocks and the subagent note stay; the built-in
-`general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` on first
-run from the copies embedded out of `prompts/agents/` — editable files, never
-clobbered, and the last-resort fallback (`AgentDefinition::is_builtin`, a
+`general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` at
+startup from the copies embedded out of `prompts/agents/` — editable files
+that follow the release until edited and are kept once they are
+(`docs/builtin-updates.md`), and the last-resort fallback (`AgentDefinition::is_builtin`, a
 `path` of `None`) since the schema's default type must always resolve —
 discovered from `{cwd}/.alter-zero/agents`, the project root's, then
 `{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
@@ -2848,8 +2850,10 @@ every other `include_str!`'d markdown (a file there missing from
 `BUILTIN_SKILL_FILES` fails `every_authored_built_in_file_is_embedded`, a
 script's `test_*` files excepted) and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
-use it) the way the agent definitions are — editable, never clobbered, a
-deleted file back next launch, the off-switch being `/skills`, which persists,
+use it) the way the agent definitions are — editable, an untouched file
+following the release and an edited one kept and named once under the
+banner (`docs/builtin-updates.md`, `smoke.sh` Phase 102b), a deleted file back
+next launch, the off-switch being `/skills`, which persists,
 rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
@@ -3230,6 +3234,46 @@ under a red `Can't resume on …` toast and leaving the record alone — so the
 directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
+
+**Built-in files follow the release** (`docs/builtin-updates.md`): the
+seeded skills and agent definitions are re-settled once at startup, before
+the walk, by one rule per file — a built-in file you have not edited follows
+the release, a file you edited is yours. Only the two folders the app owns
+are followed, `{config_home}/skills` and `{config_home}/agents`: an
+`ALTER_ZERO_AGENTS_DIR` override is still only seeded (`Mode::SeedOnly`) and
+`ALTER_ZERO_SKILLS_DIR` still never written into. Each followed folder keeps
+`{root}/.builtin.json`, a `builtin::Manifest` mapping each file's path under
+the root to the SHA-256 of the built-in it last settled against, beside the
+`schema`, the `scope` and the `version` that settled it; installs older than
+the manifest are recognised by the embedded `builtin::LEGACY_TABLE`
+(`prompts/builtin-legacy.sha256`, generated from history by
+`scripts/builtin-legacy.sh`), asked only on a folder's first settle. The
+pure `builtin::verdict` decides per file over what is at its path
+(`builtin::Disk` → `Seed`, `Leave`, `Current`, `Update`, `Kept`), and a file
+the binary no longer ships is decided per **unit** — a skill's folder, an
+agent's file — by `builtin::retired` and `builtin::unit_retires`;
+`llm::builtin::sync` applies them (every write through a temp file and a
+rename, an update keeping the file's mode, the manifest written last and
+only when it changed) and `builtin::notices` turns the `Report` into dim rows
+under the banner (`Updated built-in skills: web-search`, `Kept your version
+of built-in skill file …`), on `--verbose`'s step log headless. What must not
+break: **an edit is never overwritten**, since the only way to `Update` is a
+digest the app itself produced; **a retired file is removed only when
+nothing in its unit is the user's** — its own bytes the app's, every other
+retired file of the unit untouched, no shipped file of it kept, left or
+failed to write, and a wholly withdrawn unit's folder holding nothing else —
+and only at a relative, plain-named path (`builtin::is_safe_path`); **a
+symlink is never read, written through or removed**, the file's own or a
+folder's on the way to it below the root, and only a regular file under
+`builtin::MAX_FILE_BYTES` is read at all, where the old seed's `exists()`
+could not be stalled by a FIFO; a manifest of a newer `schema` or `version`,
+or of another `scope`, makes the launch do **nothing at all** in that folder
+(`Manifest::read` → `Read::Deferred`), so an older binary never undoes a
+newer one and never re-seeds what it retired; the legacy table is **frozen**
+and never grows after the first release that carries a manifest; a headless
+run settles no kept file (`Mode::Follow { announce: false }`), so the one
+notice waits for a launch that can show it; and the update runs **once, at
+startup**, never per turn. `smoke.sh` Phase 102b.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by

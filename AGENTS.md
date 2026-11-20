@@ -64,7 +64,8 @@ multi-minute full rebuild — don't, unless the user asks.
 | `scripts/smoke/lib.sh`, `scripts/smoke.sh` (the phase readers or the selector) | `bash scripts/smoke/selftest.sh` — under a second, no app, no tmux |
 | `scripts/smoke/phases/`, screen behaviour | `cargo build && scripts/smoke.sh <ids>` — by **id**, and widen only if you must |
 | `scripts/`, `install.sh`, `npm/`, `telemetry/`, `docker/`, `aur/` | that subtree's own suite (see [`CONTRIBUTING.md`](CONTRIBUTING.md) *Testing*) — not `cargo test` |
-| `prompts/`, `docs/`, `CHANGELOG.md` | nothing; prose has no gate |
+| `src/builtin.rs`, `src/llm/builtin.rs`, `prompts/skills/`, `prompts/agents/`, `prompts/builtin-legacy.sha256` | `cargo test --lib -- builtin:: llm::skill:: llm::subagent::` — the built-in files are embedded, and their seeding and updating are tested (`docs/builtin-updates.md`) |
+| other `prompts/`, `docs/`, `CHANGELOG.md` | nothing; prose has no gate |
 
 A filtered run is not a compromise: `cargo test --lib app::tests` runs about
 1,060 tests in ~0.4 s once the binary is built, and while the tree is being

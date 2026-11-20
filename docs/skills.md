@@ -127,17 +127,20 @@ never chosen. The rules are cheap to state and impossible to guess.
 
 Authored in `prompts/skills/<name>/` and `include_str!`'d beside every
 other markdown this crate carries, then **written into `{config_home}/skills`
-at startup when the file is absent** — the agent definitions' rule
-(`docs/subagents.md`), for the agent definitions' reasons: a default that is a
-real file on disk can be read, edited and diffed, and a release that improves
-it ships the improvement. `every_authored_built_in_file_is_embedded` keeps the
+at startup** — the agent definitions' rule (`docs/subagents.md`), for the
+agent definitions' reasons: a default that is a real file on disk can be read,
+edited and diffed, and a release that improves it ships the improvement.
+`every_authored_built_in_file_is_embedded` keeps the
 directory and the embedded list in step: a file authored under
 `prompts/skills/` but left out of `BUILTIN_SKILL_FILES` fails the test suite
 instead of quietly missing from every install (a script's `test_*` unit tests
 stay out on purpose). The seed runs *before* the walk, so the session that
-installed the app can already use it. An edited copy is never overwritten; a
-deleted file comes back next launch, so the off-switch is `/skills` (which
-persists) rather than `rm -rf`.
+installed the app can already use it — and the one after an update already
+has the new release's files. A copy you have not edited follows the release:
+a release that changes it replaces it. One you edited is yours: it is kept,
+and named once under the banner so you can delete it to take the new version.
+A deleted file comes back next launch, so the off-switch is `/skills` (which
+persists) rather than `rm -rf` (`docs/builtin-updates.md`).
 
 One difference from the agent definitions: `ALTER_ZERO_SKILLS_DIR` is **never
 seeded into**. That variable replaces the root list — it says "these are the
@@ -190,9 +193,10 @@ to screenshot download hosts; failures and rate limits require bounded,
 non-automatic retries rather than an assumption that HTTP success means
 complete extraction.
 
-Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`,
-never overwrites an existing file, respects project-root precedence and can
-be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
+Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`
+— an untouched copy follows the release, an edited one is kept
+(`docs/builtin-updates.md`) — respects project-root precedence and can be
+disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
 receives no built-ins. Offline regression tests exercise the actual
 seed → discovery → listing → tool-load path and verify that local edits
 survive reseeding and deleted files are restored.
@@ -324,11 +328,13 @@ tool schema: the ways to re-verify a provider when it starts failing.
 Loading the skill makes no request; each search is an ordinary shell call
 through the permission gate, and the body keeps searches small and forbids
 searching for secrets, private data or internal host names, since every query
-reaches a third party. Like the other built-ins its seeded copy is editable,
-a deleted file comes back, project skills shadow it, `/skills` disables it,
-and an `ALTER_ZERO_SKILLS_DIR` override is never seeded. Smoke Phase 102
-checks that the first launch seeds every file, that each seeded script
-starts, and that a deleted script is restored.
+reaches a third party. Like the other built-ins its seeded copy is editable
+— an untouched file follows the release, an edited one is kept
+(`docs/builtin-updates.md`) — a deleted file comes back, project skills
+shadow it, `/skills` disables it, and an `ALTER_ZERO_SKILLS_DIR` override is
+never seeded. Smoke Phase 102 checks that the first launch seeds every file,
+that each seeded script starts, and that a deleted script is restored; Phase
+102b that an outdated script is updated and an edited one kept.
 
 #### `yt-dlp`
 
@@ -347,8 +353,9 @@ loading it does not download anything. Later CLI calls use the ordinary shell
 and permission gate. Browser cookies require asking first; credentials must
 not be logged or copied into the download directory. It does not claim to
 bypass DRM or access controls. Like the other built-ins, its seeded copy is
-editable, project skills can shadow it, `/skills` can disable it, and an
-`ALTER_ZERO_SKILLS_DIR` override is never seeded.
+editable (an untouched copy follows the release, an edited one is kept,
+`docs/builtin-updates.md`), project skills can shadow it, `/skills` can
+disable it, and an `ALTER_ZERO_SKILLS_DIR` override is never seeded.
 
 #### `flaredantic`
 
@@ -374,7 +381,8 @@ shutdown leaves cloud-side resources; deleting them needs separate intent.
 This is a temporary share from a running machine, not deployment. The skill
 adds **no native tool or dependency**, does not bundle or install `flare`, and
 loading it executes nothing and starts no tunnel. Later CLI calls use the
-ordinary shell permission gate. Its seeded files preserve edits, deleted files
+ordinary shell permission gate. Its seeded files follow the release until
+edited and preserve edits after (`docs/builtin-updates.md`), deleted files
 return next launch, project skills take precedence, `/skills` disables it, and
 an `ALTER_ZERO_SKILLS_DIR` override receives no built-ins.
 
@@ -913,7 +921,9 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
 | `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
-| `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
+| `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`, which hands the embedded files to `llm::builtin::sync`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
+| `src/builtin.rs` | **pure**: the per-file update rule for built-in files — `verdict`, the `.builtin.json` `Manifest`, the legacy table, the banner `notices` (`docs/builtin-updates.md`) |
+| `src/llm/builtin.rs` | `sync`: applies those verdicts to a seeded root — seed, atomic replace, remove, manifest write |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
 | `src/context.rs` | the leading listing fragment |

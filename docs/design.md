@@ -621,9 +621,10 @@ which Ctrl+V reads the clipboard from.
   rollout round-trip all come for free (deliberately not codex's eager
   `<skill>` injection, which exists because codex has no skill tool).
 - **Built-in skills are editable defaults** (`docs/skills.md`): `skill-creator`,
-  `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and seed absent files
-  in the personal root before discovery. Existing files are never overwritten,
-  project skills keep precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
+  `jina-reader`, `web-search`, `yt-dlp` and `flaredantic` ship embedded and are
+  seeded into the personal root before discovery. An untouched file follows
+  the release and an edited one is kept (next bullet), project skills keep
+  precedence, and `ALTER_ZERO_SKILLS_DIR` is never seeded.
   Jina Reader adds curl-based public web/PDF retrieval instructions;
   `web-search` seeds four standard-library Python scripts beside its
   `SKILL.md`, searching keyless through Exa's, Parallel's and Tavily's hosted
@@ -634,6 +635,20 @@ which Ctrl+V reads the clipboard from.
   anonymous hosting with port-inventory checks, tracked sessions, verification
   and cleanup. None adds a native tool/dependency or runs on load; shell
   permissions and public-exposure/privacy checks still apply.
+- **Built-in files follow the release** (`docs/builtin-updates.md`): the
+  seeded skills and agent definitions are updated at startup by one rule per
+  file — a file you have not edited follows the release, a file you edited is
+  yours. The two folders the app owns each keep a `.builtin.json` manifest of
+  the digests the app wrote there, and a frozen legacy table embedded from
+  git history (`prompts/builtin-legacy.sha256`) recognises the untouched
+  files of installs older than the manifest; the pure `builtin::verdict`
+  replaces only a file whose digest the app itself produced, so an edit is
+  never overwritten — it is kept and named once under the banner. A file the
+  release no longer ships is removed only when nothing in its unit (a skill's
+  folder, an agent's file) is the user's; a symlink is never written through;
+  an override root (`ALTER_ZERO_AGENTS_DIR`) is still only seeded; and a
+  folder a newer app settled is left exactly as it is. It runs once, before
+  the walk, never per turn.
 - **Skill bodies load once per agent context** (`docs/skills.md`): the tool
   enforces its short load-once guidance at runtime. `LoadedSkills` is seeded
   from that agent's incoming skill call/result pairs, identifies successful
@@ -770,8 +785,9 @@ which Ctrl+V reads the clipboard from.
   persona half of that type's system prompt. The cwd's, the project root's and
   `~/.alter-zero/agents` are walked at **every turn start**, so a file the
   agent just wrote for itself is launchable on the next turn; the two built-ins
-  are seeded into the user's directory as editable files and stay compiled in
-  as the fallback; the `tools:` allowlist is enforced where a call **runs**,
+  are seeded into the user's directory as editable files — following the
+  release until edited, `docs/builtin-updates.md` — and stay compiled in as
+  the fallback; the `tools:` allowlist is enforced where a call **runs**,
   not only where the specs are offered; and the model picks a type from the
   `<system-reminder>` that carries the skill listing beside it, under one
   shared budget.
@@ -950,6 +966,7 @@ logic is unit-testable without a real terminal.
 | `session.rs` | The **pure core of `/resume`** (`docs/resume.md`): the rollout JSONL format (`meta_line`/`item_line` on serde'd module-local record types — the app types stay serde-free), the forward-compatible `parse_session` (malformed/unknown lines skip), the three sidecars that ride the file without being history items — `checkpoint_line`/`parse_checkpoints` (`docs/checkpoint.md`), `model_line`/`parse_model`, the session's own model selection whose newest record a resume runs on (`docs/session-model.md`), and `usage_line`/`parse_usage`, one model request's provider-reported usage placed among the items where it finished by `history_lines` (`docs/rollout-records.md`) — the picker's `preview_of` (first user/shell message, flattened) and `relative_age` (codex's `now`/`Ns`/`Nm`/`Nh`/`Nd ago`), `rollout_rel_path` (the dated layout), and the `SessionMeta`/`SessionSummary` types. The recorder + dir scan are the boundary's (`tui::recorder::SessionRecorder`/`list_sessions`). | Yes |
 | `scratchpad.rs` | The **session's own temp layout** (`docs/scratchpad.md`): `session_root` (`{tmp}/alter-zero-{uid}/{session}` — Claude Code's per-user root, one directory per live session), its two leaves `scratchpad_dir` (the agent's temp files, named in its system prompt), `tasks_dir` (the background shells' `{id}.output`, `docs/background.md`) and `images_dir` (the backend's downscaled-payload cache, `docs/images.md`), and `contains` — the strict lexical containment test behind the permission gate's scratchpad exemption (absolute only, no `..`, component-wise). The temp dir/uid/session id are injected at the boundary, which also creates the directories (`tui::config::prepare_scratchpad`). | Yes |
 | `project_doc.rs` | **AGENTS.md project-doc discovery** (`docs/project-doc.md`) — codex's `agents_md`: the pure `doc_chain` (project root → cwd, root first), `budget_docs` (the total byte budget, char-boundary truncation, blanks skipped — the docs kept separate, one `ProjectDoc { path, text }` each), `doc_budget` (the `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` override; `0` disables), `doc_heading` (`Contents of {path} (project instructions, checked into the codebase):`, the override captioned `not checked in`) and `instructions_section` (the reference's override paragraph over one heading + text per file — the `<system-reminder>`'s first section, the codex `<INSTRUCTIONS>` fragment retired), over a thin fs probe (`find_project_root` — nearest `.git` dir *or* worktree gitfile; `load_user_instructions` — the first of `AGENTS.override.md`/`AGENTS.md` per directory, read **capped at the budget** and decoded lossily). `App::user_instructions` carries the section; `context::context_messages_full` wraps it into the block the derived context leads with. | Pure core: yes (fs probes: temp dirs) |
+| `builtin.rs` | **Built-in files follow the release** (`docs/builtin-updates.md`): `digest` (SHA-256), `Manifest` (the `{root}/.builtin.json` record of the digest the app settled each built-in file against, with its `schema`, `scope` and `version`) and `Manifest::read` → `Read` (absent, ours, or `Deferred` to a newer app), `Legacy` over the embedded `LEGACY_TABLE` (every digest a manifest-less release ever shipped), `Disk` (what is at a path, found without following a link) → `verdict`/`Verdict` (seed, leave, current, update or keep, per file — only a digest the app produced is ever replaced), `retired`/`Retired` and `unit_retires` for files the release no longer ships (removed only when nothing in their unit is the user's), `is_safe_path`, and the `Report` → `notices` rows under the banner, named by `unit`. The file I/O is `llm::builtin::sync`, which `seed_builtin_skills` and `seed_default_agents` call. | Pure core: yes |
 | `reminder.rs` | **The `<system-reminder>` the context leads with** (`docs/context.md`): `reminder_message` (the tags and the `Use the following contexts and instructions:` preamble over the non-blank sections, blank-line separated; empty when no section says anything, so a session with nothing to remind the model of sends no block) and `join_sections` (the shared join). The sections come from `project_doc::instructions_section`, `skills::skill_section` and `subagents::agent_section` (the latter two joined into `App::listings` by `subagents::listing_sections`); `context::context_messages_full` composes the block at derivation, `skills::listing_message` wraps the skills section alone as a subagent's briefing. | Pure core: yes |
 | `context_usage.rs` | **What fills the context window, counted** (`docs/context-usage.md`): `breakdown` over `Sources` — the system prompt split at its headings, the tool schemas (`ToolDefinition`: the wire name and the JSON the client sends) with the `mcp__server__tool` ones grouped by server, the `<system-reminder>` split into project docs (the stored instructions, found whole) then skills, agent types and secrets by the header each contributor writes, the derived messages split by kind and their user-role text by origin (`context::context_messages_with_origins`) — into a `Breakdown` of `Slice`s of `Part`s, the counter injected so a test can count bytes; `UsageLedger` sums the provider's usage frames and their cache share. The page over it is `app::context_usage` + `ui::context_usage_view`, kept live by `tui::context_usage`. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update; the region is repainted **in place**, never blanked first, and only the rows the previous region left below it are cleared — `docs/slow-stream.md`), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers), and the OSC 8 link emitter (`draw_cells` — the choke point every cell write goes through: strips the link-id carrier, brackets marked runs so a wrapped URL opens whole — `docs/links.md`). | No (I/O boundary) |

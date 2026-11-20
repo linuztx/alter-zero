@@ -4,8 +4,9 @@ Claude Code's agent files, ported: the subagent types the `agent` tool can
 launch are **markdown files on disk** — YAML frontmatter over an optional
 system-prompt body — instead of two names hard-coded in a `match`. The
 built-in `general-purpose` and `explore` agents are seeded into
-`~/.alter-zero/agents/` on first run, so the defaults are editable and a new
-type is one new file.
+`~/.alter-zero/agents/` at startup, so the defaults are editable — an
+untouched one follows the release, an edited one is kept
+(`docs/builtin-updates.md`) — and a new type is one new file.
 
 `docs/agent-tool.md` is the tool itself (the launch, the roster, the session
 view); this is only where a type's **definition** comes from and what it
@@ -74,10 +75,17 @@ which is also what makes a test run hermetic.
 
 The two defaults ship embedded in the binary (`prompts/agents/*.md` in the
 repo, `include_str!`'d beside every other markdown this crate carries). At startup each is
-**written into the user root when that file is absent** — so a fresh install
-finds them on disk and can edit them, and a release that adds a default gets
-it too. Deleting one brings it back next launch; to change a default, edit
-it (that is what the seeding is *for*).
+**written into the user root** — so a fresh install finds them on disk and
+can edit them, and a release that adds a default gets it too. A copy you have
+not edited follows the release: one a release changes is replaced. A copy you
+edited is yours — kept, and named once under the banner so you can delete it
+to take the new version (`docs/builtin-updates.md`). Deleting one brings it
+back next launch; to change a default, edit it (that is what the seeding is
+*for*). The root keeps a `.builtin.json` manifest of what the app wrote there,
+which is how the two are told apart. That holds for `{config_home}/agents`
+only: an `ALTER_ZERO_AGENTS_DIR` override is somebody else's folder, so it is
+still **only seeded** — an absent default is written, a present one is never
+replaced, and no manifest is left there.
 
 If the walk still ends without one of them — no writable home, an
 `ALTER_ZERO_AGENTS_DIR` pointed at a read-only directory — the embedded
@@ -201,7 +209,8 @@ re-broken reports again).
 | --- | --- |
 | `src/frontmatter.rs` | the shared `---` frontmatter parse (skills + agents) |
 | `src/subagents.rs` | pure: `AgentDefinition`, the parse, `AgentTools::allows`, the listing, the reminder wrapper, `SubagentRegistry` |
-| `src/llm/subagent.rs` | boundary: the root walk, the discovery, the seeding of the embedded defaults |
+| `src/llm/subagent.rs` | boundary: the root walk, the discovery, the seeding of the embedded defaults (`seed_default_agents`, which hands them to `llm::builtin::sync`) |
+| `src/builtin.rs`, `src/llm/builtin.rs` | the per-file update rule for the seeded files, and the boundary that applies it (`docs/builtin-updates.md`) |
 | `prompts/agents/*.md` | the embedded defaults themselves |
 
 `ALTER_ZERO_AGENTS_DIR` relocates the roots. There is no separate on/off

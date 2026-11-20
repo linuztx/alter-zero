@@ -1,5 +1,6 @@
 //! Subagent definitions' boundary half (`docs/subagents.md`): find the
-//! `agents/*.md` files on disk, and seed the built-in ones the first time.
+//! `agents/*.md` files on disk, and seed the built-in ones — kept up to date
+//! release to release while nobody edits them (`docs/builtin-updates.md`).
 //!
 //! [`crate::llm::skill`]'s sibling — every rule lives in the pure
 //! [`crate::subagents`] module and this is the adapter that touches the
@@ -7,14 +8,17 @@
 
 use std::path::{Path, PathBuf};
 
+use super::builtin::{Mode, Seeded};
+use crate::builtin::{Kind, LEGACY_TABLE, Report};
 use crate::subagents::{
     AGENT_FILE_EXT, AGENTS_DIR_NAME, AgentDefinition, AgentFileError, parse_agent,
 };
 
 /// The built-in types, embedded so they exist before anything is written to
 /// disk: the seeded files' own bytes ([`seed_default_agents`] writes exactly
-/// these), and the last-resort definitions when the walk finds no file of
-/// that name at all.
+/// these, and replaces an installed copy nobody edited when they change —
+/// `docs/builtin-updates.md`), and the last-resort definitions when the walk
+/// finds no file of that name at all.
 ///
 /// Authored in `prompts/agents/`, beside every other `include_str!`'d markdown
 /// this crate embeds (`prompts/alter_zero.md`, `prompts/subagent.md`, …) — the
@@ -104,37 +108,68 @@ fn override_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// Write the built-in definitions into `dir`, skipping any that are already
-/// there — so a fresh install finds them on disk and can edit them, an
-/// **edited** default is never clobbered, and a release that adds a default
-/// gets it on the next launch (`docs/subagents.md`).
+/// Bring the built-in definitions in `dir` up to this release
+/// (`docs/builtin-updates.md`): an absent one is written (so a fresh install
+/// finds them on disk and can edit them, and a release that adds a default
+/// gets it on the next launch), one nobody edited is replaced by the new
+/// release's, and the user's own version is kept — reported once per
+/// built-in version. A definition this release no longer ships is deleted
+/// only when it is still the app's own bytes. `mode` says how far that goes
+/// ([`agents_seed_mode`]): an `ALTER_ZERO_AGENTS_DIR` folder is only seeded.
 ///
-/// Best-effort: a directory that cannot be created or a file that cannot be
-/// written is returned as an error for the startup toast, never a failed
+/// Best-effort: a directory that cannot be created is one error and a file
+/// that cannot be written another, for the startup toast, never a failed
 /// launch — the embedded copies still back the types up ([`with_builtins`]).
 #[must_use]
-pub fn seed_default_agents(dir: &Path) -> Vec<AgentFileError> {
-    let mut errors = Vec::new();
+pub fn seed_default_agents(dir: &Path, mode: Mode) -> Seeded<AgentFileError> {
     if let Err(err) = std::fs::create_dir_all(dir) {
-        errors.push(AgentFileError {
-            path: dir.to_path_buf(),
-            message: err.to_string(),
-        });
-        return errors;
-    }
-    for (name, contents) in BUILTIN_FILES {
-        let path = dir.join(name);
-        if path.exists() {
-            continue;
-        }
-        if let Err(err) = std::fs::write(&path, contents) {
-            errors.push(AgentFileError {
-                path,
+        return Seeded {
+            report: Report::default(),
+            errors: vec![AgentFileError {
+                path: dir.to_path_buf(),
                 message: err.to_string(),
-            });
-        }
+            }],
+        };
     }
-    errors
+    super::builtin::sync(
+        dir,
+        &BUILTIN_FILES,
+        Kind::Agents,
+        LEGACY_TABLE,
+        env!("CARGO_PKG_VERSION"),
+        mode,
+    )
+    .map_errors(|err| AgentFileError {
+        path: err.path,
+        message: err.message,
+    })
+}
+
+/// How far [`seed_default_agents`] goes in [`user_agents_dir`]: the config
+/// home's folder follows the release, while an `ALTER_ZERO_AGENTS_DIR` one is
+/// somebody else's — a directory a team commits its agents to must not be
+/// rewritten by whoever runs the newest build — and is only seeded, since
+/// the `agent` tool's default type has to resolve.
+#[must_use]
+pub fn agents_seed_mode(announce: bool) -> Mode {
+    seed_mode(override_dir().is_some(), announce)
+}
+
+/// [`agents_seed_mode`] with the override's presence handed in.
+fn seed_mode(overridden: bool, announce: bool) -> Mode {
+    if overridden {
+        Mode::SeedOnly
+    } else {
+        Mode::Follow { announce }
+    }
+}
+
+/// The rows a launch's agents [`Report`] is told in, under the banner or in
+/// a headless run's step log (`docs/builtin-updates.md`).
+#[must_use]
+pub fn default_agent_notices(report: &Report) -> Vec<String> {
+    let shipped: Vec<&str> = BUILTIN_FILES.iter().map(|(name, _)| *name).collect();
+    crate::builtin::notices(Kind::Agents, report, &shipped)
 }
 
 /// The embedded definitions, parsed. They carry **no** path — nothing read
@@ -249,6 +284,8 @@ pub fn load_agents(
 mod tests {
     use super::*;
     use crate::subagents::{AgentModel, AgentTools};
+
+    const FOLLOW: Mode = Mode::Follow { announce: true };
 
     #[test]
     fn the_roots_run_cwd_then_project_then_config_home() {
@@ -374,7 +411,7 @@ mod tests {
     fn seeding_writes_the_builtins_once_and_never_overwrites_an_edit() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let errors = seed_default_agents(&dir);
+        let errors = seed_default_agents(&dir, FOLLOW).errors;
         assert!(errors.is_empty(), "{errors:?}");
         assert!(dir.join("general-purpose.md").is_file());
         assert!(dir.join("explore.md").is_file());
@@ -382,7 +419,7 @@ mod tests {
         // An edited default is the user's now: a second launch must not
         // clobber it.
         std::fs::write(dir.join("explore.md"), "---\ndescription: Mine.\n---\n").unwrap();
-        let second = seed_default_agents(&dir);
+        let second = seed_default_agents(&dir, FOLLOW).errors;
         assert!(second.is_empty(), "{second:?}");
         let (agents, _) = discover_agents(&[dir]);
         let explore = agents
@@ -390,6 +427,89 @@ mod tests {
             .find(|a| a.name == "explore")
             .expect("explore");
         assert_eq!(explore.description, "Mine.");
+    }
+
+    #[test]
+    fn seeding_updates_an_outdated_untouched_default() {
+        // docs/builtin-updates.md: a built-in nobody edited follows the
+        // release — the manifest says these bytes are the app's own.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = "---\ndescription: An older explore.\n---\n";
+        std::fs::write(dir.join("explore.md"), old).unwrap();
+        let mut manifest = crate::builtin::Manifest::new("agents");
+        manifest.files = [(
+            "explore.md".to_string(),
+            crate::builtin::digest(old.as_bytes()),
+        )]
+        .into();
+        std::fs::write(
+            dir.join(crate::builtin::MANIFEST_FILE_NAME),
+            manifest.render(),
+        )
+        .unwrap();
+
+        let seeded = seed_default_agents(&dir, FOLLOW);
+        assert!(seeded.errors.is_empty(), "{:?}", seeded.errors);
+        assert!(
+            seeded.report.updated.contains(&"explore.md".to_string()),
+            "{:?}",
+            seeded.report
+        );
+        let embedded = BUILTIN_FILES
+            .iter()
+            .find(|(name, _)| *name == "explore.md")
+            .map(|(_, contents)| *contents)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("explore.md")).unwrap(),
+            embedded
+        );
+    }
+
+    #[test]
+    fn an_override_folder_is_only_seeded() {
+        assert_eq!(seed_mode(true, true), Mode::SeedOnly);
+        assert_eq!(seed_mode(true, false), Mode::SeedOnly);
+        assert_eq!(seed_mode(false, true), Mode::Follow { announce: true });
+        assert_eq!(seed_mode(false, false), Mode::Follow { announce: false });
+    }
+
+    #[test]
+    fn seed_only_never_replaces_an_outdated_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A version some release shipped, so a followed folder would update it.
+        let old = "---\ndescription: An older explore.\n---\n";
+        std::fs::write(dir.join("explore.md"), old).unwrap();
+
+        let seeded = seed_default_agents(&dir, Mode::SeedOnly);
+        assert!(seeded.errors.is_empty(), "{:?}", seeded.errors);
+        assert!(seeded.report.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("explore.md")).unwrap(),
+            old
+        );
+        assert!(dir.join("general-purpose.md").is_file(), "absent is seeded");
+        assert!(!dir.join(crate::builtin::MANIFEST_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn the_agent_notices_name_units() {
+        let report = Report {
+            updated: vec!["explore.md".into()],
+            kept: vec!["general-purpose.md".into()],
+            ..Report::default()
+        };
+        assert_eq!(
+            default_agent_notices(&report),
+            vec![
+                "Updated built-in agent: explore",
+                "Kept your version of built-in agent file general-purpose.md (delete it to get the built-in's)",
+            ]
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub mod ask;
 pub mod auth;
 pub mod backend;
 pub mod body;
+pub mod builtin;
 pub mod cache;
 pub mod chatgpt;
 pub mod classifier;

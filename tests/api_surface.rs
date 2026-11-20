@@ -220,6 +220,31 @@ use alter_zero::stream::{
     turn_events,
 };
 
+// --- `builtin` — built-in files that follow the release (docs/builtin-updates.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::builtin::{
+    Disk,
+    Kind,
+    LEGACY_TABLE,
+    Legacy,
+    MANIFEST_FILE_NAME,
+    MAX_FILE_BYTES,
+    Manifest,
+    Read,
+    Report,
+    Retired,
+    SCHEMA,
+    Verdict,
+    digest,
+    is_safe_path,
+    notices,
+    retired,
+    unit,
+    unit_retires,
+    verdict,
+};
+
 // --- `skills` — the `Skill` tool's pure model (docs/skills.md) ---
 #[rustfmt::skip]
 #[allow(unused_imports)]

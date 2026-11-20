@@ -98,6 +98,20 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Built-in skills and agent definitions now update with the app.** The
+  built-in skills in `~/.alter-zero/skills/` and the `general-purpose` and
+  `explore` agents in `~/.alter-zero/agents/` were written once, the first
+  time the app ran, and never again, so an install kept its first release's
+  `web-search` scripts and descriptions however many updates followed. Now a
+  built-in file you have not edited is replaced by the new release's when
+  you update. A file you edited is kept, and named once under the banner so
+  you know which one it is; delete it to take the new version. Installs made
+  before this release are recognised too, so their untouched files update
+  like any other. A built-in the app no longer ships is removed, unless you
+  edited it. A skills folder set with `ALTER_ZERO_SKILLS_DIR` is still left
+  alone, and an agents folder set with `ALTER_ZERO_AGENTS_DIR` still only
+  gets the definitions it is missing (`docs/builtin-updates.md`).
+
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
   macOS) on the authorize URL, which over SSH, in a container or on a

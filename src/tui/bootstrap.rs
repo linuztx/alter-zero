@@ -273,12 +273,25 @@ impl<'t> Session<'t> {
         // The built-in `skill-creator` is seeded into the personal root first,
         // so this very walk finds it — a skill that appeared only on the
         // *second* launch would be missing from exactly the session that just
-        // installed the app. Never clobbers an edited copy, and skipped
-        // entirely when ALTER_ZERO_SKILLS_DIR replaced the roots.
+        // installed the app. A file the user changed is never overwritten
+        // (docs/builtin-updates.md), and the seed is skipped entirely when
+        // ALTER_ZERO_SKILLS_DIR replaced the roots.
+        //
+        // What the built-in update did (docs/builtin-updates.md) — the skills'
+        // rows then the agents' — told once the first frame is up, or in a
+        // headless run's step log. A headless seed leaves a kept file's record
+        // for the next launch that can show it.
+        let mut builtin_notices: Vec<String> = Vec::new();
         let mut skill_errors = match alter_zero::llm::skill::resolved_builtin_skills_dir(
             config::config_home().as_deref(),
         ) {
-            Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
+            Some(root) => {
+                let seeded = alter_zero::llm::skill::seed_builtin_skills(&root, !headless);
+                builtin_notices.extend(alter_zero::llm::skill::builtin_skill_notices(
+                    &seeded.report,
+                ));
+                seeded.errors
+            }
             None => Vec::new(),
         };
         let (found_skills, walk_errors) =
@@ -302,7 +315,16 @@ impl<'t> Session<'t> {
         // parse is collected, not thrown, and becomes the startup toast.
         let mut agent_errors =
             match alter_zero::llm::subagent::user_agents_dir(config::config_home().as_deref()) {
-                Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
+                Some(dir) => {
+                    let seeded = alter_zero::llm::subagent::seed_default_agents(
+                        &dir,
+                        alter_zero::llm::subagent::agents_seed_mode(!headless),
+                    );
+                    builtin_notices.extend(alter_zero::llm::subagent::default_agent_notices(
+                        &seeded.report,
+                    ));
+                    seeded.errors
+                }
                 None => Vec::new(),
             };
         let (found_agents, walk_errors) =
@@ -679,6 +701,9 @@ impl<'t> Session<'t> {
         // no herdr pane. SessionStart fires as the session opens, as in the
         // TUI, and the headless loop submits the prompt.
         if headless {
+            for line in &builtin_notices {
+                session.toast(line.clone(), ToastKind::Info);
+            }
             session.models.fire_session_start();
             return Ok(session);
         }
@@ -688,6 +713,10 @@ impl<'t> Session<'t> {
         // fire below stays queued until then.
         let reviewing = session.open_startup_review();
         session.paint_first_frame(picker)?;
+        // The built-in update's rows (docs/builtin-updates.md), under the
+        // banner the first frame just queued — before a SessionStart or
+        // telemetry row can land between them.
+        session.commit_builtin_notices(&builtin_notices);
         // SessionStart (docs/hooks.md), in the background as the session
         // opens — Claude Code's timing: the user can type at once, and the
         // first turn (a [PROMPT]'s below included) waits for the hooks so
@@ -867,6 +896,25 @@ impl<'t> Session<'t> {
         if let Some(error) = error {
             self.toast(error, ToastKind::Error);
         }
+    }
+
+    /// Commit what this launch's built-in update did as dim rows under the
+    /// banner (`docs/builtin-updates.md`): chrome like the banner, never
+    /// `history`, so a purge rebuild does not repeat it. Rows rather than a
+    /// toast, because this happens once per update and a toast is gone in
+    /// seconds under whatever else the launch raised. Nothing at all when
+    /// the update changed nothing.
+    pub(crate) fn commit_builtin_notices(&mut self, notices: &[String]) {
+        if notices.is_empty() {
+            return;
+        }
+        let width = self.term.screen().width;
+        for sentence in notices {
+            self.term
+                .insert_before(ui::startup_paragraph_lines(sentence, width));
+        }
+        self.term.insert_before(vec![Line::default()]);
+        self.frame.schedule_frame();
     }
 
     /// Say that some `SKILL.md` could not be loaded — the hooks toast's rule

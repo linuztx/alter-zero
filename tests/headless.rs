@@ -163,6 +163,59 @@ fn verbose_logs_the_run_to_stderr_and_leaves_stdout_alone() {
     assert!(!log.contains('\x1b'), "nor stderr: {log:?}");
 }
 
+/// docs/builtin-updates.md: a headless run updates the built-in skills like
+/// any launch and says so in its step log, but leaves a kept file's record
+/// alone — the one notice is the next interactive launch's to show.
+#[test]
+fn a_headless_run_updates_the_built_in_skills_and_settles_no_kept_file() {
+    use alter_zero::builtin::{MANIFEST_FILE_NAME, Manifest, digest};
+    const SCRIPT: &str = "web-search/scripts/mcp_http.py";
+    const KEPT: &str = "yt-dlp/SKILL.md";
+    let zeros = "0".repeat(64);
+    let world = World::new("builtin-update");
+    // The config home's own skills root: the fixture's override is the one
+    // folder the update never touches.
+    let root = world.dir("cfg").join("skills");
+    let put = |path: &str, contents: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, contents).expect("write");
+    };
+    put(SCRIPT, "# an outdated built-in\n");
+    put(KEPT, "my own yt-dlp skill\n");
+    let mut manifest = Manifest::new("skills");
+    manifest.version = "0.0.1".into();
+    manifest
+        .files
+        .insert(SCRIPT.into(), digest(b"# an outdated built-in\n"));
+    manifest.files.insert(KEPT.into(), zeros.clone());
+    put(MANIFEST_FILE_NAME, &manifest.render());
+
+    let out = world
+        .command(&["-p", "--verbose", "hello there"])
+        .env_remove("ALTER_ZERO_SKILLS_DIR")
+        .env("ALTER_ZERO_DUMMY", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let log = stderr(&out);
+    assert!(log.contains("Updated built-in skill: web-search"), "{log}");
+    assert_eq!(
+        std::fs::read_to_string(root.join(SCRIPT)).expect("read"),
+        include_str!("../prompts/skills/web-search/scripts/mcp_http.py")
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(KEPT)).expect("read"),
+        "my own yt-dlp skill\n"
+    );
+    let after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(MANIFEST_FILE_NAME)).expect("manifest"),
+    )
+    .expect("json");
+    assert_eq!(after["files"][KEPT], serde_json::json!(zeros));
+}
+
 #[test]
 fn stream_json_is_one_event_per_line_from_session_to_result() {
     let world = World::new("stream");

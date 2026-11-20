@@ -4406,7 +4406,9 @@ fn live_the_built_in_skill_creator_writes_a_skill_this_crate_can_load() {
     let _ = std::fs::remove_dir_all(&work);
     let root = work.join("skills");
     assert!(
-        alter_zero::llm::skill::seed_builtin_skills(&root).is_empty(),
+        alter_zero::llm::skill::seed_builtin_skills(&root, true)
+            .errors
+            .is_empty(),
         "the built-in seeds"
     );
     let (seeded, errors) = alter_zero::llm::skill::discover_skills(std::slice::from_ref(&root));
@@ -4474,7 +4476,11 @@ fn live_the_skill_creator_sends_the_model_to_its_reference_file() {
     ));
     let _ = std::fs::remove_dir_all(&work);
     let root = work.join("skills");
-    assert!(alter_zero::llm::skill::seed_builtin_skills(&root).is_empty());
+    assert!(
+        alter_zero::llm::skill::seed_builtin_skills(&root, true)
+            .errors
+            .is_empty()
+    );
     let (seeded, errors) = alter_zero::llm::skill::discover_skills(std::slice::from_ref(&root));
     assert!(errors.is_empty(), "{errors:?}");
     let registry = alter_zero::skills::SkillRegistry::new(seeded);
