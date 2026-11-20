@@ -545,9 +545,12 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
 /// classification, folded to what matters here: positional parameters
 /// (`$1`), the `$-`/`$_` specials, and the [`COMMON_ENV_VARS`] written
 /// exactly (uppercase). The scanner stays a truthful parse and this decides
-/// separately whether the picker opens, so the two are testable apart.
+/// separately whether the picker opens, so the two are testable apart. A
+/// query with a plugin's `:` is judged by the part before it, so `$HOME:x`,
+/// `$1:foo` and `$5:30` stay shell text (`docs/skill-mentions.md`).
 #[must_use]
 pub fn shell_flavored_query(query: &str) -> bool {
+    let query = query.split(':').next().unwrap_or_default();
     if query.is_empty() {
         return false;
     }
@@ -1377,6 +1380,19 @@ mod tests {
         assert!(!shell_flavored_query("Data"));
         assert!(!shell_flavored_query("FOO"), "unknown uppercase is a query");
         assert!(!shell_flavored_query("skill-creator"));
+    }
+
+    #[test]
+    fn shell_text_with_a_colon_stays_shell_text() {
+        // The plugin `:` lets a mention run past a colon; what comes before
+        // it is still what says whether this is shell talk.
+        for (text, cursor) in [("echo $HOME:x", 12), ("$1:foo", 6), ("$5:30", 5)] {
+            let token = mention_token(text, cursor).expect("a truthful parse");
+            assert!(shell_flavored_query(&token.query), "{text}");
+        }
+        let token = mention_token("$code-review:lint", 17).expect("a mention");
+        assert_eq!(token.query, "code-review:lint");
+        assert!(!shell_flavored_query(&token.query));
     }
 
     #[test]

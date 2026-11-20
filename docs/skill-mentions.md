@@ -123,7 +123,9 @@ sentence codex's eager injection cannot read and this design can.
   with the colon inside the range, so an accept writes `$code-review:lint `
   over everything typed.
 - `shell_flavored_query(query) -> bool` — the popup-side rejection, kept a
-  separate predicate so the scanner stays a truthful parse.
+  separate predicate so the scanner stays a truthful parse. A query with a
+  plugin's `:` is judged by the part before it, so `echo $HOME:x`, `$1:foo`
+  and `$5:30` never open a `No matching skills` band under shell text.
 - `SkillMatch { name, description, score, indices }` +
   `rank_skills(query, &[SkillMetadata])` — `file_search::fuzzy_match` on
   each **name**, best score first, ties keeping discovery (precedence)
