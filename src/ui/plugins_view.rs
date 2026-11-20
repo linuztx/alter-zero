@@ -1,6 +1,6 @@
 //! The `/plugins` page's shim in `ui` (`docs/plugins-menu.md`): the
-//! [`PageKit`] the page — which lives in the `alter_zero_plugins` crate so
-//! its code costs an idle session nothing (`docs/memory.md`) — draws itself
+//! [`PageKit`] the page — which lives in the `alter_zero_plugins` crate,
+//! beside the store it works on — draws itself
 //! through, implemented as thin delegations to the picker family's own
 //! helpers so the page can never look unlike its siblings; and the four
 //! functions the enumeration sites call — the page's build (lines and

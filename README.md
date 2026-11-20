@@ -211,7 +211,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Four permission modes.** `manual` asks before file changes and commands; `edit` allows file changes; `auto`, the default, adds a reviewer for routine commands; `master` runs unattended. Cycle modes with **Shift+Tab** and keep rules per project.
 - **Run it without a screen.** `alter-zero -p "…"` answers one prompt for a script, a cron job or a CI step: the answer on stdout, or JSON with `--output-format`, and an exit status to branch on. Nothing waits for a reply; `--permission-mode` decides what runs unasked. See [headless mode](docs/headless.md).
 - **Checkpoints and rewind.** Enable checkpoints per directory to snapshot your working files in a separate store. **Esc Esc** returns to an earlier message and, when a checkpoint is available, restores the files with it.
-- **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook, yours or a project's, and any new project MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
+- **Nothing runs on its own unseen.** When the app starts, it lists any new or changed hook — yours, a project's, or a plugin's — and any new project or plugin MCP server, showing exactly what each runs. A hook runs only once you trust it, a server only once you enable it, and `/hooks` and `/mcp` change either later.
 - **Credentials by placeholder.** Store a credential with `/secrets` and the agent can use its placeholder without seeing the value. See [how secrets are stored and used](docs/secrets.md).
 
 ### Give the agent the right tools
@@ -220,6 +220,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `web-search` searches the web through Exa, Parallel, Tavily and Jina Reader with no key; `jina-reader` reads public webpages and PDFs through Jina Reader; `yt-dlp` guides media downloads with the separately installed CLI.
 - **Public tunnels.** The built-in `flaredantic` skill guides you through exposing a local service via Cloudflare, Microsoft Dev Tunnels, or Serveo using the separately installed `flare` CLI. A tunnel makes the service publicly reachable; review what you expose.
 - **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
+- **Plugins.** Install skills, commands, agents, hooks, and MCP servers as one package with `/plugins` or `alter-zero plugin`. Claude Code plugins, Codex plugins, and [Agent Plugins](https://agent-plugins.org/) load unchanged, from the two official marketplaces (`anthropics/claude-plugins-official`, `openai/plugins`) or any repository or folder you add. A plugin's hooks and MCP servers run only after you review them.
 - **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.
 
 ### Pick up where you left off
@@ -264,6 +265,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/hooks` | Browse hooks and trust or stop trusting each one |
 | `/skills` | Browse skills and enable or disable each one |
 | `/mcp` | Manage MCP servers |
+| `/plugins` | Browse, install and manage plugins and their marketplaces |
 | `/donate` | Support the project with a crypto donation |
 | `/sponsor` | Sponsor the developer or get in touch |
 | `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
@@ -360,10 +362,11 @@ Your sign-ins, saved sessions, input history, and per-directory settings live un
 | `~/.alter-zero/.env` | Keys and tokens saved through `/login` |
 | `~/.alter-zero/agents/` and `~/.alter-zero/skills/` | Your shared agent definitions and skills |
 | `~/.alter-zero/hooks.json` and `~/.alter-zero/mcp.json` | Your shared hooks and MCP servers |
+| `~/.alter-zero/plugins.json` and `~/.alter-zero/plugins/` | Installed plugins and the marketplaces they came from |
 | `.alter-zero/` in a project | Project-specific `agents/`, `skills/`, `hooks.json`, and `mcp.json` |
 | `AGENTS.md` | Project instructions read by the agent |
 
-Claude Code-style `.claude/skills/` and `.mcp.json` files are also supported. Hooks, yours and a project's, and a project's MCP servers run only after you approve them when the app starts.
+Claude Code-style `.claude/skills/` and `.mcp.json` files are also supported. Hooks — yours, a project's, and a plugin's — and a project's or a plugin's MCP servers run only after you approve them when the app starts.
 
 </details>
 

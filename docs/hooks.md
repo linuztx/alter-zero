@@ -851,8 +851,9 @@ mid-session.
   (`${CLAUDE_PROJECT_DIR}`, the plugin four) is spliced in as the variable
   it names. A handler without `args` is the shell command line it always
   was.
-- **An update is reviewed again**: the install path carries the version,
-  and `TrustFile::forget_under(cache dir)` drops every record under it.
+- **An update is reviewed again**: a plugin has one directory whatever its
+  version, so every install, update and uninstall drops the trust records
+  under it (`TrustFile::forget_under`).
 
 ## Module layout
 

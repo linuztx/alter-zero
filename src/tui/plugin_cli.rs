@@ -5,8 +5,7 @@
 //!
 //! A router and nothing more. The grammar is the pure `cli` module's; the
 //! work, every word printed and the `--json` shapes are the plugin crate's
-//! (`plugins::cli`), which an idle session never faults in
-//! (`docs/plugins.md` *Memory*). What this file adds is what only the app
+//! (`plugins::cli`). What this file adds is what only the app
 //! has: the store over the config home with `git` spawned through the
 //! tty-detach chain ([`plugin_store`], which the `/plugins` page reuses),
 //! the real stdout and stderr, and forgetting `trust.json`'s records under

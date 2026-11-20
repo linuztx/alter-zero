@@ -530,20 +530,19 @@ user has seen it — is kept without a second mechanism:
 
 Resident memory is a feature here (`docs/memory.md`), and the idle number is
 the one this design is held to: **a session with no plugins costs what it
-cost before**, and one with plugins costs only what their components cost in
-the features that load them. An earlier version of this feature read every
-marketplace's catalog behind the first frame and kept it so the page could
-open on it; that is the thing this one does not do.
+cost before**, and one with plugins costs what loading them takes and no
+more. Holding it turned out to be mostly not about data, so this section is
+the record of what was assumed, what was measured, and what holds it now.
 
 - **Startup**: one bounded read of `plugins.json`, typed, no `Value` tree.
   No catalog, no thread, no `git`. The entry point is one small function,
   `plugins::startup_plugins`: with no `plugins.json` it returns after one
   failed `open`, having touched no other plugin code (no store, no parser,
-  no directory probe) — the earlier version idled 1.4–1.6 MB above the
-  baseline with no plugins at all, nearly all of it code pages faulted in by
-  plugin code called from scattered places at startup. Classifying a root
-  and reading manifests (`plugins::load_enabled`) is reached only when the
-  registry lists a plugin that is on in this directory.
+  no directory probe). Classifying a root and reading manifests
+  (`plugins::load_enabled`) is reached only when the registry lists a
+  plugin that is on in this directory. An earlier version of this feature
+  read every marketplace's catalog behind the first frame and kept it so
+  the page could open on it; this one does not.
 - **A catalog** is read only when `/plugins` opens (or a CLI command runs):
   streamed off the file through `serde_json::from_reader` over a
   `Read::take` cap (8 MiB) into typed records naming only the fields the
@@ -553,31 +552,59 @@ open on it; that is the thing this one does not do.
   text buffer and one row table and dropped (`docs/plugins-menu.md` *The
   snapshot's shape*). It is read on the loop (two catalogs are 4–7 ms), so
   the page's first frame already has its rows and there is no placeholder
-  for them to push away; it is dropped when the page closes.
+  for them to push away; it is dropped when the page closes. Opening the
+  page on the two official catalogs' 382 plugins and closing it leaves
+  about 290 kB of freed heap behind, once (`/settings` leaves 160 kB), where
+  the first version of the page left 650 kB and more with every cycle.
 - **Fetching** is a child process; its output is captured into a few
   kilobytes.
 - **The worker thread** that waits on `git` builds nothing large (a new
-  thread is a new arena): results cross back as small typed values.
+  thread is a new arena): results cross back as small typed values, and the
+  snapshot after an operation is read on the loop.
 - No new dependency, no static table of references.
-- **The core is a crate of its own**, `crates/plugins` (`alter-zero-plugins`,
-  re-exported as `alter_zero::plugins`). Measured on the earlier version:
-  every plugin module inside the main crate — the store, the components
-  reader, the page, ~367 kB — was 100% resident at idle without ever being
-  executed, with ~290 kB of `alloc`/`core`/`serde` instantiations beside it,
-  because code inside the main crate is interleaved with hot code at a finer
-  grain than the kernel's 64 kB fault-around windows. A cold dependency
-  crate's code and its own monomorphisations are one contiguous block —
-  `rustls`, `ring`, `x11rb` measure 0% resident at idle in both the release
-  and the dist profile — so this one costs an idle session nothing. It
-  depends on nothing of the app's: cancellation is its own `CancelToken`,
-  an MCP server is its own `ServerTransport`, and `git` is spawned through
-  an injected `CommandBuilder` (the app passes one over its tty-detach
-  tiers); what it returns is paths and plain data, and the surface the main
-  crate touches is concrete, non-generic functions.
 
-`scripts/smoke` holds it: an idle session with an empty config home, one
-with marketplaces added and nothing installed, and one that opened and
-closed `/plugins` are compared by resident size (Phase 162).
+**Where the code sits is what decided the idle number.** The earlier
+version idled 1.4–1.6 MB above the baseline with no plugin installed, and
+switching every one of its startup calls off at run time gave none of that
+back: its code was resident without running. So the core became a crate of
+its own, `crates/plugins` (`alter-zero-plugins`, re-exported as
+`alter_zero::plugins`), on the observation that cold dependency crates —
+`rustls`, `ring`, `x11rb` — sat in one block each and were not resident at
+idle. That was the wrong lesson. A 2.8 MB block of code nothing calls cost
+an idle session 0.8 MB whether it was linked into the main crate or kept in
+a crate of its own, and this crate as first merged, none of it run, moved
+the idle figure by 0.8 MB in `release` and 1.5 MB in `dist`. What an idle
+session pays for code is set by where the linker puts the megabyte it
+*does* run, and adding any code anywhere shifts that.
+
+What holds the number is therefore not in this crate at all: the **idle
+text layout** (`docs/text-layout.md`) has the linker put the functions a
+session runs at rest side by side, with the ones a session with plugins
+adds — the registry read, the manifests, the skill and agent walks, the
+hook layers; about 280 kB of code — as a group of their own after them.
+A session without a plugin keeps none of the plugin system resident, and
+one with a plugin keeps that group:
+
+| The shipped binary at rest, MB | Just written | Read from disk |
+|---|---|---|
+| a configured session, before the plugin system (`main`) | 13.07 | 14.48 |
+| a configured session, no plugin | 8.04 | 8.90 |
+| the same with a plugin on (a skill, a command, an agent, a trusted hook) | 8.37 | 8.89 |
+| that plugin session under the linker's default order | 14.15 | 16.40 |
+
+The crate stays for what it is good for: it depends on nothing of the
+app's (cancellation is its own `CancelToken`, an MCP server its own
+`ServerTransport`, `git` is spawned through an injected `CommandBuilder`
+the app passes over its tty-detach tiers), what it returns is paths and
+plain data, and the surface the main crate touches is concrete,
+non-generic functions. In the shipped binary the whole plugin system —
+three formats, the catalog, the store, the commands, the page — is about
+0.6 MB of code of its own and 1.4 MB of file (18.99 → 20.37 MB).
+
+`scripts/smoke` holds what a test can hold: an idle session with an empty
+config home and one with marketplaces added and nothing installed are the
+same size to the page (Phase 162), and `scripts/text_layout.sh measure
+--plugins` is the measurement for the rest.
 
 ## The `/plugins` page
 

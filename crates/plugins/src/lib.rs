@@ -29,10 +29,11 @@
 //! - `page`       — the `/plugins` page: its state, its keys and its
 //!   view, drawn through the app's [`PageKit`] (`docs/plugins-menu.md`).
 //!
-//! A crate of its own, not a module of the app's: a cold dependency crate's
-//! code is one contiguous block that an idle session never faults in, where
-//! the same code inside the main crate is interleaved with hot code and
-//! resident (`docs/plugins.md` *Memory*). It depends on nothing of the
+//! A crate of its own, not a module of the app's, so that what it needs of
+//! the app is spelled out and nothing else can creep in. (It was first
+//! split off to keep its code out of an idle session's memory; a crate
+//! boundary does not do that — the idle text layout does, `docs/plugins.md`
+//! *Memory*.) It depends on nothing of the
 //! app's: cancellation, the MCP transport and the way `git` is spawned are
 //! its own or injected, and what it returns is paths and plain data.
 

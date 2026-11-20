@@ -14,6 +14,48 @@ release heading when a version is cut.
 
 ### Added
 
+- **Plugins: `/plugins` and `alter-zero plugin`.** A plugin is a package
+  someone else wrote that adds skills, slash commands, subagent types,
+  hooks and MCP servers in one install. Three formats load unchanged:
+  Claude Code plugins, Codex plugins and
+  [Agent Plugins](https://agent-plugins.org/) 1.0.0. Plugins come from
+  marketplaces, and the two official ones are offered out of the box:
+  `anthropics/claude-plugins-official` and `openai/plugins`. Any other
+  GitHub repository, git URL or folder can be added beside them.
+  - **`/plugins`** has a tab for every plugin, one for the installed ones,
+    one for each marketplace you added, and `+ Add`, where the official
+    marketplaces are one Enter away and a field takes any other source.
+    Type to search, Enter opens a plugin's page (what it adds, by the
+    names you will use; where it comes from; a warning before one that may
+    run code), and Space turns an installed plugin on or off for the
+    directory you are in. Ctrl+U updates a marketplace and Ctrl+R removes
+    it, with the plugins installed from it.
+  - **`alter-zero plugin`** does the same from the shell: `install`,
+    `uninstall`, `enable`, `disable`, `update`, `list` and `info`, and
+    `plugin marketplace add`, `list`, `update` and `remove`.
+    `plugin marketplace add --defaults` adds the two official ones, and
+    `alter-zero plugin install frontend-design@claude-plugins-official`
+    adds the marketplace it names on the way. `list` and `info` take
+    `--json`.
+  - A plugin's skill is `plugin:skill` (mention it with `$`), its command
+    is a skill of the same shape, its agent type `plugin:agent` and its
+    MCP server `plugin:{plugin}:{server}`.
+  - **Nothing a plugin brings runs unseen.** Its hooks and MCP servers go
+    through the same review as your own when the app starts — or at once,
+    over the page, when you install one from `/plugins` — and every update
+    is reviewed again.
+  - Marketplaces are fetched with your own `git`, so private repositories
+    use the credentials you already have, and only the catalog is checked
+    out: the official Codex repository is 105 MB and takes 1.4 MB here. A
+    session with no plugin installed starts exactly as it did
+    (`docs/plugins.md`, `docs/plugins-menu.md`, `docs/plugin-cli.md`).
+
+- **A hook can name a program and its arguments.** Beside `command`, a
+  hook in `hooks.json` may give `args`, a list: each argument reaches the
+  program as one word exactly as written, with no shell quoting to get
+  right. A hook without `args` is the shell command line it always was
+  (`docs/hooks.md`).
+
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model
   list on every open, so each one began on `Loading models…`, for a second
@@ -97,6 +139,20 @@ release heading when a version is cut.
   `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 
 ### Changed
+
+- **A session at rest takes about 40% less memory on Linux.** Most of what
+  an idle session kept in memory was the app's own code, and it ran only a
+  small part of it: the rest was resident because the linker had scattered
+  the functions a session runs across the whole binary, and memory is held
+  by the page. Release builds now place the functions an idle session runs
+  side by side. The installed binary, signed in to a provider and sitting
+  at its prompt, takes about 8.0 MB where it took 13.1 MB (8.9 MB where it
+  took 14.5 MB once the binary has been read back from disk, as after a
+  reboot), and the figure no longer moves by a megabyte from one release
+  to the next for no reason. Nothing else about the binary
+  changes: the same code, in a different order. macOS builds are laid out
+  as before. Building from source, `ALTER_ZERO_TEXT_LAYOUT=0` turns it off
+  (`docs/text-layout.md`).
 
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on

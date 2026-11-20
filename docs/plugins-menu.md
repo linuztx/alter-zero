@@ -39,11 +39,16 @@ the **crate** the page lives in.
 
 The page — state, keys, jobs and view — is the `alter_zero_plugins` crate's
 `page` module (`crates/plugins/src/page/`: `state.rs`, `view.rs`,
-`tests.rs`). Code inside the main crate is resident whether it runs or not
-(it is interleaved with hot code at a finer grain than the kernel's 64 kB
-fault-around); a cold dependency crate's is not. The prior page's view and
-state measured 100 % and 71 % resident in an idle session that never opened
-it. A crate of its own costs an idle session nothing.
+`rows.rs`, `host.rs`, `tests.rs`), beside the store it works on. The prior
+page's view and state measured 100 % and 71 % resident in an idle session
+that never opened it, and the page was moved out of the main crate for
+that. Moving it was not what fixed that — code nothing runs is resident or
+not by where the linker puts the code that does run, wherever the crate
+boundary is (`docs/plugins.md` *Memory*) — and what does is the idle text
+layout (`docs/text-layout.md`): the functions a session runs at rest are
+laid out together, and the page's are not among them. The crate boundary
+stays for what it gives the code: the page depends on the store and on
+nothing of the app's.
 
 The crate cannot depend on the main one, so the page draws itself through a
 **kit**: `page::PageKit`, a trait of plain methods the main crate implements

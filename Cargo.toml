@@ -188,9 +188,10 @@ syntect = { version = "5", default-features = false, features = ["parsing", "reg
 # uses, so the `Buffer`/`Cell` types are the same ones.
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 
-# Plugins (docs/plugins.md): a crate of its own because a cold
-# dependency crate's code is one contiguous block an idle session never
-# faults in, where the same code inside this crate is resident.
+# Plugins (docs/plugins.md): the formats, the store, the `plugin` commands
+# and the `/plugins` page, as a crate of its own that depends on nothing
+# here. What keeps its code out of an idle session's memory is the idle
+# text layout (build.rs, docs/text-layout.md), not the crate boundary.
 alter-zero-plugins = { path = "crates/plugins" }
 
 # Linux only: the two clipboard backends arboard itself is built on, reached

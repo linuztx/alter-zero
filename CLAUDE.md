@@ -28,12 +28,17 @@ bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live 
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
 cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/binary-size.md)
+scripts/text_layout.sh measure target/release/alter-zero   # an idle session's resident memory, just written and read from disk (docs/text-layout.md)
+scripts/text_layout.sh profile              # rewrite layout/idle-functions.txt from what an idle session runs (builds release + dist, needs valgrind)
+ALTER_ZERO_TEXT_LAYOUT=1 cargo test --test text_layout   # the idle text layout on a dev binary: the section the linker script asks for is there
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
 scripts/release.sh download X.Y.Z [DIST]   # a published release back into an empty dist/, each archive beside its .sha256, verified (curl or wget, no gh)
 scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the release archives: four platform packages, then the launcher (docs/npm.md)
 (cd npm && node --test)                     # the npm launcher's tests (docs/npm.md)
+cargo test -p alter-zero-plugins            # the plugin system's own crate: formats, catalog, store, commands, the /plugins page (docs/plugins.md)
+cargo test -p alter-zero-plugins --test store   # the plugin store against local git repositories, offline
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 cargo run --release --example link_probe    # what a link-heavy reply costs to render, both presentations (docs/links.md)
@@ -265,27 +270,81 @@ symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catche
 `opt-level = "s"` (a slower render path) were measured and refused —
 `docs/binary-size.md`.
 
+**Where the binary's functions sit is chosen too** — the idle text layout,
+`docs/text-layout.md`. An idle session runs about a megabyte and a half of
+its code, and under the linker's default order eight to ten megabytes of it
+were resident anyway: memory is resident by the page, the kernel maps the
+block around every page touched, and what runs was scattered across all
+twelve — so the idle figure also moved by a megabyte whenever an unrelated
+change shifted the order. **`build.rs`** (the crate's one build script, and
+it does nothing else) writes a linker script from
+**`layout/idle-functions.txt`** — every function an idle session of the
+`release` and the `dist` build executes, each a legacy-mangled name with
+its hash left to a `*` — that gathers them in a section of their own,
+`.text.idle`, ahead of `.text` (`INSERT BEFORE .text`, so the default
+script lays out everything else as before), and asks for it on the
+`alter-zero` binary's link alone (`cargo::rustc-link-arg-bins`,
+`-T {script}`). **The list is in `[groups]`, and a group is one run of
+code**: one linker input statement each, in order — `[a configured
+session]` (a provider signed in to, state files saved, a git checkout with
+an `AGENTS.md`: the state nearly every session is in), then `[a first
+run]` (what only the offline demo adds), then `[with plugins]` — so a
+session keeps resident the groups it runs and not the others; a statement
+holds every pattern of its group and each pattern's `.text.unlikely.`
+twin, since a cold-marked function runs at idle too and a statement per
+function made the link a second slower. A configured session of the
+shipped binary went from 13.07 to 8.04 MB at
+rest just installed and from 14.48 to 8.90 MB
+read back from disk — the two page-cache states a binary is in, which
+differ by a megabyte or two and which `scripts/text_layout.sh measure`
+takes both of. It applies to **`release` and `dist` builds on a Linux
+target** (GNU ld and lld read the script) and stands aside for a `dev`
+build (a second or two per link, for a binary nobody leaves idling),
+another OS, and a `-fuse-ld=` naming gold or mold (noticed in
+`CARGO_ENCODED_RUSTFLAGS`, skipped with a warning);
+`ALTER_ZERO_TEXT_LAYOUT=0` turns it off and `=1` on for a `dev` build,
+which is how CI's smoke job runs so the suite drives a binary linked the
+way a shipped one is. The generator is pure (`layout/script.rs`, included
+by path from `build.rs` and from `tests/text_layout.rs`, which also reads
+the built binary's section headers to check the section is there,
+executable, ahead of `.text` and plausibly sized — a list or a toolchain
+gone stale shows up as a near-empty section). The list is **never edited
+by hand**: `scripts/text_layout.sh profile` makes each scenario's config
+home by driving the binary through a short session against a stub provider
+on the loopback (which also stands in for the telemetry collector and the
+release page, so nothing leaves the machine and no file is in a format the
+script knows), runs an idle session of each build in each under valgrind's
+callgrind, and rewrites it — at each release and after a toolchain bump,
+since a function that newly runs at startup and is not listed costs a
+64 kB window until it is. **The scenario matters more than anything**: the
+first list, profiled on an empty config home, saved five megabytes there
+and two on a configured one, whose startup (a real backend, the key store,
+the state files' readers) it had never seen. What the hash wildcards cost
+(a generic function's instances are named alike, so the one that runs
+brings the rest: about half of `.text.idle`) and why the `v0` mangling
+that would fix it was left are in the doc.
+
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`) holds the logic; **`src/main.rs`** is a 73-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, and `plugins`, the re-export of the workspace's other crate, `crates/plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `ask`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`,
+`startup`, `headless`, `recorder`, `resume`, `history_store`, `settings`, `telemetry`, `update`, `update_cli`, `herdr`, `shell`, `workers`, `host`, `mascot`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `mcp`, `trust`, `login`, `plugins`, `plugin_runtime`, `plugin_cli`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `config_review`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `look`, `mascot`, `mascot_motion`, `spinner`, `theme`, `donate`, `sponsor`, `export`, `context_usage`, `usage`, `secrets`, `hooks_menu`, `mcp_menu`, `plugins_menu`, `config_review`, `background`,
 `agent`, `status`, `tips`, `permission`, `tool_group`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `config_review_view`, `view_flow`, `stream_render`, `frame_memo`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `plugins_view`, `config_review_view`, `view_flow`, `stream_render`, `frame_memo`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -3231,6 +3290,84 @@ directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
 
+**Plugins** (`docs/plugins.md` the design, `docs/plugins-menu.md` the page,
+`docs/plugin-cli.md` the commands): a plugin is a folder someone else wrote
+that adds skills, commands (as skills), subagent types, lifecycle hooks and
+MCP servers in one install, in **three formats read by one reader** — Agent
+Plugins 1.0.0 (agent-plugins.org: a root `plugin.json` whose `$schema` is the
+1.0.0 URL exactly, a closed manifest, `skills/<n>/SKILL.md`, a root
+`mcp.json`), Claude Code (`.claude-plugin/plugin.json`, `skills/`,
+`commands/`, `agents/`, `hooks/hooks.json`, `.mcp.json`) and Codex
+(`.codex-plugin/plugin.json`) — installed from **marketplaces**: a git
+repository or a folder with a catalog (`.claude-plugin/marketplace.json`,
+`.agents/plugins/marketplace.json`), a repository holding only a plugin
+being a marketplace of one. The two official ones — `claude-plugins-official`
+(`anthropics/claude-plugins-official`) and `openai-curated`
+(`openai/plugins`) — are **offered, never added on their own**
+(`state::DEFAULT_MARKETPLACES`; `ALTER_ZERO_PLUGIN_MARKETPLACES` replaces
+the offer), and their names are reserved for their owners' GitHub
+organisations. **All of it is a crate of its own**, `crates/plugins`
+(`alter-zero-plugins`, re-exported as `alter_zero::plugins`): the formats
+(`agent_plugins`, `manifest`, `components`), the catalog (`marketplace` —
+streamed one entry at a time, never held as a tree), `plugins.json`
+(`state`), the paths (`layout`), the hardened `git` child (`git`: the user's
+own `git`, no prompt, no `ext` transport, bounded output, a timeout, the
+operation's `CancelToken` killing the whole process group, spawned through
+an injected builder so the app's tty-detach chain applies), the operations
+(`store`), the commands (`cli`: the work, the wording, the `--json` shapes)
+and the page (`page`: `state` and its keys, `view` through the app's
+`PageKit`, `rows` the packed snapshot, `host` the page's work over the
+store). It depends on nothing of the app's; the app keeps the shims
+(`app/plugins_menu.rs`, `ui/plugins_view.rs`), the page's boundary
+(`tui/plugins.rs`: the store while the page is open, a thread per
+operation, Esc's cancel, the reload after a change), the session loader
+(`tui/plugin_runtime.rs`) and the command router (`tui/plugin_cli.rs`). On
+disk, `{config_home}/plugins.json` records the marketplaces, the installed
+plugins and each directory's `disabled` list — a plugin is installed for
+the user and on in every directory until one turns it off — and
+`{config_home}/plugins/` holds `marketplaces/{name}` (sparse, blobless
+clones: the 105 MB official Codex repository is 1.4 MB there),
+`installed/{marketplace}/{plugin}` (one copy a plugin, replaced by a
+rename), `data/` and `staging/`; a folder marketplace's plugins load in
+place. **What a plugin adds goes through the seams that were already
+there**: skills and commands into the skill walk as `plugin:skill`
+(`skills::PluginSkillSource`), agents as `plugin:agent`
+(`subagents::PluginAgentSource`), hooks as trust layers stamped with the
+plugin's root and data directory (`hooks::PluginHooks`,
+`${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` expanded), MCP servers as
+plugin-scope entries named `plugin:{plugin}:{server}` — and **nothing a
+plugin brings runs unseen**: its hooks and servers wait for the startup
+review like a project's (`docs/config-review.md`), and an install, update
+or uninstall forgets the trust records under the plugin's directory
+(`TrustFile::forget_under`), so every update is reviewed again. **Startup
+is one failed `open`** where there is no `plugins.json`
+(`plugins::startup_plugins`; `load_enabled` is reached only when a plugin
+is on here), the page reads the catalogs when it opens — a few
+milliseconds for the two official ones' 382 plugins — and drops them when
+it closes, and the functions a session with plugins runs at rest are a
+group of their own in the idle text layout (`[with plugins]`,
+`docs/text-layout.md`), so a session without one keeps none of them
+resident. **`/plugins`** is a composer-replacing page in the picker family
+with the reference's tab strip: `All`, `Installed`, one tab per added
+marketplace, `+ Add` (the two official marketplaces one Enter away, a field
+for any other source); rows in one vocabulary (enabled, disabled, not
+loaded, available, unavailable), ten at a time where there is room; Enter
+opens a plugin's page (what it adds by the names a session uses, where it
+comes from, a warning before one that may run code), Space turns an
+installed plugin on or off for this directory, Ctrl+U and Ctrl+R update
+and remove a marketplace; **the page never moves under an action and says
+nothing when one works** — a job is named on the hint's own row once it
+has run 400 ms, a failure is said there in red — and the review opens over
+it when an install brought a hook or a server. **`alter-zero plugin
+install|uninstall|enable|disable|update|list|info`** and **`plugin
+marketplace add|list|update|remove`** do the same from the shell
+(`add`/`remove`/`upgrade`/`rm` aliases, `--json` on the listings,
+`marketplace add --defaults` for the two official ones; an install naming
+an offered marketplace adds it on the way). `ALTER_ZERO_PLUGINS=0` loads
+none for a run, `ALTER_ZERO_PLUGINS_DIR` moves the tree,
+`ALTER_ZERO_PLUGIN_GIT_TIMEOUT_SECS` bounds a fetch; `smoke.sh` Phase 162
+drives a session with a plugin on and Phase 163 the page.
+
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
 the pure `herdr::pane`) the app is its own status authority — herdr has no
@@ -3987,7 +4124,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently
-`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/donate`, `/sponsor`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/export`, `/init`, `/compact`, `/context`, `/usage`, `/resume`, `/model`, `/login`, `/settings`, `/theme`, `/mascot`, `/spinner`, `/hooks`, `/skills`, `/mcp`, `/plugins`, `/donate`, `/sponsor`, `/secrets`, and `/quit` — plus, right after `/model`, one row per speed tier the active model lists, `/fast`, `/ultrafast`, built from the listing by `App::commands` rather than registered, `docs/fast-mode.md`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. It lists five commands at a time (`MENU_MAX_COMMANDS`,
 the window centered on the highlight) over a dim `(n/total)` counter in the
 names' column — the pickers' counter, saying which match the highlight is on of

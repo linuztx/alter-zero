@@ -205,7 +205,7 @@ pub mod trust;
 pub mod ui;
 pub mod update;
 
-/// The plugin core (`docs/plugins.md`), a crate of its own so that its code
-/// is one contiguous block an idle session never faults in — inside this
-/// crate it would be interleaved with hot code and resident (*Memory*).
+/// The plugin system (`docs/plugins.md`), a crate of its own that depends on
+/// nothing here: the formats, the store, the `plugin` commands and the
+/// `/plugins` page.
 pub use alter_zero_plugins as plugins;

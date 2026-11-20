@@ -1,7 +1,7 @@
 //! The `/plugins` page's shim in `App` (`docs/plugins-menu.md`). The page —
 //! its state, keys, jobs and view — lives in the `alter_zero_plugins` crate,
-//! so its code costs an idle session nothing (`docs/memory.md`); `App` only
-//! holds it while it is open, boxed, and forwards to it. No logic here.
+//! beside the store it works on; `App` only holds it while it is open,
+//! boxed, and forwards to it. No logic here.
 
 use std::time::Duration;
 
