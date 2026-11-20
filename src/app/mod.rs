@@ -117,8 +117,8 @@ pub use self::reasoning::{LiveThought, Reasoning};
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
 pub use self::config_review::{
-    ConfigReview, ItemChange, ReviewAnswer, ReviewChoice, ReviewItem, ReviewKey, ReviewKind,
-    ReviewPage, ReviewSection,
+    ConfigReview, ItemChange, PLUGIN_SECTION_PREFIX, ReviewAnswer, ReviewChoice, ReviewItem,
+    ReviewKey, ReviewKind, ReviewPage, ReviewSection,
 };
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};

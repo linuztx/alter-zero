@@ -231,6 +231,31 @@ fn the_titles_count_what_is_new_and_what_changed() {
     );
 }
 
+/// An installed plugin's servers (`docs/plugins.md`) are not "in this
+/// project": a page of them alone says where they come from, and a page
+/// mixing them with a project's says neither.
+#[test]
+fn a_plugins_servers_are_not_counted_as_the_projects() {
+    let plugin = ReviewSection {
+        scope: None,
+        path: "plugin review@m".to_string(),
+        items: vec![server("plugin_review_lint", "stdio", &["lint"])],
+    };
+    let only = ReviewPage::new(ReviewKind::McpServers, vec![plugin.clone()]);
+    find(
+        &texts(&review_app(vec![only]), 80, TALL),
+        "1 new MCP server found in installed plugins",
+    );
+    let mut mixed = servers_page();
+    mixed.sections.push(plugin);
+    let texts = texts(&review_app(vec![mixed]), 80, TALL);
+    find(&texts, "3 new MCP servers found");
+    assert!(
+        !texts.iter().any(|row| row.contains("in this project")),
+        "{texts:#?}"
+    );
+}
+
 #[test]
 fn a_changed_server_says_what_changed_under_what_it_runs() {
     // A server's entry is not kept in `trust.json`, only its shape: the

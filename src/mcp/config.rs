@@ -16,6 +16,9 @@ pub enum McpScope {
     Project,
     /// `{config_home}/mcp.json` — personal, every project.
     User,
+    /// An installed plugin's generated `.alter-zero-plugin/mcp.json` — held
+    /// for the startup review like a project's (`docs/plugins.md`).
+    Plugin,
 }
 
 impl McpScope {
@@ -26,6 +29,7 @@ impl McpScope {
         match self {
             Self::Project => "Project MCPs",
             Self::User => "User MCPs",
+            Self::Plugin => "Plugin MCPs",
         }
     }
 }
@@ -765,7 +769,8 @@ fn expand_oauth(
 }
 
 /// [`expand_config`] for a server declared in `scope`, refusing — for a
-/// project's **remote** server — any reference to a `protected` variable:
+/// project's or a plugin's **remote** server — any reference to a
+/// `protected` variable:
 /// the session's own credentials, its providers' API keys, which would
 /// otherwise go to whatever host a cloned repository's file names, once the
 /// server is approved in a review that shows the reference rather than the
@@ -780,7 +785,14 @@ pub fn resolve_config(
     lookup: &dyn Fn(&str) -> Option<String>,
     protected: &dyn Fn(&str) -> bool,
 ) -> Result<McpServerConfig, String> {
-    if scope == McpScope::Project && config.is_remote() {
+    let whose = match scope {
+        McpScope::Project => Some("project"),
+        McpScope::Plugin => Some("plugin"),
+        McpScope::User => None,
+    };
+    if let Some(whose) = whose
+        && config.is_remote()
+    {
         let named = std::cell::RefCell::new(Vec::<String>::new());
         let _ = expand_config(config, &|name| {
             let mut named = named.borrow_mut();
@@ -792,7 +804,7 @@ pub fn resolve_config(
         let named = named.into_inner();
         if !named.is_empty() {
             return Err(format!(
-                "the project's config asks for {} — this session's own credentials — \
+                "the {whose}'s config asks for {} — this session's own credentials — \
                  to be sent to a remote server, which it may not",
                 named.join(", ")
             ));
@@ -843,6 +855,38 @@ pub fn merge_project_scopes(
     project_compat: Option<(&McpFile, &str, &std::collections::BTreeSet<String>)>,
     user: Option<(&McpFile, &str)>,
 ) -> (Vec<McpServerEntry>, std::collections::BTreeSet<String>) {
+    let held: Vec<HeldScopeFile<'_>> = [project_alter, project_compat]
+        .into_iter()
+        .flatten()
+        .map(|(file, path, enabled)| (file, path, enabled, McpScope::Project))
+        .collect();
+    merge_held_scopes(&held, user)
+}
+
+/// One file whose servers wait for the startup review: its parse, its
+/// display path, the names the user has **enabled** in it, and its scope
+/// ([`McpScope::Project`] or [`McpScope::Plugin`]).
+pub type HeldScopeFile<'a> = (
+    &'a McpFile,
+    &'a str,
+    &'a std::collections::BTreeSet<String>,
+    McpScope,
+);
+
+/// [`merge_project_scopes`] over any number of reviewed files — the
+/// project's two and every enabled plugin's (`docs/plugins.md`), in
+/// precedence order. The same approval-aware rule: **enabled servers from
+/// every reviewed file, then the user's, then the reviewed files' other
+/// servers**, first occurrence of a name winning, so a server waiting for
+/// its answer or declined is listed but never shadows the user's own. The
+/// returned set names the entries held that way. The output is re-grouped
+/// Project, then User, then Plugin, each scope keeping its own order, so
+/// the `/mcp` headings render once per run.
+#[must_use]
+pub fn merge_held_scopes(
+    reviewed: &[HeldScopeFile<'_>],
+    user: Option<(&McpFile, &str)>,
+) -> (Vec<McpServerEntry>, std::collections::BTreeSet<String>) {
     let mut out: Vec<McpServerEntry> = Vec::new();
     let mut held = std::collections::BTreeSet::new();
     let push = |out: &mut Vec<McpServerEntry>,
@@ -865,27 +909,27 @@ pub fn merge_project_scopes(
         }
         pushed
     };
-    for (file, path, enabled) in [project_alter, project_compat].into_iter().flatten() {
-        push(&mut out, file, McpScope::Project, path, &|name| {
-            enabled.contains(name)
-        });
+    for (file, path, enabled, scope) in reviewed {
+        push(&mut out, file, *scope, path, &|name| enabled.contains(name));
     }
     if let Some((file, path)) = user {
         push(&mut out, file, McpScope::User, path, &|_| true);
     }
-    for (file, path, enabled) in [project_alter, project_compat].into_iter().flatten() {
-        held.extend(push(&mut out, file, McpScope::Project, path, &|name| {
+    for (file, path, enabled, scope) in reviewed {
+        held.extend(push(&mut out, file, *scope, path, &|name| {
             !enabled.contains(name)
         }));
     }
     // Stable re-group: Project entries first (enabled before held — their
-    // push order), then the user's, each scope keeping its own order.
-    let (project, user_entries): (Vec<_>, Vec<_>) = out
-        .into_iter()
-        .partition(|entry| entry.scope == McpScope::Project);
-    let mut entries = project;
-    entries.extend(user_entries);
-    (entries, held)
+    // push order), then the user's, then the plugins', each scope keeping
+    // its own order.
+    let rank = |scope: McpScope| match scope {
+        McpScope::Project => 0,
+        McpScope::User => 1,
+        McpScope::Plugin => 2,
+    };
+    out.sort_by_key(|entry| rank(entry.scope));
+    (out, held)
 }
 
 #[cfg(test)]
@@ -1087,6 +1131,129 @@ mod tests {
         assert_eq!(merged[0].config.url(), Some("https://a"));
     }
 
+    /// A plugin's `mcp.json` is held for the review the way a project's is
+    /// (`docs/plugins.md`): listed under its own scope after the user's,
+    /// never shadowing a user server while it waits, and running once
+    /// approved.
+    #[test]
+    fn plugin_files_are_held_like_a_projects_and_listed_after_the_user() {
+        let project = parse_mcp_file(r#"{"mcpServers": {"team": {"command": "t"}}}"#);
+        let user = parse_mcp_file(
+            r#"{"mcpServers": {"wiki": {"url": "https://u"}, "extra": {"command": "x"}}}"#,
+        );
+        let review = parse_mcp_file(
+            r#"{"mcpServers": {"plugin_review_lint": {"command": "lint"},
+                "wiki": {"url": "https://plugin"}}}"#,
+        );
+        let notes = parse_mcp_file(r#"{"mcpServers": {"plugin_notes_db": {"command": "db"}}}"#);
+        let team: std::collections::BTreeSet<String> = ["team".to_string()].into();
+        let approved: std::collections::BTreeSet<String> =
+            ["plugin_review_lint".to_string()].into();
+        let none = std::collections::BTreeSet::new();
+        let (merged, held) = merge_held_scopes(
+            &[
+                (
+                    &project,
+                    "/repo/.alter-zero/mcp.json",
+                    &team,
+                    McpScope::Project,
+                ),
+                (&review, "plugin review@m", &approved, McpScope::Plugin),
+                (&notes, "plugin notes@m", &none, McpScope::Plugin),
+            ],
+            Some((&user, "~/mcp.json")),
+        );
+        let summary: Vec<(&str, McpScope, &str)> = merged
+            .iter()
+            .map(|e| (e.name.as_str(), e.scope, e.config_path.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("team", McpScope::Project, "/repo/.alter-zero/mcp.json"),
+                ("wiki", McpScope::User, "~/mcp.json"),
+                ("extra", McpScope::User, "~/mcp.json"),
+                ("plugin_review_lint", McpScope::Plugin, "plugin review@m"),
+                ("plugin_notes_db", McpScope::Plugin, "plugin notes@m"),
+            ]
+        );
+        // The plugin's unapproved `wiki` loses to the user's own.
+        assert_eq!(merged[1].config.url(), Some("https://u"));
+        assert_eq!(held, ["plugin_notes_db".to_string()].into());
+    }
+
+    #[test]
+    fn an_approved_plugin_server_shadows_the_users_and_a_held_one_never_does() {
+        let user = parse_mcp_file(r#"{"mcpServers": {"wiki": {"url": "https://u"}}}"#);
+        let plugin = parse_mcp_file(r#"{"mcpServers": {"wiki": {"url": "https://p"}}}"#);
+        let approved: std::collections::BTreeSet<String> = ["wiki".to_string()].into();
+        let (merged, held) = merge_held_scopes(
+            &[(&plugin, "plugin p@m", &approved, McpScope::Plugin)],
+            Some((&user, "~/mcp.json")),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].scope, McpScope::Plugin);
+        assert_eq!(merged[0].config.url(), Some("https://p"));
+        assert!(held.is_empty());
+
+        let none = std::collections::BTreeSet::new();
+        let (merged, held) = merge_held_scopes(
+            &[(&plugin, "plugin p@m", &none, McpScope::Plugin)],
+            Some((&user, "~/mcp.json")),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].scope, McpScope::User);
+        assert!(
+            held.is_empty(),
+            "a shadowed held server is not listed at all"
+        );
+    }
+
+    #[test]
+    fn the_two_argument_merge_is_the_slice_merge_over_project_files() {
+        let alter =
+            parse_mcp_file(r#"{"mcpServers": {"a": {"command": "a"}, "b": {"command": "b"}}}"#);
+        let compat =
+            parse_mcp_file(r#"{"mcpServers": {"b": {"command": "c"}, "c": {"command": "c"}}}"#);
+        let user =
+            parse_mcp_file(r#"{"mcpServers": {"a": {"command": "u"}, "d": {"command": "d"}}}"#);
+        let some: std::collections::BTreeSet<String> = ["b".to_string()].into();
+        let none = std::collections::BTreeSet::new();
+        let old = merge_project_scopes(
+            Some((&alter, "/r/.alter-zero/mcp.json", &some)),
+            Some((&compat, "/r/.mcp.json", &none)),
+            Some((&user, "~/mcp.json")),
+        );
+        let new = merge_held_scopes(
+            &[
+                (&alter, "/r/.alter-zero/mcp.json", &some, McpScope::Project),
+                (&compat, "/r/.mcp.json", &none, McpScope::Project),
+            ],
+            Some((&user, "~/mcp.json")),
+        );
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    fn a_plugins_remote_server_never_gets_the_sessions_own_keys() {
+        let env = env_of(&[("OPENAI_API_KEY", "sk-secret")]);
+        let protected = |name: &str| name == "OPENAI_API_KEY";
+        let remote = McpServerConfig::Http {
+            url: "https://plugin.test/mcp?k=${OPENAI_API_KEY}".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: false,
+            oauth: None,
+        };
+        let error = resolve_config(&remote, McpScope::Plugin, &env, &protected).unwrap_err();
+        assert!(error.contains("OPENAI_API_KEY"), "{error}");
+        assert!(error.contains("plugin"), "{error}");
+        assert!(!error.contains("sk-secret"), "{error}");
+    }
+
+    #[test]
+    fn the_plugin_scope_has_its_own_heading() {
+        assert_eq!(McpScope::Plugin.heading(), "Plugin MCPs");
+    }
     // ===== the CLI writers (docs/mcp-cli.md) =====
 
     fn http(url: &str) -> McpServerConfig {

@@ -28,6 +28,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
         config_path: match scope {
             McpScope::Project => "~/repo/.mcp.json".to_string(),
             McpScope::User => "~/.alter-zero/mcp.json".to_string(),
+            McpScope::Plugin => "plugin review@m".to_string(),
         },
         config: McpServerConfig::Http {
             url: format!("https://{name}.test/mcp"),
@@ -90,6 +91,32 @@ fn the_list_groups_by_scope_with_status_rows() {
     // The selected row wears the ❯ marker.
     assert!(lines.iter().any(|l| l.contains("❯ linear")));
     assert!(all.contains("↑/↓ to navigate · Enter to confirm · Esc to cancel"));
+}
+
+/// An installed plugin's servers (`docs/plugins.md`) sit in their own group
+/// after the others, headed by the plugin rather than a cache path.
+#[test]
+fn plugin_servers_are_their_own_group_last() {
+    let mut app = App::new();
+    app.open_mcp_menu(vec![
+        snapshot("linear", McpScope::Project, McpServerStatus::NeedsAuth),
+        snapshot("deepwiki", McpScope::User, McpServerStatus::Connected),
+        snapshot(
+            "plugin_review_lint",
+            McpScope::Plugin,
+            McpServerStatus::AwaitingReview,
+        ),
+    ]);
+    let lines = texts(&app);
+    let heading = |needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?}: {lines:#?}"))
+    };
+    let plugin = heading("Plugin MCPs (plugin review@m)");
+    assert!(heading("User MCPs") < plugin);
+    assert!(plugin < heading("plugin_review_lint"));
 }
 
 #[test]

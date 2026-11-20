@@ -2245,6 +2245,9 @@ pub(super) const HOOKS_DISTRUST_HINT: &str = "Enter to stop trusting · Esc to g
 /// `docs/hooks.md`): the `[User]` matcher-row prefix, the hook rows'
 /// `User Settings` description, and the detail page's `Source:` label.
 pub(super) const HOOKS_SOURCE_INLINE: &str = "User";
+/// The matcher-row prefix for a row whose hooks an installed plugin brought
+/// (`docs/plugins.md`); the hook rows and the detail name the plugin itself.
+pub(super) const HOOKS_PLUGIN_SOURCE_INLINE: &str = "Plugin";
 pub(super) const HOOKS_SOURCE_HEADER: &str = "User Settings";
 pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
 

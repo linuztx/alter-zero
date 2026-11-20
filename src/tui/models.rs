@@ -1769,6 +1769,10 @@ pub(crate) struct HookSetup {
     /// `hooks.json` from — `~/.alter-zero/hooks.json`, as the startup review
     /// names it (`docs/hooks.md` *What the user sees*).
     pub(crate) home: Option<std::path::PathBuf>,
+    /// `{config_home}/plugins` when any plugin is enabled, so a plugin's hook
+    /// runs with its plugin's variables (`docs/plugins.md`); `None` — and
+    /// nothing looked up per hook — otherwise.
+    pub(crate) plugins_root: Option<std::path::PathBuf>,
 }
 
 impl HookSetup {
@@ -1817,6 +1821,7 @@ impl HookSetup {
             hooks
                 .with_project_dir(self.project_dir.clone())
                 .with_home(self.home.clone())
+                .with_plugins_root(self.plugins_root.clone())
         })
     }
 }

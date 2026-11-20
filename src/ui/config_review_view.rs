@@ -110,6 +110,14 @@ fn counted(count: usize, noun: &str) -> String {
 fn headline(page: &ReviewPage) -> String {
     let (new, changed) = page.counts();
     let all = new + changed;
+    // Where the servers come from: the project's files, installed plugins'
+    // (`docs/plugins.md`), or both — when the page says nothing.
+    let plugins = page.sections.iter().filter(|s| s.is_plugin()).count();
+    let place = match plugins {
+        0 => " in this project",
+        n if n == page.sections.len() => " in installed plugins",
+        _ => "",
+    };
     match (page.kind, new, changed) {
         (ReviewKind::Hooks, _, 0) => format!("{} found", counted(all, "new hook")),
         (ReviewKind::Hooks, 0, _) => format!("{} changed", counted(all, "hook")),
@@ -117,13 +125,13 @@ fn headline(page: &ReviewPage) -> String {
             format!("{all} hooks to review · {new} new, {changed} changed")
         }
         (ReviewKind::McpServers, _, 0) => {
-            format!("{} found in this project", counted(all, "new MCP server"))
+            format!("{} found{place}", counted(all, "new MCP server"))
         }
         (ReviewKind::McpServers, 0, _) => {
-            format!("{} changed in this project", counted(all, "MCP server"))
+            format!("{} changed{place}", counted(all, "MCP server"))
         }
         (ReviewKind::McpServers, ..) => {
-            format!("{all} MCP servers to review in this project · {new} new, {changed} changed")
+            format!("{all} MCP servers to review{place} · {new} new, {changed} changed")
         }
     }
 }

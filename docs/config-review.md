@@ -22,6 +22,19 @@ asks the user to trust each new or changed hook).
 | ---- | --------------------- | ------------ | ----------- |
 | every hook that can run | the user's `hooks.json` (`~/.alter-zero/hooks.json`, or `ALTER_ZERO_HOOKS_FILE`) **and** the project's `{root}/.alter-zero/hooks.json` | trust it, or not | the hook itself, per file |
 | every project MCP server | `{root}/.alter-zero/mcp.json`, `{root}/.mcp.json` | enable it, or not | a decision per server, per file, pinned to its entry |
+| every hook and MCP server an installed plugin brings | the plugin's generated `.alter-zero-plugin/hooks.json` and `mcp.json` under `{config_home}/plugins/cache/<marketplace>/<plugin>/` | as above: trust each hook, enable each server | as above, under the generated file's absolute path |
+
+**Installed plugins are a third layer** (`docs/plugins.md`), read once at
+launch beside the project's and held to exactly the same rules: a plugin's
+hook never runs before it is trusted here, its MCP server never connects
+before it is enabled here, and both pages title its items **`plugin
+name@marketplace`** rather than the long cache path
+(`plugins::plugin_of_generated`) — `/hooks` and `/mcp` name them the same way.
+The install path carries no version, so an update that keeps a hook's command
+asks nothing and one that changes it is asked about again with the old
+command on the `was:` line, the rule every other file follows. With no
+`plugins.json` — or `ALTER_ZERO_PLUGINS=0` — the layer is absent and costs
+one failed open.
 
 A hook "can run" when the runner would run it: a `command` handler with a
 command, under an event this app models, with no `if` condition and no

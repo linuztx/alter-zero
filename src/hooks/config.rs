@@ -54,6 +54,13 @@ pub struct MatcherGroup {
     /// which file each handler came from.
     #[serde(skip)]
     pub source: Option<PathBuf>,
+    /// Who brought this group when it is neither the user's nor a
+    /// project's: an installed plugin's label (`plugin name@marketplace`)
+    /// and its file's display path — never in the file either:
+    /// [`HooksFile::with_origin`] stamps it, so `/hooks` can name the plugin
+    /// (`docs/plugins.md`).
+    #[serde(skip)]
+    pub origin: Option<(String, String)>,
 }
 
 /// One handler inside a group.
@@ -167,6 +174,17 @@ impl HooksFile {
     pub fn with_source(mut self, path: &Path) -> Self {
         for group in self.hooks.values_mut().flatten() {
             group.source = Some(path.to_path_buf());
+        }
+        self
+    }
+
+    /// Every group stamped as brought by an installed plugin: its label and
+    /// its file's display path, what `/hooks` names it by
+    /// (`docs/plugins.md`).
+    #[must_use]
+    pub fn with_origin(mut self, label: &str, path: &str) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            group.origin = Some((label.to_string(), path.to_string()));
         }
         self
     }

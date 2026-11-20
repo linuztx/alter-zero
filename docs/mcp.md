@@ -21,6 +21,14 @@ Code precedence, minus the `local` scope we don't model):
   the repo's servers.
 - **User**: `{config_home}/mcp.json` (`~/.alter-zero/mcp.json`) — personal
   servers, every project.
+- **Plugin**: each enabled plugin's generated
+  `.alter-zero-plugin/mcp.json` (`docs/plugins.md`), its servers already
+  named `plugin_<plugin>_<server>`. Held for the startup review exactly as a
+  project's are — a held server launches nothing — listed last under
+  `Plugin MCPs (plugin name@marketplace)`, and, approved, ahead of the
+  user's like an enabled project server (`mcp::merge_held_scopes`, the
+  slice form `merge_project_scopes` now delegates to). A plugin's remote
+  server is refused the session's own credentials like a project's.
 
 **A project server runs only once the user enables it**
 (`docs/config-review.md`): a checked-in stdio entry is a process this app

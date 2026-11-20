@@ -803,6 +803,18 @@ that does not exist, the hook failed open, and a guard it was meant to run
 never did. Like every shell child, a hook runs without the herdr pane id
 (`docs/herdr.md`).
 
+**Installed plugins add a third layer** (`docs/plugins.md`): each enabled
+plugin's generated `.alter-zero-plugin/hooks.json`, unioned after the
+project's in plugin-id order and trusted through the same startup review.
+A handler read from one runs with its plugin's variables —
+`PLUGIN_ROOT`/`CLAUDE_PLUGIN_ROOT` (the install directory) and
+`PLUGIN_DATA`/`CLAUDE_PLUGIN_DATA` (its data directory, made before the
+hook runs) — decided from the handler's own file
+(`llm::hooks::plugin_hook_env`), so the user's and a project's hooks never
+see them; everything else about the run is unchanged. Like the project
+layer it is read once at launch: a plugin installed or changed mid-session
+counts from the next one.
+
 The `/settings` menu carries a **Hooks** row. It is a plain on/off toggle,
 which is all a cycling menu with no free-text field can ever offer, and it
 reports `false (unavailable)` when no config file resolved. It is **on by

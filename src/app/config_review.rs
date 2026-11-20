@@ -75,6 +75,20 @@ pub struct ReviewSection {
     pub items: Vec<ReviewItem>,
 }
 
+/// How a section heads an installed plugin's file instead of its path:
+/// `plugin name@marketplace` (`docs/plugins.md`). A display path is always
+/// absolute or `~`-relative, so it never starts this way.
+pub const PLUGIN_SECTION_PREFIX: &str = "plugin ";
+
+impl ReviewSection {
+    /// Whether the file is an installed plugin's — headed
+    /// [`PLUGIN_SECTION_PREFIX`]`name@marketplace`.
+    #[must_use]
+    pub fn is_plugin(&self) -> bool {
+        self.path.starts_with(PLUGIN_SECTION_PREFIX)
+    }
+}
+
 /// The two action rows under every page's items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewChoice {

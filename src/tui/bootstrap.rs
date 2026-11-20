@@ -320,9 +320,17 @@ impl<'t> Session<'t> {
         // how a user comes to trust a guard that isn't there.
         let hooks_path = config::user_hooks_path();
         let (user_hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
+        // The installed plugins' hooks and MCP servers (docs/plugins.md): a
+        // third layer read once here, held for the same review. With no
+        // `plugins.json` this is one failed open and nothing else.
+        let plugin_home = config::config_home();
+        // TODO(merge): take the session's PluginSnapshot instead of reading the file again
+        let launch_plugins = super::trust::plugins_at_launch(plugin_home.as_deref());
+        let plugin_layer = super::trust::load_plugin_layer(plugin_home.as_deref(), &launch_plugins);
         let (trust, trust_error) = super::trust::TrustState::load(
             hooks_path.map(|path| (path, user_hooks_file)),
             super::trust::load_project_layer(&cwd),
+            plugin_layer,
         );
 
         // The telemetry ping's report channel (docs/telemetry.md) — its own
@@ -440,6 +448,9 @@ impl<'t> Session<'t> {
             // What a refused call's cell names the hook's `hooks.json` from
             // — the home the app's own path display reads (docs/hooks.md).
             home: home.clone(),
+            // Where a plugin's hook finds its plugin's variables — only when
+            // the review holds a plugin layer, so no other session looks.
+            plugins_root: trust.plugins.as_ref().map(|layer| layer.root.clone()),
         });
 
         // The mid-turn message queue (docs/queue.md): what the user types

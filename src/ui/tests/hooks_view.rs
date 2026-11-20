@@ -660,3 +660,45 @@ fn a_hook_with_no_file_shows_no_trust_row() {
     assert!(!page.iter().any(|l| l.contains("Trust:")), "{page:#?}");
     find(&page, HOOKS_DETAIL_HINT);
 }
+
+/// A plugin's hook beside the user's (`docs/plugins.md`): its list row and
+/// its matcher row name the plugin, and its detail page names the plugin
+/// over the file the install generated.
+#[test]
+fn a_plugins_hook_is_named_by_its_plugin() {
+    let user = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+    let plugin = std::path::Path::new(
+        "/home/u/.alter-zero/plugins/cache/m/review/.alter-zero-plugin/hooks.json",
+    );
+    let users = HooksFile::parse(
+        r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command","command":"./mine.sh"}]}]}}"#,
+    )
+    .expect("parses")
+    .with_source(user);
+    let plugins = HooksFile::parse(
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"./p.sh"}]}]}}"#,
+    )
+    .expect("parses")
+    .with_source(plugin)
+    .with_origin("plugin review@m", "~/.alter-zero/plugins/…/hooks.json");
+    let overview = HooksOverview::from_file(&users.merged(&plugins));
+    let mut app = App::new();
+    app.open_hooks_menu(overview, Some("~/.alter-zero/hooks.json".into()), true);
+    press(&mut app, KeyCode::Enter); // PreToolUse
+    let matchers = texts(&app, 80);
+    find(&matchers, "[User] bash");
+    find(&matchers, "[Plugin] Write");
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter); // Write
+    let list = texts(&app, 80);
+    let row = &list[find(&list, "./p.sh")];
+    assert!(row.contains("plugin review@m"), "{row}");
+    assert!(!row.contains("User Settings"), "{row}");
+    press(&mut app, KeyCode::Enter); // the hook
+    let detail = texts(&app, 100);
+    let source = &detail[find(&detail, "Source:")];
+    assert!(
+        source.contains("plugin review@m (~/.alter-zero/plugins/…/hooks.json)"),
+        "{source}"
+    );
+}

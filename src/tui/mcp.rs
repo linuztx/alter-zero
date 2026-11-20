@@ -20,7 +20,9 @@ use super::config;
 /// listed but held — plus this project's disabled set, the token-store path,
 /// and the timeout knobs. Pure parse/merge over boundary reads. Without a
 /// project layer (`ALTER_ZERO_PROJECT_CONFIG` off) no project file
-/// contributes at all.
+/// contributes at all. Each enabled plugin's generated `mcp.json` is held the
+/// same way under the Plugin scope, titled by its plugin
+/// (`docs/plugins.md`).
 pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> McpSources {
     let project = cwd.display().to_string();
     let user_path = config::mcp_user_file_path();
@@ -74,6 +76,32 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
     let layer = trust.project.as_ref();
     let alter = scoped(layer.and_then(|l| l.mcp_alter.as_ref()), &mut errors);
     let compat = scoped(layer.and_then(|l| l.mcp_compat.as_ref()), &mut errors);
+    // Each enabled plugin's generated file (docs/plugins.md): held for the
+    // review like a project's, titled by its plugin rather than its path.
+    let plugins: Vec<(mcp::McpFile, String, BTreeSet<String>)> = trust
+        .plugins
+        .iter()
+        .flat_map(|layer| layer.files.iter())
+        .filter_map(|plugin| {
+            let file = plugin.mcp.as_ref()?;
+            let display = super::trust::plugin_heading(&plugin.id);
+            match &file.parsed {
+                Ok(parsed) => {
+                    errors.extend(
+                        parsed
+                            .errors
+                            .iter()
+                            .map(|error| format!("{display}: {error}")),
+                    );
+                    Some((parsed.clone(), display, approved(&file.path)))
+                }
+                Err(error) => {
+                    errors.push(format!("{display}: {error}"));
+                    None
+                }
+            }
+        })
+        .collect();
     if let Some(file) = user_file.as_ref() {
         errors.extend(
             file.errors
@@ -81,13 +109,16 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
                 .map(|error| format!("{user_display}: {error}")),
         );
     }
-    let (entries, held_names) = mcp::merge_project_scopes(
-        alter
-            .as_ref()
-            .map(|(file, display, enabled)| (file, display.as_str(), enabled)),
-        compat
-            .as_ref()
-            .map(|(file, display, enabled)| (file, display.as_str(), enabled)),
+    let reviewed: Vec<mcp::HeldScopeFile<'_>> = [alter.as_ref(), compat.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|(file, display, enabled)| (file, display.as_str(), enabled, mcp::McpScope::Project))
+        .chain(plugins.iter().map(|(file, display, enabled)| {
+            (file, display.as_str(), enabled, mcp::McpScope::Plugin)
+        }))
+        .collect();
+    let (entries, held_names) = mcp::merge_held_scopes(
+        &reviewed,
         user_file.as_ref().map(|file| (file, user_display.as_str())),
     );
     // A held server waits for the review when it is new or changed, and is

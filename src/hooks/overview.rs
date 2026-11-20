@@ -68,6 +68,11 @@ pub struct HookOverview {
     /// Whether the user trusts it ([`HooksOverview::with_trust`]); always
     /// `false` without a [`trust_key`](Self::trust_key).
     pub trusted: bool,
+    /// For a hook an installed plugin brought: the plugin's label
+    /// (`plugin name@marketplace`) and its file's display path, as its group
+    /// was stamped ([`HooksFile::with_origin`], `docs/plugins.md`). `None`
+    /// for the user's and a project's own.
+    pub origin: Option<(String, String)>,
 }
 
 impl HooksOverview {
@@ -100,6 +105,7 @@ impl HooksOverview {
                         HookOverview {
                             trust_key,
                             trusted: false,
+                            origin: group.origin.clone(),
                             kind: match &handler.kind {
                                 HandlerKind::Command => "command".to_string(),
                                 HandlerKind::Other(name) => name.clone(),
@@ -446,6 +452,39 @@ mod tests {
         assert_eq!(skipped.kind, "prompt");
         assert_eq!(skipped.content, "");
         assert_eq!(skipped.status_message, None);
+    }
+
+    #[test]
+    fn a_plugins_hook_carries_its_plugin_as_its_origin() {
+        // `/hooks` names a plugin's hook by its plugin (`docs/plugins.md`):
+        // the boundary stamps a plugin's file with it, and every other hook
+        // keeps no origin.
+        let plugin = std::path::Path::new(
+            "/home/u/.alter-zero/plugins/cache/m/review/.alter-zero-plugin/hooks.json",
+        );
+        let user = std::path::Path::new("/home/u/.alter-zero/hooks.json");
+        let mut file = HooksFile::parse(SAMPLE)
+            .expect("fixture parses")
+            .with_source(user);
+        let plugin_file = HooksFile::parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./p.sh"}]}]}}"#,
+        )
+        .expect("parses")
+        .with_source(plugin)
+        .with_origin("plugin review@m", &plugin.display().to_string());
+        file = file.merged(&plugin_file);
+        let overview = HooksOverview::from_file(&file);
+        let stop = event(&overview, HookEvent::Stop);
+        let hooks: Vec<_> = stop
+            .matchers
+            .iter()
+            .flat_map(|matcher| matcher.hooks.iter())
+            .collect();
+        assert_eq!(hooks[0].origin, None, "the user's own");
+        assert_eq!(
+            hooks[1].origin,
+            Some(("plugin review@m".to_string(), plugin.display().to_string()))
+        );
     }
 
     #[test]

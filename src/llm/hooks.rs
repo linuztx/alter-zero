@@ -666,6 +666,34 @@ pub struct CommandHooks {
     /// from ([`HookSink::home`]); `None` until the boundary says
     /// ([`with_home`](Self::with_home)).
     home: Option<PathBuf>,
+    /// `{config_home}/plugins`, so a handler read from a plugin's generated
+    /// hooks file runs with that plugin's variables ([`plugin_hook_env`]);
+    /// `None` until the boundary says ([`with_plugins_root`](Self::with_plugins_root)).
+    plugins_root: Option<PathBuf>,
+}
+
+/// The data directory and the environment a handler read from `source`
+/// runs with when `source` is a plugin's generated hooks file
+/// (`{plugins_root}/cache/<m>/<p>/.alter-zero-plugin/hooks.json`):
+/// `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT`, `PLUGIN_DATA` and
+/// `CLAUDE_PLUGIN_DATA`, so a hook written for Claude Code or
+/// agent-plugins.org finds its own scripts and state. `None` for every other
+/// file — a user's or a project's hook never sees a plugin's paths. See
+/// `docs/plugins.md`.
+#[must_use]
+pub fn plugin_hook_env(
+    source: Option<&Path>,
+    plugins_root: Option<&Path>,
+) -> Option<(PathBuf, [(&'static str, String); 4])> {
+    let plugins_root = plugins_root?;
+    let id = crate::plugins::plugin_of_generated(source?, plugins_root)?;
+    let root = crate::plugins::install_dir(plugins_root, &id);
+    let data = crate::plugins::data_dir(plugins_root, &id);
+    let pairs = crate::plugins::env_pairs(&crate::plugins::PluginPaths {
+        root: &root,
+        data: &data,
+    });
+    Some((data, pairs))
 }
 
 impl CommandHooks {
@@ -690,6 +718,7 @@ impl CommandHooks {
             cwd,
             handles,
             home: None,
+            plugins_root: None,
         })
     }
 
@@ -711,6 +740,15 @@ impl CommandHooks {
     #[must_use]
     pub fn with_project_dir(mut self, dir: PathBuf) -> Self {
         self.project_dir = dir;
+        self
+    }
+
+    /// Where installed plugins live (`{config_home}/plugins`), so a hook read
+    /// from a plugin's generated file runs with its plugin's variables
+    /// ([`plugin_hook_env`], `docs/plugins.md`).
+    #[must_use]
+    pub fn with_plugins_root(mut self, root: Option<PathBuf>) -> Self {
+        self.plugins_root = root;
         self
     }
 
@@ -801,6 +839,13 @@ impl CommandHooks {
         };
         let cwd = self.cwd.clone();
         let project_dir = self.project_dir.clone();
+        // A plugin's hook gets its plugin's variables, its data directory
+        // made first so a script may write there at once (a failure is the
+        // script's to meet).
+        let plugin = plugin_hook_env(handler.source.as_deref(), self.plugins_root.as_deref());
+        if let Some((data, _)) = &plugin {
+            let _ = std::fs::create_dir_all(data);
+        }
         let spawned = subprocess::spawn_shell_with(
             self.detach_helper.as_deref(),
             &handler.command,
@@ -808,6 +853,11 @@ impl CommandHooks {
                 cmd.stdin(std::process::Stdio::piped()).current_dir(&cwd);
                 for var in PROJECT_DIR_VARS {
                     cmd.env(var, &project_dir);
+                }
+                if let Some((_, pairs)) = &plugin {
+                    for (name, value) in pairs {
+                        cmd.env(name, value);
+                    }
                 }
             },
         );
@@ -4001,5 +4051,104 @@ mod tests {
         assert!(!ours.is_empty(), "ALTER_ZERO_PROJECT_DIR is set");
         assert_eq!(ours, theirs, "the Claude Code alias matches");
         let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_plugins_hook_gets_its_plugins_variables_and_no_other_does() {
+        let root = Path::new("/home/u/.alter-zero/plugins");
+        let generated = root.join("cache/m/review/.alter-zero-plugin/hooks.json");
+        let (data, pairs) =
+            plugin_hook_env(Some(&generated), Some(root)).expect("a plugin's hooks file");
+        assert_eq!(data, root.join("data/review-m"));
+        let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert_eq!(
+            pairs,
+            [
+                ("PLUGIN_ROOT", "/home/u/.alter-zero/plugins/cache/m/review"),
+                (
+                    "CLAUDE_PLUGIN_ROOT",
+                    "/home/u/.alter-zero/plugins/cache/m/review"
+                ),
+                ("PLUGIN_DATA", "/home/u/.alter-zero/plugins/data/review-m"),
+                (
+                    "CLAUDE_PLUGIN_DATA",
+                    "/home/u/.alter-zero/plugins/data/review-m"
+                ),
+            ]
+        );
+        // The user's file, a project's, a handler from no file, and a session
+        // with no plugins root give a hook nothing.
+        let user = Path::new("/home/u/.alter-zero/hooks.json");
+        assert!(plugin_hook_env(Some(user), Some(root)).is_none());
+        assert!(
+            plugin_hook_env(Some(Path::new("/repo/.alter-zero/hooks.json")), Some(root)).is_none()
+        );
+        assert!(plugin_hook_env(None, Some(root)).is_none());
+        assert!(plugin_hook_env(Some(&generated), None).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_plugins_hook_runs_with_claude_plugin_root_and_its_data_dir_made() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let root = home.path().join("plugins");
+        let generated = root.join("cache/m/review/.alter-zero-plugin");
+        std::fs::create_dir_all(&generated).expect("generated dir");
+        let source = generated.join("hooks.json");
+        let probe = home.path().join("probe.txt");
+        let file = HooksFile::parse(&pre_hook(&format!(
+            "printf '%s|%s' \"$CLAUDE_PLUGIN_ROOT\" \"$PLUGIN_DATA\" > {}",
+            probe.display()
+        )))
+        .expect("fixture parses")
+        .with_source(&source);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable")
+        .with_plugins_root(Some(root.clone()));
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the hook ran");
+        let data = root.join("data/review-m");
+        assert_eq!(
+            written,
+            format!(
+                "{}|{}",
+                root.join("cache/m/review").display(),
+                data.display()
+            )
+        );
+        assert!(data.is_dir(), "the data dir is made before the hook runs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_users_hook_never_sees_a_plugin_root() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let probe = home.path().join("probe.txt");
+        let file = HooksFile::parse(&pre_hook(&format!(
+            "printf '[%s]' \"$CLAUDE_PLUGIN_ROOT\" > {}",
+            probe.display()
+        )))
+        .expect("fixture parses")
+        .with_source(&home.path().join("hooks.json"));
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable")
+        .with_plugins_root(Some(home.path().join("plugins")));
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        // Unless the session itself was started with one exported.
+        if std::env::var_os("CLAUDE_PLUGIN_ROOT").is_none() {
+            assert_eq!(std::fs::read_to_string(&probe).expect("ran"), "[]");
+        }
     }
 }

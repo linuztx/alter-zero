@@ -925,7 +925,7 @@ pub(crate) fn permission_mode_seed() -> Option<PermissionMode> {
 /// A feature toggle read from the environment: **on** unless `name` is set to
 /// one of `0`/`false`/`no`/`off` (case- and whitespace-insensitive). The one
 /// grammar every `ALTER_ZERO_*` on/off flag uses.
-fn env_flag(name: &str) -> bool {
+pub(crate) fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),

@@ -422,6 +422,33 @@ pub fn enabled_plugins(file: &PluginsFile, plugins_root: &Path) -> Vec<EnabledPl
         .collect()
 }
 
+/// The plugin a file generated at install belongs to —
+/// `{plugins_root}/cache/<marketplace>/<plugin>/.alter-zero-plugin/<file>`,
+/// both names valid — else `None`. What lets the startup review, `/hooks`
+/// and `/mcp` title a plugin's hooks and servers `plugin name@marketplace`
+/// rather than a long cache path, and the hooks runner give a plugin's hook
+/// its plugin's variables. Purely lexical: nothing is read. See
+/// `docs/plugins.md`.
+#[must_use]
+pub fn plugin_of_generated(path: &Path, plugins_root: &Path) -> Option<PluginId> {
+    let rest = path.strip_prefix(plugins_root).ok()?;
+    let mut parts = rest.components().map(|part| match part {
+        std::path::Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
+    let (Some(Some("cache")), Some(Some(marketplace)), Some(Some(plugin))) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let (Some(Some(GENERATED_DIR)), Some(Some(_)), None) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    PluginId::new(plugin, marketplace).ok()
+}
+
 // ===== lenient reading =====
 
 /// Any value: the field's type when it is one, else its default.
@@ -812,5 +839,43 @@ mod tests {
         let ids: Vec<_> = enabled.iter().map(|p| p.id.to_string()).collect();
         assert_eq!(ids, ["ok@m", "root@m"]);
         assert_eq!(enabled[1].skills, [PathBuf::from("/p/cache/m/root")]);
+    }
+
+    #[test]
+    fn a_generated_file_names_its_plugin() {
+        let root = Path::new("/home/u/.alter-zero/plugins");
+        let id = PluginId::new("code-review", "official").unwrap();
+        let generated = install_dir(root, &id).join(GENERATED_DIR);
+        assert_eq!(
+            plugin_of_generated(&generated.join(GENERATED_HOOKS), root),
+            Some(id.clone())
+        );
+        assert_eq!(
+            plugin_of_generated(&generated.join(GENERATED_MCP), root),
+            Some(id)
+        );
+    }
+
+    #[test]
+    fn any_other_path_is_no_plugin() {
+        let root = Path::new("/home/u/.alter-zero/plugins");
+        for path in [
+            // the user's and a project's own files
+            "/home/u/.alter-zero/hooks.json",
+            "/repo/.alter-zero/hooks.json",
+            // a file the plugin ships, not one generated for it
+            "/home/u/.alter-zero/plugins/cache/m/p/hooks/hooks.json",
+            // too deep, too shallow, and outside `cache/`
+            "/home/u/.alter-zero/plugins/cache/m/p/x/.alter-zero-plugin/hooks.json",
+            "/home/u/.alter-zero/plugins/cache/m/.alter-zero-plugin/hooks.json",
+            "/home/u/.alter-zero/plugins/marketplaces/m/p/.alter-zero-plugin/hooks.json",
+            // a segment that is not a valid name, and a `..` walk
+            "/home/u/.alter-zero/plugins/cache/m/bad name/.alter-zero-plugin/hooks.json",
+            "/home/u/.alter-zero/plugins/cache/../p/.alter-zero-plugin/hooks.json",
+            // another plugins root
+            "/elsewhere/plugins/cache/m/p/.alter-zero-plugin/hooks.json",
+        ] {
+            assert_eq!(plugin_of_generated(Path::new(path), root), None, "{path}");
+        }
     }
 }

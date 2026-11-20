@@ -50,7 +50,8 @@ pub use state::{
     DefaultMarketplace, EnabledPlugin, GENERATED_DIR, GENERATED_HOOKS, GENERATED_MCP,
     KnownMarketplace, MarketplaceRecord, PLUGINS_DIR, PluginRecord, PluginsFile, STATE_FILE,
     builtin_defaults, data_dir, defaults_from_env, enabled_plugins, install_dir,
-    known_marketplaces, marketplace_dir, plugins_root, staging_dir, state_path, update_state,
+    known_marketplaces, marketplace_dir, plugin_of_generated, plugins_root, staging_dir,
+    state_path, update_state,
 };
 
 // --------------------------------------------------------------------------

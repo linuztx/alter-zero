@@ -286,7 +286,15 @@ fn matchers_lines(event: &EventOverview, selected: usize, width: u16) -> Vec<Lin
         .iter()
         .enumerate()
         .map(|(i, matcher)| {
-            let text = format!("[{HOOKS_SOURCE_INLINE}] {}", matcher.label());
+            // A row whose hooks an installed plugin brought says so.
+            let from_plugin =
+                !matcher.hooks.is_empty() && matcher.hooks.iter().all(|h| h.origin.is_some());
+            let scope = if from_plugin {
+                HOOKS_PLUGIN_SOURCE_INLINE
+            } else {
+                HOOKS_SOURCE_INLINE
+            };
+            let text = format!("[{scope}] {}", matcher.label());
             let label_cols = cols(&text);
             MenuRow {
                 label: vec![label_span(text, i == selected)],
@@ -341,7 +349,10 @@ fn hook_list_lines(
             MenuRow {
                 label,
                 label_cols,
-                desc: HOOKS_SOURCE_HEADER.to_string(),
+                desc: hook
+                    .origin
+                    .as_ref()
+                    .map_or_else(|| HOOKS_SOURCE_HEADER.to_string(), |(name, _)| name.clone()),
             }
         })
         .collect();
@@ -404,10 +415,11 @@ fn detail_lines(
         lines.push(field_line("Matcher:", label, value, width));
     }
     lines.push(field_line("Type:", &hook.kind, value, width));
-    let source = menu.source.as_ref().map_or_else(
-        || HOOKS_SOURCE_LABEL.to_string(),
-        |path| format!("{HOOKS_SOURCE_LABEL} ({path})"),
-    );
+    let source = match (&hook.origin, &menu.source) {
+        (Some((name, path)), _) => format!("{name} ({path})"),
+        (None, Some(path)) => format!("{HOOKS_SOURCE_LABEL} ({path})"),
+        (None, None) => HOOKS_SOURCE_LABEL.to_string(),
+    };
     lines.push(field_line("Source:", &source, dim, width));
     // Where the hook stands with the user, for one that can run
     // (`docs/config-review.md`) — Enter on this page toggles it.
