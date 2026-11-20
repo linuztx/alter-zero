@@ -113,7 +113,7 @@ pub fn inspect(
         &root,
         &name,
         &skill_keys,
-        fixed,
+        (fixed, manifest.format == ManifestFormat::Codex),
         &mut components,
         &mut warnings,
     );
@@ -369,11 +369,15 @@ fn outside_warning(relative: &str) -> String {
 }
 
 /// The skill paths to record, each naming its skills into `components`.
+/// `fixed` is agent-plugins.org's (only `skills/`); `recursive` the Codex
+/// format's, whose skills may sit at any depth to [`SKILL_SCAN_DEPTH`] and
+/// are each recorded as a path of their own, so the session finds them
+/// without a walk.
 fn find_skills(
     root: &Root<'_>,
     name: &str,
     keys: &[String],
-    fixed: bool,
+    (fixed, recursive): (bool, bool),
     components: &mut Components,
     warnings: &mut Vec<String>,
 ) -> Vec<String> {
@@ -393,10 +397,14 @@ fn find_skills(
             candidates.push((String::new(), Some(root.dir.to_path_buf())));
         }
     }
-    let mut kept = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     for (relative, path) in candidates {
         let Some(path) = path else { continue };
-        let skill_dirs = skill_dirs(&path);
+        let skill_dirs = if recursive {
+            nested_skill_dirs(&path)
+        } else {
+            skill_dirs(&path)
+        };
         if skill_dirs.is_empty() {
             continue;
         }
@@ -405,10 +413,62 @@ fn find_skills(
                 components.skills.push(namespaced(name, &skill));
             }
         }
-        kept.push(relative);
+        if recursive {
+            for skill_dir in &skill_dirs {
+                let below = skill_dir
+                    .strip_prefix(root.dir)
+                    .unwrap_or(skill_dir)
+                    .to_string_lossy()
+                    .into_owned();
+                if !kept.contains(&below) {
+                    kept.push(below);
+                }
+            }
+        } else {
+            kept.push(relative);
+        }
     }
     sort_dedup(&mut components.skills);
     kept
+}
+
+/// How deep below a skills folder a Codex-format `SKILL.md` may sit — the
+/// reference implementation's scan depth.
+const SKILL_SCAN_DEPTH: usize = 6;
+/// How many folders one recursive skills walk looks at.
+const SKILL_SCAN_MAX_DIRS: usize = 2_000;
+
+/// Every folder at or below `path` holding a `SKILL.md` no deeper than
+/// [`SKILL_SCAN_DEPTH`], a skill's own subfolders included: hidden folders
+/// skipped, links not followed, the walk bounded, sorted.
+fn nested_skill_dirs(path: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut seen = 0;
+    let mut pending = vec![(path.to_path_buf(), 0_usize)];
+    while let Some((dir, depth)) = pending.pop() {
+        seen += 1;
+        if seen > SKILL_SCAN_MAX_DIRS {
+            break;
+        }
+        if fs::symlink_metadata(dir.join("SKILL.md")).is_ok_and(|meta| meta.is_file()) {
+            found.push(dir.clone());
+        }
+        // A `SKILL.md` one level down must stay within the depth.
+        if depth + 1 >= SKILL_SCAN_DEPTH {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if !hidden && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// The skill folders `path` holds: itself when it has a `SKILL.md`, else its
@@ -908,7 +968,7 @@ mod tests {
             layout.manifest.description.as_deref(),
             Some("Does demo things")
         );
-        assert_eq!(layout.skills, ["skills"]);
+        assert_eq!(layout.skills, ["skills/a"]);
         assert_eq!(layout.components.agents, ["demo:helper"]);
         // Hooks run where the session runs, as the reference runs them.
         let hooks = layout.hooks.json.expect("hooks");
@@ -928,6 +988,60 @@ mod tests {
         assert_eq!(local[0], "sh");
         assert_eq!(local[4], ROOT);
         assert_eq!(layout.components.unsupported, ["2 apps"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_plugins_skills_are_found_at_any_depth_to_six() {
+        let (temp, dir) = plugin_dir();
+        write(&dir, ".codex-plugin/plugin.json", r#"{"name": "demo", "skills": "./skills/"}"#);
+        skill(&dir, "skills/report", "report");
+        skill(&dir, "skills/report/report-to-pdf", "report-to-pdf");
+        skill(&dir, "skills/group/meetings", "meetings");
+        skill(&dir, "skills/one/same", "same");
+        skill(&dir, "skills/two/same", "same");
+        skill(&dir, "skills/.hidden/secret", "secret");
+        skill(&dir, "skills/a/b/c/d/five", "five");
+        skill(&dir, "skills/a/b/c/d/e/six", "six");
+        skill(&temp.path().join("elsewhere"), "outside", "outside");
+        std::os::unix::fs::symlink(temp.path().join("elsewhere"), dir.join("skills/linked"))
+            .expect("link");
+        let layout = read(&dir, None);
+        assert_eq!(
+            layout.components.skills,
+            [
+                "demo:five",
+                "demo:meetings",
+                "demo:report",
+                "demo:report-to-pdf",
+                "demo:same"
+            ]
+        );
+        // Each skill folder is recorded on its own, so the session needs no
+        // walk of its own to find them.
+        assert_eq!(
+            layout.skills,
+            [
+                "skills/a/b/c/d/five",
+                "skills/group/meetings",
+                "skills/one/same",
+                "skills/report",
+                "skills/report/report-to-pdf",
+                "skills/two/same"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_claude_plugins_skills_are_its_skills_folders_children() {
+        let (_t, dir) = plugin_dir();
+        write(&dir, ".claude-plugin/plugin.json", r#"{"name": "demo"}"#);
+        skill(&dir, "skills/report", "report");
+        skill(&dir, "skills/report/report-to-pdf", "report-to-pdf");
+        skill(&dir, "skills/group/meetings", "meetings");
+        let layout = read(&dir, None);
+        assert_eq!(layout.components.skills, ["demo:report"]);
+        assert_eq!(layout.skills, ["skills"]);
     }
 
     #[test]

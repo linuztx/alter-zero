@@ -640,6 +640,34 @@ mod tests {
         assert_eq!(skills.len(), 3);
     }
 
+    #[test]
+    fn a_skill_recorded_inside_another_skill_is_its_own_skill() {
+        // A Codex-format plugin's sub-skills are recorded one path each
+        // (`plugins::layout`), the parent's folder holding the child's.
+        let home = install();
+        let notes = home.path().join("plugins/cache/mkt/notes");
+        write(
+            &notes.join("skills/take-notes/to-pdf/SKILL.md"),
+            "---\nname: to-pdf\ndescription: Notes as a PDF\n---\nPrint.\n",
+        );
+        let mut plugins = snapshot(home.path()).plugins;
+        plugins[1]
+            .skills
+            .push(notes.join("skills/take-notes/to-pdf"));
+        let (skills, errors) = discover_plugin_skills(&plugins);
+        assert!(errors.is_empty(), "{errors:?}");
+        let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "code-review:lint",
+                "code-review:review",
+                "notes:take-notes",
+                "notes:to-pdf"
+            ]
+        );
+    }
+
     // ===== agents =====
 
     #[test]

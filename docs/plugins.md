@@ -117,7 +117,7 @@ resolve inside the plugin; a bad one is dropped with a warning.
 
 | Component | Looked for at | Becomes |
 | --- | --- | --- |
-| skills | `skills/<name>/SKILL.md`, the manifest's `skills` paths, a lone root `SKILL.md` | a skill named `plugin:skill` |
+| skills | `skills/<name>/SKILL.md`, the manifest's `skills` paths, a lone root `SKILL.md` — for a Codex manifest, every `SKILL.md` up to six levels down, sub-skills included (hidden folders and links skipped, each skill folder recorded on its own, the first of a name winning) | a skill named `plugin:skill` |
 | commands | `commands/**/*.md`, or the manifest's `commands` | the slash command `/plugin:command` |
 | agents | `agents/**/*.md`, or the manifest's `agents` | the subagent type `plugin:agent` |
 | hooks | `hooks/hooks.json` and the manifest's `hooks` (paths or inline) — a Codex manifest's `hooks` *replaces* the file; agent-plugins.org's root `hooks.json` alone | one generated hooks file |
