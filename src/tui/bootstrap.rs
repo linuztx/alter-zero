@@ -65,6 +65,7 @@ impl<'t> Session<'t> {
             prompt,
             permission_mode,
             print,
+            system_prompt,
         } = startup;
         // A headless run (docs/headless.md): the same session, with nothing
         // shown and nobody to ask. Its prompt is the headless loop's to
@@ -467,6 +468,7 @@ impl<'t> Session<'t> {
             &settings,
             hook_setup,
             round_budget.as_ref(),
+            &system_prompt,
         );
 
         // The `@` file-search pipeline (docs/file-search.md): a background worker

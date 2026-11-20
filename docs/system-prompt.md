@@ -136,7 +136,10 @@ result object (`docs/headless.md`).
   <(make-prompt)`).
 - **What the bytes come to is pure** (`cli::system_prompt_file_text`): over
   the cap, not UTF-8, or blank is the run's failure; anything else is the
-  text.
+  text. A byte order mark at the start is dropped first — some editors
+  write one ahead of UTF-8, it is the file's encoding rather than its text,
+  and no trim takes it — so it is never the prompt's first character and a
+  file holding nothing else is empty.
 
 | The file | The line on stderr |
 | --- | --- |
@@ -230,9 +233,9 @@ is not here:
   `--continue`; a replacement and an append combine; each pair is exclusive;
   a flag twice, a missing value, a blank value and a dash-leading next
   argument (with its hint) are usage errors. `system_prompt_file_text` takes
-  text as it is and refuses a file over the cap, not UTF-8, or blank, each in
-  its own words; `system_prompt_file_unreadable` names the flag, the path and
-  the cause. The help page is pinned line for line with the four rows, fits
+  text as it is, less a byte order mark, and refuses a file over the cap, not
+  UTF-8, or blank, each in its own words; `system_prompt_file_unreadable`
+  names the flag, the path and the cause. The help page is pinned line for line with the four rows, fits
   80 columns with no trailing blanks, strips back to the plain page from the
   ANSI one, and the `mcp` page is unchanged by the long-cell rule.
 - `llm::backend` (pure): `compose_persona` over every row of the table above;

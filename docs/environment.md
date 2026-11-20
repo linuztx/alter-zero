@@ -39,12 +39,16 @@ The full system prompt the real backend sends is three blocks, in order —
 four in a headless run:
 
 ```
-persona        prompts/alter_zero.md   (who you are)
+persona        prompts/alter_zero.md   (who you are — or the run's own, plus any appended text)
 environment    prompts/environment.md  (where/when you are, as which user)   ← this doc
 scratchpad     prompts/scratchpad.md   (where your scratch goes, docs/scratchpad.md)
 headless       prompts/headless.md     (nobody is watching — alter-zero -p only, docs/headless.md)
 ```
 
+The persona is the run's own when it names one (`--system-prompt`, else
+`ALTER_ZERO_SYSTEM_PROMPT`), and `--append-system-prompt` text follows it,
+after a blank line and ahead of the environment block
+(`llm::backend::compose_persona`, `docs/system-prompt.md`).
 `persona → environment`, joined by `augment_with_environment`, then the
 scratchpad block appended by `augment_with_scratchpad` when the session has a
 scratchpad directory, then — for a headless run alone — the block
@@ -66,7 +70,8 @@ read can't live in the pure, deterministically-tested library. So the split is:
    from `/etc/os-release`, e.g. `linux (Ubuntu 24.04.4 LTS)`), and the user
    (`user_context` — the effective uid and its name, [below](#the-user-line));
    the cwd (`std::env::current_dir`) is already in hand at startup.
-   `tui::config::system_prompt` folds them into the prompt **once**. Every
+   `tui::config::system_prompt` composes the persona with the run's system
+   prompt flags and folds them into the prompt **once**. Every
    backend the loop rebuilds on a `/model` switch inherits the block via
    `system_prompt.clone()`, so there is a single injection point — and
    `tui::config::prompt_context` renders the same block from the same reads
@@ -87,9 +92,12 @@ read can't live in the pure, deterministically-tested library. So the split is:
 3. **A blank base stays blank.** The "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
    system message" contract (`docs/context.md`) is preserved:
    `augment_with_environment` returns a blank base unchanged, so
-   `configure` still drops it to `None`. Any non-empty prompt — the default
-   persona *or* a custom `ALTER_ZERO_SYSTEM_PROMPT` — gets the environment
-   block, because context awareness is orthogonal to persona.
+   `configure` still drops it to `None`. A blank base can only come from the
+   variable, since the system prompt flags refuse a blank value, and
+   appended text makes a base that is not blank. Any non-empty prompt — the
+   default persona, a custom `ALTER_ZERO_SYSTEM_PROMPT`, a `--system-prompt`
+   or appended text — gets the environment block, because context awareness
+   is orthogonal to persona.
 
 ## The user line
 

@@ -6,7 +6,10 @@
 //! specific one, bare `--resume` boots into the `/resume` picker, a quoted
 //! `[PROMPT]` is sent as the first turn of whichever session those open —
 //! and a quit that recorded anything prints [`resume_hint`]'s copy-paste
-//! command.
+//! command. The system prompt flags (`--system-prompt`,
+//! `--append-system-prompt` and their `-file` forms, `docs/system-prompt.md`)
+//! parse here to a [`SystemText`]; the files are read at the boundary, and
+//! what their bytes come to is [`system_prompt_file_text`]'s verdict.
 //!
 //! This module owns the parse (`argv` → [`Cli`], with usage errors as
 //! `Err(message)`), the two `--help` pages ([`help`], rendered plain or in
@@ -28,7 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -80,6 +83,61 @@ pub struct SessionArgs {
     /// `-p` / `--print`: run headless with these options — no screen, the
     /// answer on stdout (`docs/headless.md`). `None` is the TUI.
     pub print: Option<PrintOptions>,
+    /// `--system-prompt` / `--system-prompt-file`: the persona for this run,
+    /// in place of the built-in one — the flag form of
+    /// `ALTER_ZERO_SYSTEM_PROMPT`, outranking it (`docs/system-prompt.md`).
+    pub system_prompt: Option<SystemText>,
+    /// `--append-system-prompt` / `--append-system-prompt-file`: text added
+    /// after whichever persona the run has, before its `## Environment`
+    /// block (`docs/system-prompt.md`).
+    pub append_system_prompt: Option<SystemText>,
+}
+
+/// Where one of the system prompt flags' text comes from
+/// (`docs/system-prompt.md`): given inline, or a file the boundary reads —
+/// after `-C`, bounded by [`SYSTEM_PROMPT_FILE_MAX_BYTES`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemText {
+    /// `--system-prompt` / `--append-system-prompt`: the text, verbatim.
+    Inline(String),
+    /// `--system-prompt-file` / `--append-system-prompt-file`: the path as
+    /// given.
+    File(PathBuf),
+}
+
+/// The most a system prompt file may hold. A prompt rides every request, so
+/// a megabyte of it is already past most context windows — and the bound is
+/// what keeps a path like `/dev/zero` from filling memory: the boundary
+/// reads one byte past it and no further (`docs/system-prompt.md`).
+pub const SYSTEM_PROMPT_FILE_MAX_BYTES: usize = 1024 * 1024;
+
+/// What a system prompt file's bytes come to (`docs/system-prompt.md`): the
+/// text, unchanged, or the run's failure in the words it is reported in —
+/// over the cap, not UTF-8, or blank. The size is judged first, since a read
+/// cut at the cap can end mid-character. A byte order mark at the start is
+/// dropped: it is the file's encoding, not its text, and no trim takes it.
+/// `flag` is the file flag as typed, `path` the path as given.
+pub fn system_prompt_file_text(flag: &str, path: &Path, bytes: Vec<u8>) -> Result<String, String> {
+    let path = path.display();
+    if bytes.len() > SYSTEM_PROMPT_FILE_MAX_BYTES {
+        return Err(format!("{flag} {path} is larger than 1 MiB"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| format!("{flag} {path} is not UTF-8 text"))?;
+    let text = match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_string(),
+        None => text,
+    };
+    if text.trim().is_empty() {
+        return Err(format!("{flag} {path} is empty"));
+    }
+    Ok(text)
+}
+
+/// The line a system prompt file that cannot be opened or read is reported
+/// with — the flag, the path as given, and the operating system's `cause`.
+#[must_use]
+pub fn system_prompt_file_unreadable(flag: &str, path: &Path, cause: &str) -> String {
+    format!("Cannot read {flag} {}: {cause}", path.display())
 }
 
 /// A headless run's own options (`docs/headless.md`) — the flags that mean
@@ -206,6 +264,12 @@ impl HelpStyle {
 const HELP_INDENT: usize = 2;
 /// Columns between a section's widest literal cell and the descriptions.
 const HELP_GAP: usize = 3;
+/// The widest cell that sets the description column. A wider one — a long
+/// flag with its placeholder — is printed alone on its line and its
+/// description starts on the next, clap's rule: widening the column to fit
+/// it would squeeze every description on the page. 28 leaves the 47-column
+/// descriptions the pages are written to inside 80 (`docs/system-prompt.md`).
+const HELP_CELL_MAX: usize = 28;
 /// The continuation indent under `Usage: ` — the label's own width, so
 /// every further form aligns with the first.
 const USAGE_CONTINUATION: &str = "       ";
@@ -303,6 +367,30 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                     literal: "    --permission-mode",
                     placeholder: " <MODE>",
                     description: "manual, edit, auto or master, for this run only",
+                },
+                // The system prompt flags (docs/system-prompt.md). Three of
+                // their cells are wider than HELP_CELL_MAX, so their
+                // descriptions start on the line under them.
+                Row {
+                    literal: "    --system-prompt",
+                    placeholder: " <TEXT>",
+                    description: "Use TEXT as the system prompt for this run, in\n\
+                                  place of the built-in one",
+                },
+                Row {
+                    literal: "    --system-prompt-file",
+                    placeholder: " <PATH>",
+                    description: "The same, with the prompt read from PATH",
+                },
+                Row {
+                    literal: "    --append-system-prompt",
+                    placeholder: " <TEXT>",
+                    description: "Add TEXT to the system prompt for this run",
+                },
+                Row {
+                    literal: "    --append-system-prompt-file",
+                    placeholder: " <PATH>",
+                    description: "The same, with the text read from PATH",
                 },
                 Row {
                     literal: "-h, --help",
@@ -426,7 +514,9 @@ impl HelpPage {
 /// `Usage:` forms (each further one indented to the first), then each
 /// section's heading over its rows — two columns of indent, the literal
 /// cell padded to the page's widest, three more columns, the description,
-/// its further lines continuing at that column. Padding is
+/// its further lines continuing at that column. A cell wider than
+/// `HELP_CELL_MAX` sets no column: it stands alone on its line and its
+/// description starts on the next, at the column. Padding is
 /// measured on the plain text, so the columns line up under either style.
 /// No trailing newline: the caller's `println!` supplies it.
 #[must_use]
@@ -446,16 +536,26 @@ pub fn help(page: HelpPage, style: HelpStyle) -> String {
             .iter()
             .flat_map(|section| section.rows)
             .map(|row| row.literal.width() + row.placeholder.width())
+            .filter(|&cell| cell <= HELP_CELL_MAX)
             .max()
             .unwrap_or(0);
     for section in doc.sections {
         out.push_str("\n\n");
         out.push_str(&style.heading(section.heading));
         for row in section.rows {
-            let cell_width = HELP_INDENT + row.literal.width() + row.placeholder.width();
+            let cell = row.literal.width() + row.placeholder.width();
+            let cell_width = HELP_INDENT + cell;
+            // A cell too wide for the column stands alone on its line.
+            let alone = cell > HELP_CELL_MAX;
+            if alone {
+                out.push('\n');
+                out.push_str(&" ".repeat(HELP_INDENT));
+                out.push_str(&style.literal(row.literal));
+                out.push_str(row.placeholder);
+            }
             for (i, line) in row.description.lines().enumerate() {
                 out.push('\n');
-                if i == 0 {
+                if i == 0 && !alone {
                     out.push_str(&" ".repeat(HELP_INDENT));
                     out.push_str(&style.literal(row.literal));
                     out.push_str(row.placeholder);
@@ -521,7 +621,9 @@ pub fn colour_enabled(no_color: Option<&str>, term: Option<&str>) -> bool {
 /// `--resume`'s id may be the next argument or `=`-attached, and a
 /// following `-`-leading argument is never taken as an id. Every
 /// value-taking flag (`--output-format`, `--max-turns`,
-/// `--permission-mode`, `-C`/`--cwd`) reads its value the same way. The
+/// `--permission-mode`, `-C`/`--cwd`, and the four system prompt flags —
+/// `--system-prompt`, `--append-system-prompt` and their `-file` forms,
+/// `docs/system-prompt.md`) reads its value the same way. The
 /// one positional is the `[PROMPT]`, anywhere among the flags; `--` ends
 /// the flags so a dash-leading prompt is reachable.
 pub fn parse<I>(args: I) -> Result<Cli, String>
@@ -538,6 +640,12 @@ where
     let mut verbose: Option<()> = None;
     let mut permission_mode: Option<PermissionMode> = None;
     let mut cwd: Option<PathBuf> = None;
+    // The system prompt flags (docs/system-prompt.md): each slot per flag,
+    // so a pair given together is reported as such after the loop.
+    let mut system_prompt: Option<SystemText> = None;
+    let mut system_prompt_file: Option<SystemText> = None;
+    let mut append_system_prompt: Option<SystemText> = None;
+    let mut append_system_prompt_file: Option<SystemText> = None;
     let mut args = args.into_iter().peekable();
     // `mcp` routes as the FIRST argument only (docs/mcp-cli.md) — anywhere
     // else it is a prompt like any other word, so the session grammar is
@@ -647,6 +755,26 @@ where
                 set_once(&mut cwd, PathBuf::from(dir), "--cwd")?;
                 continue;
             }
+            "--system-prompt" | "--append-system-prompt" => {
+                let text = SystemText::Inline(text_value(&flag, value, &mut args)?);
+                let slot = if flag == "--system-prompt" {
+                    &mut system_prompt
+                } else {
+                    &mut append_system_prompt
+                };
+                set_once(slot, text, &flag)?;
+                continue;
+            }
+            "--system-prompt-file" | "--append-system-prompt-file" => {
+                let path = SystemText::File(PathBuf::from(flag_value(&flag, value, &mut args)?));
+                let slot = if flag == "--system-prompt-file" {
+                    &mut system_prompt_file
+                } else {
+                    &mut append_system_prompt_file
+                };
+                set_once(slot, path, &flag)?;
+                continue;
+            }
             _ => return Err(format!("unrecognized argument: {arg}")),
         };
         if start.replace(picked).is_some() {
@@ -654,6 +782,16 @@ where
         }
     }
     let start = start.unwrap_or(SessionStart::Fresh);
+    let system_prompt = one_of(
+        system_prompt,
+        system_prompt_file,
+        "pass at most one of --system-prompt / --system-prompt-file",
+    )?;
+    let append_system_prompt = one_of(
+        append_system_prompt,
+        append_system_prompt_file,
+        "pass at most one of --append-system-prompt / --append-system-prompt-file",
+    )?;
     // The headless run's own flags mean nothing with a screen
     // (docs/headless.md): refused rather than silently ignored.
     let print = match print {
@@ -698,7 +836,46 @@ where
         cwd,
         permission_mode,
         print,
+        system_prompt,
+        append_system_prompt,
     }))
+}
+
+/// The one of a pair of flags that was given, refusing both.
+fn one_of<T>(a: Option<T>, b: Option<T>, both: &str) -> Result<Option<T>, String> {
+    match (a, b) {
+        (Some(_), Some(_)) => Err(both.to_string()),
+        (a, b) => Ok(a.or(b)),
+    }
+}
+
+/// A system prompt text flag's value (`docs/system-prompt.md`): read like
+/// [`flag_value`]'s, but a blank one is missing too — an empty string is what
+/// a shell passes for an unset variable — and a dash-leading next argument
+/// is refused with the way to pass one, since a Markdown list starts with a
+/// dash. Never taking it was the point: `--system-prompt -p "fix it"` must
+/// not run on a system prompt of `-p`.
+fn text_value<I>(
+    flag: &str,
+    value: Option<String>,
+    args: &mut std::iter::Peekable<I>,
+) -> Result<String, String>
+where
+    I: Iterator<Item = String>,
+{
+    if value.is_none() && args.peek().is_some_and(|next| next.starts_with('-')) {
+        return Err(format!(
+            "{flag} needs a value (attach text that starts with a dash: {flag}=\"-…\")"
+        ));
+    }
+    let text = match value {
+        Some(text) => text,
+        None => args.next().unwrap_or_default(),
+    };
+    if text.trim().is_empty() {
+        return Err(format!("{flag} needs a value"));
+    }
+    Ok(text)
 }
 
 /// Fill a flag's slot, refusing a second time — clap's rule for a
@@ -1516,6 +1693,301 @@ mod tests {
         );
     }
 
+    // ===== the system prompt flags (docs/system-prompt.md) =====
+
+    fn inline(text: &str) -> Option<SystemText> {
+        Some(SystemText::Inline(text.to_string()))
+    }
+
+    fn file(path: &str) -> Option<SystemText> {
+        Some(SystemText::File(PathBuf::from(path)))
+    }
+
+    #[test]
+    fn the_system_prompt_flags_parse_separate_and_attached_in_either_run() {
+        for (flag, text, replace) in [
+            ("--system-prompt", true, true),
+            ("--system-prompt-file", false, true),
+            ("--append-system-prompt", true, false),
+            ("--append-system-prompt-file", false, false),
+        ] {
+            let value = if text {
+                inline("be brief")
+            } else {
+                file("be brief")
+            };
+            let want = |print: Option<PrintOptions>, prompt: Option<&str>| {
+                let mut args = SessionArgs {
+                    print,
+                    prompt: prompt.map(str::to_string),
+                    ..SessionArgs::default()
+                };
+                if replace {
+                    args.system_prompt = value.clone();
+                } else {
+                    args.append_system_prompt = value.clone();
+                }
+                run(args)
+            };
+            let attached = format!("{flag}=be brief");
+            assert_eq!(parsed(&[flag, "be brief"]), want(None, None), "{flag}");
+            assert_eq!(parsed(&[&attached]), want(None, None), "{flag}");
+            assert_eq!(
+                parsed(&["-p", flag, "be brief", "fix it"]),
+                want(Some(PrintOptions::default()), Some("fix it")),
+                "{flag}"
+            );
+            assert_eq!(
+                parsed(&["fix it", &attached, "-p"]),
+                want(Some(PrintOptions::default()), Some("fix it")),
+                "{flag}"
+            );
+            assert_eq!(
+                parsed(&["fix it", flag, "be brief"]),
+                want(None, Some("fix it")),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_flags_sit_beside_continue() {
+        assert_eq!(
+            parsed(&["--continue", "--append-system-prompt", "In French."]),
+            run(SessionArgs {
+                start: SessionStart::Continue,
+                append_system_prompt: inline("In French."),
+                ..SessionArgs::default()
+            })
+        );
+        assert_eq!(
+            parsed(&["--system-prompt-file=rules.md", "-c", "and the docs"]),
+            run(SessionArgs {
+                start: SessionStart::Continue,
+                prompt: Some("and the docs".into()),
+                system_prompt: file("rules.md"),
+                ..SessionArgs::default()
+            })
+        );
+    }
+
+    #[test]
+    fn a_replacement_and_an_append_combine() {
+        assert_eq!(
+            parsed(&[
+                "--system-prompt-file",
+                "prompts/reviewer.md",
+                "--append-system-prompt",
+                "Be brief."
+            ]),
+            run(SessionArgs {
+                system_prompt: file("prompts/reviewer.md"),
+                append_system_prompt: inline("Be brief."),
+                ..SessionArgs::default()
+            })
+        );
+        assert_eq!(
+            parsed(&["--append-system-prompt-file=a.md", "--system-prompt=R"]),
+            run(SessionArgs {
+                system_prompt: inline("R"),
+                append_system_prompt: file("a.md"),
+                ..SessionArgs::default()
+            })
+        );
+    }
+
+    #[test]
+    fn each_system_prompt_pair_is_exclusive() {
+        for args in [
+            &["--system-prompt", "a", "--system-prompt-file", "b"][..],
+            &["--system-prompt-file=b", "--system-prompt=a"],
+        ] {
+            assert_eq!(
+                parsed(args),
+                Err("pass at most one of --system-prompt / --system-prompt-file".to_string()),
+                "{args:?}"
+            );
+        }
+        for args in [
+            &[
+                "--append-system-prompt",
+                "a",
+                "--append-system-prompt-file",
+                "b",
+            ][..],
+            &[
+                "--append-system-prompt-file=b",
+                "-p",
+                "--append-system-prompt=a",
+            ],
+        ] {
+            assert_eq!(
+                parsed(args),
+                Err(
+                    "pass at most one of --append-system-prompt / --append-system-prompt-file"
+                        .to_string()
+                ),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_system_prompt_flag_given_twice_is_refused() {
+        for flag in [
+            "--system-prompt",
+            "--system-prompt-file",
+            "--append-system-prompt",
+            "--append-system-prompt-file",
+        ] {
+            let attached = format!("{flag}=b");
+            assert_eq!(
+                parsed(&[flag, "a", &attached]),
+                Err(format!("{flag} was given more than once")),
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_system_prompt_flag_with_no_value_needs_one() {
+        for flag in [
+            "--system-prompt",
+            "--system-prompt-file",
+            "--append-system-prompt",
+            "--append-system-prompt-file",
+        ] {
+            let want = Err(format!("{flag} needs a value"));
+            assert_eq!(parsed(&[flag]), want, "{flag}");
+            let attached = format!("{flag}=");
+            assert_eq!(parsed(&[&attached]), want, "{flag}");
+        }
+    }
+
+    #[test]
+    fn a_blank_system_prompt_text_is_refused() {
+        for flag in ["--system-prompt", "--append-system-prompt"] {
+            let want = Err(format!("{flag} needs a value"));
+            for blank in ["", "   "] {
+                assert_eq!(parsed(&[flag, blank]), want, "{flag} {blank:?}");
+                let attached = format!("{flag}={blank}");
+                assert_eq!(parsed(&[&attached]), want, "{attached:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_dash_leading_next_argument_is_refused_with_the_attach_hint() {
+        assert_eq!(
+            parsed(&["--append-system-prompt", "- a list item"]),
+            Err(
+                "--append-system-prompt needs a value (attach text that starts with a dash: \
+                 --append-system-prompt=\"-…\")"
+                    .to_string()
+            )
+        );
+        // `-p` is never taken as a system prompt.
+        assert_eq!(
+            parsed(&["--system-prompt", "-p", "fix it"]),
+            Err(
+                "--system-prompt needs a value (attach text that starts with a dash: \
+                 --system-prompt=\"-…\")"
+                    .to_string()
+            )
+        );
+        // Attached, a dash-leading text is the text, verbatim.
+        assert_eq!(
+            parsed(&["--system-prompt=- a list"]),
+            run(SessionArgs {
+                system_prompt: inline("- a list"),
+                ..SessionArgs::default()
+            })
+        );
+        // The file flags say only that the value is missing.
+        assert_eq!(
+            parsed(&["--system-prompt-file", "-p"]),
+            Err("--system-prompt-file needs a value".to_string())
+        );
+    }
+
+    #[test]
+    fn a_system_prompt_file_is_its_text_verbatim() {
+        let path = Path::new("prompts/x.md");
+        let text = "  You review code.\n\n- one\n";
+        assert_eq!(
+            system_prompt_file_text("--system-prompt-file", path, text.as_bytes().to_vec()),
+            Ok(text.to_string())
+        );
+        // Exactly at the cap is fine.
+        let at_cap = vec![b'a'; SYSTEM_PROMPT_FILE_MAX_BYTES];
+        assert_eq!(
+            system_prompt_file_text("--system-prompt-file", path, at_cap).map(|text| text.len()),
+            Ok(SYSTEM_PROMPT_FILE_MAX_BYTES)
+        );
+    }
+
+    #[test]
+    fn a_system_prompt_file_over_the_cap_is_refused() {
+        let path = Path::new("prompts/x.md");
+        // One byte over — and a cut that would land mid-character still
+        // reports the size, not the encoding.
+        let mut over = vec![b'a'; SYSTEM_PROMPT_FILE_MAX_BYTES - 1];
+        over.extend_from_slice("é".as_bytes());
+        assert_eq!(over.len(), SYSTEM_PROMPT_FILE_MAX_BYTES + 1);
+        assert_eq!(
+            system_prompt_file_text("--system-prompt-file", path, over),
+            Err("--system-prompt-file prompts/x.md is larger than 1 MiB".to_string())
+        );
+    }
+
+    #[test]
+    fn a_system_prompt_file_that_is_not_utf8_or_blank_is_refused() {
+        let path = Path::new("prompts/x.md");
+        assert_eq!(
+            system_prompt_file_text("--append-system-prompt-file", path, vec![0xff, 0xfe, b'a']),
+            Err("--append-system-prompt-file prompts/x.md is not UTF-8 text".to_string())
+        );
+        for blank in ["", " \n\t\n"] {
+            assert_eq!(
+                system_prompt_file_text("--system-prompt-file", path, blank.as_bytes().to_vec()),
+                Err("--system-prompt-file prompts/x.md is empty".to_string()),
+                "{blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_system_prompt_file_loses_its_byte_order_mark() {
+        // The mark an editor writes ahead of UTF-8 is the file's encoding,
+        // not its text: it would be the prompt's first character otherwise,
+        // and a file holding nothing else would not read as empty.
+        let path = Path::new("prompts/x.md");
+        assert_eq!(
+            system_prompt_file_text(
+                "--system-prompt-file",
+                path,
+                b"\xEF\xBB\xBFYou review code.\n".to_vec()
+            ),
+            Ok("You review code.\n".to_string())
+        );
+        assert_eq!(
+            system_prompt_file_text("--system-prompt-file", path, b"\xEF\xBB\xBF \n".to_vec()),
+            Err("--system-prompt-file prompts/x.md is empty".to_string())
+        );
+    }
+
+    #[test]
+    fn an_unreadable_system_prompt_file_names_the_flag_the_path_and_the_cause() {
+        assert_eq!(
+            system_prompt_file_unreadable(
+                "--system-prompt-file",
+                Path::new("prompts/x.md"),
+                "No such file or directory (os error 2)"
+            ),
+            "Cannot read --system-prompt-file prompts/x.md: No such file or directory (os error 2)"
+        );
+    }
+
     #[test]
     fn a_flag_given_twice_is_a_usage_error() {
         for args in [
@@ -1627,6 +2099,14 @@ Options:
                                  prints — or pick it from a list, given no ID
   -C, --cwd <DIR>                Run in DIR instead of the current directory
       --permission-mode <MODE>   manual, edit, auto or master, for this run only
+      --system-prompt <TEXT>     Use TEXT as the system prompt for this run, in
+                                 place of the built-in one
+      --system-prompt-file <PATH>
+                                 The same, with the prompt read from PATH
+      --append-system-prompt <TEXT>
+                                 Add TEXT to the system prompt for this run
+      --append-system-prompt-file <PATH>
+                                 The same, with the text read from PATH
   -h, --help                     Print help
   -V, --version                  Print version
 
@@ -1673,6 +2153,51 @@ Print mode:
             assert!(line.width() <= 80, "{line:?}");
             assert_eq!(line.trim_end(), line, "{line:?}");
         }
+        // The mcp page's usage forms run past 80 by design; its rows still
+        // end on text — the long-cell rule leaves no blank tail anywhere.
+        for line in help(HelpPage::Mcp, HelpStyle::Plain).lines() {
+            assert_eq!(line.trim_end(), line, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_cell_wider_than_the_column_stands_alone_over_its_description() {
+        // clap's rule for a long flag (docs/system-prompt.md): the cell on
+        // its own line, the description under it at the page's column (33).
+        let page = help(HelpPage::Main, HelpStyle::Plain);
+        let column = " ".repeat(33);
+        for (cell, description) in [
+            (
+                "--system-prompt-file <PATH>",
+                "The same, with the prompt read from PATH",
+            ),
+            (
+                "--append-system-prompt <TEXT>",
+                "Add TEXT to the system prompt for this run",
+            ),
+            (
+                "--append-system-prompt-file <PATH>",
+                "The same, with the text read from PATH",
+            ),
+        ] {
+            let want = format!("\n      {cell}\n{column}{description}\n");
+            assert!(page.contains(&want), "{cell}:\n{page}");
+        }
+        // A cell that fits keeps its description beside it.
+        assert!(
+            page.contains("\n      --system-prompt <TEXT>     Use TEXT"),
+            "{page}"
+        );
+        // And the column did not move for anyone else.
+        assert!(
+            page.contains("\n  -h, --help                     Print help"),
+            "{page}"
+        );
+        let styled = help(HelpPage::Main, HelpStyle::Ansi);
+        assert!(
+            styled.contains("\x1b[1m    --append-system-prompt-file\x1b[0m <PATH>\n"),
+            "{styled}"
+        );
     }
 
     #[test]
