@@ -40,7 +40,7 @@ use super::views::TOOL_VIEW_PAGE;
 use super::*;
 
 use crate::plugins::catalog::{CatalogTab, PluginCatalog, PluginDetail, PluginStatus};
-use crate::plugins::id::PluginId;
+use crate::plugins::id::{LOCAL_MARKETPLACE, PluginId};
 
 /// How many rows PageUp/PageDown move the list — the family's page.
 const PLUGINS_PAGE: usize = TOOL_VIEW_PAGE;
@@ -617,6 +617,12 @@ impl PluginsMenu {
         let Some(marketplace) = found else {
             return vec![MarketplaceAction::Back];
         };
+        // A removed marketplace still lists the plugins installed from it,
+        // and the folder installs are no marketplace at all: either can be
+        // browsed, neither fetched, updated or removed.
+        if marketplace.is_removed() || marketplace.name == LOCAL_MARKETPLACE {
+            return vec![MarketplaceAction::BrowsePlugins, MarketplaceAction::Back];
+        }
         let mut actions = if marketplace.fetched {
             vec![
                 MarketplaceAction::BrowsePlugins,
@@ -1313,5 +1319,20 @@ impl PluginsMenu {
         };
         self.set_status(&id, enabled);
         Action::PluginOp(PluginOp::SetEnabled { id, enabled })
+    }
+}
+
+/// What the page asks of a catalog marketplace beyond its fields.
+pub trait MarketplaceState {
+    /// Whether it is one the user removed whose installed plugins are still
+    /// listed: never fetched, yet carrying a reason — a marketplace that was
+    /// simply never fetched has none (`docs/plugins.md`). Such a one is shown
+    /// dim, as removed, never as a failed fetch, and offers nothing to fetch.
+    fn is_removed(&self) -> bool;
+}
+
+impl MarketplaceState for crate::plugins::catalog::CatalogMarketplace {
+    fn is_removed(&self) -> bool {
+        !self.fetched && self.error.is_some()
     }
 }

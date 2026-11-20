@@ -1062,3 +1062,42 @@ fn the_background_hint_is_hidden_while_the_page_is_open() {
     app.close_plugins_menu();
     assert_eq!(app.background_hint_elapsed(), Some(Duration::from_secs(30)));
 }
+
+#[test]
+fn a_fresh_app_holds_nothing_for_the_page() {
+    let app = App::new();
+    assert!(app.plugins_menu.is_none());
+    assert!(!app.wants_animation_frames());
+}
+
+#[test]
+fn a_removed_marketplace_and_the_folder_one_offer_only_their_plugins() {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.marketplaces.push(CatalogMarketplace {
+        fetched: false,
+        updated: None,
+        error: Some("removed — its installed plugins stay".to_string()),
+        is_default: false,
+        ..marketplace("old-market", "acme/old")
+    });
+    fresh.marketplaces.push(CatalogMarketplace {
+        is_local: true,
+        is_default: false,
+        updated: None,
+        ..marketplace("local", "folders on this machine")
+    });
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    app.on_key(key(KeyCode::Left));
+    for name in ["old-market", "local"] {
+        app.on_key(key(KeyCode::Home));
+        select(&mut app, name);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            menu(&app).marketplace_actions(),
+            [MarketplaceAction::BrowsePlugins, MarketplaceAction::Back],
+            "{name}"
+        );
+        app.on_key(key(KeyCode::Esc));
+    }
+}

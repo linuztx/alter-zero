@@ -3695,10 +3695,17 @@ pub(super) const PLUGINS_MENU_ROWS: u16 = 8;
 /// The rows it shows on the next rung down, before the description yields.
 pub(super) const PLUGINS_SHORT_MENU_ROWS: u16 = 5;
 
-/// The widest a row's name column gets — sized off every row the tab lists,
-/// so it holds still while the window scrolls, and capped so a long name
-/// never takes the description's room.
-pub(super) const PLUGINS_NAME_COLS_MAX: usize = 28;
+/// The widest a plugin row's name column gets — sized off every row the tab
+/// lists, so it holds still while the window scrolls, and capped where real
+/// names thin out (median 10 columns, 95th percentile 24): one 53-column
+/// name would otherwise pad every row by twenty wasted columns. A longer
+/// name is `…`-cut in its row and named whole under the description.
+pub(super) const PLUGINS_NAME_MAX_COLS: usize = 22;
+
+/// The widest a marketplace's name gets in a column (the plugin rows' last
+/// column, the Marketplaces tab's first) — wider than a plugin's, since the
+/// default ones run to 23.
+pub(super) const PLUGINS_MARKETPLACE_MAX_COLS: usize = 28;
 
 /// The widest the Marketplaces tab's source column gets.
 pub(super) const PLUGINS_SOURCE_COLS_MAX: usize = 40;
@@ -3808,6 +3815,15 @@ pub(super) const PLUGINS_RESTORE_ROW_NOTE: &str = "a default marketplace you rem
 pub(super) const PLUGINS_NOT_FETCHED_FACT: &str = "not fetched yet";
 pub(super) const PLUGINS_LOCAL_FACT: &str = "local folder";
 pub(super) const PLUGINS_DEFAULT_FACT: &str = "default marketplace";
+/// A marketplace the user removed whose installed plugins are still listed:
+/// dim, never a failed fetch.
+pub(super) const PLUGINS_REMOVED_FACT: &str = "removed";
+pub(super) const PLUGINS_REMOVED_ABOUT: &str =
+    "A marketplace you removed — the plugins you installed from it stay.";
+/// The plugins installed straight from a folder, listed as a marketplace of
+/// their own.
+pub(super) const PLUGINS_FOLDER_INSTALLS_ABOUT: &str =
+    "Plugins installed straight from a folder on this machine.";
 pub(super) const PLUGINS_DEFAULT_ABOUT: &str = "A default marketplace, known to every install.";
 pub(super) const PLUGINS_LOCAL_ABOUT: &str = "A folder you added, read in place.";
 pub(super) const PLUGINS_ADDED_ABOUT: &str = "A marketplace you added.";

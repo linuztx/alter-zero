@@ -115,7 +115,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 diff: &mut session.diff_rx,
                 device: &mut session.device_rx,
                 usage: &mut session.usage_rx,
-                plugins: &mut session.plugins_rx,
+                plugins: session.plugins_channel.as_mut().map(|(_, rx)| rx),
                 model: &mut session.model_rx,
                 probe: &mut session.probe_rx,
                 probe_pending: session.models.probe_pending(),
@@ -185,7 +185,9 @@ struct Sources<'a> {
     diff: &'a mut UnboundedReceiver<DiffResult>,
     device: &'a mut UnboundedReceiver<DeviceEvent>,
     usage: &'a mut UnboundedReceiver<UsageResult>,
-    plugins: &'a mut UnboundedReceiver<PluginMessage>,
+    /// `None` until the `/plugins` page first opens (the channel is made
+    /// then), and the branch waits on nothing meanwhile.
+    plugins: Option<&'a mut UnboundedReceiver<PluginMessage>>,
     model: &'a mut UnboundedReceiver<ModelFetch>,
     probe: &'a mut UnboundedReceiver<ProbeFetch>,
     /// Whether the startup probe's answer is still wanted — a `/model`
@@ -215,7 +217,7 @@ async fn next_wake(sources: Sources<'_>) -> Wake {
         Some(result) = sources.diff.recv() => Wake::Diff(result),
         Some(event) = sources.device.recv() => Wake::Device(event),
         Some(result) = sources.usage.recv() => Wake::Usage(result),
-        Some(message) = sources.plugins.recv() => Wake::Plugins(message),
+        Some(message) = recv_if_open(sources.plugins) => Wake::Plugins(message),
         Some(fetch) = sources.model.recv() => Wake::Model(fetch),
         Some(answer) = sources.probe.recv(), if sources.probe_pending => Wake::Probe(answer),
         Some(event) = sources.background.recv() => Wake::Background(event),
@@ -229,6 +231,15 @@ async fn next_wake(sources: Sources<'_>) -> Wake {
         // is the teardown's own business): nothing more will arrive, and the
         // loop goes on serving keys and frames.
         else => std::future::pending().await,
+    }
+}
+
+/// The next message on a channel that may not exist yet — never, while it
+/// doesn't (the `/plugins` page's, made when the page first opens).
+async fn recv_if_open<T>(rx: Option<&mut UnboundedReceiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 

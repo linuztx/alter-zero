@@ -504,8 +504,6 @@ impl<'t> Session<'t> {
         // The `/usage` page's reads, one worker per subscription
         // (docs/usage.md).
         let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
-        // The `/plugins` page's workers (docs/plugins.md).
-        let (plugins_tx, plugins_rx) = tokio::sync::mpsc::unbounded_channel();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
         // Spawned once the startup directive is applied (`spawn_pending_probe`
@@ -616,8 +614,7 @@ impl<'t> Session<'t> {
             usage_tx,
             usage_rx,
             usage_cancel: None,
-            plugins_tx,
-            plugins_rx,
+            plugins_channel: None,
             plugins_work: Vec::new(),
             plugins_job: None,
             plugins_opened: None,

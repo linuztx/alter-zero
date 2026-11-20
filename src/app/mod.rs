@@ -108,9 +108,9 @@ pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_
 pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad};
 pub use self::permission::PermissionPrompt;
 pub use self::plugins_menu::{
-    BrowseRow, Fetch, FetchState, Job, JobDone, JobGoto, JobKind, MarketplaceAction, Notice,
-    PLUGINS_CATALOG_FAILED, PLUGINS_FAILED, PluginAction, PluginEvent, PluginOp, PluginsMenu,
-    PluginsPage, PluginsTab,
+    BrowseRow, Fetch, FetchState, Job, JobDone, JobGoto, JobKind, MarketplaceAction,
+    MarketplaceState, Notice, PLUGINS_CATALOG_FAILED, PLUGINS_FAILED, PluginAction, PluginEvent,
+    PluginOp, PluginsMenu, PluginsPage, PluginsTab,
 };
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::{LiveThought, Reasoning};

@@ -39,8 +39,8 @@ use super::wrap::{clamp_spans, cols, ellipsize, wrap_text};
 use super::*;
 
 use crate::app::{
-    BrowseRow, FetchState, Job, JobKind, MarketplaceAction, Notice, PluginAction, PluginsMenu,
-    PluginsPage, PluginsTab, format_elapsed,
+    BrowseRow, FetchState, Job, JobKind, MarketplaceAction, MarketplaceState, Notice, PluginAction,
+    PluginsMenu, PluginsPage, PluginsTab, Spinner, format_elapsed,
 };
 use crate::plugins::catalog::{CatalogMarketplace, CatalogPlugin, PluginDetail, PluginStatus};
 
@@ -131,10 +131,12 @@ fn hanging_rows(lead: Span<'static>, text: &str, style: Style, width: u16) -> Ve
     rows
 }
 
-/// The spinner opening a live row: the session's own spinner style at the
-/// page clock (`/spinner`'s rows' pieces), ending in its separator space.
-fn spinner(app: &App, menu: &PluginsMenu) -> Vec<Span<'static>> {
-    spinner_spans(app.spinner(), menu.clock())
+/// The spinner opening a live row or standing in a tab's count: one braille
+/// cell — the `dots` style's frames, whatever the session's own style is —
+/// at the page clock, ending in its separator space. A track style is eight
+/// cells, which shoved the tab strip about and read as noise in a row.
+fn spinner(_app: &App, menu: &PluginsMenu) -> Vec<Span<'static>> {
+    spinner_spans(Spinner::Dots, menu.clock())
 }
 
 /// How long something that started at `since` on the page clock has run.
@@ -505,7 +507,7 @@ struct PluginColumns {
 }
 
 /// The columns for `rows` at `width`: the name sized off every listed row
-/// and capped ([`PLUGINS_NAME_COLS_MAX`]); the marketplace column on the
+/// and capped ([`PLUGINS_NAME_MAX_COLS`]); the marketplace column on the
 /// `All` and `Installed` tabs from [`PLUGINS_MARKETPLACE_MIN_WIDTH`]; the
 /// description from [`PLUGINS_DESCRIPTION_MIN_WIDTH`].
 fn plugin_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> PluginColumns {
@@ -527,7 +529,7 @@ fn plugin_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> PluginC
         .map(|p| cols(plugin_name(p)))
         .max()
         .unwrap_or(1)
-        .clamp(1, PLUGINS_NAME_COLS_MAX)
+        .clamp(1, PLUGINS_NAME_MAX_COLS)
         .min(usize::from(width).saturating_sub(head).max(1));
     let marketplace = if width >= PLUGINS_MARKETPLACE_MIN_WIDTH
         && matches!(menu.tab, PluginsTab::All | PluginsTab::Installed)
@@ -537,7 +539,7 @@ fn plugin_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> PluginC
             .map(|m| cols(&m.name))
             .max()
             .unwrap_or(0)
-            .min(PLUGINS_NAME_COLS_MAX)
+            .min(PLUGINS_MARKETPLACE_MAX_COLS)
     } else {
         0
     };
@@ -615,6 +617,9 @@ fn market_facts(menu: &PluginsMenu, index: usize, market: &CatalogMarketplace) -
             }
         }
     }
+    if market.is_removed() {
+        return (PLUGINS_REMOVED_FACT.to_string(), false);
+    }
     if let Some(error) = &market.error {
         return (format!("{PLUGINS_FAILED_MARK} {error}"), true);
     }
@@ -678,7 +683,7 @@ fn market_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> MarketC
     }
     columns.name = columns
         .name
-        .min(PLUGINS_NAME_COLS_MAX)
+        .min(PLUGINS_MARKETPLACE_MAX_COLS)
         .min(usize::from(width).saturating_sub(row_head()).max(1));
     columns.source = columns.source.min(PLUGINS_SOURCE_COLS_MAX);
     columns
@@ -882,12 +887,22 @@ fn tab_label(app: &App, menu: &PluginsMenu, tab: &PluginsTab) -> Vec<Span<'stati
                     PLUGINS_FAILED_MARK,
                     Style::new().fg(tool_fail_color()),
                 )),
+                // A marketplace never fetched lists nothing yet: its tab is
+                // its name alone, never a `0` that reads as an empty one.
                 None => {
-                    let count = menu
-                        .marketplace_index(name)
-                        .and_then(|i| menu.catalog.as_ref().map(|c| c.count_in(i)))
-                        .unwrap_or(0);
-                    spans.push(Span::styled(count.to_string(), dim));
+                    let found = menu.marketplace_index(name).and_then(|i| {
+                        let catalog = menu.catalog.as_ref()?;
+                        let market = &catalog.marketplaces[i];
+                        (market.fetched || market.is_removed()).then(|| catalog.count_in(i))
+                    });
+                    match found {
+                        Some(count) => spans.push(Span::styled(count.to_string(), dim)),
+                        None => {
+                            if let Some(last) = spans.last_mut() {
+                                last.content = last.content.trim_end().to_string().into();
+                            }
+                        }
+                    }
                 }
             }
             spans
@@ -1003,8 +1018,7 @@ fn stale(menu: &PluginsMenu) -> bool {
     failed
         || menu.catalog.as_ref().is_some_and(|catalog| {
             catalog.marketplaces.iter().any(|m| {
-                !m.fetched
-                    || m.error.is_some()
+                !m.is_removed() && (!m.fetched || m.error.is_some())
                     || (!m.is_local
                         && m.updated
                             .is_some_and(|at| menu.age_of(at) > PLUGINS_STALE_SECS))
@@ -1096,6 +1110,9 @@ fn empty_block(app: &App, menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> 
             .marketplace_index(name)
             .map(|i| &catalog.marketplaces[i])
     {
+        if market.is_removed() {
+            return model_wrapped_rows(PLUGINS_REMOVED_ABOUT, model_meta_color(), width);
+        }
         if let Some(error) = &market.error {
             return model_wrapped_rows(
                 &format!("{PLUGINS_UNREADABLE} {name} — {error}"),
@@ -1110,18 +1127,33 @@ fn empty_block(app: &App, menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> 
     model_wrapped_rows(&text, model_meta_color(), width)
 }
 
+/// How much the Browse page says of the highlighted row under its list.
+#[derive(Clone, Copy)]
+enum About {
+    /// Its description wrapped to at most this many rows, and the meta row.
+    Wrapped(usize),
+    /// Its description cut to one row.
+    OneRow,
+    /// Nothing: the rows the description took go to the list.
+    Omitted,
+}
+
 /// What the description block under the list says of the highlighted row:
-/// a plugin's description and meta row, or what a marketplace row is.
+/// a plugin's description and meta row, or what a marketplace row is. The
+/// meta row leads with the plugin's whole name when its row had to cut it
+/// (`name_cols`, the name column's width).
 fn about_highlighted(
     menu: &PluginsMenu,
     row: &BrowseRow,
-    layout: Option<usize>,
+    about: About,
+    name_cols: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(model_meta_color());
-    let describe = |text: &str| match layout {
-        Some(max) => capped_rows(MODEL_DETAIL_INDENT, text, dim, width, max),
-        None => model_description_rows(text, Description::OneRow, width),
+    let describe = |text: &str| match about {
+        About::Wrapped(max) => capped_rows(MODEL_DETAIL_INDENT, text, dim, width, max),
+        About::OneRow => model_description_rows(text, Description::OneRow, width),
+        About::Omitted => Vec::new(),
     };
     let catalog = menu.catalog.as_ref();
     match row {
@@ -1134,8 +1166,10 @@ fn about_highlighted(
             } else {
                 describe(&plugin.description)
             };
-            if layout.is_some() {
+            if matches!(about, About::Wrapped(_)) {
+                let name = plugin_name(plugin);
                 let meta: Vec<String> = [
+                    (cols(name) > name_cols).then(|| name.to_string()),
                     plugin.category.clone(),
                     plugin.author.clone(),
                     plugin.version.as_ref().map(|v| format!("v{v}")),
@@ -1162,7 +1196,11 @@ fn about_highlighted(
             let Some(market) = catalog.and_then(|c| c.marketplaces.get(*i)) else {
                 return Vec::new();
             };
-            let about = if market.is_default {
+            let about = if market.is_removed() {
+                PLUGINS_REMOVED_ABOUT
+            } else if market.name == crate::plugins::LOCAL_MARKETPLACE {
+                PLUGINS_FOLDER_INSTALLS_ABOUT
+            } else if market.is_default {
                 PLUGINS_DEFAULT_ABOUT
             } else if market.is_local {
                 PLUGINS_LOCAL_ABOUT
@@ -1188,9 +1226,12 @@ fn about_highlighted(
 ///    or the running job; the hint;
 /// 2. five rows instead of eight;
 /// 3. the description cut to one row and the meta row gone;
-/// 4. the compact page with its header — the title and the tab strip over
+/// 4. eight rows over the counter and nothing said of the highlighted row,
+///    then five — so a terminal of sixteen rows still lists more than the
+///    compact page's three;
+/// 5. the compact page with its header — the title and the tab strip over
 ///    the search line, three rows between the `↑`/`↓` slots, the hint;
-/// 5. the compact page without the header, and below it the rungs every
+/// 6. the compact page without the header, and below it the rungs every
 ///    search-line picker sheds to (`model_view::compact_page`), never the
 ///    search line.
 ///
@@ -1251,12 +1292,13 @@ fn browse_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
             ],
         );
     }
-    let whole = |max: u16, about: Option<usize>| {
+    let name_cols = plugin_columns(menu, &rows, width).name;
+    let whole = |max: u16, about: About| {
         let (_, list, _) = browse_window(menu, &rows, selected, usize::from(max), width);
         let mut listed = list;
         listed.push(list_counter_line(selected, rows.len()));
         let about = highlighted
-            .map(|row| about_highlighted(menu, row, about, width))
+            .map(|row| about_highlighted(menu, row, about, name_cols, width))
             .unwrap_or_default();
         framed(
             vec![
@@ -1274,9 +1316,16 @@ fn browse_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
     first_page_that_fits(
         height,
         &[
-            &|| whole(PLUGINS_MENU_ROWS, Some(PLUGINS_DESCRIPTION_ROWS)),
-            &|| whole(PLUGINS_SHORT_MENU_ROWS, Some(PLUGINS_DESCRIPTION_ROWS)),
-            &|| whole(PLUGINS_SHORT_MENU_ROWS, None),
+            &|| whole(PLUGINS_MENU_ROWS, About::Wrapped(PLUGINS_DESCRIPTION_ROWS)),
+            &|| {
+                whole(
+                    PLUGINS_SHORT_MENU_ROWS,
+                    About::Wrapped(PLUGINS_DESCRIPTION_ROWS),
+                )
+            },
+            &|| whole(PLUGINS_SHORT_MENU_ROWS, About::OneRow),
+            &|| whole(PLUGINS_MENU_ROWS, About::Omitted),
+            &|| whole(PLUGINS_SHORT_MENU_ROWS, About::Omitted),
             &|| compact_with_header(&window),
             &|| compact_page(height, &search, &window, &compact_tail, width),
         ],
@@ -1488,6 +1537,28 @@ fn plugin_action_labels(menu: &PluginsMenu) -> Vec<(String, Option<&'static str>
         .collect()
 }
 
+/// The one facts row a short Plugin page keeps: `Contains` over what the
+/// plugin carries, summed up (`2 skills · 1 command · 5 agents`), or the row
+/// saying that is known only after install — and nothing for a plugin that
+/// carries nothing the session loads.
+fn contains_row(detail: &PluginDetail, width: u16) -> Vec<Line<'static>> {
+    match &detail.components {
+        None => component_rows(detail, PLUGINS_FACT_COLS, width),
+        Some(components) => {
+            let summary = components.summary();
+            if summary.is_empty() {
+                return Vec::new();
+            }
+            vec![fact_row(
+                PLUGINS_FACT_CONTAINS,
+                vec![Span::styled(summary, Style::new().fg(model_id_color()))],
+                PLUGINS_FACT_COLS,
+                width,
+            )]
+        }
+    }
+}
+
 /// The confirmation the highlighted action wears when armed.
 fn plugin_armed(menu: &PluginsMenu) -> Option<&'static str> {
     (menu.armed() && menu.plugin_actions().get(menu.action()) == Some(&PluginAction::Uninstall))
@@ -1496,7 +1567,9 @@ fn plugin_armed(menu: &PluginsMenu) -> Option<&'static str> {
 
 /// The Plugin page — the first of its rungs that fits `height`: the whole
 /// page; the description cut to two rows and the facts to the components;
-/// the title, the status line, the result and the actions; then the small
+/// the title and the status line over one `Contains` row summing up what it
+/// carries ([`contains_row`]), the result and the actions; the same without
+/// that row; then the small
 /// rungs ([`small_rungs`]). While its detail loads, or after it failed, the
 /// title, `Loading…` or the reason in red, and `1. Back`.
 fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<Line<'static>> {
@@ -1524,6 +1597,10 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
     let focus = || match &menu.job {
         Some(_) => (0, choices.clone(), 0),
         None => action_focus(&actions, menu.action(), armed, width),
+    };
+    let contains = match &menu.detail {
+        Some(Ok(detail)) => contains_row(detail, width),
+        _ => Vec::new(),
     };
     let (head, body, facts, short_body, short_facts) = match &menu.detail {
         Some(Ok(detail)) => {
@@ -1606,6 +1683,18 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
                 framed(
                     vec![
                         head.clone(),
+                        contains.clone(),
+                        result.clone(),
+                        choices.clone(),
+                        vec![hint.clone()],
+                    ],
+                    width,
+                )
+            },
+            &|| {
+                framed(
+                    vec![
+                        head.clone(),
                         result.clone(),
                         choices.clone(),
                         vec![hint.clone()],
@@ -1671,6 +1760,8 @@ fn market_summary(
                 super::model_view::age_text(menu.age_of(updated))
             ));
         }
+    } else if market.is_removed() {
+        words.push(PLUGINS_REMOVED_FACT.to_string());
     } else {
         words.push(PLUGINS_NOT_FETCHED_FACT.to_string());
     }
@@ -1753,7 +1844,7 @@ fn market_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
     let mut facts = Vec::new();
     if let Some((index, market)) = found {
         head.push(market_summary(menu, index, market, width));
-        if let Some(error) = &market.error {
+        if let Some(error) = market.error.as_ref().filter(|_| !market.is_removed()) {
             head.extend(model_wrapped_rows(
                 &format!("{PLUGINS_UNREADABLE} {name} — {error}"),
                 tool_fail_color(),

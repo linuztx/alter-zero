@@ -965,3 +965,152 @@ fn a_hint_too_wide_drops_the_keys_the_page_already_shows_before_it_cuts() {
         "  Enter for details · Space to disable · Esc to close"
     );
 }
+
+/// The longest real name, 53 columns.
+const LONGEST_NAME: &str = "oracle-ai-data-platform-workbench-engineer-agent-suit";
+
+/// [`browsing`] with a plugin of [`LONGEST_NAME`] in the catalog, highlighted.
+fn browsing_a_long_name() -> App {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    let mut long = plug(
+        LONGEST_NAME,
+        0,
+        PluginStatus::Available,
+        "Oracle's AI data platform",
+    );
+    long.category = Some("database".to_string());
+    long.author = Some("Oracle".to_string());
+    long.version = Some("1.0".to_string());
+    fresh.plugins.push(long);
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    type_text(&mut app, "oracle");
+    app
+}
+
+#[test]
+fn a_long_name_is_cut_at_twenty_two_columns_and_named_whole_under_the_description() {
+    let app = browsing_a_long_name();
+    assert_eq!(LONGEST_NAME.len(), 53);
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    let row = shown
+        .iter()
+        .find(|t| t.starts_with("  →   oracle"))
+        .unwrap_or_else(|| panic!("{shown:#?}"));
+    let name = row["  →   ".len()..].split("  ").next().unwrap();
+    assert_eq!(cols(name), 22, "{row:?}");
+    assert!(name.ends_with('…'), "{row:?}");
+    assert!(
+        shown.contains(&format!("    {LONGEST_NAME} · database · Oracle · v1.0")),
+        "{shown:#?}"
+    );
+    // A name that fits is not repeated.
+    let (app, _) = browsing();
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    assert!(shown.contains(&"    development · Anthropic · v1.0.0".to_string()));
+}
+
+#[test]
+fn a_sixteen_row_terminal_shows_more_than_three_plugin_rows() {
+    let (app, _) = browsing();
+    for width in [80_u16, 96] {
+        let shown = texts(&plugins_view_lines(&app, width, 16));
+        let rows = shown
+            .iter()
+            .filter(|t| {
+                t.starts_with("  → ")
+                    || t.starts_with("    ✔")
+                    || t.starts_with("    ◯")
+                    || t.starts_with("    ↑")
+                    || t.starts_with("      ")
+            })
+            .count();
+        assert!(rows > 3, "{width}x16: {shown:#?}");
+        assert!(shown.iter().any(|t| t.trim() == "(1/17)"), "{shown:#?}");
+    }
+}
+
+#[test]
+fn a_sixteen_row_plugin_page_keeps_one_contains_row() {
+    let app = on_plugin(Some(Ok(full_detail())));
+    let shown = texts(&plugins_view_lines(&app, 80, 16));
+    assert!(
+        shown.contains(
+            &"  Contains    2 skills · 1 command · 5 agents · 1 hook · 1 MCP server".to_string()
+        ),
+        "{shown:#?}"
+    );
+    assert!(shown.iter().any(|t| t.contains("1. Disable")));
+}
+
+#[test]
+fn the_page_s_spinner_is_one_cell_whatever_the_session_s_style() {
+    let (mut app, round) = browsing();
+    let strip = |app: &App| {
+        let lines = plugins_view_lines(app, 120, 200);
+        lines[4]
+            .spans
+            .iter()
+            .map(|s| cols(&s.content))
+            .sum::<usize>()
+    };
+    let fetched = strip(&app);
+    app.apply_plugin_event(
+        round,
+        PluginEvent::FetchStarted {
+            marketplace: "openai-curated".to_string(),
+        },
+    );
+    // "5" gives way to a one-cell spinner: the strip keeps its width.
+    assert_eq!(strip(&app), fetched);
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    assert!(
+        crate::ui::theme::SPINNER_DOTS_FRAMES
+            .iter()
+            .any(|frame| shown[4].contains(&format!("openai-curated {frame}    "))),
+        "{:?}",
+        shown[4]
+    );
+}
+
+#[test]
+fn a_removed_marketplace_reads_dim_as_removed_never_as_a_failed_fetch() {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.marketplaces.push(CatalogMarketplace {
+        fetched: false,
+        updated: None,
+        error: Some("removed — its installed plugins stay".to_string()),
+        is_default: false,
+        ..market("old-market", "acme/old", 0)
+    });
+    let mut kept = plug("kept", 2, PluginStatus::Enabled, "Still installed");
+    kept.marketplace = 2;
+    fresh.plugins.push(kept);
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    press(&mut app, KeyCode::Left);
+    let lines = plugins_view_lines(&app, 120, 200);
+    let shown = texts(&lines);
+    let row = shown
+        .iter()
+        .find(|t| t.contains("old-market") && t.contains("acme/old"))
+        .unwrap_or_else(|| panic!("{shown:#?}"));
+    assert!(row.ends_with("removed"), "{row:?}");
+    assert!(!shown.iter().any(|t| t.contains('✗')), "{shown:#?}");
+    assert!(!shown.iter().any(|t| t.contains("Ctrl+R")), "{shown:#?}");
+}
+
+#[test]
+fn a_marketplace_never_fetched_is_named_alone_in_the_strip() {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.plugins.retain(|p| p.marketplace == 0);
+    fresh.marketplaces[1].fetched = false;
+    fresh.marketplaces[1].updated = None;
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    let strip = texts(&plugins_view_lines(&app, 120, 200))[4].clone();
+    assert!(
+        strip.contains("  openai-curated    Marketplaces"),
+        "{strip:?}"
+    );
+}

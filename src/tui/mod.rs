@@ -274,11 +274,16 @@ pub(crate) struct Session<'t> {
     usage_rx: tokio::sync::mpsc::UnboundedReceiver<usage::UsageResult>,
     usage_cancel: Option<CancelToken>,
     /// The `/plugins` page's work (`docs/plugins.md`): every operation's
-    /// worker reports here, each on a token of its own — all of them kept
-    /// so closing the page stops them, the running job's apart so Esc stops
-    /// it alone — and the instant the page opened, its clock's zero.
-    plugins_tx: tokio::sync::mpsc::UnboundedSender<plugins::PluginMessage>,
-    plugins_rx: tokio::sync::mpsc::UnboundedReceiver<plugins::PluginMessage>,
+    /// worker reports on one channel, made the first time the page opens —
+    /// a channel allocates its first block when it is made, and a session
+    /// that never opens the page keeps nothing for it. Each operation runs
+    /// on a token of its own — all of them kept so closing the page stops
+    /// them, the running job's apart so Esc stops it alone — and the instant
+    /// the page opened is its clock's zero.
+    plugins_channel: Option<(
+        tokio::sync::mpsc::UnboundedSender<plugins::PluginMessage>,
+        tokio::sync::mpsc::UnboundedReceiver<plugins::PluginMessage>,
+    )>,
     plugins_work: Vec<CancelToken>,
     plugins_job: Option<CancelToken>,
     plugins_opened: Option<std::time::Instant>,

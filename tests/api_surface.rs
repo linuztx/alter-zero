@@ -93,6 +93,7 @@ use alter_zero::app::{
     JobGoto,
     JobKind,
     MarketplaceAction,
+    MarketplaceState,
     Notice,
     PLUGINS_CATALOG_FAILED,
     PLUGINS_FAILED,
