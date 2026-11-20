@@ -3263,11 +3263,17 @@ ships as hooks and MCP configuration, in three dialects, is rewritten **once,
 at install** into `.alter-zero-plugin/hooks.json` and
 `.alter-zero-plugin/mcp.json`, the two formats `hooks::HooksFile` and
 `mcp::parse_mcp_file` already read (only runnable `command` hooks on events
-this app fires, `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` and the data
-variables expanded, servers named `plugin_<plugin>_<server>`,
-`streamable-http` spelt `http`, a Codex or Agent Plugins server wrapped in a
-`cd` to the plugin root), so no plugin-format knowledge lives in the hooks
-runner or the MCP loader. The I/O half is `git` (the user's own git — config,
+this app fires; `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` and the data
+variables **left in a hook's shell command for the shell** — the hook's
+process gets them in its environment, so a config home with a space or a
+`$` in it is never pasted into shell text — and expanded only where a value
+is an argv element or a config field; servers named
+`plugin_<plugin>_<server>`, a remote server's `oauth` client carried in the
+loader's own spelling, `streamable-http` spelt `http`, and a `cd` wrapper for
+an Agent Plugins server or one that names a `cwd` — a Codex server otherwise
+starts where the session is, as it does in Codex; each format's hooks and
+servers read only from where that format puts them), so no plugin-format
+knowledge lives in the hooks runner or the MCP loader. The I/O half is `git` (the user's own git — config,
 proxies and credential helpers in force — with bounded output, a timeout, a
 cancel that kills the process group, and no terminal prompt inside the TUI),
 `fsops` (tree copies without `.git` or symlinks, staging, a swap that puts
@@ -3278,15 +3284,29 @@ marketplace read in place), plugins **always copied** to
 `plugins/cache/<marketplace>/<plugin>/` — a path with **no version**, because
 hook trust is keyed on the hooks file's path, so an update asks again only
 about a hook whose command changed — and a failure leaving the previous
-install and the state file as they were. The two defaults
+install and the state file as they were. It trusts nothing a marketplace
+says about where things are: a fetched plugin's folder must sit inside its
+checkout with links resolved, a repository on this machine is a plugin's
+source only from a marketplace that is itself on this machine, a manifest is
+read through a 4 MiB cap, a file read out of a plugin is a regular file
+inside it and nothing else (`fsops::read_capped`), and every change to
+`plugins.json` is made under an exclusive lock on `plugins.lock` — re-read,
+swap, write — with the slow fetch outside it, so two processes never lose
+each other's edits. Names are compared ignoring ASCII case; a default
+marketplace's name is its own while that default is offered; and a plugin
+whose name another installed plugin already holds (`id::namespace_key`) is
+refused, since `plugin:component` has no room for the marketplace. The two
+defaults
 (`anthropics/claude-plugins-official`, `openai/plugins`) are known without
 being fetched; `ALTER_ZERO_PLUGIN_MARKETPLACES` replaces them (`none` for
 none, which is what the smoke suite exports so no phase reaches the network).
 A session's side is `llm::plugin::PluginSnapshot` — read once at bootstrap
 before the skills walk, re-checked by `(mtime, len)` at each turn
 (`Session::rescan_plugins`), reloaded by the page after every operation:
-skills join the registry as `plugin:skill` (`load_all_skills`; the `$`
-grammar takes a `:` followed by a name character, `SkillRegistry::find` finds
+skills join the registry as `plugin:skill` (`load_all_skills`; a Codex-format
+plugin's skills found at any depth to six, as Codex finds them; the `$`
+grammar takes a `:` followed by a name character and judges shell flavour by
+the part before it, so `$HOME:x` stays shell text; `SkillRegistry::find` finds
 a bare name when exactly one plugin has it, a plugin skill's body gets
 `${CLAUDE_PLUGIN_ROOT}` expanded and a `Plugin root:` header line), agents as
 `plugin:agent` (always the session's own model, a Claude Code agent's
@@ -3294,10 +3314,16 @@ a bare name when exactly one plugin has it, a plugin skill's body gets
 nothing left with `Read` alone, never widened to everything), commands as
 palette rows after every built-in, `/quit` included (`App::set_plugin_commands`,
 `CommandEffect::PluginPrompt`, matched by any `:`-segment so `/rev` finds
-`/code-review:review`; `/plugin:command args` submits the template with
-`$ARGUMENTS`/`$1`…`$9` filled in, the way `/init` submits its prompt —
-`Action::RunPluginCommand`, `llm::plugin::render_plugin_command`, the typed
-form handed back on an undo); hooks are a third layer of
+`/code-review:review`; no plugin row can sit ahead of a built-in for any
+query, which is what keeps a plugin's `quit.md` from taking `/q`;
+`/plugin:command args` submits the template with `$ARGUMENTS`/`$1`…`$9`
+filled in — a positional with no word left as written, since the `$1` in a
+template's `awk '{print $1}'` is awk's — the way `/init` submits its prompt,
+from Enter, the `[PROMPT]` shortcut, `-p` and a Tab-queued follow-up alike —
+`Action::RunPluginCommand`, `Session::submit_plugin_command`,
+`llm::plugin::render_plugin_command`, the typed form handed back on an undo,
+a command the manifest names by key running under that key
+(`PluginRecord::named_commands`); hooks are a third layer of
 `tui::trust::TrustState` and MCP servers a `McpScope::Plugin` held like a
 project's (`mcp::merge_held_scopes`), both read once at launch from that same
 snapshot and shown in the startup review under `plugin name@marketplace`
@@ -3306,10 +3332,15 @@ snapshot and shown in the startup review under `plugin name@marketplace`
 (`llm::hooks::plugin_hook_env`). The page (`app/plugins_menu.rs`,
 `ui/plugins_view.rs`, `tui/plugins.rs`) is a composer-replacing picker in the
 `/skills` family — tabs `All`/`Installed`/one per marketplace/`Marketplaces`,
-a search line, a status mark per row (`✔` enabled, `◯` disabled, `↑` an
-update, `⊘` cannot be installed here), a page per plugin naming what it
-brings before it is installed, marketplaces managed from visible rows — where
-**Esc goes back exactly one level**, slow work shows git's phase and
+a search line ranked by where the query matched (the name before the
+description), a status mark per row (`✔` enabled, `◯` disabled, `⊘` cannot be
+installed here, an amber `↑` beside the name while an update waits), a page
+per plugin naming what it brings before it is installed and how many of its
+hooks and servers still wait for the user, marketplaces managed from visible
+rows — where **Esc goes back exactly one level**, **nothing typed into the
+list can start an operation** (Space types once the search has text; on a
+detail page a digit only moves the highlight and Enter alone runs), slow
+work shows git's phase and
 percentage and can be cancelled, and the result, or the store's real error,
 is said on the page; every page is height-aware and sheds rows rather than
 flowing; operations run on worker threads (`workers::spawn_plugin_op`)
@@ -3322,7 +3353,8 @@ launches nothing. `ALTER_ZERO_PLUGINS=0` loads no plugin. Tests:
 `cargo test --lib plugins::`, `tests/plugin_store.rs` and
 `tests/plugin_cli.rs` over local `file://` repositories built by
 `tests/support/plugin_fixtures.rs`; `smoke.sh` Phase 162 drives the page
-against fixture marketplaces.
+against fixture marketplaces and Phase 163 a plugin's commands from every
+entry point.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
