@@ -23,6 +23,8 @@
 //! - `mcp`        — a plugin server's transport as plain data, and the
 //!   legacy `.mcp.json` entry reader.
 //! - `cancel`     — the cancellation flag long operations poll.
+//! - `cli`        — the `alter-zero plugin …` commands: the work, the
+//!   wording and the `--json` shapes (`docs/plugin-cli.md`).
 //!
 //! A crate of its own, not a module of the app's: a cold dependency crate's
 //! code is one contiguous block that an idle session never faults in, where
@@ -33,6 +35,7 @@
 
 pub mod agent_plugins;
 pub mod cancel;
+pub mod cli;
 pub mod components;
 pub mod git;
 pub mod layout;
@@ -50,6 +53,11 @@ pub use self::agent_plugins::{
     parse_manifest, parse_mcp, resolve_server, schema_version, validate_ap_name,
 };
 pub use self::cancel::CancelToken;
+pub use self::cli::{
+    CommandOutcome, InfoComponents, ListError, ListedMarketplace, ListedPlugin, MarketplaceList,
+    Output, PluginInfo, PluginList, REVIEW_NOTICE, age, marketplace_listing, plugin_info,
+    plugin_list,
+};
 pub use self::components::{
     AGENT_PLUGINS_MCP_FILE, HOOKS_FILE, HookSource, LEGACY_MCP_FILE, MAX_DESCRIPTION_CHARS,
     PROJECT_DIR_PLACEHOLDER, PluginAgent, PluginComponents, PluginContribution, PluginServer,

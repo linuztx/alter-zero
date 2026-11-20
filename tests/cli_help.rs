@@ -223,13 +223,15 @@ fn a_plugin_grammar_error_carries_its_level_s_usage_block() {
 }
 
 #[test]
-fn a_plugin_command_is_not_available_yet() {
+fn a_plugin_command_runs_past_the_grammar() {
+    // The commands themselves are `tests/plugin_cli.rs`'s; here only that a
+    // parsed one reaches the executor (exit 0, a result on stdout) rather
+    // than a help page or a usage error.
     let out = run(&["plugin", "list"]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(
-        stderr(&out).ends_with(" plugin: not available yet\n"),
+        stdout(&out).starts_with("No plugins installed"),
         "{}",
-        stderr(&out)
+        stdout(&out)
     );
 }

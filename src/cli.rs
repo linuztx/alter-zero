@@ -199,7 +199,8 @@ pub enum MarketplaceCli {
     /// `plugin marketplace update [<name>]` (also `upgrade`) — `None` is
     /// every marketplace.
     Update { name: Option<String> },
-    /// `plugin marketplace remove <name>` (also `rm`).
+    /// `plugin marketplace remove <name>` (also `rm`): the plugins
+    /// installed from it are uninstalled with it.
     Remove { name: String },
     /// `-h`/`--help` anywhere in the `marketplace` arguments (before a
     /// `--`): print the [`HelpPage::PluginMarketplace`] page and exit 0.
@@ -642,8 +643,8 @@ offered, not added, until you add them.",
                 Row {
                     literal: "remove",
                     placeholder: "",
-                    description: "Remove a marketplace (alias: rm); the plugins\n\
-                                  installed from it stay installed",
+                    description: "Remove a marketplace (alias: rm), uninstalling\n\
+                                  the plugins installed from it",
                 },
             ],
         },
@@ -3308,6 +3309,11 @@ Print mode:
         }
         assert!(
             page.contains("\nExamples:\n  alter-zero plugin marketplace add "),
+            "{page}"
+        );
+        // Removing a marketplace takes its plugins with it, and says so.
+        assert!(
+            page.contains("Remove a marketplace (alias: rm), uninstalling\n"),
             "{page}"
         );
         // Examples dress like usage lines: the command bold, the rest bare.

@@ -317,6 +317,73 @@ fn push_shell_arg(cmd: &mut Command, shell: &Path) {
     }
 }
 
+/// A **program and its arguments** — not a shell command line — under `tier`:
+/// the form the plugin store's `git` runner takes its children in
+/// (`docs/plugins.md` *Fetching*, `plugins::CommandBuilder`). The setsid tier
+/// runs `setsid {argv…}`, the helper tier hands the helper `exec {argv…}`
+/// with every word single-quoted, and the attached tier runs the program in a
+/// process group of its own — so in every tier the child leads its group
+/// (pgid == pid) and only the attached one keeps a controlling terminal. No
+/// stdio is set: the caller's runner sets it.
+#[must_use]
+pub fn argv_command(tier: &DetachTier<'_>, argv: &[OsString]) -> Command {
+    let program = argv.first().cloned().unwrap_or_default();
+    let rest = argv.iter().skip(1);
+    let mut cmd = match tier {
+        DetachTier::SetsidBinary => {
+            // No process_group: a group leader cannot setsid(2).
+            let mut c = Command::new("setsid");
+            c.arg(&program).args(rest);
+            c
+        }
+        DetachTier::HelperReexec(helper) => {
+            let words: Vec<String> = argv.iter().map(|word| shell_quote(word)).collect();
+            let mut c = Command::new(helper);
+            c.arg(DETACH_ARG).arg(format!("exec {}", words.join(" ")));
+            c
+        }
+        DetachTier::Attached => {
+            let mut c = Command::new(&program);
+            c.args(rest);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                c.process_group(0);
+            }
+            c
+        }
+    };
+    cmd.env_remove(crate::herdr::PANE_ID_ENV);
+    cmd
+}
+
+/// [`argv_command`] under the first tier this process has: the `setsid`
+/// binary when it is on `PATH`, else the helper when it is an executable
+/// file, else attached. A builder that returns a `Command` cannot fall
+/// through on a failed spawn the way [`spawn_detached_shell`] does, so the
+/// tier is chosen by looking first.
+#[must_use]
+pub fn detached_argv_command(detach_helper: Option<&Path>, argv: &[OsString]) -> Command {
+    let path = std::env::var_os("PATH");
+    let tier = tiers(detach_helper)
+        .into_iter()
+        .find(|tier| match tier {
+            DetachTier::SetsidBinary => {
+                find_on_path("setsid", path.as_deref(), is_executable_file).is_some()
+            }
+            DetachTier::HelperReexec(helper) => is_executable_file(helper),
+            DetachTier::Attached => true,
+        })
+        .unwrap_or(DetachTier::Attached);
+    argv_command(&tier, argv)
+}
+
+/// `word` as one POSIX shell word: single-quoted, each `'` written `'\''`.
+#[must_use]
+pub fn shell_quote(word: &OsStr) -> String {
+    format!("'{}'", word.to_string_lossy().replace('\'', "'\\''"))
+}
+
 /// Spawn `command` under `sh -c`, detached from the controlling terminal where
 /// possible — the [`tiers`] chain, falling through **only** on `NotFound` (a
 /// missing `setsid` binary; a `detach_helper` whose file was replaced or
@@ -626,6 +693,37 @@ mod tests {
                 DetachTier::Attached,
             ]
         );
+    }
+
+    #[test]
+    fn an_argv_command_runs_the_program_itself_in_every_tier() {
+        let words = ["git", "-c", "a=b c", "it's"].map(OsString::from);
+        let (prog, args) = argv(&argv_command(&DetachTier::SetsidBinary, &words));
+        assert_eq!(prog, "setsid");
+        assert_eq!(args, words);
+        let helper = Path::new("/opt/bin/alter-zero");
+        let (prog, args) = argv(&argv_command(&DetachTier::HelperReexec(helper), &words));
+        assert_eq!(prog, "/opt/bin/alter-zero");
+        assert_eq!(
+            args,
+            [DETACH_ARG, "exec 'git' '-c' 'a=b c' 'it'\\''s'"].map(OsString::from)
+        );
+        let (prog, args) = argv(&argv_command(&DetachTier::Attached, &words));
+        assert_eq!(prog, "git");
+        assert_eq!(args, words[1..]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_helper_tier_s_quoting_reaches_the_program_word_for_word() {
+        let words = ["printf", "%s|", "a b", "it's", "$HOME", ""].map(OsString::from);
+        let quoted: Vec<String> = words.iter().map(|w| shell_quote(w)).collect();
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(format!("exec {}", quoted.join(" ")))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a b|it's|$HOME||");
     }
 
     #[test]
