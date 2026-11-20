@@ -391,7 +391,8 @@ are folded in by round, so one for a closed or reopened page is dropped.
 ## Memory
 
 A fresh session's resident memory is a feature of this app
-(`docs/memory.md`), and this one was built to leave it where it was:
+(`docs/memory.md`), and this one was built to add nothing to what a fresh
+session allocates:
 
 1. **Nothing at startup.** No network, no `git`, no thread and no catalog —
    Codex syncs its marketplaces at every launch; here a marketplace is
@@ -411,6 +412,53 @@ A fresh session's resident memory is a feature of this app
    while a fetch or an operation is running. Even the channel its workers
    answer on is created the first time the page opens, so a session that
    never opens it allocates nothing for it.
+
+### Measured
+
+One measurement, repeated: a fresh session in a 120×40 terminal, no
+conversation, no MCP server, read four seconds after the composer appears —
+the build before plugins against the build with them, the shipped profile on
+x86_64 Linux, the median of seven launches.
+
+| the executable's pages are | before | after | |
+|---|---|---|---|
+| not in the page cache — a first launch after a boot | 9.96 MB | 9.82 MB | −0.14 MB |
+| cached by a read of the file | 14.52 MB | 15.35 MB | +0.83 MB |
+| cached by writing it — just built, just installed | 12.09 MB | 12.67 MB | +0.58 MB |
+| private to the process, in every row | 0.944 MB | 0.952 MB | +8 kB |
+
+**Private memory moved by 8 kB**: two pages of relocated tables. The heap,
+the stack and the thread count are what they were. The page's own state is a
+kilobyte, and an `App` is moved through several frames on its way to the
+loop, so that state is boxed: inline, a fresh session's stack read 196 kB;
+boxed it reads 188 kB, the figure of the build before.
+
+**The rest is the executable**, which is 1.14 MB larger (19.0 → 20.1 MB). A
+resident figure counts every page of the file the kernel has mapped into the
+process, and how many it maps is a property of the page cache, not of the
+program. With nothing cached it reads in what is touched, and the two builds
+touch the same amount — the first row. With the whole file cached it maps the
+cached pages around each one it faults in, whole large folios on a current
+kernel, and so maps a share of everything the file holds, plugin code that
+never runs included; the figure then rises with the file's size and moves by
+half a megabyte between two launches of one binary. Linking that code into a
+section of its own did not change it (15.31 MB against 15.35 MB): a folio is
+larger than the section. Those pages are in the page cache whether or not a
+process maps them, they are shared, and the kernel drops them first under
+pressure, when the figure falls back toward the first row's. The `release`
+profile, whose many codegen units interleave the same code more finely, reads
+0.5–0.9 MB higher in all three rows, with 16–24 kB more private.
+
+**Installed plugins cost what they hold.** Four of them — five commands, a
+skill, three agents — add 24 kB of private memory at startup: the records,
+the palette rows, the listing.
+
+**The page costs while it is open, and leaves its high-water mark.** Open
+over two marketplaces of 382 plugins it holds 0.73 MB of private memory.
+Closed, the catalog is freed and 0.60 MB of that stays with the allocator —
+the worker thread's arena and the main heap's top, which glibc keeps for the
+next use — so a second open adds nothing. A session that never opens
+`/plugins` pays none of it.
 
 ## Deliberately not doing
 
