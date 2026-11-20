@@ -215,6 +215,13 @@ release heading when a version is cut.
 
 ### Fixed
 
+- **A signed-in MCP server whose address uses a `${VAR}` keeps its sign-in
+  actions.** Once such a server connected, `/mcp` looked for its login under
+  the address as written in the config, found none, and stopped offering
+  **Re-authenticate** and **Clear authentication** for a server that was
+  signed in. The login is now looked up under the address the entry expands
+  to, where it is kept.
+
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
   Requests to a remote MCP server carried no `User-Agent`, and a gateway's
   stock firewall rules turn such a request away before the server sees it.

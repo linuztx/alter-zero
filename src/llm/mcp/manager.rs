@@ -839,10 +839,10 @@ impl McpManager {
                 }
             }
             // The dance above may have rotated or cleared the grant — the
-            // snapshot's auth row re-derives from what the store now holds.
+            // snapshot's auth row re-derives from what the store now holds,
+            // under the address the grant is kept by: the resolved one, not
+            // the entry's as written.
             server.has_tokens = server
-                .entry
-                .config
                 .url()
                 .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             drop(inner);
@@ -3857,6 +3857,48 @@ done
         let snapshot = manager.snapshot();
         assert_eq!(
             snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.shutdown();
+    }
+
+    /// A server whose address is written with a `${VAR}` keeps its login
+    /// under the address that expands to — and still reads authenticated
+    /// once it has connected. The row used to re-derive from the address as
+    /// written, find no grant there, and take the re-authenticate and clear
+    /// actions away from a server that was signed in.
+    #[test]
+    fn a_server_written_with_a_variable_stays_authenticated_once_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        seed_tokens(&auth_path, &fixture, None);
+        let origin = fixture.url.trim_end_matches("/mcp");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "fix".to_string(),
+                    config: McpServerConfig::Http {
+                        url: format!("${{ALTER_ZERO_TEST_NEVER_SET_ORIGIN:-{origin}}}/mcp"),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                        oauth: None,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                    literal: false,
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(auth_path.clone()),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        assert_eq!(
+            manager.snapshot()[0].auth,
             Some(crate::mcp::McpAuthState::Authenticated)
         );
         manager.shutdown();
