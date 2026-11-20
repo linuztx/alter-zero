@@ -355,7 +355,8 @@ pub fn discover_plugin_commands(plugins: &[EnabledPlugin]) -> Vec<PluginCommand>
 /// data directory gets it created first, as a skill's load does.
 ///
 /// # Errors
-/// When the command's file can no longer be read.
+/// When the command's file can no longer be read, or when what it renders
+/// is blank — a file that is only frontmatter submits nothing.
 pub fn render_plugin_command(command: &PluginCommand, args: &str) -> Result<String, String> {
     let contents = crate::plugins::read_capped(&command.path, COMMAND_MAX_BYTES)?;
     let (_, body) = crate::plugins::parse_command(&contents);
@@ -370,6 +371,9 @@ pub fn render_plugin_command(command: &PluginCommand, args: &str) -> Result<Stri
         },
     );
     let prompt = crate::plugins::expand_arguments(&body, args);
+    if prompt.trim().is_empty() {
+        return Err(format!("/{} has no prompt to submit", command.name));
+    }
     Ok(crate::skills::cap_body(
         prompt.trim_matches(['\n', '\r']).trim_end().to_string(),
     ))
@@ -752,6 +756,18 @@ mod tests {
         std::fs::remove_file(&commands[0].path).expect("rm");
         let error = render_plugin_command(&commands[0], "").expect_err("gone");
         assert!(error.contains("commit.md"), "{error}");
+    }
+
+    #[test]
+    fn a_command_that_renders_blank_is_refused_naming_it() {
+        let home = install();
+        let commands = discover_plugin_commands(&snapshot(home.path()).plugins);
+        write(
+            &commands[0].path,
+            "---\ndescription: Commit the work\n---\n\n  \n",
+        );
+        let error = render_plugin_command(&commands[0], "").expect_err("blank");
+        assert!(error.contains("/code-review:commit"), "{error}");
     }
 
     // ===== what the boundary asks =====
