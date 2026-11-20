@@ -291,7 +291,7 @@ it, hugs its rules, and sheds rows on a short terminal rather than flowing.
 
   → ✔ code-review          Automated code review for pull requests       claude-plugins-official
     ◯ feature-dev          Guided feature development with codebase un…  claude-plugins-official
-    ↑ linear               Find and manage Linear issues                 openai-curated
+    ✔ linear ↑             Find and manage Linear issues                 openai-curated
       agent-sdk-dev        Claude Agent SDK Development Plugin           claude-plugins-official
     (1/382)
 
@@ -307,16 +307,51 @@ it, hugs its rules, and sheds rows on a short terminal rather than flowing.
   where marketplaces are rows to open, add (`owner/repo`, a git URL or a
   folder) and restore — visible rows, not chords.
 - **One status vocabulary**, a mark per row: `✔` installed and enabled, `◯`
-  installed and disabled, `↑` an update is available, `⊘` cannot be
-  installed here, blank for not installed.
+  installed and disabled, `⊘` cannot be installed here, blank for not
+  installed. An update waiting is an amber `↑` **beside** the name, never in
+  the mark's place, so a row always says whether the plugin is on; the
+  row's footer and the plugin's page name both versions (`v1.0.0 →
+  v2.0.0`).
+- **Search ranks by where it matched.** Every word of the query must match
+  somewhere (the name, display name, category, author, description or
+  marketplace); the rows then come name-prefix first, then a word of the
+  name, anywhere in the name, the display name, the category or author, and
+  the description last — installed first and then the name breaking ties.
+  An empty query lists installed first, then by name. A space is typed into
+  a query already begun (so `code review` is two words); into an empty one
+  Space acts on the row. Clearing the query keeps the highlighted plugin;
+  Ctrl+U clears the search and the Add field.
 - **Enter** opens a plugin's page: what it is, where it comes from, and
   **what it brings** — its skills, commands, agents, hooks and MCP servers
-  by name, and what it carries that is not used — over the actions that fit
-  its state (Install; Enable or Disable, Update, Uninstall). **Space**
-  enables or disables an installed plugin in place.
+  by name, every name wrapped under its own column (cut to one row, the
+  count still exact, on a short terminal), and what it carries that is not
+  used — over the actions that fit its state (Install; Enable or Disable,
+  Update, Uninstall). **Space** with no query enables or disables an
+  installed plugin in place.
+- **Only Enter runs an action.** On a plugin's or a marketplace's page a
+  digit moves the highlight to that action and Enter runs it, so a search
+  phrase whose keys land on a page Space opened never installs anything.
+- **What cannot work is not offered**, and the page says why in its own
+  words: a plugin whose marketplace was removed offers no update (`Updates
+  none — its marketplace was removed`); a plugin that cannot be installed
+  here — an npm source, a folder its marketplace does not have — offers no
+  Install and promises no contents after one.
+- **What waits for the user is said**: an enabled plugin whose hooks are not
+  trusted or whose MCP servers are off says so under its status, with the
+  way forward (`2 hooks wait for your review — /hooks · 1 MCP server is off
+  — /mcp`); one installed since launch says the startup review asks at the
+  next launch. The boundary reads this from the session's trust record.
+- **The Marketplaces tab keeps its facts**: on a narrow terminal the source
+  is cut with `…` first and then gives way, never the plugin count, a
+  `✗` failure or `removed`. A marketplace that listed entries it could not
+  read counts them (`3 plugins · 2 skipped`) and names each on its page.
+  The subtitle counts the marketplaces the user has — not one removed, not
+  the folder installs' own listing.
 - **Esc goes back exactly one level**, everywhere: a running operation is
-  cancelled, an armed confirmation disarmed, a typed search cleared, a page
-  left, and only then the page closed.
+  cancelled (the page says `Cancelled`, and once the stopped work has ended
+  it shows the catalog as it is on disk, saying so when the work had
+  already finished), an armed confirmation disarmed, a typed search cleared,
+  a page left, and only then the page closed.
 - **Slow work is shown and can be stopped**: the step, git's own percentage
   when it reports one, and the elapsed time, with Esc to cancel.
 - **The result is said on the page**, including when it takes effect —

@@ -1144,7 +1144,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     if let Some(menu) = &app.plugins_menu {
         let lines = super::plugins_view::plugins_view_lines(app, area.width, area.height);
         let text = match menu.page {
-            crate::app::PluginsPage::Browse => menu.query.clone(),
+            crate::app::PluginsPage::Browse => {
+                super::plugins_view::plugins_field_text(&menu.query, area.width)
+            }
             crate::app::PluginsPage::AddMarketplace => {
                 super::plugins_view::plugins_field_text(&menu.input, area.width)
             }

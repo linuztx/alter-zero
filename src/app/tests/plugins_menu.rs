@@ -306,11 +306,134 @@ fn typing_filters_the_tab_and_returns_the_highlight_to_the_first_row() {
 }
 
 #[test]
-fn space_is_never_typed_into_the_search() {
+fn clearing_the_search_keeps_the_plugin_that_was_highlighted() {
     let (mut app, _) = browsing();
-    type_str(&mut app, "a");
+    type_str(&mut app, "notion");
+    assert_eq!(highlighted_name(&app), "notion");
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(menu(&app).query, "");
+    assert_eq!(highlighted_name(&app), "notion", "Esc keeps it");
+    type_str(&mut app, "gi");
+    assert_eq!(
+        highlighted_name(&app),
+        "github",
+        "typing goes to the best match"
+    );
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(
+        highlighted_name(&app),
+        "github",
+        "still typing: the best match"
+    );
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(menu(&app).query, "");
+    assert_eq!(
+        highlighted_name(&app),
+        "github",
+        "Backspace to empty keeps it"
+    );
+}
+
+#[test]
+fn ctrl_u_clears_the_search_and_the_add_field() {
+    let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    let (mut app, _) = browsing();
+    type_str(&mut app, "linear");
+    assert_eq!(app.on_key(ctrl_u), Action::None);
+    assert_eq!(menu(&app).query, "");
+    assert_eq!(highlighted_name(&app), "linear");
+    app.on_key(key(KeyCode::Left));
+    select(&mut app, "+add");
+    app.on_key(key(KeyCode::Enter));
+    type_str(&mut app, "acme/plugins");
+    app.on_key(ctrl_u);
+    assert_eq!(menu(&app).input, "");
+    assert_eq!(menu(&app).page, PluginsPage::AddMarketplace);
+}
+
+#[test]
+fn a_failure_whose_reason_names_the_target_does_not_name_it_twice() {
+    let (mut app, round) = browsing();
+    app.on_key(key(KeyCode::Left));
+    select(&mut app, "+add");
+    app.on_key(key(KeyCode::Enter));
+    let path = "/home/someone/work/a-folder-with-a-very-long-name/marketplaces/team";
+    type_str(&mut app, path);
+    app.on_key(key(KeyCode::Enter));
+    app.apply_plugin_event(
+        round,
+        PluginEvent::JobFinished {
+            result: Err(format!("{path} does not exist")),
+        },
+    );
+    assert_eq!(
+        menu(&app).notice.as_ref().unwrap().text,
+        format!("Couldn't add the marketplace — {path} does not exist")
+    );
+}
+
+#[test]
+fn space_is_typed_into_a_search_already_begun() {
+    let (mut app, _) = browsing();
+    type_str(&mut app, "code review");
+    assert_eq!(menu(&app).query, "code review");
+    assert_eq!(menu(&app).page, PluginsPage::Browse);
+    assert_eq!(
+        menu(&app).catalog.as_ref().unwrap().plugins[0].status,
+        PluginStatus::Enabled,
+        "typing a phrase changes no plugin"
+    );
+}
+
+#[test]
+fn no_phrase_typed_into_the_list_starts_an_operation() {
+    // Every printable key, in phrases led by a letter, a digit and a mark,
+    // spaces and digits among them, from an installed row and an available
+    // one: nothing but a search happens until Enter.
+    let printable: Vec<char> = (' '..='~').collect();
+    for start in ["code-review", "github"] {
+        for &lead in &['c', '1', '-'] {
+            for &c in &printable {
+                let (mut app, _) = browsing();
+                select(&mut app, start);
+                let before = menu(&app).catalog.clone();
+                for typed in [lead, c, ' ', '1', c, ' ', '3', c] {
+                    let action = app.on_key(key(KeyCode::Char(typed)));
+                    assert_eq!(
+                        action,
+                        Action::None,
+                        "{start}: {lead}{c} then {typed:?} acted"
+                    );
+                }
+                assert_eq!(menu(&app).page, PluginsPage::Browse, "{lead}{c}");
+                assert!(menu(&app).job.is_none());
+                assert_eq!(menu(&app).catalog, before, "{lead}{c}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_digit_typed_on_a_plugin_page_only_moves_the_highlight() {
+    // A leading Space opens an available plugin's page; what is typed after
+    // it on that page runs nothing without Enter.
+    let (mut app, round) = browsing();
+    select(&mut app, "github");
     app.on_key(key(KeyCode::Char(' ')));
-    assert_eq!(menu(&app).query, "a");
+    app.apply_plugin_event(
+        round,
+        PluginEvent::Detail {
+            id: id("github", "claude-plugins-official"),
+            result: Ok(Box::new(detail("github", PluginStatus::Available))),
+        },
+    );
+    for c in (' '..='~').collect::<Vec<_>>() {
+        assert_eq!(app.on_key(key(KeyCode::Char(c))), Action::None, "{c:?}");
+        assert!(menu(&app).job.is_none(), "{c:?}");
+        if menu(&app).page != PluginsPage::Plugin {
+            break;
+        }
+    }
 }
 
 #[test]
@@ -582,6 +705,7 @@ fn esc_goes_back_exactly_one_level_in_every_state() {
     // An armed confirmation: Esc disarms it.
     let (mut app, _) = on_plugin_page("code-review", PluginStatus::Enabled);
     app.on_key(key(KeyCode::Char('3')));
+    app.on_key(key(KeyCode::Enter));
     assert!(menu(&app).armed());
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
     assert!(!menu(&app).armed());
@@ -627,19 +751,32 @@ fn uninstall_asks_once_in_place_and_any_other_key_disarms_it() {
 }
 
 #[test]
-fn a_digit_jumps_to_its_action_and_runs_it() {
+fn a_digit_moves_to_its_action_and_enter_runs_it() {
     let (mut app, _) = on_plugin_page("code-review", PluginStatus::Enabled);
+    assert_eq!(app.on_key(key(KeyCode::Char('2'))), Action::None);
+    assert_eq!(menu(&app).action(), 1);
+    assert!(menu(&app).job.is_none(), "a digit runs nothing");
     assert_eq!(
-        app.on_key(key(KeyCode::Char('2'))),
+        app.on_key(key(KeyCode::Enter)),
         Action::PluginOp(PluginOp::Update {
             id: id("code-review", "claude-plugins-official")
         })
     );
-    assert_eq!(menu(&app).action(), 1);
     let (mut app, _) = on_plugin_page("code-review", PluginStatus::Enabled);
     assert_eq!(app.on_key(key(KeyCode::Char('9'))), Action::None);
+    assert_eq!(
+        menu(&app).action(),
+        0,
+        "a digit past the list moves nothing"
+    );
     app.on_key(key(KeyCode::Char('4')));
-    assert_eq!(menu(&app).page, PluginsPage::Browse, "4. Back");
+    assert_eq!(
+        menu(&app).page,
+        PluginsPage::Plugin,
+        "4 only highlights Back"
+    );
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(menu(&app).page, PluginsPage::Browse, "Enter on 4. Back");
 }
 
 #[test]
@@ -714,6 +851,7 @@ fn an_uninstall_that_lands_returns_to_browse_with_its_notice() {
     let (mut app, round) = on_plugin_page("code-review", PluginStatus::Enabled);
     app.on_key(key(KeyCode::Char('3')));
     app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter));
     app.apply_plugin_event(
         round,
         PluginEvent::JobFinished {
@@ -742,7 +880,59 @@ fn a_job_finished_after_it_was_cancelled_is_dropped() {
             result: Err("cancelled".to_string()),
         },
     );
-    assert_eq!(menu(&app).notice, None);
+    let notice = menu(&app).notice.clone().expect("the cancel is said");
+    assert!(notice.cancelled);
+    assert_eq!(notice.text, "Cancelled — install github");
+}
+
+#[test]
+fn esc_on_a_running_job_says_cancelled_and_a_late_finish_says_so() {
+    let (mut app, round) = on_plugin_page("github", PluginStatus::Available);
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Esc));
+    assert!(menu(&app).notice.as_ref().unwrap().cancelled);
+    app.apply_plugin_event(round, PluginEvent::CancelledJobEnded { changed: false });
+    assert_eq!(menu(&app).notice.as_ref().unwrap().detail, None);
+    app.apply_plugin_event(round, PluginEvent::CancelledJobEnded { changed: true });
+    assert_eq!(
+        menu(&app).notice.as_ref().unwrap().detail.as_deref(),
+        Some("It had already finished — the page shows it as it is now.")
+    );
+}
+
+#[test]
+fn a_plugin_from_a_removed_marketplace_offers_no_update() {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.marketplaces[0].fetched = false;
+    fresh.marketplaces[0].error = Some("removed".to_string());
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    select(&mut app, "code-review");
+    app.on_key(key(KeyCode::Enter));
+    app.apply_plugin_event(
+        round,
+        PluginEvent::Detail {
+            id: id("code-review", "claude-plugins-official"),
+            result: Ok(Box::new(detail("code-review", PluginStatus::Enabled))),
+        },
+    );
+    assert_eq!(
+        menu(&app).plugin_actions(),
+        vec![
+            PluginAction::Disable,
+            PluginAction::Uninstall,
+            PluginAction::Back
+        ]
+    );
+}
+
+#[test]
+fn the_review_count_is_the_subject_s_alone() {
+    let (mut app, _) = on_plugin_page("code-review", PluginStatus::Enabled);
+    app.set_plugin_review(&id("code-review", "claude-plugins-official"), 2, 1, false);
+    assert_eq!(menu(&app).review_waiting(), Some((2, 1, false)));
+    app.set_plugin_review(&id("github", "claude-plugins-official"), 4, 0, false);
+    assert_eq!(menu(&app).review_waiting(), None);
 }
 
 #[test]
@@ -917,6 +1107,7 @@ fn removing_a_marketplace_asks_once_then_runs_and_returns_to_its_tab() {
     select(&mut app, "openai-curated");
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.on_key(key(KeyCode::Char('3'))), Action::None);
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert!(menu(&app).armed());
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),

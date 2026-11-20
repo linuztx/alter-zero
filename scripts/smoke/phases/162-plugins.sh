@@ -126,8 +126,21 @@ dump "typed 'form'" "$pl_search"
 expect_has "$pl_search" -E "^  →   formatter " "the search does not leave formatter highlighted"
 expect_lacks "$pl_search" -F "guard" "the search did not filter guard out"
 keys "$S162" Escape
-pl_cleared="$(wait_pane 5 "$S162" -F "(1/5)")"
+pl_cleared="$(wait_pane 5 "$S162" -E "\\([0-9]/5\\)")"
 expect_has "$pl_cleared" -E '^  ❯ *$' "Esc did not clear the search"
+expect_has "$pl_cleared" -E "^  →   formatter " "clearing the search did not keep formatter highlighted"
+
+# A phrase is a search: its space and its digit are typed, nothing runs.
+type_text "$S162" "tidy house 1"
+pl_phrase="$(wait_pane 5 "$S162" -F "tidy house 1")"
+dump "typed a phrase" "$pl_phrase"
+expect_has "$pl_phrase" -E "^  ❯ tidy house 1 *$" "the phrase did not reach the search line whole"
+expect_has "$pl_phrase" -E '^  Plugins *$' "typing a phrase left Browse"
+if [ -e "$STATE" ] && grep -qF '"formatter@acme"' "$STATE"; then
+	fail "typing a phrase installed formatter"
+fi
+keys "$S162" C-u
+wait_for 5 "$S162" -F "(1/5)" || fail "Ctrl+U did not clear the search"
 
 # →: the Installed tab, empty; ←: back to All.
 keys "$S162" Right
@@ -163,6 +176,10 @@ keys "$S162" Escape
 pl_back="$(wait_pane 5 "$S162" -E "^  → ✔ formatter")"
 dump "back on Browse" "$pl_back"
 expect_has "$pl_back" -E "^  → ✔ formatter" "the installed row is not marked ✔"
+# With the search still typed, Space is a space; Esc clears the search and
+# keeps formatter highlighted, and then Space disables it.
+keys "$S162" Escape
+wait_for 5 "$S162" -F "(1/5)" || fail "Esc did not clear the search"
 keys "$S162" Space
 pl_off="$(wait_pane 5 "$S162" -E "^  → ◯ formatter")"
 dump "Space disabled it" "$pl_off"
@@ -170,8 +187,6 @@ expect_has "$pl_off" -E "^  → ◯ formatter" "Space did not flip the row to �
 wait_file 5 "$STATE" -F '"enabled": false' || fail "plugins.json does not record formatter@acme disabled"
 
 # guard: the hook and the server wait for the review.
-keys "$S162" Escape
-wait_for 5 "$S162" -F "(1/5)"
 type_text "$S162" "guard"
 wait_for 5 "$S162" -F "(1/1)"
 keys "$S162" Enter
@@ -183,9 +198,13 @@ keys "$S162" Enter
 pl_guard_ok="$(wait_pane 10 "$S162" -F "Installed guard")"
 dump "guard installed" "$pl_guard_ok"
 expect_has "$pl_guard_ok" -F "for your review at the next launch." "the install result does not carry the review sentence"
+expect_has "$pl_guard_ok" -F "1 hook and 1 MCP server wait for your review at the next launch" "the page does not say guard's hook and server wait"
 
-# Uninstall asks once, then removes it.
+# A digit only moves the highlight; Enter asks once, then removes it.
 keys "$S162" 3
+pl_three="$(wait_pane 5 "$S162" -E "❯ 3\. Uninstall")"
+expect_lacks "$pl_three" -F "press Enter again" "the digit ran Uninstall"
+keys "$S162" Enter
 wait_for 5 "$S162" -F "press Enter again to remove it" || fail "Uninstall did not ask once"
 keys "$S162" Enter
 pl_gone="$(wait_pane 10 "$S162" -F "Uninstalled guard")"
@@ -207,7 +226,7 @@ expect_lacks "$pl_blocked" -F "2. " "a plugin that cannot be installed offers a 
 keys "$S162" Escape
 wait_for 5 "$S162" -F "(1/1)" || fail "Esc did not go back from blocked's page"
 keys "$S162" Escape
-wait_for 5 "$S162" -F "(1/5)" || fail "Esc did not clear the search"
+wait_for 5 "$S162" -E "\\([0-9]/5\\)" || fail "Esc did not clear the search"
 
 # The Marketplaces tab: both, then Add — `extras` lands on its tab.
 keys "$S162" Left
@@ -232,6 +251,8 @@ keys "$S162" Home Down Down
 keys "$S162" Enter
 wait_for 5 "$S162" -F "Plugins › extras" || fail "Enter did not open the extras page"
 keys "$S162" 3
+wait_for 5 "$S162" -E "❯ 3\. Remove" || fail "3 did not move to Remove"
+keys "$S162" Enter
 wait_for 5 "$S162" -F "press Enter again" || fail "Remove did not ask once"
 keys "$S162" Enter
 pl_removed="$(wait_pane 10 "$S162" -F "Removed extras")"

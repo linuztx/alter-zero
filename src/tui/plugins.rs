@@ -24,11 +24,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use std::cell::Cell;
+
 use alter_zero::app::{JobDone, JobGoto, PluginEvent, PluginOp};
 use alter_zero::plugins::{
     Control, GitControl, GitError, GitProgress, InstallOutcome, KnownMarketplace,
     LOCAL_MARKETPLACE, MarketplaceOutcome, MarketplaceSource, PluginId, PluginStore, git_available,
 };
+use alter_zero::plugins::{PluginDetail, PluginStatus};
 use alter_zero::stream::CancelToken;
 
 use super::Session;
@@ -103,15 +106,72 @@ impl Session<'_> {
             &event,
             PluginEvent::JobFinished { result: Ok(_) }
                 | PluginEvent::EnabledSet { result: Ok(_), .. }
+                | PluginEvent::CancelledJobEnded { changed: true }
         );
         if matches!(event, PluginEvent::JobFinished { .. }) {
             self.plugins_job = None;
         }
+        let review = match &event {
+            PluginEvent::Detail {
+                id,
+                result: Ok(detail),
+            } => Some((id.clone(), self.plugin_review(detail))),
+            _ => None,
+        };
         self.app.apply_plugin_event(round, event);
+        if let Some((id, (hooks, servers, next_launch))) = review {
+            self.app.set_plugin_review(&id, hooks, servers, next_launch);
+        }
         if changed {
             self.plugins_changed();
         }
         self.frame.schedule_frame();
+    }
+
+    /// How many of an enabled plugin's hooks and MCP servers wait for the
+    /// user — `(hooks, servers, next_launch)`. For a plugin this session
+    /// loaded, its hooks not trusted and its servers not enabled, read off
+    /// the review's own record; for one installed or enabled since launch,
+    /// every hook and server it carries, since the startup review asks
+    /// about them at the next launch.
+    fn plugin_review(&self, detail: &PluginDetail) -> (usize, usize, bool) {
+        if detail.status != PluginStatus::Enabled {
+            return (0, 0, false);
+        }
+        let loaded = self
+            .trust
+            .plugins
+            .iter()
+            .flat_map(|layer| layer.files.iter())
+            .find(|files| files.id == detail.id);
+        let Some(files) = loaded else {
+            return detail.components.as_ref().map_or((0, 0, false), |c| {
+                (c.hooks.len(), c.mcp_servers.len(), true)
+            });
+        };
+        let hooks = files
+            .hooks
+            .as_ref()
+            .and_then(|file| {
+                let source = file.path.display().to_string();
+                let parsed = file.parsed.as_ref().ok()?;
+                Some(
+                    alter_zero::trust::runnable_hooks(parsed)
+                        .iter()
+                        .filter(|hook| !self.trust.is_hook_trusted(&source, hook))
+                        .count(),
+                )
+            })
+            .unwrap_or(0);
+        let servers = files.mcp.as_ref().map_or(0, |file| {
+            let source = file.path.display().to_string();
+            self.trust
+                .server_reviews()
+                .iter()
+                .filter(|review| review.source == source && !review.trust.approved())
+                .count()
+        });
+        (hooks, servers, false)
     }
 
     /// The page clock, before a draw: how long the page has been open, and
@@ -221,6 +281,13 @@ impl PluginWorkerControl {
         if self.cancelled() {
             return;
         }
+        let _ = self.tx.send((self.round, event));
+    }
+
+    /// Send one event even though the operation was cancelled — what a
+    /// cancelled job reads of the disk once it has ended, so the page shows
+    /// what is true.
+    fn send_settled(&self, event: PluginEvent) {
         let _ = self.tx.send((self.round, event));
     }
 
@@ -550,12 +617,24 @@ pub(crate) fn run_plugin_op(op: &PluginOp, ctl: &PluginWorkerControl) {
         return;
     };
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    Work {
+    let work = Work {
         store: &store,
         ctl,
         home: home.as_deref(),
+        changed: Cell::new(false),
+    };
+    work.run(op);
+    if is_job(op) && ctl.cancelled() {
+        work.settle_cancelled(op);
     }
-    .run(op);
+}
+
+/// The plugin a job is about, when it is about one.
+fn job_subject(op: &PluginOp) -> Option<&PluginId> {
+    match op {
+        PluginOp::Install { id } | PluginOp::Update { id } | PluginOp::Uninstall { id } => Some(id),
+        _ => None,
+    }
 }
 
 /// One operation's working set.
@@ -563,6 +642,8 @@ struct Work<'a> {
     store: &'a PluginStore,
     ctl: &'a PluginWorkerControl,
     home: Option<&'a Path>,
+    /// Whether it changed anything on disk.
+    changed: Cell<bool>,
 }
 
 impl Work<'_> {
@@ -691,6 +772,7 @@ impl Work<'_> {
     /// Something changed on disk: the page gets the catalog again, and the
     /// plugin it touched (`subject`) its detail.
     fn changed(&self, subject: Option<&PluginId>) {
+        self.changed.set(true);
         for event in self.snapshot() {
             self.ctl.send(event);
         }
@@ -700,6 +782,26 @@ impl Work<'_> {
                 result: self.store.detail(id).map(Box::new),
             });
         }
+    }
+
+    /// A job the user cancelled has ended — its store call returned, whether
+    /// it stopped in time or had already done its work. Every event it sent
+    /// since the cancel was dropped, so the page gets the catalog (and the
+    /// plugin's detail) as they are on disk now, then whether anything
+    /// changed, which also reloads the session's plugins.
+    fn settle_cancelled(&self, op: &PluginOp) {
+        for event in self.snapshot() {
+            self.ctl.send_settled(event);
+        }
+        if let Some(id) = job_subject(op) {
+            self.ctl.send_settled(PluginEvent::Detail {
+                id: id.clone(),
+                result: self.store.detail(id).map(Box::new),
+            });
+        }
+        self.ctl.send_settled(PluginEvent::CancelledJobEnded {
+            changed: self.changed.get(),
+        });
     }
 
     /// Whether an installed plugin carries hooks or MCP servers — what its

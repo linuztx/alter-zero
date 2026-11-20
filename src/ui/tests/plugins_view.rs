@@ -263,7 +263,6 @@ pub(super) fn on_plugin(detail: Option<Result<PluginDetail, String>>) -> App {
                 id: subject,
                 result: result.map(|d| {
                     Box::new(PluginDetail {
-                        installed_version: None,
                         id: id("code-review", "claude-plugins-official"),
                         ..d
                     })
@@ -356,6 +355,7 @@ pub(super) fn states() -> Vec<(&'static str, App)> {
     ));
     let mut app = on_plugin(Some(Ok(full_detail())));
     press(&mut app, KeyCode::Char('3'));
+    press(&mut app, KeyCode::Enter);
     states.push(("plugin: uninstall armed", app));
     let mut app = on_plugin(Some(Ok(PluginDetail {
         installed_version: None,
@@ -376,6 +376,7 @@ pub(super) fn states() -> Vec<(&'static str, App)> {
     let mut app = on_plugin(Some(Ok(full_detail())));
     let round = app.plugins_menu.as_ref().unwrap().round;
     press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Enter);
     app.apply_plugin_event(
         round,
         PluginEvent::JobFinished {
@@ -391,6 +392,30 @@ pub(super) fn states() -> Vec<(&'static str, App)> {
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Enter);
     states.push(("marketplace", app));
+    states.push((
+        "plugin: no description",
+        on_plugin(Some(Ok(PluginDetail {
+            description: String::new(),
+            ..full_detail()
+        }))),
+    ));
+    states.push(("plugin: an update waits", outdated_plugin()));
+    states.push(("plugin: hooks and servers wait", waiting_plugin()));
+    states.push(("plugin: its marketplace removed", orphaned_plugin()));
+    let mut app = on_plugin(Some(Ok(PluginDetail {
+        status: PluginStatus::Available,
+        ..full_detail()
+    })));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+    states.push(("plugin: an install cancelled", app));
+    states.push((
+        "browse: Marketplaces, failing and removed",
+        failing_markets(),
+    ));
+    let mut app = failing_markets();
+    press(&mut app, KeyCode::Enter);
+    states.push(("marketplace: entries skipped", app));
     let (mut app, _) = browsing();
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Up);
@@ -399,6 +424,77 @@ pub(super) fn states() -> Vec<(&'static str, App)> {
     type_text(&mut app, "acme/agent-plugins");
     states.push(("add", app));
     states
+}
+
+/// The page on `code-review`, enabled, at v1.0.0 with v2.0.0 offered.
+fn outdated_plugin() -> App {
+    on_plugin(Some(Ok(PluginDetail {
+        installed_version: Some("1.0.0".to_string()),
+        version: Some("2.0.0".to_string()),
+        update_available: true,
+        ..full_detail()
+    })))
+}
+
+/// The page on `code-review` with two of its hooks and one server waiting.
+fn waiting_plugin() -> App {
+    let mut app = on_plugin(Some(Ok(full_detail())));
+    app.set_plugin_review(&id("code-review", "claude-plugins-official"), 2, 1, false);
+    app
+}
+
+/// The page on `code-review`, installed from a marketplace since removed.
+fn orphaned_plugin() -> App {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.marketplaces[0].fetched = false;
+    fresh.marketplaces[0].updated = None;
+    fresh.marketplaces[0].error = Some("removed — its installed plugins stay".to_string());
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    press(&mut app, KeyCode::Enter);
+    app.apply_plugin_event(
+        round,
+        PluginEvent::Detail {
+            id: id("code-review", "claude-plugins-official"),
+            result: Ok(Box::new(full_detail())),
+        },
+    );
+    app
+}
+
+/// The Marketplaces tab with a marketplace whose manifest could not be
+/// read, one removed, and one that skipped two entries, highlighted.
+fn failing_markets() -> App {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.marketplaces[0].skipped = vec![
+        "日本語 — a plugin name is ASCII letters, digits, ., _ and - only".to_string(),
+        "broken-entry — its source has no path and no url, so there is nothing to fetch it from"
+            .to_string(),
+    ];
+    fresh.marketplaces.push(CatalogMarketplace {
+        error: Some("marketplace.json: expected `,` or `}` at line 12 column 5".to_string()),
+        is_default: false,
+        ..market(
+            "team-tools",
+            "/home/someone/work/team/plugins/marketplace-of-the-team",
+            60,
+        )
+    });
+    fresh.marketplaces.push(CatalogMarketplace {
+        fetched: false,
+        updated: None,
+        error: Some("removed — its installed plugins stay".to_string()),
+        is_default: false,
+        ..market(
+            "old-market",
+            "github.com/acme/an-old-marketplace-with-a-long-name",
+            0,
+        )
+    });
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    press(&mut app, KeyCode::Left);
+    app
 }
 
 /// Every row's plain text.
@@ -513,7 +609,7 @@ fn the_whole_browse_page_reads_like_the_spec() {
     assert_eq!(shown[6], "");
     assert!(shown[7].starts_with("  → ✔ code-review"), "{:?}", shown[7]);
     assert!(shown[8].starts_with("    ◯ feature-dev"));
-    assert!(shown[9].starts_with("    ↑ linear"));
+    assert!(shown[9].starts_with("    ✔ linear ↑"), "{:?}", shown[9]);
     assert!(shown[10].starts_with("      agent-sdk-dev"));
     assert_eq!(shown[15], "    (1/17)");
     assert!(shown[17].starts_with("    Automated code review"));
@@ -755,7 +851,7 @@ fn the_plugin_page_states_status_facts_and_actions() {
         "    2. Check for updates",
         "    3. Uninstall",
         "    4. Back",
-        "  ↑/↓ to navigate · Enter to confirm · Esc to go back",
+        "  ↑/↓ or 1–9 to choose · Enter to confirm · Esc to go back",
     ] {
         assert!(shown.contains(&row.to_string()), "{row:?} in {shown:#?}");
     }
@@ -1122,4 +1218,240 @@ fn a_marketplace_never_fetched_is_named_alone_in_the_strip() {
         strip.contains("  openai-curated    Marketplaces"),
         "{strip:?}"
     );
+}
+
+#[test]
+fn a_plugin_with_no_description_stacks_no_blank_rows() {
+    let states = states();
+    let (_, app) = states
+        .iter()
+        .find(|(what, _)| *what == "plugin: no description")
+        .unwrap();
+    let shown = texts(&plugins_view_lines(app, 96, 200));
+    assert_eq!(
+        shown[2],
+        "  ✔ installed · enabled · v1.0.0 · claude-plugins-official"
+    );
+    assert_eq!(shown[3], "");
+    assert!(shown[4].starts_with("  Author"), "{shown:#?}");
+}
+
+#[test]
+fn what_a_plugin_brings_is_wrapped_whole_and_cut_to_a_row_on_a_short_terminal() {
+    let mut detail = full_detail();
+    let components = detail.components.as_mut().unwrap();
+    components.commands = ["configure", "help", "list", "hookify"]
+        .iter()
+        .map(|c| format!("/hookify:{c}"))
+        .collect();
+    components.hooks = ["PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit"]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let app = on_plugin(Some(Ok(detail)));
+    let shown = texts(&plugins_view_lines(&app, 60, 40));
+    let words = shown.join(" ");
+    for name in ["/hookify:hookify", "UserPromptSubmit"] {
+        assert!(words.contains(name), "{name} in {shown:#?}");
+    }
+    assert!(
+        shown
+            .iter()
+            .any(|t| t == "  Hooks       4 · PreToolUse, PostToolUse, Stop,"),
+        "{shown:#?}"
+    );
+    assert!(
+        shown.iter().any(|t| t == "              UserPromptSubmit"),
+        "{shown:#?}"
+    );
+    // A short terminal cuts each list to a row, the count still exact.
+    let cut = (10..40_u16)
+        .map(|h| texts(&plugins_view_lines(&app, 60, h)))
+        .find(|shown| {
+            shown
+                .iter()
+                .any(|t| t.starts_with("  Hooks       4 · ") && t.ends_with('…'))
+        });
+    assert!(cut.is_some(), "a one-row cut on some short terminal");
+}
+
+#[test]
+fn an_update_sits_beside_the_status_never_in_its_place() {
+    let (mut app, _) = browsing();
+    for _ in 0..2 {
+        press(&mut app, KeyCode::Down);
+    }
+    let shown = texts(&plugins_view_lines(&app, 96, 200));
+    assert!(
+        shown.iter().any(|t| t.starts_with("  → ✔ linear ↑")),
+        "{shown:#?}"
+    );
+    // Space disables it: the row says so, and still that an update waits.
+    press(&mut app, KeyCode::Char(' '));
+    let shown = texts(&plugins_view_lines(&app, 96, 200));
+    assert!(
+        shown.iter().any(|t| t.starts_with("  → ◯ linear ↑")),
+        "{shown:#?}"
+    );
+    let page = texts(&plugins_view_lines(&outdated_plugin(), 120, 200));
+    assert_eq!(
+        page[2],
+        "  ✔ installed · enabled · ↑ update available · v1.0.0 → v2.0.0 · claude-plugins-official"
+    );
+    assert!(page.iter().any(|t| t.contains("1. Disable")), "{page:#?}");
+}
+
+#[test]
+fn the_row_footer_names_both_versions_while_an_update_waits() {
+    let (mut app, round) = browsing();
+    let mut fresh = catalog();
+    fresh.plugins[12].installed_version = Some("1.0.0".to_string());
+    fresh.plugins[12].version = Some("2.0.0".to_string());
+    app.apply_plugin_event(round, PluginEvent::Catalog(fresh));
+    type_text(&mut app, "linear");
+    let shown = texts(&plugins_view_lines(&app, 96, 200));
+    assert!(
+        shown.iter().any(|t| t.ends_with("v1.0.0 → v2.0.0")),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn hooks_and_servers_waiting_for_the_user_are_said_with_the_way_forward() {
+    let shown = texts(&plugins_view_lines(&waiting_plugin(), 120, 200));
+    assert_eq!(
+        shown[3],
+        "  2 hooks wait for your review — /hooks · 1 MCP server is off — /mcp"
+    );
+    let mut app = on_plugin(Some(Ok(full_detail())));
+    app.set_plugin_review(&id("code-review", "claude-plugins-official"), 1, 0, true);
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    assert_eq!(
+        shown[3],
+        "  1 hook waits for your review at the next launch"
+    );
+    app.set_plugin_review(&id("code-review", "claude-plugins-official"), 0, 0, false);
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    assert_eq!(shown[3], "", "nothing waits: no line");
+}
+
+#[test]
+fn a_plugin_from_a_removed_marketplace_says_why_it_has_no_update() {
+    let shown = texts(&plugins_view_lines(&orphaned_plugin(), 120, 200));
+    assert!(
+        shown
+            .iter()
+            .any(|t| t.starts_with("  Updates     none — its marketplace was removed")),
+        "{shown:#?}"
+    );
+    assert!(
+        !shown.iter().any(|t| t.contains("Check for updates")),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn a_plugin_that_cannot_be_installed_promises_nothing_after_install() {
+    let shown = texts(&plugins_view_lines(
+        &on_plugin(Some(Ok(blocked_detail()))),
+        120,
+        200,
+    ));
+    assert!(
+        !shown.iter().any(|t| t.contains("shown after install")),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn a_cancelled_job_is_said_on_the_page() {
+    let states = states();
+    let (_, app) = states
+        .iter()
+        .find(|(what, _)| *what == "plugin: an install cancelled")
+        .unwrap();
+    let shown = texts(&plugins_view_lines(app, 96, 200));
+    assert!(
+        shown.contains(&"  ✗ Cancelled — install code-review".to_string()),
+        "{shown:#?}"
+    );
+    assert!(shown.iter().any(|t| t.contains("1. Install")), "{shown:#?}");
+}
+
+#[test]
+fn at_eighty_columns_a_marketplace_s_failure_outranks_its_source() {
+    let app = failing_markets();
+    let shown = texts(&plugins_view_lines(&app, 80, 200));
+    let row = |name: &str| {
+        shown
+            .iter()
+            .find(|t| t.contains(name) && !t.contains("Marketplaces"))
+            .unwrap_or_else(|| panic!("{name} in {shown:#?}"))
+            .clone()
+    };
+    let team = row("team-tools");
+    assert!(team.contains("✗ marketplace.json"), "{team:?}");
+    assert!(team.contains('…'), "the source is cut first: {team:?}");
+    assert!(row("old-market").ends_with("removed"));
+    assert!(row("claude-plugins-official").contains("12 plugins · 2 skipped"));
+    for (_, app) in [("80", &app)] {
+        for line in plugins_view_lines(app, 80, 200) {
+            assert!(line.spans.iter().map(|s| cols(&s.content)).sum::<usize>() <= 80);
+        }
+    }
+}
+
+#[test]
+fn a_marketplace_page_lists_the_entries_it_skipped() {
+    let states = states();
+    let (_, app) = states
+        .iter()
+        .find(|(what, _)| *what == "marketplace: entries skipped")
+        .unwrap();
+    let shown = texts(&plugins_view_lines(app, 80, 200));
+    assert!(
+        shown[2].contains("12 plugins · 2 installed · 2 skipped"),
+        "{shown:#?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|t| t.starts_with("  Skipped     日本語 — a plugin name is ASCII")),
+        "{shown:#?}"
+    );
+    let words = shown
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        words.contains("so there is nothing to fetch it from"),
+        "{shown:#?}"
+    );
+}
+
+#[test]
+fn the_search_line_cuts_a_long_query_from_the_left_with_an_ellipsis() {
+    let (mut app, _) = browsing();
+    type_text(&mut app, &"review ".repeat(12));
+    let shown = texts(&plugins_view_lines(&app, 60, 200));
+    let search = shown.iter().find(|t| t.starts_with("  ❯")).unwrap();
+    assert!(
+        search.starts_with("  ❯ …") || search.starts_with("  ❯…"),
+        "{search:?}"
+    );
+    assert!(cols(search) <= 60);
+}
+
+#[test]
+fn the_subtitle_counts_only_the_marketplaces_the_user_has() {
+    let app = failing_markets();
+    let shown = texts(&plugins_view_lines(&app, 120, 200));
+    assert!(shown[2].starts_with("  3 marketplaces"), "{:?}", shown[2]);
+}
+
+#[test]
+fn a_marketplace_that_could_not_be_read_wears_a_red_cross_in_the_strip() {
+    let shown = texts(&plugins_view_lines(&failing_markets(), 120, 200));
+    assert!(shown[4].contains("team-tools ✗"), "{:?}", shown[4]);
 }

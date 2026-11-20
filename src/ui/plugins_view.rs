@@ -74,7 +74,9 @@ fn inset_row(spans: Vec<Span<'static>>, width: u16) -> Line<'static> {
 }
 
 /// `text` word-wrapped behind `indent`, at most `max` rows — the last one
-/// closing on `…` when the text goes on.
+/// closing on `…` when the text goes on. Blank text is no rows at all, so a
+/// plugin with no description leaves no blank row of its own between the
+/// blank rows that part its sections.
 fn capped_rows(
     indent: &str,
     text: &str,
@@ -84,6 +86,9 @@ fn capped_rows(
 ) -> Vec<Line<'static>> {
     let room = usize::from(width).saturating_sub(cols(indent)).max(1);
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return Vec::new();
+    }
     let rows = wrap_text(&flat, u16::try_from(room).unwrap_or(u16::MAX));
     let cut = rows.len() > max;
     rows.into_iter()
@@ -237,7 +242,13 @@ fn job_row(app: &App, menu: &PluginsMenu, job: &Job, width: u16) -> Line<'static
 /// and red text — wrapped, never cut — and the dim second sentence under
 /// it, hanging off the mark.
 fn notice_rows(notice: &Notice, width: u16) -> Vec<Line<'static>> {
-    let (mark, mark_color, text_style) = if notice.ok {
+    let (mark, mark_color, text_style) = if notice.cancelled {
+        (
+            PLUGINS_FAILED_MARK,
+            model_meta_color(),
+            Style::new().fg(model_meta_color()),
+        )
+    } else if notice.ok {
         (PLUGINS_OK_MARK, model_active_color(), Style::default())
     } else {
         (
@@ -477,12 +488,11 @@ fn action_focus(
 
 // --- Browse ------------------------------------------------------------------
 
-/// A plugin's status mark and its colour; blank for one not installed.
-fn status_mark(plugin_status: PluginStatus, update: bool) -> (&'static str, Color) {
+/// A plugin's status mark and its colour; blank for one not installed. An
+/// update waiting never takes the mark's place — it is its own `↑` beside
+/// the name ([`update_waits`]), so the mark always says whether it is on.
+fn status_mark(plugin_status: PluginStatus) -> (&'static str, Color) {
     match plugin_status {
-        PluginStatus::Enabled | PluginStatus::Disabled if update => {
-            (PLUGINS_UPDATE_MARK, ask_warning_color())
-        }
         PluginStatus::Enabled => (PLUGINS_ENABLED_MARK, model_active_color()),
         PluginStatus::Disabled => (PLUGINS_DISABLED_MARK, model_meta_color()),
         PluginStatus::Unsupported => (PLUGINS_BLOCKED_MARK, model_meta_color()),
@@ -493,6 +503,29 @@ fn status_mark(plugin_status: PluginStatus, update: bool) -> (&'static str, Colo
 /// The name a plugin row shows: its display name when it has one.
 fn plugin_name(plugin: &CatalogPlugin) -> &str {
     plugin.display_name.as_deref().unwrap_or(&plugin.name)
+}
+
+/// Whether an installed plugin has an update waiting — its row wears the
+/// amber `↑` after its name.
+fn update_waits(plugin: &CatalogPlugin) -> bool {
+    plugin.update_available && plugin.status.is_installed()
+}
+
+/// The columns the `↑` after an updatable plugin's name takes.
+fn update_suffix_cols() -> usize {
+    1 + cols(PLUGINS_UPDATE_MARK)
+}
+
+/// The version a plugin is at, as `v1.0.0` — or, while an update waits and
+/// both are known, the installed one and the offered one: `v1.0.0 →
+/// v2.0.0`.
+fn version_text(installed: Option<&str>, offered: Option<&str>, update: bool) -> Option<String> {
+    match (installed, offered) {
+        (Some(from), Some(to)) if update && from != to => {
+            Some(format!("v{from}{PLUGINS_VERSION_ARROW}v{to}"))
+        }
+        (installed, offered) => offered.or(installed).map(|v| format!("v{v}")),
+    }
 }
 
 /// The columns a plugin row is laid out on, measured off every row the tab
@@ -526,7 +559,14 @@ fn plugin_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> PluginC
     };
     let head = plugin_head_cols();
     let name = plugins()
-        .map(|p| cols(plugin_name(p)))
+        .map(|p| {
+            cols(plugin_name(p))
+                + if update_waits(p) {
+                    update_suffix_cols()
+                } else {
+                    0
+                }
+        })
         .max()
         .unwrap_or(1)
         .clamp(1, PLUGINS_NAME_MAX_COLS)
@@ -564,12 +604,26 @@ fn plugin_row(
     columns: &PluginColumns,
     width: u16,
 ) -> Line<'static> {
-    let name = ellipsize(plugin_name(plugin), columns.name);
-    let pad = columns.name.saturating_sub(cols(&name));
-    let (mark, mark_color) = status_mark(plugin.status, plugin.update_available);
+    let suffix = if update_waits(plugin) {
+        update_suffix_cols()
+    } else {
+        0
+    };
+    let name = ellipsize(
+        plugin_name(plugin),
+        columns.name.saturating_sub(suffix).max(1),
+    );
+    let pad = columns.name.saturating_sub(cols(&name) + suffix);
+    let (mark, mark_color) = status_mark(plugin.status);
     let mut spans = marked_row_head(&name, selected);
     spans.insert(2, Span::styled(mark, Style::new().fg(mark_color)));
     spans.insert(3, Span::raw(" "));
+    if suffix > 0 {
+        spans.push(Span::styled(
+            format!(" {PLUGINS_UPDATE_MARK}"),
+            Style::new().fg(ask_warning_color()),
+        ));
+    }
     let used = plugin_head_cols() + columns.name;
     let tail = if columns.marketplace > 0 {
         PLUGINS_COLUMN_GAP + columns.marketplace
@@ -631,6 +685,12 @@ fn market_facts(menu: &PluginsMenu, index: usize, market: &CatalogMarketplace) -
         .as_ref()
         .map_or(0, |catalog| catalog.count_in(index));
     let mut facts = counted(count, PLUGINS_PLUGIN_NOUN);
+    if !market.skipped.is_empty() {
+        facts.push_str(&format!(
+            "{FOOTER_SEPARATOR}{} {PLUGINS_SKIPPED_WORD}",
+            market.skipped.len()
+        ));
+    }
     if market.is_local {
         facts.push_str(FOOTER_SEPARATOR);
         facts.push_str(PLUGINS_LOCAL_FACT);
@@ -686,6 +746,7 @@ fn market_columns(menu: &PluginsMenu, rows: &[BrowseRow], width: u16) -> MarketC
         .min(PLUGINS_MARKETPLACE_MAX_COLS)
         .min(usize::from(width).saturating_sub(row_head()).max(1));
     columns.source = columns.source.min(PLUGINS_SOURCE_COLS_MAX);
+    columns.facts = columns.facts.min(PLUGINS_FACTS_COLS_MAX);
     columns
 }
 
@@ -695,9 +756,10 @@ fn row_head() -> usize {
 }
 
 /// One Marketplaces-tab row: the name, the source dim, the facts dim and
-/// flush right (red for a failure) — the source yielding to the facts on a
-/// narrow terminal, and the facts to nothing. The `+` rows put their note
-/// where the source goes and let it run on.
+/// flush right (red for a failure) — on a narrow terminal the source is cut
+/// with `…` first and then gives way, since the facts are what say a
+/// marketplace failed or was removed; the facts are cut last. The `+` rows
+/// put their note where the source goes and let it run on.
 fn market_row(
     menu: &PluginsMenu,
     row: &BrowseRow,
@@ -732,21 +794,31 @@ fn market_row(
         dim
     };
     // The source keeps its whole column while the facts fit beside it, then
-    // narrows (to a dozen columns), then the facts give way to it.
+    // is cut down to a few columns, then gives way: the facts outrank it.
     let (source_cols, facts_cols) = if rest >= columns.source + PLUGINS_COLUMN_GAP + columns.facts {
         (columns.source, columns.facts)
-    } else if rest >= 12 + PLUGINS_COLUMN_GAP + columns.facts.min(rest) && columns.facts < rest {
+    } else if rest >= PLUGINS_SOURCE_COLS_MIN + PLUGINS_COLUMN_GAP + columns.facts {
         (rest - columns.facts - PLUGINS_COLUMN_GAP, columns.facts)
     } else {
-        (rest, 0)
+        (0, rest)
     };
     if rest == 0 {
         return clamp_spans(spans, usize::from(width));
     }
-    let source = ellipsize(&source, source_cols.max(1));
+    let source = if source_cols > 0 {
+        ellipsize(&source, source_cols)
+    } else {
+        String::new()
+    };
     let source_pad = source_cols.saturating_sub(cols(&source));
     spans.push(Span::raw(" ".repeat(pad + PLUGINS_COLUMN_GAP)));
-    spans.push(Span::styled(source, dim));
+    if source_cols > 0 {
+        spans.push(Span::styled(source, dim));
+    } else {
+        // No source column: the facts start where it would have.
+        spans.pop();
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
     if facts_cols > 0 {
         let facts = ellipsize(&facts, facts_cols);
         let right = facts_cols - cols(&facts);
@@ -807,8 +879,15 @@ fn browse_window(
 /// the catalog lands, when the list's place already says it is loading.
 fn subtitle(menu: &PluginsMenu, width: u16) -> Option<Line<'static>> {
     let catalog = menu.catalog.as_ref()?;
+    // The marketplaces the user has: not one removed (listed only for the
+    // plugins it left installed) nor the folder installs' own listing.
+    let marketplaces = catalog
+        .marketplaces
+        .iter()
+        .filter(|m| !m.is_removed() && m.name != crate::plugins::LOCAL_MARKETPLACE)
+        .count();
     let mut text = [
-        counted(catalog.marketplaces.len(), PLUGINS_MARKETPLACE_NOUN),
+        counted(marketplaces, PLUGINS_MARKETPLACE_NOUN),
         counted(catalog.plugins.len(), PLUGINS_PLUGIN_NOUN),
         format!("{} {PLUGINS_INSTALLED_WORD}", catalog.installed_count()),
     ]
@@ -890,6 +969,19 @@ fn tab_label(app: &App, menu: &PluginsMenu, tab: &PluginsTab) -> Vec<Span<'stati
                 // A marketplace never fetched lists nothing yet: its tab is
                 // its name alone, never a `0` that reads as an empty one.
                 None => {
+                    let unreadable = menu.marketplace_index(name).is_some_and(|i| {
+                        menu.catalog.as_ref().is_some_and(|catalog| {
+                            let market = &catalog.marketplaces[i];
+                            market.error.is_some() && !market.is_removed()
+                        })
+                    });
+                    if unreadable {
+                        spans.push(Span::styled(
+                            PLUGINS_FAILED_MARK,
+                            Style::new().fg(tool_fail_color()),
+                        ));
+                        return spans;
+                    }
                     let found = menu.marketplace_index(name).and_then(|i| {
                         let catalog = menu.catalog.as_ref()?;
                         let market = &catalog.marketplaces[i];
@@ -1169,10 +1261,21 @@ fn about_highlighted(
             if matches!(about, About::Wrapped(_)) {
                 let name = plugin_name(plugin);
                 let meta: Vec<String> = [
-                    (cols(name) > name_cols).then(|| name.to_string()),
+                    (cols(name)
+                        + if update_waits(plugin) {
+                            update_suffix_cols()
+                        } else {
+                            0
+                        }
+                        > name_cols)
+                        .then(|| name.to_string()),
                     plugin.category.clone(),
                     plugin.author.clone(),
-                    plugin.version.as_ref().map(|v| format!("v{v}")),
+                    version_text(
+                        plugin.installed_version.as_deref(),
+                        plugin.version.as_deref(),
+                        update_waits(plugin),
+                    ),
                 ]
                 .into_iter()
                 .flatten()
@@ -1243,7 +1346,7 @@ fn browse_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
         .chain(subtitle(menu, width))
         .collect();
     let tabs = tab_strip(app, menu, width);
-    let search = search_line(&menu.query);
+    let search = search_line(&plugins_field_text(&menu.query, width));
     let rows = menu.rows();
     let selected = menu.selected_in(rows.len());
     let highlighted = rows.get(selected);
@@ -1337,12 +1440,12 @@ fn browse_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
 /// The status line under a plugin's title: its mark, then one phrase —
 /// `✔ installed · enabled · v1.0.0 · claude-plugins-official`.
 fn plugin_status_line(detail: &PluginDetail, width: u16) -> Line<'static> {
-    let (mark, color) = status_mark(detail.status, detail.update_available);
+    let (mark, color) = status_mark(detail.status);
+    let installed = detail.status.is_installed();
+    let update = installed && detail.update_available;
     let mut words: Vec<String> = match detail.status {
         PluginStatus::Enabled | PluginStatus::Disabled => {
-            let state = if detail.update_available {
-                PLUGINS_STATUS_UPDATE
-            } else if detail.status == PluginStatus::Enabled {
+            let state = if detail.status == PluginStatus::Enabled {
                 PLUGINS_STATUS_ENABLED
             } else {
                 PLUGINS_STATUS_DISABLED
@@ -1352,54 +1455,105 @@ fn plugin_status_line(detail: &PluginDetail, width: u16) -> Line<'static> {
         PluginStatus::Available => vec![PLUGINS_STATUS_AVAILABLE.to_string()],
         PluginStatus::Unsupported => vec![PLUGINS_STATUS_BLOCKED.to_string()],
     };
+    let dim = Style::new().fg(model_meta_color());
+    let mut spans = Vec::new();
+    if !mark.trim().is_empty() {
+        spans.push(Span::styled(mark, Style::new().fg(color)));
+        spans.push(Span::raw(" "));
+    }
+    if update {
+        spans.push(Span::styled(
+            format!("{}{FOOTER_SEPARATOR}", words.join(FOOTER_SEPARATOR)),
+            dim,
+        ));
+        spans.push(Span::styled(
+            format!("{PLUGINS_UPDATE_MARK} {PLUGINS_STATUS_UPDATE}"),
+            Style::new().fg(ask_warning_color()),
+        ));
+        words.clear();
+    }
     if detail.status != PluginStatus::Unsupported
-        && let Some(version) = &detail.version
+        && let Some(version) = version_text(
+            detail.installed_version.as_deref(),
+            detail.version.as_deref(),
+            update,
+        )
     {
-        words.push(format!("v{version}"));
+        words.push(version);
     }
     words.push(detail.id.marketplace.clone());
-    let mut spans = Vec::new();
-    if mark.trim().is_empty() {
-        spans.push(Span::styled(
-            words.join(FOOTER_SEPARATOR),
-            Style::new().fg(model_meta_color()),
-        ));
-    } else {
-        spans.push(Span::styled(mark, Style::new().fg(color)));
-        spans.push(Span::styled(
-            format!(" {}", words.join(FOOTER_SEPARATOR)),
-            Style::new().fg(model_meta_color()),
-        ));
-    }
+    let lead = if update { FOOTER_SEPARATOR } else { "" };
+    spans.push(Span::styled(
+        format!("{lead}{}", words.join(FOOTER_SEPARATOR)),
+        dim,
+    ));
     inset_row(spans, width)
 }
 
-/// A component row's value — `2 · code-review:lint, code-review:triage` —
+/// A component row — `Skills  2 · code-review:lint, code-review:triage` —
 /// with, for a plugin not installed, the dim note that its hooks or
-/// servers will ask for review; the note keeps its seat and the names cut.
-fn component_value(
+/// servers will ask for review. Wrapped (`wrap`), every name is read under
+/// the value's own column; on one row the count stays exact, the note keeps
+/// its seat and the names are cut.
+fn component_row(
+    label: &str,
     names: &[String],
     review: bool,
+    wrap: bool,
     label_cols: usize,
     width: u16,
-) -> Vec<Span<'static>> {
+) -> Vec<Line<'static>> {
     let value = Style::new().fg(model_id_color());
+    let dim = Style::new().fg(model_meta_color());
     let note = if review { PLUGINS_REVIEW_NOTE } else { "" };
+    let text = format!("{}{FOOTER_SEPARATOR}{}", names.len(), names.join(", "));
+    if wrap {
+        let room = usize::from(width)
+            .saturating_sub(cols(MODEL_INDENT) + label_cols)
+            .max(1);
+        let mut parts = vec![(text, value)];
+        if review {
+            parts.push((note.to_string(), dim));
+        }
+        let rows = super::inline::wrap_inline(&parts, u16::try_from(room).unwrap_or(u16::MAX));
+        return rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, spans)| {
+                let head = if i == 0 {
+                    Span::styled(format!("{label:<label_cols$}"), dim)
+                } else {
+                    Span::raw(" ".repeat(label_cols))
+                };
+                let mut row = vec![Span::raw(MODEL_INDENT), head];
+                row.extend(spans);
+                Line::from(row)
+            })
+            .collect();
+    }
     let room = usize::from(width)
         .saturating_sub(cols(MODEL_INDENT) + label_cols + cols(note))
         .max(1);
-    let text = format!("{}{FOOTER_SEPARATOR}{}", names.len(), names.join(", "));
     let mut spans = vec![Span::styled(ellipsize(&text, room), value)];
     if review {
-        spans.push(Span::styled(note, Style::new().fg(model_meta_color())));
+        spans.push(Span::styled(note, dim));
     }
-    spans
+    vec![fact_row(label, spans, label_cols, width)]
 }
 
 /// The component rows of a plugin's facts table, or the one `Contains` row
-/// when they are not known until it is installed.
-fn component_rows(detail: &PluginDetail, label_cols: usize, width: u16) -> Vec<Line<'static>> {
+/// when they are not known until it is installed — and none for a plugin
+/// that cannot be installed here, whose `Can't install` row says why.
+fn component_rows(
+    detail: &PluginDetail,
+    wrap: bool,
+    label_cols: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
     let Some(components) = &detail.components else {
+        if detail.blocked.is_some() || detail.status == PluginStatus::Unsupported {
+            return Vec::new();
+        }
         return wrapped_fact(
             PLUGINS_FACT_CONTAINS,
             PLUGINS_CONTAINS_LATER,
@@ -1419,12 +1573,7 @@ fn component_rows(detail: &PluginDetail, label_cols: usize, width: u16) -> Vec<L
         (PLUGINS_FACT_MCP, &components.mcp_servers, review),
     ] {
         if !names.is_empty() {
-            rows.push(fact_row(
-                label,
-                component_value(names, asks, label_cols, width),
-                label_cols,
-                width,
-            ));
+            rows.extend(component_row(label, names, asks, wrap, label_cols, width));
         }
     }
     if !components.unsupported.is_empty() {
@@ -1442,8 +1591,15 @@ fn component_rows(detail: &PluginDetail, label_cols: usize, width: u16) -> Vec<L
 }
 
 /// A plugin's whole facts table: who made it, where it comes from, what it
-/// carries, why it cannot be installed, what to watch for.
-fn plugin_facts(detail: &PluginDetail, components_only: bool, width: u16) -> Vec<Line<'static>> {
+/// carries (each list wrapped whole, or cut to a row: `wrap`), why it
+/// cannot be installed or updated, what to watch for.
+fn plugin_facts(
+    menu: &PluginsMenu,
+    detail: &PluginDetail,
+    components_only: bool,
+    wrap: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
     let value = Style::new().fg(model_id_color());
     // One label column for the whole table: the family's, widened only when
     // the longest label it shows needs it.
@@ -1490,7 +1646,17 @@ fn plugin_facts(detail: &PluginDetail, components_only: bool, width: u16) -> Vec
             ));
         }
     }
-    rows.extend(component_rows(detail, label_cols, width));
+    rows.extend(component_rows(detail, wrap, label_cols, width));
+    if detail.status.is_installed() && menu.marketplace_removed(&detail.id.marketplace) {
+        rows.extend(wrapped_fact(
+            PLUGINS_FACT_UPDATES,
+            PLUGINS_NO_UPDATES_REMOVED,
+            Style::new().fg(model_meta_color()),
+            None,
+            label_cols,
+            width,
+        ));
+    }
     if let Some(blocked) = &detail.blocked {
         rows.extend(wrapped_fact(
             PLUGINS_FACT_BLOCKED,
@@ -1543,7 +1709,7 @@ fn plugin_action_labels(menu: &PluginsMenu) -> Vec<(String, Option<&'static str>
 /// carries nothing the session loads.
 fn contains_row(detail: &PluginDetail, width: u16) -> Vec<Line<'static>> {
     match &detail.components {
-        None => component_rows(detail, PLUGINS_FACT_COLS, width),
+        None => component_rows(detail, false, PLUGINS_FACT_COLS, width),
         Some(components) => {
             let summary = components.summary();
             if summary.is_empty() {
@@ -1559,6 +1725,58 @@ fn contains_row(detail: &PluginDetail, width: u16) -> Vec<Line<'static>> {
     }
 }
 
+/// The dim line under an enabled plugin's status saying what of it still
+/// waits for the user, and where to go: `2 hooks wait for your review —
+/// /hooks · 1 MCP server is off — /mcp` — or, for one the session has not
+/// loaded yet, that the startup review asks at the next launch. Nothing
+/// when everything it carries runs.
+fn review_rows(menu: &PluginsMenu, detail: &PluginDetail, width: u16) -> Vec<Line<'static>> {
+    if detail.status != PluginStatus::Enabled {
+        return Vec::new();
+    }
+    let Some((hooks, servers, next_launch)) = menu.review_waiting() else {
+        return Vec::new();
+    };
+    let pick =
+        |n: usize, (one, many): (&'static str, &'static str)| if n == 1 { one } else { many };
+    let text = if next_launch {
+        let parts: Vec<String> = [
+            (hooks, ("hook", "hooks")),
+            (servers, ("MCP server", "MCP servers")),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, noun)| counted(n, noun))
+        .collect();
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        let one = parts.len() == 1 && hooks + servers == 1;
+        format!(
+            "{} {}",
+            parts.join(" and "),
+            if one {
+                PLUGINS_WAIT_NEXT_LAUNCH.0
+            } else {
+                PLUGINS_WAIT_NEXT_LAUNCH.1
+            }
+        )
+    } else {
+        let mut parts = Vec::new();
+        if hooks > 0 {
+            parts.push(format!("{hooks} {}", pick(hooks, PLUGINS_HOOKS_WAIT)));
+        }
+        if servers > 0 {
+            parts.push(format!("{servers} {}", pick(servers, PLUGINS_SERVERS_OFF)));
+        }
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        parts.join(FOOTER_SEPARATOR)
+    };
+    model_wrapped_rows(&text, model_meta_color(), width)
+}
+
 /// The confirmation the highlighted action wears when armed.
 fn plugin_armed(menu: &PluginsMenu) -> Option<&'static str> {
     (menu.armed() && menu.plugin_actions().get(menu.action()) == Some(&PluginAction::Uninstall))
@@ -1566,7 +1784,9 @@ fn plugin_armed(menu: &PluginsMenu) -> Option<&'static str> {
 }
 
 /// The Plugin page — the first of its rungs that fits `height`: the whole
-/// page; the description cut to two rows and the facts to the components;
+/// page, what it brings wrapped whole, then cut to a row a list; the
+/// description cut to two rows and the facts to the components, wrapped,
+/// then cut;
 /// the title and the status line over one `Contains` row summing up what it
 /// carries ([`contains_row`]), the result and the actions; the same without
 /// that row; then the small
@@ -1602,11 +1822,15 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
         Some(Ok(detail)) => contains_row(detail, width),
         _ => Vec::new(),
     };
-    let (head, body, facts, short_body, short_facts) = match &menu.detail {
+    // The facts in four sizes: every fact or the components alone, each
+    // with what it brings wrapped whole or cut to a row.
+    let (head, body, short_body, facts) = match &menu.detail {
         Some(Ok(detail)) => {
             let dim = Style::new().fg(model_id_color());
+            let mut head = vec![title.clone(), plugin_status_line(detail, width)];
+            head.extend(review_rows(menu, detail, width));
             (
-                vec![title.clone(), plugin_status_line(detail, width)],
+                head,
                 capped_rows(
                     MODEL_INDENT,
                     &detail.description,
@@ -1614,7 +1838,6 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
                     width,
                     PLUGINS_DETAIL_DESCRIPTION_ROWS,
                 ),
-                plugin_facts(detail, false, width),
                 capped_rows(
                     MODEL_INDENT,
                     &detail.description,
@@ -1622,7 +1845,12 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
                     width,
                     PLUGINS_SHORT_DESCRIPTION_ROWS,
                 ),
-                plugin_facts(detail, true, width),
+                [
+                    plugin_facts(menu, detail, false, true, width),
+                    plugin_facts(menu, detail, false, false, width),
+                    plugin_facts(menu, detail, true, true, width),
+                    plugin_facts(menu, detail, true, false, width),
+                ],
             )
         }
         Some(Err(reason)) => {
@@ -1630,9 +1858,8 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
             (
                 vec![title.clone()],
                 failed.clone(),
-                Vec::new(),
                 failed,
-                Vec::new(),
+                Default::default(),
             )
         }
         None => {
@@ -1644,41 +1871,31 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
             (
                 vec![title.clone()],
                 loading.clone(),
-                Vec::new(),
                 loading,
-                Vec::new(),
+                Default::default(),
             )
         }
+    };
+    let page = |body: &Vec<Line<'static>>, facts: &Vec<Line<'static>>| {
+        framed(
+            vec![
+                head.clone(),
+                body.clone(),
+                facts.clone(),
+                result.clone(),
+                choices.clone(),
+                vec![hint.clone()],
+            ],
+            width,
+        )
     };
     first_page_that_fits(
         height,
         &[
-            &|| {
-                framed(
-                    vec![
-                        head.clone(),
-                        body.clone(),
-                        facts.clone(),
-                        result.clone(),
-                        choices.clone(),
-                        vec![hint.clone()],
-                    ],
-                    width,
-                )
-            },
-            &|| {
-                framed(
-                    vec![
-                        head.clone(),
-                        short_body.clone(),
-                        short_facts.clone(),
-                        result.clone(),
-                        choices.clone(),
-                        vec![hint.clone()],
-                    ],
-                    width,
-                )
-            },
+            &|| page(&body, &facts[0]),
+            &|| page(&body, &facts[1]),
+            &|| page(&short_body, &facts[2]),
+            &|| page(&short_body, &facts[3]),
             &|| {
                 framed(
                     vec![
@@ -1752,6 +1969,9 @@ fn market_summary(
                 .count()
         });
         words.push(format!("{installed} {PLUGINS_INSTALLED_WORD}"));
+        if !market.skipped.is_empty() {
+            words.push(format!("{} {PLUGINS_SKIPPED_WORD}", market.skipped.len()));
+        }
         if market.is_local {
             words.push(PLUGINS_LOCAL_FACT.to_string());
         } else if let Some(updated) = market.updated {
@@ -1814,9 +2034,30 @@ fn market_facts_rows(
     rows
 }
 
-/// The Marketplace page — its whole page, then without its facts, then the
-/// small rungs. A fetch of it under way or failed shows above the actions,
-/// where a job's result goes.
+/// The entries a marketplace lists that could not be read, one sentence
+/// each under a `Skipped` label, wrapped whole.
+fn skipped_rows(market: &CatalogMarketplace, width: u16) -> Vec<Line<'static>> {
+    market
+        .skipped
+        .iter()
+        .enumerate()
+        .flat_map(|(i, sentence)| {
+            let label = if i == 0 { PLUGINS_FACT_SKIPPED } else { "" };
+            wrapped_fact(
+                label,
+                sentence,
+                Style::new().fg(ask_warning_color()),
+                None,
+                PLUGINS_FACT_COLS,
+                width,
+            )
+        })
+        .collect()
+}
+
+/// The Marketplace page — its whole page, then without the entries it
+/// skipped, then without its facts, then the small rungs. A fetch of it
+/// under way or failed shows above the actions, where a job's result goes.
 fn market_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<Line<'static>> {
     let name = menu.marketplace.clone().unwrap_or_default();
     let title = crumb_title(&name, width);
@@ -1842,7 +2083,9 @@ fn market_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
     }
     let mut head = vec![title.clone()];
     let mut facts = Vec::new();
+    let mut skipped = Vec::new();
     if let Some((index, market)) = found {
+        skipped = skipped_rows(market, width);
         head.push(market_summary(menu, index, market, width));
         if let Some(error) = market.error.as_ref().filter(|_| !market.is_removed()) {
             head.extend(model_wrapped_rows(
@@ -1860,6 +2103,19 @@ fn market_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
     first_page_that_fits(
         height,
         &[
+            &|| {
+                framed(
+                    vec![
+                        head.clone(),
+                        facts.clone(),
+                        skipped.clone(),
+                        result.clone(),
+                        choices.clone(),
+                        vec![hint.clone()],
+                    ],
+                    width,
+                )
+            },
             &|| {
                 framed(
                     vec![

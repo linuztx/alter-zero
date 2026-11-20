@@ -55,6 +55,14 @@ pub const PLUGINS_FAILED: &str = "Couldn't";
 /// list's place instead).
 pub const PLUGINS_CATALOG_FAILED: &str = "Couldn't read the plugins";
 
+/// What the page says when Esc stops a running job.
+pub const PLUGINS_CANCELLED: &str = "Cancelled";
+
+/// The dim line under [`PLUGINS_CANCELLED`] when the job had already done
+/// its work by the time it was stopped.
+pub const PLUGINS_CANCELLED_TOO_LATE: &str =
+    "It had already finished — the page shows it as it is now.";
+
 /// The pages of the `/plugins` walk.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PluginsPage {
@@ -153,6 +161,19 @@ impl JobKind {
             Self::RemoveMarketplace => "remove",
         }
     }
+
+    /// What a failure calls its target when the reason already names it:
+    /// `Couldn't add the marketplace — /work/team does not exist`.
+    #[must_use]
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Install | Self::Update | Self::Uninstall => "the plugin",
+            Self::AddMarketplace
+            | Self::RestoreMarketplace
+            | Self::UpdateMarketplace
+            | Self::RemoveMarketplace => "the marketplace",
+        }
+    }
 }
 
 /// The last result, stated on the page it happened on until the next key
@@ -161,6 +182,8 @@ impl JobKind {
 pub struct Notice {
     /// A success (a green `✔`) or a failure (red throughout).
     pub ok: bool,
+    /// A job the user stopped: neither, said dim.
+    pub cancelled: bool,
     /// The sentence.
     pub text: String,
     /// A dim second sentence: what waits for the next launch.
@@ -249,6 +272,12 @@ pub enum PluginEvent {
     JobFinished {
         result: Result<JobDone, String>,
     },
+    /// A job the user cancelled has ended: whether it changed anything on
+    /// disk before it stopped. The fresh catalog (and detail) it read comes
+    /// just before this.
+    CancelledJobEnded {
+        changed: bool,
+    },
     /// A plugin was enabled or disabled — not a job, since the row flipped
     /// the moment the key was pressed; a failure flips it back.
     EnabledSet {
@@ -331,7 +360,8 @@ enum RowKey {
 pub struct PluginsMenu {
     pub page: PluginsPage,
     pub tab: PluginsTab,
-    /// The type-to-search query (Browse) — space is never typed, it acts.
+    /// The type-to-search query (Browse). A space is typed into a query
+    /// already begun; into an empty one it acts on the highlighted row.
     pub query: String,
     /// `None` until the first catalog lands.
     pub catalog: Option<PluginCatalog>,
@@ -372,6 +402,9 @@ pub struct PluginsMenu {
     home: Option<String>,
     /// Why the first catalog could not be read.
     load_error: Option<String>,
+    /// How many of a plugin's hooks and MCP servers wait for the user, as
+    /// the boundary read them: `(plugin, hooks, servers, next_launch)`.
+    review: Option<(PluginId, usize, usize, bool)>,
 }
 
 impl PluginsMenu {
@@ -542,6 +575,29 @@ impl PluginsMenu {
         self.load_error.as_deref()
     }
 
+    /// How many of the Plugin page's subject's hooks and MCP servers wait
+    /// for the user — `(hooks, servers, next_launch)`, `next_launch` when the
+    /// session has not loaded them yet and the startup review will ask —
+    /// as the boundary last said ([`App::set_plugin_review`]).
+    #[must_use]
+    pub fn review_waiting(&self) -> Option<(usize, usize, bool)> {
+        let (id, hooks, servers, next) = self.review.as_ref()?;
+        (self.subject.as_ref() == Some(id)).then_some((*hooks, *servers, *next))
+    }
+
+    /// Whether `marketplace` is one the user removed: its plugins stay
+    /// installed but there is nothing to update them from.
+    #[must_use]
+    pub fn marketplace_removed(&self, marketplace: &str) -> bool {
+        self.marketplace_index(marketplace)
+            .and_then(|i| {
+                self.catalog
+                    .as_ref()
+                    .map(|c| c.marketplaces[i].is_removed())
+            })
+            .unwrap_or(false)
+    }
+
     /// How long ago (in seconds) something stamped at `at` (Unix seconds)
     /// was, on the injected wall clock.
     #[must_use]
@@ -593,10 +649,13 @@ impl PluginsMenu {
                 } else {
                     PluginAction::Enable
                 });
-                actions.push(match (&detail.version, detail.update_available) {
-                    (Some(version), true) => PluginAction::UpdateTo(version.clone()),
-                    _ => PluginAction::CheckForUpdates,
-                });
+                // A removed marketplace has nothing to update from.
+                if !self.marketplace_removed(&detail.id.marketplace) {
+                    actions.push(match (&detail.version, detail.update_available) {
+                        (Some(version), true) => PluginAction::UpdateTo(version.clone()),
+                        _ => PluginAction::CheckForUpdates,
+                    });
+                }
                 actions.push(PluginAction::Uninstall);
             }
         }
@@ -674,6 +733,7 @@ impl PluginsMenu {
 fn failure(verb: &str, target: &str, reason: &str) -> Notice {
     Notice {
         ok: false,
+        cancelled: false,
         text: format!("{PLUGINS_FAILED} {verb} {target} — {reason}"),
         detail: None,
     }
@@ -683,6 +743,7 @@ fn failure(verb: &str, target: &str, reason: &str) -> Notice {
 fn success(done: &JobDone) -> Notice {
     Notice {
         ok: true,
+        cancelled: false,
         text: done.text.clone(),
         detail: done.detail.clone(),
     }
@@ -752,6 +813,22 @@ impl App {
         }
     }
 
+    /// How many of `id`'s hooks and MCP servers wait for the user — read
+    /// at the boundary from what the session trusts, or from the plugin
+    /// itself when the session has not loaded it yet (`next_launch`). The
+    /// Plugin page of `id` says so; `0, 0` says nothing.
+    pub fn set_plugin_review(
+        &mut self,
+        id: &PluginId,
+        hooks: usize,
+        servers: usize,
+        next_launch: bool,
+    ) {
+        if let Some(menu) = self.plugins_menu.as_mut() {
+            menu.review = Some((id.clone(), hooks, servers, next_launch));
+        }
+    }
+
     /// Fold one of the boundary's answers into the open page. An answer for
     /// another round, or with no page open, is dropped.
     pub fn apply_plugin_event(&mut self, round: u64, event: PluginEvent) {
@@ -766,6 +843,7 @@ impl App {
                 } else {
                     menu.notice = Some(Notice {
                         ok: false,
+                        cancelled: false,
                         text: format!("{PLUGINS_CATALOG_FAILED} — {reason}"),
                         detail: None,
                     });
@@ -810,6 +888,11 @@ impl App {
                 }
             }
             PluginEvent::JobFinished { result } => menu.finish_job(result),
+            PluginEvent::CancelledJobEnded { changed } => {
+                if changed && let Some(notice) = menu.notice.as_mut().filter(|n| n.cancelled) {
+                    notice.detail = Some(PLUGINS_CANCELLED_TOO_LATE.to_string());
+                }
+            }
             PluginEvent::EnabledSet {
                 id,
                 enabled,
@@ -866,7 +949,14 @@ impl App {
                 || (key.code == KeyCode::Backspace
                     && matches!(menu.page, PluginsPage::Plugin | PluginsPage::Marketplace));
             if cancels {
-                menu.job = None;
+                if let Some(job) = menu.job.take() {
+                    menu.notice = Some(Notice {
+                        ok: false,
+                        cancelled: true,
+                        text: format!("{PLUGINS_CANCELLED} — {} {}", job.kind.verb(), job.target),
+                        detail: None,
+                    });
+                }
                 return Action::PluginOp(PluginOp::Cancel);
             }
             return Action::None;
@@ -907,18 +997,24 @@ impl App {
             KeyCode::Left | KeyCode::BackTab => menu.step_tab(-1),
             KeyCode::Right | KeyCode::Tab => menu.step_tab(1),
             KeyCode::Enter => return menu.open_highlighted(),
-            KeyCode::Char(' ') => return menu.toggle_or_open(),
+            KeyCode::Char(' ') if menu.query.is_empty() && !ctrl => {
+                return menu.toggle_or_open();
+            }
             KeyCode::Esc => {
                 if menu.query.is_empty() {
                     self.close_plugins_menu();
                     return Action::ClosePluginsMenu;
                 }
-                menu.query.clear();
-                menu.selected = 0;
+                menu.clear_query();
             }
+            KeyCode::Char('u') if ctrl => menu.clear_query(),
             KeyCode::Backspace => {
-                menu.query.pop();
-                menu.selected = 0;
+                if menu.query.chars().count() <= 1 {
+                    menu.clear_query();
+                } else {
+                    menu.query.pop();
+                    menu.selected = 0;
+                }
             }
             KeyCode::Char(c)
                 if !key
@@ -934,9 +1030,11 @@ impl App {
     }
 
     /// The Plugin and Marketplace pages' keys — one grammar over two action
-    /// lists: ↑/↓/Home/End move (and disarm a confirmation), a digit jumps
-    /// to its action and runs it, Enter runs the highlighted one, Esc and
-    /// Backspace disarm or go back. Any other key disarms too.
+    /// lists: ↑/↓/Home/End and a digit move the highlight (and disarm a
+    /// confirmation), Enter runs the highlighted action, Esc and Backspace
+    /// disarm or go back. Any other key disarms too. Only Enter runs
+    /// anything, so a search phrase typed a moment too long — its keys
+    /// landing on a page Space opened — never installs or removes.
     fn on_key_plugins_detail(&mut self, key: KeyEvent, run: fn(&mut Self) -> Action) -> Action {
         let Some(menu) = self.plugins_menu.as_mut() else {
             return Action::None;
@@ -964,15 +1062,12 @@ impl App {
             }
             KeyCode::Char(c @ '1'..='9') => {
                 let index = c as usize - '1' as usize;
-                if index >= len {
-                    menu.armed = false;
-                    return Action::None;
-                }
-                if index != menu.action {
+                if index != menu.action || index >= len {
                     menu.armed = false;
                 }
-                menu.action = index;
-                return run(self);
+                if index < len {
+                    menu.action = index;
+                }
             }
             KeyCode::Enter => return run(self),
             KeyCode::Esc | KeyCode::Backspace => {
@@ -1093,6 +1188,9 @@ impl App {
             KeyCode::Backspace => {
                 menu.input.pop();
             }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                menu.input.clear();
+            }
             KeyCode::Char(c)
                 if !key
                     .modifiers
@@ -1185,7 +1283,12 @@ impl PluginsMenu {
                 }
             }
             Err(reason) => {
-                self.notice = Some(failure(job.kind.verb(), &job.target, &reason));
+                let target = if reason.contains(job.target.as_str()) {
+                    job.kind.noun()
+                } else {
+                    job.target.as_str()
+                };
+                self.notice = Some(failure(job.kind.verb(), target, &reason));
             }
         }
     }
@@ -1208,6 +1311,15 @@ impl PluginsMenu {
         {
             detail.status = status;
         }
+    }
+
+    /// Empty the search, keeping the highlight on the row it was on — the
+    /// plugin found stays found when the list comes back whole. While a
+    /// query is typed the highlight is its best match instead.
+    fn clear_query(&mut self) {
+        let key = self.highlighted_key();
+        self.query.clear();
+        self.select_key(key.as_ref());
     }
 
     /// Back to Browse, on the tab and the row the page was opened from.

@@ -3802,8 +3802,10 @@ pub(super) const PLUGINS_HINT_CLOSE: &str = "Esc to close";
 pub(super) const PLUGINS_HINT_CLEAR: &str = "Esc to clear";
 pub(super) const PLUGINS_HINT_REFRESH: &str = "Ctrl+R to refresh";
 pub(super) const PLUGINS_HINT_CANCEL: &str = "Esc to cancel";
-/// The Plugin and Marketplace pages' hint — the `/mcp` server page's.
-pub(super) const PLUGINS_DETAIL_HINT: &str = "↑/↓ to navigate · Enter to confirm · Esc to go back";
+/// The Plugin and Marketplace pages' hint: a digit only moves the
+/// highlight, Enter alone runs an action.
+pub(super) const PLUGINS_DETAIL_HINT: &str =
+    "↑/↓ or 1–9 to choose · Enter to confirm · Esc to go back";
 /// The Add page's.
 pub(super) const PLUGINS_ADD_HINT: &str = "Enter to add · Esc to go back";
 
@@ -3860,6 +3862,34 @@ pub(super) const PLUGINS_FACT_EXAMPLES: &str = "Examples";
 /// What the `Contains` row says of a plugin whose files are elsewhere.
 pub(super) const PLUGINS_CONTAINS_LATER: &str =
     "shown after install — its files are in another repository";
+/// Where an update waits, the installed version and the offered one:
+/// `v1.0.0 → v2.0.0`.
+pub(super) const PLUGINS_VERSION_ARROW: &str = " → ";
+/// Why a plugin from a removed marketplace offers no update.
+pub(super) const PLUGINS_FACT_UPDATES: &str = "Updates";
+pub(super) const PLUGINS_NO_UPDATES_REMOVED: &str =
+    "none — its marketplace was removed; add it again to update this plugin";
+/// The Marketplaces tab's count of entries a marketplace lists that could
+/// not be read, and the label they are listed under on its page.
+pub(super) const PLUGINS_SKIPPED_WORD: &str = "skipped";
+pub(super) const PLUGINS_FACT_SKIPPED: &str = "Skipped";
+/// The widest the Marketplaces tab's facts column gets: a failure's first
+/// words and its mark, never the whole reason.
+pub(super) const PLUGINS_FACTS_COLS_MAX: usize = 36;
+/// The narrowest a source is cut to before it gives way to the facts.
+pub(super) const PLUGINS_SOURCE_COLS_MIN: usize = 8;
+/// The Plugin page's line about what of an installed plugin waits for the
+/// user: its hooks for their trust, its MCP servers for being turned on.
+pub(super) const PLUGINS_HOOKS_WAIT: (&str, &str) = (
+    "hook waits for your review — /hooks",
+    "hooks wait for your review — /hooks",
+);
+pub(super) const PLUGINS_SERVERS_OFF: (&str, &str) =
+    ("MCP server is off — /mcp", "MCP servers are off — /mcp");
+pub(super) const PLUGINS_WAIT_NEXT_LAUNCH: (&str, &str) = (
+    "waits for your review at the next launch",
+    "wait for your review at the next launch",
+);
 /// What a not-installed plugin's `Hooks` and `MCP` rows add.
 pub(super) const PLUGINS_REVIEW_NOTE: &str = " — asks for your review at the next launch";
 /// A detail page whose detail is still on its way.
