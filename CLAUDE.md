@@ -1625,7 +1625,36 @@ duplicate-error ergonomics on top, a bare `--url` writing the type-less
 http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
-`tui::mcp_cli`) in
+`tui::mcp_cli` — and the `/mcp` sign-in's **client form**, `docs/mcp.md`
+*Pre-registered clients* and *The client form*: a sign-in with no OAuth
+client to present — its authorization server registers none (Google's, for
+its MCP servers), refused this app, or turned the client away at the token
+endpoint — ends **asking** (`oauth::AuthError::NeedsClient(ClientRequest)` →
+`McpEvent::AuthNeedsClient`; the pure vocabulary is `mcp::client`), and the
+Authenticate page becomes a form (`app::McpClientForm`, the `/secrets`
+form's shape): the redirect URI to register over a Client ID, a secret
+masked in the builder and held in a `SecretValue`, and a callback port — a
+new client's form opens on `SUGGESTED_CALLBACK_PORT` (8976), so the URI can
+be registered as shown, and the fields are the page's tail, so a short
+terminal keeps them. What is entered is kept in the token store's `clients`
+section (`mcp-auth.json`, owner-only, never an `mcp.json`, so a project's
+or a plugin's server can be given one), bound to the issuer it was entered
+for, and **is the whole client, as its form said** (`preregistered_client`:
+it outranks the entry's own; a secret left empty is a public client unless
+it explicitly keeps its entry's, `secret_from_entry`, read from the file and
+never copied). **A login is its client's**: forgetting an entered client, or
+changing to another, removes the login made as it in the same locked write
+(`oauth::save_client` → `ClientChange`). The server's page names the client
+in effect and offers `Set`/`Change`/`Forget OAuth client`, and a sign-in
+that fails stays on its page with the whole reason (`McpAuthView::failure`).
+**A Codex plugin's entry reads in codex's spelling** (`client_id`,
+`client_secret`, `callback_port`, `callback_url`, the `scopes` on the entry
+itself): a `<PLACEHOLDER>` where a client goes — OpenAI's gmail plugin ships
+`<GMAIL_PUBLIC_CLIENT_ID>` — is no client, so the form asks, on the plugin's
+port and for the plugin's scopes, while a real shipped client signs in on
+the redirect it was registered with (`callbackUrl`; codex's
+`http://127.0.0.1/callback` for a client written codex's way);
+`smoke.sh` Phases 162 and 163) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
