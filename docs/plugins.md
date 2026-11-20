@@ -282,7 +282,11 @@ one failed `stat` and nothing else.
   conversation's.
 - **Agents** join the subagent types as `plugin:agent`
   (`docs/subagents.md`), always on the session's own model, with a Claude
-  Code agent's tool names mapped to the tools this app has.
+  Code agent's tool names mapped to the tools this app has. A search tool
+  (`Glob`, `Grep`, `LS`) maps to the shell, because a search is a shell
+  command here; what the agent runs meets the permission gate like anything
+  else. A list none of whose tools exist here leaves the agent `Read`
+  alone.
 - **Hooks** are a third hooks layer, after the user's and the project's, and
   **MCP servers** are a `Plugin` scope held for approval like a project's
   servers. Both are read once at launch and pass the startup review

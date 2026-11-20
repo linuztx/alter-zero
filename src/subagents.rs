@@ -312,11 +312,14 @@ pub fn parse_agent(contents: &str, default_name: &str) -> Result<AgentDefinition
 ///   — a frontmatter name already written that way is not doubled;
 /// - the model is always [`AgentModel::Inherit`]: a plugin does not choose
 ///   which model the user runs, or what it bills;
-/// - a `tools:` list goes through [`crate::plugins::map_agent_tools`], so a
-///   Claude Code agent's `Glob, Grep` can still search (through `bash`) — and
-///   a list none of whose tools exist here (`TodoWrite, ExitPlanMode`) leaves
-///   the agent `Read` alone, never every tool: the narrowest list a file
-///   wrote must not become the widest;
+/// - a `tools:` list goes through [`crate::plugins::map_agent_tools`], each
+///   tool named becoming the tool that does its job here. A search tool
+///   (`Glob`, `Grep`, `LS`) becomes `bash`, since a search is a shell command
+///   in this app and an agent without one could look for nothing; what it
+///   runs meets the permission gate like any other command. The one rule is
+///   about an empty result: a list none of whose tools exist here
+///   (`TodoWrite, ExitPlanMode`) leaves the agent `Read` alone and is never
+///   read as "no list", which would be every tool;
 /// - the body has its `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}`
 ///   expanded ([`crate::plugins::expand_claude`]).
 ///
