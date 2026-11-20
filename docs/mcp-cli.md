@@ -100,9 +100,10 @@ alter-zero mcp list
   that broke Claude Code's own help example). Repeated keys: last wins.
 - **A pre-registered OAuth client** — for a server whose login provider
   registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
-  clients*; Google's servers are not supported yet, and signing in to them
-  this way is experimental, *Servers that list their tools to anyone*) —
-  is the flags other MCP clients' CLIs document:
+  clients*; signing in to Google's own servers this way is still
+  experimental, *Servers that list their tools to anyone*) — is the flags
+  other MCP clients' CLIs document, beside the form `/mcp` shows when a
+  sign-in needs a client (`docs/mcp.md` *The client form*):
   `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
   object (remote only; with a command they are a usage error), and
   `--client-secret` is a **switch**, never a value — `--client-secret=…`
@@ -118,6 +119,12 @@ alter-zero mcp list
   in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
   `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
   `***** (in the file)` for a `clientSecret` written there), never what.
+  A client entered on the `/mcp` auth page lives in that same `clients`
+  section rather than in the file, and `get` names it all the same —
+  `OAuth client: {id} (entered in /mcp)` over the port it signs in on —
+  so the file is never the only place to look for the client a server
+  signs in with (`llm::mcp::client_summary`, pure over the entry's `oauth`
+  and the kept record; the boundary only reads the store and prints).
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules
@@ -238,8 +245,9 @@ a failed write — one plain stderr line), **0** for success and help.
 - `tests/mcp_cli.rs` (the `detached_exec.rs` pattern — the real binary
   via `CARGO_BIN_EXE_alter-zero`, `ALTER_ZERO_MCP_FILE` into a temp dir):
   add stdio + http + sse + add-json, the file's exact JSON, list order,
-  get's masking, remove keeping order, duplicate/missing/invalid-file
-  exit codes, help, and the invalid file left byte-identical.
+  get's masking, get naming a client entered in `/mcp` and never its
+  secret, remove keeping order, duplicate/missing/invalid-file exit codes,
+  help, and the invalid file left byte-identical.
 - `scripts/smoke.sh` Phase 84: the CLI installs the Phase 80 scripted
   stdio fixture into a temp user file, then the TUI boots against that
   same file and `/mcp` shows the server `✔ connected · 1 tool` — proving

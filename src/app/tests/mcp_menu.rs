@@ -1,10 +1,12 @@
 //! The `/mcp` manager's state machine (`docs/mcp.md`).
 
 use super::*;
-use crate::app::{McpOp, McpPage, McpServerAction, server_actions};
+use crate::app::{McpClientField, McpClientForm, McpOp, McpPage, McpServerAction, server_actions};
 use crate::mcp::{
-    McpAuthState, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo,
+    McpAuthState, McpClientRequest, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus,
+    McpToolInfo, OAuthClientConfig,
 };
+use crate::secrets::SecretValue;
 
 fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnapshot {
     // The auth row derives exactly as the manager derives it: only a server
@@ -482,4 +484,515 @@ fn a_failure_no_open_page_takes_is_left_to_the_toast() {
     assert!(!app.finish_mcp_auth("linear", false, "nope"));
     let mut closed = App::new();
     assert!(!closed.finish_mcp_auth("linear", false, "nope"));
+}
+
+// --- the client form (`docs/mcp.md` *Pre-registered clients*) ---
+
+/// What a sign-in with no client to present asks for.
+fn client_request() -> McpClientRequest {
+    McpClientRequest {
+        issuer: "https://accounts.google.com".to_string(),
+        client_id: None,
+        fixed_id: false,
+        has_secret: false,
+        callback_port: Some(8976),
+        reason: None,
+    }
+}
+
+/// linear's auth page turned into the client form over `request`.
+fn form_app(request: &McpClientRequest) -> App {
+    let mut app = auth_page_app();
+    assert!(app.ask_mcp_client("linear", request));
+    app
+}
+
+fn form(app: &App) -> &McpClientForm {
+    app.mcp_menu
+        .as_ref()
+        .unwrap()
+        .auth
+        .client
+        .as_ref()
+        .expect("the client form")
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// A sign-in that has no client to present turns its auth page into the
+/// client form: who issues the client, the port its redirect URI names, the
+/// id and then the secret — and submitting hands the boundary the client to
+/// keep, the page waiting on the sign-in that follows.
+#[test]
+fn a_sign_in_with_no_client_turns_the_auth_page_into_the_client_form() {
+    let mut app = form_app(&client_request());
+    let opened = form(&app);
+    assert_eq!(opened.issuer, "https://accounts.google.com");
+    assert_eq!(opened.port, "8976");
+    assert_eq!(opened.field, McpClientField::ClientId);
+    assert_eq!(opened.fixed_client_id, None);
+    type_text(&mut app, "123.apps.example");
+    // Enter on the id moves on to the secret; nothing is sent yet.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(form(&app).field, McpClientField::Secret);
+    assert!(app.paste_into_mcp_auth("s3cret\n"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "123.apps.example".to_string(),
+            client_secret: Some(SecretValue::new("s3cret")),
+            callback_port: Some(8976),
+        })
+    );
+    // The page is the auth page again, waiting on the sign-in that follows.
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth, Default::default());
+}
+
+/// Tab and the arrows walk the three fields in the order they sit on the
+/// page, wrapping; keys edit the focused one — digits alone in the port —
+/// and Ctrl+U empties it.
+#[test]
+fn the_client_form_cycles_its_fields_and_edits_the_focused_one() {
+    use McpClientField::{ClientId, Port, Secret};
+    let mut app = form_app(&client_request());
+    for (press, lands) in [
+        (KeyCode::Tab, Secret),
+        (KeyCode::Tab, Port),
+        (KeyCode::Tab, ClientId),
+        (KeyCode::BackTab, Port),
+        (KeyCode::BackTab, Secret),
+        (KeyCode::Up, ClientId),
+        (KeyCode::Down, Secret),
+        (KeyCode::Down, Port),
+    ] {
+        app.on_key(key(press));
+        assert_eq!(form(&app).field, lands, "after {press:?}");
+    }
+    // The port takes digits, five at most.
+    app.on_key(ctrl('u'));
+    assert_eq!(form(&app).port, "");
+    type_text(&mut app, "9x0-01 23");
+    assert_eq!(form(&app).port, "90012");
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(form(&app).port, "9001");
+    // Enter on a field that is not the last moves on.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(form(&app).field, ClientId);
+    type_text(&mut app, "abc");
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(form(&app).client_id, "ab");
+    app.on_key(key(KeyCode::Tab));
+    type_text(&mut app, "pw");
+    assert_eq!(form(&app).secret, SecretValue::new("pw"));
+    app.on_key(ctrl('u'));
+    assert!(form(&app).secret.is_empty());
+    assert_eq!(form(&app).client_id, "ab", "only the focused field");
+}
+
+/// The secret is optional: a public client submits without one.
+#[test]
+fn a_public_client_needs_no_secret() {
+    let mut app = form_app(&client_request());
+    type_text(&mut app, "  public-cid ");
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "public-cid".to_string(),
+            client_secret: None,
+            callback_port: Some(8976),
+        })
+    );
+}
+
+/// A submit that can't go says why and puts the caret in the field at
+/// fault; the next edit clears it.
+#[test]
+fn the_client_form_says_what_stops_a_submit() {
+    let mut app = form_app(&client_request());
+    app.on_key(key(KeyCode::Tab)); // the secret: the last field
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(
+        form(&app)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("client ID"))
+    );
+    assert_eq!(form(&app).field, McpClientField::ClientId);
+    type_text(&mut app, "two words");
+    assert_eq!(form(&app).error, None, "an edit clears it");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(
+        form(&app)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("spaces"))
+    );
+    assert_eq!(form(&app).field, McpClientField::ClientId);
+    // A port that is no port.
+    app.on_key(ctrl('u'));
+    type_text(&mut app, "cid");
+    for bad in ["", "0", "70000"] {
+        app.on_key(key(KeyCode::Up)); // the port
+        assert_eq!(form(&app).field, McpClientField::Port);
+        app.on_key(ctrl('u'));
+        type_text(&mut app, bad);
+        app.on_key(key(KeyCode::BackTab)); // wraps to the secret
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::None,
+            "port {bad:?}"
+        );
+        assert!(
+            form(&app)
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("1 to 65535")),
+            "port {bad:?}: {:?}",
+            form(&app).error
+        );
+        assert_eq!(form(&app).field, McpClientField::Port);
+        app.on_key(key(KeyCode::Down)); // back on the id
+    }
+}
+
+/// A server whose entry names its client is asked only for the secret: the
+/// id is the entry's, no field moves to it or to the port, and a secret is
+/// required unless one is already kept.
+#[test]
+fn a_configured_client_is_asked_only_for_its_secret() {
+    let request = McpClientRequest {
+        client_id: Some("file-cid".to_string()),
+        fixed_id: true,
+        callback_port: Some(8080),
+        ..client_request()
+    };
+    let mut app = form_app(&request);
+    assert_eq!(form(&app).fixed_client_id.as_deref(), Some("file-cid"));
+    assert_eq!(form(&app).field, McpClientField::Secret);
+    for press in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down] {
+        app.on_key(key(press));
+        assert_eq!(form(&app).field, McpClientField::Secret, "after {press:?}");
+    }
+    // No secret typed and none kept: nothing to sign in with.
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(
+        form(&app)
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("secret"))
+    );
+    type_text(&mut app, "shh");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "file-cid".to_string(),
+            client_secret: Some(SecretValue::new("shh")),
+            callback_port: Some(8080),
+        })
+    );
+    // With one kept, an empty field keeps it.
+    let kept = McpClientRequest {
+        has_secret: true,
+        ..request
+    };
+    let mut app = form_app(&kept);
+    assert!(matches!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            client_secret: None,
+            ..
+        })
+    ));
+}
+
+/// A request that calls its id fixed without naming one is a request for a
+/// whole client: the form never opens with no field the caret can reach.
+#[test]
+fn a_fixed_id_with_no_id_asks_for_the_whole_client() {
+    let request = McpClientRequest {
+        fixed_id: true,
+        client_id: None,
+        ..client_request()
+    };
+    let mut app = form_app(&request);
+    assert_eq!(form(&app).fixed_client_id, None);
+    assert_eq!(form(&app).field, McpClientField::ClientId);
+    type_text(&mut app, "cid");
+    assert_eq!(form(&app).client_id, "cid");
+}
+
+/// A form that is back because the client was turned away opens with what
+/// was entered and the reason, the caret on the secret — one Enter tries
+/// the same client again, its kept secret untouched.
+#[test]
+fn a_form_reopened_with_a_reason_keeps_what_was_entered() {
+    let request = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: true,
+        callback_port: Some(9001),
+        reason: Some("as.test turned this client away (HTTP 401: invalid_client).".to_string()),
+        ..client_request()
+    };
+    let mut app = form_app(&request);
+    let reopened = form(&app);
+    assert_eq!(reopened.client_id, "typed-cid");
+    assert_eq!(reopened.port, "9001");
+    assert!(reopened.has_secret);
+    assert_eq!(reopened.reason, request.reason);
+    assert_eq!(reopened.field, McpClientField::Secret);
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::SaveAuthClient {
+            server: "linear".to_string(),
+            issuer: "https://accounts.google.com".to_string(),
+            client_id: "typed-cid".to_string(),
+            client_secret: None,
+            callback_port: Some(9001),
+        })
+    );
+}
+
+/// Esc on the form goes back to the server's page. No sign-in is running —
+/// the one that asked has ended — so nothing is cancelled.
+#[test]
+fn esc_on_the_client_form_goes_back_without_cancelling_anything() {
+    let mut app = form_app(&client_request());
+    type_text(&mut app, "half-typed");
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Server);
+    assert_eq!(menu.auth, Default::default());
+}
+
+/// The request reaches only the auth page of the server it is for: a page
+/// the user has left, another server's, or a closed menu leaves it to the
+/// boundary's toast.
+#[test]
+fn a_client_request_for_a_page_no_longer_open_is_not_shown() {
+    let request = client_request();
+    let mut app = auth_page_app();
+    assert!(
+        !app.ask_mcp_client("deepwiki", &request),
+        "another server's"
+    );
+    assert!(app.mcp_menu.as_ref().unwrap().auth.client.is_none());
+    app.on_key(key(KeyCode::Esc)); // back on linear's page
+    assert!(!app.ask_mcp_client("linear", &request), "the page was left");
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+    let mut closed = App::new();
+    assert!(!closed.ask_mcp_client("linear", &request));
+}
+
+/// Ctrl+Y copies the redirect URI the form shows — the one to register
+/// with the provider — and does nothing while the port is no port.
+#[test]
+fn ctrl_y_copies_the_redirect_uri_the_form_shows() {
+    let mut app = form_app(&client_request());
+    assert_eq!(
+        app.on_key(ctrl('y')),
+        Action::McpOp(McpOp::CopyRedirectUri {
+            uri: "http://localhost:8976/callback".to_string()
+        })
+    );
+    app.on_key(key(KeyCode::Up)); // the port
+    app.on_key(ctrl('u'));
+    assert_eq!(app.on_key(ctrl('y')), Action::None);
+    type_text(&mut app, "3000");
+    assert_eq!(
+        app.on_key(ctrl('y')),
+        Action::McpOp(McpOp::CopyRedirectUri {
+            uri: "http://localhost:3000/callback".to_string()
+        })
+    );
+    // A typed `y` is a letter, never the copy.
+    app.on_key(key(KeyCode::Down));
+    type_text(&mut app, "y");
+    assert_eq!(form(&app).client_id, "y");
+}
+
+/// A paste lands in the focused field: line breaks dropped and the ends
+/// trimmed; the port keeps digits alone.
+#[test]
+fn pastes_into_the_client_form_land_in_the_focused_field() {
+    let mut app = form_app(&client_request());
+    assert!(app.paste_into_mcp_auth("  123.apps\r\n.example \n"));
+    assert_eq!(form(&app).client_id, "123.apps.example");
+    app.on_key(key(KeyCode::Up)); // the port
+    app.on_key(ctrl('u'));
+    assert!(app.paste_into_mcp_auth(" 80 80\n"));
+    assert_eq!(form(&app).port, "8080");
+    app.on_key(key(KeyCode::BackTab)); // the secret
+    assert!(app.paste_into_mcp_auth("GOCSPX-abc\n"));
+    assert_eq!(form(&app).secret, SecretValue::new("GOCSPX-abc"));
+    assert_eq!(
+        app.mcp_menu.as_ref().unwrap().auth.input,
+        "",
+        "never the URL field behind the form"
+    );
+}
+
+/// The typed secret is held redacted: nothing that prints the menu's state
+/// — a test failure, a debug log — can spell it.
+#[test]
+fn the_typed_secret_never_shows_in_the_menus_debug_output() {
+    let mut app = form_app(&client_request());
+    type_text(&mut app, "cid");
+    app.on_key(key(KeyCode::Enter));
+    type_text(&mut app, "GOCSPX-very-secret");
+    let printed = format!("{:?}", app.mcp_menu);
+    assert!(!printed.contains("GOCSPX"), "{printed}");
+    let action = app.on_key(key(KeyCode::Enter));
+    assert!(!format!("{action:?}").contains("GOCSPX"), "{action:?}");
+}
+
+/// A client that could not be kept comes back as a failed sign-in, on the
+/// page the form was on: the reason whole, the form gone with the attempt.
+#[test]
+fn a_client_that_cannot_be_kept_fails_on_the_forms_page() {
+    let mut app = form_app(&client_request());
+    assert!(app.finish_mcp_auth("linear", false, "couldn't keep the client"));
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert!(auth.client.is_none());
+    assert_eq!(auth.failed.as_deref(), Some("couldn't keep the client"));
+}
+
+/// The client rows appear only where a client is on hand: one entered here
+/// can be changed or forgotten; an entry naming its client without a
+/// secret can be given one; a secret the entry spells is the file's.
+#[test]
+fn server_actions_offer_the_client_rows_where_a_client_is_on_hand() {
+    use McpServerAction as A;
+    let mut entered = snapshot("l", McpServerStatus::NeedsAuth, 0);
+    entered.kept_client = Some("typed-cid".to_string());
+    assert_eq!(
+        server_actions(&entered),
+        [
+            A::Authenticate,
+            A::ChangeClient,
+            A::ForgetClient,
+            A::Disable
+        ]
+    );
+    let mut signed_in = snapshot("l", McpServerStatus::Connected, 1);
+    signed_in.auth = Some(McpAuthState::Authenticated);
+    signed_in.kept_client = Some("typed-cid".to_string());
+    assert_eq!(
+        server_actions(&signed_in),
+        [
+            A::ViewTools,
+            A::Reauthenticate,
+            A::ClearAuth,
+            A::ChangeClient,
+            A::ForgetClient,
+            A::Reconnect,
+            A::Disable
+        ]
+    );
+    let naming = |secret: Option<&str>| {
+        let mut server = snapshot("l", McpServerStatus::NeedsAuth, 0);
+        server.config = McpServerConfig::Http {
+            url: "https://l.test/mcp".to_string(),
+            headers: Default::default(),
+            sse_fallback: false,
+            oauth: Some(OAuthClientConfig {
+                client_id: Some("file-cid".to_string()),
+                client_secret: secret.map(str::to_string),
+                ..Default::default()
+            }),
+        };
+        server
+    };
+    assert_eq!(
+        server_actions(&naming(None)),
+        [A::Authenticate, A::SetClientSecret, A::Disable]
+    );
+    assert_eq!(
+        server_actions(&naming(Some("${SECRET}"))),
+        [A::Authenticate, A::Disable]
+    );
+    // The entry's own client outranks one entered here: nothing to change.
+    let mut both = naming(None);
+    both.kept_client = Some("typed-cid".to_string());
+    assert_eq!(
+        server_actions(&both),
+        [A::Authenticate, A::SetClientSecret, A::Disable]
+    );
+    // A written-in header signs in with no OAuth at all.
+    let mut header = snapshot("h", McpServerStatus::Connected, 1);
+    header.auth = Some(McpAuthState::Header);
+    header.kept_client = Some("typed-cid".to_string());
+    assert_eq!(
+        server_actions(&header),
+        [A::ViewTools, A::Reconnect, A::Disable]
+    );
+    // A server that is off, disabled or connecting offers none of them.
+    for status in [
+        McpServerStatus::Disabled,
+        McpServerStatus::Off,
+        McpServerStatus::Pending,
+    ] {
+        let mut server = snapshot("l", status, 0);
+        server.kept_client = Some("typed-cid".to_string());
+        let actions = server_actions(&server);
+        assert!(
+            !actions.contains(&A::ChangeClient) && !actions.contains(&A::ForgetClient),
+            "{actions:?}"
+        );
+    }
+}
+
+/// The client rows hand the boundary their ops; the form the server's page
+/// opens comes back from it, over the client on hand.
+#[test]
+fn the_client_rows_dispatch_their_ops_and_open_the_form() {
+    let mut app = App::new();
+    let mut linear = snapshot("linear", McpServerStatus::NeedsAuth, 0);
+    linear.kept_client = Some("typed-cid".to_string());
+    app.open_mcp_menu(vec![linear]);
+    app.on_key(key(KeyCode::Enter)); // linear's page
+    // 2. Change OAuth client
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('2'))),
+        Action::McpOp(McpOp::EditAuthClient {
+            server: "linear".to_string()
+        })
+    );
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+    let request = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: true,
+        callback_port: Some(9001),
+        ..client_request()
+    };
+    assert!(
+        !app.edit_mcp_client("deepwiki", &request),
+        "another server's"
+    );
+    assert!(app.edit_mcp_client("linear", &request));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    assert_eq!(form(&app).client_id, "typed-cid");
+    assert_eq!(form(&app).port, "9001");
+    // Back out, and forget it instead: 3. Forget OAuth client.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('3'))),
+        Action::McpOp(McpOp::ForgetAuthClient {
+            server: "linear".to_string()
+        })
+    );
+    // The form opens only from the server's own page.
+    let mut app = auth_page_app();
+    assert!(!app.edit_mcp_client("linear", &request));
 }

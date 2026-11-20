@@ -2381,6 +2381,44 @@ pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
 /// reason stays on screen, whole, over this hint (`docs/mcp.md`).
 pub(super) const MCP_AUTH_FAILED_TITLE: &str = "Couldn't authenticate with ";
 pub(super) const MCP_AUTH_FAILED_HINT: &str = "Enter to try again · Esc to go back";
+/// The auth page's client form, shown when the authorization server
+/// registers no client for this app or turned the user's own away
+/// (`docs/mcp.md` *Pre-registered clients*). The title leads the server's
+/// name; [`MCP_CLIENT_NOTE`] follows the issuer's host, which reads as
+/// [`MCP_CLIENT_UNKNOWN_ISSUER`] when no sign-in has seen it.
+pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
+pub(super) const MCP_CLIENT_NOTE: &str =
+    " doesn't register this app by itself, so signing in needs an OAuth client you create there.";
+pub(super) const MCP_CLIENT_UNKNOWN_ISSUER: &str = "The sign-in provider";
+pub(super) const MCP_CLIENT_SECRET_NOTE: &str =
+    "This server's entry names its OAuth client, so only the client's secret is asked for.";
+/// Where Google's clients are made, and which redirect URI each kind wants
+/// — its sign-in is the case the form exists for.
+pub(super) const MCP_CLIENT_GOOGLE_HINT: &str = "Create one at \
+    https://console.cloud.google.com/apis/credentials — an OAuth client ID. A Desktop app \
+    client needs no redirect URI registered; a Web application client needs the one below.";
+/// The redirect URI row: its label, the note under it, and what stands in
+/// for the address while the port typed is no port.
+pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI:  ";
+pub(super) const MCP_CLIENT_REDIRECT_NOTE: &str =
+    "Add it to the client where the provider asks for a redirect URI.";
+pub(super) const MCP_CLIENT_REDIRECT_UNSET: &str = "set the callback port";
+/// The form's three prompts, padded to one width so the values line up —
+/// each a span of its own, which is how the caret finds its field's row.
+pub(super) const MCP_CLIENT_PORT_PROMPT: &str = "Callback port > ";
+pub(super) const MCP_CLIENT_ID_PROMPT: &str = "Client ID     > ";
+pub(super) const MCP_CLIENT_SECRET_PROMPT: &str = "Client secret > ";
+/// What an empty secret field means: the kept secret stays, or the client
+/// is a public one.
+pub(super) const MCP_CLIENT_SECRET_KEPT: &str = "unchanged — type to replace it";
+pub(super) const MCP_CLIENT_SECRET_OPTIONAL: &str = "optional — leave empty if the client has none";
+/// The form's keys: all three fields; the secret alone beside a redirect
+/// URI to copy; the secret alone.
+pub(super) const MCP_CLIENT_HINT: &str = "Tab to switch fields · Enter to continue · ctrl+y to \
+    copy the redirect URI · Esc to go back";
+pub(super) const MCP_CLIENT_SECRET_HINT: &str =
+    "Enter to continue · ctrl+y to copy the redirect URI · Esc to go back";
+pub(super) const MCP_CLIENT_SECRET_ONLY_HINT: &str = "Enter to continue · Esc to go back";
 
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =

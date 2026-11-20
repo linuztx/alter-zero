@@ -75,6 +75,8 @@ use alter_zero::app::{
     MascotRow,
     MascotShine,
     McpAuthView,
+    McpClientField,
+    McpClientForm,
     McpMenu,
     McpOp,
     McpPage,

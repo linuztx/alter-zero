@@ -14,6 +14,28 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
+  sign-in providers register no apps by themselves — Google's, for its MCP
+  servers — so signing in takes an OAuth client you create with the
+  provider. That client could only be written into `mcp.json` or passed to
+  `alter-zero mcp add --client-id … --client-secret`, and pressing
+  **Authenticate** without one ended on a one-line error naming config keys.
+  The page now turns into a form. It names the provider, shows the redirect
+  URI to register with the client (it follows the callback port as you
+  change it, and Ctrl+Y copies it), and takes the client ID and its secret,
+  which is only ever drawn as dots. The same form appears when a provider
+  refuses to register the app. What you enter is kept with the server's
+  tokens — owner-only, never written to a config file, and only ever
+  presented to the provider it was entered for — so it works alike for a
+  server from your own file, a project's or a plugin's. If the provider
+  turns the client away, the form comes back with what you entered and the
+  provider's own reason, rather than an error to start over from. A server's
+  page names the client it signs in with and offers **Change OAuth client**
+  and **Forget OAuth client**; a server whose entry already names its client
+  (`oauth.clientId`) is asked for the secret alone, and offers **Set client
+  secret**. `alter-zero mcp get` names a client entered this way too
+  (`docs/mcp.md`).
+
 - **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
   GitHub `owner/repo`, any git URL, or a directory — and install the plugins
   it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex

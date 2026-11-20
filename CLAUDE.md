@@ -1625,7 +1625,19 @@ duplicate-error ergonomics on top, a bare `--url` writing the type-less
 http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
-`tui::mcp_cli`) in
+`tui::mcp_cli` — and the `/mcp` sign-in's **client form**, `docs/mcp.md`
+*The client form*: a sign-in with no OAuth client to present (the
+authorization server registers none — Google's — or refused the
+registration, or turned the user's own client away) ends **asking**
+(`oauth::AuthError::NeedsClient` → `McpEvent::AuthNeedsClient`), and the
+auth page becomes a form (`app::McpClientForm`): the redirect URI to
+register, the callback port it follows, the client ID and a masked secret
+(`SecretValue`); what is entered is kept in the token store's `clients`
+section, bound to its issuer and never written to a config file
+(`oauth::StoredClient`), signs in on exactly its own port
+(`DEFAULT_CALLBACK_PORT`), and is changed or forgotten from the server's
+page; a sign-in that fails stays on its page with the whole reason
+(`McpAuthView::failed`); `smoke.sh` Phase 162) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —

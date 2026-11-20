@@ -1,13 +1,15 @@
 //! The `/mcp` manager's rendering (`docs/mcp.md`).
 
 use super::*;
-use crate::app::{McpPage, server_actions};
+use crate::app::{McpClientField, McpPage, server_actions};
 use crate::mcp::{
-    McpAuthState, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo,
+    McpAuthState, McpClientRequest, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus,
+    McpToolInfo, OAuthClientConfig,
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    HOOKS_DETAIL_HINT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_SESSION_OFF,
+    HOOKS_DETAIL_HINT, LOGIN_MASK_CHAR, MCP_CLIENT_ID_PROMPT, MCP_CLIENT_PORT_PROMPT,
+    MCP_CLIENT_SECRET_PROMPT, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_SESSION_OFF,
     MCP_TOOL_FIELD_GAP, error_color, mcp_description_color, mcp_detail_label_color,
     mcp_detail_state_color, mcp_detail_value_color, model_meta_color, tool_fail_color,
     tool_ok_color,
@@ -1321,4 +1323,506 @@ fn a_failed_sign_in_shows_its_whole_reason_and_how_to_retry() {
         let (x, y) = crate::ui::cursor_position(area, &app);
         assert!(x < width && usize::from(y) < lines.len());
     }
+}
+
+// --- the client form (`docs/mcp.md` *Pre-registered clients*) ---
+
+/// What a sign-in with no client to present asks for.
+fn client_request() -> McpClientRequest {
+    McpClientRequest {
+        issuer: "https://login.example.com".to_string(),
+        client_id: None,
+        fixed_id: false,
+        has_secret: false,
+        callback_port: Some(8976),
+        reason: None,
+    }
+}
+
+/// linear's auth page turned into the client form over `request`.
+fn client_form_app(request: &McpClientRequest) -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert!(app.ask_mcp_client("linear", request));
+    app
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+}
+
+/// The row of `lines` whose field prompt is `prompt`, and its whole text.
+fn field_row(lines: &[Line<'static>], prompt: &str) -> (usize, String) {
+    let row = lines
+        .iter()
+        .position(|line| line.spans.iter().any(|s| s.content == prompt))
+        .unwrap_or_else(|| panic!("no {prompt:?} field on the page"));
+    (row, plain(&lines[row]))
+}
+
+/// The form says who issues the client and why it is asked for, the
+/// redirect URI to register with it, the three fields in page order, and
+/// its keys — in place of the URL and its paste field.
+#[test]
+fn the_client_form_says_who_issues_the_client_and_what_to_register() {
+    let app = client_form_app(&client_request());
+    let lines = mcp_view_lines(&app, 100);
+    let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("OAuth client for linear"), "{all}");
+    assert!(
+        all.contains("login.example.com doesn't register this app by itself"),
+        "{all}"
+    );
+    assert!(all.contains("Redirect URI:"), "{all}");
+    assert!(all.contains("http://localhost:8976/callback"), "{all}");
+    let (port, port_text) = field_row(&lines, MCP_CLIENT_PORT_PROMPT);
+    let (id, _) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
+    let (secret, _) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(port_text.trim_end().ends_with("> 8976"), "{port_text:?}");
+    assert_eq!(
+        (id, secret),
+        (port + 1, port + 2),
+        "the fields sit together"
+    );
+    assert!(all.contains("Tab to switch fields"), "{all}");
+    assert!(all.contains("ctrl+y to copy the redirect URI"), "{all}");
+    assert!(all.contains("Esc to go back"), "{all}");
+    // The form stands in for the URL and its paste field.
+    assert!(!all.contains("URL > "), "{all}");
+    assert!(
+        !all.contains("Preparing the authorization request"),
+        "{all}"
+    );
+    // No provider-specific pointer for a provider it knows nothing about.
+    assert!(!all.contains("console.cloud.google.com"), "{all}");
+}
+
+/// The redirect URI on the page is the one the port typed makes — what the
+/// sign-in will send — and while the port is no port, the row says so
+/// instead of showing an address that would not be used.
+#[test]
+fn the_redirect_uri_follows_the_port_as_it_is_typed() {
+    let mut app = client_form_app(&client_request());
+    app.on_key(key(KeyCode::Up)); // the port
+    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    let all = texts(&app).join("\n");
+    assert!(!all.contains("http://localhost"), "{all}");
+    assert!(all.contains("Redirect URI:"), "{all}");
+    assert!(all.contains("set the callback port"), "{all}");
+    type_text(&mut app, "3000");
+    let all = texts(&app).join("\n");
+    assert!(all.contains("http://localhost:3000/callback"), "{all}");
+    assert!(!all.contains("8976"), "{all}");
+}
+
+/// The secret is drawn as a mask, one mark a character, and spelled
+/// nowhere on the page — a flowed row is committed to scrollback as text.
+#[test]
+fn the_client_form_never_draws_the_secret() {
+    let mut app = client_form_app(&client_request());
+    type_text(&mut app, "cid");
+    app.on_key(key(KeyCode::Enter));
+    type_text(&mut app, "GOCSPX-hunter2");
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(!all.contains("GOCSPX") && !all.contains("hunter2"), "{all}");
+        let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+        assert_eq!(
+            secret.chars().filter(|c| *c == LOGIN_MASK_CHAR).count(),
+            "GOCSPX-hunter2".chars().count(),
+            "{secret:?}"
+        );
+    }
+}
+
+/// Google's sign-in is the case the form exists for: the page points at
+/// the console where its clients are made, as a link.
+#[test]
+fn google_is_pointed_at_its_console() {
+    let request = McpClientRequest {
+        issuer: "https://accounts.google.com".to_string(),
+        ..client_request()
+    };
+    let app = client_form_app(&request);
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            all.contains("accounts.google.com doesn't register"),
+            "{all}"
+        );
+        assert!(
+            link_targets(&lines)
+                .iter()
+                .any(|url| url == "https://console.cloud.google.com/apis/credentials"),
+            "{:?}",
+            link_targets(&lines)
+        );
+    }
+    // The entry's own client was made already: no pointer to make one.
+    let fixed = McpClientRequest {
+        client_id: Some("file-cid".to_string()),
+        fixed_id: true,
+        ..request
+    };
+    let all = texts(&client_form_app(&fixed)).join("\n");
+    assert!(!all.contains("console.cloud.google.com"), "{all}");
+}
+
+/// A server whose entry names its client shows the id — it is how the user
+/// knows which client the secret is for — and asks for the secret alone:
+/// no port field, no Tab; the redirect URI only where the entry pins a port.
+#[test]
+fn a_configured_client_shows_its_id_and_asks_only_for_the_secret() {
+    let request = McpClientRequest {
+        client_id: Some("file-cid.apps.example".to_string()),
+        fixed_id: true,
+        callback_port: Some(8080),
+        ..client_request()
+    };
+    let app = client_form_app(&request);
+    let lines = mcp_view_lines(&app, 100);
+    let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+    let (_, id) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
+    assert!(id.contains("file-cid.apps.example"), "{id:?}");
+    assert!(all.contains("names its OAuth client"), "{all}");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == MCP_CLIENT_PORT_PROMPT)),
+        "the port is the entry's, not a field"
+    );
+    assert!(all.contains("http://localhost:8080/callback"), "{all}");
+    assert!(!all.contains("Tab to switch fields"), "{all}");
+    assert!(all.contains("Enter to continue"), "{all}");
+    // An entry naming no port signs in on any: no address to register.
+    let any_port = McpClientRequest {
+        callback_port: None,
+        ..request
+    };
+    let all = texts(&client_form_app(&any_port)).join("\n");
+    assert!(!all.contains("Redirect URI"), "{all}");
+    assert!(!all.contains("ctrl+y"), "{all}");
+}
+
+/// A form that is back says why — the sign-in's own words, in the error
+/// colour, whole — and a submit that can't go says what stops it, under
+/// the fields.
+#[test]
+fn a_form_that_is_back_says_why_in_red() {
+    let reason = "login.example.com turned this client away (HTTP 401: invalid_client: The \
+                  OAuth client was not found.). Check its ID and its secret.";
+    let request = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: true,
+        reason: Some(reason.to_string()),
+        ..client_request()
+    };
+    let mut app = client_form_app(&request);
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let red: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| s.style.fg == Some(error_color()))
+            .map(|s| s.content.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in reason.split_whitespace() {
+            assert!(
+                red.contains(word),
+                "{word:?} missing at width {width}: {red}"
+            );
+        }
+    }
+    // What stops a submit sits right under the fields.
+    app.on_key(key(KeyCode::Up)); // the id
+    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    app.on_key(key(KeyCode::Down)); // the secret
+    app.on_key(key(KeyCode::Enter));
+    let lines = mcp_view_lines(&app, 100);
+    let (secret, _) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    let under = &lines[secret + 1];
+    assert!(plain(under).contains("client ID"), "{:?}", plain(under));
+    assert!(
+        under
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(error_color())),
+        "{under:?}"
+    );
+}
+
+/// The reason a form is back stands alone over a client already on hand —
+/// "turned this client away" needs no reminder that a client is needed —
+/// while a refused registration, which leaves no client at all, still says
+/// what to do about it.
+#[test]
+fn the_reason_stands_alone_over_a_client_already_on_hand() {
+    let refused = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: true,
+        reason: Some("login.example.com turned this client away (HTTP 401).".to_string()),
+        ..client_request()
+    };
+    let mut app = client_form_app(&refused);
+    let all = texts(&app).join("\n");
+    assert!(all.contains("turned this client away"), "{all}");
+    assert!(!all.contains("doesn't register this app"), "{all}");
+    // Editing the id never brings the note back mid-typing.
+    app.on_key(key(KeyCode::Up));
+    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert!(!texts(&app).join("\n").contains("doesn't register this app"));
+    let no_registration = McpClientRequest {
+        reason: Some("login.example.com wouldn't register this app (HTTP 403).".to_string()),
+        ..client_request()
+    };
+    let all = texts(&client_form_app(&no_registration)).join("\n");
+    assert!(all.contains("wouldn't register this app"), "{all}");
+    assert!(all.contains("doesn't register this app by itself"), "{all}");
+}
+
+/// An empty secret field says what leaving it empty means: the kept secret
+/// stays, or the client is a public one.
+#[test]
+fn the_secret_field_says_what_leaving_it_empty_means() {
+    let kept = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: true,
+        ..client_request()
+    };
+    let lines = mcp_view_lines(&client_form_app(&kept), 100);
+    let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(secret.contains("unchanged"), "{secret:?}");
+    let mut app = client_form_app(&client_request());
+    let lines = mcp_view_lines(&app, 100);
+    let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(secret.contains("optional"), "{secret:?}");
+    // Typing replaces the note with the mask.
+    app.on_key(key(KeyCode::Tab));
+    type_text(&mut app, "pw");
+    let lines = mcp_view_lines(&app, 100);
+    let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(!secret.contains("optional"), "{secret:?}");
+}
+
+/// The caret ends the focused field's text — the secret counted as its
+/// mask — on that field's own row, found in the page the paint builds, at
+/// any width; and a value wider than its room keeps its end, and the caret,
+/// in view.
+#[test]
+fn the_client_form_caret_ends_the_focused_field() {
+    let mut app = client_form_app(&client_request());
+    type_text(&mut app, "cid");
+    app.on_key(key(KeyCode::Enter));
+    type_text(&mut app, "sécret");
+    assert!(crate::ui::cursor_visible(&app));
+    let prompt_cols = 2 + cols(MCP_CLIENT_ID_PROMPT);
+    for (field, prompt, typed) in [
+        (McpClientField::Port, MCP_CLIENT_PORT_PROMPT, 4),
+        (McpClientField::ClientId, MCP_CLIENT_ID_PROMPT, 3),
+        (McpClientField::Secret, MCP_CLIENT_SECRET_PROMPT, 6),
+    ] {
+        app.mcp_menu
+            .as_mut()
+            .unwrap()
+            .auth
+            .client
+            .as_mut()
+            .unwrap()
+            .field = field;
+        for width in [40u16, 100] {
+            let lines = mcp_view_lines(&app, width);
+            let (row, _) = field_row(&lines, prompt);
+            let area = Rect::new(0, 0, width, lines.len() as u16);
+            assert_eq!(
+                crate::ui::cursor_position(area, &app),
+                ((prompt_cols + typed) as u16, row as u16),
+                "{field:?} at width {width}"
+            );
+        }
+    }
+    // A client id wider than the row: its end stays in view, the caret on it.
+    let long = "1234567890-abcdefghijklmnopqrstuvwxyz0123456789.apps.googleusercontent.com";
+    let mut app = client_form_app(&client_request());
+    type_text(&mut app, long);
+    let lines = mcp_view_lines(&app, 40);
+    let (row, text) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
+    assert!(cols(&text) <= 40, "{text:?}");
+    assert!(
+        text.trim_end().ends_with("googleusercontent.com"),
+        "{text:?}"
+    );
+    let area = Rect::new(0, 0, 40, lines.len() as u16);
+    let (x, y) = crate::ui::cursor_position(area, &app);
+    assert_eq!(y, row as u16);
+    assert!(x < 40, "the caret stays on the row: {x}");
+}
+
+/// Every framed page is bottom-anchored, so on a terminal too short for the
+/// whole form its tail is what stays on screen — and the tail is the fields
+/// and the keys, with the caret on its field. What flows away is the notes
+/// above them, already read.
+#[test]
+fn a_short_terminal_keeps_the_fields_and_the_caret_on_screen() {
+    let mut app = client_form_app(&client_request());
+    type_text(&mut app, "cid");
+    let (width, height) = (80u16, 8u16);
+    assert!(
+        mcp_view_lines(&app, width).len() > usize::from(height),
+        "the page must not fit, or this proves nothing"
+    );
+    let mut buf = buffer(width, height);
+    render_mcp_menu(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..height).map(|y| row(&buf, y, width)).collect();
+    let shown = rows.join("\n");
+    for prompt in [
+        MCP_CLIENT_PORT_PROMPT,
+        MCP_CLIENT_ID_PROMPT,
+        MCP_CLIENT_SECRET_PROMPT,
+    ] {
+        assert!(
+            shown.contains(prompt.trim_end()),
+            "{prompt:?} left the screen:\n{shown}"
+        );
+    }
+    assert!(shown.contains("Esc to go back"), "{shown}");
+    let (x, y) = crate::ui::cursor_position(buf.area, &app);
+    assert!(y < height, "the caret left the screen");
+    let caret_row = &rows[usize::from(y)];
+    assert!(caret_row.contains("Client ID     > cid"), "{caret_row:?}");
+    assert_eq!(usize::from(x), cols("  Client ID     > cid"));
+}
+
+/// The form is a framed page like the rest: the title straight under the
+/// opening rule, the hint straight over the closing one, in every state, at
+/// every width.
+#[test]
+fn the_client_form_hugs_its_frame() {
+    let with = |request: McpClientRequest| client_form_app(&request);
+    let mut stopped = with(client_request());
+    stopped.on_key(key(KeyCode::Tab));
+    stopped.on_key(key(KeyCode::Enter)); // no client id: an error row
+    let mut no_port = with(client_request());
+    no_port.on_key(key(KeyCode::Up));
+    no_port.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    for (what, app) in [
+        ("the client form", with(client_request())),
+        (
+            "the client form with a reason",
+            with(McpClientRequest {
+                client_id: Some("typed-cid".to_string()),
+                has_secret: true,
+                reason: Some("login.example.com turned this client away (HTTP 401).".to_string()),
+                ..client_request()
+            }),
+        ),
+        ("the client form with an error", stopped),
+        ("the client form with no port", no_port),
+        (
+            "the client form for Google",
+            with(McpClientRequest {
+                issuer: "https://accounts.google.com".to_string(),
+                ..client_request()
+            }),
+        ),
+        (
+            "the secret-only form",
+            with(McpClientRequest {
+                client_id: Some("file-cid".to_string()),
+                fixed_id: true,
+                callback_port: None,
+                ..client_request()
+            }),
+        ),
+        (
+            "the secret-only form with no issuer",
+            with(McpClientRequest {
+                issuer: String::new(),
+                client_id: Some("file-cid".to_string()),
+                fixed_id: true,
+                ..client_request()
+            }),
+        ),
+    ] {
+        for width in [40u16, 100] {
+            let lines = mcp_view_lines(&app, width);
+            assert_frame_hugs_content(&format!("{what} at width {width}"), &lines);
+            // No row is wider than the page: nothing is cut by the paint.
+            for line in &lines {
+                assert!(
+                    cols(&plain(line)) <= usize::from(width),
+                    "{what} at width {width}: {:?}",
+                    plain(line)
+                );
+            }
+        }
+    }
+}
+
+/// The server's page names the OAuth client it signs in with — the entry's
+/// own, else the one entered here — beside the rows that change it. Never a
+/// secret.
+#[test]
+fn the_server_page_names_its_oauth_client_never_its_secret() {
+    let mut entered = snapshot("linear", McpScope::User, McpServerStatus::NeedsAuth);
+    entered.kept_client = Some("typed-cid.apps.example".to_string());
+    let mut app = App::new();
+    app.open_mcp_menu(vec![entered]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(
+        all.lines()
+            .any(|l| l.contains("OAuth client:") && l.contains("typed-cid.apps.example")),
+        "{all}"
+    );
+    assert!(all.contains("Change OAuth client"), "{all}");
+    assert!(all.contains("Forget OAuth client"), "{all}");
+    // The entry's own client, and the row that gives it a secret.
+    let mut named = snapshot("linear", McpScope::User, McpServerStatus::NeedsAuth);
+    named.kept_client = Some("typed-cid".to_string());
+    named.config = McpServerConfig::Http {
+        url: "https://linear.test/mcp".to_string(),
+        headers: Default::default(),
+        sse_fallback: false,
+        oauth: Some(OAuthClientConfig {
+            client_id: Some("file-cid".to_string()),
+            ..Default::default()
+        }),
+    };
+    let mut app = App::new();
+    app.open_mcp_menu(vec![named.clone()]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(
+        all.lines()
+            .any(|l| l.contains("OAuth client:") && l.contains("file-cid")),
+        "{all}"
+    );
+    assert!(
+        !all.contains("typed-cid"),
+        "the entry's own client wins: {all}"
+    );
+    assert!(all.contains("Set client secret"), "{all}");
+    // A secret the entry spells is never drawn.
+    if let McpServerConfig::Http {
+        oauth: Some(oauth), ..
+    } = &mut named.config
+    {
+        oauth.client_secret = Some("GOCSPX-in-the-file".to_string());
+    }
+    let mut app = App::new();
+    app.open_mcp_menu(vec![named]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(!all.contains("GOCSPX"), "{all}");
+    // A server with no client of the user's has no such row.
+    let mut plain_server = mcp_app();
+    plain_server.on_key(key(KeyCode::Enter));
+    assert!(!texts(&plain_server).join("\n").contains("OAuth client:"));
 }

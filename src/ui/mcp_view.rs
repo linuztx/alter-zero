@@ -13,7 +13,7 @@ use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
-use crate::app::{McpMenu, McpPage, server_actions};
+use crate::app::{McpClientField, McpClientForm, McpMenu, McpPage, server_actions};
 use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name, wire_names};
 
 /// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
@@ -539,6 +539,17 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     } else {
         field_lines("Command:", &target, value, width)
     });
+    // The OAuth client the sign-in presents, when the user has one on hand:
+    // the entry's own, else the one entered on the auth page — seeing it is
+    // how they know which client the server signs in as. Never a secret.
+    if let Some(client_id) = server
+        .config
+        .oauth()
+        .and_then(|oauth| oauth.client_id.as_deref())
+        .or(server.kept_client.as_deref())
+    {
+        lines.extend(field_lines("OAuth client:", client_id, value, width));
+    }
     lines.extend(field_lines(
         "Config location:",
         &server.config_path,
@@ -780,12 +791,229 @@ fn auth_failed_lines(reason: &str, server: &McpServerSnapshot, width: u16) -> Ve
     lines
 }
 
+/// The room a client-form field's value has: the row past the inset and
+/// the prompt, less the cell the caret sits in after the last character.
+fn client_field_room(width: u16) -> usize {
+    usize::from(width)
+        .saturating_sub(cols(MODEL_INDENT) + cols(MCP_CLIENT_ID_PROMPT) + 1)
+        .max(1)
+}
+
+/// The end of `value` that fits `room` columns — the end being typed stays
+/// in view.
+fn field_tail(value: &str, room: usize) -> &str {
+    let mut tail = value;
+    while cols(tail) > room {
+        let mut chars = tail.chars();
+        chars.next();
+        tail = chars.as_str();
+    }
+    tail
+}
+
+/// What a client-form field shows: the id and the port as typed, the secret
+/// as a mask — one mark a character, the value itself never drawn, since a
+/// flowed row is committed to scrollback as text.
+fn client_field_text(form: &McpClientForm, field: McpClientField) -> String {
+    match field {
+        McpClientField::Port => form.port.clone(),
+        McpClientField::ClientId => form
+            .fixed_client_id
+            .clone()
+            .unwrap_or_else(|| form.client_id.clone()),
+        McpClientField::Secret => {
+            std::iter::repeat_n(LOGIN_MASK_CHAR, form.secret.char_count()).collect()
+        }
+    }
+}
+
+/// A client-form field's prompt.
+const fn client_prompt(field: McpClientField) -> &'static str {
+    match field {
+        McpClientField::Port => MCP_CLIENT_PORT_PROMPT,
+        McpClientField::ClientId => MCP_CLIENT_ID_PROMPT,
+        McpClientField::Secret => MCP_CLIENT_SECRET_PROMPT,
+    }
+}
+
+/// Where the client form's caret sits: the focused field's prompt — the row
+/// is found by it in the built page — and the column just past the text
+/// that field shows. What [`client_field_row`] draws, so the two agree.
+pub(super) fn client_caret(form: &McpClientForm, width: u16) -> (&'static str, usize) {
+    let prompt = client_prompt(form.field);
+    let shown = client_field_text(form, form.field);
+    let typed = cols(field_tail(&shown, client_field_room(width)));
+    (prompt, cols(MODEL_INDENT) + cols(prompt) + typed)
+}
+
+/// One form field row: the prompt — lit on the field taking keys — then the
+/// value, or `note` in its place while the field is empty.
+fn client_field_row(
+    form: &McpClientForm,
+    field: McpClientField,
+    note: &str,
+    width: u16,
+) -> Line<'static> {
+    let fixed = field == McpClientField::ClientId && form.fixed_client_id.is_some();
+    let focused = form.field == field && !fixed;
+    let prompt_ink = if focused {
+        model_selected_color()
+    } else {
+        model_meta_color()
+    };
+    let room = client_field_room(width);
+    let shown = client_field_text(form, field);
+    let (text, ink) = if shown.is_empty() {
+        (ellipsize(note, room), model_meta_color())
+    } else {
+        let ink = if focused {
+            ai_color()
+        } else if fixed {
+            model_meta_color()
+        } else {
+            model_id_color()
+        };
+        (field_tail(&shown, room).to_string(), ink)
+    };
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(client_prompt(field), Style::new().fg(prompt_ink)),
+        Span::styled(text, Style::new().fg(ink)),
+    ])
+}
+
+/// The redirect URI rows: the address the sign-in will send for the port
+/// typed — beside its label where the row holds both, under it where it
+/// doesn't, so a narrow terminal never breaks the address mid-way — or what
+/// to do while the port is no port; then the note saying what it is for.
+fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
+    let label = Style::new().fg(mcp_detail_label_color());
+    let mut lines = Vec::new();
+    match form.redirect_uri() {
+        Some(uri) => {
+            let address = Style::new().fg(model_selected_color());
+            let beside = cols(MODEL_INDENT) + cols(MCP_CLIENT_REDIRECT_LABEL) + cols(&uri);
+            if beside <= usize::from(width) {
+                lines.push(Line::from(vec![
+                    Span::raw(MODEL_INDENT),
+                    Span::styled(MCP_CLIENT_REDIRECT_LABEL, label),
+                    Span::styled(uri, address),
+                ]));
+            } else {
+                lines.push(mcp_line(MCP_CLIENT_REDIRECT_LABEL.trim_end(), label, width));
+                let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+                lines.extend(wrap_output(&uri, room).into_iter().map(|row| {
+                    Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, address)])
+                }));
+            }
+        }
+        None => lines.push(Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(MCP_CLIENT_REDIRECT_LABEL, label),
+            Span::styled(
+                ellipsize(
+                    MCP_CLIENT_REDIRECT_UNSET,
+                    usize::from(width)
+                        .saturating_sub(cols(MODEL_INDENT) + cols(MCP_CLIENT_REDIRECT_LABEL))
+                        .max(1),
+                ),
+                Style::new().fg(model_meta_color()),
+            ),
+        ])),
+    }
+    lines.extend(dim_wrapped(MCP_CLIENT_REDIRECT_NOTE, width));
+    lines
+}
+
+/// The client form (`docs/mcp.md` *Pre-registered clients*): why it is
+/// asked — the sign-in's own reason first, when it is back — who issues the
+/// client, the redirect URI to register with it, the fields, what stopped
+/// the last submit, and the keys. An entry's own client is shown, not
+/// asked for: its secret is the one field, and its port its entry's.
+fn client_form_lines(
+    form: &McpClientForm,
+    server: &McpServerSnapshot,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let fixed = form.fixed_client_id.is_some();
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_CLIENT_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    if let Some(reason) = &form.reason {
+        lines.extend(model_linked_rows(reason, error_color(), width));
+    }
+    // The reason a form is back says enough over a client already on hand
+    // ("turned this client away"); everywhere else the page says why a
+    // client is asked for at all.
+    let explained = form.reason.is_some() && form.on_hand;
+    if fixed && !explained {
+        lines.extend(dim_wrapped(MCP_CLIENT_SECRET_NOTE, width));
+    } else if !explained {
+        let host = crate::mcp::issuer_host(&form.issuer);
+        let host = if host.is_empty() {
+            MCP_CLIENT_UNKNOWN_ISSUER
+        } else {
+            host.as_str()
+        };
+        lines.extend(dim_wrapped(&format!("{host}{MCP_CLIENT_NOTE}"), width));
+        if host == "accounts.google.com" {
+            lines.extend(model_linked_rows(
+                MCP_CLIENT_GOOGLE_HINT,
+                model_meta_color(),
+                width,
+            ));
+        }
+    }
+    // The address to register: always for a client entered here, and for an
+    // entry's own only where the entry pins the port — one that takes any
+    // free port has no address to show.
+    let redirect = !fixed || form.redirect_uri().is_some();
+    if redirect {
+        lines.push(Line::default());
+        lines.extend(client_redirect_rows(form, width));
+    }
+    lines.push(Line::default());
+    if !fixed {
+        lines.push(client_field_row(form, McpClientField::Port, "", width));
+    }
+    lines.push(client_field_row(form, McpClientField::ClientId, "", width));
+    let secret_note = match (form.has_secret, fixed) {
+        (true, _) => MCP_CLIENT_SECRET_KEPT,
+        (false, false) => MCP_CLIENT_SECRET_OPTIONAL,
+        (false, true) => "",
+    };
+    lines.push(client_field_row(
+        form,
+        McpClientField::Secret,
+        secret_note,
+        width,
+    ));
+    if let Some(error) = &form.error {
+        lines.extend(wrapped(error, Style::new().fg(error_color()), width));
+    }
+    lines.push(Line::default());
+    let hint = match (fixed, redirect) {
+        (false, _) => MCP_CLIENT_HINT,
+        (true, true) => MCP_CLIENT_SECRET_HINT,
+        (true, false) => MCP_CLIENT_SECRET_ONLY_HINT,
+    };
+    lines.extend(dim_wrapped(hint, width));
+    lines.push(model_rule(width));
+    lines
+}
+
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
-/// and the `URL >` paste-the-redirect fallback — or, once the sign-in has
+/// and the `URL >` paste-the-redirect fallback — or, while the sign-in
+/// waits on the user for an OAuth client, the client form; or, once it has
 /// failed, the reason.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     if let Some(reason) = &menu.auth.failed {
         return auth_failed_lines(reason, server, width);
+    }
+    if let Some(form) = &menu.auth.client {
+        return client_form_lines(form, server, width);
     }
     let mut lines = vec![
         model_rule(width),

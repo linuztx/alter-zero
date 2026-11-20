@@ -540,4 +540,24 @@ pub enum McpOp {
     /// Enter on the auth page's `URL >` field: hand the pasted redirect URL
     /// to the waiting flow.
     SubmitAuthUrl { text: String },
+    /// The auth page's client form, submitted: keep the OAuth client the user
+    /// entered for this server — created with `issuer` — and start the
+    /// sign-in again (`docs/mcp.md` *Pre-registered clients*). No secret
+    /// keeps the one already kept for the same client.
+    SaveAuthClient {
+        server: String,
+        issuer: String,
+        client_id: String,
+        client_secret: Option<crate::secrets::SecretValue>,
+        callback_port: Option<u16>,
+    },
+    /// `Change OAuth client` / `Set client secret` on a server's page: open
+    /// the client form over the client on hand — the boundary knows it.
+    EditAuthClient { server: String },
+    /// `Forget OAuth client` on a server's page: drop the client entered for
+    /// it, and the login that client was granted.
+    ForgetAuthClient { server: String },
+    /// Ctrl+Y on the client form: copy the redirect URI to register with
+    /// the provider.
+    CopyRedirectUri { uri: String },
 }

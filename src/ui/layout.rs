@@ -913,8 +913,9 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
-    // The auth page's `URL >` field is typed into — unless the sign-in
-    // failed, when the page is a reason to read with nothing to type.
+    // The auth page's fields are typed into — its `URL >` paste field, its
+    // client form — unless the sign-in failed, when the page is a reason to
+    // read with nothing to type.
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none();
     }
@@ -1234,27 +1235,34 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, view_cursor_y(area, body, row));
     }
     // The `/mcp` manager seats on its `❯` too — except its auth page,
-    // whose `URL >` paste field seats the caret at the typed text's end, on
-    // the field's row **found** in the page the paint builds
-    // (`view_prompt_row`'s rule): the notes under the field wrap with the
-    // width, so a row counted up from the region's bottom landed under the
-    // field on a narrow terminal. See `docs/mcp.md`.
+    // whose field — the `URL >` paste field, or the client form's focused
+    // one — seats the caret at the typed text's end, on the field's row
+    // **found** in the page the paint builds (`view_prompt_row`'s rule): the
+    // notes around the field wrap with the width, so a row counted up from
+    // the region's bottom landed under the field on a narrow terminal. See
+    // `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
         // A failed sign-in's page has no field: its hidden cursor seats as
         // any page without a marker does.
         if menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none() {
-            let x =
-                cols(MODEL_INDENT)
-                    + cols(super::theme::MCP_AUTH_PROMPT)
-                    + cols(&menu.auth.input).min(usize::from(area.width).saturating_sub(
-                        cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
-                    ));
+            // The field taking keys: the client form's focused one, at the
+            // column its builder reports, else the `URL >` paste field.
+            let (prompt, x) = match &menu.auth.client {
+                Some(form) => super::mcp_view::client_caret(form, area.width),
+                None => (
+                    super::theme::MCP_AUTH_PROMPT,
+                    cols(MODEL_INDENT)
+                        + cols(super::theme::MCP_AUTH_PROMPT)
+                        + cols(&menu.auth.input).min(usize::from(area.width).saturating_sub(
+                            cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
+                        )),
+                ),
+            };
             let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
             let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
             let [_, body] = view_split(area, rows);
-            let field =
-                super::model_view::view_row_of(&lines, super::theme::MCP_AUTH_PROMPT).unwrap_or(0);
+            let field = super::model_view::view_row_of(&lines, prompt).unwrap_or(0);
             let row = anchored_view_row(rows, body, field);
             return (x, view_cursor_y(area, body, row));
         }
