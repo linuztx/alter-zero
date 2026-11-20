@@ -540,6 +540,33 @@ fn plugin_commands_list_after_the_built_ins_and_before_quit() {
 }
 
 #[test]
+fn a_hint_written_as_prose_is_bracketed_so_it_reads_as_a_hint() {
+    // `argument-hint: Optional specific behavior to address` ran straight on
+    // from the description; one already in `[…]` or `<…>` is left as written.
+    let mut app = App::new();
+    app.set_plugin_commands(vec![
+        plugin_row("p:prose", "Create hooks", Some("Optional behavior")),
+        plugin_row("p:square", "Review a PR", Some("[pr-number]")),
+        plugin_row("p:angle", "Open a file", Some("<path>")),
+        plugin_row("p:alone", "", Some("Optional behavior")),
+        plugin_row("p:blank", "Do it", Some("  ")),
+    ]);
+    let commands = app.commands();
+    let description = |name: &str| -> String {
+        commands
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.description.to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(description("p:prose"), "Create hooks [Optional behavior]");
+    assert_eq!(description("p:square"), "Review a PR [pr-number]");
+    assert_eq!(description("p:angle"), "Open a file <path>");
+    assert_eq!(description("p:alone"), "[Optional behavior]");
+    assert_eq!(description("p:blank"), "Do it");
+}
+
+#[test]
 fn a_plugin_command_never_shadows_a_built_in() {
     let mut app = App::new();
     app.set_plugin_commands(vec![plugin_row("model", "Not the picker", None)]);

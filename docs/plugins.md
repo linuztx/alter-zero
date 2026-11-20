@@ -367,7 +367,8 @@ A fresh session's resident memory is a feature of this app
   dropping it leaves no resident growth worth the name.
 - `scripts/smoke.sh 162` — the page in a real terminal against fixture
   marketplaces: the fetch on first open, search, a plugin's page, install,
-  enable and disable, uninstall, adding and removing a marketplace, and a
+  enable and disable, uninstall, adding and removing a marketplace, an
+  enabled plugin's command and skill working in the same session, and a
   14-row terminal.
 - Nothing in the suite reaches the network.
 

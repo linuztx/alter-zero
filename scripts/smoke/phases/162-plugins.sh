@@ -250,6 +250,37 @@ expect_has "$pl_again" -F "acme 3" "the reopened page lost acme's count"
 expect_lacks "$pl_again" -F "Fetching" "the reopened page fetched again"
 expect_has "$pl_again" -F "1 installed" "the reopened page lost the install"
 
+# An enabled plugin's command and skill are live in this same session, with
+# no restart (docs/plugins.md *What an enabled plugin adds to a session*):
+# Space turns formatter back on, and the palette, the `$` picker and a typed
+# command all know it.
+keys "$S162" Space
+pl_on="$(wait_pane 5 "$S162" -E "^  → ✔ formatter")"
+dump "Space enabled it again" "$pl_on"
+expect_has "$pl_on" -E "^  → ✔ formatter" "Space did not flip the row back to ✔"
+wait_file 5 "$STATE" -F '"enabled": true' || fail "plugins.json does not record formatter@acme enabled again"
+keys "$S162" Escape
+wait_for 5 "$S162" -E '^❯ *$' || fail "Esc did not close the page"
+type_text "$S162" "/form"
+pl_palette="$(wait_pane 5 "$S162" -F "/formatter:format")"
+dump "the palette lists the plugin's command" "$pl_palette"
+expect_has "$pl_palette" -F "Format the files named" "the palette row lost the command's description"
+keys "$S162" C-u
+type_text "$S162" 'use $ti'
+pl_mention="$(wait_pane 5 "$S162" -F "formatter:tidy")"
+dump "the \$ picker lists the plugin's skill" "$pl_mention"
+expect_has "$pl_mention" -F "Tidy a file the house way" "the picker row lost the skill's description"
+keys "$S162" C-u
+type_text "$S162" "/formatter:format a.rs b.rs"
+keys "$S162" Enter
+pl_ran="$(wait_pane 10 "$S162" -F "Format these files: a.rs b.rs")"
+dump "the command ran as a turn" "$pl_ran"
+expect_has "$pl_ran" -F "Format these files: a.rs b.rs" "the command's template did not reach the turn with its arguments"
+wait_summaries 30 "$S162" 1 >/dev/null || fail "the command's turn never settled"
+type_text "$S162" "/plugins"
+keys "$S162" Enter
+wait_for 5 "$S162" -F "codex-demo 2" || fail "the page did not reopen after the turn"
+
 # 14 rows: the search line, a selected row and the hint, and no flow.
 tmux resize-window -t "$S162" -x 100 -y 14
 sleep 0.6

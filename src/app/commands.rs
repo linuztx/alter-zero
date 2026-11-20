@@ -399,6 +399,22 @@ pub fn matching_commands<'a>(commands: &'a [SlashCommand], query: &str) -> Vec<&
         .collect()
 }
 
+/// A plugin command's argument hint as the palette shows it after the
+/// description: one already written in `[…]` or `<…>` as it is, anything
+/// else in square brackets — a hint written as prose (`Optional behavior to
+/// address`) otherwise ran straight on from the description and read as
+/// part of it. `None` for a blank one.
+fn dressed_hint(hint: &str) -> Option<Cow<'_, str>> {
+    let hint = hint.trim();
+    if hint.is_empty() {
+        None
+    } else if hint.starts_with('[') || hint.starts_with('<') {
+        Some(Cow::Borrowed(hint))
+    } else {
+        Some(Cow::Owned(format!("[{hint}]")))
+    }
+}
+
 impl App {
     /// The palette's rows for this session: [`COMMANDS`] with one row per
     /// speed tier the active model lists spliced in **right after `/model`**,
@@ -449,8 +465,8 @@ impl App {
             if COMMANDS.iter().any(taken) || commands.iter().any(taken) {
                 continue;
             }
-            let description = match &row.argument_hint {
-                Some(hint) if row.description.is_empty() => hint.clone(),
+            let description = match row.argument_hint.as_deref().and_then(dressed_hint) {
+                Some(hint) if row.description.is_empty() => hint.into_owned(),
                 Some(hint) => format!("{} {hint}", row.description),
                 None => row.description.clone(),
             };
