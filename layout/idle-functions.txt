@@ -802,7 +802,6 @@ _ZN3std4sync4mpmc4list16Channel$LT$T$GT$10start_recv17h*
 _ZN3std4sync4mpmc4list16Channel$LT$T$GT$4recv17h*
 _ZN3std4sync4mpmc4list16Channel$LT$T$GT$4recv28_$u7b$$u7b$closure$u7d$$u7d$17h*
 _ZN3std4sync4mpmc5array16Channel$LT$T$GT$4recv17h*
-_ZN3std4sync4mpmc5array16Channel$LT$T$GT$4recv28_$u7b$$u7b$closure$u7d$$u7d$17h*
 _ZN3std4sync4mpmc5array16Channel$LT$T$GT$4send17h*
 _ZN3std4sync4mpmc5waker9SyncWaker6notify17h*
 _ZN3std4sync4mpmc5waker9SyncWaker8register17h*
@@ -942,7 +941,6 @@ _ZN4core3ptr78drop_in_place$LT$core..option..Option$LT$ratatui_widgets..block..B
 _ZN4core3ptr78drop_in_place$LT$winnow..error..ErrMode$LT$winnow..error..ContextError$GT$$GT$17h*
 _ZN4core3ptr80drop_in_place$LT$alloc..vec..Vec$LT$alter_zero..stream..event..RoundCall$GT$$GT$17h*
 _ZN4core3ptr82drop_in_place$LT$alloc..vec..Vec$LT$alter_zero..subagents..AgentDefinition$GT$$GT$17h*
-_ZN4core3ptr82drop_in_place$LT$alloc..vec..drain..Drain$LT$std..sync..mpmc..waker..Entry$GT$$GT$17h*
 _ZN4core3ptr83drop_in_place$LT$core..iter..adapters..flatten..Flatten$LT$std..fs..ReadDir$GT$$GT$17h*
 _ZN4core3ptr84drop_in_place$LT$alloc..vec..Vec$LT$alter_zero_plugins..store..EnabledPlugin$GT$$GT$17h*
 _ZN4core3ptr84drop_in_place$LT$alloc..vec..into_iter..IntoIter$LT$serde_json..value..Value$GT$$GT$17h*
@@ -1184,6 +1182,7 @@ _ZN72_$LT$std..sys..thread..unix..Thread$u20$as$u20$core..ops..drop..Drop$GT$4dr
 _ZN73_$LT$$u5b$A$u5d$$u20$as$u20$core..slice..cmp..SlicePartialEq$LT$B$GT$$GT$5equal17h*
 _ZN73_$LT$chrono..offset..fixed..FixedOffset$u20$as$u20$core..fmt..Display$GT$3fmt17h*
 _ZN73_$LT$indexmap..inner..Core$LT$K$C$V$GT$$u20$as$u20$core..clone..Clone$GT$10clone_from17h*
+_ZN73_$LT$indexmap..inner..Core$LT$K$C$V$GT$$u20$as$u20$core..clone..Clone$GT$5clone17h*
 _ZN73_$LT$ratatui_core..buffer..cell..Cell$u20$as$u20$core..cmp..PartialEq$GT$2eq17h*
 _ZN73_$LT$serde_json..number..Number$u20$as$u20$serde_core..ser..Serialize$GT$9serialize17h*
 _ZN73_$LT$std..env..Args$u20$as$u20$core..iter..traits..iterator..Iterator$GT$4next17h*
@@ -1201,7 +1200,6 @@ _ZN76_$LT$std..thread..spawnhook..SpawnHooks$u20$as$u20$core..ops..drop..Drop$GT
 _ZN77_$LT$alter_zero..subagents..AgentDefinition$u20$as$u20$core..clone..Clone$GT$5clone17h*
 _ZN77_$LT$tokio..task..coop..RestoreOnPending$u20$as$u20$core..ops..drop..Drop$GT$4drop17h*
 _ZN78_$LT$chrono..offset..local..inner..Cache$u20$as$u20$core..default..Default$GT$7default17h*
-_ZN79_$LT$indexmap..map..IndexMap$LT$K$C$V$C$S$GT$$u20$as$u20$core..clone..Clone$GT$5clone17h*
 _ZN79_$LT$ratatui_crossterm..CrosstermBackend$LT$W$GT$$u20$as$u20$std..io..Write$GT$5flush17h*
 _ZN80_$LT$alter_zero..llm..settings..ModelSelection$u20$as$u20$core..clone..Clone$GT$5clone17h*
 _ZN80_$LT$crossterm..event..stream..EventStream$u20$as$u20$core..default..Default$GT$7default17h*
@@ -1252,6 +1250,7 @@ _ZN8indexmap3map25IndexMap$LT$K$C$V$C$S$GT$17shift_remove_full17h*
 _ZN8indexmap3map25IndexMap$LT$K$C$V$C$S$GT$3get17h*
 _ZN8indexmap3map25IndexMap$LT$K$C$V$C$S$GT$5entry17h*
 _ZN8indexmap5inner17Core$LT$K$C$V$GT$10push_entry17h*
+_ZN8indexmap5inner17Core$LT$K$C$V$GT$11insert_full17h*
 _ZN8indexmap5inner17Core$LT$K$C$V$GT$13insert_unique17h*
 _ZN90_$LT$core..str..iter..Split$LT$P$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$4next17h*
 _ZN91_$LT$$RF$ratatui_widgets..block..Block$u20$as$u20$ratatui_core..widgets..widget..Widget$GT$6render17h*
@@ -1357,9 +1356,6 @@ _ZN10alter_zero6stream5dummy7DummyAi8with_ask17h*
 _ZN10alter_zero6stream6source11ReplySource11agent_model17h*
 _ZN10alter_zero6stream6source11ReplySource13system_prompt17h*
 _ZN10alter_zero6stream6source11ReplySource16tool_definitions17h*
-_ZN3std3sys3pal4unix5futex10futex_wake17h*
-_ZN3std4sync4mpmc5waker5Waker6notify17h*
-_ZN79_$LT$alloc..vec..drain..Drain$LT$T$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$4drop17h*
 _ZN80_$LT$alter_zero..settings..SessionSettings$u20$as$u20$core..default..Default$GT$7default17h*
 _ZN94_$LT$alter_zero..stream..dummy..DummyAi$u20$as$u20$alter_zero..stream..source..ReplySource$GT$10model_name17h*
 [with plugins]
@@ -1436,6 +1432,10 @@ _ZN18alter_zero_plugins10components6Reader5skill17h*
 _ZN18alter_zero_plugins10components6Reader6agents17h*
 _ZN18alter_zero_plugins10components6Reader7command17h*
 _ZN18alter_zero_plugins10components6Reader8commands17h*
+_ZN18alter_zero_plugins4text13clean_display17h*
+_ZN18alter_zero_plugins4text16clean_paragraphs17h*
+_ZN18alter_zero_plugins4text18cleaned_paragraphs17h*
+_ZN18alter_zero_plugins4text7cleaned17h*
 _ZN18alter_zero_plugins5state11PluginsFile10is_enabled17h*
 _ZN18alter_zero_plugins5state11PluginsFile5parse17h*
 _ZN18alter_zero_plugins5state11PluginsFile5parse28_$u7b$$u7b$closure$u7d$$u7d$17h*
@@ -1458,6 +1458,7 @@ _ZN18alter_zero_plugins8manifest12parse_legacy17h*
 _ZN18alter_zero_plugins8manifest12read_bounded17h*
 _ZN18alter_zero_plugins8manifest13decode_string17h*
 _ZN18alter_zero_plugins8manifest13load_manifest17h*
+_ZN18alter_zero_plugins8manifest14PluginMetadata5clean17h*
 _ZN18alter_zero_plugins8manifest14resolve_inside17h*
 _ZN18alter_zero_plugins8manifest15legacy_manifest17h*
 _ZN18alter_zero_plugins8manifest15resolve_lenient17h*
@@ -1471,6 +1472,7 @@ _ZN3std3sys12thread_local6native5eager7destroy17h*
 _ZN3std3sys2fs12canonicalize17h*
 _ZN3std3sys2fs4unix12canonicalize17h*
 _ZN3std3sys3pal4unix14stack_overflow3imp12drop_handler17h*
+_ZN3std4sync4mpmc5array16Channel$LT$T$GT$4recv28_$u7b$$u7b$closure$u7d$$u7d$17h*
 _ZN4core3ptr111drop_in_place$LT$alloc..vec..Vec$LT$$LP$alter_zero_plugins..state..PluginId$C$alloc..string..String$RP$$GT$$GT$17h*
 _ZN4core3ptr132drop_in_place$LT$alloc..collections..btree..map..BTreeMap$LT$alloc..string..String$C$alter_zero_plugins..state..PluginRecord$GT$$GT$17h*
 _ZN4core3ptr134drop_in_place$LT$alloc..collections..btree..map..BTreeMap$LT$alloc..string..String$C$alter_zero_plugins..state..ProjectPlugins$GT$$GT$17h*
@@ -1491,6 +1493,7 @@ _ZN4core3ptr65drop_in_place$LT$alter_zero_plugins..state..MarketplaceRecord$GT$1
 _ZN4core3ptr71drop_in_place$LT$alter_zero_plugins..components..PluginContribution$GT$17h*
 _ZN4core3ptr79drop_in_place$LT$alloc..vec..Vec$LT$alter_zero_plugins..state..PluginId$GT$$GT$17h*
 _ZN4core3ptr82drop_in_place$LT$alloc..vec..Vec$LT$alter_zero..hooks..config..HookHandler$GT$$GT$17h*
+_ZN4core3ptr82drop_in_place$LT$alloc..vec..drain..Drain$LT$std..sync..mpmc..waker..Entry$GT$$GT$17h*
 _ZN4core3ptr83drop_in_place$LT$alloc..vec..Vec$LT$alter_zero..hooks..config..MatcherGroup$GT$$GT$17h*
 _ZN4core3ptr87drop_in_place$LT$alloc..vec..Vec$LT$alter_zero_plugins..components..PluginSkill$GT$$GT$17h*
 _ZN4core3ptr88drop_in_place$LT$alloc..vec..Vec$LT$alter_zero_plugins..components..PluginServer$GT$$GT$17h*

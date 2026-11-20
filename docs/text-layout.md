@@ -83,9 +83,10 @@ profile, `docs/binary-size.md`), in a configured session:
 | **Total** | **14.48 MB** |
 
 Most of it is the binary's code. And callgrind's answer to how much code a
-configured session needs at rest: **861 functions, 1.42 MB**, out of
-11.9 MB. (A first run needs 734 functions and 1.17 MB; the `release` build,
-which inlines less, 1,581 functions and 1.26 MB out of 13.8 MB.)
+configured session needs at rest, taken on the current binary and its
+13.0 MB of code: **857 functions, 1.42 MB**. (A first run needs 730
+functions and 1.17 MB; the `release` build, which inlines less, 1,581
+functions and 1.30 MB out of 14.9 MB.)
 
 ## Why eight megabytes are resident for the one and a half that run
 
@@ -163,9 +164,9 @@ names is renamed.
 **The list is in groups, and a group is one run of code.** A linker places
 the sections one input statement matches together, so each `[group]` of the
 list is a statement of its own, in the list's order: `[a configured
-session]` first — everything such a session runs, 1,330 functions — then
-`[a first run]`, the 21 only the offline demo adds, then `[with plugins]`,
-the 154 a session with a plugin on adds. A session keeps resident the
+session]` first — everything such a session runs, 1,329 functions — then
+`[a first run]`, the 18 only the offline demo adds, then `[with plugins]`,
+the 161 a session with a plugin on adds. A session keeps resident the
 groups it runs: a configured one the first, one with plugins the first and
 the last, and neither pays for the other's. That is also how a new
 always-on feature should join the list — as a group, profiled in a scenario
@@ -252,8 +253,8 @@ the linker's order happened to cost that day.
 generic function the same but for the hash — `RawVec<T,A>::grow_one` is one
 name for hundreds of functions — so the pattern for the instance an idle
 session runs takes the rest with it. In the `dist` binary the functions a
-configured session ran are 1.42 MB and their patterns take 2.82 MB (1.26 MB
-and 3.89 MB in `release`, where every crate keeps its own copy of each
+configured session ran are 1.42 MB and their patterns take 2.82 MB (1.30 MB
+and 3.94 MB in `release`, where every crate keeps its own copy of each
 instance): half of `.text.idle` and more is code that did not run and is
 resident anyway. The `v0` mangling names an instance by its type arguments,
 which would let the list name exactly what ran. It was weighed and left: it
