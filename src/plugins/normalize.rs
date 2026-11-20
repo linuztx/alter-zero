@@ -272,8 +272,10 @@ fn absolute_command(command: &str, ctx: &NormalizeContext<'_>) -> String {
 /// `sh -c 'cd "$1" && shift && exec "$@"' alter-zero-plugin <cwd> <command>
 /// <args…>` (the MCP loader has no working-directory field); the plugin
 /// variables are expanded everywhere and every other `${…}` left for the
-/// loader; unknown keys (Codex's `oauth`, `scopes`, `env_vars`, timeouts) are
-/// dropped; `ws` and unknown transports are dropped and named. Server names
+/// loader; a remote server's `oauth` block and server-level `scopes` become
+/// the loader's `oauth` (see `oauth`); other unknown keys (`env_vars`,
+/// timeouts, icons) are dropped; `ws` and unknown transports are dropped and
+/// named. Server names
 /// become `plugin_<plugin>_<server>`.
 #[must_use]
 pub fn normalize_mcp(documents: &[Value], ctx: &NormalizeContext<'_>) -> NormalizedMcp {
@@ -373,6 +375,9 @@ fn server(entry: &Value, ctx: &NormalizeContext<'_>) -> Result<(Value, &'static 
         if !headers.is_empty() {
             out.insert("headers".into(), Value::Object(headers));
         }
+        if let Some(oauth) = oauth(object, &expand) {
+            out.insert("oauth".into(), Value::Object(oauth));
+        }
         return Ok((Value::Object(out), kind.unwrap_or("http")));
     }
     let command = object
@@ -420,6 +425,73 @@ fn server(entry: &Value, ctx: &NormalizeContext<'_>) -> Result<(Value, &'static 
     }
     out.insert("env".into(), Value::Object(env));
     Ok((Value::Object(out), "stdio"))
+}
+
+/// A remote server's sign-in client in the spelling the MCP loader reads —
+/// `clientId`, `clientSecret`, `callbackPort`, `scopes` — from an `oauth`
+/// block in either spelling (the snake_case one winning, as in the
+/// reference implementation) and a server-level `scopes` list, which an
+/// `oauth.scopes` outranks. A value the loader would refuse — a number for
+/// an id, a port out of range — and an id or secret still reading
+/// `<PLACEHOLDER>` are left out, so one bad field never costs the server.
+/// `None` when nothing is left.
+fn oauth(server: &Map<String, Value>, expand: &dyn Fn(&str) -> String) -> Option<Map<String, Value>> {
+    let block = server.get("oauth").and_then(Value::as_object);
+    let field = |snake: &str, camel: &str| {
+        block.and_then(|block| block.get(snake).or_else(|| block.get(camel)))
+    };
+    let text = |snake: &str, camel: &str| {
+        field(snake, camel)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !is_placeholder(text))
+            .map(|text| Value::String(expand(text)))
+    };
+    let mut out = Map::new();
+    if let Some(id) = text("client_id", "clientId") {
+        out.insert("clientId".into(), id);
+    }
+    if let Some(secret) = text("client_secret", "clientSecret") {
+        out.insert("clientSecret".into(), secret);
+    }
+    if let Some(port) = field("callback_port", "callbackPort")
+        .and_then(Value::as_u64)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0)
+    {
+        out.insert("callbackPort".into(), Value::from(port));
+    }
+    if let Some(scopes) = block
+        .and_then(|block| block.get("scopes"))
+        .and_then(scope_list)
+        .or_else(|| server.get("scopes").and_then(scope_list))
+    {
+        out.insert("scopes".into(), Value::String(scopes));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Scopes as one space-separated string, from a string or a list of them;
+/// `None` for anything else or nothing.
+fn scope_list(value: &Value) -> Option<String> {
+    let words: Vec<&str> = match value {
+        Value::String(text) => text.split_whitespace().collect(),
+        Value::Array(items) => {
+            let mut words = Vec::new();
+            for item in items {
+                words.extend(item.as_str()?.split_whitespace());
+            }
+            words
+        }
+        _ => return None,
+    };
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// `<GMAIL_PUBLIC_CLIENT_ID>`: a value a marketplace left for its own build
+/// to fill in, which no provider would accept.
+fn is_placeholder(text: &str) -> bool {
+    text.len() > 2 && text.starts_with('<') && text.ends_with('>') && !text.contains(char::is_whitespace)
 }
 
 /// A server's `cwd` as an absolute path: `.` is the root, a relative path is
@@ -570,7 +642,7 @@ mod tests {
 
     use super::*;
     use crate::hooks::{HandlerKind, HooksFile};
-    use crate::mcp::{McpServerConfig, parse_mcp_file};
+    use crate::mcp::{McpServerConfig, OAuthClientConfig, parse_mcp_file};
 
     const ROOT: &str = "/cache/m/it's a plugin";
     const DATA: &str = "/data/p-m";
@@ -1017,17 +1089,83 @@ mod tests {
         let doc = json!({ "mcpServers": { "gmail": {
             "type": "http",
             "url": "https://gmailmcp.googleapis.com/mcp/v1",
-            "scopes": ["https://mail.google.com/"],
+            "scopes": ["https://mail.google.com/", "https://www.googleapis.com/auth/gmail.modify"],
             "oauth": { "callback_port": 12798, "client_id": "<GMAIL_PUBLIC_CLIENT_ID>",
                        "client_secret": "<GMAIL_CLIENT_SECRET>" },
             "oauth_resource": "x"
         } } });
         let out = normalize_mcp(&[doc], &ctx(false));
+        assert_eq!(
+            servers(&out)[0].1,
+            McpServerConfig::Http {
+                url: "https://gmailmcp.googleapis.com/mcp/v1".into(),
+                headers: std::collections::BTreeMap::new(),
+                sse_fallback: false,
+                oauth: Some(OAuthClientConfig {
+                    client_id: None,
+                    client_secret: None,
+                    callback_port: Some(12798),
+                    scopes: Some(
+                        "https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify"
+                            .into()
+                    ),
+                }),
+            }
+        );
+        assert!(!out.json.as_deref().unwrap_or_default().contains("GMAIL"));
+    }
+
+    #[test]
+    fn a_remote_servers_oauth_client_is_carried_in_the_loaders_spelling() {
+        let doc = json!({ "mcpServers": { "github": {
+            "type": "http",
+            "url": "https://api.githubcopilot.com/mcp/",
+            "oauth": { "client_id": "Iv23li", "client_secret": "824c9c", "callback_port": 12799,
+                       "callback_url": "http://127.0.0.1:12799/callback/x" }
+        }, "slack": { "type": "sse", "url": "https://mcp.slack.com/sse",
+            "oauth": { "clientId": "1184.1190", "scopes": "chat:write  users:read" } },
+           "odd": { "url": "https://odd.example/mcp",
+            "oauth": { "client_id": 7, "callback_port": "12799", "scopes": [1] } } } });
+        let out = normalize_mcp(&[doc], &ctx(false));
+        let got = servers(&out);
+        let oauth = |name: &str| match &got.iter().find(|(n, _)| n == name).expect(name).1 {
+            McpServerConfig::Http { oauth, .. } | McpServerConfig::Sse { oauth, .. } => {
+                oauth.clone()
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            oauth("plugin_p_github"),
+            Some(OAuthClientConfig {
+                client_id: Some("Iv23li".into()),
+                client_secret: Some("824c9c".into()),
+                callback_port: Some(12799),
+                scopes: None,
+            })
+        );
+        assert_eq!(
+            oauth("plugin_p_slack"),
+            Some(OAuthClientConfig {
+                client_id: Some("1184.1190".into()),
+                client_secret: None,
+                callback_port: None,
+                scopes: Some("chat:write users:read".into()),
+            })
+        );
+        // Fields of a shape the loader would refuse are left out rather than
+        // costing the server.
+        assert_eq!(oauth("plugin_p_odd"), None);
+    }
+
+    #[test]
+    fn server_level_scopes_alone_make_an_oauth_block() {
+        let doc = json!({ "s": { "type": "http", "url": "https://x/mcp", "scopes": ["a", "b"] } });
+        let out = normalize_mcp(&[doc], &ctx(false));
         assert!(matches!(
             &servers(&out)[0].1,
-            McpServerConfig::Http { oauth: None, url, .. } if url == "https://gmailmcp.googleapis.com/mcp/v1"
+            McpServerConfig::Http { oauth: Some(oauth), .. }
+                if oauth.scopes.as_deref() == Some("a b") && oauth.client_id.is_none()
         ));
-        assert!(!out.json.as_deref().unwrap_or_default().contains("GMAIL"));
     }
 
     #[test]

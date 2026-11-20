@@ -230,7 +230,11 @@ already reads:
 - `.alter-zero-plugin/mcp.json` is an ordinary `mcp.json` (`docs/mcp.md`):
   each server named `plugin_<plugin>_<server>` (Claude Code's wire shape, so
   a hook matcher written for `mcp__plugin_<plugin>_<server>__<tool>` matches
-  unchanged), `streamable-http` spelt `http`, the variables expanded, the
+  unchanged), `streamable-http` spelt `http`, the variables expanded, a
+  remote server's `oauth` client (`client_id`, `client_secret`,
+  `callback_port` — either spelling) and a server-level `scopes` list carried
+  into the `oauth` block the loader reads, an id still reading
+  `<PLACEHOLDER>` left out, the
   plugin's four variables set in a stdio server's environment, and — for
   the two formats whose servers start in the plugin's folder — the command
   wrapped in a `cd`.
