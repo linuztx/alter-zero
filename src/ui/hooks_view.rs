@@ -404,10 +404,13 @@ fn detail_lines(
         lines.push(field_line("Matcher:", label, value, width));
     }
     lines.push(field_line("Type:", &hook.kind, value, width));
-    let source = menu.source.as_ref().map_or_else(
-        || HOOKS_SOURCE_LABEL.to_string(),
-        |path| format!("{HOOKS_SOURCE_LABEL} ({path})"),
-    );
+    // A plugin's hook names its plugin; the rest name the files the menu
+    // was opened over.
+    let source = match (&hook.plugin, &menu.source) {
+        (Some(plugin), _) => format!("Plugin ({plugin})"),
+        (None, Some(path)) => format!("{HOOKS_SOURCE_LABEL} ({path})"),
+        (None, None) => HOOKS_SOURCE_LABEL.to_string(),
+    };
     lines.push(field_line("Source:", &source, dim, width));
     // Where the hook stands with the user, for one that can run
     // (`docs/config-review.md`) — Enter on this page toggles it.

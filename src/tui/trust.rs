@@ -98,6 +98,11 @@ pub(crate) struct TrustState {
     /// The project layer; `None` when `ALTER_ZERO_PROJECT_CONFIG` is off or
     /// the cwd resolves to the home directory.
     pub(crate) project: Option<ProjectLayer>,
+    /// The enabled plugins' hooks, one layer per file, after the project's
+    /// (`docs/plugins.md`) — untrusted until reviewed, like any other.
+    plugin_hooks: Vec<hooks::PluginHooks>,
+    /// The enabled plugins' MCP files — the third reviewed scope.
+    plugin_mcp: Vec<mcp::PluginMcpFile>,
 }
 
 impl TrustState {
@@ -108,6 +113,8 @@ impl TrustState {
     pub(crate) fn load(
         user_hooks: Option<(PathBuf, hooks::HooksFile)>,
         project: Option<ProjectLayer>,
+        plugin_hooks: Vec<hooks::PluginHooks>,
+        plugin_mcp: Vec<mcp::PluginMcpFile>,
     ) -> (Self, Option<String>) {
         let store_path = config::trust_json_path();
         let (store, error) = config::load_trust_file(store_path.as_deref());
@@ -116,6 +123,8 @@ impl TrustState {
             store_path,
             user_hooks,
             project,
+            plugin_hooks,
+            plugin_mcp,
         };
         let migrated = state.migrate_legacy().err();
         (state, error.or(migrated))
@@ -153,17 +162,49 @@ impl TrustState {
         })
     }
 
+    /// Replace the plugins' hook layers (an install, an update, a toggle).
+    /// Whether they changed — the caller rebinds the runner then.
+    pub(crate) fn set_plugin_hooks(&mut self, layers: Vec<hooks::PluginHooks>) -> bool {
+        let changed = self.plugin_hooks != layers;
+        self.plugin_hooks = layers;
+        changed
+    }
+
+    /// Replace the plugins' MCP files. Whether they changed.
+    pub(crate) fn set_plugin_mcp(&mut self, files: Vec<mcp::PluginMcpFile>) -> bool {
+        let changed = self.plugin_mcp != files;
+        self.plugin_mcp = files;
+        changed
+    }
+
+    /// The plugins' MCP files.
+    pub(crate) fn plugin_mcp(&self) -> &[mcp::PluginMcpFile] {
+        &self.plugin_mcp
+    }
+
     /// Every hooks file that parsed, with its absolute path and scope word —
-    /// the user's first, the project's after it (the merge's order).
-    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, &'static str)> {
+    /// the user's first, the project's after it (the merge's order), then
+    /// each plugin's, its scope naming the plugin.
+    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, String)> {
         let mut out = Vec::new();
         if let Some((path, file)) = &self.user_hooks {
-            out.push((path.display().to_string(), file, "User"));
+            out.push((path.display().to_string(), file, "User".to_string()));
         }
         if let Some(file) = self.project.as_ref().and_then(|p| p.hooks.as_ref())
             && let Ok(parsed) = &file.parsed
         {
-            out.push((file.path.display().to_string(), parsed, "Project"));
+            out.push((
+                file.path.display().to_string(),
+                parsed,
+                "Project".to_string(),
+            ));
+        }
+        for layer in &self.plugin_hooks {
+            out.push((
+                layer.path.display().to_string(),
+                &layer.file,
+                format!("Plugin {}", layer.plugin.name),
+            ));
         }
         out
     }
@@ -226,7 +267,7 @@ impl TrustState {
                 .collect();
             if !items.is_empty() {
                 sections.push(ReviewSection {
-                    scope: Some(scope.to_string()),
+                    scope: Some(scope),
                     path: alter_zero::ui::display_cwd(Path::new(&source), home),
                     items,
                 });
@@ -235,8 +276,37 @@ impl TrustState {
         (!sections.is_empty()).then(|| ReviewPage::new(ReviewKind::Hooks, sections))
     }
 
-    /// Every project server and where it stands (`trust::review_servers`).
+    /// Every reviewed MCP file — the project's, then each plugin's — as
+    /// `(absolute path, parse)`, in precedence order.
+    fn reviewed_mcp_files(&self) -> Vec<(String, mcp::McpFile)> {
+        let mut out: Vec<(String, mcp::McpFile)> = self
+            .project
+            .as_ref()
+            .map(|project| {
+                project
+                    .mcp_files()
+                    .into_iter()
+                    .map(|(path, file)| (path.display().to_string(), file.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.extend(
+            self.plugin_mcp
+                .iter()
+                .map(|file| (file.source.display().to_string(), file.as_mcp_file())),
+        );
+        out
+    }
+
+    /// Every project and plugin server and where it stands
+    /// (`trust::review_servers`).
     pub(crate) fn server_reviews(&self) -> Vec<ServerReview> {
+        // Without plugins, exactly the path every launch has always run —
+        // nothing of the plugins' code is touched (`docs/plugins.md`
+        // *Memory*).
+        if !self.plugin_mcp.is_empty() {
+            return self.server_reviews_with_plugins();
+        }
         let Some(project) = &self.project else {
             return Vec::new();
         };
@@ -250,6 +320,31 @@ impl TrustState {
             .map(|(path, file)| (path.as_str(), *file))
             .collect();
         trust::review_servers(&self.store, &borrowed)
+    }
+
+    /// [`Self::server_reviews`] with the plugins' MCP files after the
+    /// project's.
+    fn server_reviews_with_plugins(&self) -> Vec<ServerReview> {
+        let files = self.reviewed_mcp_files();
+        let borrowed: Vec<(&str, &mcp::McpFile)> = files
+            .iter()
+            .map(|(path, file)| (path.as_str(), file))
+            .collect();
+        trust::review_servers(&self.store, &borrowed)
+    }
+
+    /// Are there plugin MCP files? The caller's guard, so a launch without
+    /// plugins calls none of their code.
+    #[inline]
+    pub(crate) fn has_plugin_mcp(&self) -> bool {
+        !self.plugin_mcp.is_empty()
+    }
+
+    /// The plugin declaring the MCP file `source`, when a plugin does.
+    fn mcp_plugin(&self, source: &str) -> Option<&mcp::PluginMcpFile> {
+        self.plugin_mcp
+            .iter()
+            .find(|file| file.source.display().to_string() == source)
     }
 
     /// The servers page: the servers the manager holds for the review
@@ -266,9 +361,24 @@ impl TrustState {
                 )),
                 _ => None,
             };
+            let plugin = if self.plugin_mcp.is_empty() {
+                None
+            } else {
+                self.mcp_plugin(&review.source)
+            };
+            let mut detail = server_detail(&review.config);
+            // A plugin's local server runs in a directory of its plugin's
+            // choosing: part of what runs, so the page says where.
+            if let Some(cwd) = plugin
+                .and_then(|file| file.servers.iter().find(|s| s.name == review.name))
+                .and_then(|server| server.launch.cwd.as_ref())
+                .filter(|_| !review.config.is_remote())
+            {
+                detail.push(format!("cwd  {}", cwd.display()));
+            }
             let item = ReviewItem {
                 title: format!("{} · {}", review.name, review.config.transport_label()),
-                detail: server_detail(&review.config),
+                detail,
                 change,
                 checked: true,
                 key: ReviewKey::Server {
@@ -280,10 +390,16 @@ impl TrustState {
             match sections.iter_mut().find(|section| section.path == path) {
                 Some(section) => section.items.push(item),
                 None => sections.push(ReviewSection {
-                    scope: None,
+                    scope: plugin.map(|file| format!("Plugin {}", file.plugin)),
                     path,
                     items: vec![item],
                 }),
+            }
+        }
+        // Beside a plugin's file, a project's names its scope too.
+        if sections.iter().any(|section| section.scope.is_some()) {
+            for section in &mut sections {
+                section.scope.get_or_insert_with(|| "Project".to_string());
             }
         }
         (!sections.is_empty()).then(|| ReviewPage::new(ReviewKind::McpServers, sections))
@@ -312,14 +428,13 @@ impl TrustState {
     fn record_servers(&mut self, decisions: &[(String, String, bool)]) -> Result<(), String> {
         let sources: BTreeSet<&String> = decisions.iter().map(|(source, _, _)| source).collect();
         let mut files: Vec<FileDecisions> = Vec::new();
+        let reviewed = self.reviewed_mcp_files();
         for source in sources {
-            let Some(file) = self.project.as_ref().and_then(|project| {
-                project
-                    .mcp_files()
-                    .into_iter()
-                    .find(|(path, _)| path.display().to_string() == *source)
-                    .map(|(_, file)| file.clone())
-            }) else {
+            let Some(file) = reviewed
+                .iter()
+                .find(|(path, _)| path == source)
+                .map(|(_, file)| file.clone())
+            else {
                 continue;
             };
             let named: Vec<(String, bool)> = decisions
@@ -336,6 +451,14 @@ impl TrustState {
         })
     }
 
+    /// Forget every decision about the files under `dir` — an installed
+    /// plugin's cache directory — in the session's copy and in
+    /// `trust.json` (`docs/plugins.md` *Installing*).
+    pub(crate) fn forget_under(&mut self, dir: &Path) -> Result<(), String> {
+        self.store.forget_under(dir);
+        forget_plugin_trust(self.store_path.as_deref(), dir)
+    }
+
     /// Apply `change` to the session's copy, then record it in `trust.json`.
     fn record(&mut self, change: impl Fn(&mut TrustFile)) -> Result<(), String> {
         change(&mut self.store);
@@ -348,7 +471,38 @@ impl TrustState {
     /// costs this session's choices their persistence, not every earlier
     /// decision. `Ok` with nowhere to write (no config home).
     fn persist(&self, change: impl FnOnce(&mut TrustFile)) -> Result<(), String> {
-        let Some(path) = &self.store_path else {
+        persist_at(self.store_path.as_deref(), change)
+    }
+}
+
+/// `page` keeping only the sections a plugin's files make — what a change of
+/// plugins asks about, never a decision the user already put off.
+fn plugins_only(mut page: ReviewPage) -> Option<ReviewPage> {
+    page.sections.retain(|section| {
+        section
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.starts_with("Plugin "))
+    });
+    (!page.sections.is_empty()).then(|| ReviewPage::new(page.kind, page.sections))
+}
+
+/// Forget every hooks and MCP decision recorded for a file under `dir` (an
+/// installed plugin's cache directory) in the `trust.json` at `store_path`
+/// — the boundary half of `TrustFile::forget_under`, through the same
+/// read-modify-write as every decision. Callable before the TUI boots
+/// (`alter-zero plugin install`): `store_path` is
+/// `config::trust_json_path()`. `Ok` with nowhere to write.
+pub(crate) fn forget_plugin_trust(store_path: Option<&Path>, dir: &Path) -> Result<(), String> {
+    persist_at(store_path, |store| {
+        store.forget_under(dir);
+    })
+}
+
+/// Record `change` over the `trust.json` at `path` as it is on disk now.
+fn persist_at(path: Option<&Path>, change: impl FnOnce(&mut TrustFile)) -> Result<(), String> {
+    {
+        let Some(path) = path else {
             return Ok(());
         };
         let not_saved = |err: &dyn std::fmt::Display| {
@@ -627,16 +781,16 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
-    /// `/mcp` Enable or Disable on a **project** server: the decision is the
-    /// review's, recorded in `trust.json`, never in the user's MCP file.
-    /// `false` when `name` is not a project server the session knows, so
-    /// the caller applies the user file's toggle instead.
-    pub(crate) fn set_project_server(&mut self, name: &str, enabled: bool) -> bool {
+    /// `/mcp` Enable or Disable on a **project** or **plugin** server: the
+    /// decision is the review's, recorded in `trust.json`, never in the
+    /// user's MCP file. `false` when `name` is not a reviewed server the
+    /// session knows, so the caller applies the user file's toggle instead.
+    pub(crate) fn set_reviewed_server(&mut self, name: &str, enabled: bool) -> bool {
         let manager = self.mcp.clone();
-        let project = manager
-            .snapshot()
-            .iter()
-            .any(|server| server.name == name && server.scope == mcp::McpScope::Project);
+        let project = manager.snapshot().iter().any(|server| {
+            server.name == name
+                && matches!(server.scope, mcp::McpScope::Project | mcp::McpScope::Plugin)
+        });
         let Some(review) = self.server_reviews_named(name).filter(|_| project) else {
             return false;
         };
@@ -658,10 +812,189 @@ impl Session<'_> {
         true
     }
 
+    /// Take in what the enabled plugins contribute now (`docs/plugins.md`
+    /// *Loading into a session*): first forget every trust decision under
+    /// the `forget` directories (a plugin just installed, updated or
+    /// removed), then replace the plugins' hook layers — rebinding the
+    /// hooks the session runs — and their MCP files — adding, holding and
+    /// dropping servers in the running manager — and open the review on
+    /// whatever of theirs now waits for a decision. Nothing changed, nothing
+    /// done: the session without plugins pays nothing here.
+    pub(crate) fn set_plugin_contributions(
+        &mut self,
+        plugin_hooks: Vec<hooks::PluginHooks>,
+        plugin_mcp: Vec<mcp::PluginMcpFile>,
+        forget: &[PathBuf],
+    ) {
+        let mut errors = Vec::new();
+        for dir in forget {
+            if let Err(error) = self.trust.forget_under(dir) {
+                errors.push(error);
+            }
+        }
+        let forgot = !forget.is_empty();
+        let hooks_changed = self.trust.set_plugin_hooks(plugin_hooks) || forgot;
+        let mcp_changed = self.trust.set_plugin_mcp(plugin_mcp) || forgot;
+        if !hooks_changed && !mcp_changed && errors.is_empty() {
+            return;
+        }
+        if hooks_changed {
+            self.models.set_hooks_file(self.trust.runner_hooks());
+        }
+        if mcp_changed {
+            errors.extend(super::mcp::sync_plugin_servers(&self.mcp, &self.trust));
+        }
+        for error in errors {
+            self.toast(error, ToastKind::Error);
+        }
+        let pages = self
+            .review_pages(hooks_changed, mcp_changed)
+            .into_iter()
+            .filter_map(plugins_only)
+            .collect();
+        self.app.open_requested_review(pages);
+        self.frame.schedule_frame();
+    }
+
     fn server_reviews_named(&self, name: &str) -> Option<ServerReview> {
         self.trust
             .server_reviews()
             .into_iter()
             .find(|review| review.name == name)
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    fn plugin_hooks(name: &str, root: &str) -> hooks::PluginHooks {
+        hooks::PluginHooks::parse(
+            hooks::HookPlugin {
+                name: name.to_string(),
+                root: PathBuf::from(root),
+                data: PathBuf::from("/data"),
+            },
+            PathBuf::from(format!("{root}/hooks/hooks.json")),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"${CLAUDE_PLUGIN_ROOT}/run.sh"}]}]}}"#,
+        )
+        .expect("fixture parses")
+    }
+
+    fn stop_commands(file: &hooks::HooksFile) -> Vec<String> {
+        file.select(hooks::HookEvent::Stop, None)
+            .handlers
+            .into_iter()
+            .map(|hook| hook.command)
+            .collect()
+    }
+
+    /// Nothing a plugin's hooks file holds reaches the runner before the
+    /// review: untrusted, it is on the hooks page under its plugin's name;
+    /// trusted, it runs; and forgetting the plugin's directory (an install
+    /// or an update) puts it back to unreviewed.
+    #[test]
+    fn a_plugins_hooks_run_only_once_reviewed() {
+        let mut state = TrustState::default();
+        assert!(state.set_plugin_hooks(vec![
+            plugin_hooks("one@m", "/cache/one"),
+            plugin_hooks("two@m", "/cache/two"),
+        ]));
+        assert!(!state.set_plugin_hooks(vec![
+            plugin_hooks("one@m", "/cache/one"),
+            plugin_hooks("two@m", "/cache/two"),
+        ]));
+        assert!(stop_commands(&state.runner_hooks()).is_empty());
+        assert_eq!(stop_commands(&state.configured_hooks()).len(), 2);
+        let page = state.hooks_page(None).expect("waiting for review");
+        let scopes: Vec<Option<&str>> = page
+            .sections
+            .iter()
+            .map(|section| section.scope.as_deref())
+            .collect();
+        assert_eq!(scopes, [Some("Plugin one@m"), Some("Plugin two@m")]);
+        let ReviewKey::Hook { source, identity } = page.sections[0].items[0].key.clone() else {
+            panic!("a hook");
+        };
+        assert_eq!(identity.command, "/cache/one/run.sh");
+        state.record_hooks(&source, &[identity], &[]).unwrap();
+        assert_eq!(stop_commands(&state.runner_hooks()), ["/cache/one/run.sh"]);
+        // An install or an update forgets it: asked about again.
+        state.forget_under(Path::new("/cache/one")).unwrap();
+        assert!(stop_commands(&state.runner_hooks()).is_empty());
+        // Removed: gone from everything.
+        assert!(state.set_plugin_hooks(Vec::new()));
+        assert!(stop_commands(&state.configured_hooks()).is_empty());
+        assert!(state.hooks_page(None).is_none());
+    }
+
+    fn plugin_mcp() -> mcp::PluginMcpFile {
+        let root = Path::new("/cache/db");
+        mcp::PluginMcpFile::parse_legacy(
+            "db@m",
+            "db",
+            root.join(".mcp.json"),
+            r#"{"main":{"command":"./bin/srv","cwd":"."}}"#,
+            root,
+            Path::new("/data/db"),
+        )
+    }
+
+    /// A plugin's servers are reviewed like a project's: listed new until
+    /// decided, on the servers page under the plugin's name with where they
+    /// run, and recorded against the plugin's file.
+    #[test]
+    fn a_plugins_servers_are_reviewed_and_recorded() {
+        let mut state = TrustState::default();
+        assert!(state.server_reviews().is_empty());
+        assert!(state.set_plugin_mcp(vec![plugin_mcp()]));
+        let reviews = state.server_reviews();
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].name, "plugin:db:main");
+        assert!(reviews[0].trust.needs_review());
+        let page = state
+            .mcp_page(&["plugin:db:main".to_string()], None)
+            .expect("waiting for review");
+        assert_eq!(page.sections[0].scope.as_deref(), Some("Plugin db@m"));
+        assert!(
+            page.sections[0].items[0]
+                .detail
+                .contains(&"cwd  /cache/db/.".to_string()),
+            "{:?}",
+            page.sections[0].items[0].detail
+        );
+        state
+            .record_servers(&[(
+                "/cache/db/.mcp.json".to_string(),
+                "plugin:db:main".to_string(),
+                true,
+            )])
+            .unwrap();
+        assert!(state.server_reviews()[0].trust.approved());
+        state.forget_under(Path::new("/cache/db")).unwrap();
+        assert!(state.server_reviews()[0].trust.needs_review());
+    }
+
+    /// The review a plugin change opens asks only about the plugins' files.
+    #[test]
+    fn a_plugin_change_reviews_only_the_plugins_files() {
+        let page = ReviewPage::new(
+            ReviewKind::Hooks,
+            vec![
+                ReviewSection {
+                    scope: Some("User".to_string()),
+                    path: "~/.alter-zero/hooks.json".to_string(),
+                    items: Vec::new(),
+                },
+                ReviewSection {
+                    scope: Some("Plugin one@m".to_string()),
+                    path: "~/x".to_string(),
+                    items: Vec::new(),
+                },
+            ],
+        );
+        let kept = plugins_only(page).expect("a plugin section");
+        assert_eq!(kept.sections.len(), 1);
+        assert!(plugins_only(ReviewPage::new(ReviewKind::Hooks, Vec::new())).is_none());
     }
 }

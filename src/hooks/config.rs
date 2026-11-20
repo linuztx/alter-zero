@@ -54,6 +54,107 @@ pub struct MatcherGroup {
     /// which file each handler came from.
     #[serde(skip)]
     pub source: Option<PathBuf>,
+    /// The installed plugin this group came from — never in the file:
+    /// [`HooksFile::with_plugin`] stamps it, so the runner can export the
+    /// plugin's variables and `select`'s dedup keeps two plugins' identical
+    /// commands apart (`docs/plugins.md`).
+    #[serde(skip)]
+    pub plugin: Option<HookPlugin>,
+}
+
+/// The installed plugin a hooks file belongs to: the name the review and
+/// `/hooks` show (`superpowers@claude-plugins-official`), its root and its
+/// data directory — what `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}`
+/// (and their `PLUGIN_` spellings) mean in its commands, and what the runner
+/// exports to the handler's process under those four names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookPlugin {
+    pub name: String,
+    pub root: PathBuf,
+    pub data: PathBuf,
+}
+
+/// One plugin's hooks, as a trust layer takes them: the plugin, the file
+/// they were read from (a `hooks.json`, or the manifest for inline hooks —
+/// the trust record's key) and the parse, sourced and stamped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginHooks {
+    pub plugin: HookPlugin,
+    pub path: PathBuf,
+    pub file: HooksFile,
+}
+
+impl PluginHooks {
+    /// A plugin's hooks file ([`HooksFile::parse_plugin`]), read from
+    /// `path`, sourced and stamped.
+    ///
+    /// # Errors
+    /// [`HooksFile::parse_plugin`]'s.
+    pub fn parse(plugin: HookPlugin, path: PathBuf, text: &str) -> Result<Self, String> {
+        Ok(Self::stamped(plugin, path, HooksFile::parse_plugin(text)?))
+    }
+
+    /// A manifest's inline hooks ([`HooksFile::parse_plugin_inline`]),
+    /// `path` naming the manifest they are declared in.
+    ///
+    /// # Errors
+    /// [`HooksFile::parse_plugin_inline`]'s.
+    pub fn parse_inline(plugin: HookPlugin, path: PathBuf, text: &str) -> Result<Self, String> {
+        Ok(Self::stamped(
+            plugin,
+            path,
+            HooksFile::parse_plugin_inline(text)?,
+        ))
+    }
+
+    fn stamped(plugin: HookPlugin, path: PathBuf, file: HooksFile) -> Self {
+        let file = file.with_source(&path).with_plugin(&plugin);
+        Self { plugin, path, file }
+    }
+}
+
+/// Substitute a plugin's four placeholders — `${CLAUDE_PLUGIN_ROOT}`,
+/// `${PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}`, `${PLUGIN_DATA}` — in `text`:
+/// the braced form only, in one pass (a substituted value is never scanned
+/// again), anything else left exactly as written for the shell to see.
+#[must_use]
+pub fn expand_plugin_vars(text: &str, root: &Path, data: &Path) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let value = after.find('}').and_then(|close| {
+            let value = match &after[..close] {
+                "CLAUDE_PLUGIN_ROOT" | "PLUGIN_ROOT" => root,
+                "CLAUDE_PLUGIN_DATA" | "PLUGIN_DATA" => data,
+                _ => return None,
+            };
+            Some((value, close))
+        });
+        match value {
+            Some((value, close)) => {
+                out.push_str(&value.display().to_string());
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push_str("${");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A plugin hooks file's top level, read leniently: `description` and
+/// `hooks`, anything else (a mods list) ignored.
+#[derive(Deserialize)]
+struct PluginHooksDocument {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    hooks: BTreeMap<String, Vec<MatcherGroup>>,
 }
 
 /// One handler inside a group.
@@ -65,6 +166,13 @@ pub struct HookHandler {
     pub kind: HandlerKind,
     #[serde(default)]
     pub command: Option<String>,
+    /// Claude Code's **exec form**: with `args`, `command` is the program
+    /// and each argument is one word exactly as written — no shell reads
+    /// them — while a path placeholder (`${CLAUDE_PROJECT_DIR}`,
+    /// `${CLAUDE_PLUGIN_ROOT}`, …) is still the directory it names.
+    /// Without it, `command` is a shell command line.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
     /// Seconds. `None` takes [`CommandHook::DEFAULT_TIMEOUT_SECS`].
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -75,6 +183,10 @@ pub struct HookHandler {
     /// Fire-and-forget. Parsed and **ignored** — every v1 hook is synchronous.
     #[serde(rename = "async", default)]
     pub is_async: bool,
+    /// Claude Code's background-and-wake-the-model flag. Parsed and run
+    /// synchronously like [`is_async`](Self::is_async), with a warning.
+    #[serde(default)]
+    pub async_rewake: bool,
     /// Claude Code's permission-rule pre-filter (`"Bash(git *)"`). We don't
     /// evaluate those, and running the handler anyway would run it **wider
     /// than the author scoped it** — so a handler carrying one is skipped
@@ -126,6 +238,9 @@ pub struct CommandHook {
     pub status_message: Option<String>,
     /// The `hooks.json` it is configured in, when it came from a file.
     pub source: Option<PathBuf>,
+    /// The plugin it belongs to, when one does: its variables are exported
+    /// to the handler's process.
+    pub plugin: Option<HookPlugin>,
 }
 
 impl CommandHook {
@@ -159,6 +274,76 @@ impl HooksFile {
             return Ok(Self::default());
         }
         serde_json::from_str(text).map_err(|err| err.to_string())
+    }
+
+    /// Parse an installed plugin's hooks file — Claude Code's
+    /// `{"description"?, "hooks": {Event: [...]}}` — leniently at the top
+    /// level only: a key this client does not model (`modules`) is read
+    /// past, and a file with no `hooks` at all is empty, not an error.
+    /// Everything inside `hooks` is read exactly as [`Self::parse`] reads it.
+    ///
+    /// # Errors
+    /// Not JSON, not an object, or a `hooks` map that does not parse.
+    pub fn parse_plugin(text: &str) -> Result<Self, String> {
+        if text.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        Self::from_plugin_document(value)
+    }
+
+    /// Parse a plugin manifest's inline hooks: the bare event map
+    /// (`{Event: [...]}`, Claude Code's inline form), or a wrapped
+    /// `{"hooks": …}` object read as [`Self::parse_plugin`] reads a file.
+    ///
+    /// # Errors
+    /// Not a JSON object, or an event map that does not parse.
+    pub fn parse_plugin_inline(text: &str) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if value.get("hooks").is_some() {
+            return Self::from_plugin_document(value);
+        }
+        if !value.is_object() {
+            return Err("inline hooks must be a JSON object".to_string());
+        }
+        let hooks = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(Self {
+            description: None,
+            hooks,
+        })
+    }
+
+    fn from_plugin_document(value: serde_json::Value) -> Result<Self, String> {
+        if !value.is_object() {
+            return Err("a hooks file must be a JSON object".to_string());
+        }
+        let document: PluginHooksDocument =
+            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(Self {
+            description: document.description,
+            hooks: document.hooks,
+        })
+    }
+
+    /// This file as `plugin`'s: its four placeholders substituted into
+    /// every handler's command ([`expand_plugin_vars`]) and every group
+    /// stamped with the plugin, so the review shows the real path, the
+    /// runner exports the variables, and two plugins' identical command text
+    /// never collapses into one handler.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: &HookPlugin) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            for handler in &mut group.hooks {
+                if let Some(command) = &handler.command {
+                    handler.command = Some(expand_plugin_vars(command, &plugin.root, &plugin.data));
+                }
+                for arg in handler.args.iter_mut().flatten() {
+                    *arg = expand_plugin_vars(arg, &plugin.root, &plugin.data);
+                }
+            }
+            group.plugin = Some(plugin.clone());
+        }
+        self
     }
 
     /// This file read from `path`: every group remembers it, so a verdict can
@@ -244,6 +429,7 @@ impl HooksFile {
                 match handler.resolve() {
                     Ok(mut hook) => {
                         hook.source.clone_from(&group.source);
+                        hook.plugin.clone_from(&group.plugin);
                         // `"async": true` parses so a config shared with
                         // another tool loads, but every v1 hook is
                         // synchronous. Running it inline is the safe reading
@@ -257,7 +443,20 @@ impl HooksFile {
                                 hook.command
                             ));
                         }
-                        if !selection.handlers.iter().any(|h| h.command == hook.command) {
+                        if handler.async_rewake {
+                            selection.warnings.push(format!(
+                                "hooks.json: {} handler {:?} is \"asyncRewake\" — run synchronously",
+                                event.name(),
+                                hook.command
+                            ));
+                        }
+                        // Two plugins' identical commands are two hooks,
+                        // each run with its own plugin's variables.
+                        if !selection
+                            .handlers
+                            .iter()
+                            .any(|h| h.command == hook.command && h.plugin == hook.plugin)
+                        {
                             selection.handlers.push(hook);
                         }
                     }
@@ -295,7 +494,8 @@ impl HookHandler {
                  skipped rather than run unscoped"
             ));
         }
-        if self.shell.as_deref() == Some("powershell") {
+        // `shell` is ignored in the exec form, which runs no shell of its own.
+        if self.args.is_none() && self.shell.as_deref() == Some("powershell") {
             return Err("handler asks for powershell — skipped (hooks run under sh)".to_string());
         }
         let command = self
@@ -304,16 +504,76 @@ impl HookHandler {
             .map(str::trim)
             .filter(|c| !c.is_empty())
             .ok_or_else(|| "command handler has no command — skipped".to_string())?;
+        let command = match &self.args {
+            Some(args) => std::iter::once(command)
+                .chain(args.iter().map(String::as_str))
+                .map(exec_word)
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => command.to_string(),
+        };
         Ok(CommandHook {
-            command: command.to_string(),
+            command,
             timeout_secs: self
                 .timeout
                 .filter(|t| *t > 0)
                 .unwrap_or(CommandHook::DEFAULT_TIMEOUT_SECS),
             status_message: self.status_message.clone(),
             source: None,
+            plugin: None,
         })
     }
+}
+
+/// The path placeholders an exec-form argument may hold — each still the
+/// directory it names, read from the variable the runner exports under the
+/// same name.
+const PATH_PLACEHOLDERS: &[&str] = &[
+    "CLAUDE_PROJECT_DIR",
+    "ALTER_ZERO_PROJECT_DIR",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
+    "PLUGIN_ROOT",
+    "PLUGIN_DATA",
+];
+
+/// One exec-form word as `sh -c` must be handed it to read it back exactly:
+/// the text single-quoted, a path placeholder spliced in as the variable
+/// it names, double-quoted — `${CLAUDE_PROJECT_DIR}/x` is
+/// `"$CLAUDE_PROJECT_DIR"'/x'` — and an empty word `''`.
+fn exec_word(text: &str) -> String {
+    fn literal(out: &mut String, text: &str) {
+        if !text.is_empty() {
+            out.push('\'');
+            out.push_str(&text.replace('\'', "'\\''"));
+            out.push('\'');
+        }
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let name = after
+            .find('}')
+            .map(|end| &after[..end])
+            .filter(|name| PATH_PLACEHOLDERS.contains(name));
+        match name {
+            Some(name) => {
+                literal(&mut out, &rest[..start]);
+                out.push_str(&format!("\"${name}\""));
+                rest = &after[name.len() + 1..];
+            }
+            None => {
+                literal(&mut out, &rest[..start + 2]);
+                rest = after;
+            }
+        }
+    }
+    literal(&mut out, rest);
+    if out.is_empty() {
+        out.push_str("''");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -354,6 +614,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                plugin: None,
             }]
         );
     }
@@ -641,6 +902,30 @@ mod tests {
     }
 
     #[test]
+    fn an_exec_form_handler_runs_each_argument_exactly_as_written() {
+        // Claude Code's exec form (`command` + `args`): no shell reads the
+        // arguments, so each is one word whatever it holds — quoted for the
+        // `sh -c` every hook runs under — while a path placeholder is still
+        // the directory it names.
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node",
+                "args":["${CLAUDE_PROJECT_DIR}/hooks/check.js","it's $HOME","","--x"]}]}]}}"#,
+        );
+        assert_eq!(
+            file.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some(r#"'node' "$CLAUDE_PROJECT_DIR"'/hooks/check.js' 'it'\''s $HOME' '' '--x'"#)
+        );
+        // An empty argument list is still the exec form: the program alone.
+        let bare = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./fmt","args":[]}]}]}}"#,
+        );
+        assert_eq!(
+            bare.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some("'./fmt'")
+        );
+    }
+
+    #[test]
     fn runnable_command_is_the_command_a_handler_would_run() {
         // What the trust review asks about (`docs/config-review.md`): exactly
         // the handlers the runner would run, their command as it would run.
@@ -747,6 +1032,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                plugin: None,
             }]
         );
     }
@@ -769,6 +1055,236 @@ mod tests {
             HooksFile::default()
                 .merged(&HooksFile::default())
                 .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    //! A plugin's hooks file (`docs/plugins.md` *What a plugin adds*).
+    use std::path::Path;
+
+    use super::*;
+
+    fn plugin(name: &str, root: &str) -> HookPlugin {
+        HookPlugin {
+            name: name.to_string(),
+            root: PathBuf::from(root),
+            data: PathBuf::from(format!("/data/{name}")),
+        }
+    }
+
+    /// `code-modernization`'s shape: a description, the hooks, and a mods
+    /// list this client does not model.
+    #[test]
+    fn a_plugin_file_tolerates_top_level_keys_it_does_not_model() {
+        let text = r#"{"description":"d","hooks":{"Stop":[{"hooks":[
+            {"type":"command","command":"sh \"${CLAUDE_PLUGIN_ROOT}/s.sh\" run"}]}]},
+            "modules":["./register.ts"]}"#;
+        // The user's own file stays strict.
+        assert!(HooksFile::parse(text).is_err());
+        let file = HooksFile::parse_plugin(text).expect("a plugin file loads");
+        assert_eq!(file.description.as_deref(), Some("d"));
+        assert_eq!(file.select(HookEvent::Stop, None).handlers.len(), 1);
+    }
+
+    /// `theme-examples`' whole file: mods and no hooks — empty, not broken.
+    #[test]
+    fn a_plugin_file_with_no_hooks_is_empty_not_an_error() {
+        let file = HooksFile::parse_plugin(r#"{ "modules": ["./register.tsx"] }"#)
+            .expect("no hooks is not an error");
+        assert!(file.is_empty());
+        assert!(HooksFile::parse_plugin("").expect("empty").is_empty());
+    }
+
+    #[test]
+    fn a_broken_plugin_file_is_still_an_error() {
+        assert!(HooksFile::parse_plugin("{").is_err());
+        assert!(HooksFile::parse_plugin(r#"{"hooks": 5}"#).is_err());
+        assert!(HooksFile::parse_plugin("[]").is_err());
+        assert!(
+            HooksFile::parse_plugin(r#"{"hooks":{"Stop":[{"hooks":[{"command":7}]}]}}"#).is_err()
+        );
+    }
+
+    /// A manifest's inline `hooks` is the bare event map; a wrapped object
+    /// is read too.
+    #[test]
+    fn inline_hooks_load_bare_or_wrapped() {
+        let bare = r#"{"Stop":[{"hooks":[{"type":"command","command":"./a.sh"}]}]}"#;
+        let file = HooksFile::parse_plugin_inline(bare).expect("a bare event map loads");
+        assert_eq!(file.select(HookEvent::Stop, None).handlers.len(), 1);
+        let wrapped = format!(r#"{{"description":"x","hooks":{bare}}}"#);
+        let file = HooksFile::parse_plugin_inline(&wrapped).expect("a wrapped map loads");
+        assert_eq!(file.select(HookEvent::Stop, None).handlers.len(), 1);
+        assert!(HooksFile::parse_plugin_inline(r#"{"Stop": 1}"#).is_err());
+    }
+
+    /// `security-guidance`'s handlers: every field Claude Code knows and we
+    /// don't is read past, an `if` still skips the handler (never run wider
+    /// than its author scoped it), and an `asyncRewake` one runs — inline,
+    /// said so.
+    #[test]
+    fn unmodelled_handler_fields_never_cost_the_file() {
+        let text = r#"{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[
+            {"type":"command","command":"./review.sh","if":"Bash(git*commit*)",
+             "asyncRewake":true,"rewakeMessage":"m","rewakeSummary":"s","timeout":5},
+            {"type":"command","command":"./always.sh","asyncRewake":true,
+             "rewakeMessage":"m","once":true,"onFailure":"continue"}
+        ]}]}}"#;
+        let file = HooksFile::parse_plugin(text).expect("loads");
+        let selection = file.select(HookEvent::PostToolUse, Some("bash"));
+        let commands: Vec<&str> = selection
+            .handlers
+            .iter()
+            .map(|hook| hook.command.as_str())
+            .collect();
+        assert_eq!(commands, ["./always.sh"]);
+        assert!(
+            selection.warnings.iter().any(|w| w.contains("\"if\"")),
+            "{:?}",
+            selection.warnings
+        );
+        assert!(
+            selection.warnings.iter().any(|w| w.contains("asyncRewake")),
+            "{:?}",
+            selection.warnings
+        );
+    }
+
+    #[test]
+    fn the_four_placeholders_are_substituted_once_braced_only() {
+        let root = Path::new("/p/root");
+        let data = Path::new("/p/data");
+        assert_eq!(
+            expand_plugin_vars(
+                "${CLAUDE_PLUGIN_ROOT}/a ${PLUGIN_ROOT}/b ${CLAUDE_PLUGIN_DATA}/c ${PLUGIN_DATA}/d",
+                root,
+                data
+            ),
+            "/p/root/a /p/root/b /p/data/c /p/data/d"
+        );
+        // Unbraced, unknown and unclosed references stay as written — the
+        // shell still sees the exported variable.
+        assert_eq!(
+            expand_plugin_vars("$CLAUDE_PLUGIN_ROOT ${HOME} ${PLUGIN_ROOT", root, data),
+            "$CLAUDE_PLUGIN_ROOT ${HOME} ${PLUGIN_ROOT"
+        );
+        // Single pass: a value is never scanned again.
+        assert_eq!(
+            expand_plugin_vars("${PLUGIN_ROOT}", Path::new("/x/${PLUGIN_DATA}"), data),
+            "/x/${PLUGIN_DATA}"
+        );
+    }
+
+    #[test]
+    fn with_plugin_stamps_every_command_and_group() {
+        let file = HooksFile::parse_plugin(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command",
+                "command":"bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\" \"${PLUGIN_DATA}\""}]}]}}"#,
+        )
+        .expect("loads")
+        .with_plugin(&plugin("ralph@m", "/cache/ralph"));
+        let hooks = file.select(HookEvent::Stop, None).handlers;
+        assert_eq!(
+            hooks[0].command,
+            "bash \"/cache/ralph/hooks/stop.sh\" \"/data/ralph@m\""
+        );
+        assert_eq!(hooks[0].plugin, Some(plugin("ralph@m", "/cache/ralph")));
+    }
+
+    /// The bug the stamp exists for: two plugins shipping the same command
+    /// text would collapse into one handler in `select`'s dedup — one
+    /// plugin's hook silently never running.
+    #[test]
+    fn two_plugins_identical_commands_stay_two_handlers() {
+        let text = r#"{"hooks":{"Stop":[{"hooks":[
+            {"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\""}]}]}}"#;
+        let one = HooksFile::parse_plugin(text)
+            .unwrap()
+            .with_plugin(&plugin("one@m", "/c/one"));
+        let two = HooksFile::parse_plugin(text)
+            .unwrap()
+            .with_plugin(&plugin("two@m", "/c/two"));
+        let merged = one.merged(&two);
+        let commands: Vec<String> = merged
+            .select(HookEvent::Stop, None)
+            .handlers
+            .into_iter()
+            .map(|hook| hook.command)
+            .collect();
+        assert_eq!(
+            commands,
+            ["\"/c/one/hooks/run.sh\"", "\"/c/two/hooks/run.sh\""]
+        );
+        // A command naming no placeholder is still two plugins' two hooks:
+        // each runs with its own plugin's variables.
+        let bare = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./run.sh"}]}]}}"#;
+        let one = HooksFile::parse_plugin(bare)
+            .unwrap()
+            .with_plugin(&plugin("one@m", "/c/one"));
+        let two = HooksFile::parse_plugin(bare)
+            .unwrap()
+            .with_plugin(&plugin("two@m", "/c/two"));
+        let roots: Vec<PathBuf> = one
+            .merged(&two)
+            .select(HookEvent::Stop, None)
+            .handlers
+            .into_iter()
+            .filter_map(|hook| hook.plugin.map(|p| p.root))
+            .collect();
+        assert_eq!(roots, [PathBuf::from("/c/one"), PathBuf::from("/c/two")]);
+        // The user's own duplicates still collapse, as before.
+        let user = HooksFile::parse(bare).unwrap();
+        assert_eq!(
+            user.merged(&user)
+                .select(HookEvent::Stop, None)
+                .handlers
+                .len(),
+            1
+        );
+    }
+
+    /// A plugin's exec-form hook: each argument has its plugin's
+    /// directories substituted, and stays one word.
+    #[test]
+    fn a_plugin_exec_form_hook_substitutes_each_argument() {
+        let file = HooksFile::parse_plugin(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"${PLUGIN_ROOT}/bin/x",
+                "args":["${CLAUDE_PLUGIN_DATA}/state file","${CLAUDE_PROJECT_DIR}"]}]}]}}"#,
+        )
+        .unwrap()
+        .with_plugin(&plugin("p@m", "/c/p"));
+        assert_eq!(
+            file.select(HookEvent::Stop, None).handlers[0].command,
+            r#"'/c/p/bin/x' '/data/p@m/state file' "$CLAUDE_PROJECT_DIR""#
+        );
+    }
+
+    #[test]
+    fn a_plugin_layer_is_parsed_sourced_and_stamped() {
+        let layer = PluginHooks::parse(
+            plugin("ralph@m", "/c/ralph"),
+            PathBuf::from("/c/ralph/hooks/hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"${PLUGIN_ROOT}/s"}]}]}}"#,
+        )
+        .expect("loads");
+        assert_eq!(layer.plugin.name, "ralph@m");
+        let hook = &layer.file.select(HookEvent::Stop, None).handlers[0];
+        assert_eq!(hook.command, "/c/ralph/s");
+        assert_eq!(
+            hook.source.as_deref(),
+            Some(Path::new("/c/ralph/hooks/hooks.json"))
+        );
+        let inline = PluginHooks::parse_inline(
+            plugin("ralph@m", "/c/ralph"),
+            PathBuf::from("/c/ralph/.claude-plugin/plugin.json"),
+            r#"{"Stop":[{"hooks":[{"type":"command","command":"${PLUGIN_ROOT}/s"}]}]}"#,
+        )
+        .expect("loads");
+        assert_eq!(
+            inline.file.select(HookEvent::Stop, None).handlers[0].command,
+            "/c/ralph/s"
         );
     }
 }

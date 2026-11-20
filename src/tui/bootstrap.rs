@@ -323,6 +323,9 @@ impl<'t> Session<'t> {
         let (trust, trust_error) = super::trust::TrustState::load(
             hooks_path.map(|path| (path, user_hooks_file)),
             super::trust::load_project_layer(&cwd),
+            // The enabled plugins' hooks and MCP files (docs/plugins.md).
+            Vec::new(),
+            Vec::new(),
         );
 
         // The telemetry ping's report channel (docs/telemetry.md) — its own
@@ -386,6 +389,14 @@ impl<'t> Session<'t> {
             mcp_tx,
             super::mcp::load_mcp_sources(&cwd, &trust),
         );
+        // The plugins' servers, held for the review unless already enabled
+        // in it — before the startup connects, which then take them along.
+        // Guarded here, so a launch without plugins runs none of their code.
+        let plugin_mcp_notices = if trust.has_plugin_mcp() {
+            super::mcp::sync_plugin_servers(&mcp_manager, &trust)
+        } else {
+            Vec::new()
+        };
         if settings.mcp {
             mcp_manager.start_connections();
         } else {
@@ -660,7 +671,17 @@ impl<'t> Session<'t> {
         session.report_skill_errors(&skill_errors);
         session.report_agent_errors(&agent_errors);
         session.report_mcp_errors();
+        for notice in plugin_mcp_notices {
+            session.toast(notice, ToastKind::Error);
+        }
         session.report_trust_state(trust_error);
+        // The mid-session plugin seam (docs/plugins.md), for the plugin glue
+        // to feed. At startup the plugins came in above, so there is nothing
+        // to change — and with nothing to hand it, it is never entered.
+        let (plugin_hooks, plugin_mcp): (Vec<_>, Vec<_>) = (Vec::new(), Vec::new());
+        if !plugin_hooks.is_empty() || !plugin_mcp.is_empty() {
+            session.set_plugin_contributions(plugin_hooks, plugin_mcp, &[]);
+        }
         session.report_secrets_error(secrets_error);
         // Last of the config reports, so it is the one left showing: a
         // provider the user wrote that did not load is the likeliest to

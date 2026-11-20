@@ -815,6 +815,45 @@ waiting for trust opens the review's hooks page.
 `ALTER_ZERO_HOOKS` seeds the row for a run (`=1` on, a falsy value off — the
 `ALTER_ZERO_TOOLS` pattern) and is never saved.
 
+## Plugins
+
+An installed plugin's hooks (`docs/plugins.md`) are one more **layer** after
+the user's and the project's (`TrustState::hook_layers`, scope word
+`Plugin {name}`), so the startup review, `/hooks`, `trust_only` and the
+runner treat them as they treat the user's own: untrusted until reviewed.
+The glue hands them in as plain data — `hooks::PluginHooks { plugin:
+HookPlugin { name, root, data }, path, file }` — through
+`TrustState::load` at startup and `Session::set_plugin_contributions`
+mid-session.
+
+- **The file** is Claude Code's plugin shape, read by
+  `HooksFile::parse_plugin`: `{"description"?, "hooks"?}` with any other
+  top-level key (`modules`) read past and a file with no `hooks` empty, not
+  an error — the user's own file stays strict. A manifest's inline hooks
+  (`parse_plugin_inline`) are the bare event map, or a wrapped object.
+- **Unmodelled handler fields** cost nothing: `rewakeMessage`,
+  `rewakeSummary`, `once`, `onFailure` are read past; `asyncRewake` runs the
+  handler synchronously with a warning, as `async` does; an `if` still skips
+  the handler, so nothing runs wider than its author scoped it.
+- **The stamp** (`HooksFile::with_plugin`) substitutes `${CLAUDE_PLUGIN_ROOT}`,
+  `${PLUGIN_ROOT}`, `${CLAUDE_PLUGIN_DATA}` and `${PLUGIN_DATA}` into every
+  command and exec-form argument — braced form only, one pass
+  (`hooks::expand_plugin_vars`) — and records the plugin on each group. The
+  runner exports the same four variables to the handler's process. The
+  review therefore shows the real path, and `select`'s dedup keys on
+  `(command, plugin)`, so two plugins' identical
+  `"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh"` — or identical placeholder-free
+  commands — stay two hooks. The user's and the project's duplicates still
+  collapse exactly as before.
+- **Exec form** (`command` + `args`, for every hook, not only a plugin's):
+  each argument is one word exactly as written — single-quoted for the
+  `sh -c` hooks run under — while a path placeholder
+  (`${CLAUDE_PROJECT_DIR}`, the plugin four) is spliced in as the variable
+  it names. A handler without `args` is the shell command line it always
+  was.
+- **An update is reviewed again**: the install path carries the version,
+  and `TrustFile::forget_under(cache dir)` drops every record under it.
+
 ## Module layout
 
 Following the pure-core / boundary split the rest of the crate uses:

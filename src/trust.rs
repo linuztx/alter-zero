@@ -622,6 +622,26 @@ impl TrustFile {
         }
     }
 
+    /// Forget every hooks and MCP record whose file lies under `dir` —
+    /// an installed plugin's cache directory (`docs/plugins.md`
+    /// *Installing*): an install, an update or an uninstall drops what was
+    /// decided about the plugin's files, so whatever arrives next is
+    /// reviewed again, even under an unchanged command line. Lexical and
+    /// component-wise — `/c/p` covers `/c/p/1.0/hooks.json` and never
+    /// `/c/plugin/…` — and a record keyed past the path (an inline hooks
+    /// key such as `…/plugin.json#hooks`) is covered by its path part.
+    /// Whether anything was forgotten.
+    pub fn forget_under(&mut self, dir: &Path) -> bool {
+        let under = |key: &String| {
+            let path = key.split_once('#').map_or(key.as_str(), |(path, _)| path);
+            Path::new(path).starts_with(dir)
+        };
+        let before = self.hooks.len() + self.mcp.len();
+        self.hooks.retain(|key, _| !under(key));
+        self.mcp.retain(|key, _| !under(key));
+        before != self.hooks.len() + self.mcp.len()
+    }
+
     /// Carry the `/trust` era's approvals over for the project at `root`
     /// (`docs/config-review.md`). `/trust` approved a project's files whole,
     /// pinned to their bytes; a file it approved at exactly its current
@@ -1700,5 +1720,66 @@ mod tests {
         );
         // A text file ends its last line.
         assert!(text.ends_with("}\n"), "{text:?}");
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    fn hook(command: &str) -> HookIdentity {
+        HookIdentity {
+            event: "Stop".to_string(),
+            matcher: String::new(),
+            command: command.to_string(),
+        }
+    }
+
+    fn store_with(paths: &[&str]) -> TrustFile {
+        let mut store = TrustFile::default();
+        let server = crate::mcp::parse_mcp_file(r#"{"mcpServers":{"s":{"command":"x"}}}"#);
+        for path in paths {
+            store.hooks.insert((*path).to_string(), vec![hook("x")]);
+            store.record_servers(path, &server, &[("s".to_string(), true)]);
+        }
+        store
+    }
+
+    /// An install forgets what was decided about the plugin's files —
+    /// hooks and servers alike — and nothing else.
+    #[test]
+    fn forgetting_a_plugin_directory_drops_only_its_records() {
+        let mut store = store_with(&[
+            "/cfg/plugins/cache/m/p/1.0.0/hooks/hooks.json",
+            "/cfg/plugins/cache/m/p/1.0.0/.claude-plugin/plugin.json#hooks",
+            "/cfg/plugins/cache/m/plugin-two/1.0/hooks/hooks.json",
+            "/home/u/.alter-zero/hooks.json",
+        ]);
+        assert!(store.forget_under(Path::new("/cfg/plugins/cache/m/p")));
+        let left: Vec<&String> = store.hooks.keys().collect();
+        assert_eq!(
+            left,
+            [
+                "/cfg/plugins/cache/m/plugin-two/1.0/hooks/hooks.json",
+                "/home/u/.alter-zero/hooks.json"
+            ]
+        );
+        assert_eq!(store.mcp.len(), 2);
+        assert!(!store.forget_under(Path::new("/cfg/plugins/cache/m/p")));
+        // Through the read-modify-write every decision goes through.
+        let text = update_store(&store.serialize(), |store| {
+            store.forget_under(Path::new("/cfg/plugins/cache/m/plugin-two"));
+        })
+        .unwrap();
+        let after = TrustFile::parse(&text).unwrap();
+        assert_eq!(after.hooks.len(), 1);
+        assert!(after.hooks.contains_key("/home/u/.alter-zero/hooks.json"));
+        // A malformed store is never written over.
+        assert!(
+            update_store("{", |store| {
+                store.forget_under(Path::new("/x"));
+            })
+            .is_err()
+        );
     }
 }

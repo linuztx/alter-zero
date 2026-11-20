@@ -9,6 +9,8 @@
 //!
 //! - `config`   — the `mcpServers` file parse, scopes, per-project disabled
 //!   sets (the `skills.json` pattern).
+//! - `plugin`   — an installed plugin's servers: the third reviewed scope,
+//!   their launch extras and how they merge in (`docs/plugins.md`).
 //! - `names`    — wire names (`mcp__server__tool`), display names
 //!   (`{server} - {tool} (MCP)`), and the batch label the live strip shows.
 //! - `protocol` — JSON-RPC framing, `initialize`, `tools/list`,
@@ -23,6 +25,7 @@ mod config;
 mod headers;
 mod instructions;
 mod names;
+mod plugin;
 mod protocol;
 mod sse;
 mod status;
@@ -46,6 +49,10 @@ pub use self::names::{
     is_mcp_tool, label_from_wire, normalize_name, parse_wire_name, server_name_problems,
     tool_display_name, tool_label, tool_wire_name, validate_server_name, wire_from_display,
     wire_names,
+};
+pub use self::plugin::{
+    McpLaunch, PLUGIN_ENV_VARS, PluginMcpFile, PluginMcpServer, PluginMerge, PluginServerEntry,
+    merge_plugin_scopes, plugin_server_name,
 };
 pub use self::protocol::{
     CallOutcome, ExcludedTool, FOLDED_SCHEMA_NOTE, Incoming, InputRequired,

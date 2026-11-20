@@ -61,6 +61,13 @@ const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// finding the project root is the first thing such a script does.
 const PROJECT_DIR_VARS: &[&str] = &["ALTER_ZERO_PROJECT_DIR", "CLAUDE_PROJECT_DIR"];
 
+/// A plugin's root, as its hooks read it — the Agent Plugins name and Claude
+/// Code's (`docs/plugins.md`).
+const PLUGIN_ROOT_VARS: &[&str] = &["PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"];
+
+/// A plugin's data directory, under both names.
+const PLUGIN_DATA_VARS: &[&str] = &["PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"];
+
 /// What the agent loop does about a `PreToolUse` verdict.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PreToolVerdict {
@@ -801,6 +808,7 @@ impl CommandHooks {
         };
         let cwd = self.cwd.clone();
         let project_dir = self.project_dir.clone();
+        let plugin = handler.plugin.clone();
         let spawned = subprocess::spawn_shell_with(
             self.detach_helper.as_deref(),
             &handler.command,
@@ -808,6 +816,16 @@ impl CommandHooks {
                 cmd.stdin(std::process::Stdio::piped()).current_dir(&cwd);
                 for var in PROJECT_DIR_VARS {
                     cmd.env(var, &project_dir);
+                }
+                // A plugin's hook reads its own files through these
+                // (`docs/plugins.md`), whichever spelling it was written for.
+                if let Some(plugin) = &plugin {
+                    for var in PLUGIN_ROOT_VARS {
+                        cmd.env(var, &plugin.root);
+                    }
+                    for var in PLUGIN_DATA_VARS {
+                        cmd.env(var, &plugin.data);
+                    }
                 }
             },
         );
@@ -3985,6 +4003,53 @@ mod tests {
         let here = subdir.canonicalize().expect("the subdir resolves");
         assert_eq!(block.reason, format!("guarded from {}", here.display()));
         let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// A plugin's hook sees its plugin's root and data directory under all
+    /// four names (`docs/plugins.md`), and a user's hook sees none of them.
+    #[test]
+    fn a_plugin_hook_gets_its_plugins_four_variables() {
+        let probe = std::env::temp_dir().join("alter-zero-plugin-hook-env-probe.txt");
+        let _ = std::fs::remove_file(&probe);
+        let command = format!(
+            "printf '%s|%s|%s|%s' \"$CLAUDE_PLUGIN_ROOT\" \"$PLUGIN_ROOT\" \
+             \"$CLAUDE_PLUGIN_DATA\" \"$PLUGIN_DATA\" > {}",
+            probe.display()
+        );
+        let plugin = crate::hooks::HookPlugin {
+            name: "p@m".into(),
+            root: "/plugin/root".into(),
+            data: "/plugin/data".into(),
+        };
+        let file = HooksFile::parse_plugin(&pre_hook(&command))
+            .expect("fixture parses")
+            .with_plugin(&plugin);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable");
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the hook ran");
+        assert_eq!(
+            written,
+            "/plugin/root|/plugin/root|/plugin/data|/plugin/data"
+        );
+        let _ = std::fs::remove_file(&probe);
+        // The user's own hook: nothing of a plugin's leaks into it.
+        let hooks = hooks_for(&pre_hook(&format!(
+            "printf '%s' \"${{CLAUDE_PLUGIN_ROOT-unset}}\" > {}",
+            probe.display()
+        )));
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the hook ran");
+        if std::env::var_os("CLAUDE_PLUGIN_ROOT").is_none() {
+            assert_eq!(written, "unset");
+        }
+        let _ = std::fs::remove_file(&probe);
     }
 
     #[test]

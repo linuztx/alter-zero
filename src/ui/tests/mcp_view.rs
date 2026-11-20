@@ -28,6 +28,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
         config_path: match scope {
             McpScope::Project => "~/repo/.mcp.json".to_string(),
             McpScope::User => "~/.alter-zero/mcp.json".to_string(),
+            McpScope::Plugin => "~/.alter-zero/plugins/cache/m/p/.mcp.json".to_string(),
         },
         config: McpServerConfig::Http {
             url: format!("https://{name}.test/mcp"),

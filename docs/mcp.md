@@ -1384,6 +1384,62 @@ event channel, which re-injects the snapshot (`App::set_mcp_snapshot`) and
 schedules a frame — the picker is always looking at live state, and a
 pending row shows `… connecting` until its thread reports.
 
+## Plugins
+
+An installed plugin's servers (`docs/plugins.md`) are a third reviewed
+scope, `McpScope::Plugin` (heading `Plugin MCPs`), held for the review
+exactly as a project's are (`McpHold::Review` / `Declined`, the servers
+page, `/mcp` Enable/Disable recorded in `trust.json` by
+`Session::set_reviewed_server`, never in the user file's disabled set).
+
+- **Names are Claude Code's**: `plugin:{plugin}:{server}`
+  (`mcp::plugin_server_name`, the plugin's manifest name), so the tools are
+  `mcp__plugin_{plugin}_{server}__{tool}` on the wire — the ordinary
+  normalisation turns `:` into `_`, and the 64-character limit and its
+  hash-shortening apply unchanged. A plugin server therefore never takes a
+  name the user or a project configured. A name that is taken anyway (two
+  enabled plugins of one manifest name) keeps its first owner and the other
+  is reported (`PluginMerge::shadowed`); a different name that meets
+  another on the wire is listed `Failed`, not started, and reported by
+  `McpManager::set_plugin_servers`.
+- **What an entry carries beyond its config** rides beside it, not in it:
+  `mcp::McpLaunch { cwd, env, literal }` — the working directory a stdio
+  server starts in (else the session's), the environment laid over its own
+  `env` (`PLUGIN_ROOT`, `PLUGIN_DATA`, `CLAUDE_PLUGIN_ROOT`,
+  `CLAUDE_PLUGIN_DATA`), and `literal`, which expands no `${…}` at all (an
+  Agent Plugins `mcp.json`, whose own two placeholders the plugin library
+  already applied). Otherwise `resolve_config` expands from the session's
+  environment and **protects the session's credentials from a plugin's
+  remote server** as it does from a project's.
+- **The fingerprint is the declared config only.** `cwd` and the plugin
+  variables are functions of where the plugin is installed, which is the
+  trust key's own path (version directory included), so they cannot change
+  while the key stays the same; and every install or update forgets the
+  records under the plugin's directory (`TrustFile::forget_under`), so an
+  unchanged reinstall is reviewed again regardless. Leaving them out keeps
+  `changed:` lines about what the plugin declared. The servers page shows
+  the `cwd` beside the command line, since where it runs is part of what
+  runs.
+- **Legacy files** (`PluginMcpFile::parse_legacy`): `{"mcpServers": …}` or
+  the bare map; the four placeholders substituted in every string; a
+  relative `cwd` and a `./` command resolved against the plugin root;
+  Codex's `streamable_http` and snake-case `oauth` keys read; every other
+  `${VAR}` left for the expansion at launch.
+- **Live swap**: `McpManager::set_plugin_servers(entries, held)` replaces
+  the plugin scope and nothing else. An unchanged entry (same entry and
+  launch) keeps its connection, though a new hold applies to it (a held
+  server's connection is dropped); a removed or changed one is dropped —
+  its transport with it, so a stdio child stops (off-thread, as on any
+  disconnect); a new one connects unless held, refused, user-disabled or
+  MCP is off. Added servers start at a generation past every removed one's,
+  so a connect still running for a removed server can never land on its
+  replacement. Limits: a sign-in flow running for a removed server is not
+  cancelled (its result finds no server and is dropped); a call already
+  running on a removed server finishes on the transport it holds; a name
+  conflict an earlier server had is not re-evaluated when the server it
+  collided with goes. With no plugins and no plugin servers the call
+  returns at once and sends no event.
+
 ## What stays out (v1)
 
 Resources, prompts, sampling, elicitation, and roots are not modeled — the

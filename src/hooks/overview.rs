@@ -68,6 +68,9 @@ pub struct HookOverview {
     /// Whether the user trusts it ([`HooksOverview::with_trust`]); always
     /// `false` without a [`trust_key`](Self::trust_key).
     pub trusted: bool,
+    /// The installed plugin it belongs to (`superpowers@claude-plugins-official`),
+    /// when one does — the detail page's `Source:` names it.
+    pub plugin: Option<String>,
 }
 
 impl HooksOverview {
@@ -100,6 +103,7 @@ impl HooksOverview {
                         HookOverview {
                             trust_key,
                             trusted: false,
+                            plugin: group.plugin.as_ref().map(|plugin| plugin.name.clone()),
                             kind: match &handler.kind {
                                 HandlerKind::Command => "command".to_string(),
                                 HandlerKind::Other(name) => name.clone(),
@@ -538,5 +542,35 @@ mod tests {
                 event.name()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    /// A plugin's hook names its plugin; the user's names none.
+    #[test]
+    fn a_plugins_hook_names_its_plugin() {
+        let text = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./x"}]}]}}"#;
+        let plugin = crate::hooks::HookPlugin {
+            name: "ralph@m".to_string(),
+            root: "/c/ralph".into(),
+            data: "/d/ralph".into(),
+        };
+        let user = HooksFile::parse(text).unwrap();
+        let theirs = HooksFile::parse_plugin(text).unwrap().with_plugin(&plugin);
+        let overview = HooksOverview::from_file(&user.merged(&theirs));
+        let stop = overview
+            .events
+            .iter()
+            .find(|event| event.event == HookEvent::Stop)
+            .unwrap();
+        let plugins: Vec<Option<&str>> = stop
+            .hooks_at(None)
+            .iter()
+            .map(|hook| hook.plugin.as_deref())
+            .collect();
+        assert_eq!(plugins, [None, Some("ralph@m")]);
     }
 }

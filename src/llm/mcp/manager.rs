@@ -14,8 +14,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
-    McpServerConfig, McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo,
-    ServerIdentity, call_params_retrying, parse_call_result,
+    McpLaunch, McpScope, McpServerConfig, McpServerEntry, McpServerSnapshot, McpServerStatus,
+    McpToolInfo, PluginServerEntry, ServerIdentity, call_params_retrying, parse_call_result,
 };
 use crate::stream::CancelToken;
 
@@ -220,6 +220,10 @@ fn off_thread<T: Send + 'static>(
 
 struct ServerState {
     entry: McpServerEntry,
+    /// A plugin server's launch extras — its working directory and the
+    /// environment laid over its own (`docs/plugins.md`). `None` for every
+    /// other server.
+    launch: Option<McpLaunch>,
     /// The config a launch uses — the declared one with its `${VAR}`
     /// references expanded from the session's environment
     /// ([`crate::mcp::resolve_config`]) — or why there is none: a variable
@@ -309,6 +313,29 @@ impl ServerState {
     }
 }
 
+/// The config a plugin's `entry` launches with: its `${VAR}` references
+/// expanded from the session's environment ([`crate::mcp::resolve_config`])
+/// — none at all when `launch` is literal — then its launch environment
+/// laid over a stdio server's own. Reached only from
+/// [`McpManager::set_plugin_servers`], never on a launch without plugins.
+fn resolve_plugin_entry(
+    entry: &McpServerEntry,
+    launch: &McpLaunch,
+    protected: &std::collections::BTreeSet<String>,
+) -> Result<McpServerConfig, String> {
+    let resolved = if launch.literal {
+        Ok(entry.config.clone())
+    } else {
+        crate::mcp::resolve_config(
+            &entry.config,
+            entry.scope,
+            &|name| std::env::var(name).ok(),
+            &|name| protected.contains(name),
+        )
+    };
+    resolved.map(|config| launch.apply(config))
+}
+
 struct Inner {
     servers: Vec<ServerState>,
     /// Whether MCP runs at all this session — the `/settings` **MCP** row
@@ -325,6 +352,16 @@ struct Inner {
     detach_helper: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
+    /// The session's own credentials' variable names, kept for the plugin
+    /// servers added after construction ([`McpManager::set_plugin_servers`]).
+    protected_env: std::collections::BTreeSet<String>,
+    /// Whether the startup connects have been kicked off — a plugin server
+    /// added before then connects with them, one added after on its own.
+    started: bool,
+    /// The generation a server added mid-session starts at: past every
+    /// generation a removed server reached, so a connect thread still
+    /// running for a removed server can never land on its replacement.
+    generation_base: u64,
     /// The sign-in running now, while one does.
     auth_flow: Option<AuthFlow>,
     /// The id the next sign-in gets.
@@ -406,6 +443,7 @@ impl McpManager {
                     relisting: false,
                     relist_again: false,
                     entry,
+                    launch: None,
                 }
             })
             .collect();
@@ -431,6 +469,9 @@ impl McpManager {
                 } else {
                     sources.tool_timeout
                 },
+                protected_env: sources.protected_env,
+                started: false,
+                generation_base: 0,
                 auth_flow: None,
                 next_auth_flow: 0,
             })),
@@ -463,13 +504,16 @@ impl McpManager {
     /// Kick off the startup connects — one worker thread per enabled server.
     /// Returns at once; completions report on the event channel.
     pub fn start_connections(&self) {
-        let names: Vec<String> = self
-            .lock()
-            .servers
-            .iter()
-            .filter(|s| s.status == McpServerStatus::Pending)
-            .map(|s| s.entry.name.clone())
-            .collect();
+        let names: Vec<String> = {
+            let mut inner = self.lock();
+            inner.started = true;
+            inner
+                .servers
+                .iter()
+                .filter(|s| s.status == McpServerStatus::Pending)
+                .map(|s| s.entry.name.clone())
+                .collect()
+        };
         for name in names {
             self.spawn_connect(&name);
         }
@@ -556,7 +600,7 @@ impl McpManager {
                 self.notify(McpEvent::Changed);
                 return;
             }
-            let (auth_path, cwd, timeout) = (
+            let (auth_path, mut cwd, timeout) = (
                 inner.auth_path.clone(),
                 (inner.cwd.clone(), inner.detach_helper.clone()),
                 inner.startup_timeout,
@@ -564,6 +608,10 @@ impl McpManager {
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
             };
+            // A plugin server runs where its plugin says.
+            if let Some(dir) = server.launch.as_ref().and_then(|launch| launch.cwd.clone()) {
+                cwd.0 = Some(dir);
+            }
             if let Some(problem) = server.blocked() {
                 server.status = McpServerStatus::Failed(problem);
                 return;
@@ -880,6 +928,198 @@ impl McpManager {
         if connect {
             self.spawn_connect(name);
         }
+    }
+
+    /// Replace the installed plugins' servers ([`McpScope::Plugin`]) with
+    /// `servers`, leaving every other server — and its connection — alone
+    /// (`docs/plugins.md` *Loading into a session*). `held` names the ones
+    /// the review holds back and why, exactly as [`McpSources::held`] does
+    /// at startup; a held server never connects until
+    /// [`set_approved`](Self::set_approved) releases it.
+    ///
+    /// A plugin server whose entry and launch are unchanged keeps its state
+    /// and its connection, though a change of hold applies to it; one no
+    /// longer listed, or changed, is dropped — its transport with it, so a
+    /// stdio child stops — and the new form added. A server added after the
+    /// startup connects connects at once unless held, refused or MCP is
+    /// off. Returns one sentence per server refused because the name is
+    /// another scope's or listed twice, or not started because its tools'
+    /// wire names would meet another server's — the caller toasts them.
+    pub fn set_plugin_servers(
+        &self,
+        servers: Vec<PluginServerEntry>,
+        held: BTreeMap<String, McpHold>,
+    ) -> Vec<String> {
+        let mut refused = Vec::new();
+        let (connect, transports) = {
+            let mut guard = self.lock();
+            let inner = &mut *guard;
+            // Nothing to add and nothing of a plugin's here: nothing to do,
+            // and no event — the session without plugins pays nothing.
+            if servers.is_empty()
+                && !inner
+                    .servers
+                    .iter()
+                    .any(|state| state.entry.scope == McpScope::Plugin)
+            {
+                return refused;
+            }
+            let mut wanted: Vec<PluginServerEntry> = Vec::new();
+            for server in servers {
+                let taken = inner.servers.iter().any(|state| {
+                    state.entry.name == server.entry.name && state.entry.scope != McpScope::Plugin
+                }) || wanted
+                    .iter()
+                    .any(|other| other.entry.name == server.entry.name);
+                if taken || server.entry.scope != McpScope::Plugin {
+                    refused.push(format!(
+                        "{}: MCP server \"{}\" is not used — its name is already taken",
+                        server.plugin, server.entry.name
+                    ));
+                } else {
+                    wanted.push(server);
+                }
+            }
+            // Drop the plugin servers that are gone or changed.
+            let mut transports = Vec::new();
+            let mut kept: Vec<String> = Vec::new();
+            let mut base = inner.generation_base;
+            let mut index = 0;
+            while index < inner.servers.len() {
+                let state = &inner.servers[index];
+                let unchanged = state.entry.scope != McpScope::Plugin
+                    || wanted.iter().any(|w| {
+                        w.entry == state.entry && Some(&w.launch) == state.launch.as_ref()
+                    });
+                if unchanged {
+                    if state.entry.scope == McpScope::Plugin {
+                        kept.push(state.entry.name.clone());
+                    }
+                    index += 1;
+                    continue;
+                }
+                let mut gone = inner.servers.remove(index);
+                base = base.max(gone.generation + 1);
+                transports.extend(gone.transport.take());
+                let name = gone.entry.name.clone();
+                inner.held.remove(&name);
+            }
+            inner.generation_base = base;
+            // Holds on the plugin servers kept: the review's latest word.
+            for name in &kept {
+                match held.get(name) {
+                    Some(hold) => {
+                        inner.held.insert(name.clone(), *hold);
+                    }
+                    None => {
+                        inner.held.remove(name);
+                    }
+                }
+            }
+            let mut connect = Vec::new();
+            for server in &mut inner.servers {
+                if server.entry.scope != McpScope::Plugin {
+                    continue;
+                }
+                match held.get(&server.entry.name) {
+                    Some(hold) => {
+                        server.drop_connection();
+                        server.status = match hold {
+                            McpHold::Review => McpServerStatus::AwaitingReview,
+                            McpHold::Declined => McpServerStatus::Disabled,
+                        };
+                    }
+                    // Released by the review: it connects — with the
+                    // startup kick when that is still to come.
+                    None if matches!(
+                        server.status,
+                        McpServerStatus::AwaitingReview | McpServerStatus::Disabled
+                    ) && !inner.disabled.contains(&server.entry.name) =>
+                    {
+                        if inner.started {
+                            connect.push(server.entry.name.clone());
+                        } else {
+                            server.status = McpServerStatus::Pending;
+                        }
+                    }
+                    None => {}
+                }
+            }
+            // Add the new ones.
+            let mut names: Vec<String> =
+                inner.servers.iter().map(|s| s.entry.name.clone()).collect();
+            for server in wanted {
+                if kept.contains(&server.entry.name) {
+                    continue;
+                }
+                names.push(server.entry.name.clone());
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let name_problem = crate::mcp::server_name_problems(&refs).pop().flatten();
+                // Its tools would meet another server's on the wire: it is
+                // not started (it stays `Failed`), and the caller says so.
+                if let Some(problem) = &name_problem {
+                    refused.push(format!(
+                        "{}: MCP server \"{}\" is not started — {problem}",
+                        server.plugin, server.entry.name
+                    ));
+                }
+                let resolved =
+                    resolve_plugin_entry(&server.entry, &server.launch, &inner.protected_env);
+                let blocked = name_problem
+                    .clone()
+                    .or_else(|| resolved.as_ref().err().cloned());
+                let hold = held.get(&server.entry.name).copied();
+                let status = match (hold, blocked) {
+                    (Some(McpHold::Review), _) => McpServerStatus::AwaitingReview,
+                    (Some(McpHold::Declined), _) => McpServerStatus::Disabled,
+                    (None, _) if inner.disabled.contains(&server.entry.name) => {
+                        McpServerStatus::Disabled
+                    }
+                    (None, Some(problem)) => McpServerStatus::Failed(problem),
+                    (None, None) if !inner.active => McpServerStatus::Off,
+                    (None, None) => {
+                        if inner.started {
+                            connect.push(server.entry.name.clone());
+                        }
+                        McpServerStatus::Pending
+                    }
+                };
+                if let Some(hold) = hold {
+                    inner.held.insert(server.entry.name.clone(), hold);
+                }
+                let has_tokens = resolved
+                    .as_ref()
+                    .ok()
+                    .and_then(McpServerConfig::url)
+                    .is_some_and(|url| {
+                        oauth::load_tokens(inner.auth_path.as_deref(), url).is_some()
+                    });
+                inner.servers.push(ServerState {
+                    entry: server.entry,
+                    launch: Some(server.launch),
+                    resolved,
+                    status,
+                    identity: None,
+                    tools: Vec::new(),
+                    transport: None,
+                    excluded: Vec::new(),
+                    last_restart: None,
+                    name_problem,
+                    has_tokens,
+                    challenge: None,
+                    generation: inner.generation_base,
+                    relisting: false,
+                    relist_again: false,
+                });
+            }
+            (connect, transports)
+        };
+        drop(transports);
+        self.notify(McpEvent::Changed);
+        for name in connect {
+            self.spawn_connect(&name);
+        }
+        refused
     }
 
     /// The servers waiting for the startup review's answer.
@@ -1611,6 +1851,184 @@ mod tests {
             },
         );
         (manager, rx)
+    }
+
+    /// A plugin server from `stdio_entry`'s fixture: it writes its
+    /// `$PLUGIN_ROOT`, its working directory and its first argument (a
+    /// literal `${HOME}`) to `probe` before answering.
+    fn plugin_entry(
+        name: &str,
+        cwd: &std::path::Path,
+        probe: &std::path::Path,
+    ) -> PluginServerEntry {
+        let mut entry = stdio_entry(name);
+        entry.scope = McpScope::Plugin;
+        entry.config_path = "~/.alter-zero/plugins/cache/p/.mcp.json".to_string();
+        if let McpServerConfig::Stdio { args, .. } = &mut entry.config {
+            args[1] = format!(
+                "printf '%s|%s|%s' \"$PLUGIN_ROOT\" \"$(pwd)\" \"$0\" > '{}'; {}",
+                probe.display(),
+                args[1]
+            );
+            args.push("${HOME}".to_string());
+        }
+        PluginServerEntry {
+            entry,
+            plugin: "p@m".to_string(),
+            source: "/cache/p/.mcp.json".to_string(),
+            launch: McpLaunch {
+                cwd: Some(cwd.to_path_buf()),
+                env: [("PLUGIN_ROOT".to_string(), "/plugin/root".to_string())].into(),
+                literal: true,
+            },
+        }
+    }
+
+    fn plugin_status_of(manager: &McpManager, name: &str) -> Option<McpServerStatus> {
+        manager
+            .snapshot()
+            .into_iter()
+            .find(|s| s.name == name)
+            .map(|s| s.status)
+    }
+
+    /// Nothing a plugin declares connects before the review releases it —
+    /// not at the startup kick, not on a reconnect — and once released it
+    /// runs in its plugin's directory with its plugin's environment, its
+    /// literal entry unexpanded.
+    #[test]
+    fn a_plugin_server_waits_for_the_review_then_launches_as_its_plugin_says() {
+        let dir = std::env::temp_dir().join(format!("az-plugin-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let probe = dir.join("probe.txt");
+        let _ = std::fs::remove_file(&probe);
+        let (manager, _rx) = manager_with(vec![stdio_entry("user")]);
+        let refused = manager.set_plugin_servers(
+            vec![plugin_entry("plug", &dir, &probe)],
+            [("plug".to_string(), McpHold::Review)].into(),
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        manager.start_connections();
+        manager.reconnect("plug");
+        wait_connected(&manager, "user");
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            plugin_status_of(&manager, "plug"),
+            Some(McpServerStatus::AwaitingReview)
+        );
+        assert!(!probe.exists(), "a held plugin server was launched");
+        assert_eq!(manager.awaiting_review(), ["plug"]);
+        let snapshot = manager.snapshot();
+        let plug = snapshot.iter().find(|s| s.name == "plug").unwrap();
+        assert_eq!(plug.scope, McpScope::Plugin);
+        // Released by the review: it connects as its plugin says.
+        manager.set_approved("plug", true);
+        wait_connected(&manager, "plug");
+        let written = std::fs::read_to_string(&probe).expect("the server ran");
+        let here = dir.canonicalize().unwrap();
+        assert_eq!(
+            written,
+            format!("/plugin/root|{}|${{HOME}}", here.display())
+        );
+        manager.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Replacing the plugin servers drops the removed ones, adds the new
+    /// ones (held, unless the review let them through) and leaves every
+    /// other server — and an unchanged plugin server — connected.
+    #[test]
+    fn replacing_plugin_servers_touches_only_the_plugin_scope() {
+        let dir = std::env::temp_dir().join(format!("az-plugin-mcp-r-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (manager, _rx) = manager_with(vec![stdio_entry("user")]);
+        let keep = plugin_entry("keep", &dir, &dir.join("keep.txt"));
+        let gone = plugin_entry("gone", &dir, &dir.join("gone.txt"));
+        manager.set_plugin_servers(vec![keep.clone(), gone], BTreeMap::new());
+        manager.start_connections();
+        for name in ["user", "keep", "gone"] {
+            wait_connected(&manager, name);
+        }
+        let fresh = plugin_entry("fresh", &dir, &dir.join("fresh.txt"));
+        let held = plugin_entry("held", &dir, &dir.join("held.txt"));
+        let refused = manager.set_plugin_servers(
+            vec![keep, fresh, held],
+            [("held".to_string(), McpHold::Review)].into(),
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        let names: Vec<String> = manager.snapshot().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["user", "keep", "fresh", "held"]);
+        assert_eq!(
+            plugin_status_of(&manager, "user"),
+            Some(McpServerStatus::Connected)
+        );
+        assert_eq!(
+            plugin_status_of(&manager, "keep"),
+            Some(McpServerStatus::Connected)
+        );
+        assert_eq!(
+            plugin_status_of(&manager, "held"),
+            Some(McpServerStatus::AwaitingReview)
+        );
+        wait_connected(&manager, "fresh");
+        assert!(!dir.join("held.txt").exists());
+        // Emptied: only the user's server is left.
+        manager.set_plugin_servers(Vec::new(), BTreeMap::new());
+        let names: Vec<String> = manager.snapshot().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["user"]);
+        assert!(!manager.is_held("held"));
+        manager.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A plugin can never take a name another scope declares, or list one
+    /// twice, and the refusal says so.
+    #[test]
+    fn a_plugin_server_cannot_take_a_name_already_in_use() {
+        let dir = std::env::temp_dir();
+        let (manager, _rx) = manager_with(vec![stdio_entry("user")]);
+        let refused = manager.set_plugin_servers(
+            vec![
+                plugin_entry("user", &dir, &dir.join("x")),
+                plugin_entry("twice", &dir, &dir.join("x")),
+                plugin_entry("twice", &dir, &dir.join("x")),
+            ],
+            BTreeMap::new(),
+        );
+        assert_eq!(refused.len(), 2, "{refused:?}");
+        assert!(refused[0].contains("\"user\""), "{refused:?}");
+        // A different name that meets another on the wire is listed, not
+        // started, and reported.
+        let refused = manager.set_plugin_servers(
+            vec![
+                plugin_entry("twice", &dir, &dir.join("x")),
+                plugin_entry("plugin:u:ser", &dir, &dir.join("x")),
+                plugin_entry("plugin_u_ser", &dir, &dir.join("x")),
+            ],
+            BTreeMap::new(),
+        );
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(refused[0].contains("not started"), "{refused:?}");
+        assert!(matches!(
+            plugin_status_of(&manager, "plugin_u_ser"),
+            Some(McpServerStatus::Failed(_))
+        ));
+        manager.set_plugin_servers(
+            vec![plugin_entry("twice", &dir, &dir.join("x"))],
+            BTreeMap::new(),
+        );
+        let scopes: Vec<(String, McpScope)> = manager
+            .snapshot()
+            .into_iter()
+            .map(|s| (s.name, s.scope))
+            .collect();
+        assert_eq!(
+            scopes,
+            [
+                ("user".to_string(), McpScope::User),
+                ("twice".to_string(), McpScope::Plugin)
+            ]
+        );
     }
 
     fn wait_connected(manager: &McpManager, name: &str) {

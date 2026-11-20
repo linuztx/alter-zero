@@ -106,7 +106,29 @@ fn counted(count: usize, noun: &str) -> String {
     }
 }
 
-/// The page's headline: what it asks about and how much of it is new.
+/// The scope word a plugin's file is shown under (`Plugin hello@demo`).
+const REVIEW_PLUGIN_SCOPE: &str = "Plugin";
+
+/// Where a servers page's servers come from, by the scope each file is
+/// shown under: a plugin's (`Plugin hello@demo`) is no project's.
+fn servers_origin(page: &ReviewPage) -> &'static str {
+    let plugin = |section: &ReviewSection| {
+        section
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.split(' ').next() == Some(REVIEW_PLUGIN_SCOPE))
+    };
+    if page.sections.iter().all(plugin) {
+        "your plugins"
+    } else if page.sections.iter().any(plugin) {
+        "this project and your plugins"
+    } else {
+        "this project"
+    }
+}
+
+/// The page's headline: what it asks about, where it comes from and how
+/// much of it is new.
 fn headline(page: &ReviewPage) -> String {
     let (new, changed) = page.counts();
     let all = new + changed;
@@ -116,15 +138,20 @@ fn headline(page: &ReviewPage) -> String {
         (ReviewKind::Hooks, ..) => {
             format!("{all} hooks to review · {new} new, {changed} changed")
         }
-        (ReviewKind::McpServers, _, 0) => {
-            format!("{} found in this project", counted(all, "new MCP server"))
-        }
-        (ReviewKind::McpServers, 0, _) => {
-            format!("{} changed in this project", counted(all, "MCP server"))
-        }
-        (ReviewKind::McpServers, ..) => {
-            format!("{all} MCP servers to review in this project · {new} new, {changed} changed")
-        }
+        (ReviewKind::McpServers, _, 0) => format!(
+            "{} found in {}",
+            counted(all, "new MCP server"),
+            servers_origin(page)
+        ),
+        (ReviewKind::McpServers, 0, _) => format!(
+            "{} changed in {}",
+            counted(all, "MCP server"),
+            servers_origin(page)
+        ),
+        (ReviewKind::McpServers, ..) => format!(
+            "{all} MCP servers to review in {} · {new} new, {changed} changed",
+            servers_origin(page)
+        ),
     }
 }
 

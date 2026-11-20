@@ -280,6 +280,30 @@ whole; only the last rung, with nothing else left to shed, cuts it to one row.
   lifetime (`docs/project-config.md`); a hook added mid-session is reviewed at
   the next launch.
 
+## Plugins
+
+An installed plugin's hooks files and MCP files are reviewed like the
+user's and a project's (`docs/plugins.md` *Nothing runs unseen*): each hooks
+file is a layer of `TrustState::hook_layers` whose section reads
+`Plugin {name} · {path}`, and each MCP file a source of `server_reviews`
+after the project's, its section scoped the same way (a project's section
+beside it then reads `Project`). A servers page made only of plugins'
+servers says they were found in **your plugins**, not "in this project"; a
+mixed one says both. `/hooks` names a plugin hook's plugin on its
+`Source:` row.
+
+What a plugin runs reaches nothing before the review: a plugin hook is in
+`runner_hooks` only once `trust.json` lists it for its file, and a plugin
+server is held (`McpHold::Review`) unless `trust.json` has it enabled at
+exactly its entry. An install, update or uninstall calls
+`TrustFile::forget_under(cache dir)` — in the session
+(`TrustState::forget_under`) or before the TUI boots
+(`tui::trust::forget_plugin_trust(config::trust_json_path(), dir)`) — so
+every hook and server of that plugin is asked about again. Mid-session,
+`Session::set_plugin_contributions(hooks, mcp, forget)` applies a change
+and opens a requested review on the plugins' sections alone, never
+re-asking what the user already put off.
+
 ## Module split
 
 Pure, unit-tested:

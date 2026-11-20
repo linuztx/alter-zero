@@ -135,6 +135,79 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
     }
 }
 
+/// Hand the running manager the enabled plugins' servers
+/// (`docs/plugins.md`): each held for the review unless `trust.json` has it
+/// enabled at exactly this entry, after every server the user and the
+/// project configured. The sentences to toast come back — a plugin file's
+/// entries that did not parse, a name already taken, a server not started
+/// because its tools would meet another's on the wire. With no plugins and
+/// none in the manager, nothing is done at all.
+pub(crate) fn sync_plugin_servers(
+    manager: &alter_zero::llm::mcp::McpManager,
+    trust: &super::trust::TrustState,
+) -> Vec<String> {
+    let files = trust.plugin_mcp();
+    if files.is_empty() {
+        return manager.set_plugin_servers(Vec::new(), Default::default());
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let reviews = trust.server_reviews();
+    let mut notices = Vec::new();
+    let scoped: Vec<(&mcp::PluginMcpFile, String, BTreeSet<String>)> = files
+        .iter()
+        .map(|file| {
+            let source = file.source.display().to_string();
+            let display = alter_zero::ui::display_cwd(&file.source, home.as_deref());
+            notices.extend(
+                file.errors
+                    .iter()
+                    .map(|error| format!("{display}: {error}")),
+            );
+            let enabled = reviews
+                .iter()
+                .filter(|review| review.source == source && review.trust.approved())
+                .map(|review| review.name.clone())
+                .collect();
+            (file, display, enabled)
+        })
+        .collect();
+    let borrowed: Vec<(&mcp::PluginMcpFile, &str, &BTreeSet<String>)> = scoped
+        .iter()
+        .map(|(file, display, enabled)| (*file, display.as_str(), enabled))
+        .collect();
+    let taken: Vec<mcp::McpServerEntry> = manager
+        .snapshot()
+        .into_iter()
+        .filter(|server| server.scope != mcp::McpScope::Plugin)
+        .map(|server| mcp::McpServerEntry {
+            name: server.name,
+            config: server.config,
+            scope: server.scope,
+            config_path: server.config_path,
+        })
+        .collect();
+    let merged = mcp::merge_plugin_scopes(&taken, &borrowed);
+    // Held: waiting for the review when new or changed, else declined.
+    let held = merged
+        .held
+        .iter()
+        .map(|name| {
+            let review = reviews
+                .iter()
+                .any(|r| r.name == *name && r.trust.needs_review());
+            let hold = if review {
+                McpHold::Review
+            } else {
+                McpHold::Declined
+            };
+            (name.clone(), hold)
+        })
+        .collect();
+    notices.extend(merged.shadowed);
+    notices.extend(manager.set_plugin_servers(merged.servers, held));
+    notices
+}
+
 impl Session<'_> {
     /// `/mcp`: open the manager over the live snapshot — the
     /// `open_skills_menu` injection seam. It opens with MCP off too (the
@@ -172,7 +245,7 @@ impl Session<'_> {
                 // A project server's on/off is the review's decision, kept in
                 // trust.json (`docs/config-review.md`); a user server's is the
                 // user file's per-directory set.
-                if !self.set_project_server(&server, !disabled)
+                if !self.set_reviewed_server(&server, !disabled)
                     && let Err(error) = manager.set_disabled(&server, disabled)
                 {
                     self.toast(

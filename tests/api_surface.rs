@@ -585,6 +585,45 @@ use alter_zero::ui::{
     wrap_text,
 };
 
+// --- plugin seams in `hooks`, `mcp`, `llm::mcp` and `trust` (docs/plugins.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::hooks::{
+    HookPlugin,
+    PluginHooks,
+    expand_plugin_vars,
+};
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::mcp::{
+    McpLaunch,
+    PLUGIN_ENV_VARS,
+    PluginMcpFile,
+    PluginMcpServer,
+    PluginMerge,
+    PluginServerEntry,
+    merge_plugin_scopes,
+    plugin_server_name,
+};
+#[allow(unused_imports)]
+use alter_zero::trust::TrustFile;
+
+/// What `McpManager::set_plugin_servers` takes and returns.
+type SetPluginServers = fn(
+    &alter_zero::llm::mcp::McpManager,
+    Vec<PluginServerEntry>,
+    std::collections::BTreeMap<String, alter_zero::llm::mcp::McpHold>,
+) -> Vec<String>;
+
+/// `McpManager::set_plugin_servers` and `TrustFile::forget_under` keep the
+/// signatures the plugin glue calls them by.
+#[allow(dead_code)]
+fn plugin_seam_signatures() {
+    let _: SetPluginServers = alter_zero::llm::mcp::McpManager::set_plugin_servers;
+    let _: fn(&mut TrustFile, &std::path::Path) -> bool = TrustFile::forget_under;
+    let _ = alter_zero::mcp::McpScope::Plugin;
+}
+
 /// Bodyless on purpose: the `use` declarations above are the assertion, and this
 /// gives `cargo test` a name to report if they stop resolving.
 #[test]

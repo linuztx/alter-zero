@@ -35,7 +35,10 @@ mod payload;
 mod report;
 mod verdict;
 
-pub use self::config::{CommandHook, HandlerKind, HookHandler, HooksFile, MatcherGroup, Selection};
+pub use self::config::{
+    CommandHook, HandlerKind, HookHandler, HookPlugin, HooksFile, MatcherGroup, PluginHooks,
+    Selection, expand_plugin_vars,
+};
 pub use self::event::HookEvent;
 pub use self::matcher::{claude_code_alias, constraint, invalid_regex, matches};
 pub use self::overview::{
