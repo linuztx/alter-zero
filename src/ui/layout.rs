@@ -913,8 +913,10 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
+    // The auth page's `URL >` field is typed into — unless the sign-in
+    // failed, when the page is a reason to read with nothing to type.
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth;
+        return menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none();
     }
     // The `/plugins` list's search line — the add tab's field too — and its
     // add page's field are typed into; its other pages are menus
@@ -1239,7 +1241,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // field on a narrow terminal. See `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
-        if menu.page == crate::app::McpPage::Auth {
+        // A failed sign-in's page has no field: its hidden cursor seats as
+        // any page without a marker does.
+        if menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none() {
             let x =
                 cols(MODEL_INDENT)
                     + cols(super::theme::MCP_AUTH_PROMPT)

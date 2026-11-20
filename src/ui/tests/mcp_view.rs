@@ -12,6 +12,7 @@ use crate::ui::theme::{
     mcp_detail_state_color, mcp_detail_value_color, model_meta_color, tool_fail_color,
     tool_ok_color,
 };
+use crate::ui::wrap::cols;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -1257,4 +1258,66 @@ fn a_stdio_servers_command_row_is_no_link() {
         "{:?}",
         link_targets(&lines)
     );
+}
+
+// --- a failed sign-in (`docs/mcp.md` *The `/mcp` manager*) ---
+
+/// A failed sign-in keeps its whole reason on the page, in red, its URL a
+/// link, over how to try again — and shows no caret, having no field.
+#[test]
+fn a_failed_sign_in_shows_its_whole_reason_and_how_to_retry() {
+    let reason = "token exchange failed: HTTP 400: invalid_grant: the authorization code has \
+                  expired, sign in again — https://login.example.com/help/oauth-errors";
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app.set_mcp_auth_url("linear", "https://as.test/authorize?client_id=c1");
+    assert!(app.finish_mcp_auth("linear", false, reason));
+    assert!(!crate::ui::cursor_visible(&app));
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(all.contains("Couldn't authenticate with linear"), "{all}");
+        assert!(all.contains("Enter to try again"), "{all}");
+        assert!(all.contains("Esc to go back"), "{all}");
+        assert!(!all.contains("URL > "), "{all}");
+        assert!(
+            !all.contains("as.test/authorize"),
+            "the dead sign-in's URL: {all}"
+        );
+        let red: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter(|s| s.style.fg == Some(error_color()))
+            .map(|s| s.content.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in reason
+            .split_whitespace()
+            .filter(|w| !w.starts_with("https://"))
+        {
+            assert!(
+                red.contains(word),
+                "{word:?} missing at width {width}: {red}"
+            );
+        }
+        assert_eq!(
+            link_targets(&lines),
+            ["https://login.example.com/help/oauth-errors"]
+        );
+        // A framed page like the rest, and no row wider than it.
+        assert_frame_hugs_content(&format!("a failed sign-in at width {width}"), &lines);
+        for line in &lines {
+            assert!(
+                cols(&plain(line)) <= usize::from(width),
+                "{:?}",
+                plain(line)
+            );
+        }
+        // The hidden cursor still has a seat on the page.
+        let area = Rect::new(0, 0, width, lines.len() as u16);
+        let (x, y) = crate::ui::cursor_position(area, &app);
+        assert!(x < width && usize::from(y) < lines.len());
+    }
 }

@@ -154,6 +154,13 @@ release heading when a version is cut.
   `/plugins` page reads its catalog only while it is open
   (`docs/plugins.md`).
 
+- **A failed MCP sign-in stays on its page.** When **Authenticate** in
+  `/mcp` failed, the page closed and the reason rode a one-row notice above
+  the composer, cut off at the terminal's width — and these reasons are
+  long: the provider's own sentence, an error code, sometimes a link. The
+  page now stays, with the whole reason wrapped on it and any link in it
+  clickable. Enter tries again; Esc goes back.
+
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
   macOS) on the authorize URL, which over SSH, in a container or on a

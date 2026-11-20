@@ -2377,6 +2377,10 @@ pub(super) const MCP_AUTH_RETURN_NOTE: &str =
     "Return here after authenticating in your browser. Press Esc to go back.";
 pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
 pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
+/// A failed sign-in's page: its title leads the server's name, and the
+/// reason stays on screen, whole, over this hint (`docs/mcp.md`).
+pub(super) const MCP_AUTH_FAILED_TITLE: &str = "Couldn't authenticate with ";
+pub(super) const MCP_AUTH_FAILED_HINT: &str = "Enter to try again · Esc to go back";
 
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =

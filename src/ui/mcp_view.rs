@@ -764,9 +764,29 @@ fn tool_lines_page(
     lines
 }
 
+/// A failed sign-in's page: the reason whole — wrapped, any URL in it a
+/// link — over how to try again. A toast row cut it at the width and took
+/// it away with itself.
+fn auth_failed_lines(reason: &str, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_AUTH_FAILED_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(model_linked_rows(reason, error_color(), width));
+    lines.push(Line::default());
+    lines.extend(dim_wrapped(MCP_AUTH_FAILED_HINT, width));
+    lines.push(model_rule(width));
+    lines
+}
+
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
-/// and the `URL >` paste-the-redirect fallback.
+/// and the `URL >` paste-the-redirect fallback — or, once the sign-in has
+/// failed, the reason.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    if let Some(reason) = &menu.auth.failed {
+        return auth_failed_lines(reason, server, width);
+    }
     let mut lines = vec![
         model_rule(width),
         title_line(&format!("Authenticating with {}…", server.name), width),

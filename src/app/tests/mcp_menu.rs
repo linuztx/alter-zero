@@ -188,7 +188,7 @@ fn authenticate_opens_the_auth_page_and_dispatches_the_op() {
     );
     assert!(app.mcp_menu.as_ref().unwrap().auth.submitted);
     // The finished flow closes the page back to the server detail.
-    app.finish_mcp_auth("linear");
+    assert!(!app.finish_mcp_auth("linear", true, "Authenticated with linear"));
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -387,9 +387,9 @@ fn a_finished_sign_in_closes_only_its_own_page() {
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter));
     app.on_key(key(KeyCode::Enter)); // linear's Authenticate
-    app.finish_mcp_auth("deepwiki");
+    assert!(!app.finish_mcp_auth("deepwiki", true, "Authenticated with deepwiki"));
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
-    app.finish_mcp_auth("linear");
+    assert!(!app.finish_mcp_auth("linear", true, "Authenticated with linear"));
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
 }
 
@@ -416,4 +416,69 @@ fn a_rejected_paste_gives_the_field_back_with_its_reason() {
     );
     app.on_key(key(KeyCode::Backspace));
     assert_eq!(app.mcp_menu.as_ref().unwrap().auth.error, None);
+}
+
+// --- a failed sign-in (`docs/mcp.md` *The `/mcp` manager*) ---
+
+/// linear's auth page, its sign-in running.
+fn auth_page_app() -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    app
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+}
+
+/// A failed sign-in stays on its page with the whole reason — a toast row
+/// cut it at the width and took it away. Enter tries again; Esc goes back,
+/// with no sign-in left to cancel.
+#[test]
+fn a_failed_sign_in_keeps_its_reason_on_the_page() {
+    let reason = "token exchange failed: HTTP 400: invalid_grant: the code expired";
+    let mut app = auth_page_app();
+    app.set_mcp_auth_url("linear", "https://as.test/authorize?x=1");
+    assert!(
+        app.finish_mcp_auth("linear", false, reason),
+        "the page took it"
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth.failed.as_deref(), Some(reason));
+    assert_eq!(menu.auth.url, None, "the dead sign-in's URL is gone");
+    // Nothing is typed on a failed page.
+    type_text(&mut app, "c");
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.input, "");
+    assert!(!app.paste_into_mcp_auth("https://x/cb?code=1"));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: "linear".to_string()
+        })
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert_eq!(menu.auth, Default::default());
+    // Esc from a failed page: back, nothing to cancel.
+    assert!(app.finish_mcp_auth("linear", false, reason));
+    assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+}
+
+/// A failure no open page takes — the user left, or it is another server's
+/// — is the boundary's to toast; so is every success.
+#[test]
+fn a_failure_no_open_page_takes_is_left_to_the_toast() {
+    let mut app = auth_page_app();
+    assert!(!app.finish_mcp_auth("deepwiki", false, "nope"));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().auth.failed, None);
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.finish_mcp_auth("linear", false, "nope"));
+    let mut closed = App::new();
+    assert!(!closed.finish_mcp_auth("linear", false, "nope"));
 }

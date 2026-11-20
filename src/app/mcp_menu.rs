@@ -134,6 +134,11 @@ pub struct McpAuthView {
     /// Why the flow turned the last paste away — shown under the field until
     /// the URL is edited.
     pub error: Option<String>,
+    /// Why the sign-in failed, shown whole in place of everything else on
+    /// the page — the `/login` device page's rule: an explanation is never
+    /// closed away with the page it explains, and the toast row it used to
+    /// be was cut at the width.
+    pub failed: Option<String>,
 }
 
 /// The open `/mcp` menu.
@@ -251,18 +256,29 @@ impl App {
         }
     }
 
-    /// `server`'s auth flow finished — its auth page closes back to the
-    /// server's detail (the boundary raises the outcome toast beside this).
-    /// Another server's page is left alone.
-    pub fn finish_mcp_auth(&mut self, server: &str) {
-        if let Some(menu) = &mut self.mcp_menu
-            && menu.page == McpPage::Auth
-            && menu.current_server().is_some_and(|s| s.name == server)
-        {
+    /// `server`'s auth flow finished. Success closes its auth page back to
+    /// the server's detail; a failure **stays** on the page, its reason
+    /// whole ([`McpAuthView::failed`]). Returns whether the open page took
+    /// the failure — the boundary toasts whatever it did not: a success, a
+    /// page the user already left, another server's.
+    pub fn finish_mcp_auth(&mut self, server: &str, ok: bool, detail: &str) -> bool {
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
+            return false;
+        }
+        if ok {
             menu.page = McpPage::Server;
             menu.selected = 0;
             menu.auth = McpAuthView::default();
+            return false;
         }
+        menu.auth = McpAuthView {
+            failed: Some(detail.to_string()),
+            ..McpAuthView::default()
+        };
+        true
     }
 
     /// `server`'s flow turned the pasted URL away: the field takes another
@@ -442,6 +458,26 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
         };
+        // A failed sign-in's page: Enter tries again, Esc goes back. Nothing
+        // is typed there, and no sign-in is running to cancel.
+        if menu.auth.failed.is_some() {
+            match key.code {
+                KeyCode::Enter => {
+                    let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
+                        return Action::None;
+                    };
+                    menu.auth = McpAuthView::default();
+                    return Action::McpOp(McpOp::Authenticate { server });
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    menu.page = McpPage::Server;
+                    menu.selected = 0;
+                    menu.auth = McpAuthView::default();
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
         match key.code {
             KeyCode::Esc => {
                 menu.page = McpPage::Server;
@@ -479,10 +515,12 @@ impl App {
     }
 
     /// Route a bracketed paste into the auth page's `URL >` field (the
-    /// redirect URL is long — pasting is the point).
+    /// redirect URL is long — pasting is the point). A failed page takes
+    /// none.
     pub fn paste_into_mcp_auth(&mut self, text: &str) -> bool {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
+            && menu.auth.failed.is_none()
         {
             menu.auth
                 .input

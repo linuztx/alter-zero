@@ -1256,8 +1256,21 @@ mid-turn (the strip stays above it). Pages:
    accent and gains an underline; a URL inside a rejected paste's reason is
    linked the same way. `smoke.sh` Phase 149 reads the link off the raw
    byte stream against a stub server that demands OAuth.
-   Esc backs out; the result lands as a toast + the server list
-   re-sorting itself.
+   Esc backs out; a sign-in that succeeds lands as a toast + the server
+   list re-sorting itself.
+
+   **A sign-in that fails stays on its page.** The failure used to close
+   the page and ride a one-row toast, cut at the terminal's width — and the
+   reasons that matter are long (`token exchange failed: HTTP 400:
+   invalid_grant: …`, a provider's own sentence, a help URL). The page now
+   keeps it (`McpAuthView::failed`, `auth_failed_lines`): `Couldn't
+   authenticate with {server}`, the reason whole and wrapped in the error
+   colour, any URL in it a link, over `Enter to try again · Esc to go back`
+   — the `/login` device page's rule, an explanation never closed away with
+   the page it explains. `App::finish_mcp_auth(server, ok, detail)` says
+   whether the open page took the failure, and the boundary toasts only what
+   it did not: a success, or a failure whose page the user already left. No
+   field, so no caret, and no sign-in left for Esc to cancel.
 
    **One sign-in at a time, and each knows whether it still is the one.**
    The manager keeps the running flow as an `AuthFlow` with an id; a second
