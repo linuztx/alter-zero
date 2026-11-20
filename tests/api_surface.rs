@@ -610,6 +610,7 @@ use alter_zero::plugins::{
     MarketplaceHeader,
     MarketplaceRecord,
     MarketplaceSource,
+    NamedCommand,
     PLUGINS_DIR,
     PluginCatalog,
     PluginDetail,

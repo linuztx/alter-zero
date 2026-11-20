@@ -124,7 +124,13 @@ pub fn inspect(
         &mut warnings,
     );
     for (path, relative) in markdown_files(&root, &commands) {
-        if let Some(command) = command_name(&name, &relative) {
+        // A `commands` map names its file by key; any other file by its path.
+        let named = manifest
+            .named_commands
+            .iter()
+            .find(|entry| root.dir.join(&entry.path) == path)
+            .map(|entry| namespaced(&name, &entry.name));
+        if let Some(command) = named.or_else(|| command_name(&name, &relative)) {
             components.commands.push(format!("/{command}"));
         } else {
             warnings.push(format!(
@@ -1042,6 +1048,21 @@ mod tests {
         let layout = read(&dir, None);
         assert_eq!(layout.components.skills, ["demo:report"]);
         assert_eq!(layout.skills, ["skills"]);
+    }
+
+    #[test]
+    fn a_command_map_names_its_commands_by_their_keys() {
+        let (_t, dir) = plugin_dir();
+        write(
+            &dir,
+            ".claude-plugin/plugin.json",
+            r#"{"name": "cmdmap", "commands": {"about": {"source": "./docs/README.md", "description": "What this is"}}}"#,
+        );
+        write(&dir, "docs/README.md", "# Readme\n");
+        let layout = read(&dir, None);
+        assert_eq!(layout.components.commands, ["/cmdmap:about"]);
+        assert_eq!(layout.commands, ["docs/README.md"]);
+        assert_eq!(layout.manifest.named_commands[0].name, "about");
     }
 
     #[test]

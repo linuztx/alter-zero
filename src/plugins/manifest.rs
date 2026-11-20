@@ -24,6 +24,8 @@
 //! A manifest is one small file, so it is read as a `serde_json::Value`
 //! (unlike a marketplace, `super::marketplace`).
 
+use std::path::Path;
+
 use serde_json::{Map, Value};
 
 use super::source::safe_relative;
@@ -155,6 +157,20 @@ pub enum ComponentPaths {
     Listed(Vec<String>),
 }
 
+/// One entry of a `commands` object map: the command the key names, the
+/// file it runs, and what the map says about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedCommand {
+    /// The map's key — the command is `/plugin:name`.
+    pub name: String,
+    /// The `source` path (already [`safe_relative`]).
+    pub path: String,
+    /// The map's `description`, which outranks the file's.
+    pub description: Option<String>,
+    /// The map's `argumentHint`, which outranks the file's.
+    pub argument_hint: Option<String>,
+}
+
 /// One plugin's manifest, whichever layout it came from: identity, display
 /// fields, and the component locations it names.
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +193,8 @@ pub struct PluginManifest {
     /// root); the default `skills/` is always looked at too.
     pub skills: Vec<String>,
     pub commands: ComponentPaths,
+    /// The commands a `commands` object map names by key, in map order.
+    pub named_commands: Vec<NamedCommand>,
     pub agents: ComponentPaths,
     /// Hook files named by the manifest (already [`safe_relative`]).
     pub hook_files: Vec<String>,
@@ -220,6 +238,7 @@ impl PluginManifest {
             keywords: Vec::new(),
             skills: Vec::new(),
             commands: ComponentPaths::Default,
+            named_commands: Vec::new(),
             agents: ComponentPaths::Default,
             hook_files: Vec::new(),
             hooks_inline: Vec::new(),
@@ -534,17 +553,53 @@ fn component_path(raw: &str, allow_root: bool) -> Option<String> {
     safe_relative(raw).filter(|path| allow_root || !path.is_empty())
 }
 
-/// Claude's `commands`: a path, a list, or a `{name: {source | content}}`
-/// map, whose `source` paths are listed and whose inline `content` is not
-/// something alter-zero runs.
+/// Claude's `commands`: a path, a list, or a `{name: {source | content,
+/// description?, argumentHint?}}` map, whose `source` paths are listed —
+/// each a command named by its key ([`NamedCommand`]) when the key is a
+/// usable command name — and whose inline `content` is not something
+/// alter-zero runs.
 fn command_paths(m: &mut PluginManifest, key: &str, value: &Value) -> Vec<String> {
     let Value::Object(commands) = value else {
         return path_list(m, key, value, false);
     };
     let mut paths = Vec::new();
-    for command in commands.values() {
+    for (name, command) in commands {
         match command.get("source") {
-            Some(source) => paths.extend(path_list(m, key, source, false)),
+            Some(source) => {
+                let listed = path_list(m, key, source, false);
+                // The key as the palette would spell it, or `None` when it
+                // cannot be typed.
+                let typed = (!name.contains(['/', '\\', ':']))
+                    .then(|| {
+                        super::command::command_name("p", Path::new(&format!("{name}.md")))
+                    })
+                    .flatten()
+                    .and_then(|full| full.strip_prefix("p:").map(str::to_string));
+                match (typed, listed.as_slice()) {
+                    (Some(typed), [path]) => {
+                        let text = |field: &str| {
+                            command
+                                .get(field)
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|text| !text.is_empty())
+                                .map(str::to_string)
+                        };
+                        m.named_commands.push(NamedCommand {
+                            name: typed,
+                            path: path.clone(),
+                            description: text("description"),
+                            argument_hint: text("argumentHint"),
+                        });
+                    }
+                    (None, _) => m.warn(
+                        key,
+                        &format!("names a command `{name}` that cannot be typed — its file's name is used"),
+                    ),
+                    _ => {}
+                }
+                paths.extend(listed);
+            }
             None if command.get("content").is_some() => m.unsupported("inline commands".into()),
             None => m.warn(key, "has a command with neither `source` nor `content`"),
         }
@@ -917,6 +972,37 @@ mod tests {
             "hello": {"content": "Say hello"}}}));
         assert_eq!(m.commands, ComponentPaths::Listed(vec!["README.md".into()]));
         assert_eq!(m.unsupported, ["inline commands"]);
+    }
+
+    #[test]
+    fn a_command_map_names_each_command_by_its_key() {
+        let m = claude(json!({"commands": {
+            "about": {"source": "./docs/README.md", "description": "What this is",
+                      "argumentHint": "[topic]"},
+            "Bad Name": {"source": "./x.md"},
+            "plain": {"source": "./cmds/plain.md"}}}));
+        assert_eq!(
+            m.named_commands,
+            [
+                NamedCommand {
+                    name: "about".into(),
+                    path: "docs/README.md".into(),
+                    description: Some("What this is".into()),
+                    argument_hint: Some("[topic]".into()),
+                },
+                NamedCommand {
+                    name: "plain".into(),
+                    path: "cmds/plain.md".into(),
+                    description: None,
+                    argument_hint: None,
+                },
+            ]
+        );
+        assert!(
+            m.warnings.iter().any(|w| w.contains("Bad Name")),
+            "{:?}",
+            m.warnings
+        );
     }
 
     #[test]

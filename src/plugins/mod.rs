@@ -38,7 +38,7 @@ pub use id::{
     sanitize_segment, validate_marketplace_name, validate_plugin_name,
 };
 pub use manifest::{
-    ComponentPaths, MANIFEST_FILES, ManifestFormat, PluginManifest, agent_plugins_schema,
+    ComponentPaths, MANIFEST_FILES, ManifestFormat, NamedCommand, PluginManifest, agent_plugins_schema,
     fill_display, manifest_from_entry, parse_manifest,
 };
 pub use marketplace::{
