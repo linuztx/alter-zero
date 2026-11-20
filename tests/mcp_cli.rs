@@ -356,7 +356,11 @@ fn get_says_an_entered_client_stands_in_for_the_files_own() {
         &["add", "srv", "--url", server, "--client-id", "from-file"],
     );
     assert!(out.status.success(), "{}", stderr(&out));
-    keep_client(&dir, server, serde_json::json!({"client_id": "typed"}));
+    keep_client(
+        &dir,
+        server,
+        serde_json::json!({"client_id": "typed", "issuer": "https://as.test"}),
+    );
     let text = stdout(&mcp_in(&dir, &["get", "srv"]));
     assert!(
         text.contains("OAuth client: typed (entered in /mcp)"),
@@ -375,6 +379,55 @@ fn get_says_an_entered_client_stands_in_for_the_files_own() {
     assert!(!text.contains("shh"), "{text}");
 }
 
+/// A client entered as the file's own — to give it a port, say, its secret
+/// field left empty to keep the one the file carries — signs in with the
+/// file's secret, and `get` says where that is. Entered as a public client
+/// it has none, whatever the file holds, and its port is what was entered.
+#[test]
+fn get_says_where_an_entered_clients_secret_is() {
+    let (dir, _file) = scratch("get_secret_from_entry");
+    let server = "https://s.test/mcp";
+    let entry = serde_json::json!({
+        "type": "http",
+        "url": server,
+        "oauth": { "clientId": "cid", "clientSecret": "in-file", "callbackPort": 8000 }
+    })
+    .to_string();
+    let out = mcp_in(&dir, &["add-json", "srv", &entry]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    keep_client(
+        &dir,
+        server,
+        serde_json::json!({
+            "client_id": "cid", "issuer": "https://as.test",
+            "callback_port": 9000, "secret_from_entry": true
+        }),
+    );
+    let text = stdout(&mcp_in(&dir, &["get", "srv"]));
+    assert!(
+        text.contains("OAuth client: cid (entered in /mcp)"),
+        "{text}"
+    );
+    assert!(text.contains("Callback port: 9000"), "{text}");
+    assert!(
+        text.contains("Client secret: ***** (in the file)"),
+        "{text}"
+    );
+    assert!(!text.contains("in-file"), "the secret was printed: {text}");
+    keep_client(
+        &dir,
+        server,
+        serde_json::json!({"client_id": "cid", "issuer": "https://as.test"}),
+    );
+    let text = stdout(&mcp_in(&dir, &["get", "srv"]));
+    assert!(
+        text.contains("OAuth client: cid (entered in /mcp)"),
+        "{text}"
+    );
+    assert!(!text.contains("Client secret"), "{text}");
+    assert!(!text.contains("Callback port"), "{text}");
+}
+
 /// An entry added with its own client is the statement about that address:
 /// a client entered in `/mcp` for an earlier entry there would otherwise
 /// sign in in its place, unseen. One added without a client leaves what is
@@ -383,11 +436,14 @@ fn get_says_an_entered_client_stands_in_for_the_files_own() {
 fn add_with_its_own_client_forgets_one_kept_for_the_address() {
     let (dir, _file) = scratch("add_forgets_entered");
     let server = "https://s.test/mcp";
-    let typed = serde_json::json!({"client_id": "typed", "client_secret": "old"});
+    let typed = serde_json::json!({
+        "client_id": "typed", "client_secret": "old", "issuer": "https://as.test"
+    });
     keep_client(&dir, server, typed.clone());
     let out = mcp_in(&dir, &["add", "plain", "--url", server]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(kept_clients(&dir)[server], typed, "a plain add keeps it");
+    assert!(!stdout(&out).contains("Forgot"), "{}", stdout(&out));
     let out = mcp_in(
         &dir,
         &["add", "own", "--url", server, "--client-id", "from-file"],
@@ -397,6 +453,12 @@ fn add_with_its_own_client_forgets_one_kept_for_the_address() {
         kept_clients(&dir).get(server).is_none(),
         "the entered client outlived the entry that names its own: {}",
         kept_clients(&dir)
+    );
+    // What went is said: it was the user's, typed somewhere else.
+    assert!(
+        stdout(&out).contains("Forgot the OAuth client entered in /mcp for this address\n"),
+        "{}",
+        stdout(&out)
     );
     // Nothing kept and no store at all: nothing is created for it.
     let (dir, _file) = scratch("add_forgets_nothing");
@@ -409,4 +471,100 @@ fn add_with_its_own_client_forgets_one_kept_for_the_address() {
         !dir.join("mcp-auth.json").exists(),
         "an empty store was written"
     );
+}
+
+/// Write `{dir}/mcp-auth.json` whole.
+fn write_store(dir: &Path, store: serde_json::Value) {
+    std::fs::write(dir.join("mcp-auth.json"), store.to_string()).expect("store written");
+}
+
+/// The client a login kept for `server` was made as, if one is kept.
+fn login_of(dir: &Path, server: &str) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("mcp-auth.json")).ok()?;
+    let store: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(store["servers"][server]["client_id"].as_str()?.to_string())
+}
+
+/// The login made as an entered client goes with it: the grant keeps its
+/// own copy of the id and secret, so left behind it would go on signing in
+/// as the client the new entry just replaced. Both ways an `add` replaces
+/// one — an entry naming its own client, and `--client-secret` — say so.
+#[test]
+fn add_replacing_an_entered_client_signs_out_of_it() {
+    let server = "https://s.test/mcp";
+    let store = |login_as: &str| {
+        serde_json::json!({
+            "clients": { server: {
+                "client_id": "typed", "client_secret": "old", "issuer": "https://as.test"
+            } },
+            "servers": { server: { "access_token": "at", "client_id": login_as } }
+        })
+    };
+    let (dir, _file) = scratch("add_signs_out");
+    write_store(&dir, store("typed"));
+    let out = mcp_in(
+        &dir,
+        &["add", "own", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(login_of(&dir, server), None, "its login outlived it");
+    assert!(
+        stdout(&out).contains(
+            "Forgot the OAuth client entered in /mcp for this address, and signed out of it"
+        ),
+        "{}",
+        stdout(&out)
+    );
+    // `--client-secret` replaces what is kept with the entry's secret.
+    let (dir, _file) = scratch("add_secret_signs_out");
+    write_store(&dir, store("typed"));
+    let out = Command::new(bin())
+        .args(["mcp", "add", "own", "--url", server])
+        .args(["--client-id", "from-file", "--client-secret"])
+        .env_remove("ALTER_ZERO_MCP_FILE")
+        .env("MCP_CLIENT_SECRET", "for-the-entry")
+        .env("ALTER_ZERO_CONFIG_DIR", &dir)
+        .output()
+        .expect("binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        kept_clients(&dir)[server],
+        serde_json::json!({"client_secret": "for-the-entry"})
+    );
+    assert_eq!(login_of(&dir, server), None, "its login outlived it");
+    assert!(
+        stdout(&out).contains(
+            "Forgot the OAuth client entered in /mcp for this address, and signed out of it"
+        ),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stdout(&out).contains("for-the-entry"), "{}", stdout(&out));
+    // A login made as another client is not the forgotten one's to take.
+    let (dir, _file) = scratch("add_keeps_other_login");
+    write_store(&dir, store("someone-else"));
+    let out = mcp_in(
+        &dir,
+        &["add", "own", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(login_of(&dir, server).as_deref(), Some("someone-else"));
+}
+
+/// The secret `mcp add --client-secret` kept is the entry's client's, not a
+/// client entered in `/mcp`: adding the entry again — naming its client,
+/// without the flag — leaves it where it is.
+#[test]
+fn add_naming_its_client_keeps_the_secret_kept_for_it() {
+    let (dir, _file) = scratch("add_keeps_cli_secret");
+    let server = "https://s.test/mcp";
+    let kept = serde_json::json!({"client_secret": "for-the-entry"});
+    keep_client(&dir, server, kept.clone());
+    let out = mcp_in(
+        &dir,
+        &["add", "own", "--url", server, "--client-id", "from-file"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(kept_clients(&dir)[server], kept);
+    assert!(!stdout(&out).contains("Forgot"), "{}", stdout(&out));
 }

@@ -4,7 +4,7 @@ use super::*;
 use crate::app::{McpClientField, McpClientForm, McpOp, McpPage, McpServerAction, server_actions};
 use crate::mcp::{
     ClientNeed, ClientRequest, ClientSource, EnteredClient, McpAuthState, McpClientInfo, McpScope,
-    McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo,
+    McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo, SUGGESTED_CALLBACK_PORT,
 };
 use crate::secrets::SecretValue;
 
@@ -550,7 +550,7 @@ fn a_sign_in_that_needs_a_client_turns_its_auth_page_into_the_form() {
     let form = form(&app);
     assert_eq!(form.request.issuer, ISSUER);
     assert_eq!(form.focus, McpClientField::ClientId);
-    assert!(form.client_id.is_empty() && form.secret.is_empty() && form.port.is_empty());
+    assert!(form.client_id.is_empty() && form.secret.is_empty());
     // The page was left: nothing to turn into a form.
     app.on_key(key(KeyCode::Esc));
     assert!(!app.ask_mcp_client("linear", &request(ClientNeed::NoRegistration)));
@@ -580,7 +580,8 @@ fn the_form_walks_its_fields_and_hands_over_the_client() {
                 client_id: "cid.apps.test".to_string(),
                 client_secret: Some(SecretValue::new("s3cret")),
                 keep_secret: false,
-                callback_port: None,
+                // The port the form opened on, left as it was.
+                callback_port: Some(SUGGESTED_CALLBACK_PORT),
             },
         })
     );
@@ -592,14 +593,60 @@ fn the_form_walks_its_fields_and_hands_over_the_client() {
     type_text(&mut app, "public-cid");
     app.on_key(key(KeyCode::Enter));
     app.on_key(key(KeyCode::Enter));
-    type_text(&mut app, "8976");
+    app.on_key(ctrl('u'));
+    type_text(&mut app, "7000");
     let Action::McpOp(McpOp::SaveAuthClient { client, .. }) = app.on_key(key(KeyCode::Enter))
     else {
         panic!("the form did not submit");
     };
     assert_eq!(client.client_secret, None);
     assert!(!client.keep_secret);
-    assert_eq!(client.callback_port, Some(8976));
+    assert_eq!(client.callback_port, Some(7000));
+}
+
+/// A form for a **new** client opens on a callback port: the redirect URI
+/// it shows is then one that can be registered as it stands, where a port
+/// left to chance fails in the browser, at a provider that matches redirect
+/// URIs exactly, with nothing here to say why. It is a suggestion in an
+/// ordinary field — typed over, or emptied for any free port — and only
+/// where nothing says otherwise: a port already in effect is the one shown,
+/// and a client on hand keeps the port it has, none included.
+#[test]
+fn a_form_for_a_new_client_suggests_a_callback_port() {
+    assert_eq!(SUGGESTED_CALLBACK_PORT, 8976);
+    for need in [
+        ClientNeed::NoRegistration,
+        ClientNeed::RegistrationRefused("HTTP 403".to_string()),
+        ClientNeed::Asked,
+    ] {
+        let app = on_client_form(request(need.clone()));
+        assert_eq!(form(&app).port.text(), "8976", "{need:?}");
+    }
+    // The entry names a port — one the user may have had to allow-list.
+    let app = on_client_form(ClientRequest {
+        callback_port: Some(8080),
+        ..request(ClientNeed::NoRegistration)
+    });
+    assert_eq!(form(&app).port.text(), "8080");
+    // A client on hand with no port signs in on any free one: a number
+    // filled in under it would change that at the next Enter.
+    for need in [ClientNeed::Asked, ClientNeed::Rejected("no".to_string())] {
+        let app = on_client_form(ClientRequest {
+            client_id: Some("cid".to_string()),
+            ..request(need)
+        });
+        assert!(form(&app).port.is_empty());
+    }
+    // Emptied, it is any free port.
+    let mut app = on_client_form(request(ClientNeed::NoRegistration));
+    type_text(&mut app, "cid");
+    app.on_key(key(KeyCode::Up)); // ClientId → Port, wrapping
+    app.on_key(ctrl('u'));
+    let Action::McpOp(McpOp::SaveAuthClient { client, .. }) = app.on_key(key(KeyCode::Enter))
+    else {
+        panic!("the form did not submit");
+    };
+    assert_eq!(client.callback_port, None);
 }
 
 /// A form the sign-in could not use never leaves: the reason shows under
@@ -617,6 +664,7 @@ fn the_form_refuses_a_missing_id_and_a_port_that_is_none() {
     assert_eq!(form(&app).error, None);
     app.on_key(key(KeyCode::Up)); // ClientId → Port, wrapping
     assert_eq!(form(&app).focus, McpClientField::Port);
+    app.on_key(ctrl('u'));
     type_text(&mut app, "70000");
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert_eq!(form(&app).focus, McpClientField::Port);
@@ -673,6 +721,7 @@ fn the_forms_keys_move_between_its_fields_and_edit_them() {
     app.on_key(ctrl('u'));
     assert!(form(&app).secret.is_empty());
     app.on_key(key(KeyCode::Tab));
+    app.on_key(ctrl('u'));
     type_text(&mut app, "8a9-7 6x");
     assert_eq!(form(&app).port.text(), "8976");
     type_text(&mut app, "54321");
@@ -738,8 +787,14 @@ fn a_paste_goes_to_the_focused_field() {
     assert!(app.paste_into_mcp_auth("GOCSPX-s3cr3t\r\n"));
     assert_eq!(form(&app).secret.expose(), "GOCSPX-s3cr3t");
     app.on_key(key(KeyCode::Tab));
-    assert!(app.paste_into_mcp_auth("port 8976\n"));
+    // A pasted port is the whole port: it takes the place of the one the
+    // form opened on, rather than running into it.
     assert_eq!(form(&app).port.text(), "8976");
+    assert!(app.paste_into_mcp_auth("port 9000\n"));
+    assert_eq!(form(&app).port.text(), "9000");
+    // A paste with no port in it leaves the field alone.
+    assert!(app.paste_into_mcp_auth("localhost"));
+    assert_eq!(form(&app).port.text(), "9000");
     assert_eq!(app.mcp_menu.as_ref().unwrap().auth.input, "");
     // A paste is an edit: it takes a complaint back.
     let mut app = on_client_form(request(ClientNeed::NoRegistration));

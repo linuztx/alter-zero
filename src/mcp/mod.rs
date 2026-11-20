@@ -33,8 +33,9 @@ mod status;
 
 pub use self::client::{
     CALLBACK_PORT_PLACEHOLDER, ClientNeed, ClientRequest, ClientSource, EnteredClient,
-    McpClientInfo, PreRegistered, StoredClient, callback_redirect, client_in_effect, issuer_host,
-    issuers_match, parse_callback_port, preregistered_client, stored_from_entered,
+    McpClientInfo, PreRegistered, SUGGESTED_CALLBACK_PORT, StoredClient, callback_redirect,
+    client_in_effect, issuer_host, issuers_match, parse_callback_port, preregistered_client,
+    stored_from_entered,
 };
 pub use self::config::{
     McpFile, McpScope, McpServerConfig, McpServerEntry, McpWriteError, OAuthClientConfig,

@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::mcp::{
     ClientRequest, ClientSource, EnteredClient, McpAuthState, McpServerSnapshot, McpServerStatus,
-    parse_callback_port,
+    SUGGESTED_CALLBACK_PORT, parse_callback_port,
 };
 use crate::secrets::SecretValue;
 use crate::textarea::TextArea;
@@ -254,7 +254,19 @@ impl McpClientForm {
     /// The form over what a sign-in asked: the client on hand filled in —
     /// its id and its port, **not** its secret — and the focus on the first
     /// thing still to give.
+    ///
+    /// A form for a **new** client opens on [`SUGGESTED_CALLBACK_PORT`]
+    /// where no port is in effect, so the redirect URI it shows can be
+    /// registered as it stands. A client on hand keeps the port it has —
+    /// none included: a number filled in under it would change, at the next
+    /// Enter, the port a working client signs in on.
     fn over(request: ClientRequest) -> Self {
+        let port = request.callback_port.or_else(|| {
+            request
+                .client_id
+                .is_none()
+                .then_some(SUGGESTED_CALLBACK_PORT)
+        });
         Self {
             focus: if request.client_id.is_some() {
                 McpClientField::Secret
@@ -262,12 +274,7 @@ impl McpClientForm {
                 McpClientField::ClientId
             },
             client_id: TextArea::from_text(request.client_id.as_deref().unwrap_or_default()),
-            port: TextArea::from_text(
-                &request
-                    .callback_port
-                    .map(|port| port.to_string())
-                    .unwrap_or_default(),
-            ),
+            port: TextArea::from_text(&port.map(|port| port.to_string()).unwrap_or_default()),
             request,
             ..Self::default()
         }
@@ -327,7 +334,7 @@ impl McpClientForm {
 
     /// Paste `text` into the focused field — a console's copy button brings
     /// a line break along, so the id and the secret land on one line,
-    /// trimmed, and the port as its digits.
+    /// trimmed, and the port as its digits, replacing what was there.
     fn paste(&mut self, text: &str) {
         let line: String = text.chars().filter(|c| !c.is_control()).collect();
         let line = line.trim();
@@ -343,14 +350,17 @@ impl McpClientForm {
                 self.secret
                     .push_str(&line.chars().take(room).collect::<String>());
             }
+            // A pasted port is the whole port: it takes the field's place —
+            // the form may have opened on one — rather than running into it.
             McpClientField::Port => {
-                let room = PORT_MAX_DIGITS.saturating_sub(self.port.text().chars().count());
                 let digits: String = line
                     .chars()
                     .filter(char::is_ascii_digit)
-                    .take(room)
+                    .take(PORT_MAX_DIGITS)
                     .collect();
-                self.port.insert_str(&digits);
+                if !digits.is_empty() {
+                    self.port = TextArea::from_text(&digits);
+                }
             }
         }
     }

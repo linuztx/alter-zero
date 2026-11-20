@@ -1332,8 +1332,11 @@ fn the_client_form_says_who_asks_and_never_draws_the_secret() {
     assert!(field("Client secret").contains("•••••••"));
     assert!(!field("Client secret").contains("••••••••"));
     assert!(!all.contains("hunter2"), "the secret was drawn: {all}");
-    assert!(field("Callback port").contains("any free port"));
-    assert!(all.contains("Redirect URI: http://localhost:PORT/callback"));
+    // A new client's form opens on a port, so the redirect URI it shows can
+    // be registered as it stands.
+    assert!(field("Callback port").contains("8976"));
+    assert!(all.contains("Redirect URI: http://localhost:8976/callback"));
+    assert!(!all.contains("PORT"), "{all}");
     // It is a form, not the sign-in's page: no redirect field, no URL note.
     assert!(!all.contains("URL > "), "{all}");
     assert!(!all.contains("Open this URL"), "{all}");
@@ -1394,10 +1397,21 @@ fn the_form_says_why_it_asks() {
 fn the_redirect_names_the_port_typed() {
     let mut app = client_form_app(client_request(ClientNeed::NoRegistration));
     app.on_key(key(KeyCode::Up)); // → callback port
-    type_into(&mut app, "8976");
+    // Emptied, any free port is used: the URI says so, and the field.
+    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    let rows = texts(&app);
+    let all = rows.join("\n");
+    assert!(
+        all.contains("Redirect URI: http://localhost:PORT/callback"),
+        "{all}"
+    );
+    assert!(squashed(&rows).contains("PORTisanyfreeport"), "{all}");
+    let port = rows.iter().find(|r| r.contains("Callback port")).unwrap();
+    assert!(port.contains("any free port"), "{port:?}");
+    type_into(&mut app, "7000");
     let all = texts(&app).join("\n");
     assert!(
-        all.contains("Redirect URI: http://localhost:8976/callback"),
+        all.contains("Redirect URI: http://localhost:7000/callback"),
         "{all}"
     );
     assert!(!all.contains("PORT"), "{all}");
@@ -1457,6 +1471,8 @@ fn the_focused_field_wears_the_marker_and_holds_the_caret() {
         ] {
             let form = app.mcp_menu.as_ref().unwrap().auth.client.as_ref().unwrap();
             assert_eq!(form.focus, field);
+            // Each from empty: the port opens on a suggestion.
+            app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
             type_into(&mut app, typed);
             let (caret, rows) = caret_and_rows(&app, width);
             let row = rows
@@ -1682,8 +1698,7 @@ fn the_client_form_hugs_its_frame_and_fits_the_width() {
             &mut app,
             "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hunter2hunter2",
         );
-        app.on_key(key(KeyCode::Tab));
-        type_into(&mut app, "8976");
+        // The port it opened on stays.
         app
     };
     let refused = {

@@ -121,13 +121,20 @@ alter-zero mcp list
   `***** (in the file)` for a `clientSecret` written there), never what.
   A client **entered in `/mcp`** is kept in that same store, not in the
   file, and is the one a sign-in uses: `get` names it — `OAuth client: …
-  (entered in /mcp)` — and, where the file names another, says that one is
-  not used. So an entry **added with its own client** (`--client-id`) is
-  the statement about its address: whatever client was kept there — one
-  entered for an earlier entry at that URL — is forgotten, by the secret
-  written now or, with no `--client-secret`, outright, rather than left to
-  sign in in the new client's place unseen. An entry added without a client
-  leaves what is kept alone.
+  (entered in /mcp)`, with its own port and where its secret is (`kept with
+  the tokens`, or `***** (in the file)` when it was entered as the file's
+  own client to keep the file's secret) — and, where the file names
+  another, says that one is not used. So an entry **added with its own
+  client** (`--client-id`) is the statement about its address: a client
+  entered there for an earlier entry is forgotten — replaced by the secret
+  written now, or, with no `--client-secret`, removed — rather than left to
+  sign in in the new client's place unseen, **and the login made as it
+  goes too** (the grant holds its own copy of the id and secret; `docs/
+  mcp.md` *A login is its client's*). `add` says so: `Forgot the OAuth
+  client entered in /mcp for this address, and signed out of it`. The
+  secret an earlier `--client-secret` kept is the entry's client's, not an
+  entered client: an `add` naming the client again without the flag leaves
+  it, and an entry added without a client leaves everything kept alone.
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules

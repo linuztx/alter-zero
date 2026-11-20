@@ -18,7 +18,9 @@ smoke_begin
 # away with `invalid_client`. Driven end to end, the browser played by curl:
 #
 # - Authenticate ends in the FORM, not a failure: who asks and why, the
-#   three fields, the redirect URI to register;
+#   redirect URI to register — on the callback port a new client's form
+#   suggests, so it can be registered as it stands — and the three fields;
+#   the port emptied is any free port, and the redirect URI says so;
 # - a typed id, a PASTED secret shown one dot per character and never as
 #   text — the WRONG one first: the token endpoint turns the client away and
 #   the form reopens on the id, with the server's own words;
@@ -195,10 +197,15 @@ form="$(wait_pane 15 "$S162" -F "registers no clients itself")" || {
 dump "the client form" "$form"
 for want in "OAuth client for stub" "127.0.0.1:$AUTH_PORT registers no clients itself" \
 	"never in an mcp.json" "❯ Client ID" "type or paste the client ID" \
-	"Client secret" "leave empty for a public client" "Callback port" "any free port" \
-	"Redirect URI: http://localhost:PORT/callback" "Enter for the next field"; do
+	"Client secret" "leave empty for a public client" "Enter for the next field"; do
 	expect_has "$form" -F "$want" "the form is missing \"$want\""
 done
+# A new client's form opens on a callback port: the redirect URI it shows is
+# one that can be registered as it stands.
+expect_has "$form" -E "Callback port +8976" "the form does not suggest a callback port"
+expect_has "$form" -F "Redirect URI: http://localhost:8976/callback" \
+	"the redirect URI does not name the suggested port"
+expect_lacks "$form" -F "PORT" "the redirect URI still stands in for a port the form suggests"
 expect_lacks "$form" -F "URL > " "the form still shows the sign-in's redirect field"
 
 # The id typed, the WRONG secret pasted: one dot a character, never its text.
@@ -215,6 +222,12 @@ never_shows_a_secret "the secret field"
 keys "$S162" Enter
 hint="$(wait_pane 5 "$S162" -F "Enter to sign in")" || fail "the last field's hint does not say Enter signs in"
 expect_has "$hint" -F "❯ Callback port" "Enter did not move to the callback port"
+# The suggestion is an ordinary field: emptied, any free port is used — and
+# the page says so (this phase must not listen on a port another may want).
+keys "$S162" C-u
+any_port="$(wait_pane 5 "$S162" -F "Redirect URI: http://localhost:PORT/callback")" ||
+	fail "emptying the port did not turn the redirect URI back to any port"
+expect_has "$any_port" -F "any free port" "the emptied port field does not say what empty means"
 keys "$S162" Enter # no port: any free one
 
 # The sign-in runs as the typed client; the browser approves; the token
@@ -376,6 +389,7 @@ paste "$SECRET"
 sleep "$SMOKE_TYPE_SETTLE"
 keys "$S162" Enter
 wait_for 5 "$S162" -F "❯ Callback port" || fail "Enter did not move to the callback port"
+keys "$S162" C-u # over the suggested port
 type_text "$S162" "$SQUAT_PORT"
 wait_for 5 "$S162" -F "http://localhost:$SQUAT_PORT/callback" || fail "the redirect did not follow the taken port"
 keys "$S162" Enter

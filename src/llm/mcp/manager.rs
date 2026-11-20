@@ -1250,7 +1250,7 @@ impl McpManager {
             // The form's client is kept before anything is signed in to —
             // here, on the worker: the store's write may wait on another
             // session's.
-            let kept = entered.map_or(Ok(()), |entered| {
+            let kept = entered.map_or(Ok(oauth::ClientChange::default()), |entered| {
                 let stored = crate::mcp::stored_from_entered(
                     &entered,
                     oauth::load_client(auth_path.as_deref(), &url).as_ref(),
@@ -1259,7 +1259,13 @@ impl McpManager {
                 oauth::save_client(auth_path.as_deref(), &url, Some(&stored))
                     .map_err(|e| format!("couldn't keep the OAuth client: {e}"))
             });
-            let result = kept.map_err(oauth::AuthError::Failed).and_then(|()| {
+            // Another client in the old one's place took the old one's
+            // login with it: the page says so now, whatever becomes of the
+            // sign-in that follows.
+            if kept.as_ref().is_ok_and(|change| change.signed_out) {
+                manager.signed_out(&name);
+            }
+            let result = kept.map_err(oauth::AuthError::Failed).and_then(|_| {
                 oauth::run_auth_flow(
                     &oauth::SignIn {
                         server_url: &url,
@@ -1322,59 +1328,67 @@ impl McpManager {
     /// OAuth client`): what the token store keeps for it goes, and with it
     /// the login made as that client — the grant keeps its own copy of the
     /// id and secret, so a client that outlived its forgetting would not be
-    /// forgotten at all. `Ok(true)` when a login went too; a login made as
-    /// another client is left alone, and so is a server nothing was entered
-    /// for.
+    /// forgotten at all. What happened comes back
+    /// ([`oauth::ClientChange`]): a login made as another client is left
+    /// alone, and so is a server nothing was entered for — the secret kept
+    /// for its entry's client included.
     ///
     /// # Errors
     /// The store couldn't be rewritten — the client is still there, and
     /// saying "forgotten" would be a lie.
-    pub fn forget_client(&self, name: &str) -> Result<bool, String> {
+    pub fn forget_client(&self, name: &str) -> Result<oauth::ClientChange, String> {
         let (url, auth_path) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
-                return Ok(false);
+                return Ok(oauth::ClientChange::default());
             };
             (server.url().map(str::to_string), inner.auth_path.clone())
         };
         let Some(url) = url else {
-            return Ok(false);
+            return Ok(oauth::ClientChange::default());
         };
         // The store's I/O runs outside the manager's lock: its file lock may
         // wait on another session's write.
-        let entered =
-            oauth::load_client(auth_path.as_deref(), &url).and_then(|client| client.client_id);
-        let Some(client_id) = entered else {
-            return Ok(false);
-        };
-        oauth::save_client(auth_path.as_deref(), &url, None)?;
-        let signed_out = oauth::load_tokens(auth_path.as_deref(), &url)
-            .is_some_and(|tokens| tokens.client_id == client_id);
-        if signed_out {
-            oauth::save_tokens(auth_path.as_deref(), &url, None)?;
+        let change = oauth::forget_entered_client(auth_path.as_deref(), &url)?;
+        if change.signed_out {
+            self.signed_out(name);
+        } else if change.forgot_entered {
+            if let Some(server) = self
+                .lock()
+                .servers
+                .iter_mut()
+                .find(|s| s.entry.name == name)
+            {
+                server.client = server.client_in_effect(auth_path.as_deref());
+            }
+            self.notify(McpEvent::Changed);
         }
+        Ok(change)
+    }
+
+    /// A server's login just left the store with the client it was made as:
+    /// its page says so, and the live connection goes with the grant — it
+    /// still carries the old bearer (the [`clear_auth`] rule).
+    ///
+    /// [`clear_auth`]: McpManager::clear_auth
+    fn signed_out(&self, name: &str) {
         let reconnect = {
             let mut inner = self.lock();
+            let auth_path = inner.auth_path.clone();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
-                return Ok(signed_out);
+                return;
             };
+            server.has_tokens = false;
             server.client = server.client_in_effect(auth_path.as_deref());
-            if signed_out {
-                server.has_tokens = false;
-            }
-            // The live connection still carries the old bearer — the
-            // `clear_auth` rule.
-            signed_out
-                && matches!(
-                    server.status,
-                    McpServerStatus::Connected | McpServerStatus::Failed(_)
-                )
+            matches!(
+                server.status,
+                McpServerStatus::Connected | McpServerStatus::Failed(_)
+            )
         };
         self.notify(McpEvent::Changed);
         if reconnect {
             self.spawn_connect(name);
         }
-        Ok(signed_out)
     }
 
     /// Hand the running auth flow a pasted redirect URL (the `URL >`
@@ -2358,6 +2372,7 @@ done"#
             &url,
             Some(&crate::mcp::StoredClient {
                 client_id: Some("typed-cid".to_string()),
+                issuer: Some("https://as.test".to_string()),
                 ..Default::default()
             }),
         )
@@ -4498,6 +4513,7 @@ done
                 client_secret: Some("s3cret".to_string()),
                 callback_port: None,
                 issuer: Some(base.clone()),
+                secret_from_entry: false,
             })
         );
         assert_eq!(
@@ -4553,6 +4569,7 @@ done
                 client_secret: Some("s3cret".to_string()),
                 callback_port: None,
                 issuer: Some(base.clone()),
+                secret_from_entry: false,
             }),
         )
         .unwrap();
@@ -4619,6 +4636,7 @@ done
                     client_secret: Some("s3cret".to_string()),
                     callback_port: None,
                     issuer: Some(base.clone()),
+                    secret_from_entry: false,
                 }),
             )
             .unwrap();
@@ -4640,7 +4658,14 @@ done
         grant("typed-cid");
         let (manager, _rx) = signin_manager(&base, &store);
         assert!(manager.snapshot()[0].client.is_some());
-        assert_eq!(manager.forget_client("srv"), Ok(true), "signed out with it");
+        assert_eq!(
+            manager.forget_client("srv"),
+            Ok(oauth::ClientChange {
+                forgot_entered: true,
+                signed_out: true
+            }),
+            "signed out with it"
+        );
         assert_eq!(oauth::load_client(Some(&store), &server), None);
         assert!(oauth::load_tokens(Some(&store), &server).is_none());
         let server_now = &manager.snapshot()[0];
@@ -4649,18 +4674,100 @@ done
             server_now.auth,
             Some(crate::mcp::McpAuthState::NotAuthenticated)
         );
-        // Nothing entered: nothing to forget, and nothing is touched.
+        // Nothing entered: nothing to forget, and nothing is touched — not
+        // a login, and not the secret kept for the entry's own client.
         grant("someone-else");
-        assert_eq!(manager.forget_client("srv"), Ok(false));
+        oauth::save_client_secret(Some(&store), &server, Some("for-the-entry")).unwrap();
+        assert_eq!(
+            manager.forget_client("srv"),
+            Ok(oauth::ClientChange::default())
+        );
         assert!(oauth::load_tokens(Some(&store), &server).is_some());
+        assert_eq!(
+            oauth::load_client_secret(Some(&store), &server).as_deref(),
+            Some("for-the-entry")
+        );
         // A login made as another client stays.
         keep("typed-cid");
-        assert_eq!(manager.forget_client("srv"), Ok(false));
+        assert_eq!(
+            manager.forget_client("srv"),
+            Ok(oauth::ClientChange {
+                forgot_entered: true,
+                signed_out: false
+            })
+        );
         assert_eq!(oauth::load_client(Some(&store), &server), None);
+        assert_eq!(manager.snapshot()[0].client, None);
         assert_eq!(
             oauth::load_tokens(Some(&store), &server).unwrap().client_id,
             "someone-else"
         );
+        manager.shutdown();
+    }
+
+    /// `Change OAuth client` to another client signs out of the old one the
+    /// moment the new one is kept — before the new sign-in ends, and whether
+    /// or not it ever does: the old grant would otherwise go on signing in
+    /// as a client that is no longer the one kept.
+    #[test]
+    fn entering_another_client_signs_out_of_the_one_it_replaces() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{base}/mcp");
+        oauth::save_client(
+            Some(&store),
+            &server,
+            Some(&crate::mcp::StoredClient {
+                client_id: Some("old-cid".to_string()),
+                client_secret: Some("s3cret".to_string()),
+                issuer: Some(base.clone()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        oauth::save_tokens(
+            Some(&store),
+            &server,
+            Some(&oauth::StoredTokens {
+                access_token: "at".to_string(),
+                client_id: "old-cid".to_string(),
+                client_secret: Some("s3cret".to_string()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let (manager, mut rx) = signin_manager(&base, &store);
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.save_client("srv", form_client(&base, "new-cid", Some("s3cret")));
+        // The new sign-in is under way — its URL is out — and the old
+        // client's login is gone already.
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        assert_eq!(
+            crate::llm::mcp::redirect_param(&url, "client_id").as_deref(),
+            Some("new-cid")
+        );
+        assert!(
+            oauth::load_tokens(Some(&store), &server).is_none(),
+            "the old client's login outlived it"
+        );
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        // Abandoned there: still signed out, the new client the one kept.
+        manager.cancel_auth();
+        assert_eq!(
+            oauth::load_client(Some(&store), &server)
+                .unwrap()
+                .client_id
+                .as_deref(),
+            Some("new-cid")
+        );
+        assert!(oauth::load_tokens(Some(&store), &server).is_none());
         manager.shutdown();
     }
 

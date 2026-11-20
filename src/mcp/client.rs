@@ -34,10 +34,19 @@ pub struct StoredClient {
     /// metadata names itself. A client is that server's alone: it is never
     /// presented to another (the spec's authorization-server binding).
     pub issuer: Option<String>,
+    /// An entered client that signs in with the secret its server's
+    /// **entry** carries — the entry's own client, re-entered with its
+    /// secret field left empty to keep it. The secret stays in the file and
+    /// is read at each sign-in, never copied here; without this an entered
+    /// client with no secret is a public one.
+    pub secret_from_entry: bool,
 }
 
 impl StoredClient {
-    /// Read one `clients` entry — `None` for one that keeps nothing.
+    /// Read one `clients` entry — `None` for one that keeps nothing, and for
+    /// a client that names no authorization server: there is nothing to
+    /// hold that one to, so nothing of it is read — not as a client, and
+    /// not as a secret the entry's own client could borrow.
     #[must_use]
     pub fn from_json(entry: &Value) -> Option<Self> {
         let text = |key: &str| {
@@ -48,15 +57,23 @@ impl StoredClient {
                 .filter(|text| !text.is_empty())
                 .map(str::to_string)
         };
+        let client_id = text("client_id");
+        let issuer = text("issuer");
+        if client_id.is_some() && issuer.is_none() {
+            return None;
+        }
         let client = Self {
-            client_id: text("client_id"),
+            // Only a client can say whose secret it uses.
+            secret_from_entry: client_id.is_some()
+                && entry.get("secret_from_entry").and_then(Value::as_bool) == Some(true),
+            client_id,
             client_secret: text("client_secret"),
             callback_port: entry
                 .get("callback_port")
                 .and_then(Value::as_u64)
                 .and_then(|port| u16::try_from(port).ok())
                 .filter(|port| *port != 0),
-            issuer: text("issuer"),
+            issuer,
         };
         (client != Self::default()).then_some(client)
     }
@@ -76,6 +93,9 @@ impl StoredClient {
         }
         if let Some(port) = self.callback_port {
             entry.insert("callback_port".to_string(), port.into());
+        }
+        if self.secret_from_entry {
+            entry.insert("secret_from_entry".to_string(), true.into());
         }
         Value::Object(entry)
     }
@@ -98,6 +118,7 @@ impl std::fmt::Debug for StoredClient {
             )
             .field("callback_port", &self.callback_port)
             .field("issuer", &self.issuer)
+            .field("secret_from_entry", &self.secret_from_entry)
             .finish()
     }
 }
@@ -146,8 +167,13 @@ impl std::fmt::Debug for PreRegistered {
 /// **What the user entered in `/mcp` wins**: it is what they last said, and
 /// the one client a project's or a plugin's entry can be given without
 /// editing a file that is not theirs. It is bound to the authorization server
-/// it was entered for, so another issuer never sees it. Short of its own, it
-/// takes the entry's secret and port when it is the entry's own client.
+/// it was entered for, so another issuer never sees it — and one that names
+/// none is never presented at all. **It is the whole client, as its form
+/// said**: its port is its own (none is any free port — the form opened on
+/// the entry's, so leaving it out was a choice), and so is its secret (none
+/// is a public client), with one exception it has to state itself —
+/// [`StoredClient::secret_from_entry`], the entry's own client keeping the
+/// secret its entry carries.
 ///
 /// An entry's client takes the secret kept for it (`mcp add
 /// --client-secret`), and never an entered client's: that one is another
@@ -158,27 +184,28 @@ pub fn preregistered_client(
     stored: Option<&StoredClient>,
     issuer: Option<&str>,
 ) -> Option<PreRegistered> {
-    let configured_id = configured.and_then(|config| config.client_id.as_deref());
-    let configured_port = configured.and_then(|config| config.callback_port);
     let entered = stored.filter(|client| {
         client.is_entered()
             && client
                 .issuer
                 .as_deref()
-                .is_none_or(|bound| issuer.is_some_and(|issuer| issuers_match(bound, issuer)))
+                .is_some_and(|bound| issuer.is_some_and(|issuer| issuers_match(bound, issuer)))
     });
     if let Some(client) = entered
         && let Some(client_id) = &client.client_id
     {
-        let same_client = configured_id == Some(client_id.as_str());
+        // Its entry's secret: on its own say-so, and only while the entry
+        // still names this client. Never by default — a secret the server
+        // refused and the form then left out would ride along again.
+        let lent = configured
+            .filter(|config| {
+                client.secret_from_entry && config.client_id.as_deref() == Some(client_id.as_str())
+            })
+            .and_then(|config| config.client_secret.clone());
         return Some(PreRegistered {
             client_id: client_id.clone(),
-            client_secret: client.client_secret.clone().or_else(|| {
-                configured
-                    .filter(|_| same_client)
-                    .and_then(|config| config.client_secret.clone())
-            }),
-            callback_port: client.callback_port.or(configured_port),
+            client_secret: client.client_secret.clone().or(lent),
+            callback_port: client.callback_port,
             source: ClientSource::Entered,
         });
     }
@@ -270,42 +297,57 @@ pub struct EnteredClient {
 
 /// The store entry a submitted form becomes — the **one** client kept for
 /// its server, replacing whatever was (`kept`): its id, the authorization
-/// server it was entered for, its port, and its secret. A secret field left
-/// empty over a client whose secret is kept (`keep_secret`) keeps that
-/// secret, when it is **this client's** — the same client entered for the
-/// same authorization server, or the one kept for the entry's client
-/// (`configured`) when the entry names this one — and no other's.
+/// server it was entered for, its port, and its secret.
+///
+/// A secret typed is the client's own. A field left empty is a **public
+/// client** — unless it was left empty over a client whose secret is kept
+/// (`keep_secret`), which keeps the secret **in effect** for this client:
+///
+/// - the same client's, entered before for the same authorization server —
+///   its own secret, or its say-so to use its entry's;
+/// - the one its entry (`configured`) carries **in the file**, when the entry
+///   names this client: never copied here, only recorded as the one to use
+///   ([`StoredClient::secret_from_entry`]), so it is read at each sign-in and
+///   a `${VAR}` it came from is not written down;
+/// - else the one `mcp add --client-secret` kept for the entry's client.
+///
+/// And no other's: another id's secret, or another authorization server's,
+/// is not this client's to keep.
 #[must_use]
 pub fn stored_from_entered(
     entered: &EnteredClient,
     kept: Option<&StoredClient>,
     configured: Option<&OAuthClientConfig>,
 ) -> StoredClient {
-    let this_client = |client: &&StoredClient| match &client.client_id {
-        Some(id) => {
-            *id == entered.client_id
-                && client
-                    .issuer
-                    .as_deref()
-                    .is_none_or(|issuer| issuers_match(issuer, &entered.issuer))
-        }
-        None => {
-            configured.and_then(|config| config.client_id.as_deref())
-                == Some(entered.client_id.as_str())
-        }
-    };
-    let client_secret = match &entered.client_secret {
-        Some(secret) => Some(secret.expose().to_string()),
-        None if entered.keep_secret => kept
-            .filter(this_client)
-            .and_then(|client| client.client_secret.clone()),
-        None => None,
+    let before = kept.filter(|client| {
+        client.client_id.as_deref() == Some(entered.client_id.as_str())
+            && client
+                .issuer
+                .as_deref()
+                .is_some_and(|issuer| issuers_match(issuer, &entered.issuer))
+    });
+    let entry =
+        configured.filter(|config| config.client_id.as_deref() == Some(entered.client_id.as_str()));
+    let (client_secret, secret_from_entry) = match &entered.client_secret {
+        Some(secret) => (Some(secret.expose().to_string()), false),
+        None if !entered.keep_secret => (None, false),
+        None => match (before, entry) {
+            (Some(client), _) => (client.client_secret.clone(), client.secret_from_entry),
+            (None, Some(entry)) if entry.client_secret.is_some() => (None, true),
+            (None, Some(_)) => (
+                kept.filter(|client| !client.is_entered())
+                    .and_then(|client| client.client_secret.clone()),
+                false,
+            ),
+            (None, None) => (None, false),
+        },
     };
     StoredClient {
         client_id: Some(entered.client_id.clone()),
         client_secret,
         callback_port: entered.callback_port,
         issuer: Some(entered.issuer.clone()),
+        secret_from_entry,
     }
 }
 
@@ -337,6 +379,14 @@ pub fn issuer_host(issuer: &str) -> String {
 
 /// What stands in for the port in a redirect URI nobody has fixed one for.
 pub const CALLBACK_PORT_PLACEHOLDER: &str = "PORT";
+
+/// The callback port a form for a **new** client opens on. A provider that
+/// matches redirect URIs exactly — most do, for a client created in their
+/// console — must be told one, and a port left to chance fails in the
+/// browser, at the provider, with nothing here to say why; so the form
+/// shows a redirect URI that can be registered as it stands. Only a
+/// suggestion: the field takes another port, or none (any free one).
+pub const SUGGESTED_CALLBACK_PORT: u16 = 8976;
 
 /// The redirect URI a sign-in listens on — what a provider that matches
 /// redirect URIs exactly must be told. Without a fixed port it carries
@@ -386,6 +436,7 @@ mod tests {
             client_secret: secret.map(str::to_string),
             callback_port: None,
             issuer: issuer.map(str::to_string),
+            secret_from_entry: false,
         }
     }
 
@@ -398,16 +449,37 @@ mod tests {
             client_secret: Some("shh".to_string()),
             callback_port: Some(8976),
             issuer: Some(GOOGLE.to_string()),
+            secret_from_entry: false,
         };
         assert_eq!(
             whole.to_json(),
             json!({"client_id": "cid", "client_secret": "shh", "issuer": GOOGLE, "callback_port": 8976})
         );
         assert_eq!(StoredClient::from_json(&whole.to_json()), Some(whole));
-        // A public client entered with nothing else is its id alone.
-        let bare = entered("cid", None, None);
-        assert_eq!(bare.to_json(), json!({"client_id": "cid"}));
+        // A public client entered with nothing else is its id and the
+        // authorization server it is for.
+        let bare = entered("cid", None, Some(GOOGLE));
+        assert_eq!(
+            bare.to_json(),
+            json!({"client_id": "cid", "issuer": GOOGLE})
+        );
         assert_eq!(StoredClient::from_json(&bare.to_json()), Some(bare));
+        // One that signs in with its entry's secret says so — the secret
+        // itself stays in the file.
+        let lent = StoredClient {
+            secret_from_entry: true,
+            ..entered("cid", None, Some(GOOGLE))
+        };
+        assert_eq!(
+            lent.to_json(),
+            json!({"client_id": "cid", "issuer": GOOGLE, "secret_from_entry": true})
+        );
+        assert_eq!(StoredClient::from_json(&lent.to_json()), Some(lent));
+        // Only a client can say it: beside a bare secret it means nothing.
+        let kept =
+            StoredClient::from_json(&json!({"client_secret": "shh", "secret_from_entry": true}))
+                .unwrap();
+        assert!(!kept.secret_from_entry);
     }
 
     #[test]
@@ -420,9 +492,18 @@ mod tests {
         assert_eq!(StoredClient::from_json(&json!({})), None);
         assert_eq!(StoredClient::from_json(&json!({"client_id": "  "})), None);
         assert_eq!(
-            StoredClient::from_json(&json!({"client_id": "cid", "callback_port": 0}))
-                .unwrap()
-                .callback_port,
+            StoredClient::from_json(
+                &json!({"client_id": "cid", "issuer": GOOGLE, "callback_port": 0})
+            )
+            .unwrap()
+            .callback_port,
+            None
+        );
+        // A client that names no authorization server is nobody's — there
+        // is nothing to hold it to — so nothing of it is read: not as a
+        // client, and not as a secret the entry's client could borrow.
+        assert_eq!(
+            StoredClient::from_json(&json!({"client_id": "cid", "client_secret": "shh"})),
             None
         );
     }
@@ -460,27 +541,70 @@ mod tests {
         assert_eq!(chosen.client_secret.as_deref(), Some("typed-secret"));
         assert_eq!(chosen.callback_port, Some(9000));
         assert_eq!(chosen.source, ClientSource::Entered);
-        // Another client's secret is never lent to it, but the entry's port
-        // holds where it named none: the user may have had to allow-list it.
+        // What the form said is the whole client: another client's secret
+        // is never lent to it, and a port field left empty is any free port
+        // — the form opened on the entry's, so leaving it out was a choice.
         let bare = entered("typed", None, Some(GOOGLE));
         let chosen = preregistered_client(Some(&entry), Some(&bare), Some(GOOGLE)).unwrap();
         assert_eq!(chosen.client_secret, None);
-        assert_eq!(chosen.callback_port, Some(8000));
+        assert_eq!(chosen.callback_port, None);
     }
 
     #[test]
-    fn an_entered_client_that_is_the_entrys_own_takes_its_secret() {
+    fn an_entered_client_takes_its_entrys_secret_only_on_its_say_so() {
         // `Change OAuth client` over a configured client, to give it a port:
-        // the secret its entry carries still counts.
+        // the secret its entry carries still counts — the form's secret was
+        // left empty to keep it, and the kept client says so.
         let entry = config(Some("cid"), Some("config-secret"), None);
-        let typed = StoredClient {
+        let lent = StoredClient {
             callback_port: Some(9000),
+            secret_from_entry: true,
             ..entered("cid", None, Some(GOOGLE))
         };
-        let chosen = preregistered_client(Some(&entry), Some(&typed), Some(GOOGLE)).unwrap();
+        let chosen = preregistered_client(Some(&entry), Some(&lent), Some(GOOGLE)).unwrap();
         assert_eq!(chosen.client_secret.as_deref(), Some("config-secret"));
         assert_eq!(chosen.callback_port, Some(9000));
         assert_eq!(chosen.source, ClientSource::Entered);
+        // Without it the same id is a public client, whatever the entry
+        // carries: a secret the server just refused, left out on the form,
+        // must not ride along again.
+        let public = entered("cid", None, Some(GOOGLE));
+        let chosen = preregistered_client(Some(&entry), Some(&public), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.client_secret, None);
+        // It is the entry's own client's say-so alone: an entry that names
+        // another id since lends nothing…
+        let renamed = config(Some("other"), Some("config-secret"), None);
+        let chosen = preregistered_client(Some(&renamed), Some(&lent), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.client_secret, None);
+        // …and a secret of its own comes first.
+        let own = StoredClient {
+            client_secret: Some("typed-secret".to_string()),
+            ..lent
+        };
+        let chosen = preregistered_client(Some(&entry), Some(&own), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.client_secret.as_deref(), Some("typed-secret"));
+    }
+
+    /// The loop a refused secret used to make: the entry carries a secret
+    /// the server turns away, the form reopens, its secret is left empty —
+    /// a public client — and the very next sign-in must not present the
+    /// entry's secret again.
+    #[test]
+    fn a_secret_left_out_after_a_refusal_stays_out() {
+        let entry = config(Some("cid"), Some("refused"), Some(8000));
+        let form = EnteredClient {
+            issuer: GOOGLE.to_string(),
+            client_id: "cid".to_string(),
+            client_secret: None,
+            // The request said no secret is kept: nothing to keep.
+            keep_secret: false,
+            callback_port: Some(8000),
+        };
+        let kept = stored_from_entered(&form, None, Some(&entry));
+        assert!(!kept.secret_from_entry);
+        let chosen = preregistered_client(Some(&entry), Some(&kept), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.client_id, "cid");
+        assert_eq!(chosen.client_secret, None, "the refused secret came back");
     }
 
     #[test]
@@ -504,9 +628,14 @@ mod tests {
         assert_eq!(chosen.client_id, "from-config");
         assert_eq!(chosen.client_secret, None);
         assert_eq!(chosen.source, ClientSource::Config);
-        // One entered before the issuer was recorded is used as it is.
+        // One that names no authorization server is nobody's: there is
+        // nothing to hold it to, so it is never presented.
         let unbound = entered("typed", None, None);
-        assert!(preregistered_client(None, Some(&unbound), None).is_some());
+        assert_eq!(
+            preregistered_client(None, Some(&unbound), Some(GOOGLE)),
+            None
+        );
+        assert_eq!(preregistered_client(None, Some(&unbound), None), None);
     }
 
     #[test]
@@ -543,25 +672,33 @@ mod tests {
                 client_secret: Some("typed".to_string()),
                 callback_port: Some(8976),
                 issuer: Some(GOOGLE.to_string()),
+                secret_from_entry: false,
             }
         );
+        // The secret a form keeps: its own, and whether it is its entry's.
         let secret_of = |form: &EnteredClient,
                          kept: Option<&StoredClient>,
                          entry: Option<&OAuthClientConfig>| {
-            stored_from_entered(form, kept, entry).client_secret
+            let stored = stored_from_entered(form, kept, entry);
+            (stored.client_secret, stored.secret_from_entry)
         };
+        let own = |secret: &str| (Some(secret.to_string()), false);
+        const PUBLIC: (Option<String>, bool) = (None, false);
         // Left empty with nothing kept: a public client.
-        assert_eq!(secret_of(&submitted(None, true), None, None), None);
+        assert_eq!(secret_of(&submitted(None, true), None, None), PUBLIC);
         // Left empty over the same entered client: its secret stays — a
         // provider may show one only once.
         let same = entered("cid", Some("kept"), Some(GOOGLE));
         assert_eq!(
-            secret_of(&submitted(None, true), Some(&same), None).as_deref(),
-            Some("kept")
+            secret_of(&submitted(None, true), Some(&same), None),
+            own("kept")
         );
         // Over another client's: never. That secret is not this client's.
         let other = entered("other", Some("kept"), Some(GOOGLE));
-        assert_eq!(secret_of(&submitted(None, true), Some(&other), None), None);
+        assert_eq!(
+            secret_of(&submitted(None, true), Some(&other), None),
+            PUBLIC
+        );
         // Over the secret kept for the entry's client, when it is this one…
         let for_entry = StoredClient {
             client_secret: Some("kept".to_string()),
@@ -569,33 +706,104 @@ mod tests {
         };
         let entry = config(Some("cid"), None, None);
         assert_eq!(
-            secret_of(&submitted(None, true), Some(&for_entry), Some(&entry)).as_deref(),
-            Some("kept")
+            secret_of(&submitted(None, true), Some(&for_entry), Some(&entry)),
+            own("kept")
         );
         // …and not when the entry names another, or none.
         let another = config(Some("other"), None, None);
         assert_eq!(
             secret_of(&submitted(None, true), Some(&for_entry), Some(&another)),
-            None
+            PUBLIC
         );
         assert_eq!(
             secret_of(&submitted(None, true), Some(&for_entry), None),
-            None
+            PUBLIC
         );
-        // …nor a client's entered for another authorization server: a
-        // secret is that server's alone, whatever the id.
+        // …nor a client's entered for another authorization server, or for
+        // none: a secret is that server's alone, whatever the id.
         let elsewhere = entered("cid", Some("kept"), Some("https://other.test"));
         assert_eq!(
             secret_of(&submitted(None, true), Some(&elsewhere), None),
-            None
+            PUBLIC
+        );
+        let unbound = entered("cid", Some("kept"), None);
+        assert_eq!(
+            secret_of(&submitted(None, true), Some(&unbound), None),
+            PUBLIC
         );
         // A typed secret replaces a kept one; and without the say-so an
         // empty field is a public client, whatever is kept.
         assert_eq!(
-            secret_of(&submitted(Some("new"), true), Some(&same), None).as_deref(),
-            Some("new")
+            secret_of(&submitted(Some("new"), true), Some(&same), None),
+            own("new")
         );
-        assert_eq!(secret_of(&submitted(None, false), Some(&same), None), None);
+        assert_eq!(
+            secret_of(&submitted(None, false), Some(&same), None),
+            PUBLIC
+        );
+    }
+
+    /// The secret an entry carries **in its file** is never copied into the
+    /// store: a form left empty to keep it records only that the entry's
+    /// secret is the one to use, read from the file at each sign-in.
+    #[test]
+    fn keeping_an_entrys_own_secret_copies_nothing() {
+        let keep = EnteredClient {
+            issuer: GOOGLE.to_string(),
+            client_id: "cid".to_string(),
+            client_secret: None,
+            keep_secret: true,
+            callback_port: Some(9000),
+        };
+        let in_file = config(Some("cid"), Some("in-file"), None);
+        let lent = stored_from_entered(&keep, None, Some(&in_file));
+        assert_eq!(lent.client_secret, None, "the file's secret was copied");
+        assert!(lent.secret_from_entry);
+        let chosen = preregistered_client(Some(&in_file), Some(&lent), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.client_secret.as_deref(), Some("in-file"));
+        assert_eq!(chosen.callback_port, Some(9000));
+        // The file's secret is the one in effect ahead of one the CLI kept:
+        // keeping "the secret already kept" keeps that one.
+        let from_cli = StoredClient {
+            client_secret: Some("from-cli".to_string()),
+            ..Default::default()
+        };
+        let lent = stored_from_entered(&keep, Some(&from_cli), Some(&in_file));
+        assert_eq!((lent.client_secret, lent.secret_from_entry), (None, true));
+        // Saved again, still left empty: the say-so stays.
+        let again = stored_from_entered(&keep, Some(&lent_client()), Some(&in_file));
+        assert_eq!((again.client_secret, again.secret_from_entry), (None, true));
+        // The entry's client was the one in effect while a client entered
+        // for another authorization server sat unused: the same.
+        let elsewhere = entered("cid", Some("theirs"), Some("https://other.test"));
+        let lent = stored_from_entered(&keep, Some(&elsewhere), Some(&in_file));
+        assert_eq!((lent.client_secret, lent.secret_from_entry), (None, true));
+        // A typed secret, or a public client, takes the say-so back.
+        let typed = EnteredClient {
+            client_secret: Some(SecretValue::new("typed")),
+            keep_secret: false,
+            ..keep.clone()
+        };
+        let stored = stored_from_entered(&typed, Some(&lent_client()), Some(&in_file));
+        assert_eq!(stored.client_secret.as_deref(), Some("typed"));
+        assert!(!stored.secret_from_entry);
+        let public = EnteredClient {
+            keep_secret: false,
+            ..keep
+        };
+        let stored = stored_from_entered(&public, Some(&lent_client()), Some(&in_file));
+        assert_eq!(
+            (stored.client_secret, stored.secret_from_entry),
+            (None, false)
+        );
+    }
+
+    /// The entry's own client as a form left empty over it keeps it.
+    fn lent_client() -> StoredClient {
+        StoredClient {
+            secret_from_entry: true,
+            ..entered("cid", None, Some(GOOGLE))
+        }
     }
 
     #[test]

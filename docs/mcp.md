@@ -338,7 +338,8 @@ in **`src/llm/mcp/`**.
   the page's form hands back (its secret a `secrets::SecretValue`, so the
   action carrying it prints without it); `McpClientInfo`, the client a
   server's page names; and the small shared spellings — `issuers_match`,
-  `issuer_host`, `callback_redirect`, `parse_callback_port`.
+  `issuer_host`, `callback_redirect`, `parse_callback_port`, and
+  `SUGGESTED_CALLBACK_PORT`, the port a new client's form opens on.
 - `mcp::status` — what the UI consumes: `McpServerSnapshot { name, scope,
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
@@ -825,7 +826,8 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   }
   ```
 
-  An entry with a `client_id` is a client **entered** in `/mcp`; one with a
+  An entry with a `client_id` is a client **entered** in `/mcp` (it may
+  also carry `"secret_from_entry": true`, below); one with a
   `client_secret` alone is the secret the CLI kept for the client the
   server's *entry* names. The store, never an `mcp.json`: it is owner-only,
   it is the one place every scope's server can be given a client, and
@@ -845,20 +847,67 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     slash by which Google's two documents differ). Where discovery now
     names another issuer the entered client is simply not on hand: the
     entry's own signs in, or the server registers this app, or the page
-    asks again — starting from nothing, the old id never offered.
-  - Short of its own, it takes the entry's secret and port **when it is the
-    entry's own client** (the same id): `Change OAuth client` over a
-    configured client, to give it a port, must not cost it its secret.
+    asks again — starting from nothing, the old id never offered. A store
+    entry naming a client and **no** issuer — only a hand-edit makes one —
+    is read as nothing at all (`StoredClient::from_json`): there is nothing
+    to hold it to, and its secret is not one the entry's client may borrow.
+  - **It is the whole client, as its form said.** Its port is its own —
+    none is any free port: the form opened on the port in effect, the
+    entry's included, so a field left empty was a choice — and so is its
+    secret: none is a public client. One exception, which the kept client
+    has to state itself (`secret_from_entry`): the entry's own client (the
+    same id), re-entered with its secret field left empty **to keep** the
+    secret its entry carries — `Change OAuth client` over a configured
+    client, to give it a port, must not cost it its secret. That secret
+    stays in the file: read at each sign-in, a `${VAR}` it came from never
+    written down, and lent only while the entry still names this client.
   - An entry's client takes the secret kept for it, and never an entered
     client's — that one is another client's secret.
 
+  Lending the entry's secret *by default* — to any entered client with the
+  entry's id and no secret of its own, as this first did — made a loop out
+  of a refused secret: the server turns the entry's secret away, the form
+  reopens, its secret is left empty (a public client, the hint says), and
+  the next sign-in presented the entry's secret again, for as long as the
+  user kept trying. The entry's port was lent the same way and misled the
+  same way: a field the form called `any free port` signed in on the
+  entry's.
+
   A submitted form becomes the one kept entry through
   `mcp::stored_from_entered`, whose one subtlety is the secret: a provider
-  may show a secret **once**, so the form never loads a kept one back and a
-  field left empty **keeps** it — but only the secret that is this
-  client's (the same id, entered for the same authorization server, or the
-  one kept for the entry's client when the entry names this id). Change the
-  id and the empty field is a public client; the form's hint says which.
+  may show a secret **once**, so the form never loads a kept one back. A
+  secret typed is the client's own; a field left empty is a **public
+  client** — unless it was left empty over a client whose secret is kept
+  (the form's hint says which), and then it keeps the secret **in
+  effect**: the same client's, entered before for the same authorization
+  server (its own, or its say-so to use its entry's); else the one its
+  entry carries in the file, recorded as `secret_from_entry` and never
+  copied; else the one `mcp add --client-secret` kept for the entry's
+  client. Change the id and the empty field is a public client.
+
+  **A login is its client's.** The grant keeps its own copy of the client's
+  id and secret — a refresh presents them — so the login of a client the
+  user has retired would go on signing in as it, unseen, under a page
+  naming another: forgetting the client would forget nothing.
+  `oauth::save_client` therefore removes, in the same locked write, the
+  login made as an **entered** client that stops being the one kept
+  (`ClientChange { forgot_entered, signed_out }`):
+
+  - `Forget OAuth client` (`forget_entered_client`, which touches nothing
+    but an *entered* client — the secret kept for an entry's own is not
+    one), and an `mcp add` that replaces it;
+  - `Change OAuth client` to **another** id: the old client's login goes
+    when the new one is kept — before the sign-in that follows ends, and
+    whether or not it does, since nothing would remember the old client to
+    take its login later — and the live connection with it
+    (`McpManager::signed_out`, the `clear_auth` rule).
+
+  The same client re-entered — a new secret, a port — keeps its login. A
+  login made as any other client is left alone: the entry's own, or one
+  this app registered before the user chose theirs, was never a client the
+  user retired; the sign-in that follows replaces it, and dropping it
+  sooner would sign the user out of a working server for a form they may
+  yet abandon.
 
   `run_auth_flow` (over a `SignIn`: the server, its challenge, the store,
   the entry's `oauth`, and whether to ask) reads the kept client itself,
@@ -881,9 +930,11 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   request says **no secret is kept**: the pairing just refused is not one
   to offer to keep, and the two corrections are both typed there, the right
   secret, or none at all (Entra turns a *public* client away *for*
-  presenting a secret). A client the flow registered itself that is turned
-  away stays a failure: no form corrects that. Where no page is open to ask
-  on, `AuthError`'s own words say every way to give a client.
+  presenting a secret) — and none stays none: what is kept then is a public
+  client, whatever secret its entry carries. A client the flow registered
+  itself that is turned away stays a failure: no form corrects that. Where
+  no page is open to ask on, `AuthError`'s own words say every way to give
+  a client.
 
   An authorization server with needs of its own gets them on the authorize
   URL (`provider_authorize_params`): Google issues a refresh token only for
@@ -902,12 +953,20 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   edits an entry in place), and split one credential over two files.
   Asking for a secret *before* the browser, whenever the metadata lists no
   `none` method, turns away the public clients of servers whose metadata
-  merely omits it (Entra's does). A default callback port would collide
-  across sessions; the form asks instead, and shows the redirect URI either
-  way. And provider-specific setup steps on the page (which kind of Google
-  client to create) would be this app's guess at another product's
-  console — the page says what is true of every provider, the redirect URI
-  to register, and leaves the console to its own docs.
+  merely omits it (Entra's does). Keeping a typed client only once it has
+  signed in, so a mistyped one never sticks: but the sign-ins that fail
+  first are the ones that need a second try with the same client — a
+  redirect URI still to register, a port something else holds — and a
+  secret shown once is not there to type again; it is kept at the Enter,
+  shown on the server's page, and `Change`/`Forget OAuth client` are one
+  row away. A callback port **defaulted in the flow** (an entered client
+  with none listening on a fixed one): a provider that takes any loopback
+  port would gain a way to fail, and the redirect URI on the form would not
+  be the one used; the form **suggests** one instead, in a field
+  (*The client form*, below). And provider-specific setup steps on the page
+  (which kind of Google client to create) would be this app's guess at
+  another product's console — the page says what is true of every provider,
+  the redirect URI to register, and leaves the console to its own docs.
 
   **The sign-in's requests name this client too.** The metadata documents,
   the registration, the exchange and every renewal go out on
@@ -1333,10 +1392,12 @@ mid-turn (the strip stays above it). Pages:
    it a secret or a port — and `Forget OAuth client` for one entered here
    (an entry's own is its file's to remove). The first two open the client
    form; forgetting removes what the token store keeps for the server **and
-   the login made as that client** (`McpManager::forget_client`): the grant
-   holds its own copy of the id and secret, so a client that outlived its
-   forgetting would not be forgotten at all — a login made as another
-   client is left alone. When a fresh snapshot changes the list under the user the
+   the login made as that client** (`McpManager::forget_client`, *A login
+   is its client's*, above): the grant holds its own copy of the id and
+   secret, so a client that outlived its forgetting would not be forgotten
+   at all — a login made as another client is left alone, and the toast
+   says which happened (`Forgot calendar's OAuth client and signed out of
+   it`). When a fresh snapshot changes the list under the user the
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first
@@ -1412,14 +1473,13 @@ mid-turn (the strip stays above it). Pages:
      needs an OAuth client you create there. It is kept with your
      logins on this machine, never in an mcp.json.
 
-     Redirect URI: http://localhost:PORT/callback
+     Redirect URI: http://localhost:8976/callback
      Register it with the client if the provider asks for a redirect
-     URI. PORT is any free port — set a callback port when the provider
-     needs the exact one.
+     URI.
 
      ❯ Client ID      123.apps.googleusercontent.com
        Client secret  leave empty for a public client
-       Callback port  any free port
+       Callback port  8976
 
      Enter for the next field · Tab/↑↓ to move · Esc to go back
    ────────────────────────────────────────────────────────────────
@@ -1441,11 +1501,25 @@ mid-turn (the strip stays above it). Pages:
      public client` — or `leave empty to keep the secret already kept` over
      a client whose secret is kept, until the id is changed — and `any free
      port`.
+   - **A new client's form opens on a callback port**
+     (`mcp::SUGGESTED_CALLBACK_PORT`, 8976). A provider that matches
+     redirect URIs exactly — most do, for a client created in their console,
+     Google's web clients among them — must be told one, and a port left to
+     chance fails in the *browser*, at the provider, with nothing on this
+     page to say why. So the redirect URI the form shows is one that can be
+     registered as it stands. It is a suggestion in an ordinary field:
+     typed over, or emptied (Ctrl+U) for any free port — and made only
+     where nothing says otherwise: a port already in effect (the entry's
+     `callbackPort`) is the one shown, and a client on hand keeps the port
+     it has, none included, since a number filled in under it would change
+     at the next Enter the port a working client signs in on.
    - **The redirect URI follows the port as it is typed**, since that row
      is what the user copies into the provider's console: `PORT` stands in
-     until a port is a port, and the note under it then drops the sentence
-     about any free port. It reads **before** the fields — it is what the
-     client is created with, and the client is what the fields take.
+     while the field holds no port — `http://localhost:PORT/callback` over
+     `PORT is any free port — set a callback port when the provider needs
+     the exact one` — and the note drops that sentence once a port is a
+     port. It reads **before** the fields — it is what the client is
+     created with, and the client is what the fields take.
    - **The fields are the page's tail**, over nothing but the hint (and a
      refusal, when there is one). Every framed page is bottom-anchored
      (`docs/view-flow.md`), so the tail is what a short terminal keeps:
@@ -1459,7 +1533,9 @@ mid-turn (the strip stays above it). Pages:
      last field**, Ctrl+U empties the field, ←/→/Home/End/Delete move
      through the id and the port (a mask has nothing to move through), a
      paste lands in the focused field on one line — never in the redirect
-     field behind the form — and Esc goes back, cancelling nothing: the
+     field behind the form; a pasted port **replaces** the field's, being a
+     whole port, rather than running into the one the form opened on — and
+     Esc goes back, cancelling nothing: the
      sign-in that asked has already ended. A form the sign-in could not
      use never leaves: `✗ Enter the client ID`, or the port's range, shows
      under the fields with the focus on the one at fault.
@@ -1712,11 +1788,13 @@ to, which is how a connect's retries are counted request by request. The
 client form's whole path has the same fixtures — an authorization server
 with no registration endpoint, one refusing a registration, one whose token
 endpoint turns the client away — under `oauth`'s and the manager's tests
-(the request the flow ends on, the kept entry, the issuer binding, the
-forgetting), its state machine and rendering under `app::tests::mcp_menu`
-and `ui::tests::mcp_view`, and `smoke.sh` Phase 162 drives it on screen
-against a stub of that shape with `curl` as the browser: a wrong secret,
-the reopened form, the right one, the kept entry (owner-only, never in
+(the request the flow ends on, the kept entry, the issuer binding, a
+secret left out staying out on the wire, the login that goes with a
+forgotten or replaced client), its state machine and rendering under
+`app::tests::mcp_menu` and `ui::tests::mcp_view`, and `smoke.sh` Phase 162
+drives it on screen against a stub of that shape with `curl` as the
+browser: the suggested port and the emptied one, a wrong secret, the
+reopened form, the right one, the kept entry (owner-only, never in
 `mcp.json`), `mcp get`, a changed port, and the forgetting — and neither
 secret anywhere on screen, scrollback included. What
 those can't prove — that a real server's tools, descriptions and parallel

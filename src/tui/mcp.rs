@@ -236,11 +236,18 @@ impl Session<'_> {
             McpOp::AskAuthClient { server } => manager.ask_for_client(&server),
             McpOp::SaveAuthClient { server, client } => manager.save_client(&server, client),
             McpOp::ForgetClient { server } => match manager.forget_client(&server) {
-                Ok(true) => self.toast(
+                Ok(change) if change.signed_out => self.toast(
                     format!("Forgot {server}'s OAuth client and signed out of it"),
                     ToastKind::Info,
                 ),
-                Ok(false) => self.toast(format!("Forgot {server}'s OAuth client"), ToastKind::Info),
+                Ok(change) if change.forgot_entered => {
+                    self.toast(format!("Forgot {server}'s OAuth client"), ToastKind::Info);
+                }
+                // Another session forgot it first: say what is true now.
+                Ok(_) => self.toast(
+                    format!("{server} has no OAuth client entered here"),
+                    ToastKind::Info,
+                ),
                 Err(error) => self.toast(
                     format!("Couldn't forget {server}'s OAuth client: {error}"),
                     ToastKind::Error,
