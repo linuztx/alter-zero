@@ -223,8 +223,13 @@ already reads:
 
 - `.alter-zero-plugin/hooks.json` is an ordinary `hooks.json`
   (`docs/hooks.md`) holding only what can run here — `command` handlers on
-  events this app fires — with `${CLAUDE_PLUGIN_ROOT}`, `${PLUGIN_ROOT}`
-  and the two data variables already expanded. An event this app does not
+  events this app fires. A command keeps `${CLAUDE_PLUGIN_ROOT}`,
+  `${PLUGIN_ROOT}` and the two data variables as written: the hook's
+  process has all four in its environment and the shell expands them with
+  the author's quoting, so a config home with a space or a `$` in its path
+  is never split or run; only the words of an agent-plugins.org
+  `{command, args}` handler, and an MCP server's command, arguments,
+  environment and URL, have them expanded. An event this app does not
   fire, a `prompt` or `agent` handler, and a handler behind an `if`
   condition are left out and counted for the detail page.
 - `.alter-zero-plugin/mcp.json` is an ordinary `mcp.json` (`docs/mcp.md`):

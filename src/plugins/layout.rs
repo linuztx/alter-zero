@@ -878,7 +878,7 @@ mod tests {
         );
         let layout = read(&dir, None);
         let hooks = layout.hooks.json.expect("hooks");
-        assert!(hooks.contains("/inst/demo/stop.sh"), "{hooks}");
+        assert!(hooks.contains("${CLAUDE_PLUGIN_ROOT}/stop.sh"), "{hooks}");
         assert!(!hooks.contains("cd '"), "{hooks}");
     }
 

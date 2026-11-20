@@ -4059,21 +4059,20 @@ mod tests {
         let generated = root.join("cache/m/review/.alter-zero-plugin/hooks.json");
         let (data, pairs) =
             plugin_hook_env(Some(&generated), Some(root)).expect("a plugin's hooks file");
-        assert_eq!(data, root.join("data/m/review"));
+        let id = crate::plugins::PluginId::parse("review@m").expect("id");
+        // The data directory is the store's own answer, never rebuilt here.
+        let expected = crate::plugins::data_dir(root, &id);
+        assert_eq!(data, expected);
+        let install = "/home/u/.alter-zero/plugins/cache/m/review";
+        let expected = expected.to_string_lossy();
         let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
         assert_eq!(
             pairs,
             [
-                ("PLUGIN_ROOT", "/home/u/.alter-zero/plugins/cache/m/review"),
-                (
-                    "CLAUDE_PLUGIN_ROOT",
-                    "/home/u/.alter-zero/plugins/cache/m/review"
-                ),
-                ("PLUGIN_DATA", "/home/u/.alter-zero/plugins/data/m/review"),
-                (
-                    "CLAUDE_PLUGIN_DATA",
-                    "/home/u/.alter-zero/plugins/data/m/review"
-                ),
+                ("PLUGIN_ROOT", install),
+                ("CLAUDE_PLUGIN_ROOT", install),
+                ("PLUGIN_DATA", &*expected),
+                ("CLAUDE_PLUGIN_DATA", &*expected),
             ]
         );
         // The user's file, a project's, a handler from no file, and a session
@@ -4113,7 +4112,8 @@ mod tests {
         .with_plugins_root(Some(root.clone()));
         let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
         let written = std::fs::read_to_string(&probe).expect("the hook ran");
-        let data = root.join("data/m/review");
+        let id = crate::plugins::PluginId::parse("review@m").expect("id");
+        let data = crate::plugins::data_dir(&root, &id);
         assert_eq!(
             written,
             format!(
@@ -4123,6 +4123,74 @@ mod tests {
             )
         );
         assert!(data.is_dir(), "the data dir is made before the hook runs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_plugins_hook_gets_its_variables_whatever_event_fires_it() {
+        // A plugin's generated hooks file names the variables as written
+        // (`docs/plugins.md`), so every event's spawn must carry them.
+        let home = tempfile::tempdir().expect("temp dir");
+        let root = home.path().join("plugins");
+        let generated = root.join("cache/m/review/.alter-zero-plugin");
+        std::fs::create_dir_all(&generated).expect("generated dir");
+        let probes = home.path().join("probes");
+        std::fs::create_dir(&probes).expect("probes");
+        let events = [
+            "PreToolUse",
+            "PostToolUse",
+            "UserPromptSubmit",
+            "Stop",
+            "SessionStart",
+            "SessionEnd",
+        ];
+        let command = |event: &str| {
+            format!(
+                "printf '%s|%s|%s|%s' \"$PLUGIN_ROOT\" \"$CLAUDE_PLUGIN_ROOT\" \"$PLUGIN_DATA\" \"${{CLAUDE_PLUGIN_DATA}}\" > '{}/{event}'",
+                probes.display()
+            )
+        };
+        let mut map = serde_json::Map::new();
+        for event in events {
+            map.insert(
+                event.to_string(),
+                serde_json::json!([{ "hooks": [{ "type": "command", "command": command(event) }] }]),
+            );
+        }
+        let file = HooksFile::parse(&serde_json::json!({ "hooks": map }).to_string())
+            .expect("fixture parses")
+            .with_source(&generated.join("hooks.json"));
+        let handles = HookHandles::default();
+        handles.sources.lock().unwrap().push("startup".to_string());
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            handles,
+        )
+        .expect("runnable")
+        .with_plugins_root(Some(root.clone()));
+        let cancel = CancelToken::new();
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &cancel);
+        let _ = hooks.post_tool_use(&call("bash", "{}"), &ToolOutcome::ok("ok".to_string()), &cancel);
+        let _ = hooks.user_prompt_submit("hi", &cancel);
+        let _ = hooks.stop(false, "done", &cancel);
+        let _ = hooks.session_start(&cancel);
+        hooks.session_end("exit");
+        let id = crate::plugins::PluginId::parse("review@m").expect("id");
+        let install = crate::plugins::install_dir(&root, &id);
+        let data = crate::plugins::data_dir(&root, &id);
+        let expected = format!(
+            "{0}|{0}|{1}|{1}",
+            install.display(),
+            data.display()
+        );
+        for event in events {
+            let written = std::fs::read_to_string(probes.join(event))
+                .unwrap_or_else(|_| panic!("the {event} hook ran"));
+            assert_eq!(written, expected, "{event}");
+        }
     }
 
     #[cfg(unix)]

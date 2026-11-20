@@ -73,10 +73,11 @@ pub struct NormalizedMcp {
 ///
 /// Kept: the events alter-zero fires (`hooks::HookEvent`), and handlers of
 /// `type: "command"` (or no type) with a non-empty command, no `if` and no
-/// `powershell` shell. Each kept command has its variables expanded and,
-/// when `root_is_cwd`, is prefixed `cd '<root>' && `. An agent-plugins.org
-/// 1.1 draft handler (`{command, args}`, no matcher level) becomes
-/// `<command> <args…>`, sh-quoted, under no matcher. `async` is accepted and
+/// `powershell` shell. A shell-form command keeps the plugin variables as
+/// written, for the shell to expand from the hook's environment, and, when
+/// `root_is_cwd`, is prefixed `cd '<root>' && `. An agent-plugins.org 1.1
+/// draft handler (`{command, args}`, no matcher level) becomes
+/// `<command> <args…>`, each word expanded and sh-quoted, under no matcher. `async` is accepted and
 /// ignored: alter-zero runs every hook synchronously.
 #[must_use]
 pub fn normalize_hooks(documents: &[Value], ctx: &NormalizeContext<'_>) -> NormalizedHooks {
@@ -221,7 +222,11 @@ fn handler(entry: &Value, ctx: &NormalizeContext<'_>, dropped: &mut Tally) -> Op
             }
             line
         }
-        None => vars::expand(command, &ctx.paths),
+        // The shell form names the plugin variables as written: the hook's
+        // process has them in its environment, and the shell expands them
+        // with the author's own quoting. Pasting the path in would split it
+        // at a space and run whatever `$(…)` it holds.
+        None => command.to_string(),
     };
     if ctx.root_is_cwd {
         command = format!(
@@ -688,7 +693,7 @@ mod tests {
         let file = parsed(&out);
         assert_eq!(
             commands(&file, "Stop"),
-            [format!("bash \"{ROOT}/hooks/stop-hook.sh\"")]
+            ["bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh\""]
         );
         assert_eq!(file.hooks["Stop"][0].matcher, None);
         assert_eq!(out.summary, ["Stop"]);
@@ -703,7 +708,7 @@ mod tests {
         let file = parsed(&out);
         assert_eq!(
             commands(&file, "PostToolUse"),
-            [format!("\"{ROOT}/scripts/format.sh\"")]
+            ["\"${PLUGIN_ROOT}/scripts/format.sh\""]
         );
         assert_eq!(
             file.hooks["PostToolUse"][0].matcher.as_deref(),
@@ -765,7 +770,7 @@ mod tests {
         assert_eq!(handler.kind, HandlerKind::Command);
         assert_eq!(
             handler.command.as_deref(),
-            Some(format!("sh \"{ROOT}/hooks/hooks.sh\" unanswered || true").as_str())
+            Some("sh \"${CLAUDE_PLUGIN_ROOT}/hooks/hooks.sh\" unanswered || true")
         );
         assert_eq!(handler.timeout, Some(90));
         assert_eq!(handler.status_message.as_deref(), Some("Checking…"));
@@ -875,11 +880,55 @@ mod tests {
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(command)
+            .envs(vars::env_pairs(&ctx.paths))
             .output()
             .expect("sh");
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         let canonical = root.canonicalize().expect("canonical");
         assert_eq!(text, format!("{}\n{}", canonical.display(), data.display()));
+    }
+
+    #[test]
+    fn a_shell_form_command_names_the_plugin_variables_as_written() {
+        let doc = json!({ "PreToolUse": [ { "matcher": "Bash", "hooks": [
+            { "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/a.py --state ${PLUGIN_DATA}" } ] } ] });
+        let out = normalize_hooks(&[doc], &ctx(false));
+        assert_eq!(
+            commands(&parsed(&out), "PreToolUse"),
+            ["python3 ${CLAUDE_PLUGIN_ROOT}/hooks/a.py --state ${PLUGIN_DATA}"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_with_spaces_and_a_substitution_is_never_run_as_shell_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("Jane Doe $(touch pwned)");
+        std::fs::create_dir(&root).expect("root");
+        let data = dir.path().join("data");
+        let ctx = NormalizeContext {
+            plugin: "p",
+            paths: PluginPaths {
+                root: &root,
+                data: &data,
+            },
+            root_is_cwd: false,
+        };
+        let doc = json!({ "Stop": [ { "hooks": [
+            { "command": "printf '[%s]' \"${CLAUDE_PLUGIN_ROOT}\"" } ] } ] });
+        let command = commands(&parsed(&normalize_hooks(&[doc], &ctx)), "Stop").remove(0);
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(dir.path())
+            .envs(vars::env_pairs(&ctx.paths))
+            .output()
+            .expect("sh");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("[{}]", root.display())
+        );
+        assert!(!dir.path().join("pwned").exists(), "nothing in the path ran");
     }
 
     // --- MCP --------------------------------------------------------------
