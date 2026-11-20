@@ -55,6 +55,7 @@
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
+//! | [`plugins`] | The `/plugins` page's boundary: the snapshot it opens on, its operations and their answers — a stub until the plugin library is connected (`docs/plugins-menu.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list / usage / transcript-render jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
@@ -107,6 +108,7 @@ pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod plugin_cli;
 pub(crate) mod plugin_runtime;
+pub(crate) mod plugins;
 pub(crate) mod recorder;
 pub(crate) mod resume;
 pub(crate) mod secrets;

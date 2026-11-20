@@ -49,6 +49,7 @@ mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
+mod plugins_menu;
 mod queue;
 mod reasoning;
 mod resume;
@@ -573,6 +574,15 @@ pub struct App {
     /// (page walk, no search) over the boundary-injected server snapshot.
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
+    /// The open `/plugins` page; `None` when closed — the marketplaces'
+    /// plugins to browse, install and manage, over the snapshot the boundary
+    /// read when it opened, dropped when it closes. See
+    /// `docs/plugins-menu.md`.
+    pub plugins_menu: Option<Box<alter_zero_plugins::page::PluginsPage>>,
+    /// The round the newest `/plugins` job was asked under — what an answer
+    /// must carry to be taken ([`App::finish_plugin_job`]). On `App` rather
+    /// than the page, so a reopened page never matches an old round.
+    plugin_rounds: u64,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over

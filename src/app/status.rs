@@ -461,7 +461,7 @@ impl App {
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
     /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/sponsor`, `/secrets`,
-    /// `/export`, `/context`, `/usage`) own every key the same way, so the
+    /// `/export`, `/context`, `/usage`, `/plugins`) own every key the same way, so the
     /// running cell they keep visible above themselves stays hintless while
     /// one is open (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
     /// `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`, `docs/donate.md`,
@@ -484,6 +484,7 @@ impl App {
             || self.export_picker.is_some()
             || self.context_usage.is_some()
             || self.usage_page.is_some()
+            || self.plugins_menu.is_some()
         {
             return None;
         }

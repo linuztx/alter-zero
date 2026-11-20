@@ -2,8 +2,9 @@
 //! commands (as skills), subagent types, lifecycle hooks and MCP servers to
 //! a session, in three formats — Agent Plugins 1.0.0, Claude Code and Codex
 //! — installed from marketplaces. This is the core library: the formats, the
-//! catalog, the on-disk state, the `git` runner and the store. The page, the
-//! CLI and the session seams are callers.
+//! catalog, the on-disk state, the `git` runner and the store — and, over
+//! them, the plugin commands and the `/plugins` page. The session seams are
+//! the app's.
 //!
 //! - `agent_plugins` — Agent Plugins 1.0.0 exactly: the closed manifest,
 //!   the name grammar, `mcp.json` and its two placeholders.
@@ -25,6 +26,8 @@
 //! - `cancel`     — the cancellation flag long operations poll.
 //! - `cli`        — the `alter-zero plugin …` commands: the work, the
 //!   wording and the `--json` shapes (`docs/plugin-cli.md`).
+//! - `page`       — the `/plugins` page: its state, its keys and its
+//!   view, drawn through the app's [`PageKit`] (`docs/plugins-menu.md`).
 //!
 //! A crate of its own, not a module of the app's: a cold dependency crate's
 //! code is one contiguous block that an idle session never faults in, where
@@ -42,6 +45,7 @@ pub mod layout;
 pub mod manifest;
 pub mod marketplace;
 pub mod mcp;
+pub mod page;
 pub mod source;
 pub mod state;
 pub mod store;
@@ -83,6 +87,7 @@ pub use self::marketplace::{
     read_catalog, read_catalog_file, repository_name, single_plugin_catalog,
 };
 pub use self::mcp::{LegacyEntry, ServerTransport, parse_legacy_entry};
+pub use self::page::{PageKit, PluginOp, PluginsPage, PluginsSnapshot};
 pub use self::source::{
     GITHUB_BASE, MarketplaceSource, MarketplaceSpec, SourceError, github_shorthand, github_url,
     normalize, parse_marketplace_source,

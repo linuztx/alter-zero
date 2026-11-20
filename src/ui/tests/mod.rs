@@ -42,6 +42,7 @@ mod model_view;
 mod offline;
 mod palette;
 mod permission_view;
+mod plugins_view;
 mod reasoning;
 mod resume_view;
 mod secrets_view;

@@ -3,7 +3,7 @@ name = "alter-zero-plugins"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "Alter Zero's plugin core: the three plugin formats, marketplace catalogs, plugins.json, the git runner and the store."
+description = "Alter Zero's plugins: the three plugin formats, marketplace catalogs, plugins.json, the git runner, the store, the plugin commands and the /plugins page."
 license = "Apache-2.0"
 
 [dependencies]
@@ -12,6 +12,10 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 url = "2"
 # Staging directories for clones and copies (removed when dropped).
 tempfile = "3"
+# The /plugins page (docs/plugins-menu.md): its lines and its keys. The same
+# versions and features as the app's, so the workspace builds one copy.
+ratatui = { version = "0.30.1", default-features = false, features = ["crossterm", "underline-color", "layout-cache"] }
+unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # Killing a git child's whole process group on cancel or timeout.

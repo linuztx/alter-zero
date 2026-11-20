@@ -105,10 +105,15 @@ impl App {
         if self.view == View::Conversation && self.secrets_page.is_some() {
             return self.on_key_secrets_page(key);
         }
-        // …and the inline `/skills` menu. See `docs/skills.md`.
+        // …and the `/mcp` manager. See `docs/mcp.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);
         }
+        // …and the `/plugins` page. See `docs/plugins-menu.md`.
+        if self.view == View::Conversation && self.plugins_menu.is_some() {
+            return self.on_key_plugins(key);
+        }
+        // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.skills_menu.is_some() {
             return self.on_key_skills(key);
         }

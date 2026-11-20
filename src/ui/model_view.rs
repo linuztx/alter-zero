@@ -668,7 +668,7 @@ pub(super) fn whole_url_run(text: &str, base: Style) -> Option<(String, Style)> 
 
 /// One line split into styled runs: the prose under `base`, each bare URL
 /// underlined and carrying itself as its link target.
-fn linked_segments(line: &str, base: Style) -> Vec<(String, Style)> {
+pub(super) fn linked_segments(line: &str, base: Style) -> Vec<(String, Style)> {
     let mut out: Vec<(String, Style)> = Vec::new();
     let mut at = 0;
     for range in crate::links::find_urls(line) {

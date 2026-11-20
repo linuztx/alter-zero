@@ -372,6 +372,26 @@ pub enum Action {
     /// threads, completions re-inject the snapshot via the MCP event
     /// channel. See `docs/mcp.md`.
     McpOp(McpOp),
+    /// `/plugins`: open the plugins page. Works mid-turn — it only replaces
+    /// the composer. The *loop* reads the plugin state and hands it to
+    /// [`App::open_plugins_menu`]. See `docs/plugins-menu.md`.
+    OpenPluginsMenu,
+    /// The `/plugins` page was closed (Esc from the list, or Ctrl+C):
+    /// [`App::plugins_menu`] is already cleared; the loop stops a job still
+    /// running.
+    ClosePluginsMenu,
+    /// Esc while a `/plugins` job runs: the page has let go of it; the loop
+    /// stops it.
+    CancelPluginJob,
+    /// One `/plugins` operation, already marked running on the page under
+    /// `round` (`0` for an `Inspect`,
+    /// which is no job): the loop runs it and answers with
+    /// [`App::finish_plugin_job`] (or [`App::supply_plugin_contents`]). See
+    /// `docs/plugins-menu.md`.
+    PluginOp {
+        op: alter_zero_plugins::page::PluginOp,
+        round: u64,
+    },
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to

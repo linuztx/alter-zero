@@ -223,6 +223,17 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.plugins_menu.is_some() {
+        // The `/plugins` list sheds rows before it could flow; a plugin's
+        // page can be taller than the terminal and changes on a keystroke
+        // or an answer — its job clock ticks on its status row, which is
+        // always on screen, never in the flowed top — so it signs its rows
+        // (`docs/plugins-menu.md`).
+        return Some(FlowPage::framed(
+            super::plugins_view::plugins_view_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.hooks_menu.is_some() {
         return Some(FlowPage::framed(
             super::hooks_view::hooks_view_lines(app, width),

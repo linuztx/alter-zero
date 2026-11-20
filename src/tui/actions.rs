@@ -325,6 +325,11 @@ impl Session<'_> {
                 // region collapses back to the composer on the next draw.
             }
             Action::McpOp(op) => self.apply_mcp_op(op),
+            Action::OpenPluginsMenu => self.open_plugins_menu(),
+            // The page closed (Esc on its list, Ctrl+C anywhere) or Esc let go
+            // of its job: stop the job, if one runs (docs/plugins-menu.md).
+            Action::ClosePluginsMenu | Action::CancelPluginJob => self.cancel_plugin_job(),
+            Action::PluginOp { op, round } => self.run_plugin_op(op, round),
             Action::ReviewAnswered(answer) => self.apply_review_answer(answer),
             Action::SetHookTrust {
                 source,
@@ -634,6 +639,11 @@ impl Session<'_> {
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
             // point); every other page swallows them (docs/mcp.md).
+            // The `/plugins` page: a marketplace's address into its add
+            // field, or into the list's `❯` line (docs/plugins-menu.md).
+            View::Conversation if self.app.plugins_menu.is_some() => {
+                self.app.on_paste(pasted);
+            }
             View::Conversation if self.app.mcp_menu.is_some() => {
                 let _ = self.app.paste_into_mcp_auth(pasted);
             }

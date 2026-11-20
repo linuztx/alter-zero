@@ -811,6 +811,17 @@ pub fn render_live_with_preview(
         render_skills_menu(body, buf, app);
         return;
     }
+    // …and the `/plugins` page: a search-line picker on its list, the `/mcp`
+    // pages' twin on its detail pages. See `docs/plugins-menu.md`.
+    if app.plugins_menu.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::plugins_view::plugins_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        super::plugins_view::render_plugins_menu(body, buf, app);
+        return;
+    }
     // …and the read-only `/hooks` menu — its body is the built line count,
     // the ↓ manager band's rule. See `docs/hooks-menu.md`.
     if app.hooks_menu.is_some() {

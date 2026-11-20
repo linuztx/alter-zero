@@ -82,8 +82,11 @@ pub fn is_valid_name(name: &str) -> bool {
 }
 
 /// A plugin's id, `name@marketplace`: the key in `plugins.json` and the two
-/// directory names under `installed/`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// directory names under `installed/`. Two marketplaces may list a plugin of
+/// one name, so the pair is the identity. The default is the empty id, a
+/// placeholder that names nothing: no record has it, so no operation finds
+/// it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PluginId {
     /// The marketplace entry's name.
     pub name: String,

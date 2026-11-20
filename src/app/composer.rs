@@ -106,6 +106,12 @@ impl App {
             self.paste_into_secrets_page(pasted);
             return;
         }
+        // …and so does `/plugins`: a pasted marketplace address belongs in
+        // its field (`docs/plugins-menu.md`).
+        if self.view == View::Conversation && self.plugins_menu.is_some() {
+            self.paste_into_plugins(pasted);
+            return;
+        }
         // An edit may change the active /command, @token or $mention, like
         // the Char arm.
         let had_query = command_query(self.input.text()).is_some();

@@ -57,6 +57,11 @@ const DEVICE_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// picker left open shows them within this long (`docs/model-cache.md`).
 const MODEL_PICKER_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often an open `/plugins` page redraws while a job runs: often enough
+/// that its line appears near the 400 ms it waits for and its seconds tick
+/// on time, a sixth of the status chain's rate (`docs/plugins-menu.md`).
+const PLUGINS_JOB_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
 /// rewind) re-renders into scrollback. A purge drops the terminal's own
 /// scrollback, so the whole conversation is rebuilt from history — capped here
@@ -104,6 +109,12 @@ impl Session<'_> {
         // (docs/usage.md).
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
+        }
+        // …and the `/plugins` page's job clock and marketplace ages
+        // (docs/plugins-menu.md).
+        if self.app.plugins_menu.is_some() {
+            self.app
+                .set_plugins_clock(super::host::unix_secs_signed(), now);
         }
         // …and so does the `/model` page's `updated 2h ago`
         // (docs/model-cache.md).
@@ -872,6 +883,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::mcp_menu_height(app, screen.width, screen.height) {
         return height;
     }
+    // The `/plugins` page, likewise (docs/plugins-menu.md).
+    if let Some(height) = ui::plugins_menu_height(app, screen.width, screen.height) {
+        return height;
+    }
     if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
         return height;
     }
@@ -994,6 +1009,12 @@ impl Session<'_> {
         // its lists' age changes by the minute, with no event of its own.
         if self.app.model_picker.is_some() {
             self.frame.schedule_frame_in(MODEL_PICKER_TICK_INTERVAL);
+        }
+        // A `/plugins` job keeps a slow chain of its own: its line appears
+        // once the job has run 400 ms and then counts seconds — never the
+        // status chain's thirty frames a second (docs/plugins-menu.md).
+        if self.app.plugins_menu_ticks() {
+            self.frame.schedule_frame_in(PLUGINS_JOB_TICK_INTERVAL);
         }
         Ok(())
     }
