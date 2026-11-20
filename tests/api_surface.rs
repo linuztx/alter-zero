@@ -560,6 +560,50 @@ use alter_zero::ui::{
     wrap_text,
 };
 
+// --- `plugins` — transforms and I/O primitives (vars, command, normalize, git, fsops) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::plugins::{
+    COPY_MAX_BYTES,
+    COPY_MAX_FILES,
+    CommandMeta,
+    CopyReport,
+    DEFAULT_GIT_TIMEOUT,
+    GitControl,
+    GitError,
+    GitOptions,
+    GitProgress,
+    NoControl,
+    NormalizeContext,
+    NormalizedHooks,
+    NormalizedMcp,
+    PluginPaths,
+    command_name,
+    copy_tree,
+    env_pairs,
+    expand,
+    expand_arguments as plugin_expand_arguments,
+    expand_claude,
+    fetch_revision,
+    git_available,
+    head_revision,
+    make_staging,
+    map_agent_tools,
+    match_invocation,
+    matches_query,
+    normalize_hooks,
+    normalize_mcp,
+    parse_command,
+    read_capped,
+    remote_revision,
+    remove_tree,
+    sh_quote,
+    shallow_clone,
+    swap_into_place,
+    tree_id,
+    write_atomic,
+};
+
 /// Bodyless on purpose: the `use` declarations above are the assertion, and this
 /// gives `cargo test` a name to report if they stop resolving.
 #[test]

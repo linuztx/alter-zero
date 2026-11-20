@@ -34,6 +34,22 @@ pub mod vars;
 
 // --- transforms and primitives: vars, command, normalize, git, fsops ------
 // (re-exports by name; never a glob)
+pub use command::{
+    CommandMeta, command_name, expand_arguments, match_invocation, matches_query, parse_command,
+};
+pub use fsops::{
+    COPY_MAX_BYTES, COPY_MAX_FILES, CopyReport, copy_tree, make_staging, read_capped, remove_tree,
+    swap_into_place, write_atomic,
+};
+pub use git::{
+    DEFAULT_GIT_TIMEOUT, GitControl, GitError, GitOptions, GitProgress, NoControl, fetch_revision,
+    git_available, head_revision, remote_revision, shallow_clone, tree_id,
+};
+pub use normalize::{
+    NormalizeContext, NormalizedHooks, NormalizedMcp, map_agent_tools, normalize_hooks,
+    normalize_mcp,
+};
+pub use vars::{PluginPaths, env_pairs, expand, expand_claude, sh_quote};
 
 // --------------------------------------------------------------------------
 
