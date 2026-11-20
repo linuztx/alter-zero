@@ -43,7 +43,12 @@ release heading when a version is cut.
   - **Nothing a plugin brings runs unseen.** Its hooks and MCP servers go
     through the same review as your own when the app starts — or at once,
     over the page, when you install one from `/plugins` — and every update
-    is reviewed again.
+    is reviewed again, in a session that was already open too, at its next
+    message. The review names the environment variables a plugin's MCP
+    server reads, since that is how it gets its key and how it could take
+    another. The names `claude-plugins-official` and `openai-curated`
+    belong to those two repositories on GitHub: no other source may use
+    them.
   - Marketplaces are fetched with your own `git`, so private repositories
     use the credentials you already have, and only the catalog is checked
     out: the official Codex repository is 105 MB and takes 1.4 MB here. A
