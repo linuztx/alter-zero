@@ -274,11 +274,33 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
 
 /// Read a text file of at most `max` bytes; a larger one is refused rather
 /// than read, since every file this is used on is small when it is sane.
+/// Anything that is not a regular file once links are followed — a FIFO, a
+/// terminal, a device — is refused before it is opened, and the open itself
+/// never waits or takes a terminal, so a file a plugin ships can never
+/// block a read on someone else's input.
 ///
 /// # Errors
-/// When the file cannot be read, is larger than `max`, or is not UTF-8.
+/// When the file cannot be read, is not a regular file, is larger than
+/// `max`, or is not UTF-8.
 pub fn read_capped(path: &Path, max: u64) -> Result<String, String> {
-    let file = fs::File::open(path).map_err(|error| read_error(path, &error))?;
+    let not_regular = || format!("{} is not a regular file — not read", path.display());
+    let meta = fs::metadata(path).map_err(|error| read_error(path, &error))?;
+    if !meta.is_file() {
+        return Err(not_regular());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOCTTY;
+        options.custom_flags(flags.bits().cast_signed());
+    }
+    let file = options.open(path).map_err(|error| read_error(path, &error))?;
+    // The path may have been swapped between the check and the open.
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err(not_regular());
+    }
     let mut bytes = Vec::new();
     file.take(max.saturating_add(1))
         .read_to_end(&mut bytes)
@@ -549,6 +571,29 @@ mod tests {
             .map(|e| e.expect("entry").file_name())
             .collect();
         assert_eq!(names, [std::ffi::OsString::from("plugins.json")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_capped_refuses_what_is_not_a_regular_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&fifo, &link).expect("link");
+        for path in [&fifo, &link, &dir.path().to_path_buf(), &PathBuf::from("/dev/null")] {
+            let error = read_capped(path, 64).expect_err("refused");
+            assert!(error.contains("not a regular file"), "{error}");
+        }
+        let file = dir.path().join("file");
+        fs::write(&file, "ok").expect("write");
+        let to_file = dir.path().join("to-file");
+        std::os::unix::fs::symlink(&file, &to_file).expect("link");
+        assert_eq!(read_capped(&to_file, 64).expect("a link to a file"), "ok");
     }
 
     #[test]

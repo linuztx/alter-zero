@@ -218,13 +218,14 @@ fn read_manifest(
     entry: Option<&Value>,
     warnings: &mut Vec<String>,
 ) -> Result<PluginManifest, String> {
+    let root = Root::new(dir);
     let mut primary = None;
     for (file, format) in MANIFEST_FILES {
         let path = dir.join(file);
         if !path.is_file() {
             continue;
         }
-        let text = match read_capped(&path, MANIFEST_MAX_BYTES) {
+        let text = match root.read(&path, MANIFEST_MAX_BYTES) {
             Ok(text) => text,
             // Another tool's root `plugin.json` is none of ours to read.
             Err(_) if format == ManifestFormat::AgentPlugins => continue,
@@ -250,7 +251,8 @@ fn read_manifest(
     if manifest.format != ManifestFormat::Codex {
         let codex = dir.join(".codex-plugin/plugin.json");
         if codex.is_file() {
-            match read_capped(&codex, MANIFEST_MAX_BYTES)
+            match root
+                .read(&codex, MANIFEST_MAX_BYTES)
                 .and_then(|text| parse_manifest(&text, ManifestFormat::Codex))
             {
                 Ok(overlay) => fill_display(&mut manifest, &overlay),
@@ -310,6 +312,23 @@ impl<'a> Root<'a> {
         } else {
             Found::Outside
         }
+    }
+
+    /// `path` (anywhere below the plugin) read through [`read_capped`] when
+    /// it resolves inside the plugin — a link to a file elsewhere on the
+    /// machine is refused, as `read_capped` refuses anything that is not a
+    /// regular file.
+    fn read(&self, path: &Path, max: u64) -> Result<String, String> {
+        let inside = self.resolved.as_ref().is_some_and(|root| {
+            fs::canonicalize(path).is_ok_and(|resolved| resolved.starts_with(root))
+        });
+        if !inside {
+            return Err(format!(
+                "{} leads outside the plugin — not read",
+                path.display()
+            ));
+        }
+        read_capped(path, max)
     }
 
     /// [`Root::find`], with a warning for a path the manifest named that is
@@ -382,7 +401,7 @@ fn find_skills(
             continue;
         }
         for skill_dir in &skill_dirs {
-            if let Some(skill) = skill_name(skill_dir, root.dir, warnings) {
+            if let Some(skill) = skill_name(skill_dir, root, warnings) {
                 components.skills.push(namespaced(name, &skill));
             }
         }
@@ -413,10 +432,10 @@ fn skill_dirs(path: &Path) -> Vec<PathBuf> {
 
 /// A skill's name — its frontmatter `name`, else its folder's — or `None`
 /// and a warning when its `SKILL.md` will not parse.
-fn skill_name(dir: &Path, root: &Path, warnings: &mut Vec<String>) -> Option<String> {
+fn skill_name(dir: &Path, root: &Root<'_>, warnings: &mut Vec<String>) -> Option<String> {
     let file = dir.join("SKILL.md");
     let shown = file
-        .strip_prefix(root)
+        .strip_prefix(root.dir)
         .unwrap_or(&file)
         .display()
         .to_string();
@@ -424,7 +443,8 @@ fn skill_name(dir: &Path, root: &Path, warnings: &mut Vec<String>) -> Option<Str
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    let parsed = read_capped(&file, COMPONENT_MAX_BYTES)
+    let parsed = root
+        .read(&file, COMPONENT_MAX_BYTES)
         .and_then(|text| crate::skills::parse_skill(&text, default).map_err(|e| e.to_string()));
     match parsed {
         Ok(skill) => Some(skill.name),
@@ -589,7 +609,8 @@ fn documents(
         if !path.is_file() {
             continue;
         }
-        match read_capped(&path, COMPONENT_MAX_BYTES)
+        match root
+            .read(&path, COMPONENT_MAX_BYTES)
             .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
         {
             Ok(document) => documents.push(document),
@@ -613,19 +634,20 @@ fn unsupported_parts(
     mcp: &NormalizedMcp,
 ) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
-    let apps = count_keys(root.dir, ".app.json", Some("apps"));
-    let lsp = count_keys(root.dir, ".lsp.json", None);
+    let apps = count_entries(root, ".app.json", Some("apps"));
+    let lsp = count_entries(root, ".lsp.json", None);
     let has_lsp = from_manifest.iter().any(|p| p.contains("LSP server"));
     for phrase in from_manifest {
+        // The file says how many apps there are, none included.
         if phrase == "apps" && apps.is_some() {
             continue;
         }
         parts.push(phrase);
     }
-    if let Some(n) = apps {
+    if let Some(n) = apps.filter(|n| *n > 0) {
         parts.push(counted(n, "app", "apps"));
     }
-    if let Some(n) = lsp
+    if let Some(n) = lsp.filter(|n| *n > 0)
         && !has_lsp
     {
         parts.push(counted(n, "LSP server", "LSP servers"));
@@ -651,16 +673,21 @@ fn unsupported_parts(
     unique
 }
 
-/// How many keys `file`'s object (or its `key` object) has; `None` when the
-/// file is not there or not such an object, or holds none.
-fn count_keys(dir: &Path, file: &str, key: Option<&str>) -> Option<usize> {
-    let text = read_capped(&dir.join(file), COMPONENT_MAX_BYTES).ok()?;
+/// How many entries `file`'s object or list (or its `key` member) holds,
+/// `Some(0)` for an empty one; `None` when the file is not there, not inside
+/// the plugin, or not of that shape.
+fn count_entries(root: &Root<'_>, file: &str, key: Option<&str>) -> Option<usize> {
+    let text = root.read(&root.dir.join(file), COMPONENT_MAX_BYTES).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
-    let object = match key {
-        Some(key) => value.get(key)?.as_object()?,
-        None => value.as_object()?,
+    let value = match key {
+        Some(key) => value.get(key)?,
+        None => &value,
     };
-    (!object.is_empty()).then_some(object.len())
+    match value {
+        Value::Object(object) => Some(object.len()),
+        Value::Array(items) => Some(items.len()),
+        _ => None,
+    }
 }
 
 /// `1 app`, `2 apps`.
@@ -901,6 +928,51 @@ mod tests {
         assert_eq!(local[0], "sh");
         assert_eq!(local[4], ROOT);
         assert_eq!(layout.components.unsupported, ["2 apps"]);
+    }
+
+    #[test]
+    fn an_app_file_with_no_apps_names_no_apps() {
+        for apps in ["{}", "[]"] {
+            let (_t, dir) = plugin_dir();
+            write(
+                &dir,
+                ".codex-plugin/plugin.json",
+                r#"{"name": "demo", "apps": "./.app.json"}"#,
+            );
+            write(&dir, ".app.json", &format!(r#"{{"apps": {apps}}}"#));
+            let layout = read(&dir, None);
+            assert!(
+                layout.components.unsupported.is_empty(),
+                "{apps}: {:?}",
+                layout.components.unsupported
+            );
+        }
+        let (_t, dir) = plugin_dir();
+        write(&dir, ".app.json", r#"{"apps": [{"id": "1"}, {"id": "2"}]}"#);
+        assert_eq!(read(&dir, None).components.unsupported, ["2 apps"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_or_a_link_out_of_the_plugin_is_never_read() {
+        let (temp, dir) = plugin_dir();
+        let status = std::process::Command::new("mkfifo")
+            .arg(dir.join(".app.json"))
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+        let outside = temp.path().join("lsp.json");
+        fs::write(&outside, r#"{"rust": {"command": "ra"}}"#).expect("outside");
+        std::os::unix::fs::symlink(&outside, dir.join(".lsp.json")).expect("link");
+        let (sent, got) = std::sync::mpsc::channel();
+        let path = dir.clone();
+        std::thread::spawn(move || {
+            let _ = sent.send(read(&path, None).components.unsupported);
+        });
+        let unsupported = got
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reading the plugin never waits on a FIFO");
+        assert!(unsupported.is_empty(), "{unsupported:?}");
     }
 
     #[test]
