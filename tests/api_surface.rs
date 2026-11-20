@@ -700,6 +700,21 @@ use alter_zero::plugins::{
     inspect,
 };
 
+// --- `cli` — the command-line grammar (docs/cli.md, docs/mcp-cli.md, docs/plugin-cli.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::cli::{
+    Cli,
+    HelpPage,
+    HelpStyle,
+    MarketplaceCli,
+    McpCli,
+    PluginCli,
+    help,
+    parse,
+    usage_error,
+};
+
 /// Bodyless on purpose: the `use` declarations above are the assertion, and this
 /// gives `cargo test` a name to report if they stop resolving.
 #[test]

@@ -64,6 +64,11 @@ fn the_help_page_opens_on_the_product_name_and_names_the_prompt() {
     );
     assert!(text.contains("\nArguments:\n  [PROMPT]"), "{text}");
     assert!(text.contains("\nCommands:\n  mcp"), "{text}");
+    assert!(
+        text.contains("\n       alter-zero plugin <COMMAND>\n"),
+        "{text}"
+    );
+    assert!(text.contains("\n  plugin "), "{text}");
     assert!(text.contains("\nOptions:\n  -c, --continue"), "{text}");
 }
 
@@ -76,6 +81,36 @@ fn piped_mcp_help_is_the_plain_mcp_page() {
         format!("{}\n", cli::help(HelpPage::Mcp, HelpStyle::Plain))
     );
     assert_eq!(stdout(&out).lines().next(), Some("alter-zero mcp"));
+}
+
+#[test]
+fn piped_plugin_help_is_the_plain_plugin_page() {
+    for args in [&["plugin", "--help"][..], &["plugins", "-h"]] {
+        let out = run(args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            format!("{}\n", cli::help(HelpPage::Plugin, HelpStyle::Plain))
+        );
+        assert_eq!(stdout(&out).lines().next(), Some("alter-zero plugin"));
+    }
+}
+
+#[test]
+fn a_plugin_grammar_error_carries_the_plugin_usage_block() {
+    let out = run(&["plugin", "install"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}\n",
+            cli::usage_error(
+                HelpPage::Plugin,
+                "`plugin install` needs a plugin: PLUGIN[@MARKETPLACE] or a directory",
+                HelpStyle::Plain
+            )
+        )
+    );
 }
 
 #[test]

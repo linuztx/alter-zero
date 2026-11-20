@@ -308,6 +308,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Arguments:
@@ -344,7 +345,7 @@ git diff origin/main | alter-zero -p --output-format json "Review this diff"
 
 [Headless mode](docs/headless.md) covers the output formats, exit codes and permission modes.
 
-Run `alter-zero mcp --help` for MCP server management commands, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
+Run `alter-zero mcp --help` for MCP server management commands, `alter-zero plugin --help` for installing plugins and their marketplaces, and `alter-zero update` to install the newest release over the binary you are running (an npm install updates with `npm install -g @linuztx/alter-zero@latest`).
 
 </details>
 

@@ -103,6 +103,7 @@ pub(crate) mod mcp;
 pub(crate) mod mcp_cli;
 pub(crate) mod models;
 pub(crate) mod permission;
+pub(crate) mod plugin_cli;
 pub(crate) mod plugins;
 pub(crate) mod recorder;
 pub(crate) mod resume;

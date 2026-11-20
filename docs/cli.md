@@ -11,10 +11,12 @@ failing test"` boots straight into that turn, and `alter-zero --resume {id}
 "and now the docs"` sends it into the reopened conversation — and `--help`
 is a titled, sectioned page in the app's own colour. (The same pre-TUI
 boundary also answers the `mcp` subcommand family — `alter-zero mcp
-add/add-json/remove/get/list`, `docs/mcp-cli.md` — and `alter-zero
-update`, which installs the newest release over this binary through the
-one-line installer, `docs/update.md`; each is routed by its first argument
-before the flag grammar below applies.) **`-p` runs the same session with no
+add/add-json/remove/get/list`, `docs/mcp-cli.md` — the `plugin` family —
+`alter-zero plugin list/info/install/…` and `plugin marketplace …`,
+`docs/plugin-cli.md` — and `alter-zero update`, which installs the newest
+release over this binary through the one-line installer, `docs/update.md`;
+each is routed by its first argument before the flag grammar below
+applies.) **`-p` runs the same session with no
 screen** — one prompt in, the answer on stdout, an exit status out — with
 its own section on the page; the run itself is `docs/headless.md`, and this
 page covers only its grammar.
@@ -28,11 +30,14 @@ Starts an interactive session by default; with -p, answers once and exits.
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Commands:
   mcp                            Manage MCP servers in the user config file —
                                  see alter-zero mcp --help
+  plugin                         Install and manage plugins —
+                                 see alter-zero plugin --help
   update                         Install the newest release over this binary,
                                  if one is out (the checksum-verified installer)
 
@@ -219,6 +224,7 @@ error: unrecognized argument: --frob
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 For more information, try '--help'.
@@ -226,7 +232,8 @@ For more information, try '--help'.
 
 `cli::usage_error(page, message, style)` renders it — the `error:` lead,
 the page's own `Usage:` block, the pointer at `--help` — and the `mcp`
-page's grammar errors take the same shape over its six usage lines. Exit
+and `plugin` pages' grammar errors take the same shape over their own
+usage lines. Exit
 `2`, on stderr, as before.
 
 ### The pure `cli` module (src/cli.rs)

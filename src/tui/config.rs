@@ -1594,6 +1594,26 @@ pub(crate) fn mcp_auth_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mcp-auth.json"))
 }
 
+/// The store behind `/plugins` and `alter-zero plugin …` (`docs/plugins.md`),
+/// or `None` with no config home to keep it in. The one place
+/// `ALTER_ZERO_PLUGIN_MARKETPLACES` is read: unset leaves the two built-in
+/// default marketplaces, `none` (or empty) leaves none, anything else
+/// replaces them — what points a test at folders of its own instead of the
+/// network. `interactive` says whether git may ask for a password: yes from
+/// the command line, never inside the TUI, which owns the terminal.
+pub(crate) fn plugin_store(interactive: bool) -> Option<alter_zero::plugins::PluginStore> {
+    let config_home = config_home()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let marketplaces = std::env::var("ALTER_ZERO_PLUGIN_MARKETPLACES").ok();
+    let defaults =
+        alter_zero::plugins::defaults_from_env(marketplaces.as_deref(), &cwd, home.as_deref());
+    Some(
+        alter_zero::plugins::PluginStore::new(&config_home, defaults, interactive)
+            .with_home(home.as_deref()),
+    )
+}
+
 /// Sweep away the **retired** era cache (`{config_home}/mcp-era.json`).
 /// Nothing reads it any more — the era and the protocol revision are
 /// re-derived from the server at every connect (`docs/mcp.md`) — and a file
