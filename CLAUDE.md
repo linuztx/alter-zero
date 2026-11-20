@@ -3420,7 +3420,8 @@ and no plugin's server takes another's name), held for the review like a
 project's and switched live (`McpManager::set_plugin_servers`), a legacy
 plugin's `.mcp.json` read by the one `mcp::parse_server_entry`, so codex's
 snake_case `oauth` keys, top-level `scopes` and `callbackUrl` hold there too
-and a `<…>` template client counts as none, which `/mcp` then asks for; of two
+and a `<…>` template client counts as none, which `/mcp` then asks for
+(`smoke.sh` Phase 163); of two
 enabled plugins of one name only the first in id order loads — **nothing that
 runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,

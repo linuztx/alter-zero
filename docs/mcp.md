@@ -843,6 +843,10 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   An entry's top-level `oauth_resource` is ignored on purpose: the spec
   binds the RFC 8707 `resource` to the MCP server's own URL, and the sign-in
   already derives it from discovery and checks it there (`discover`).
+  `smoke.sh` Phase 163 drives both codex shapes on the real binary, each a
+  plugin's server: a client left as a template slot is asked for on the
+  entry's port and signs in with the entry's scopes, and an entry's own
+  client signs in on its `callback_url`.
 
   **The client form — a client entered in `/mcp`.** The spec's registration
   order ends on *"prompt the user to enter the client information if no
