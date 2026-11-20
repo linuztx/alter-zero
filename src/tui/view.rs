@@ -105,6 +105,9 @@ impl Session<'_> {
         if self.app.usage_page.is_some() {
             self.app.set_usage_now(super::host::unix_secs_signed());
         }
+        // The `/plugins` page's clock: its spinners, its elapsed times and
+        // its `updated 2h ago` (docs/plugins.md).
+        self.update_plugins_clock();
         // …and so does the `/model` page's `updated 2h ago`
         // (docs/model-cache.md).
         if self.app.model_picker.is_some() {
@@ -838,6 +841,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     }
     // The inline `/skills` menu, likewise (docs/skills.md).
     if let Some(height) = ui::skills_menu_height(app, screen.width, screen.height) {
+        return height;
+    }
+    // The `/plugins` page, likewise (docs/plugins.md).
+    if let Some(height) = ui::plugins_menu_height(app, screen.width, screen.height) {
         return height;
     }
     // The read-only `/hooks` menu, likewise (docs/hooks-menu.md).

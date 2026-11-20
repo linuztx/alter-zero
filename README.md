@@ -263,6 +263,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/spinner` | Choose the status spinner style |
 | `/hooks` | Browse hooks and trust or stop trusting each one |
 | `/skills` | Browse skills and enable or disable each one |
+| `/plugins` | Browse, install and manage plugins |
 | `/mcp` | Manage MCP servers |
 | `/donate` | Support the project with a crypto donation |
 | `/sponsor` | Sponsor the developer or get in touch |

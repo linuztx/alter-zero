@@ -3673,3 +3673,221 @@ pub(super) fn diff_border_color(focused: bool) -> Color {
         tool_dim_color()
     }
 }
+
+// --- the /plugins page (docs/plugins.md). The /skills and /mcp family's
+// frame, search line, markers, counter and shedding ladder, reused whole;
+// what is here is the page's own words and the geometry of its columns. ---
+
+/// The page's title, in the pages' title dress; a detail page's title is
+/// this, the dim [`PLUGINS_CRUMB`] and the subject's name in bold.
+pub(super) const PLUGINS_TITLE: &str = "Plugins";
+
+/// Between the page's title and a detail page's subject: `Plugins ›
+/// code-review`.
+pub(super) const PLUGINS_CRUMB: &str = " › ";
+
+/// The rows the Browse list shows on the whole page.
+pub(super) const PLUGINS_MENU_ROWS: u16 = 8;
+
+/// The rows it shows on the next rung down, before the description yields.
+pub(super) const PLUGINS_SHORT_MENU_ROWS: u16 = 5;
+
+/// The widest a row's name column gets — sized off every row the tab lists,
+/// so it holds still while the window scrolls, and capped so a long name
+/// never takes the description's room.
+pub(super) const PLUGINS_NAME_COLS_MAX: usize = 28;
+
+/// The widest the Marketplaces tab's source column gets.
+pub(super) const PLUGINS_SOURCE_COLS_MAX: usize = 40;
+
+/// Blank columns between two columns of a row.
+pub(super) const PLUGINS_COLUMN_GAP: usize = 2;
+
+/// Below this width a plugin row gives up its marketplace column…
+pub(super) const PLUGINS_MARKETPLACE_MIN_WIDTH: u16 = 90;
+
+/// …and below this one its description — never the mark or the name.
+pub(super) const PLUGINS_DESCRIPTION_MIN_WIDTH: u16 = 60;
+
+/// Below this width the tab strip is the active tab alone, between `‹ ›`,
+/// with its place among the tabs after it.
+pub(super) const PLUGINS_TABS_MIN_WIDTH: u16 = 60;
+
+/// How many rows the highlighted plugin's description takes under the list.
+pub(super) const PLUGINS_DESCRIPTION_ROWS: usize = 3;
+
+/// How many rows a detail page's description takes on the whole page…
+pub(super) const PLUGINS_DETAIL_DESCRIPTION_ROWS: usize = 6;
+
+/// …and on the next rung down.
+pub(super) const PLUGINS_SHORT_DESCRIPTION_ROWS: usize = 2;
+
+/// How many of a plugin's warnings its page lists.
+pub(super) const PLUGINS_WARNINGS_MAX: usize = 3;
+
+/// The facts table's label column: `Not used` plus its gap.
+pub(super) const PLUGINS_FACT_COLS: usize = 12;
+
+/// How a revision is shown: its first characters, git's short form.
+pub(super) const PLUGINS_REVISION_COLS: usize = 7;
+
+/// A marketplace that has not been fetched for longer than this offers
+/// Ctrl+R in the hint.
+pub(super) const PLUGINS_STALE_SECS: i64 = 86_400;
+
+/// The tab strip: the blank around each tab (the active one's chip ground
+/// fills it), the blank between two tabs, the cut-edge arrows.
+pub(super) const PLUGINS_TAB_PAD: &str = " ";
+pub(super) const PLUGINS_TAB_GAP: &str = "  ";
+pub(super) const PLUGINS_TAB_LEFT: &str = "‹ ";
+pub(super) const PLUGINS_TAB_RIGHT: &str = " ›";
+pub(super) const PLUGINS_TAB_ALL: &str = "All";
+pub(super) const PLUGINS_TAB_INSTALLED: &str = "Installed";
+pub(super) const PLUGINS_TAB_MARKETPLACES: &str = "Marketplaces";
+
+/// The status marks — one vocabulary for the rows and the detail page. The
+/// first two are the `/skills` and `/login` rows' own pair.
+pub(super) const PLUGINS_ENABLED_MARK: &str = LOGIN_CONFIGURED_MARK;
+pub(super) const PLUGINS_DISABLED_MARK: &str = LOGIN_UNCONFIGURED_MARK;
+pub(super) const PLUGINS_UPDATE_MARK: &str = "↑";
+pub(super) const PLUGINS_BLOCKED_MARK: &str = "⊘";
+/// A result that worked, and one that did not.
+pub(super) const PLUGINS_OK_MARK: &str = "✔";
+pub(super) const PLUGINS_FAILED_MARK: &str = "✗";
+pub(super) const PLUGINS_WARNING_MARK: &str = "⚠";
+
+/// The subtitle's nouns and freshness.
+pub(super) const PLUGINS_MARKETPLACE_NOUN: (&str, &str) = ("marketplace", "marketplaces");
+pub(super) const PLUGINS_PLUGIN_NOUN: (&str, &str) = ("plugin", "plugins");
+pub(super) const PLUGINS_INSTALLED_WORD: &str = "installed";
+pub(super) const PLUGINS_UPDATED: &str = "updated";
+pub(super) const PLUGINS_FETCHING: &str = "fetching…";
+pub(super) const PLUGINS_REFRESHING: &str = "refreshing…";
+
+/// What the list's place shows when there is no list.
+pub(super) const PLUGINS_LOADING: &str = "Loading plugins…";
+pub(super) const PLUGINS_FETCH_VERB: &str = "Fetching";
+pub(super) const PLUGINS_FETCH_FAILED: &str = "Couldn't fetch";
+pub(super) const PLUGINS_FETCH_RETRY: &str = "Ctrl+R to try again";
+pub(super) const PLUGINS_NO_MATCH: &str = "No plugins match";
+pub(super) const PLUGINS_NOTHING_INSTALLED: &str =
+    "Nothing installed yet — pick a plugin from another tab and press Enter";
+pub(super) const PLUGINS_NO_MARKETPLACES: &str =
+    "No marketplaces — open the Marketplaces tab to add one";
+pub(super) const PLUGINS_NOT_FETCHED: &str = "Not fetched yet — Ctrl+R to fetch it";
+pub(super) const PLUGINS_UNREADABLE: &str = "Couldn't read";
+pub(super) const PLUGINS_LOAD_FAILED: &str = "Couldn't read the plugins";
+
+/// The Browse hint's clauses, chosen by the highlighted row.
+pub(super) const PLUGINS_HINT_DETAILS: &str = "Enter for details";
+pub(super) const PLUGINS_HINT_INSTALL: &str = "Enter to view and install";
+pub(super) const PLUGINS_HINT_DISABLE: &str = "Space to disable";
+pub(super) const PLUGINS_HINT_ENABLE: &str = "Space to enable";
+pub(super) const PLUGINS_HINT_MANAGE: &str = "Enter to manage";
+pub(super) const PLUGINS_HINT_ADD: &str = "Enter to add one";
+pub(super) const PLUGINS_HINT_RESTORE: &str = "Enter to restore it";
+pub(super) const PLUGINS_HINT_TABS: &str = "←/→ tabs";
+pub(super) const PLUGINS_HINT_SEARCH: &str = "Type to search";
+pub(super) const PLUGINS_HINT_CLOSE: &str = "Esc to close";
+pub(super) const PLUGINS_HINT_CLEAR: &str = "Esc to clear";
+pub(super) const PLUGINS_HINT_REFRESH: &str = "Ctrl+R to refresh";
+pub(super) const PLUGINS_HINT_CANCEL: &str = "Esc to cancel";
+/// The Plugin and Marketplace pages' hint — the `/mcp` server page's.
+pub(super) const PLUGINS_DETAIL_HINT: &str = "↑/↓ to navigate · Enter to confirm · Esc to go back";
+/// The Add page's.
+pub(super) const PLUGINS_ADD_HINT: &str = "Enter to add · Esc to go back";
+
+/// The Marketplaces tab's rows and what they say.
+pub(super) const PLUGINS_ADD_ROW: &str = "+ Add a marketplace";
+pub(super) const PLUGINS_ADD_ROW_NOTE: &str = "owner/repo, a git URL, or a local folder";
+pub(super) const PLUGINS_RESTORE_ROW: &str = "+ Restore";
+pub(super) const PLUGINS_RESTORE_ROW_NOTE: &str = "a default marketplace you removed";
+pub(super) const PLUGINS_NOT_FETCHED_FACT: &str = "not fetched yet";
+pub(super) const PLUGINS_LOCAL_FACT: &str = "local folder";
+pub(super) const PLUGINS_DEFAULT_FACT: &str = "default marketplace";
+pub(super) const PLUGINS_DEFAULT_ABOUT: &str = "A default marketplace, known to every install.";
+pub(super) const PLUGINS_LOCAL_ABOUT: &str = "A folder you added, read in place.";
+pub(super) const PLUGINS_ADDED_ABOUT: &str = "A marketplace you added.";
+pub(super) const PLUGINS_ADD_ABOUT: &str =
+    "Add a git repository or a folder that lists plugins — Enter opens the field.";
+pub(super) const PLUGINS_RESTORE_ABOUT: &str =
+    "Put back a default marketplace you removed, and fetch it.";
+
+/// The Plugin page's status phrases.
+pub(super) const PLUGINS_STATUS_INSTALLED: &str = "installed";
+pub(super) const PLUGINS_STATUS_ENABLED: &str = "enabled";
+pub(super) const PLUGINS_STATUS_DISABLED: &str = "disabled";
+pub(super) const PLUGINS_STATUS_UPDATE: &str = "update available";
+pub(super) const PLUGINS_STATUS_AVAILABLE: &str = "not installed";
+pub(super) const PLUGINS_STATUS_BLOCKED: &str = "can't be installed here";
+
+/// The facts table's labels.
+pub(super) const PLUGINS_FACT_AUTHOR: &str = "Author";
+pub(super) const PLUGINS_FACT_CATEGORY: &str = "Category";
+pub(super) const PLUGINS_FACT_LICENSE: &str = "License";
+pub(super) const PLUGINS_FACT_SOURCE: &str = "Source";
+pub(super) const PLUGINS_FACT_HOMEPAGE: &str = "Homepage";
+pub(super) const PLUGINS_FACT_SKILLS: &str = "Skills";
+pub(super) const PLUGINS_FACT_COMMANDS: &str = "Commands";
+pub(super) const PLUGINS_FACT_AGENTS: &str = "Agents";
+pub(super) const PLUGINS_FACT_HOOKS: &str = "Hooks";
+pub(super) const PLUGINS_FACT_MCP: &str = "MCP";
+pub(super) const PLUGINS_FACT_UNUSED: &str = "Not used";
+pub(super) const PLUGINS_FACT_CONTAINS: &str = "Contains";
+pub(super) const PLUGINS_FACT_BLOCKED: &str = "Can't install";
+pub(super) const PLUGINS_FACT_REVISION: &str = "Revision";
+pub(super) const PLUGINS_FACT_KEPT: &str = "Kept at";
+pub(super) const PLUGINS_FACT_EXAMPLES: &str = "Examples";
+/// What the `Contains` row says of a plugin whose files are elsewhere.
+pub(super) const PLUGINS_CONTAINS_LATER: &str =
+    "shown after install — its files are in another repository";
+/// What a not-installed plugin's `Hooks` and `MCP` rows add.
+pub(super) const PLUGINS_REVIEW_NOTE: &str = " — asks for your review at the next launch";
+/// A detail page whose detail is still on its way.
+pub(super) const PLUGINS_DETAIL_LOADING: &str = "Loading…";
+
+/// The Plugin page's actions, and the one phrase the highlighted one wears.
+pub(super) const PLUGINS_ACTION_INSTALL: (&str, &str) = ("Install", "Copy it in and turn it on");
+pub(super) const PLUGINS_ACTION_ENABLE: (&str, &str) =
+    ("Enable", "Load it again from your next message");
+pub(super) const PLUGINS_ACTION_DISABLE: (&str, &str) =
+    ("Disable", "Stop loading it; it stays installed");
+pub(super) const PLUGINS_ACTION_CHECK: (&str, &str) = (
+    "Check for updates",
+    "Reinstall it if its marketplace has a newer one",
+);
+pub(super) const PLUGINS_ACTION_UPDATE_TO: (&str, &str) =
+    ("Update to v", "Install the newer version");
+pub(super) const PLUGINS_ACTION_UNINSTALL: (&str, &str) = ("Uninstall", "Remove it and its data");
+pub(super) const PLUGINS_ACTION_BACK: &str = "Back";
+/// `Uninstall` armed: the second Enter removes it.
+pub(super) const PLUGINS_UNINSTALL_ARMED: &str = "Uninstall — press Enter again to remove it";
+
+/// The Marketplace page's actions.
+pub(super) const PLUGINS_ACTION_BROWSE: (&str, &str) =
+    ("Browse its plugins", "Open its tab of the catalog");
+pub(super) const PLUGINS_ACTION_FETCH: (&str, &str) = ("Fetch now", "Download its list of plugins");
+pub(super) const PLUGINS_ACTION_UPDATE: (&str, &str) = ("Update now", "Fetch its newest list");
+pub(super) const PLUGINS_ACTION_READ: (&str, &str) =
+    ("Read it again", "Read the folder's list anew");
+pub(super) const PLUGINS_ACTION_REMOVE: (&str, &str) =
+    ("Remove", "Forget it; installed plugins stay");
+pub(super) const PLUGINS_REMOVE_ARMED: &str = "Remove — press Enter again; installed plugins stay";
+
+/// The Add page.
+pub(super) const PLUGINS_ADD_TITLE: &str = "Add a marketplace";
+pub(super) const PLUGINS_ADD_SUBTITLE: &str =
+    "A marketplace is a git repository or a folder that lists plugins.";
+pub(super) const PLUGINS_ADD_EXAMPLES: [&str; 3] = [
+    "acme/agent-plugins",
+    "https://gitlab.com/acme/plugins.git#main",
+    "~/work/my-plugins",
+];
+
+/// A running job's verb.
+pub(super) const PLUGINS_JOB_INSTALLING: &str = "Installing";
+pub(super) const PLUGINS_JOB_UPDATING: &str = "Updating";
+pub(super) const PLUGINS_JOB_UNINSTALLING: &str = "Uninstalling";
+pub(super) const PLUGINS_JOB_ADDING: &str = "Adding";
+pub(super) const PLUGINS_JOB_RESTORING: &str = "Restoring";
+pub(super) const PLUGINS_JOB_REMOVING: &str = "Removing";

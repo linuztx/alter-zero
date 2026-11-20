@@ -892,6 +892,16 @@ pub fn cursor_visible(app: &App) -> bool {
     {
         return false;
     }
+    // The `/plugins` page's Plugin and Marketplace views are menus — numbered
+    // actions, nothing to type into — so the same rule; Browse's search line
+    // and the Add view's field are typed into, and keep their caret
+    // (`docs/plugins.md`).
+    if let Some(menu) = &app.plugins_menu {
+        return matches!(
+            menu.page,
+            crate::app::PluginsPage::Browse | crate::app::PluginsPage::AddMarketplace
+        );
+    }
     // The `/login` device page is a wait, not a field — the same menu rule: a
     // kitty cursor trail would streak across it on every countdown tick. The
     // sign-in method choice above it has nothing to type into either
@@ -1126,6 +1136,30 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // compact page drops the rule above it (`compact_page`), and the
     // `/skills` header over it wraps with the width. Built once, read twice:
     // the page's height and that row.
+    // The `/plugins` page's Browse search line and its Add view's field seat
+    // the caret the same way — the field's shown text gives up its head to a
+    // `…` on a narrow terminal, so its end, where the caret goes, stays in
+    // view. The Plugin and Marketplace views seat on their `❯` action, the
+    // menus' rule (`docs/plugins.md`).
+    if let Some(menu) = &app.plugins_menu {
+        let lines = super::plugins_view::plugins_view_lines(app, area.width, area.height);
+        let text = match menu.page {
+            crate::app::PluginsPage::Browse => menu.query.clone(),
+            crate::app::PluginsPage::AddMarketplace => {
+                super::plugins_view::plugins_field_text(&menu.input, area.width)
+            }
+            crate::app::PluginsPage::Plugin | crate::app::PluginsPage::Marketplace => {
+                return menu_marker_seat(&lines, area);
+            }
+        };
+        let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let [_, body] = view_split(area, rows);
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&text);
+        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        let field = super::model_view::view_prompt_row(&lines).unwrap_or(0);
+        let row = anchored_view_row(rows, body, field);
+        return (x, view_cursor_y(area, body, row));
+    }
     let search_line = if let Some(picker) = &app.model_picker {
         Some((
             super::model_view::model_view_lines(picker, area.width, area.height),

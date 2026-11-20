@@ -6,6 +6,7 @@ use super::*;
 /// hint, bottom rule — pinned here so a builder change that adds or drops a
 /// row fails a height test (`key_onboarding_lines`).
 const LOGIN_KEY_ROWS: u16 = 7;
+use super::plugins_view::{browsing, full_detail, on_plugin, states, texts, type_text};
 use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::layout::live_layout;
 use crate::ui::theme::{
@@ -1353,4 +1354,39 @@ fn live_layout_never_evicts_the_box() {
             "and the rows still add up at height {height}"
         );
     }
+}
+
+// --- the /plugins page's cursor (docs/plugins.md) ---
+
+#[test]
+fn the_plugins_caret_sits_on_its_search_line_and_its_add_field() {
+    let (mut app, _) = browsing();
+    type_text(&mut app, "rev");
+    for height in [6_u16, 12, 40] {
+        let page = texts(&crate::ui::plugins_view::plugins_view_lines(
+            &app, 96, height,
+        ));
+        assert_caret_on_search_line(&app, &page, 96, "rev");
+    }
+    let states = states();
+    let (_, add) = states.iter().find(|(what, _)| *what == "add").unwrap();
+    let page = texts(&crate::ui::plugins_view::plugins_view_lines(add, 96, 40));
+    assert_caret_on_search_line(add, &page, 96, "acme/agent-plugins");
+    assert!(cursor_visible(add));
+}
+
+#[test]
+fn a_plugins_detail_page_hides_the_caret_and_seats_it_on_its_action() {
+    let app = on_plugin(Some(Ok(full_detail())));
+    assert!(!cursor_visible(&app));
+    let page = texts(&crate::ui::plugins_view::plugins_view_lines(&app, 96, 40));
+    let row = page
+        .iter()
+        .position(|t| t.starts_with("  ❯ 1. Disable"))
+        .unwrap();
+    let area = Rect::new(0, 0, 96, u16::try_from(page.len()).unwrap());
+    assert_eq!(
+        cursor_position(area, &app),
+        (2, u16::try_from(row).unwrap())
+    );
 }

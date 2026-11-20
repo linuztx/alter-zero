@@ -223,6 +223,15 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.plugins_menu.is_some() {
+        // The `/plugins` page is never flow-eligible: every one of its views
+        // builds the first rung that fits the terminal, down to the search
+        // line or the highlighted action alone, so nothing is left over to
+        // flow — and its live rows (a fetch's spinner, a job's elapsed
+        // time) tick between keystrokes, which a page signed on its rows
+        // would answer with a purge rebuild per frame (`docs/plugins.md`).
+        return None;
+    }
     if app.hooks_menu.is_some() {
         return Some(FlowPage::framed(
             super::hooks_view::hooks_view_lines(app, width),

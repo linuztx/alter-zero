@@ -61,6 +61,7 @@ use alter_zero::ui;
 use super::Session;
 use super::actions::Flow;
 use super::diff::DiffResult;
+use super::plugins::PluginMessage;
 use super::startup::Startup;
 use super::usage::UsageResult;
 use super::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
@@ -114,6 +115,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 diff: &mut session.diff_rx,
                 device: &mut session.device_rx,
                 usage: &mut session.usage_rx,
+                plugins: &mut session.plugins_rx,
                 model: &mut session.model_rx,
                 probe: &mut session.probe_rx,
                 probe_pending: session.models.probe_pending(),
@@ -149,6 +151,8 @@ enum Wake {
     Device(DeviceEvent),
     /// One subscription's `/usage` read (`docs/usage.md`).
     Usage(UsageResult),
+    /// An answer from the `/plugins` page's worker (`docs/plugins.md`).
+    Plugins(PluginMessage),
     /// A finished `/model` fetch from one provider's worker thread.
     Model(ModelFetch),
     /// The startup capability probe answered.
@@ -181,6 +185,7 @@ struct Sources<'a> {
     diff: &'a mut UnboundedReceiver<DiffResult>,
     device: &'a mut UnboundedReceiver<DeviceEvent>,
     usage: &'a mut UnboundedReceiver<UsageResult>,
+    plugins: &'a mut UnboundedReceiver<PluginMessage>,
     model: &'a mut UnboundedReceiver<ModelFetch>,
     probe: &'a mut UnboundedReceiver<ProbeFetch>,
     /// Whether the startup probe's answer is still wanted — a `/model`
@@ -210,6 +215,7 @@ async fn next_wake(sources: Sources<'_>) -> Wake {
         Some(result) = sources.diff.recv() => Wake::Diff(result),
         Some(event) = sources.device.recv() => Wake::Device(event),
         Some(result) = sources.usage.recv() => Wake::Usage(result),
+        Some(message) = sources.plugins.recv() => Wake::Plugins(message),
         Some(fetch) = sources.model.recv() => Wake::Model(fetch),
         Some(answer) = sources.probe.recv(), if sources.probe_pending => Wake::Probe(answer),
         Some(event) = sources.background.recv() => Wake::Background(event),
@@ -237,6 +243,7 @@ impl Session<'_> {
             Wake::Diff(result) => self.on_diff_result(result)?,
             Wake::Device(event) => self.on_device_event(event),
             Wake::Usage(result) => self.on_usage_result(result),
+            Wake::Plugins(message) => self.on_plugin_event(message),
             Wake::Model(fetch) => self.on_model_fetch(fetch),
             Wake::Probe((provider, result)) => self.apply_capability_probe(&provider, result),
             Wake::Background(event) => self.on_bg_event(event),

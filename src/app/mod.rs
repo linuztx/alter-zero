@@ -49,6 +49,7 @@ mod mascot_motion;
 mod mcp_menu;
 mod model_picker;
 mod permission;
+mod plugins_menu;
 mod queue;
 mod reasoning;
 mod resume;
@@ -106,6 +107,11 @@ pub use self::mascot_motion::{
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad};
 pub use self::permission::PermissionPrompt;
+pub use self::plugins_menu::{
+    BrowseRow, Fetch, FetchState, Job, JobDone, JobGoto, JobKind, MarketplaceAction, Notice,
+    PLUGINS_CATALOG_FAILED, PLUGINS_FAILED, PluginAction, PluginEvent, PluginOp, PluginsMenu,
+    PluginsPage, PluginsTab,
+};
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::{LiveThought, Reasoning};
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
@@ -573,6 +579,16 @@ pub struct App {
     /// (page walk, no search) over the boundary-injected server snapshot.
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
+    /// The open `/plugins` page; `None` when closed — and with it the
+    /// catalog it was browsing, which is never kept past the page
+    /// (`docs/plugins.md` *Memory*). The `/skills` menu's sibling over the
+    /// marketplaces' plugins, its answers arriving from the boundary's
+    /// worker as [`PluginEvent`]s.
+    pub plugins_menu: Option<PluginsMenu>,
+    /// The last `/plugins` round handed out — kept here rather than on the
+    /// page, so an answer for a page closed and reopened since can never
+    /// name the new page's round (the `/usage` rule).
+    plugins_rounds: u64,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over

@@ -325,6 +325,12 @@ impl Session<'_> {
                 // region collapses back to the composer on the next draw.
             }
             Action::McpOp(op) => self.apply_mcp_op(op),
+            // The page opens over a fresh round and starts reading the
+            // catalog; every operation runs on a worker of its own; closing
+            // stops whatever the page still had in flight (docs/plugins.md).
+            Action::OpenPluginsMenu => self.open_plugins_menu(),
+            Action::ClosePluginsMenu => self.cancel_plugin_work(),
+            Action::PluginOp(op) => self.start_plugin_op(op),
             Action::ReviewAnswered(answer) => self.apply_review_answer(answer),
             Action::SetHookTrust {
                 source,
@@ -636,6 +642,12 @@ impl Session<'_> {
             // point); every other page swallows them (docs/mcp.md).
             View::Conversation if self.app.mcp_menu.is_some() => {
                 let _ = self.app.paste_into_mcp_auth(pasted);
+            }
+            // The `/plugins` page: its search and its Add field take pastes
+            // as one line; every other view of it swallows them, never the
+            // composer draft underneath (docs/plugins.md).
+            View::Conversation if self.app.plugins_menu.is_some() => {
+                self.app.paste_into_plugins(pasted);
             }
             View::Conversation => {
                 self.app.on_paste(pasted);

@@ -372,6 +372,19 @@ pub enum Action {
     /// threads, completions re-inject the snapshot via the MCP event
     /// channel. See `docs/mcp.md`.
     McpOp(McpOp),
+    /// `/plugins`: open the plugins page. Like `/skills` it works mid-turn —
+    /// it only replaces the composer. The *loop* opens the page
+    /// ([`App::open_plugins_menu`], which hands out the round) and starts the
+    /// first catalog read. See `docs/plugins.md`.
+    OpenPluginsMenu,
+    /// The `/plugins` page was dismissed (Esc from Browse, or Ctrl+C):
+    /// [`App::plugins_menu`] is already cleared; the loop cancels whatever
+    /// the page still had in flight.
+    ClosePluginsMenu,
+    /// One `/plugins` operation for the boundary's worker
+    /// (`tui::plugins::Session::start_plugin_op`); its answers come back as
+    /// [`super::PluginEvent`]s. See `docs/plugins.md`.
+    PluginOp(super::PluginOp),
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to

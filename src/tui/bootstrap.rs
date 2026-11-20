@@ -493,6 +493,8 @@ impl<'t> Session<'t> {
         // The `/usage` page's reads, one worker per subscription
         // (docs/usage.md).
         let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The `/plugins` page's workers (docs/plugins.md).
+        let (plugins_tx, plugins_rx) = tokio::sync::mpsc::unbounded_channel();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
         // Spawned once the startup directive is applied (`spawn_pending_probe`
@@ -603,6 +605,11 @@ impl<'t> Session<'t> {
             usage_tx,
             usage_rx,
             usage_cancel: None,
+            plugins_tx,
+            plugins_rx,
+            plugins_work: Vec::new(),
+            plugins_job: None,
+            plugins_opened: None,
             probe_tx,
             probe_rx,
             bg_rx,
@@ -1084,6 +1091,8 @@ impl<'t> Session<'t> {
         // reads likewise.
         self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
+        // …and whatever the `/plugins` page had in flight (docs/plugins.md).
+        self.cancel_plugin_work();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`
         // (docs/background.md) — and cancel every subagent (their threads observe

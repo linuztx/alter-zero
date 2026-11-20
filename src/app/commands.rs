@@ -136,6 +136,11 @@ pub enum CommandEffect {
     /// replaces the composer, and a toggle binds the *next* turn's request.
     /// See `docs/skills.md`.
     Skills,
+    /// Open the `/plugins` page: the marketplaces' plugins to browse,
+    /// install and manage, and the marketplaces themselves. Works
+    /// **mid-turn** like `/skills` — the page only replaces the composer,
+    /// and what it changes binds the *next* turn. See `docs/plugins.md`.
+    Plugins,
     /// Open the inline `/theme` picker: the colour themes, previewed on real
     /// cells. Works **mid-turn** like `/settings` — it only replaces the
     /// composer. See `docs/theme.md`.
@@ -305,6 +310,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         "skills",
         "Browse skills and enable or disable each one",
         CommandEffect::Skills,
+    ),
+    SlashCommand::builtin(
+        "plugins",
+        "Browse, install and manage plugins",
+        CommandEffect::Plugins,
     ),
     SlashCommand::builtin("mcp", "Manage MCP servers", CommandEffect::Mcp),
     SlashCommand::builtin(
@@ -581,6 +591,13 @@ impl App {
                 // over it, so the rows can never disagree with what the model
                 // is offered. docs/skills.md.
                 Action::OpenSkillsMenu
+            }
+            CommandEffect::Plugins => {
+                // /plugins works mid-turn too — it only replaces the
+                // composer, and every operation runs on a worker thread.
+                // The *loop* opens the page (it owns the worker that reads
+                // the catalog) — docs/plugins.md.
+                Action::OpenPluginsMenu
             }
             CommandEffect::Theme => {
                 // /theme works mid-turn like /mascot: it only replaces the

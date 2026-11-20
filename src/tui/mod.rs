@@ -103,6 +103,7 @@ pub(crate) mod mcp;
 pub(crate) mod mcp_cli;
 pub(crate) mod models;
 pub(crate) mod permission;
+pub(crate) mod plugins;
 pub(crate) mod recorder;
 pub(crate) mod resume;
 pub(crate) mod secrets;
@@ -271,6 +272,15 @@ pub(crate) struct Session<'t> {
     usage_tx: tokio::sync::mpsc::UnboundedSender<usage::UsageResult>,
     usage_rx: tokio::sync::mpsc::UnboundedReceiver<usage::UsageResult>,
     usage_cancel: Option<CancelToken>,
+    /// The `/plugins` page's work (`docs/plugins.md`): every operation's
+    /// worker reports here, each on a token of its own — all of them kept
+    /// so closing the page stops them, the running job's apart so Esc stops
+    /// it alone — and the instant the page opened, its clock's zero.
+    plugins_tx: tokio::sync::mpsc::UnboundedSender<plugins::PluginMessage>,
+    plugins_rx: tokio::sync::mpsc::UnboundedReceiver<plugins::PluginMessage>,
+    plugins_work: Vec<CancelToken>,
+    plugins_job: Option<CancelToken>,
+    plugins_opened: Option<std::time::Instant>,
     /// The probe's sender is kept because a probe is spawned more than
     /// once: at bootstrap, and by a resume whose recorded model has facts
     /// this session never learned (`docs/session-model.md`).

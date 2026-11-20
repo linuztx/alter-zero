@@ -475,6 +475,7 @@ impl App {
             || self.settings_picker.is_some()
             || self.hooks_menu.is_some()
             || self.skills_menu.is_some()
+            || self.plugins_menu.is_some()
             || self.mascot_picker.is_some()
             || self.spinner_picker.is_some()
             || self.theme_picker.is_some()

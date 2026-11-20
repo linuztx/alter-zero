@@ -832,6 +832,26 @@ pub(crate) fn spawn_usage_fetch(
     });
 }
 
+/// Run one `/plugins` operation on a thread of its own (`docs/plugins.md`):
+/// the work reports through its [`PluginWorkerControl`] and the event that
+/// closes it is sent last — unless the page cancelled it meanwhile, when the
+/// worker sends nothing more. A worker that panics still answers, through
+/// the control's own drop.
+///
+/// [`PluginWorkerControl`]: super::plugins::PluginWorkerControl
+pub(crate) fn spawn_plugin_op(
+    round: u64,
+    op: alter_zero::app::PluginOp,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<super::plugins::PluginMessage>,
+) {
+    std::thread::spawn(move || {
+        let ctl = super::plugins::PluginWorkerControl::new(round, op.clone(), cancel, tx);
+        let closing = super::plugins::run_plugin_op(&op, &ctl);
+        ctl.send(closing);
+    });
+}
+
 impl Session<'_> {
     /// Kick off a file search when the active `@token` query changed — codex's
     /// `StartFileSearch` on every token change. The last query sent is the
