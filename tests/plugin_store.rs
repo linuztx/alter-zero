@@ -1255,6 +1255,44 @@ fn the_detail_reads_whichever_copy_of_the_files_is_at_hand() {
 }
 
 #[test]
+fn an_entry_whose_folder_the_marketplace_lacks_is_blocked_and_says_why() {
+    let world = World::new();
+    let (mut claude, _, _) = two_marketplaces(&world);
+    claude
+        .entry(json!({"name": "ghost", "description": "Gone", "source": "./plugins/ghost"}))
+        .save();
+    let store = world.store();
+    store
+        .add_marketplace(&local(&claude.root), &Silent)
+        .expect("added");
+
+    // Listed, since the manifest names it — but Install would only fail, so
+    // the detail carries the reason and the page offers none.
+    let detail = store.detail(&id("ghost@team")).expect("detail");
+    assert_eq!(detail.status, PluginStatus::Available);
+    assert!(
+        detail
+            .blocked
+            .as_deref()
+            .is_some_and(|b| b.contains("plugins/ghost") && b.contains("is not in the marketplace")),
+        "{:?}",
+        detail.blocked
+    );
+    store
+        .install(&id("ghost@team"), &Silent)
+        .expect_err("there is no folder to install");
+
+    // An entry whose folder is there is not blocked by the same rule.
+    assert!(
+        store
+            .detail(&id("review@team"))
+            .expect("detail")
+            .blocked
+            .is_none()
+    );
+}
+
+#[test]
 fn a_name_resolves_to_its_one_plugin_through_renames() {
     let world = World::new();
     let (mut claude, codex, _) = two_marketplaces(&world);
