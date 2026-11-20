@@ -257,24 +257,8 @@ fn a_marketplace_manifest_past_the_cap_is_refused_unread() {
 }
 
 #[test]
-fn a_marketplace_may_not_take_a_built_in_ones_name() {
+fn a_default_marketplaces_name_is_kept_for_it_while_it_is_offered() {
     let world = World::new();
-    let impostor = Marketplace::new(
-        &world.src.join("impostor"),
-        "claude-plugins-official",
-        Layout::Claude,
-    );
-    impostor.save();
-    let error = world
-        .store()
-        .add_marketplace(&local(&impostor.root), &Silent)
-        .expect_err("a built-in's name");
-    assert!(
-        error.contains("claude-plugins-official") && error.contains("built-in"),
-        "{error}"
-    );
-
-    // A default known but never fetched keeps its name too.
     let real = claude_market(&world);
     real.init_git();
     let twin = Marketplace::new(&world.src.join("twin"), "team", Layout::Claude);
@@ -283,14 +267,49 @@ fn a_marketplace_may_not_take_a_built_in_ones_name() {
         name: Some("team".into()),
         source: git_source(&real.url()),
     }]);
+
+    // A default known but never fetched keeps its name: another source
+    // calling itself the same is refused, told the way out, and nothing is
+    // written.
     let error = store
         .add_marketplace(&local(&twin.root), &Silent)
         .expect_err("the default's name");
-    assert!(error.contains("built-in"), "{error}");
+    assert!(
+        error.contains("`team` is the name of a built-in marketplace")
+            && error.contains("remove that one first"),
+        "{error}"
+    );
     assert!(!world.home.join("plugins.json").exists());
+
+    // Its own source takes it.
     store
         .add_marketplace(&git_source(&real.url()), &Silent)
         .expect("its own source");
+
+    // Once the user has removed the default the name is theirs to give: a
+    // mirror or a checkout of it may carry it.
+    store.remove_marketplace("team").expect("removed");
+    store
+        .add_marketplace(&local(&twin.root), &Silent)
+        .expect("free once the default is removed");
+}
+
+#[test]
+fn with_no_default_offered_a_built_in_ones_name_is_free() {
+    // No default is offered (`ALTER_ZERO_PLUGIN_MARKETPLACES=none`, or a
+    // machine that cannot reach the built-in ones): a checkout that carries
+    // a built-in marketplace's name is added like any other.
+    let world = World::new();
+    let checkout = Marketplace::new(
+        &world.src.join("checkout"),
+        "claude-plugins-official",
+        Layout::Claude,
+    );
+    checkout.save();
+    world
+        .store()
+        .add_marketplace(&local(&checkout.root), &Silent)
+        .expect("no default holds the name");
 }
 
 #[test]

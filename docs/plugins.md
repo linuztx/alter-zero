@@ -145,8 +145,12 @@ marketplace's name. Every `source` shape either reference writes is read:
 
 A marketplace is added by `owner/repo` (GitHub), any git URL (`#ref` or
 `@ref` names a branch or tag), or a local folder. Its name is its
-manifest's, compared ignoring ASCII case, and a built-in marketplace's name
-is taken only by that marketplace's own source. An entry that names a
+manifest's, compared ignoring ASCII case. While a default marketplace is
+offered its name is its own: another source whose manifest carries that name
+is refused, so `plugin@claude-plugins-official` cannot quietly come from
+somewhere else. A default the user removed, or one this run was told not to
+offer, leaves the name free — which is how a mirror or a checkout of it is
+added. An entry that names a
 repository on this machine (`file://` or a path) is installed only from a
 marketplace that is itself on this machine — a folder, or one added by a
 `file://` URL. A manifest over 4 MiB is refused unread, and an entry that

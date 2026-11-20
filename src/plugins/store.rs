@@ -46,8 +46,8 @@ use super::marketplace::{
 use super::source::{MarketplaceSource, PluginSource};
 use super::state::{
     DefaultMarketplace, GENERATED_DIR, GENERATED_HOOKS, GENERATED_MCP, KnownMarketplace,
-    MarketplaceRecord, PluginRecord, PluginsFile, builtin_defaults, data_dir, install_dir,
-    known_marketplaces, marketplace_dir, plugins_root, staging_dir, state_path,
+    MarketplaceRecord, PluginRecord, PluginsFile, data_dir, install_dir, known_marketplaces,
+    marketplace_dir, plugins_root, staging_dir, state_path,
 };
 
 /// The most a marketplace manifest may weigh; the largest real one is
@@ -1773,10 +1773,14 @@ fn same_source(recorded: &str, canonical: &str) -> bool {
             .is_ok_and(|source| source.canonical() == canonical)
 }
 
-/// A new marketplace's name: not reserved, not a built-in marketplace's
-/// (unless this is that marketplace's own source), and not taken by another
-/// source — names compared ignoring ASCII case, since on a case-insensitive
-/// filesystem `Team` and `team` share a checkout.
+/// A new marketplace's name: not reserved, not a default marketplace's
+/// while that default is offered (unless this is its own source), and not
+/// taken by another source — names compared ignoring ASCII case, since on a
+/// case-insensitive filesystem `Team` and `team` share a checkout.
+///
+/// A default holds its name only while it is offered: one the user removed,
+/// or one this run was told not to offer, leaves the name free, so a mirror
+/// or a checkout of it can be added under the name its manifest carries.
 fn check_name(
     file: &PluginsFile,
     defaults: &[DefaultMarketplace],
@@ -1789,16 +1793,17 @@ fn check_name(
              installed from a folder"
         ));
     }
-    if let Some(builtin) = builtin_defaults().iter().chain(defaults).find(|d| {
+    if let Some(default) = defaults.iter().find(|d| {
         d.name
             .as_deref()
             .is_some_and(|n| n.eq_ignore_ascii_case(name))
-    }) && builtin.source.canonical() != canonical
+            && !file.removed_defaults.contains(&d.source.canonical())
+    }) && default.source.canonical() != canonical
     {
         return Err(format!(
-            "`{name}` is the name of a built-in marketplace, which comes from {} — {canonical} \
-             may not take it",
-            builtin.source.canonical()
+            "`{name}` is the name of a built-in marketplace, which comes from {} — remove that \
+             one first to add {canonical} under its name",
+            default.source.canonical()
         ));
     }
     if let Some((taken, record)) = file
