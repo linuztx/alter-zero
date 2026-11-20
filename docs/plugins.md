@@ -484,6 +484,23 @@ servers that are not yet trusted, the review opens on them
 the plugin has run. `ALTER_ZERO_PLUGINS=0` loads no plugin for a run;
 `/plugins` still opens and says so.
 
+In the code (`src/tui/plugin_runtime.rs`): bootstrap resolves the layout,
+calls `startup_plugins` and stops there when it lists nothing that is on
+here — no conversion, no setter, not even the `ALTER_ZERO_PLUGINS` read,
+which is made only once a plugin would load. Otherwise one `#[cold]`
+function runs `load_enabled` (which creates each plugin's data directory
+first) and converts each contribution: skill directories and commands into
+`PluginSkillSource`s, agent directories into `PluginAgentSource`s (whose
+walk already reads `tools:` in Claude Code's vocabulary and ignores
+`model:`), each hooks source into a `PluginHooks` layer stamped with the
+plugin's root and data, and the servers into one `PluginMcpFile` per
+declaring file — each problem a startup toast. The skill and agent sources
+are kept on the session for the per-turn rescans, which read no plugin file
+of their own. `Session::reload_plugins(forget: &[PathBuf])` is what the
+page's boundary calls: one `plugins.json` read when nothing changed and
+nothing is to be forgotten; otherwise the reload, the two rescans, and
+`set_plugin_contributions(hooks, mcp, forget)`.
+
 ### Nothing runs unseen
 
 A plugin is somebody else's code arriving over the network, so the rule the

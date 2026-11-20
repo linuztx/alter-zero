@@ -115,8 +115,11 @@ impl Session<'_> {
     /// skill appeared still carried no `<system-reminder>` — the listing
     /// arrived a turn late, which reads exactly like the rescan not working.
     pub(crate) fn rescan_skills(&mut self) {
-        let (skills, errors) =
-            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref(), &[]);
+        let (skills, errors) = alter_zero::llm::skill::load_skills(
+            &self.cwd,
+            config::config_home().as_deref(),
+            self.plugins.skills(),
+        );
         self.skill_registry.replace(skills);
         self.sync_setting_availability();
         self.sync_listings();
@@ -145,7 +148,7 @@ impl Session<'_> {
         let (agents, errors) = alter_zero::llm::subagent::load_agents(
             &self.cwd,
             config::config_home().as_deref(),
-            &[],
+            self.plugins.agents(),
         );
         self.subagents.replace(agents);
         self.sync_listings();

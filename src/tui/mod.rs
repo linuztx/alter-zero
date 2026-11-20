@@ -49,6 +49,7 @@
 //! | [`telemetry`] | The once-a-day anonymous usage ping (once more on the day of an update): the install id, the notice, the send, the recorded day and version (`docs/telemetry.md`). |
 //! | [`update`] | The once-a-day update check: the request, the card under the banner, the recorded day (`docs/update.md`). |
 //! | [`update_cli`] | The `alter-zero update` subcommand: the check, then the one-line installer over this binary (`docs/update.md`). |
+//! | [`plugin_runtime`] | The plugins on in this directory, taken into the session through the skill, agent, hook and MCP seams; `Session::reload_plugins` for the `/plugins` page (`docs/plugins.md`). |
 //! | [`plugin_cli`] | The `alter-zero plugin` subcommand family: the help pages today, the plugin library's commands next (`docs/plugin-cli.md`). |
 //! | [`herdr`] | Telling the herdr pane this session runs in what it is doing: the loop-bottom sync into the library's tracker and worker, and the failed-turn hold (`docs/herdr.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
@@ -105,6 +106,7 @@ pub(crate) mod mcp_cli;
 pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod plugin_cli;
+pub(crate) mod plugin_runtime;
 pub(crate) mod recorder;
 pub(crate) mod resume;
 pub(crate) mod secrets;
@@ -375,6 +377,10 @@ pub(crate) struct Session<'t> {
     /// `/mcp` toggle records through it, and the hooks the session runs are
     /// its trusted share.
     trust: trust::TrustState,
+    /// The plugins on in this directory (`docs/plugins.md`): the layout, and
+    /// the skill and agent sources the per-turn rescans walk — nothing
+    /// loaded while no plugin is on.
+    plugins: plugin_runtime::PluginRuntime,
     /// A `[PROMPT]` from the command line, held while the startup review
     /// asks what may run, so the first turn starts with its answers
     /// (`docs/config-review.md`).

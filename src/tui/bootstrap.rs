@@ -281,8 +281,34 @@ impl<'t> Session<'t> {
             Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
             None => Vec::new(),
         };
-        let (found_skills, walk_errors) =
-            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref(), &[]);
+        // The plugins on in this directory (docs/plugins.md): one read of
+        // `plugins.json` — a failed `open` when there is none — and nothing
+        // more unless it lists a plugin that is on here (or will not read).
+        let plugins_layout = alter_zero::plugins::PluginsLayout::resolve(
+            config::config_home().as_deref(),
+            std::env::var_os(alter_zero::plugins::PLUGINS_DIR_ENV).as_deref(),
+        );
+        let plugins_on = plugins_layout
+            .as_ref()
+            .map(|layout| alter_zero::plugins::startup_plugins(layout, &cwd))
+            .unwrap_or_default();
+        let (plugins, mut plugin_load) = if plugins_on.enabled.is_empty()
+            && plugins_on.error.is_none()
+        {
+            let idle = super::plugin_runtime::PluginRuntime {
+                layout: plugins_layout,
+                loaded: None,
+            };
+            (idle, None)
+        } else {
+            let (runtime, load) = super::plugin_runtime::load(plugins_layout, &plugins_on, &cwd);
+            (runtime, Some(load))
+        };
+        let (found_skills, walk_errors) = alter_zero::llm::skill::load_skills(
+            &cwd,
+            config::config_home().as_deref(),
+            plugins.skills(),
+        );
         skill_errors.extend(walk_errors);
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
         // …and this project's saved on/off choices from `skills.json`, applied
@@ -305,8 +331,11 @@ impl<'t> Session<'t> {
                 Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
                 None => Vec::new(),
             };
-        let (found_agents, walk_errors) =
-            alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref(), &[]);
+        let (found_agents, walk_errors) = alter_zero::llm::subagent::load_agents(
+            &cwd,
+            config::config_home().as_deref(),
+            plugins.agents(),
+        );
         agent_errors.extend(walk_errors);
         let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
 
@@ -324,8 +353,14 @@ impl<'t> Session<'t> {
             hooks_path.map(|path| (path, user_hooks_file)),
             super::trust::load_project_layer(&cwd),
             // The enabled plugins' hooks and MCP files (docs/plugins.md).
-            Vec::new(),
-            Vec::new(),
+            plugin_load
+                .as_mut()
+                .map(|load| std::mem::take(&mut load.hooks))
+                .unwrap_or_default(),
+            plugin_load
+                .as_mut()
+                .map(|load| std::mem::take(&mut load.mcp))
+                .unwrap_or_default(),
         );
 
         // The telemetry ping's report channel (docs/telemetry.md) — its own
@@ -639,6 +674,7 @@ impl<'t> Session<'t> {
             secrets,
             mcp: mcp_manager,
             trust,
+            plugins,
             held_prompt: None,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
@@ -675,12 +711,11 @@ impl<'t> Session<'t> {
             session.toast(notice, ToastKind::Error);
         }
         session.report_trust_state(trust_error);
-        // The mid-session plugin seam (docs/plugins.md), for the plugin glue
-        // to feed. At startup the plugins came in above, so there is nothing
-        // to change — and with nothing to hand it, it is never entered.
-        let (plugin_hooks, plugin_mcp): (Vec<_>, Vec<_>) = (Vec::new(), Vec::new());
-        if !plugin_hooks.is_empty() || !plugin_mcp.is_empty() {
-            session.set_plugin_contributions(plugin_hooks, plugin_mcp, &[]);
+        // What the plugins could not bring (docs/plugins.md): a toast each.
+        if let Some(load) = plugin_load {
+            for notice in load.notices {
+                session.toast(notice, ToastKind::Error);
+            }
         }
         session.report_secrets_error(secrets_error);
         // Last of the config reports, so it is the one left showing: a

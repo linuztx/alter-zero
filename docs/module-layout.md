@@ -168,6 +168,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list / device-sign-in / usage / telemetry-ping / update-check jobs, and the Ctrl+O transcript's render worker. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
+| `plugin_runtime.rs` | The plugins on in this directory, taken into the session (`docs/plugins.md` *Loading into a session*): `PluginRuntime` (the layout, and the skill and agent sources the per-turn rescans walk), the `#[cold]` `load` that turns each `PluginContribution` into the seams' inputs — skill sources with the commands, agent sources, a hook layer per hooks file, an MCP file per declaring file — and `Session::reload_plugins(forget)` for the `/plugins` page. Kept small on purpose: everything here is resident at idle, so what needs no app type lives in `crates/plugins`; with no `plugins.json`, bootstrap calls `startup_plugins` and nothing of this file runs. |
 
 ### `src/stream/` — the backend seam
 
