@@ -924,3 +924,28 @@ fn a_failure_after_the_form_shows_on_its_page() {
         })
     );
 }
+
+/// A lookup that failed — `Set OAuth client` could not find where the server
+/// signs in — is tried again **as a lookup**: Enter repeats what failed,
+/// never a sign-in the user did not ask for.
+#[test]
+fn a_failed_lookup_is_tried_again_as_a_lookup() {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Char('2'))); // Set OAuth client
+    assert!(app.finish_mcp_auth(
+        "linear",
+        Some("could not discover the authorization server")
+    ));
+    assert!(app.mcp_menu.as_ref().unwrap().auth.failure.is_some());
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::AskAuthClient {
+            server: "linear".to_string()
+        })
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert!(menu.auth.asking, "the page is looking again");
+    assert_eq!(menu.auth.failure, None);
+}

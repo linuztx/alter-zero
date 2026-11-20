@@ -178,6 +178,7 @@ pub struct McpAuthView {
     /// Why the sign-in failed — the page then shows the reason whole, in
     /// place of the URL and the field: an explanation is never closed away
     /// with the page it explains, and a one-row toast cut it at the width.
+    /// `asking` stays as it was, so Enter tries again what failed.
     pub failure: Option<String>,
 }
 
@@ -538,6 +539,9 @@ impl App {
             Some(reason) => {
                 menu.auth = McpAuthView {
                     failure: Some(reason.to_string()),
+                    // What failed is what Enter tries again: a lookup stays
+                    // a lookup.
+                    asking: menu.auth.asking,
                     ..McpAuthView::default()
                 };
                 true
@@ -747,7 +751,8 @@ impl App {
             return self.on_key_mcp_client(key);
         }
         // A failed sign-in's page is a reason to read, not a field: Enter
-        // tries again, Esc goes back — cancelling nothing, since the
+        // tries again — what failed, a sign-in or the lookup `Set OAuth
+        // client` runs — and Esc goes back, cancelling nothing, since the
         // sign-in has already ended.
         if menu.auth.failure.is_some() {
             match key.code {
@@ -755,8 +760,16 @@ impl App {
                     let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
                         return Action::None;
                     };
-                    menu.auth = McpAuthView::default();
-                    return Action::McpOp(McpOp::Authenticate { server });
+                    let asking = menu.auth.asking;
+                    menu.auth = McpAuthView {
+                        asking,
+                        ..McpAuthView::default()
+                    };
+                    return Action::McpOp(if asking {
+                        McpOp::AskAuthClient { server }
+                    } else {
+                        McpOp::Authenticate { server }
+                    });
                 }
                 KeyCode::Esc | KeyCode::Backspace => {
                     menu.page = McpPage::Server;

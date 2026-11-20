@@ -1391,9 +1391,10 @@ mid-turn (the strip stays above it). Pages:
    URL in it a link, since a reason can name the page to act on — and
    `Enter to try again · Esc to go back`. It is a reason to read, not a
    field: no caret, nothing types into it, a paste lands nowhere; Enter
-   dispatches the same `McpOp::Authenticate` (so a client the form just
-   kept is the one tried again), and Esc cancels nothing, the sign-in
-   having ended. `App::finish_mcp_auth` says whether the page took the
+   tries again **what failed** — the same `McpOp::Authenticate` (so a
+   client the form just kept is the one tried again), or, for a `Set OAuth
+   client` whose lookup failed, the lookup, never a sign-in nobody asked
+   for — and Esc cancels nothing, the sign-in having ended. `App::finish_mcp_auth` says whether the page took the
    failure, and the boundary toasts it only when it didn't — the user left
    the page, or it is another server's — the `/login` device page's rule:
    an explanation is never closed away with the page it explains.
