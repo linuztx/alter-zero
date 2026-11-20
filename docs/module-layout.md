@@ -63,6 +63,7 @@ widened for the split.
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `context_usage.rs` | The `/context` page's state — the counted breakdown, its signature, the highlight that follows the largest category until moved — the injected tool sets, the provider's last frame and the since-launch ledger (`docs/context-usage.md`). The counting itself is the top-level `crate::context_usage`. |
 | `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
+| `plugins_menu.rs` | The `/plugins` page's state — its four pages and tabs, the catalog held only while the page is open, the fetches and the one foreground job, the rounds every answer is matched to, the result stated on the page, its keys (`docs/plugins.md`). The catalog itself is `crate::plugins::catalog`. |
 | `usage.rs` | The `/usage` page's state — a section per signed-in subscription, the rounds of reads every result is matched to, the reports kept across opens, the minute refresh's due check, the injected clock and local offset, its keys (`docs/usage.md`). The reports themselves are `crate::llm::usage`. |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
@@ -112,6 +113,7 @@ widened for the split.
 | `classifier_view.rs` | The Ctrl+D view's classifier page body (`docs/permissions.md`). |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
+| `plugins_view.rs` | The `/plugins` page: the tab strip, the rows with their status marks, a plugin's and a marketplace's page, the add field, the job and result rows — each page height-aware, shedding rows on a short terminal (`docs/plugins.md`). |
 | `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |
 | `ask_view.rs` | The `AskUserQuestion` modal: the chip strip, option pages, preview panel, review page (`docs/ask.md`). |
 | `reasoning.rs` | The thinking stream's cells: the live `● Thinking…` block, the collapsed `Thought for …` line, and its Ctrl+O expansion (`docs/thinking-stream.md`). |
@@ -147,7 +149,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
 | `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), the `/model` picker's kept listings and which providers a saved variable configures (`docs/model-cache.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
-| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
+| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `plugin` / `update` subcommand dispatch (`docs/cli.md`). |
 | `headless.rs` | `alter-zero -p`: the prompt read from the argument and stdin before the runtime, the loop that runs the same `Session` with no screen, the signals, the streams, the exit status (`docs/headless.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
@@ -160,6 +162,8 @@ opening the viewport, running the loop — and everything else lives here:
 | `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `context_usage.rs` | Keeping an open `/context` page live: the backend's tool set (or the viewed agent type's) handed over on the open and at every loop bottom, then the re-count (`docs/context-usage.md`). |
 | `secrets.rs` | The `/secrets` page's saves, deletes and copies: the `secrets.json` read-modify-write, the shared store, the reminder sync (`docs/secrets.md`). |
+| `plugins.rs` | The `/plugins` page's work: the channel created the first time the page opens, one worker per operation over the library's `plugins::PluginStore`, the refresh that fetches what was never fetched or is a day old, the result texts, and the reload of the session's plugins after a change (`docs/plugins.md`). |
+| `plugin_cli.rs` | The `alter-zero plugin` subcommand family over the same store: the lists, the info block, the JSON documents, progress on a terminal's stderr (`docs/plugin-cli.md`). |
 | `usage.rs` | The `/usage` page's reads: one worker per signed-in subscription, the round they answer, the wall clock its countdowns run on, the minute refresh, the empty toast, `c`'s clipboard write (`docs/usage.md`). |
 | `telemetry.rs` | The once-a-day anonymous usage ping (once more on the day of an update): the install id's mint, the one-time notice under the banner, the detached send, the record of the delivered day and version (`docs/telemetry.md`). |
 | `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |

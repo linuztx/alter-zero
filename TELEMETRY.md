@@ -306,6 +306,28 @@ shown. `ALTER_ZERO_UPDATE_URL` points the check at another repository — a
 fork of your own — and `scripts/smoke.sh` Phase 116 drives the whole thing
 against a local stand-in server, so you can watch the one request it makes.
 
+## Plugin marketplaces
+
+Nothing about plugins leaves your machine on its own. The two marketplaces
+the app knows out of the box — `anthropics/claude-plugins-official` and
+`openai/plugins` — are **not** fetched at startup, and nothing checks them in
+the background. They are fetched with your own `git`, over HTTPS from
+github.com, when you ask for them: the first time you open `/plugins` or run
+an `alter-zero plugin` command that has to look in one, and again when the
+page is open and its copy is more than a day old. Installing a plugin whose
+files live in another repository fetches that repository the same way. What
+the host sees is what it sees when you `git clone` it yourself; no install
+id, no query string, nothing recorded by this project
+([`docs/plugins.md`](docs/plugins.md)).
+
+It belongs in this document for the update check's reason: opening a page is
+not typing a URL. To keep the page from reaching the network, remove the
+marketplaces you do not want (they stay removed), or start with
+`ALTER_ZERO_PLUGIN_MARKETPLACES=none` so that none is known by default. A
+plugin you install can bring MCP servers and hooks of its own, which reach
+whatever they reach — each waits for your approval in the startup review
+before it runs at all.
+
 ## Why this is opt-out
 
 An opt-in counter measures the people who go looking for a setting, which is

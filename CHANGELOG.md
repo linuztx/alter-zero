@@ -14,6 +14,26 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/plugins` installs plugins from marketplaces, and `alter-zero plugin`
+  does the same from the command line.** A plugin is a folder of skills,
+  slash commands, subagent types, hooks and MCP servers; a marketplace is a
+  git repository or a folder that lists plugins. Plugins written for Claude
+  Code, for Codex and to the agent-plugins.org specification are all read as
+  they are. Two marketplaces are known from the start,
+  `anthropics/claude-plugins-official` and `openai/plugins`, and you can add
+  your own by `owner/repo`, git URL or folder. The page has a tab per
+  marketplace, a search, and a page per plugin that names what it brings
+  before you install it; an install, update or removal shows its progress,
+  can be cancelled with Esc, and says on the page what happened, with the
+  real error when something fails. An installed plugin's skills
+  (`$plugin:skill`), commands (`/plugin:command`) and agents are ready from
+  your next message. Its hooks and MCP servers never run unseen: they are
+  listed, verbatim, in the review at the next launch and run only once you
+  approve them. Nothing is fetched at startup — a marketplace is contacted
+  only while the page is open or when a command asks — and a session with
+  no plugins starts exactly as it did before. `ALTER_ZERO_PLUGINS=0` loads
+  no plugin for a run (`docs/plugins.md`, `docs/plugin-cli.md`).
+
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model
   list on every open, so each one began on `Loading models…`, for a second
