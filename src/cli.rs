@@ -9,7 +9,7 @@
 //! command.
 //!
 //! This module owns the parse (`argv` → [`Cli`], with usage errors as
-//! `Err(message)`), the two `--help` pages ([`help`], rendered plain or in
+//! `Err(message)`), the `--help` pages ([`help`], rendered plain or in
 //! the app's colour by [`HelpStyle`]), the usage-error trailer
 //! ([`usage_error`]), the colour rule ([`colour_enabled`]) and the exit
 //! hint's exact shape. Everything impure — reading `std::env::args`,
@@ -25,6 +25,14 @@
 //! the same pre-TUI boundary as the session flags. The grammar and its
 //! mapping onto [`McpServerConfig`] live here; the file I/O is the
 //! boundary's (`tui::mcp_cli`).
+//!
+//! A first argument of `plugin` (or `plugins`) routes to the plugin family
+//! the same way (`docs/plugin-cli.md`): `install`/`uninstall`/`enable`/
+//! `disable`/`update`/`list`/`info` and `marketplace add`/`list`/`update`/
+//! `remove`, parsed here into [`PluginCli`] with every plugin and source
+//! kept as typed — resolving them is the plugin library's, running them the
+//! boundary's (`tui::plugin_cli`). [`usage_page`] says which page a grammar
+//! error's usage block comes from.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -37,8 +45,8 @@ use crate::mcp::{self, McpServerConfig};
 use crate::permission::PermissionMode;
 
 /// One parsed invocation: a TUI run ([`Cli::Session`] — the flagless
-/// default included), one of the two print-and-exit flags, or the `mcp`
-/// subcommand family.
+/// default included), one of the two print-and-exit flags, or a subcommand
+/// family (`mcp`, `plugin`, `update`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cli {
     /// Run the TUI: how the session starts, plus the optional `[PROMPT]`
@@ -51,6 +59,9 @@ pub enum Cli {
     /// `mcp …` as the first argument: manage the user MCP config file
     /// (`docs/mcp-cli.md`).
     Mcp(McpCli),
+    /// `plugin …` (or `plugins …`) as the first argument: install and manage
+    /// plugins and the marketplaces they come from (`docs/plugin-cli.md`).
+    Plugin(PluginCli),
     /// `update` as the first argument: install the newest release over this
     /// binary when one is out (`docs/update.md`). Takes nothing.
     Update,
@@ -136,6 +147,65 @@ pub enum McpCli {
     Help,
 }
 
+/// One parsed `plugin` subcommand (`docs/plugin-cli.md`). A plugin is named
+/// as typed — `<plugin>[@<marketplace>]`, a string the plugin library
+/// resolves against the added marketplaces; the grammar refuses only what
+/// can never name one (nothing, a space, an empty side of the `@`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginCli {
+    /// `plugin install <plugin>[@<marketplace>]` (also `add`, Claude
+    /// Code's and Codex's word).
+    Install { plugin: String },
+    /// `plugin uninstall <plugin>[@<marketplace>]` (also `remove`).
+    Uninstall { plugin: String },
+    /// `plugin enable <plugin>[@<marketplace>]`: on in the directory the
+    /// command runs in — a plugin is installed for the user and on in every
+    /// directory until one turns it off.
+    Enable { plugin: String },
+    /// `plugin disable <plugin>[@<marketplace>]`: off in the directory the
+    /// command runs in, still installed.
+    Disable { plugin: String },
+    /// `plugin update [<plugin>[@<marketplace>]]` (also `upgrade`) — `None`
+    /// is every installed plugin.
+    Update { plugin: Option<String> },
+    /// `plugin list [--available] [--json]`: the installed plugins, plus
+    /// every plugin the added marketplaces offer with `--available`.
+    List { available: bool, json: bool },
+    /// `plugin info <plugin>[@<marketplace>] [--json]`.
+    Info { plugin: String, json: bool },
+    /// `plugin marketplace …`.
+    Marketplace(MarketplaceCli),
+    /// `-h`/`--help` anywhere in the `plugin` arguments outside
+    /// `marketplace` (and before a `--`): print the [`HelpPage::Plugin`]
+    /// page and exit 0.
+    Help,
+}
+
+/// One parsed `plugin marketplace` subcommand (`docs/plugin-cli.md`). The
+/// source and the names stay strings: what a source *is* (`owner/repo`, a
+/// git URL, a local folder) is the plugin library's parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarketplaceCli {
+    /// `plugin marketplace add <source> [--ref <ref>]`.
+    Add {
+        source: String,
+        /// `--ref`: the branch, tag or commit of a git source.
+        git_ref: Option<String>,
+    },
+    /// `plugin marketplace add --defaults`: add the default marketplaces.
+    AddDefaults,
+    /// `plugin marketplace list [--json]`.
+    List { json: bool },
+    /// `plugin marketplace update [<name>]` (also `upgrade`) — `None` is
+    /// every marketplace.
+    Update { name: Option<String> },
+    /// `plugin marketplace remove <name>` (also `rm`).
+    Remove { name: String },
+    /// `-h`/`--help` anywhere in the `marketplace` arguments (before a
+    /// `--`): print the [`HelpPage::PluginMarketplace`] page and exit 0.
+    Help,
+}
+
 // ===== the --help pages (docs/cli.md) =====
 
 /// The `--help` page's description: what running the command *does*, in
@@ -150,15 +220,20 @@ pub enum McpCli {
 pub const DESCRIPTION: &str = "\
 Starts an interactive session by default; with -p, answers once and exits.";
 
-/// Which `--help` page: the binary's own, or the `mcp` subcommand's
-/// (`docs/mcp-cli.md`). Both render through the one [`help`] renderer, so
-/// they share a look.
+/// Which `--help` page: the binary's own, or a subcommand family's — `mcp`
+/// (`docs/mcp-cli.md`), `plugin` and `plugin marketplace`
+/// (`docs/plugin-cli.md`). All render through the one [`help`] renderer, so
+/// they share a look. [`usage_page`] picks one for a grammar error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpPage {
     /// `alter-zero --help`.
     Main,
     /// `alter-zero mcp --help`.
     Mcp,
+    /// `alter-zero plugin --help`.
+    Plugin,
+    /// `alter-zero plugin marketplace --help`.
+    PluginMarketplace,
 }
 
 /// How a page is dressed. `Plain` emits no escape sequence at all — what a
@@ -223,6 +298,10 @@ struct HelpDoc {
     usage: &'static [(&'static str, &'static str)],
     /// The sections in print order.
     sections: &'static [Section],
+    /// Invocations to copy, under an `Examples:` heading after the
+    /// sections, dressed like the usage forms: `(literal, rest)`. Help only
+    /// — a usage error's trailer carries the `Usage:` block alone.
+    examples: &'static [(&'static str, &'static str)],
 }
 
 /// A heading over aligned rows.
@@ -248,6 +327,7 @@ const MAIN_DOC: HelpDoc = HelpDoc {
         ("alter-zero", " [OPTIONS] [PROMPT]"),
         ("alter-zero -p", " [OPTIONS] [PROMPT]"),
         ("alter-zero mcp", " <COMMAND>"),
+        ("alter-zero plugin", " <COMMAND>"),
         ("alter-zero update", ""),
     ],
     sections: &[
@@ -259,6 +339,12 @@ const MAIN_DOC: HelpDoc = HelpDoc {
                     placeholder: "",
                     description: "Manage MCP servers in the user config file —\n\
                                   see alter-zero mcp --help",
+                },
+                Row {
+                    literal: "plugin",
+                    placeholder: "",
+                    description: "Install and manage plugins and marketplaces —\n\
+                                  see alter-zero plugin --help",
                 },
                 Row {
                     literal: "update",
@@ -346,6 +432,7 @@ const MAIN_DOC: HelpDoc = HelpDoc {
             ],
         },
     ],
+    examples: &[],
 };
 
 const MCP_DOC: HelpDoc = HelpDoc {
@@ -411,6 +498,193 @@ Manage MCP servers in the user config file (ALTER_ZERO_MCP_FILE, else
             },
         ],
     }],
+    examples: &[],
+};
+
+const PLUGIN_DOC: HelpDoc = HelpDoc {
+    title: "alter-zero plugin",
+    description: "\
+Install and manage plugins — Agent Plugins, Claude Code and Codex plugins —
+from the marketplaces you add. A plugin is installed for you and on in every
+directory; enable and disable act on the directory they run in. A bare
+<plugin> is enough while one marketplace lists it. Inside the app, /plugins
+does the same.",
+    usage: &[
+        ("alter-zero plugin install", " <plugin>[@<marketplace>]"),
+        ("alter-zero plugin uninstall", " <plugin>[@<marketplace>]"),
+        ("alter-zero plugin enable", " <plugin>[@<marketplace>]"),
+        ("alter-zero plugin disable", " <plugin>[@<marketplace>]"),
+        ("alter-zero plugin update", " [<plugin>[@<marketplace>]]"),
+        ("alter-zero plugin list", " [--available] [--json]"),
+        (
+            "alter-zero plugin info",
+            " <plugin>[@<marketplace>] [--json]",
+        ),
+        ("alter-zero plugin marketplace", " <COMMAND>"),
+    ],
+    sections: &[
+        Section {
+            heading: "Commands:",
+            rows: &[
+                Row {
+                    literal: "install",
+                    placeholder: "",
+                    description: "Install a plugin (alias: add); its hooks and MCP\n\
+                                  servers are reviewed at the next launch",
+                },
+                Row {
+                    literal: "uninstall",
+                    placeholder: "",
+                    description: "Remove a plugin and its files (alias: remove)",
+                },
+                Row {
+                    literal: "enable",
+                    placeholder: "",
+                    description: "Turn a plugin on again in this directory",
+                },
+                Row {
+                    literal: "disable",
+                    placeholder: "",
+                    description: "Turn a plugin off in this directory, still installed",
+                },
+                Row {
+                    literal: "update",
+                    placeholder: "",
+                    description: "Reinstall a plugin from its marketplace (alias:\n\
+                                  upgrade) — every installed plugin, given none",
+                },
+                Row {
+                    literal: "list",
+                    placeholder: "",
+                    description: "List the installed plugins",
+                },
+                Row {
+                    literal: "info",
+                    placeholder: "",
+                    description: "Show a plugin: where it comes from, what it adds",
+                },
+                Row {
+                    literal: "marketplace",
+                    placeholder: "",
+                    description: "Add, list, update or remove marketplaces —\n\
+                                  see alter-zero plugin marketplace --help",
+                },
+            ],
+        },
+        Section {
+            heading: "Options:",
+            rows: &[
+                Row {
+                    literal: "    --available",
+                    placeholder: "",
+                    description: "With list: the plugins not installed too",
+                },
+                Row {
+                    literal: "    --json",
+                    placeholder: "",
+                    description: "With list and info: print JSON",
+                },
+                Row {
+                    literal: "-h, --help",
+                    placeholder: "",
+                    description: "Print help",
+                },
+            ],
+        },
+    ],
+    examples: &[
+        ("alter-zero plugin marketplace add", " --defaults"),
+        ("alter-zero plugin list", " --available"),
+        (
+            "alter-zero plugin install",
+            " commit-commands@claude-plugins-official",
+        ),
+    ],
+};
+
+const PLUGIN_MARKETPLACE_DOC: HelpDoc = HelpDoc {
+    title: "alter-zero plugin marketplace",
+    description: "\
+Manage the marketplaces plugins are installed from: a git repository or a
+local folder holding a marketplace manifest. The default marketplaces are
+offered, not added, until you add them.",
+    usage: &[
+        (
+            "alter-zero plugin marketplace add",
+            " <source> [--ref <ref>]",
+        ),
+        ("alter-zero plugin marketplace add", " --defaults"),
+        ("alter-zero plugin marketplace list", " [--json]"),
+        ("alter-zero plugin marketplace update", " [<name>]"),
+        ("alter-zero plugin marketplace remove", " <name>"),
+    ],
+    sections: &[
+        Section {
+            heading: "Commands:",
+            rows: &[
+                Row {
+                    literal: "add",
+                    placeholder: "",
+                    description: "Add a marketplace: owner/repo, a git URL (https://,\n\
+                                  ssh://, git@host:) or a local folder, used in place",
+                },
+                Row {
+                    literal: "list",
+                    placeholder: "",
+                    description: "List the marketplaces, the defaults not yet added too",
+                },
+                Row {
+                    literal: "update",
+                    placeholder: "",
+                    description: "Fetch a marketplace's catalog again (alias:\n\
+                                  upgrade) — every marketplace, given none",
+                },
+                Row {
+                    literal: "remove",
+                    placeholder: "",
+                    description: "Remove a marketplace (alias: rm); the plugins\n\
+                                  installed from it stay installed",
+                },
+            ],
+        },
+        Section {
+            heading: "Options:",
+            rows: &[
+                Row {
+                    literal: "    --ref",
+                    placeholder: " <ref>",
+                    description: "With add: the branch, tag or commit of a git source",
+                },
+                Row {
+                    literal: "    --defaults",
+                    placeholder: "",
+                    description: "With add: add the default marketplaces\n\
+                                  (claude-plugins-official, openai-curated)",
+                },
+                Row {
+                    literal: "    --json",
+                    placeholder: "",
+                    description: "With list: print JSON",
+                },
+                Row {
+                    literal: "-h, --help",
+                    placeholder: "",
+                    description: "Print help",
+                },
+            ],
+        },
+    ],
+    examples: &[
+        (
+            "alter-zero plugin marketplace add",
+            " anthropics/claude-plugins-official",
+        ),
+        (
+            "alter-zero plugin marketplace add",
+            " https://github.com/acme/plugins --ref v2",
+        ),
+        ("alter-zero plugin marketplace add", " ./my-marketplace"),
+    ],
 };
 
 impl HelpPage {
@@ -418,13 +692,16 @@ impl HelpPage {
         match self {
             Self::Main => &MAIN_DOC,
             Self::Mcp => &MCP_DOC,
+            Self::Plugin => &PLUGIN_DOC,
+            Self::PluginMarketplace => &PLUGIN_MARKETPLACE_DOC,
         }
     }
 }
 
 /// Render a `--help` page (`docs/cli.md`): the title, the description, the
 /// `Usage:` forms (each further one indented to the first), then each
-/// section's heading over its rows — two columns of indent, the literal
+/// section's heading over its rows, then any `Examples:` (indented like a
+/// row, dressed like a usage form) — two columns of indent, the literal
 /// cell padded to the page's widest, three more columns, the description,
 /// its further lines continuing at that column. Padding is
 /// measured on the plain text, so the columns line up under either style.
@@ -465,6 +742,16 @@ pub fn help(page: HelpPage, style: HelpStyle) -> String {
                 }
                 out.push_str(line);
             }
+        }
+    }
+    if !doc.examples.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&style.heading("Examples:"));
+        for (literal, rest) in doc.examples {
+            out.push('\n');
+            out.push_str(&" ".repeat(HELP_INDENT));
+            out.push_str(&style.literal(literal));
+            out.push_str(rest);
         }
     }
     out
@@ -545,6 +832,12 @@ where
     if args.peek().is_some_and(|first| first == "mcp") {
         args.next();
         return parse_mcp(args).map(Cli::Mcp);
+    }
+    // `plugin` — or Claude Code's `plugins` — routes the same way
+    // (docs/plugin-cli.md), first argument only.
+    if args.peek().is_some_and(|first| is_plugin_word(first)) {
+        args.next();
+        return parse_plugin(args).map(Cli::Plugin);
     }
     // `update` routes the same way (docs/update.md), and takes nothing: a
     // flag or a word after it is a mistake to report, not a prompt to run.
@@ -1046,17 +1339,346 @@ fn plain_arguments<I>(args: I) -> Result<Option<Vec<String>>, String>
 where
     I: Iterator<Item = String>,
 {
-    let mut positionals = Vec::new();
-    for arg in args {
-        match arg.as_str() {
-            "--help" | "-h" => return Ok(None),
-            _ if arg.starts_with('-') && arg.len() > 1 => {
-                return Err(format!("unrecognized argument: {arg}"));
+    Ok(subcommand_arguments(args, &NO_FLAGS)?.map(|read| read.positionals))
+}
+
+/// The flags one subcommand takes, by long form — what
+/// [`subcommand_arguments`] reads.
+struct Flags {
+    /// Flags that take no value (`--json`).
+    switches: &'static [&'static str],
+    /// Flags that take one (`--ref <ref>`, `--ref=<ref>`).
+    values: &'static [&'static str],
+    /// Flags another subcommand takes, each with the message that says
+    /// which — a better answer than "unrecognized" for a flag that exists.
+    elsewhere: &'static [(&'static str, &'static str)],
+}
+
+/// A subcommand that takes no flag at all.
+const NO_FLAGS: Flags = Flags {
+    switches: &[],
+    values: &[],
+    elsewhere: &[],
+};
+
+/// A subcommand's arguments once read: its positionals in order and, slot
+/// for slot with its [`Flags`], what each flag was given.
+struct SubcommandArgs {
+    positionals: Vec<String>,
+    switches: Vec<Option<()>>,
+    values: Vec<Option<String>>,
+    flags: &'static Flags,
+}
+
+impl SubcommandArgs {
+    /// Whether the switch `name` was given.
+    fn switch(&self, name: &str) -> bool {
+        self.flags
+            .switches
+            .iter()
+            .position(|flag| *flag == name)
+            .is_some_and(|slot| self.switches[slot].is_some())
+    }
+
+    /// The value flag `name`'s value, taken out.
+    fn take_value(&mut self, name: &str) -> Option<String> {
+        let slot = self.flags.values.iter().position(|flag| *flag == name)?;
+        self.values[slot].take()
+    }
+}
+
+/// Read a subcommand's arguments against the flags it takes — the shared
+/// grammar of every subcommand that has no raw command to capture (`mcp`'s
+/// plain ones, the whole `plugin` family): a positional anywhere among the
+/// flags, `--flag=value` or `--flag value`, each flag at most once, `-h` /
+/// `--help` answering `Ok(None)`, and `--` ending the flags so a
+/// dash-leading value (or a literal `--help`) is reachable.
+fn subcommand_arguments<I>(args: I, flags: &'static Flags) -> Result<Option<SubcommandArgs>, String>
+where
+    I: Iterator<Item = String>,
+{
+    let mut args = args.peekable();
+    let mut read = SubcommandArgs {
+        positionals: Vec::new(),
+        switches: vec![None; flags.switches.len()],
+        values: vec![None; flags.values.len()],
+        flags,
+    };
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            read.positionals.extend(args.by_ref());
+            break;
+        }
+        if !is_flag(&arg) {
+            read.positionals.push(arg);
+            continue;
+        }
+        let (flag, value) = match arg.split_once('=') {
+            Some((flag, value)) => (flag.to_string(), Some(value.to_string())),
+            None => (arg.clone(), None),
+        };
+        if flag == "--help" || flag == "-h" {
+            return Ok(None);
+        }
+        if let Some(slot) = flags.switches.iter().position(|name| *name == flag) {
+            if value.is_some() {
+                return Err(format!("{flag} takes no value"));
             }
-            _ => positionals.push(arg),
+            set_once(&mut read.switches[slot], (), &flag)?;
+        } else if let Some(slot) = flags.values.iter().position(|name| *name == flag) {
+            let value = flag_value(&flag, value, &mut args)?;
+            set_once(&mut read.values[slot], value, &flag)?;
+        } else if let Some((_, message)) = flags.elsewhere.iter().find(|(name, _)| *name == flag) {
+            return Err((*message).to_string());
+        } else {
+            return Err(format!("unrecognized argument: {arg}"));
         }
     }
-    Ok(Some(positionals))
+    Ok(Some(read))
+}
+
+// ===== the plugin family (docs/plugin-cli.md) =====
+
+/// The first arguments that route to the `plugin` family: `plugin`, and
+/// Claude Code's `plugins`.
+fn is_plugin_word(arg: &str) -> bool {
+    arg == "plugin" || arg == "plugins"
+}
+
+/// What a plugin is named as, for the messages that ask for one.
+const PLUGIN_SPEC: &str = "<plugin>[@<marketplace>]";
+
+/// `--available` everywhere but `plugin list`.
+const AVAILABLE_ELSEWHERE: (&str, &str) =
+    ("--available", "--available only applies to plugin list");
+
+/// `install`, `uninstall`, `enable`, `disable`, `update`.
+const PLUGIN_FLAGS: Flags = Flags {
+    switches: &[],
+    values: &[],
+    elsewhere: &[AVAILABLE_ELSEWHERE],
+};
+
+/// `plugin list`.
+const PLUGIN_LIST_FLAGS: Flags = Flags {
+    switches: &["--available", "--json"],
+    values: &[],
+    elsewhere: &[],
+};
+
+/// `plugin info`.
+const PLUGIN_INFO_FLAGS: Flags = Flags {
+    switches: &["--json"],
+    values: &[],
+    elsewhere: &[AVAILABLE_ELSEWHERE],
+};
+
+/// `plugin marketplace add`.
+const MARKETPLACE_ADD_FLAGS: Flags = Flags {
+    switches: &["--defaults"],
+    values: &["--ref"],
+    elsewhere: &[AVAILABLE_ELSEWHERE],
+};
+
+/// `plugin marketplace list`.
+const MARKETPLACE_LIST_FLAGS: Flags = Flags {
+    switches: &["--json"],
+    values: &[],
+    elsewhere: &[AVAILABLE_ELSEWHERE],
+};
+
+/// `plugin marketplace update` and `remove`.
+const MARKETPLACE_FLAGS: Flags = Flags {
+    switches: &[],
+    values: &[],
+    elsewhere: &[AVAILABLE_ELSEWHERE],
+};
+
+/// Parse the arguments after a leading `plugin` (`docs/plugin-cli.md`).
+/// Usage errors come back as `Err(message)` like [`parse`]'s; the boundary
+/// prints [`usage_error`]'s trailer for the page [`usage_page`] picks and
+/// exits 2.
+fn parse_plugin<I>(mut args: std::iter::Peekable<I>) -> Result<PluginCli, String>
+where
+    I: Iterator<Item = String>,
+{
+    let Some(sub) = args.next() else {
+        return Err(
+            "plugin needs a subcommand: install, uninstall, enable, disable, \
+                    update, list, info, marketplace"
+                .to_string(),
+        );
+    };
+    let flags = match sub.as_str() {
+        "--help" | "-h" => return Ok(PluginCli::Help),
+        "marketplace" => return parse_marketplace(args).map(PluginCli::Marketplace),
+        "install" | "add" | "uninstall" | "remove" | "enable" | "disable" | "update"
+        | "upgrade" => &PLUGIN_FLAGS,
+        "list" => &PLUGIN_LIST_FLAGS,
+        "info" => &PLUGIN_INFO_FLAGS,
+        other => {
+            return Err(format!(
+                "unrecognized plugin command: {other} (use install, uninstall, enable, \
+                 disable, update, list, info or marketplace)"
+            ));
+        }
+    };
+    let Some(read) = subcommand_arguments(args, flags)? else {
+        return Ok(PluginCli::Help);
+    };
+    let json = read.switch("--json");
+    let available = read.switch("--available");
+    let plugin = at_most_one(read.positionals)?;
+    let needed = |plugin: Option<String>| -> Result<String, String> {
+        match plugin.filter(|plugin| !plugin.is_empty()) {
+            Some(plugin) => plugin_spec(plugin),
+            None => Err(format!(
+                "plugin {sub} needs a plugin name (use {PLUGIN_SPEC})"
+            )),
+        }
+    };
+    Ok(match sub.as_str() {
+        "install" | "add" => PluginCli::Install {
+            plugin: needed(plugin)?,
+        },
+        "uninstall" | "remove" => PluginCli::Uninstall {
+            plugin: needed(plugin)?,
+        },
+        "enable" => PluginCli::Enable {
+            plugin: needed(plugin)?,
+        },
+        "disable" => PluginCli::Disable {
+            plugin: needed(plugin)?,
+        },
+        "update" | "upgrade" => PluginCli::Update {
+            plugin: plugin.map(|plugin| needed(Some(plugin))).transpose()?,
+        },
+        "info" => PluginCli::Info {
+            plugin: needed(plugin)?,
+            json,
+        },
+        _ => match plugin {
+            // `list` takes no positional.
+            Some(extra) => return Err(format!("unrecognized argument: {extra}")),
+            None => PluginCli::List { available, json },
+        },
+    })
+}
+
+/// Parse the arguments after `plugin marketplace`.
+fn parse_marketplace<I>(mut args: std::iter::Peekable<I>) -> Result<MarketplaceCli, String>
+where
+    I: Iterator<Item = String>,
+{
+    let Some(sub) = args.next() else {
+        return Err("plugin marketplace needs a subcommand: add, list, update, remove".to_string());
+    };
+    let flags = match sub.as_str() {
+        "--help" | "-h" => return Ok(MarketplaceCli::Help),
+        "add" => &MARKETPLACE_ADD_FLAGS,
+        "list" => &MARKETPLACE_LIST_FLAGS,
+        "update" | "upgrade" | "remove" | "rm" => &MARKETPLACE_FLAGS,
+        other => {
+            return Err(format!(
+                "unrecognized plugin marketplace command: {other} \
+                 (use add, list, update or remove)"
+            ));
+        }
+    };
+    let Some(mut read) = subcommand_arguments(args, flags)? else {
+        return Ok(MarketplaceCli::Help);
+    };
+    let defaults = read.switch("--defaults");
+    let json = read.switch("--json");
+    let git_ref = read.take_value("--ref");
+    let value = at_most_one(read.positionals)?;
+    let name = |name: Option<String>| -> Result<String, String> {
+        name.filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| format!("plugin marketplace {sub} needs a marketplace name"))
+    };
+    Ok(match sub.as_str() {
+        "add" => {
+            if defaults {
+                if value.is_some() || git_ref.is_some() {
+                    return Err("--defaults takes no source or --ref".to_string());
+                }
+                MarketplaceCli::AddDefaults
+            } else {
+                let Some(source) = value.filter(|source| !source.trim().is_empty()) else {
+                    return Err(
+                        "plugin marketplace add needs a source (owner/repo, a git URL \
+                                or a local folder) or --defaults"
+                            .to_string(),
+                    );
+                };
+                MarketplaceCli::Add { source, git_ref }
+            }
+        }
+        "list" => match value {
+            Some(extra) => return Err(format!("unrecognized argument: {extra}")),
+            None => MarketplaceCli::List { json },
+        },
+        "update" | "upgrade" => MarketplaceCli::Update {
+            name: value.map(|value| name(Some(value))).transpose()?,
+        },
+        _ => MarketplaceCli::Remove { name: name(value)? },
+    })
+}
+
+/// The one positional a subcommand takes, if any — a second is refused by
+/// name.
+fn at_most_one(positionals: Vec<String>) -> Result<Option<String>, String> {
+    let mut positionals = positionals.into_iter();
+    let first = positionals.next();
+    match positionals.next() {
+        Some(extra) => Err(format!("unrecognized argument: {extra}")),
+        None => Ok(first),
+    }
+}
+
+/// Check a non-empty `<plugin>[@<marketplace>]` as typed: one word, with a
+/// name on each side of an `@`. Which plugin it names is the library's to
+/// resolve.
+fn plugin_spec(spec: String) -> Result<String, String> {
+    if spec.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "invalid plugin \"{spec}\": a plugin name has no spaces (use {PLUGIN_SPEC})"
+        ));
+    }
+    if let Some((plugin, marketplace)) = spec.split_once('@')
+        && (plugin.is_empty() || marketplace.is_empty())
+    {
+        return Err(format!(
+            "invalid plugin \"{spec}\": nothing before or after the @ (use {PLUGIN_SPEC})"
+        ));
+    }
+    Ok(spec)
+}
+
+/// The page a grammar error's usage block comes from, read off the
+/// arguments (without `argv[0]`) the way [`parse`] routes them: `mcp …`
+/// the [`HelpPage::Mcp`] page, `plugin marketplace …` the
+/// [`HelpPage::PluginMarketplace`] one, any other `plugin …` (or
+/// `plugins …`) the [`HelpPage::Plugin`] one, anything else the main page.
+#[must_use]
+pub fn usage_page<I, S>(args: I) -> HelpPage
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    let first = args.next();
+    match first.as_ref().map(AsRef::as_ref) {
+        Some("mcp") => HelpPage::Mcp,
+        Some(word) if is_plugin_word(word) => {
+            if args.next().is_some_and(|sub| sub.as_ref() == "marketplace") {
+                HelpPage::PluginMarketplace
+            } else {
+                HelpPage::Plugin
+            }
+        }
+        _ => HelpPage::Main,
+    }
 }
 
 /// The exit hint printed below the restored terminal after a quit that
@@ -1608,11 +2230,14 @@ Starts an interactive session by default; with -p, answers once and exits.
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Commands:
   mcp                            Manage MCP servers in the user config file —
                                  see alter-zero mcp --help
+  plugin                         Install and manage plugins and marketplaces —
+                                 see alter-zero plugin --help
   update                         Install the newest release over this binary,
                                  if one is out (the checksum-verified installer)
 
@@ -1777,7 +2402,8 @@ Print mode:
             text,
             "error: unrecognized argument: --frob\n\n\
              Usage: alter-zero [OPTIONS] [PROMPT]\n       alter-zero -p [OPTIONS] [PROMPT]\n       \
-             alter-zero mcp <COMMAND>\n       alter-zero update\n\n\
+             alter-zero mcp <COMMAND>\n       alter-zero plugin <COMMAND>\n       \
+             alter-zero update\n\n\
              For more information, try '--help'."
         );
         let styled = usage_error(HelpPage::Main, "x", HelpStyle::Ansi);
@@ -2226,5 +2852,499 @@ Print mode:
             parsed(&["--continue", "mcp"]),
             session(SessionStart::Continue, Some("mcp"))
         );
+    }
+
+    // ===== the plugin subcommand (docs/plugin-cli.md) =====
+
+    /// `parse` expecting the `plugin` route.
+    fn parsed_plugin(args: &[&str]) -> Result<PluginCli, String> {
+        match parsed(args) {
+            Ok(Cli::Plugin(cmd)) => Ok(cmd),
+            Ok(other) => panic!("expected a plugin command, got {other:?}"),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `parse` expecting the `plugin marketplace` route.
+    fn parsed_marketplace(args: &[&str]) -> Result<MarketplaceCli, String> {
+        match parsed_plugin(args) {
+            Ok(PluginCli::Marketplace(cmd)) => Ok(cmd),
+            Ok(other) => panic!("expected a marketplace command, got {other:?}"),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn spec(text: &str) -> String {
+        text.to_string()
+    }
+
+    #[test]
+    fn plugin_install_uninstall_enable_and_disable_take_one_plugin() {
+        assert_eq!(
+            parsed_plugin(&["plugin", "install", "commit@claude-plugins-official"]),
+            Ok(PluginCli::Install {
+                plugin: spec("commit@claude-plugins-official")
+            })
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "install", "commit"]),
+            Ok(PluginCli::Install {
+                plugin: spec("commit")
+            })
+        );
+        // Both references' spellings: `add` and `remove` (Claude Code's
+        // and Codex's), `upgrade` below.
+        assert_eq!(
+            parsed_plugin(&["plugin", "add", "commit"]),
+            Ok(PluginCli::Install {
+                plugin: spec("commit")
+            })
+        );
+        for word in ["uninstall", "remove"] {
+            assert_eq!(
+                parsed_plugin(&["plugin", word, "commit"]),
+                Ok(PluginCli::Uninstall {
+                    plugin: spec("commit")
+                }),
+                "{word}"
+            );
+        }
+        assert_eq!(
+            parsed_plugin(&["plugin", "enable", "a@m"]),
+            Ok(PluginCli::Enable {
+                plugin: spec("a@m")
+            })
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "disable", "a@m"]),
+            Ok(PluginCli::Disable {
+                plugin: spec("a@m")
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_is_also_spelled_plugins_as_the_first_argument_only() {
+        assert_eq!(
+            parsed_plugin(&["plugins", "enable", "a"]),
+            Ok(PluginCli::Enable { plugin: spec("a") })
+        );
+        for word in ["plugin", "plugins"] {
+            assert_eq!(
+                parsed(&["--continue", word]),
+                session(SessionStart::Continue, Some(word))
+            );
+        }
+    }
+
+    #[test]
+    fn a_plugin_spec_must_be_one_non_empty_word() {
+        let err = parsed_plugin(&["plugin", "install"]).expect_err("missing");
+        assert_eq!(
+            err,
+            "plugin install needs a plugin name (use <plugin>[@<marketplace>])"
+        );
+        let err = parsed_plugin(&["plugin", "remove"]).expect_err("missing");
+        assert!(
+            err.starts_with("plugin remove needs a plugin name"),
+            "{err}"
+        );
+        // `rm` is the marketplace's alone.
+        let err = parsed_plugin(&["plugin", "rm", "a"]).expect_err("rm");
+        assert!(err.starts_with("unrecognized plugin command: rm"), "{err}");
+        let err = parsed_plugin(&["plugin", "enable", ""]).expect_err("empty");
+        assert!(err.contains("plugin enable needs a plugin name"), "{err}");
+        let err = parsed_plugin(&["plugin", "install", "two words"]).expect_err("space");
+        assert_eq!(
+            err,
+            "invalid plugin \"two words\": a plugin name has no spaces \
+             (use <plugin>[@<marketplace>])"
+        );
+        for bad in ["@market", "commit@", "@"] {
+            let err = parsed_plugin(&["plugin", "install", bad]).expect_err(bad);
+            assert!(
+                err.starts_with(&format!("invalid plugin \"{bad}\"")),
+                "{err}"
+            );
+        }
+        let err = parsed_plugin(&["plugin", "install", "a", "b"]).expect_err("second");
+        assert_eq!(err, "unrecognized argument: b");
+    }
+
+    #[test]
+    fn plugin_update_takes_one_plugin_or_none_for_all() {
+        for word in ["update", "upgrade"] {
+            assert_eq!(
+                parsed_plugin(&["plugin", word]),
+                Ok(PluginCli::Update { plugin: None }),
+                "{word}"
+            );
+        }
+        assert_eq!(
+            parsed_plugin(&["plugin", "update", "a@m"]),
+            Ok(PluginCli::Update {
+                plugin: Some(spec("a@m"))
+            })
+        );
+        let err = parsed_plugin(&["plugin", "update", "a", "b"]).expect_err("two");
+        assert_eq!(err, "unrecognized argument: b");
+        let err = parsed_plugin(&["plugin", "update", " "]).expect_err("blank");
+        assert!(err.contains("invalid plugin"), "{err}");
+    }
+
+    #[test]
+    fn plugin_list_and_info_take_their_switches() {
+        assert_eq!(
+            parsed_plugin(&["plugin", "list"]),
+            Ok(PluginCli::List {
+                available: false,
+                json: false
+            })
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "list", "--json", "--available"]),
+            Ok(PluginCli::List {
+                available: true,
+                json: true
+            })
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "info", "--json", "a"]),
+            Ok(PluginCli::Info {
+                plugin: spec("a"),
+                json: true
+            })
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "info", "a"]),
+            Ok(PluginCli::Info {
+                plugin: spec("a"),
+                json: false
+            })
+        );
+        let err = parsed_plugin(&["plugin", "list", "a"]).expect_err("positional");
+        assert_eq!(err, "unrecognized argument: a");
+        let err = parsed_plugin(&["plugin", "list", "--json", "--json"]).expect_err("twice");
+        assert_eq!(err, "--json was given more than once");
+        let err = parsed_plugin(&["plugin", "list", "--json=yes"]).expect_err("value");
+        assert_eq!(err, "--json takes no value");
+        let err = parsed_plugin(&["plugin", "info"]).expect_err("missing");
+        assert!(err.starts_with("plugin info needs a plugin name"), "{err}");
+    }
+
+    #[test]
+    fn available_belongs_to_plugin_list_alone() {
+        for sub in ["install", "info", "update", "enable"] {
+            let err = parsed_plugin(&["plugin", sub, "a", "--available"]).expect_err(sub);
+            assert_eq!(err, "--available only applies to plugin list", "{sub}");
+        }
+        let err = parsed_marketplace(&["plugin", "marketplace", "list", "--available"])
+            .expect_err("marketplace list");
+        assert_eq!(err, "--available only applies to plugin list");
+        // Other flags a subcommand doesn't take are unrecognized arguments.
+        let err = parsed_plugin(&["plugin", "install", "a", "--json"]).expect_err("json");
+        assert_eq!(err, "unrecognized argument: --json");
+        let err = parsed_plugin(&["plugin", "install", "a", "--frob"]).expect_err("frob");
+        assert_eq!(err, "unrecognized argument: --frob");
+    }
+
+    #[test]
+    fn double_dash_ends_the_plugin_flags() {
+        // A dash-leading spec is reachable (and the library judges it).
+        assert_eq!(
+            parsed_plugin(&["plugin", "install", "--", "-odd"]),
+            Ok(PluginCli::Install {
+                plugin: spec("-odd")
+            })
+        );
+        // After `--`, --help is a value too.
+        assert_eq!(
+            parsed_plugin(&["plugin", "info", "--", "--help"]),
+            Ok(PluginCli::Info {
+                plugin: spec("--help"),
+                json: false
+            })
+        );
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "add", "--", "-dir"]),
+            Ok(MarketplaceCli::Add {
+                source: spec("-dir"),
+                git_ref: None
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_help_answers_at_every_level() {
+        for args in [
+            &["plugin", "--help"][..],
+            &["plugin", "-h"],
+            &["plugins", "--help"],
+            &["plugin", "install", "--help"],
+            &["plugin", "install", "a", "-h"],
+            &["plugin", "list", "--json", "--help"],
+            &["plugin", "update", "-h"],
+        ] {
+            assert_eq!(parsed_plugin(args), Ok(PluginCli::Help), "{args:?}");
+        }
+        for args in [
+            &["plugin", "marketplace", "--help"][..],
+            &["plugin", "marketplace", "-h"],
+            &["plugin", "marketplace", "add", "--help"],
+            &["plugin", "marketplace", "add", "x", "--ref", "v1", "-h"],
+            &["plugin", "marketplace", "rm", "--help"],
+        ] {
+            assert_eq!(
+                parsed_marketplace(args),
+                Ok(MarketplaceCli::Help),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_subcommand_errors_name_the_choices() {
+        assert_eq!(
+            parsed_plugin(&["plugin"]),
+            Err(
+                "plugin needs a subcommand: install, uninstall, enable, disable, \
+                 update, list, info, marketplace"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "frob"]),
+            Err(
+                "unrecognized plugin command: frob (use install, uninstall, enable, \
+                 disable, update, list, info or marketplace)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "marketplace"]),
+            Err("plugin marketplace needs a subcommand: add, list, update, remove".to_string())
+        );
+        assert_eq!(
+            parsed_plugin(&["plugin", "marketplace", "frob"]),
+            Err(
+                "unrecognized plugin marketplace command: frob (use add, list, update or remove)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn marketplace_add_takes_a_source_and_an_optional_ref() {
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "add", "acme/plugins"]),
+            Ok(MarketplaceCli::Add {
+                source: spec("acme/plugins"),
+                git_ref: None
+            })
+        );
+        for args in [
+            &[
+                "plugin",
+                "marketplace",
+                "add",
+                "acme/plugins",
+                "--ref",
+                "v2",
+            ][..],
+            &["plugin", "marketplace", "add", "--ref=v2", "acme/plugins"],
+        ] {
+            assert_eq!(
+                parsed_marketplace(args),
+                Ok(MarketplaceCli::Add {
+                    source: spec("acme/plugins"),
+                    git_ref: Some(spec("v2"))
+                }),
+                "{args:?}"
+            );
+        }
+        // A local folder may hold a space; the library resolves it.
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "add", "./my plugins"]),
+            Ok(MarketplaceCli::Add {
+                source: spec("./my plugins"),
+                git_ref: None
+            })
+        );
+        let err = parsed_marketplace(&["plugin", "marketplace", "add"]).expect_err("none");
+        assert_eq!(
+            err,
+            "plugin marketplace add needs a source (owner/repo, a git URL or a local \
+             folder) or --defaults"
+        );
+        let err = parsed_marketplace(&["plugin", "marketplace", "add", " "]).expect_err("blank");
+        assert!(
+            err.starts_with("plugin marketplace add needs a source"),
+            "{err}"
+        );
+        let err = parsed_marketplace(&["plugin", "marketplace", "add", "a", "b"])
+            .expect_err("two sources");
+        assert_eq!(err, "unrecognized argument: b");
+        let err = parsed_marketplace(&["plugin", "marketplace", "add", "a", "--ref"])
+            .expect_err("ref without value");
+        assert_eq!(err, "--ref needs a value");
+        let err =
+            parsed_marketplace(&["plugin", "marketplace", "add", "a", "--ref", "x", "--ref=y"])
+                .expect_err("ref twice");
+        assert_eq!(err, "--ref was given more than once");
+    }
+
+    #[test]
+    fn marketplace_add_defaults_stands_alone() {
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "add", "--defaults"]),
+            Ok(MarketplaceCli::AddDefaults)
+        );
+        let err = parsed_marketplace(&["plugin", "marketplace", "add", "--defaults", "a/b"])
+            .expect_err("with a source");
+        assert_eq!(err, "--defaults takes no source or --ref");
+        let err =
+            parsed_marketplace(&["plugin", "marketplace", "add", "--defaults", "--ref", "v1"])
+                .expect_err("with a ref");
+        assert_eq!(err, "--defaults takes no source or --ref");
+        let err = parsed_marketplace(&["plugin", "marketplace", "add", "--defaults", "--defaults"])
+            .expect_err("twice");
+        assert_eq!(err, "--defaults was given more than once");
+    }
+
+    #[test]
+    fn marketplace_list_update_and_remove_parse() {
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "list"]),
+            Ok(MarketplaceCli::List { json: false })
+        );
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "list", "--json"]),
+            Ok(MarketplaceCli::List { json: true })
+        );
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "update"]),
+            Ok(MarketplaceCli::Update { name: None })
+        );
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "upgrade"]),
+            Ok(MarketplaceCli::Update { name: None })
+        );
+        assert_eq!(
+            parsed_marketplace(&["plugin", "marketplace", "update", "acme"]),
+            Ok(MarketplaceCli::Update {
+                name: Some(spec("acme"))
+            })
+        );
+        for word in ["remove", "rm"] {
+            assert_eq!(
+                parsed_marketplace(&["plugin", "marketplace", word, "acme"]),
+                Ok(MarketplaceCli::Remove { name: spec("acme") }),
+                "{word}"
+            );
+        }
+        let err = parsed_marketplace(&["plugin", "marketplace", "remove"]).expect_err("none");
+        assert_eq!(err, "plugin marketplace remove needs a marketplace name");
+        let err = parsed_marketplace(&["plugin", "marketplace", "update", ""]).expect_err("empty");
+        assert_eq!(err, "plugin marketplace update needs a marketplace name");
+        let err = parsed_marketplace(&["plugin", "marketplace", "list", "x"]).expect_err("stray");
+        assert_eq!(err, "unrecognized argument: x");
+        let err = parsed_marketplace(&["plugin", "marketplace", "update", "a", "--json"])
+            .expect_err("json");
+        assert_eq!(err, "unrecognized argument: --json");
+    }
+
+    #[test]
+    fn the_error_page_follows_the_command_family() {
+        let page = |args: &[&str]| usage_page(args.iter().copied());
+        assert_eq!(page(&[]), HelpPage::Main);
+        assert_eq!(page(&["--frob"]), HelpPage::Main);
+        assert_eq!(page(&["-c", "plugin"]), HelpPage::Main);
+        assert_eq!(page(&["mcp", "add"]), HelpPage::Mcp);
+        assert_eq!(page(&["plugin"]), HelpPage::Plugin);
+        assert_eq!(page(&["plugins", "install"]), HelpPage::Plugin);
+        assert_eq!(page(&["plugin", "list", "marketplace"]), HelpPage::Plugin);
+        assert_eq!(
+            page(&["plugin", "marketplace", "add"]),
+            HelpPage::PluginMarketplace
+        );
+        assert_eq!(
+            page(&["plugins", "marketplace"]),
+            HelpPage::PluginMarketplace
+        );
+    }
+
+    const PLUGIN_PAGES: [HelpPage; 2] = [HelpPage::Plugin, HelpPage::PluginMarketplace];
+
+    #[test]
+    fn the_plugin_pages_are_titled_by_their_command_and_list_every_form() {
+        let page = help(HelpPage::Plugin, HelpStyle::Plain);
+        assert_eq!(page.lines().next(), Some("alter-zero plugin"));
+        for form in [
+            "Usage: alter-zero plugin install <plugin>[@<marketplace>]\n",
+            "\n       alter-zero plugin uninstall <plugin>[@<marketplace>]\n",
+            "\n       alter-zero plugin update [<plugin>[@<marketplace>]]\n",
+            "\n       alter-zero plugin list [--available] [--json]\n",
+            "\n       alter-zero plugin info <plugin>[@<marketplace>] [--json]\n",
+            "\n       alter-zero plugin marketplace <COMMAND>\n",
+        ] {
+            assert!(page.contains(form), "{form:?} in\n{page}");
+        }
+        assert!(page.contains("\nExamples:\n  alter-zero plugin "), "{page}");
+        // enable and disable are per directory, and the page says so.
+        assert!(
+            page.contains("enable and disable act on the directory"),
+            "{page}"
+        );
+        let page = help(HelpPage::PluginMarketplace, HelpStyle::Plain);
+        assert_eq!(page.lines().next(), Some("alter-zero plugin marketplace"));
+        for form in [
+            "Usage: alter-zero plugin marketplace add <source> [--ref <ref>]\n",
+            "\n       alter-zero plugin marketplace add --defaults\n",
+            "\n       alter-zero plugin marketplace list [--json]\n",
+            "\n       alter-zero plugin marketplace update [<name>]\n",
+            "\n       alter-zero plugin marketplace remove <name>\n",
+        ] {
+            assert!(page.contains(form), "{form:?} in\n{page}");
+        }
+        assert!(
+            page.contains("\nExamples:\n  alter-zero plugin marketplace add "),
+            "{page}"
+        );
+        // Examples dress like usage lines: the command bold, the rest bare.
+        let styled = help(HelpPage::PluginMarketplace, HelpStyle::Ansi);
+        assert!(
+            styled.contains(
+                "\x1b[1;36mExamples:\x1b[0m\n  \x1b[1malter-zero plugin marketplace add\x1b[0m "
+            ),
+            "{styled}"
+        );
+    }
+
+    #[test]
+    fn the_plugin_pages_fit_eighty_columns_and_strip_back_to_plain() {
+        // (The MCP page's first usage form is wider than 80 columns, and has
+        // always been — a usage line is the one row nothing wraps.)
+        for page in [
+            HelpPage::Main,
+            HelpPage::Plugin,
+            HelpPage::PluginMarketplace,
+        ] {
+            let plain = help(page, HelpStyle::Plain);
+            for line in plain.lines() {
+                assert!(line.width() <= 80, "{page:?}: {line:?}");
+                assert_eq!(line.trim_end(), line, "{page:?}: {line:?}");
+            }
+            assert_eq!(strip_ansi(&help(page, HelpStyle::Ansi)), plain, "{page:?}");
+        }
+        let mcp = help(HelpPage::Mcp, HelpStyle::Plain);
+        assert_eq!(strip_ansi(&help(HelpPage::Mcp, HelpStyle::Ansi)), mcp);
+        for page in PLUGIN_PAGES {
+            let text = usage_error(page, "x", HelpStyle::Plain);
+            assert!(
+                text.starts_with("error: x\n\nUsage: alter-zero plugin "),
+                "{text}"
+            );
+            assert!(!text.contains("Examples:"), "{text}");
+        }
     }
 }

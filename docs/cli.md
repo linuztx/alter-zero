@@ -11,8 +11,9 @@ failing test"` boots straight into that turn, and `alter-zero --resume {id}
 "and now the docs"` sends it into the reopened conversation — and `--help`
 is a titled, sectioned page in the app's own colour. (The same pre-TUI
 boundary also answers the `mcp` subcommand family — `alter-zero mcp
-add/add-json/remove/get/list`, `docs/mcp-cli.md` — and `alter-zero
-update`, which installs the newest release over this binary through the
+add/add-json/remove/get/list`, `docs/mcp-cli.md` — the `plugin` family —
+`alter-zero plugin install/…/marketplace …` (or `plugins`),
+`docs/plugin-cli.md` — and `alter-zero update`, which installs the newest release over this binary through the
 one-line installer, `docs/update.md`; each is routed by its first argument
 before the flag grammar below applies.) **`-p` runs the same session with no
 screen** — one prompt in, the answer on stdout, an exit status out — with
@@ -28,11 +29,14 @@ Starts an interactive session by default; with -p, answers once and exits.
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Commands:
   mcp                            Manage MCP servers in the user config file —
                                  see alter-zero mcp --help
+  plugin                         Install and manage plugins and marketplaces —
+                                 see alter-zero plugin --help
   update                         Install the newest release over this binary,
                                  if one is out (the checksum-verified installer)
 
@@ -163,16 +167,18 @@ The grammar (`cli::parse`):
 
 ### The `--help` page
 
-One renderer, two pages: `cli::help(HelpPage::Main, style)` and
-`cli::help(HelpPage::Mcp, style)` each build a `HelpDoc` — a title, a
-description, the `Usage:` lines, and the sections' rows — and render it
+One renderer, four pages: `cli::help(page, style)` over `HelpPage::Main`,
+`Mcp`, `Plugin` and `PluginMarketplace` each builds a `HelpDoc` — a title, a
+description, the `Usage:` lines, the sections' rows and, on the plugin
+pages, a few `Examples:` — and renders it
 the way clap and cargo do, so a reader who knows any Rust CLI knows where
 to look:
 
 - **The title is `Alter Zero`** — `crate::APP_NAME`, the one place the
   app's name lives — on the first line, wearing the *heading* style: the
   page names the product, and `alter-zero` below it names the binary. The
-  `mcp` page is titled by its command, `alter-zero mcp`, in the same style.
+  `mcp` page is titled by its command, `alter-zero mcp`, in the same style,
+  as are `alter-zero plugin` and `alter-zero plugin marketplace`.
 - **The description** is the line under it, and it describes the
   *invocation*, not the product: `Starts an interactive session by
   default; with -p, answers once and exits.` Both references write this
@@ -195,6 +201,10 @@ to look:
   that same column. Nothing wraps at render time — every description is
   pre-wrapped in the source, so the page reads on disk exactly as it
   prints and a test can pin it.
+- **Examples** (the plugin pages' — `HelpDoc::examples`) close a page under
+  an `Examples:` heading, indented like a row and dressed like a usage
+  form: the command words bold, the rest bare. A usage error's trailer
+  leaves them out.
 - **Styles.** `HelpStyle::Plain` emits no escapes at all — the string the
   tests compare against and what a pipe receives. `HelpStyle::Ansi`
   dresses headings and the title in **bold cyan** (`ESC[1;36m` — the app's
@@ -219,6 +229,7 @@ error: unrecognized argument: --frob
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 For more information, try '--help'.
@@ -226,22 +237,28 @@ For more information, try '--help'.
 
 `cli::usage_error(page, message, style)` renders it — the `error:` lead,
 the page's own `Usage:` block, the pointer at `--help` — and the `mcp`
-page's grammar errors take the same shape over its six usage lines. Exit
-`2`, on stderr, as before.
+page's grammar errors take the same shape over its six usage lines, the
+`plugin` and `plugin marketplace` pages' over theirs. Which page is the pure
+`cli::usage_page(args)`'s to say — `mcp …` the MCP page, `plugin
+marketplace …` the marketplace page, any other `plugin …` the plugin page,
+anything else the main one — read off the same arguments `parse` routes on.
+Exit `2`, on stderr, as before.
 
 ### The pure `cli` module (src/cli.rs)
 
 - `Cli` — the parsed invocation: `Session(SessionArgs)` (a session run —
   how to start, plus the optional prompt), `Help`, `Version`,
-  `Mcp(McpCli)`, `Update` (the `update` subcommand — `tui::update_cli::run`
-  does the work, `docs/update.md`).
+  `Mcp(McpCli)`, `Plugin(PluginCli)` (the `plugin` family —
+  `tui::plugin_cli::run` does the work, `docs/plugin-cli.md`), `Update` (the
+  `update` subcommand — `tui::update_cli::run` does the work,
+  `docs/update.md`).
   `SessionArgs { start, prompt, cwd, permission_mode, print }` with
   `SessionStart::{Fresh, Continue, Resume(Option<String>)}`, `cwd` the
   `-C`/`--cwd` directory, `permission_mode` the `--permission-mode` seed,
   and `print: Option<PrintOptions { output_format, max_turns }>` — `Some`
   for a headless run (`docs/headless.md`), `None` for the TUI.
 - `parse(args)` — over `std::env::args().skip(1)`: a first argument of
-  `mcp` or `update` routes to that subcommand (`update` takes nothing — a
+  `mcp`, `plugin`/`plugins` or `update` routes to that subcommand (`update` takes nothing — a
   trailing argument is a usage error, never a guess); else `--continue`/`-c`,
   `--resume [id]`/`-r [id]` (also `--resume=id`), `--help`/`-h`,
   `--version`/`-V`, one positional `[PROMPT]`, `--` before it. Anything
@@ -372,7 +389,9 @@ page's grammar errors take the same shape over its six usage lines. Exit
   hint; a blank prompt refused; a prompt with the bare picker refused;
   `--resume "x y"` still an id. The help — the plain main page pinned
   line for line, every line under 80 columns with no trailing blanks, the
-  title `Alter Zero` first, the `mcp` page's title and six usage lines;
+  title `Alter Zero` first, the `mcp` page's title and six usage lines,
+  the plugin pages' titles, forms and examples, each under 80
+  columns; `usage_page`'s choice per family;
   the ANSI rendering stripped of escapes equal to the plain one, the
   title/headings carrying the heading escape and `alter-zero` the bold
   one; `usage_error`'s three-part shape; `colour_enabled`'s three rules;
@@ -384,7 +403,9 @@ page's grammar errors take the same shape over its six usage lines. Exit
   otherwise.
 - `tests/cli_help.rs` (the real binary, `CARGO_BIN_EXE_alter-zero`,
   offline): a piped `--help` is byte-for-byte `help(Main, Plain)` — no
-  escapes off a tty — and `mcp --help` the `Mcp` page; `--version` prints
+  escapes off a tty — `mcp --help` the `Mcp` page and `plugin --help` /
+  `plugin marketplace --help` the plugin pages; a `plugin` grammar error
+  carries its page's usage block; `--version` prints
   `alter-zero {version}`; a grammar error exits 2 with the `error:` shape
   on stderr and an empty stdout; two positionals name the second with the
   quote hint; a prompt with the bare picker is refused.

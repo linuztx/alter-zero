@@ -172,3 +172,64 @@ fn an_mcp_grammar_error_carries_the_mcp_usage_block() {
         )
     );
 }
+
+#[test]
+fn piped_plugin_help_is_the_plain_page_of_its_level() {
+    for (args, page) in [
+        (&["plugin", "--help"][..], HelpPage::Plugin),
+        (&["plugins", "install", "-h"], HelpPage::Plugin),
+        (
+            &["plugin", "marketplace", "--help"],
+            HelpPage::PluginMarketplace,
+        ),
+        (
+            &["plugin", "marketplace", "add", "-h"],
+            HelpPage::PluginMarketplace,
+        ),
+    ] {
+        let out = run(args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            format!("{}\n", cli::help(page, HelpStyle::Plain)),
+            "{args:?}"
+        );
+        assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn a_plugin_grammar_error_carries_its_level_s_usage_block() {
+    for (args, page, message) in [
+        (
+            &["plugin", "install"][..],
+            HelpPage::Plugin,
+            "plugin install needs a plugin name (use <plugin>[@<marketplace>])",
+        ),
+        (
+            &["plugin", "marketplace", "remove"],
+            HelpPage::PluginMarketplace,
+            "plugin marketplace remove needs a marketplace name",
+        ),
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+        assert_eq!(
+            stderr(&out),
+            format!("{}\n", cli::usage_error(page, message, HelpStyle::Plain))
+        );
+    }
+}
+
+#[test]
+fn a_plugin_command_is_not_available_yet() {
+    let out = run(&["plugin", "list"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).ends_with(" plugin: not available yet\n"),
+        "{}",
+        stderr(&out)
+    );
+}
