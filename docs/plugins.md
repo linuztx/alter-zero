@@ -245,8 +245,10 @@ one failed `stat` and nothing else.
 - **Slash commands** are prompt templates the *user* runs: `/plugin:command
   arguments` submits the template with `$ARGUMENTS`, `$1`…`$9` and
   `$ARGUMENTS[n]` filled in, the way `/init` submits its prompt. The palette
-  lists them after the built-ins and finds one by any of its `:`-separated
-  parts, so `/rev` finds `/code-review:review`.
+  lists them after every built-in, `/quit` included, so a built-in that
+  matches what was typed is always the row Enter runs — a plugin's
+  `commands/quit.md` never takes `/q` from `/quit` — and finds one by any
+  of its `:`-separated parts, so `/rev` finds `/code-review:review`.
 - **Agents** join the subagent types as `plugin:agent`
   (`docs/subagents.md`), always on the session's own model, with a Claude
   Code agent's tool names mapped to the tools this app has.

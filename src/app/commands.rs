@@ -418,8 +418,9 @@ fn dressed_hint(hint: &str) -> Option<Cow<'_, str>> {
 impl App {
     /// The palette's rows for this session: [`COMMANDS`] with one row per
     /// speed tier the active model lists spliced in **right after `/model`**,
-    /// and the installed plugins' commands after every built-in but `/quit`
-    /// (`docs/plugins.md`)
+    /// and the installed plugins' commands after every built-in, `/quit`
+    /// included, so a built-in that matches a query always lists ahead of
+    /// every plugin row and Enter on `/q` still quits (`docs/plugins.md`)
     /// — where codex inserts its tier commands, a tier being a fact about
     /// the model just switched to (`docs/fast-mode.md`). Built from
     /// [`App::speed`] on demand rather than stored, so the rows can never
@@ -437,9 +438,6 @@ impl App {
         let mut commands: Vec<SlashCommand> =
             Vec::with_capacity(COMMANDS.len() + tiers.len() + self.plugin_commands.len());
         for command in COMMANDS {
-            if command.effect == CommandEffect::Quit {
-                self.push_plugin_rows(&mut commands);
-            }
             commands.push(command.clone());
             if command.effect != CommandEffect::Model {
                 continue;
@@ -451,20 +449,16 @@ impl App {
                 }
             }
         }
+        self.push_plugin_rows(&mut commands);
         commands
     }
 
-    /// The installed plugins' commands as palette rows, pushed onto
-    /// `commands` — the built-ins and tier rows before them, `/quit` after
+    /// The installed plugins' commands as palette rows, pushed onto the end
+    /// of `commands` — every built-in and tier row before them
     /// (`docs/plugins.md`). Each is described by its file's description and
-    /// argument hint; one whose name is a row's already gets none, so a
-    /// built-in is never shadowed.
+    /// argument hint.
     fn push_plugin_rows(&self, commands: &mut Vec<SlashCommand>) {
         for row in &self.plugin_commands {
-            let taken = |c: &SlashCommand| c.name.eq_ignore_ascii_case(&row.name);
-            if COMMANDS.iter().any(taken) || commands.iter().any(taken) {
-                continue;
-            }
             let description = match row.argument_hint.as_deref().and_then(dressed_hint) {
                 Some(hint) if row.description.is_empty() => hint.into_owned(),
                 Some(hint) => format!("{} {hint}", row.description),

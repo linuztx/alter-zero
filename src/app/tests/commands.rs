@@ -519,20 +519,20 @@ fn no_plugin_commands_leave_the_palette_exactly_the_built_ins() {
 }
 
 #[test]
-fn plugin_commands_list_after_the_built_ins_and_before_quit() {
+fn plugin_commands_list_after_every_built_in_quit_included() {
     let app = plugin_app();
     let commands = app.commands();
     let names: Vec<&str> = commands.iter().map(|c| c.name.as_ref()).collect();
     let n = names.len();
     assert_eq!(
         names[n - 3..],
-        ["code-review:commit", "code-review:review", "quit"]
+        ["quit", "code-review:commit", "code-review:review"]
     );
     assert_eq!(n, COMMANDS.len() + 2);
-    assert_eq!(commands[n - 3].description, "Commit the work");
-    assert_eq!(commands[n - 2].description, "Review a PR [pr]");
+    assert_eq!(commands[n - 2].description, "Commit the work");
+    assert_eq!(commands[n - 1].description, "Review a PR [pr]");
     assert_eq!(
-        commands[n - 2].effect,
+        commands[n - 1].effect,
         CommandEffect::PluginPrompt {
             takes_arguments: true
         }
@@ -572,8 +572,53 @@ fn a_plugin_command_never_shadows_a_built_in() {
     app.set_plugin_commands(vec![plugin_row("model", "Not the picker", None)]);
     let commands = app.commands();
     let models: Vec<&SlashCommand> = commands.iter().filter(|c| c.name == "model").collect();
-    assert_eq!(models.len(), 1);
     assert_eq!(models[0].effect, CommandEffect::Model);
+}
+
+/// For every built-in and every prefix of its name, plugin commands whose
+/// segments start with that prefix: each built-in that matches the query
+/// lists ahead of every plugin row, so Enter can never run a plugin's
+/// template where the user typed the start of a built-in.
+#[test]
+fn no_plugin_command_lists_ahead_of_a_built_in_for_any_prefix_of_its_name() {
+    for builtin in COMMANDS {
+        let name = builtin.name.as_ref();
+        for end in 1..=name.len() {
+            let prefix = &name[..end];
+            let mut app = App::new();
+            app.set_plugin_commands(vec![
+                plugin_row(&format!("dup:{name}"), "d", None),
+                plugin_row(&format!("dup:{prefix}"), "d", None),
+                plugin_row(&format!("{prefix}:x"), "d", None),
+                plugin_row(&format!("{name}:{name}"), "d", Some("[a]")),
+            ]);
+            let commands = app.commands();
+            let matches = matching_commands(&commands, prefix);
+            let first_plugin = matches
+                .iter()
+                .position(|c| matches!(c.effect, CommandEffect::PluginPrompt { .. }))
+                .expect("the plugin rows match");
+            let last_builtin = matches
+                .iter()
+                .rposition(|c| !matches!(c.effect, CommandEffect::PluginPrompt { .. }))
+                .expect("the built-in matches its own prefix");
+            assert!(
+                last_builtin < first_plugin,
+                "/{prefix}: {:?}",
+                matches.iter().map(|c| c.name.as_ref()).collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_plugin_quit_command_never_takes_enter_from_quit() {
+    for typed in ["/q", "/qu", "/quit"] {
+        let mut app = App::new();
+        app.set_plugin_commands(vec![plugin_row("dup:quit", "Not quitting", None)]);
+        type_str(&mut app, typed);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Quit, "{typed}");
+    }
 }
 
 #[test]

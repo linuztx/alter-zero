@@ -3292,7 +3292,7 @@ a bare name when exactly one plugin has it, a plugin skill's body gets
 `plugin:agent` (always the session's own model, a Claude Code agent's
 `tools:` mapped through `normalize::map_agent_tools`, a list that maps to
 nothing left with `Read` alone, never widened to everything), commands as
-palette rows after the built-ins and before `/quit` (`App::set_plugin_commands`,
+palette rows after every built-in, `/quit` included (`App::set_plugin_commands`,
 `CommandEffect::PluginPrompt`, matched by any `:`-segment so `/rev` finds
 `/code-review:review`; `/plugin:command args` submits the template with
 `$ARGUMENTS`/`$1`…`$9` filled in, the way `/init` submits its prompt —
