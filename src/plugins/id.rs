@@ -36,6 +36,31 @@ pub fn validate_marketplace_name(name: &str) -> Result<(), String> {
     validate_name("marketplace", name)
 }
 
+/// The rule a plugin name breaks, as a clause for a sentence naming it —
+/// `None` for a valid name. A marketplace's unreadable entries are reported
+/// with it.
+#[must_use]
+pub(crate) fn plugin_name_rule(name: &str) -> Option<&'static str> {
+    validate_plugin_name(name).err()?;
+    Some(if name.is_empty() {
+        "a plugin name is not empty"
+    } else if name
+        .chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+    {
+        "a plugin name is ASCII letters, digits, ., _ and - only"
+    } else if name.chars().count() > MAX_NAME_LEN {
+        "a plugin name is 64 characters at most"
+    } else if name.contains("..")
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name.ends_with(|c: char| c.is_ascii_alphanumeric())
+    {
+        "a plugin name may not hold .."
+    } else {
+        "a plugin name starts and ends with an ASCII letter or digit"
+    })
+}
+
 /// The shared check, `kind` being the noun the error leads with.
 fn validate_name(kind: &str, name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -51,7 +76,7 @@ fn validate_name(kind: &str, name: &str) -> Result<(), String> {
             format!("`{bad}`")
         };
         return Err(format!(
-            "{kind} name `{name}` has {what} in it — letters, digits, `.`, `_` and `-` only"
+            "{kind} name `{name}` has {what} in it — ASCII letters, digits, `.`, `_` and `-` only"
         ));
     }
     let len = name.chars().count();
@@ -215,6 +240,16 @@ pub fn mcp_server_name(plugin: &str, server: &str) -> String {
     )
 }
 
+/// What two plugin names must not share to be installed side by side: the
+/// name in ASCII lowercase with `.` folded to `_`. Components are listed as
+/// `plugin:component` and MCP servers as `plugin_<plugin>_<server>` (with
+/// `.` folded), and a filesystem may ignore case — so `Dup`, `dup`, `a.b`
+/// and `a_b` would shadow each other.
+#[must_use]
+pub fn namespace_key(name: &str) -> String {
+    name.to_ascii_lowercase().replace('.', "_")
+}
+
 /// `plugin:component` — how a plugin's skills, agents and commands are
 /// named, so two plugins' `review` never collide.
 #[must_use]
@@ -250,6 +285,19 @@ mod tests {
         for name in ["a/b", "a\\b", "a@b", "a:b", "ü"] {
             assert!(validate_plugin_name(name).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn a_non_ascii_letter_is_refused_as_not_an_ascii_letter() {
+        let err = validate_plugin_name("日本語").unwrap_err();
+        assert!(err.contains("ASCII letters"), "{err}");
+    }
+
+    #[test]
+    fn names_differing_by_case_or_by_dot_and_underscore_share_a_namespace() {
+        assert_eq!(namespace_key("Dup"), namespace_key("dup"));
+        assert_eq!(namespace_key("a.b"), namespace_key("a_b"));
+        assert_ne!(namespace_key("a-b"), namespace_key("a_b"));
     }
 
     #[test]

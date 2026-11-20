@@ -132,14 +132,15 @@ for credentials here, never inside the TUI. Every operation is the store's
   look among the **installed** plugins alone, so a name another marketplace
   also lists is not ambiguous there, and they never fetch.
 - **`list`** — one row per installed plugin: the mark, the id, the version
-  (`—` when none), the state and `Components::summary()`, read from each
+  (`—` when none; `1.0.0 → 2.0.0` when an update waits), the state and `Components::summary()`, read from each
   install through `PluginStore::detail` (the store's own reading of the
   copy, so the counts are what loads), wrapped between its ` · ` parts
   under its own column at the width. `--available` fetches the
   never-fetched marketplaces first, then prints a block per marketplace
   (`{name} — {source} ({n} plugins)`), installed plugins first, `⊘ … (can't
   be installed here)` for a source this build does not fetch.
-- **`info`** — the id and its state (`✔ installed · enabled · v1.0.0`), the
+- **`info`** — the id and its state (`✔ installed · enabled · v1.0.0`, or
+  `v1.0.0 → v2.0.0 · update available`), the
   description, then `Author`, `Category`, `License`, `Source`, `Homepage`
   (the plugin's, else the browsable source), `Blocked`, and the components
   by name (`Skills`, `Commands`, `Agents`, `Hooks`, `MCP`, `Not used`) —
@@ -166,28 +167,44 @@ for credentials here, never inside the TUI. Every operation is the store's
   then `add_marketplace`: `Added marketplace team (4 plugins) from
   ~/work/team-plugins` over `Install one with: alter-zero plugin install
   <plugin>@team`; the same source again is `Marketplace team is already
-  added (4 plugins)`, exit 0.
+  added (4 plugins)`, exit 0. Entries the manifest lists but that could not
+  be read follow on stderr, `warning: skipped 2 entries: 日本語 — a plugin
+  name is ASCII letters, digits, ., _ and - only; …`.
 - **`marketplace list`** — one row per known marketplace: its name (`—`
   for a folder named only once read), the source, the plugin count right
   aligned (or `not fetched yet`), `updated 2h ago` or `local folder`, and
-  `default`.
+  `default`. A default the user removed is a `removed` row, closed by
+  `Restore {name} with: alter-zero plugin marketplace add {source}`.
 - **`marketplace update [name]`** — `Updated …`, `… is up to date`, or
-  `Fetched …` for a default never fetched. **`marketplace remove`** —
+  `Fetched …` for a default never fetched, then the same `skipped` warning
+  as `add`. **`marketplace remove`** —
   `Removed marketplace team`, then which installed plugins came from it and
   stay. An unknown marketplace name lists the ones there are.
 - **`--json`** — one compact document and a newline, built from typed
   borrowing structs, never a `Value` tree: `list` →
-  `{"plugins":[{id,name,marketplace,version,enabled,description}]}`;
-  `list --available` → `{"marketplaces":[{name,source,plugins:[{name,
-  description,category,version,status}]}]}`, `status` one of `available`,
-  `enabled`, `disabled`, `unsupported`; `info` → the `PluginDetail` in
-  camelCase (`id`, `displayName`, …, `updateAvailable`, `blocked`,
+  `{"plugins":[{id,name,marketplace,version,installed_version,enabled,
+  description}]}`; `list --available` → `{"marketplaces":[{name,source,
+  plugins:[{name,description,category,version,installed_version,status}]}]}`,
+  `status` one of `available`, `enabled`, `disabled`, `unsupported`; `info`
+  → the `PluginDetail` in camelCase (`id`, `displayName`, `version`,
+  `installedVersion`, …, `updateAvailable`, `blocked`,
   `components{skills,commands,agents,hooks,mcpServers,unsupported}` or
   `null`, `warnings`); `marketplace list` →
-  `{"marketplaces":[{name,source,default,fetched,plugins,updated,revision}]}`
-  (`name` null while unfetched and unnamed, `updated` unix seconds).
+  `{"marketplaces":[{name,source,default,fetched,plugins,updated,revision,
+  removed,skipped}]}` (`name` null while unfetched and unnamed, `updated`
+  unix seconds, `skipped` a sentence per unreadable entry). In every shape
+  `version` is what the marketplace offers now and `installed_version` what
+  was installed.
+- **Failures** name what failed: a plugin whose fetch failed is `error:
+  couldn't fetch rocket@mk from file:///nonexistent/repo.git —
+  '/nonexistent/repo.git' does not appear to be a git repository`, git's
+  first `fatal:`/`error:` line rather than the generic one it closes on.
+  The store's errors say what is wrong and name no command (the page shows
+  them too); this boundary adds the command that helps — `(alter-zero plugin
+  list --available)` after an unknown plugin, `(alter-zero plugin
+  marketplace list)` after an unknown marketplace.
 - Every command a message suggests names the binary as it was invoked
-  (`cli::bin_name`), the store's own messages included.
+  (`cli::bin_name`).
 
 Exit codes: **0** success (an already-done enable, disable or add
 included), **1** a failure (one `error:` line per failure), **2** a grammar

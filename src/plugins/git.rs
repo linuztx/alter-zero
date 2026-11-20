@@ -114,6 +114,20 @@ impl fmt::Display for GitError {
     }
 }
 
+impl GitError {
+    /// Why it failed, as a clause to follow a sentence naming what was being
+    /// fetched: git's own words for a failure, else the whole message.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Failed { stderr, .. } => {
+                meaningful_line(stderr).unwrap_or_else(|| self.to_string())
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
 impl std::error::Error for GitError {}
 
 /// Is there a `git` to run?
@@ -605,11 +619,16 @@ fn parse_progress(line: &str) -> Option<GitProgress> {
 }
 
 /// Splits git's stderr into lines at `\n` and at `\r`, which is how git
-/// redraws a progress line in place.
+/// redraws a progress line in place. A line longer than [`LINE_MAX_BYTES`]
+/// keeps only its tail — what a progress line ends on — so a stream with no
+/// line ends never grows without bound.
 #[derive(Debug, Default)]
 struct LineSplitter {
     pending: Vec<u8>,
 }
+
+/// The most of one stderr line [`LineSplitter`] holds.
+const LINE_MAX_BYTES: usize = 4096;
 
 impl LineSplitter {
     /// The lines `bytes` completes.
@@ -623,6 +642,11 @@ impl LineSplitter {
                     self.pending.clear();
                 }
             } else {
+                if self.pending.len() == LINE_MAX_BYTES {
+                    // Keep the newer half: a progress line's end is the
+                    // part worth reading.
+                    self.pending.drain(..LINE_MAX_BYTES / 2);
+                }
                 self.pending.push(byte);
             }
         }
@@ -635,31 +659,55 @@ impl LineSplitter {
     }
 }
 
+/// What git says last when something before it went wrong, adding nothing
+/// to the line that said what.
+const GENERIC_GIT_LINES: [&str; 5] = [
+    "could not read from remote repository",
+    "the remote end hung up unexpectedly",
+    "early eof",
+    "index-pack failed",
+    "fetch-pack: invalid index-pack output",
+];
+
 /// The line of git's stderr an error message should quote.
 ///
-/// The last `fatal:` or `error:` line without its prefix; else the last line
-/// that is not a hint, a warning or progress.
-fn meaningful_line(stderr: &str) -> Option<&str> {
+/// The first `fatal:` or `error:` line without its prefix — git says the
+/// cause first and a generic line after it — joined with the last such line
+/// when that one says something more; else the last line that is not a
+/// hint, a warning or progress.
+fn meaningful_line(stderr: &str) -> Option<String> {
     let lines = || {
         stderr
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
     };
-    lines()
+    let failures: Vec<&str> = lines()
         .filter_map(|line| {
             line.strip_prefix("fatal:")
                 .or_else(|| line.strip_prefix("error:"))
                 .map(str::trim)
         })
-        .rfind(|line| !line.is_empty())
-        .or_else(|| {
-            lines().rfind(|line| {
-                !line.starts_with("hint:")
-                    && !line.starts_with("warning:")
-                    && parse_progress(line).is_none()
-            })
+        .filter(|line| !line.is_empty())
+        .collect();
+    if let (Some(first), Some(last)) = (failures.first(), failures.last()) {
+        let generic = |line: &str| {
+            let lower = line.trim_end_matches('.').to_ascii_lowercase();
+            GENERIC_GIT_LINES.contains(&lower.as_str())
+        };
+        return Some(if first == last || generic(last) {
+            (*first).to_string()
+        } else {
+            format!("{first}; {last}")
+        });
+    }
+    lines()
+        .rfind(|line| {
+            !line.starts_with("hint:")
+                && !line.starts_with("warning:")
+                && parse_progress(line).is_none()
         })
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -725,17 +773,58 @@ mod tests {
     }
 
     #[test]
-    fn the_meaningful_line_is_the_last_fatal_or_error() {
+    fn a_line_with_no_end_keeps_only_its_tail() {
+        let mut splitter = LineSplitter::default();
+        for _ in 0..1024 {
+            assert!(splitter.push(&[b'x'; 1024]).is_empty());
+        }
+        assert!(splitter.pending.len() <= LINE_MAX_BYTES);
+        let lines = splitter.push(b"Receiving objects:  45% (1/2)\n");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].len() <= LINE_MAX_BYTES);
+        assert!(
+            lines[0].ends_with("Receiving objects:  45% (1/2)"),
+            "{}",
+            &lines[0][..40]
+        );
+    }
+
+    #[test]
+    fn the_meaningful_line_is_the_first_fatal_or_error() {
         let stderr = "Cloning into 'x'...\nfatal: repository 'x' does not exist\nhint: try again\n";
         assert_eq!(
-            meaningful_line(stderr),
+            meaningful_line(stderr).as_deref(),
             Some("repository 'x' does not exist")
         );
         assert_eq!(
-            meaningful_line("hint: a\nsomething broke\n"),
+            meaningful_line("hint: a\nsomething broke\n").as_deref(),
             Some("something broke")
         );
         assert_eq!(meaningful_line("  \n"), None);
+    }
+
+    #[test]
+    fn a_generic_closing_line_never_hides_the_cause() {
+        let stderr = "fatal: '/nonexistent/repo.git' does not appear to be a git repository\n\
+                      fatal: Could not read from remote repository.\n\n\
+                      Please make sure you have the correct access rights\n\
+                      and the repository exists.\n";
+        assert_eq!(
+            meaningful_line(stderr).as_deref(),
+            Some("'/nonexistent/repo.git' does not appear to be a git repository")
+        );
+        // A later line that says more is joined on.
+        let stderr = "error: RPC failed; HTTP 403\nfatal: unable to access 'x': denied\n";
+        assert_eq!(
+            meaningful_line(stderr).as_deref(),
+            Some("RPC failed; HTTP 403; unable to access 'x': denied")
+        );
+        let failed = GitError::Failed {
+            code: Some(128),
+            stderr: "fatal: gone\nfatal: the remote end hung up unexpectedly\n".into(),
+        };
+        assert_eq!(failed.reason(), "gone");
+        assert_eq!(failed.to_string(), "git failed: gone");
     }
 
     #[test]

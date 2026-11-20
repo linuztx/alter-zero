@@ -22,9 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use alter_zero::cli::{self, HelpPage, MarketplaceCli, PluginCli};
 use alter_zero::plugins::{
-    CatalogTab, Components, Control, GitControl, GitProgress, InstallOutcome, KnownMarketplace,
-    LOCAL_MARKETPLACE, MarketplaceSource, PluginCatalog, PluginDetail, PluginId, PluginSelector,
-    PluginStatus, PluginStore, PluginsFile,
+    CatalogTab, Components, Control, DefaultMarketplace, GitControl, GitProgress, InstallOutcome,
+    KnownMarketplace, LOCAL_MARKETPLACE, MarketplaceSource, PluginCatalog, PluginDetail, PluginId,
+    PluginSelector, PluginStatus, PluginStore, PluginsFile,
 };
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
@@ -106,22 +106,41 @@ fn list_installed(store: &PluginStore, out: &Out, json: bool) -> bool {
         Ok(file) => file,
         Err(error) => return out.fail(&error),
     };
+    // The store's reading of each install: what it loads, and what its
+    // marketplace offers now.
+    let details: Vec<Option<PluginDetail>> = file
+        .plugins
+        .keys()
+        .map(|key| {
+            PluginId::parse(key)
+                .ok()
+                .and_then(|id| store.detail(&id).ok())
+        })
+        .collect();
+    let offered: Vec<Option<&str>> = details
+        .iter()
+        .map(|detail| detail.as_ref().and_then(|d| d.version.as_deref()))
+        .collect();
     if json {
-        say!("{}", installed_json(&file));
+        say!("{}", installed_json(&file, &offered));
         return true;
     }
     let rows: Vec<InstalledRow> = file
         .plugins
         .iter()
-        .map(|(key, record)| InstalledRow {
+        .zip(&details)
+        .map(|((key, record), detail)| InstalledRow {
             id: key.clone(),
-            version: record.version.clone(),
+            version: version_step(
+                record.version.as_deref(),
+                detail.as_ref().and_then(|d| d.version.as_deref()),
+                detail.as_ref().is_some_and(|d| d.update_available),
+            ),
             enabled: record.enabled,
-            summary: PluginId::parse(key)
-                .ok()
-                .and_then(|id| store.detail(&id).ok())
-                .and_then(|detail| detail.components)
-                .map(|components| components.summary())
+            summary: detail
+                .as_ref()
+                .and_then(|detail| detail.components.as_ref())
+                .map(Components::summary)
                 .unwrap_or_default(),
         })
         .collect();
@@ -347,6 +366,7 @@ fn marketplace_add(store: &PluginStore, out: &Out, input: &str, reference: Optio
                 outcome.name,
                 plugins_count(outcome.plugins)
             );
+            warn_skipped(store, out, &outcome.name);
             true
         }
         Ok(outcome) => {
@@ -360,9 +380,18 @@ fn marketplace_add(store: &PluginStore, out: &Out, input: &str, reference: Optio
                 out.bin,
                 outcome.name
             );
+            warn_skipped(store, out, &outcome.name);
             true
         }
         Err(error) => out.fail(&error),
+    }
+}
+
+/// `warning: skipped 2 entries: …` on stderr when the marketplace `name`
+/// lists entries that could not be read.
+fn warn_skipped(store: &PluginStore, out: &Out, name: &str) {
+    if let Some(line) = skipped_line(&store.skipped_entries(name)) {
+        out.warning(&line);
     }
 }
 
@@ -373,11 +402,18 @@ fn marketplace_list(store: &PluginStore, out: &Out, json: bool) -> bool {
     };
     let catalog = store.catalog().unwrap_or_default();
     let home = store_home();
-    let rows: Vec<MarketplaceRow> = known
+    let mut rows: Vec<MarketplaceRow> = known
         .iter()
         .enumerate()
         .map(|(index, known)| MarketplaceRow::new(known, &catalog, index, home.as_deref()))
         .collect();
+    rows.extend(
+        store
+            .removed_defaults()
+            .unwrap_or_default()
+            .iter()
+            .map(|default| MarketplaceRow::removed(default, home.as_deref())),
+    );
     if json {
         say!("{}", marketplaces_json(&rows));
     } else {
@@ -431,6 +467,7 @@ fn marketplace_update(store: &PluginStore, out: &Out, name: Option<&str>) -> boo
                 } else {
                     say!("{} is up to date ({count})", outcome.name);
                 }
+                warn_skipped(store, out, &outcome.name);
             }
             Err(error) => ok = out.fail(&format!("could not update `{label}`: {error}")),
         }
@@ -666,7 +703,7 @@ impl Out {
     /// Say a failure on stderr; always `false`, for `ok = out.fail(…)`.
     fn fail(&self, message: &str) -> bool {
         self.progress.finish();
-        let message = with_bin(message, &self.bin);
+        let message = with_bin(&with_hint(message), &self.bin);
         eprintln!("{} {message}", self.paint_err.error("error:"));
         false
     }
@@ -814,6 +851,24 @@ fn with_bin(message: &str, bin: &str) -> String {
     }
 }
 
+/// A store error that a command answers, with that command after it: the
+/// store says what is wrong, and only here is there a command line to
+/// point at.
+fn with_hint(message: &str) -> String {
+    let hint =
+        if message.starts_with("no plugin named `") && message.ends_with("in your marketplaces") {
+            Some("alter-zero plugin list --available")
+        } else if message.starts_with("no marketplace named `") && message.ends_with('`') {
+            Some("alter-zero plugin marketplace list")
+        } else {
+            None
+        };
+    match hint {
+        Some(hint) => format!("{message} ({hint})"),
+        None => message.to_string(),
+    }
+}
+
 /// The store's "in more than one marketplace" error with its ids one to a
 /// line, so each can be copied whole; any other error as it is.
 fn ambiguity(error: String) -> String {
@@ -833,6 +888,37 @@ fn ambiguous(name: &str, ids: &[PluginId]) -> String {
         "`{name}` is in more than one marketplace — name one:\n  {}",
         ids.join("\n  ")
     )
+}
+
+/// `skipped 2 entries: a — why; b — why`, or `None` for none. The reader
+/// gives a sentence each to the first entries and closes on one counting
+/// the rest (`480 more entries could not be read`), which the count adds.
+fn skipped_line(skipped: &[String]) -> Option<String> {
+    let (last, _) = skipped.split_last()?;
+    let more = last
+        .split_once(" more entr")
+        .and_then(|(n, _)| n.parse::<usize>().ok());
+    let total = match more {
+        Some(n) => skipped.len() - 1 + n,
+        None => skipped.len(),
+    };
+    Some(format!(
+        "skipped {total} entr{}: {}",
+        if total == 1 { "y" } else { "ies" },
+        skipped.join("; ")
+    ))
+}
+
+/// The version a row shows: the installed one, then `→` the one the
+/// marketplace offers when an update waits and names another.
+fn version_step(installed: Option<&str>, offered: Option<&str>, update: bool) -> Option<String> {
+    match (installed, offered) {
+        (Some(installed), Some(offered)) if update && installed != offered => {
+            Some(format!("{installed} → {offered}"))
+        }
+        (Some(installed), _) => Some(installed.to_string()),
+        (None, offered) => offered.map(str::to_string),
+    }
 }
 
 /// `1 plugin`, `317 plugins`.
@@ -1179,8 +1265,19 @@ fn info_text(detail: &PluginDetail, paint: Paint, width: Option<usize>, bin: &st
         PluginStatus::Available => vec!["not installed".into()],
         PluginStatus::Unsupported => vec!["can't be installed here".into()],
     };
-    if let Some(version) = &detail.version {
-        status.push(format!("v{version}"));
+    let installed = detail.installed_version.as_deref().filter(|_| {
+        matches!(
+            detail.status,
+            PluginStatus::Enabled | PluginStatus::Disabled
+        )
+    });
+    let shown = |v: &str| format!("v{v}");
+    if let Some(version) = version_step(
+        installed.map(shown).as_deref(),
+        detail.version.as_deref().map(shown).as_deref(),
+        detail.update_available,
+    ) {
+        status.push(version);
     }
     if detail.update_available {
         status.push("update available".into());
@@ -1279,6 +1376,11 @@ struct MarketplaceRow {
     plugins: Option<usize>,
     updated: Option<u64>,
     revision: Option<String>,
+    /// A default the user removed: listed with the command that adds it
+    /// back.
+    removed: bool,
+    /// One sentence per entry the marketplace lists but could not be read.
+    skipped: Vec<String>,
     #[serde(skip)]
     local: bool,
     #[serde(skip)]
@@ -1306,8 +1408,28 @@ impl MarketplaceRow {
                 .then(|| catalog.count_in(index)),
             updated: known.updated,
             revision: known.revision.clone(),
+            removed: false,
+            skipped: market.map(|m| m.skipped.clone()).unwrap_or_default(),
             local: matches!(known.source, MarketplaceSource::Local { .. }),
             error,
+        }
+    }
+
+    /// A default marketplace the user removed.
+    fn removed(default: &DefaultMarketplace, home: Option<&Path>) -> Self {
+        Self {
+            name: default.name.clone(),
+            source: default.source.canonical(),
+            shown: default.source.display(home),
+            default: true,
+            fetched: false,
+            plugins: None,
+            updated: None,
+            revision: None,
+            removed: true,
+            skipped: Vec::new(),
+            local: matches!(default.source, MarketplaceSource::Local { .. }),
+            error: None,
         }
     }
 }
@@ -1338,11 +1460,13 @@ fn marketplaces_text(rows: &[MarketplaceRow], now: u64, paint: Paint, bin: &str)
         .iter()
         .map(|row| {
             let count = match (row.plugins, row.fetched) {
+                _ if row.removed => "removed".to_string(),
                 (Some(n), _) => format!("{n:>digits$} plugin{}", if n == 1 { "" } else { "s" }),
                 (None, true) => "could not be read".to_string(),
                 (None, false) => "not fetched yet".to_string(),
             };
             let when = match (row.local, row.updated) {
+                _ if row.removed => String::new(),
                 (true, _) => "local folder".to_string(),
                 (false, Some(updated)) if row.fetched => age(now, updated),
                 _ => String::new(),
@@ -1371,6 +1495,13 @@ fn marketplaces_text(rows: &[MarketplaceRow], now: u64, paint: Paint, bin: &str)
             text.push_str(&format!("\n{name}: {error}\n"));
         }
     }
+    for row in rows.iter().filter(|row| row.removed) {
+        let name = row.name.as_deref().unwrap_or(&row.shown);
+        text.push_str(&format!(
+            "\nRestore {name} with: {bin} plugin marketplace add {}\n",
+            row.source
+        ));
+    }
     text
 }
 
@@ -1389,23 +1520,32 @@ struct InstalledPluginJson<'a> {
     id: &'a str,
     name: &'a str,
     marketplace: &'a str,
+    /// What its marketplace offers now, else the installed version.
     version: Option<&'a str>,
+    installed_version: Option<&'a str>,
     enabled: bool,
     description: Option<&'a str>,
 }
 
-/// `plugin list --json`.
-fn installed_json(file: &PluginsFile) -> String {
+/// `plugin list --json`; `offered` is what each plugin's marketplace offers
+/// now, in the file's order.
+fn installed_json(file: &PluginsFile, offered: &[Option<&str>]) -> String {
     let plugins = file
         .plugins
         .iter()
-        .map(|(key, record)| {
+        .enumerate()
+        .map(|(index, (key, record))| {
             let (name, marketplace) = key.rsplit_once('@').unwrap_or((key.as_str(), ""));
             InstalledPluginJson {
                 id: key,
                 name,
                 marketplace,
-                version: record.version.as_deref(),
+                version: offered
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .or(record.version.as_deref()),
+                installed_version: record.version.as_deref(),
                 enabled: record.enabled,
                 description: record.description.as_deref(),
             }
@@ -1432,6 +1572,7 @@ struct AvailablePluginJson<'a> {
     description: &'a str,
     category: Option<&'a str>,
     version: Option<&'a str>,
+    installed_version: Option<&'a str>,
     status: &'static str,
 }
 
@@ -1454,6 +1595,7 @@ fn available_json(catalog: &PluginCatalog) -> String {
                         description: &plugin.description,
                         category: plugin.category.as_deref(),
                         version: plugin.version.as_deref(),
+                        installed_version: plugin.installed_version.as_deref(),
                         status: status_word(plugin.status),
                     }
                 })
@@ -1470,6 +1612,7 @@ struct DetailJson<'a> {
     display_name: Option<&'a str>,
     description: &'a str,
     version: Option<&'a str>,
+    installed_version: Option<&'a str>,
     author: Option<&'a str>,
     category: Option<&'a str>,
     homepage: Option<&'a str>,
@@ -1502,6 +1645,7 @@ fn detail_json(detail: &PluginDetail) -> String {
         display_name: detail.display_name.as_deref(),
         description: &detail.description,
         version: detail.version.as_deref(),
+        installed_version: detail.installed_version.as_deref(),
         author: detail.author.as_deref(),
         category: detail.category.as_deref(),
         homepage: detail.homepage.as_deref(),
@@ -1600,6 +1744,42 @@ mod tests {
              review@team"
         );
         assert_eq!(ambiguity("other".into()), "other");
+    }
+
+    #[test]
+    fn a_store_error_gains_the_command_that_helps() {
+        assert_eq!(
+            with_hint("no plugin named `x` in your marketplaces"),
+            "no plugin named `x` in your marketplaces (alter-zero plugin list --available)"
+        );
+        assert_eq!(
+            with_hint("no marketplace named `m`"),
+            "no marketplace named `m` (alter-zero plugin marketplace list)"
+        );
+        let listed = "no marketplace named `m` — you have: team";
+        assert_eq!(with_hint(listed), listed);
+    }
+
+    #[test]
+    fn a_waiting_update_shows_as_a_step_from_the_installed_version() {
+        assert_eq!(
+            version_step(Some("1.0.0"), Some("2.0.0"), true).as_deref(),
+            Some("1.0.0 → 2.0.0")
+        );
+        assert_eq!(
+            version_step(Some("1.0.0"), Some("2.0.0"), false).as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            version_step(Some("1.0.0"), Some("1.0.0"), true).as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(
+            version_step(None, Some("2.0.0"), false).as_deref(),
+            Some("2.0.0")
+        );
+        assert_eq!(version_step(None, None, true), None);
+        assert_eq!(with_hint("something else"), "something else");
     }
 
     #[test]
@@ -1896,6 +2076,8 @@ mod tests {
             plugins,
             updated: fetched.then_some(1000),
             revision: None,
+            removed: false,
+            skipped: Vec::new(),
             local,
             error: None,
         }
@@ -1932,7 +2114,9 @@ mod tests {
             },
         );
         let installed: serde_json::Value =
-            serde_json::from_str(&installed_json(&file)).expect("json");
+            serde_json::from_str(&installed_json(&file, &[Some("2.0.0")])).expect("json");
+        assert_eq!(installed["plugins"][0]["version"], "2.0.0");
+        assert_eq!(installed["plugins"][0]["installed_version"], "1.0.0");
         assert_eq!(installed["plugins"][0]["id"], "review@official");
         assert_eq!(installed["plugins"][0]["name"], "review");
         assert_eq!(installed["plugins"][0]["marketplace"], "official");
@@ -1967,7 +2151,7 @@ mod tests {
         assert_eq!(list["marketplaces"][1]["updated"], serde_json::Value::Null);
         assert!(list["marketplaces"][0].get("shown").is_none());
 
-        for doc in [installed_json(&file), detail_json(&detail())] {
+        for doc in [installed_json(&file, &[]), detail_json(&detail())] {
             assert!(!doc.contains('\n'), "one compact document");
         }
     }

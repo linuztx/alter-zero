@@ -239,6 +239,77 @@ fn a_marketplace_without_a_manifest_a_reserved_name_or_a_taken_name_is_refused()
 }
 
 #[test]
+fn a_marketplace_manifest_past_the_cap_is_refused_unread() {
+    let world = World::new();
+    let root = world.src.join("huge");
+    let description = "x".repeat(5 * 1024 * 1024);
+    let manifest = json!({"name": "huge", "description": description, "plugins": []});
+    write(
+        &root,
+        ".claude-plugin/marketplace.json",
+        &manifest.to_string(),
+    );
+    let error = world
+        .store()
+        .add_marketplace(&local(&root), &Silent)
+        .expect_err("too large");
+    assert!(error.contains("too large"), "{error}");
+}
+
+#[test]
+fn a_marketplace_may_not_take_a_built_in_ones_name() {
+    let world = World::new();
+    let impostor = Marketplace::new(
+        &world.src.join("impostor"),
+        "claude-plugins-official",
+        Layout::Claude,
+    );
+    impostor.save();
+    let error = world
+        .store()
+        .add_marketplace(&local(&impostor.root), &Silent)
+        .expect_err("a built-in's name");
+    assert!(
+        error.contains("claude-plugins-official") && error.contains("built-in"),
+        "{error}"
+    );
+
+    // A default known but never fetched keeps its name too.
+    let real = claude_market(&world);
+    real.init_git();
+    let twin = Marketplace::new(&world.src.join("twin"), "team", Layout::Claude);
+    twin.save();
+    let store = world.store_with(vec![DefaultMarketplace {
+        name: Some("team".into()),
+        source: git_source(&real.url()),
+    }]);
+    let error = store
+        .add_marketplace(&local(&twin.root), &Silent)
+        .expect_err("the default's name");
+    assert!(error.contains("built-in"), "{error}");
+    assert!(!world.home.join("plugins.json").exists());
+    store
+        .add_marketplace(&git_source(&real.url()), &Silent)
+        .expect("its own source");
+}
+
+#[test]
+fn a_marketplace_name_differing_only_by_case_is_taken() {
+    let world = World::new();
+    claude_market(&world);
+    let store = world.store();
+    store
+        .add_marketplace(&local(&world.src.join("team")), &Silent)
+        .expect("first");
+    let twin = Marketplace::new(&world.src.join("twin"), "Team", Layout::Claude);
+    twin.save();
+    let error = store
+        .add_marketplace(&local(&twin.root), &Silent)
+        .expect_err("taken ignoring case");
+    assert!(error.contains("already added"), "{error}");
+}
+
+#[test]
 fn updating_a_git_marketplace_fetches_only_when_it_moved() {
     let world = World::new();
     let mut market = claude_market(&world);
@@ -350,7 +421,10 @@ fn a_default_is_written_only_once_fetched_and_a_removed_one_stays_removed() {
     store.remove_marketplace("team").expect("removed unfetched");
     assert!(store.known_marketplaces().expect("known").is_empty());
     let error = store.remove_marketplace("nope").expect_err("unknown");
-    assert!(error.contains("no marketplace named `nope`"), "{error}");
+    assert_eq!(
+        error, "no marketplace named `nope`",
+        "no command advice in the store"
+    );
 }
 
 // ===== installing =====
@@ -377,7 +451,8 @@ fn assert_review_installed(world: &World, text: &str) {
     let data = world
         .plugins()
         .join("data")
-        .join(format!("{}-{}", pid.name, pid.marketplace));
+        .join(&pid.marketplace)
+        .join(&pid.name);
     assert!(data.is_dir());
     let record = &world.state_json()["plugins"][text];
     assert_eq!(record["enabled"], true);
@@ -652,7 +727,8 @@ fn uninstalling_removes_the_copy_the_data_and_the_record() {
     store.uninstall(&id("review@team")).expect("uninstalled");
     assert!(!world.install_dir("review@team").exists());
     assert!(!world.plugins().join("cache/team").exists());
-    assert!(!world.plugins().join("data/review-team").exists());
+    assert!(!world.plugins().join("data/team/review").exists());
+    assert!(!world.plugins().join("data/team").exists());
     assert!(world.state_json()["plugins"].get("review@team").is_none());
     let error = store.uninstall(&id("review@team")).expect_err("gone");
     assert_eq!(error, "`review@team` is not installed");
@@ -711,6 +787,166 @@ fn a_failed_install_leaves_the_previous_install_and_the_state_alone() {
             .is_file()
     );
     world.assert_no_staging();
+}
+
+/// A repository whose `link` is a symbolic link to a folder outside it.
+#[cfg(unix)]
+fn repo_with_an_escaping_link(world: &World) -> PathBuf {
+    let secret = world.src.join("secret");
+    write(&secret, "id_rsa", "PRIVATE");
+    write(&secret, "notes.md", "---\ndescription: x\n---\nx\n");
+    let evil = world.src.join("evil-repo");
+    write(&evil, "README.md", "hi\n");
+    write(&evil, "inner/notes.md", "---\ndescription: x\n---\nx\n");
+    std::os::unix::fs::symlink(&secret, evil.join("link")).expect("link");
+    plugin_fixtures::init_repo(&evil);
+    evil
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fetched_plugin_folder_that_is_a_link_out_of_its_repository_is_refused() {
+    let world = World::new();
+    let evil = repo_with_an_escaping_link(&world);
+    let mut market = Marketplace::new(&world.src.join("team"), "team", Layout::Claude);
+    market
+        .entry(json!({"name": "steal", "commands": ["./notes.md"],
+            "source": {"source": "git-subdir", "url": file_url(&evil), "path": "link"}}))
+        .entry(json!({"name": "steal-url", "commands": ["./notes.md"],
+            "source": {"source": "url", "url": file_url(&evil), "path": "link"}}))
+        .entry(json!({"name": "inner", "commands": ["./notes.md"],
+            "source": {"source": "git-subdir", "url": file_url(&evil), "path": "inner"}}));
+    market.save();
+    let store = world.store();
+    store
+        .add_marketplace(&local(&market.root), &Silent)
+        .expect("added");
+    for name in ["steal@team", "steal-url@team"] {
+        let error = store.install(&id(name), &Silent).expect_err("refused");
+        assert!(error.contains("not a folder inside"), "{error}");
+        assert!(!world.install_dir(name).exists(), "{name} copied");
+    }
+    assert!(world.state_json().get("plugins").is_none());
+    // The repository's real folder installs.
+    store.install(&id("inner@team"), &Silent).expect("inside");
+    assert!(world.install_dir("inner@team").join("notes.md").is_file());
+    world.assert_no_staging();
+}
+
+#[test]
+fn only_a_marketplace_on_this_machine_may_name_a_repository_on_it() {
+    let world = World::new();
+    let mine = world.src.join("mine");
+    plugin_repo(&mine, &Plugin::new("mine").skill("s"), None, Layout::Claude);
+    let mut market = Marketplace::new(&world.src.join("team"), "team", Layout::Claude);
+    market.entry(json!({"name": "mine", "source": {"source": "url", "url": file_url(&mine)}}));
+    market.init_git();
+    let store = world.store();
+    store
+        .add_marketplace(&git_source(&market.url()), &Silent)
+        .expect("added");
+    // Added by a `file://` URL, the marketplace is on this machine.
+    store.install(&id("mine@team"), &Silent).expect("local");
+    store.uninstall(&id("mine@team")).expect("uninstalled");
+
+    // The same checkout recorded as fetched from a remote.
+    let state = world
+        .state_text()
+        .replace(&market.url(), "https://example.invalid/team.git");
+    fs::write(world.home.join("plugins.json"), state).expect("state");
+    let error = store
+        .install(&id("mine@team"), &Silent)
+        .expect_err("refused");
+    assert!(
+        error.contains("mine") && error.contains("on this machine"),
+        "{error}"
+    );
+    assert!(!world.install_dir("mine@team").exists());
+    world.assert_no_staging();
+}
+
+#[test]
+fn a_plugin_whose_namespace_another_install_holds_is_refused() {
+    let world = World::new();
+    let store = world.store();
+    for (market, plugins) in [("mka", ["dup", "a.b"]), ("mkb", ["dup", "a_b"])] {
+        let mut m = Marketplace::new(&world.src.join(market), market, Layout::Claude);
+        for name in plugins {
+            m.in_repo(&Plugin::new(name).command("lint"));
+        }
+        m.save();
+        store
+            .add_marketplace(&local(&m.root), &Silent)
+            .expect("added");
+    }
+    store.install(&id("dup@mka"), &Silent).expect("first");
+    let error = store.install(&id("dup@mkb"), &Silent).expect_err("taken");
+    assert_eq!(
+        error,
+        "a plugin named dup is already installed from mka (dup@mka) — uninstall it first, \
+         since both would add /dup:… commands"
+    );
+    assert!(!world.install_dir("dup@mkb").exists());
+    store.install(&id("a.b@mka"), &Silent).expect("a.b");
+    let error = store.install(&id("a_b@mkb"), &Silent).expect_err("folded");
+    assert!(error.contains("(a.b@mka)"), "{error}");
+    // The same id again is a reinstall, and after an uninstall the name is free.
+    store.install(&id("dup@mka"), &Silent).expect("again");
+    store
+        .update_plugin(&id("dup@mka"), &Silent)
+        .expect("update");
+    store.uninstall(&id("dup@mka")).expect("uninstalled");
+    store.install(&id("dup@mkb"), &Silent).expect("free now");
+    world.assert_no_staging();
+}
+
+/// A control that, when the store reaches the step starting with `at`,
+/// tells another thread to go and gives it a moment to try.
+struct GoAt {
+    at: &'static str,
+    go: std::sync::mpsc::Sender<()>,
+}
+
+impl GitControl for GoAt {}
+
+impl Control for GoAt {
+    fn step(&self, text: &str) {
+        if text.starts_with(self.at) {
+            let _ = self.go.send(());
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+}
+
+#[test]
+fn a_change_made_by_another_process_during_a_slow_update_is_kept() {
+    let world = World::new();
+    let mut market = Marketplace::new(&world.src.join("lm"), "lm", Layout::Claude);
+    market
+        .in_repo(&Plugin::new("big").skill("b"))
+        .in_repo(&Plugin::new("small").skill("s"));
+    market.save();
+    let store = world.store();
+    store
+        .add_marketplace(&local(&market.root), &Silent)
+        .expect("added");
+    store.install(&id("big@lm"), &Silent).expect("big");
+    store.install(&id("small@lm"), &Silent).expect("small");
+
+    let (go, went) = std::sync::mpsc::channel();
+    let other = world.store();
+    let disabler = std::thread::spawn(move || {
+        went.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the update reached its commit");
+        other.set_enabled(&id("small@lm"), false)
+    });
+    store
+        .update_plugin(&id("big@lm"), &GoAt { at: "moving", go })
+        .expect("updated");
+    disabler.join().expect("thread").expect("disabled");
+    let state = world.state_json();
+    assert_eq!(state["plugins"]["small@lm"]["enabled"], false, "{state}");
+    assert_eq!(state["plugins"]["big@lm"]["enabled"], true, "{state}");
 }
 
 #[test]
@@ -853,6 +1089,12 @@ fn an_update_is_offered_for_a_new_pin_and_a_new_folder_version() {
     let catalog = store.catalog().expect("catalog");
     assert!(find(&catalog, "pinned@team").update_available);
     assert!(find(&catalog, "helper@codex-team").update_available);
+    let helper = find(&catalog, "helper@codex-team");
+    assert_eq!(helper.version.as_deref(), Some("1.1.0"));
+    assert_eq!(helper.installed_version.as_deref(), Some("1.0.0"));
+    let detail = store.detail(&id("helper@codex-team")).expect("detail");
+    assert_eq!(detail.version.as_deref(), Some("1.1.0"));
+    assert_eq!(detail.installed_version.as_deref(), Some("1.0.0"));
 
     let updated = store
         .update_plugin(&id("pinned@team"), &Silent)
@@ -860,6 +1102,53 @@ fn an_update_is_offered_for_a_new_pin_and_a_new_folder_version() {
     assert!(updated.changed);
     assert_eq!(updated.version.as_deref(), Some("2.0.0"));
     assert!(!find(&store.catalog().expect("catalog"), "pinned@team").update_available);
+}
+
+#[test]
+fn a_removed_default_keeps_its_source_and_lists_only_what_is_installed() {
+    let world = World::new();
+    let mut market = claude_market(&world);
+    market.in_repo(&Plugin::new("other").skill("o"));
+    market.init_git();
+    let store = world.store_with(vec![DefaultMarketplace {
+        name: Some("team".into()),
+        source: git_source(&market.url()),
+    }]);
+    let known = store.known_marketplaces().expect("known");
+    store
+        .ensure_marketplace(&known[0], &Silent)
+        .expect("fetched");
+    store
+        .install(&id("review@team"), &Silent)
+        .expect("installed");
+    store.remove_marketplace("team").expect("removed");
+
+    let removed = store.removed_defaults().expect("removed");
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].source.canonical(), market.url());
+    let catalog = store.catalog().expect("catalog");
+    assert_eq!(catalog.marketplaces.len(), 1);
+    let team = &catalog.marketplaces[0];
+    assert_eq!(team.name, "team");
+    assert_eq!(team.source, market.url());
+    assert!(team.is_default);
+    let names: Vec<&str> = catalog.plugins.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["review"], "nothing of it listed as available");
+}
+
+#[test]
+fn an_in_repo_plugin_with_a_description_but_no_version_has_its_manifests() {
+    let world = World::new();
+    let market = claude_market(&world);
+    let store = world.store();
+    store
+        .add_marketplace(&local(&market.root), &Silent)
+        .expect("added");
+    let catalog = store.catalog().expect("catalog");
+    let review = find(&catalog, "review@team");
+    assert_eq!(review.description, "The review plugin");
+    assert_eq!(review.version.as_deref(), Some("1.0.0"));
+    assert_eq!(review.installed_version, None);
 }
 
 #[test]
@@ -988,7 +1277,7 @@ fn a_name_resolves_to_its_one_plugin_through_renames() {
         id("review@team")
     );
     let error = resolve("nothing").expect_err("unknown");
-    assert!(error.contains("no plugin named `nothing`"), "{error}");
+    assert_eq!(error, "no plugin named `nothing` in your marketplaces");
     assert!(resolve("x@nowhere").is_err());
 
     store

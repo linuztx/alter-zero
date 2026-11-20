@@ -195,6 +195,25 @@ impl MarketplaceSource {
             Self::Local { .. } => None,
         }
     }
+
+    /// Whether the marketplace is on this machine: a folder, or a
+    /// repository added by a `file://` URL. Only such a marketplace may
+    /// name a plugin repository on this machine.
+    #[must_use]
+    pub fn is_on_this_machine(&self) -> bool {
+        match self {
+            Self::Git { url, .. } => is_local_url(url),
+            Self::Local { .. } => true,
+        }
+    }
+}
+
+/// A git location that reads this machine's disk: a `file://` URL or a
+/// path.
+fn is_local_url(url: &str) -> bool {
+    url.get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://"))
+        || url.starts_with(['/', '.', '~'])
 }
 
 impl fmt::Display for MarketplaceSource {
@@ -238,6 +257,13 @@ impl PluginSource {
     #[must_use]
     pub fn is_installable(&self) -> bool {
         !matches!(self, Self::Unsupported { .. })
+    }
+
+    /// Whether this is a git repository on this machine (a `file://` URL or
+    /// a path), which only a marketplace on this machine may name.
+    #[must_use]
+    pub fn names_repository_on_this_machine(&self) -> bool {
+        matches!(self, Self::Git { url, .. } if is_local_url(url))
     }
 
     /// One line for a detail page or `plugin info`: `plugins/code-review`,
@@ -804,6 +830,21 @@ mod tests {
         );
         assert_eq!(parse("./team").unwrap().web_url(), None);
         assert_eq!(parse("file:///srv/x").unwrap().web_url(), None);
+    }
+
+    #[test]
+    fn a_folder_or_a_file_url_is_on_this_machine() {
+        assert!(parse("./team").unwrap().is_on_this_machine());
+        assert!(parse("file:///srv/x").unwrap().is_on_this_machine());
+        assert!(parse("FILE:///srv/x").unwrap().is_on_this_machine());
+        assert!(!parse("o/r").unwrap().is_on_this_machine());
+        assert!(!parse("git@host.example:o/r").unwrap().is_on_this_machine());
+        let fetched = |url: &str| {
+            from(json!({"source": "url", "url": url})).names_repository_on_this_machine()
+        };
+        assert!(fetched("file:///home/me/private"));
+        assert!(!fetched("https://example.com/r.git"));
+        assert!(!from(json!("./x")).names_repository_on_this_machine());
     }
 
     // ===== safe_relative =====

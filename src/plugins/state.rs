@@ -353,13 +353,15 @@ pub fn install_dir(plugins_root: &Path, id: &PluginId) -> PathBuf {
         .join(&id.name)
 }
 
-/// `{plugins_root}/data/<plugin>-<marketplace>` — the plugin's data
-/// directory, kept across updates.
+/// `{plugins_root}/data/<marketplace>/<plugin>` — the plugin's data
+/// directory, kept across updates. Two segments, never one joined name:
+/// `a-b@c` and `a@b-c` must not share a directory.
 #[must_use]
 pub fn data_dir(plugins_root: &Path, id: &PluginId) -> PathBuf {
     plugins_root
         .join("data")
-        .join(format!("{}-{}", id.name, id.marketplace))
+        .join(&id.marketplace)
+        .join(&id.name)
 }
 
 /// `{plugins_root}/tmp` — staging for clones and atomic installs.
@@ -790,9 +792,11 @@ mod tests {
         );
         assert_eq!(
             data_dir(&root, &id),
-            root.join("data/code-review-claude-plugins-official")
+            root.join("data/claude-plugins-official/code-review")
         );
         assert_eq!(staging_dir(&root), root.join("tmp"));
+        let joined = |text: &str| data_dir(&root, &PluginId::parse(text).unwrap());
+        assert_ne!(joined("a-b@c"), joined("a@b-c"));
     }
 
     // ===== enabled plugins =====
@@ -809,7 +813,7 @@ mod tests {
         assert_eq!(review.root, install);
         assert_eq!(
             review.data,
-            root.join("data/code-review-claude-plugins-official")
+            root.join("data/claude-plugins-official/code-review")
         );
         assert_eq!(review.skills, [install.join("skills")]);
         assert_eq!(review.agents, [install.join("agents")]);

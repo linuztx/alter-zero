@@ -4059,7 +4059,7 @@ mod tests {
         let generated = root.join("cache/m/review/.alter-zero-plugin/hooks.json");
         let (data, pairs) =
             plugin_hook_env(Some(&generated), Some(root)).expect("a plugin's hooks file");
-        assert_eq!(data, root.join("data/review-m"));
+        assert_eq!(data, root.join("data/m/review"));
         let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
         assert_eq!(
             pairs,
@@ -4069,10 +4069,10 @@ mod tests {
                     "CLAUDE_PLUGIN_ROOT",
                     "/home/u/.alter-zero/plugins/cache/m/review"
                 ),
-                ("PLUGIN_DATA", "/home/u/.alter-zero/plugins/data/review-m"),
+                ("PLUGIN_DATA", "/home/u/.alter-zero/plugins/data/m/review"),
                 (
                     "CLAUDE_PLUGIN_DATA",
-                    "/home/u/.alter-zero/plugins/data/review-m"
+                    "/home/u/.alter-zero/plugins/data/m/review"
                 ),
             ]
         );
@@ -4113,7 +4113,7 @@ mod tests {
         .with_plugins_root(Some(root.clone()));
         let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
         let written = std::fs::read_to_string(&probe).expect("the hook ran");
-        let data = root.join("data/review-m");
+        let data = root.join("data/m/review");
         assert_eq!(
             written,
             format!(

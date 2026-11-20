@@ -32,7 +32,7 @@ pub const COPY_MAX_FILES: usize = 20_000;
 pub const COPY_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Copy a directory tree: `.git` directories skipped, symlinks skipped and
-/// counted, file modes kept (so a script stays executable), the caps
+/// counted (and a `src` that is itself a link refused), file modes kept (so a script stays executable), the caps
 /// refusing a tree that is not a plugin. `dest` must not exist; on failure
 /// nothing of it is left.
 ///
@@ -51,6 +51,14 @@ fn copy_tree_capped(
 ) -> Result<CopyReport, String> {
     if fs::symlink_metadata(dest).is_ok() {
         return Err(format!("{} already exists", dest.display()));
+    }
+    // A link is never followed, the tree's root included: it could point
+    // anywhere on the machine.
+    if fs::symlink_metadata(src).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "{} is a symbolic link, not a folder — it is not copied",
+            src.display()
+        ));
     }
     if !fs::metadata(src).is_ok_and(|meta| meta.is_dir()) {
         return Err(format!(
@@ -347,6 +355,21 @@ mod tests {
         let error = copy_tree(&src, &dest).expect_err("refused");
         assert!(error.contains("already exists"), "{error}");
         assert!(fs::read_dir(&dest).expect("dir").next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_refuses_a_source_that_is_itself_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = dir.path().join("outside");
+        write(&outside.join("secret"), "s");
+        let link = dir.path().join("link");
+        symlink(&outside, &link).expect("link");
+        let dest = dir.path().join("dest");
+        let error = copy_tree(&link, &dest).expect_err("refused");
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(fs::symlink_metadata(&dest).is_err(), "nothing copied");
     }
 
     #[test]

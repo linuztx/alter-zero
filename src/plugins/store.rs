@@ -22,7 +22,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,7 +37,7 @@ use super::fsops::{
 use super::git::{
     GitControl, GitError, GitOptions, fetch_revision, remote_revision, shallow_clone, tree_id,
 };
-use super::id::{LOCAL_MARKETPLACE, PluginId, PluginSelector, validate_plugin_name};
+use super::id::{LOCAL_MARKETPLACE, PluginId, PluginSelector, namespace_key, validate_plugin_name};
 use super::layout::{PluginLayout, inspect, manifest_of};
 use super::manifest::ManifestFormat;
 use super::marketplace::{
@@ -46,10 +46,15 @@ use super::marketplace::{
 use super::source::{MarketplaceSource, PluginSource};
 use super::state::{
     DefaultMarketplace, GENERATED_DIR, GENERATED_HOOKS, GENERATED_MCP, KnownMarketplace,
-    MarketplaceRecord, PluginRecord, PluginsFile, data_dir, install_dir, known_marketplaces,
-    marketplace_dir, plugins_root, staging_dir, state_path, update_state,
+    MarketplaceRecord, PluginRecord, PluginsFile, builtin_defaults, data_dir, install_dir,
+    known_marketplaces, marketplace_dir, plugins_root, staging_dir, state_path,
 };
 
+/// The most a marketplace manifest may weigh; the largest real one is
+/// under 200 KB.
+const MARKETPLACE_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// The lock file beside `plugins.json` (`PluginStore::lock`).
+const LOCK_FILE: &str = "plugins.lock";
 /// The most `plugins.json` may weigh; a few hundred installs is tens of KB.
 const STATE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// How many characters of a description a record keeps.
@@ -215,6 +220,12 @@ struct Request<'a> {
     only_if_changed: bool,
 }
 
+/// The lock on the state, released when it is dropped (closing the file
+/// releases it); empty when the filesystem could not lock.
+struct StateLock {
+    _file: Option<fs::File>,
+}
+
 /// Staging directories removed when it is dropped — on success and on every
 /// error path alike.
 #[derive(Default)]
@@ -309,20 +320,56 @@ impl PluginStore {
     }
 
     /// The state file's new text after `change`, over the file as it is
-    /// now, not yet written.
-    fn prepare(&self, change: impl FnOnce(&mut PluginsFile)) -> Result<String, String> {
+    /// now, not yet written; `change` may refuse. Called with the lock held
+    /// ([`PluginStore::lock`]), so nothing changes the file between this read
+    /// and the write that follows.
+    fn prepare(
+        &self,
+        change: impl FnOnce(&mut PluginsFile) -> Result<(), String>,
+    ) -> Result<String, String> {
         let text = self.state_text()?;
-        update_state(&text, change).map_err(|_| self.broken_state(&text))
+        let mut file = PluginsFile::parse(&text).map_err(|_| self.broken_state(&text))?;
+        change(&mut file)?;
+        Ok(file.to_json())
     }
 
     fn write_state(&self, text: &str) -> Result<(), String> {
         write_atomic(&state_path(&self.config_home), text)
     }
 
-    /// Read-modify-write the state file.
+    /// Read-modify-write the state file under the lock.
     fn edit(&self, change: impl FnOnce(&mut PluginsFile)) -> Result<(), String> {
+        let _lock = self.lock();
+        self.write_change(|file| {
+            change(file);
+            Ok(())
+        })
+    }
+
+    /// Read-modify-write the state file; the caller holds the lock.
+    fn write_change(
+        &self,
+        change: impl FnOnce(&mut PluginsFile) -> Result<(), String>,
+    ) -> Result<(), String> {
         let text = self.prepare(change)?;
         self.write_state(&text)
+    }
+
+    /// The exclusive lock on `{config_home}/plugins.lock` every commit takes
+    /// — the state re-read, the trees swapped, the state written — so two
+    /// processes never write over each other's change. A long fetch into
+    /// staging happens before it is taken. A filesystem that cannot lock
+    /// gets no lock rather than no store.
+    fn lock(&self) -> StateLock {
+        let _ = fs::create_dir_all(&self.config_home);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.config_home.join(LOCK_FILE))
+            .ok()
+            .filter(|file| file.lock().is_ok());
+        StateLock { _file: file }
     }
 
     fn tmp(&self) -> PathBuf {
@@ -417,9 +464,11 @@ impl PluginStore {
                 }
                 ctl.step("reading the marketplace");
                 let (header, entries) = read_market(path, &self.shown(source))?;
-                check_name(&file, &header.name, &canonical)?;
+                check_name(&file, &self.defaults, &header.name, &canonical)?;
                 let name = header.name;
-                self.edit(|f| {
+                let _lock = self.lock();
+                self.write_change(|f| {
+                    check_name(f, &self.defaults, &name, &canonical)?;
                     f.marketplaces.insert(
                         name.clone(),
                         MarketplaceRecord {
@@ -428,6 +477,7 @@ impl PluginStore {
                         },
                     );
                     f.removed_defaults.retain(|s| s != &canonical);
+                    Ok(())
                 })?;
                 Ok(MarketplaceOutcome {
                     name,
@@ -444,10 +494,12 @@ impl PluginStore {
                     .map_err(git_error)?;
                 ctl.step("reading the marketplace");
                 let (header, entries) = read_market(&checkout, &shown_url(url))?;
-                check_name(&file, &header.name, &canonical)?;
+                check_name(&file, &self.defaults, &header.name, &canonical)?;
                 check_cancel(ctl)?;
                 let name = header.name;
+                let _lock = self.lock();
                 let state = self.prepare(|f| {
+                    check_name(f, &self.defaults, &name, &canonical)?;
                     f.marketplaces.insert(
                         name.clone(),
                         MarketplaceRecord {
@@ -458,7 +510,9 @@ impl PluginStore {
                         },
                     );
                     f.removed_defaults.retain(|s| s != &canonical);
+                    Ok(())
                 })?;
+                ctl.step("moving it into place");
                 swap_into_place(&checkout, &marketplace_dir(&self.root, &name))?;
                 self.write_state(&state)?;
                 Ok(MarketplaceOutcome {
@@ -469,6 +523,19 @@ impl PluginStore {
                 })
             }
         }
+    }
+
+    /// One sentence for each entry of the fetched marketplace `name` that
+    /// could not be listed (`MarketplaceHeader::skipped`); none when there
+    /// is no such marketplace or it cannot be read.
+    #[must_use]
+    pub fn skipped_entries(&self, name: &str) -> Vec<String> {
+        self.state()
+            .ok()
+            .and_then(|file| self.market(&file, name))
+            .and_then(|market| read_market(&market.root, name).ok())
+            .map(|(header, _)| header.skipped)
+            .unwrap_or_default()
     }
 
     /// Fetch a known marketplace that never was (a default); one already
@@ -559,12 +626,20 @@ impl PluginStore {
         let (header, entries) = read_market(&checkout, &shown)?;
         check_renamed(&header, name, &shown)?;
         check_cancel(ctl)?;
+        let _lock = self.lock();
         let state = self.prepare(|f| {
-            if let Some(record) = f.marketplaces.get_mut(name) {
-                record.revision = Some(revision.clone());
-                record.updated = Some(now());
-            }
+            let record = f
+                .marketplaces
+                .get_mut(name)
+                .filter(|record| same_source(&record.source, &market.record.source))
+                .ok_or_else(|| {
+                    format!("`{name}` was removed or replaced while it was being updated")
+                })?;
+            record.revision = Some(revision.clone());
+            record.updated = Some(now());
+            Ok(())
         })?;
+        ctl.step("moving it into place");
         swap_into_place(&checkout, &market.root)?;
         self.write_state(&state)?;
         Ok(MarketplaceOutcome {
@@ -596,14 +671,16 @@ impl PluginStore {
                 .defaults
                 .iter()
                 .any(|d| d.source.canonical() == canonical);
+            let _lock = self.lock();
             if validate_marketplace_dir(name) {
                 remove_tree(&marketplace_dir(&self.root, name))?;
             }
-            return self.edit(|f| {
+            return self.write_change(|f| {
                 f.marketplaces.remove(name);
                 if is_default && !f.removed_defaults.contains(&canonical) {
                     f.removed_defaults.push(canonical);
                 }
+                Ok(())
             });
         }
         let parsed = MarketplaceSource::parse(name, Path::new("/"), None)
@@ -627,6 +704,21 @@ impl PluginStore {
                 f.removed_defaults.push(canonical);
             }
         })
+    }
+
+    /// The default marketplaces the user removed, in the defaults' order —
+    /// each with its source, so it can be named and added back.
+    ///
+    /// # Errors
+    /// When the state file cannot be read.
+    pub fn removed_defaults(&self) -> Result<Vec<DefaultMarketplace>, String> {
+        let file = self.state()?;
+        Ok(self
+            .defaults
+            .iter()
+            .filter(|d| file.removed_defaults.contains(&d.source.canonical()))
+            .cloned()
+            .collect())
     }
 
     /// Put a removed default back, by its canonical source (`owner/repo`).
@@ -691,6 +783,7 @@ impl PluginStore {
                         if let Some(title) = header.display_name {
                             market.title = title;
                         }
+                        market.skipped = header.skipped;
                         for entry in entries {
                             let key = format!("{}@{}", entry.name, fetched.name);
                             let plugin = self.catalog_plugin(&fetched, &file, &key, entry, index);
@@ -725,7 +818,7 @@ impl PluginStore {
         let update_available =
             record.is_some_and(|record| update_available(market, &entry.source, record));
         let mut plugin = CatalogPlugin {
-            installed_version: None,
+            installed_version: record.and_then(|record| record.version.clone()),
             name: entry.name,
             display_name: entry.display_name,
             marketplace: index,
@@ -736,13 +829,16 @@ impl PluginStore {
             status,
             update_available,
         };
-        // Codex's marketplace lists no descriptions: the plugin's own
-        // manifest — one small file — has them.
-        if plugin.description.is_empty()
+        // One of the formats' marketplaces lists no descriptions, and many
+        // entries name no version: the plugin's own manifest — one small
+        // file — has them.
+        if (plugin.description.is_empty() || plugin.version.is_none())
             && let PluginSource::Local { path } = &entry.source
             && let Some(manifest) = manifest_of(&join_relative(&market.root, path))
         {
-            plugin.description = manifest.description.unwrap_or_default();
+            if plugin.description.is_empty() {
+                plugin.description = manifest.description.unwrap_or_default();
+            }
             fill(&mut plugin.display_name, manifest.display_name);
             fill(&mut plugin.category, manifest.category);
             fill(&mut plugin.version, manifest.version);
@@ -760,6 +856,7 @@ impl PluginStore {
         listed: &BTreeSet<String>,
         catalog: &mut PluginCatalog,
     ) {
+        let removed = self.removed_defaults().unwrap_or_default();
         let mut local = Vec::new();
         for (key, record) in &file.plugins {
             if listed.contains(key) {
@@ -777,13 +874,19 @@ impl PluginStore {
                 .iter()
                 .position(|m| m.name == id.marketplace)
                 .unwrap_or_else(|| {
+                    // A removed default still has its source; any other
+                    // removed marketplace is known by its name alone.
+                    let default = removed
+                        .iter()
+                        .find(|d| d.name.as_deref() == Some(id.marketplace.as_str()));
                     catalog.marketplaces.push(CatalogMarketplace {
                         skipped: Vec::new(),
                         name: id.marketplace.clone(),
                         title: id.marketplace.clone(),
-                        source: id.marketplace.clone(),
-                        web_url: None,
-                        is_default: false,
+                        source: default
+                            .map_or_else(|| id.marketplace.clone(), |d| self.shown(&d.source)),
+                        web_url: default.and_then(|d| d.source.web_url()),
+                        is_default: default.is_some(),
                         is_local: false,
                         fetched: false,
                         updated: None,
@@ -904,7 +1007,7 @@ impl PluginStore {
             _ => None,
         });
         let mut detail = PluginDetail {
-            installed_version: None,
+            installed_version: record.as_ref().and_then(|r| r.version.clone()),
             id: id.clone(),
             display_name: entry.display_name.clone(),
             description: entry_description.unwrap_or_default(),
@@ -934,6 +1037,19 @@ impl PluginStore {
         if let Some(layout) = layout {
             apply_layout(&mut detail, layout, &mut warnings);
         }
+        // The files read may be the install; `version` is what the
+        // marketplace offers now — its entry's, or its in-repo folder's.
+        // Its folder's manifest first, as an install records it.
+        let offered = match &entry.source {
+            PluginSource::Local { path } => {
+                manifest_of(&join_relative(&market.root, path)).and_then(|m| m.version)
+            }
+            _ => None,
+        }
+        .or_else(|| entry.version.clone());
+        if offered.is_some() {
+            detail.version = offered;
+        }
         detail.warnings = warnings;
         Ok(detail)
     }
@@ -948,7 +1064,7 @@ impl PluginStore {
         data: &Path,
     ) -> PluginDetail {
         let mut detail = PluginDetail {
-            installed_version: None,
+            installed_version: record.version.clone(),
             id: id.clone(),
             display_name: None,
             description: record.description.clone().unwrap_or_default(),
@@ -1049,10 +1165,7 @@ impl PluginStore {
                 }
                 match found.len() {
                     1 => Ok(found.remove(0)),
-                    0 => Err(format!(
-                        "no plugin named `{name}` in your marketplaces \
-                         (alter-zero plugin list --available)"
-                    )),
+                    0 => Err(format!("no plugin named `{name}` in your marketplaces")),
                     _ => Err(format!(
                         "`{name}` is in more than one marketplace — name one: {}",
                         found
@@ -1196,16 +1309,22 @@ impl PluginStore {
         if file.plugin(id).is_none() {
             return Err(not_installed(id));
         }
+        let _lock = self.lock();
+        if self.state()?.plugin(id).is_none() {
+            return Err(not_installed(id));
+        }
         let root = install_dir(&self.root, id);
         remove_tree(&root)?;
-        remove_tree(&data_dir(&self.root, id))?;
-        if let Some(parent) = root.parent() {
+        let data = data_dir(&self.root, id);
+        remove_tree(&data)?;
+        for parent in [root.parent(), data.parent()].into_iter().flatten() {
             // Only an empty marketplace folder goes.
             let _ = fs::remove_dir(parent);
         }
         let key = id.to_string();
-        self.edit(|f| {
+        self.write_change(|f| {
             f.plugins.remove(&key);
+            Ok(())
         })
     }
 
@@ -1279,17 +1398,13 @@ impl PluginStore {
         let raw = raw_entry(&market.root, &entry.name);
         let origin = match &entry.source {
             PluginSource::Local { path } => {
-                let dir = join_relative(&market.root, path);
-                let inside = fs::canonicalize(&market.root)
-                    .ok()
-                    .zip(fs::canonicalize(&dir).ok())
-                    .filter(|(root, dir)| dir.starts_with(root) && dir.is_dir());
-                if inside.is_none() {
+                let Some(dir) = folder_inside(&market.root, &join_relative(&market.root, path))
+                else {
                     return Err(format!(
                         "`{}` lists `{}` at ./{path}, which is not a folder inside it",
                         market.name, entry.name
                     ));
-                }
+                };
                 Origin::Folder {
                     revision: market
                         .is_git()
@@ -1297,6 +1412,16 @@ impl PluginStore {
                         .flatten(),
                     dir,
                 }
+            }
+            PluginSource::Git { url, .. }
+                if entry.source.names_repository_on_this_machine()
+                    && !market.source.is_on_this_machine() =>
+            {
+                return Err(format!(
+                    "`{}` lists `{}` from {url}, a repository on this machine — only a \
+                     marketplace on this machine may name one; nothing was installed",
+                    market.name, entry.name
+                ));
             }
             PluginSource::Git {
                 url,
@@ -1347,6 +1472,7 @@ impl PluginStore {
             only_if_changed,
         } = request;
         check_cancel(ctl)?;
+        namespace_free(&self.state()?, &id)?;
         let mut staging = Staging::default();
         let (folder, revision) = match origin {
             Origin::Folder { dir, revision } => (dir, revision),
@@ -1359,10 +1485,17 @@ impl PluginStore {
                 let checkout = staging.make(&self.tmp(), "fetch")?.join("repo");
                 ctl.step(&format!("fetching {}", shown_url(url)));
                 let commit = fetch_revision(url, reference, sha, path, &checkout, &self.git, ctl)
-                    .map_err(git_error)?;
+                    .map_err(|error| match error {
+                    GitError::Cancelled => CANCELLED.to_string(),
+                    other => format!(
+                        "couldn't fetch {id} from {} — {}",
+                        without_credentials(url),
+                        other.reason()
+                    ),
+                })?;
                 let folder = match path {
                     Some(path) => checkout.join(path),
-                    None => checkout,
+                    None => checkout.clone(),
                 };
                 if !folder.is_dir() {
                     return Err(format!(
@@ -1371,6 +1504,15 @@ impl PluginStore {
                         path.unwrap_or_default()
                     ));
                 }
+                // A folder reached through a link out of the repository
+                // would copy any directory on this machine.
+                let Some(folder) = folder_inside(&checkout, &folder) else {
+                    return Err(format!(
+                        "{} names {}, which is not a folder inside the repository",
+                        shown_url(url),
+                        path.unwrap_or_default()
+                    ));
+                };
                 (folder, Some(commit))
             }
         };
@@ -1460,12 +1602,16 @@ impl PluginStore {
             hooks: hooks.json.is_some(),
             mcp: mcp.json.is_some(),
         };
+        check_cancel(ctl)?;
         let key = id.to_string();
+        let _lock = self.lock();
         let state = self.prepare(|f| {
+            namespace_free(f, &id)?;
             record.enabled = f.plugins.get(&key).is_none_or(|old| old.enabled);
             f.plugins.insert(key, record);
+            Ok(())
         })?;
-        check_cancel(ctl)?;
+        ctl.step("moving it into place");
         swap_into_place(&copy, &install_root)?;
         fs::create_dir_all(&data)
             .map_err(|error| format!("could not create {}: {error}", data.display()))?;
@@ -1507,7 +1653,7 @@ fn apply_layout(detail: &mut PluginDetail, layout: PluginLayout, warnings: &mut 
 /// A catalog row for an installed plugin no marketplace lists.
 fn recorded_plugin(id: &PluginId, record: &PluginRecord, marketplace: usize) -> CatalogPlugin {
     CatalogPlugin {
-        installed_version: None,
+        installed_version: record.version.clone(),
         name: id.name.clone(),
         display_name: None,
         marketplace,
@@ -1577,9 +1723,28 @@ fn read_market(
                  .agents/plugins/marketplace.json"
             )
         })?;
-    let file = fs::File::open(&path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let file = open_manifest(&path)?;
     read_marketplace(BufReader::new(file)).map_err(|error| format!("{shown}: {error}"))
+}
+
+/// A marketplace manifest opened for reading, at most
+/// [`MARKETPLACE_MAX_BYTES`] of it: a larger one is refused rather than
+/// read, and the cap holds even for a file that grows meanwhile.
+fn open_manifest(path: &Path) -> Result<io::Take<fs::File>, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let size = file
+        .metadata()
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?
+        .len();
+    if size > MARKETPLACE_MAX_BYTES {
+        return Err(format!(
+            "{} is {size} bytes, too large for a marketplace manifest ({MARKETPLACE_MAX_BYTES} at \
+             most)",
+            path.display()
+        ));
+    }
+    Ok(file.take(MARKETPLACE_MAX_BYTES))
 }
 
 /// One entry's whole JSON object, or `None` when it cannot be read.
@@ -1588,7 +1753,7 @@ fn raw_entry(root: &Path, name: &str) -> Option<Value> {
         .iter()
         .map(|file| root.join(file))
         .find(|path| path.is_file())?;
-    let file = fs::File::open(path).ok()?;
+    let file = open_manifest(&path).ok()?;
     read_entry(BufReader::new(file), name).ok().flatten()
 }
 
@@ -1599,24 +1764,67 @@ fn same_source(recorded: &str, canonical: &str) -> bool {
             .is_ok_and(|source| source.canonical() == canonical)
 }
 
-/// A new marketplace's name: not reserved, and not taken by another source.
-fn check_name(file: &PluginsFile, name: &str, canonical: &str) -> Result<(), String> {
-    if name == LOCAL_MARKETPLACE {
+/// A new marketplace's name: not reserved, not a built-in marketplace's
+/// (unless this is that marketplace's own source), and not taken by another
+/// source — names compared ignoring ASCII case, since on a case-insensitive
+/// filesystem `Team` and `team` share a checkout.
+fn check_name(
+    file: &PluginsFile,
+    defaults: &[DefaultMarketplace],
+    name: &str,
+    canonical: &str,
+) -> Result<(), String> {
+    if name.eq_ignore_ascii_case(LOCAL_MARKETPLACE) {
         return Err(format!(
             "a marketplace may not be named `{LOCAL_MARKETPLACE}` — the name is kept for plugins \
              installed from a folder"
         ));
     }
-    if let Some(record) = file.marketplaces.get(name)
+    if let Some(builtin) = builtin_defaults().iter().chain(defaults).find(|d| {
+        d.name
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    }) && builtin.source.canonical() != canonical
+    {
+        return Err(format!(
+            "`{name}` is the name of a built-in marketplace, which comes from {} — {canonical} \
+             may not take it",
+            builtin.source.canonical()
+        ));
+    }
+    if let Some((taken, record)) = file
+        .marketplaces
+        .iter()
+        .find(|(taken, _)| taken.eq_ignore_ascii_case(name))
         && !same_source(&record.source, canonical)
     {
         return Err(format!(
-            "a marketplace named `{name}` is already added from {} — remove it before adding \
+            "a marketplace named `{taken}` is already added from {} — remove it before adding \
              {canonical}",
             record.source
         ));
     }
     Ok(())
+}
+
+/// `id` may be installed beside what `file` records: no other installed
+/// plugin shares its namespace ([`namespace_key`]), which would shadow its
+/// commands, skills, agents and MCP servers or its cache folder.
+fn namespace_free(file: &PluginsFile, id: &PluginId) -> Result<(), String> {
+    let key = namespace_key(&id.name);
+    let holder = file
+        .plugins
+        .keys()
+        .filter_map(|text| PluginId::parse(text).ok())
+        .find(|other| other != id && namespace_key(&other.name) == key);
+    match holder {
+        None => Ok(()),
+        Some(other) => Err(format!(
+            "a plugin named {} is already installed from {} ({other}) — uninstall it first, \
+             since both would add /{}:… commands",
+            other.name, other.marketplace, other.name
+        )),
+    }
 }
 
 /// An update's manifest must still name the marketplace it updates.
@@ -1638,7 +1846,7 @@ fn validate_marketplace_dir(name: &str) -> bool {
 }
 
 fn unknown_marketplace(name: &str) -> String {
-    format!("no marketplace named `{name}` (alter-zero plugin marketplace list)")
+    format!("no marketplace named `{name}`")
 }
 
 fn not_installed(id: &PluginId) -> String {
@@ -1662,6 +1870,14 @@ fn git_error(error: GitError) -> String {
         GitError::Cancelled => CANCELLED.to_string(),
         other => other.to_string(),
     }
+}
+
+/// `folder` with every link resolved, when it is a directory inside `root`
+/// (itself resolved); `None` when it is not a directory or a link leads out.
+fn folder_inside(root: &Path, folder: &Path) -> Option<PathBuf> {
+    let root = fs::canonicalize(root).ok()?;
+    let folder = fs::canonicalize(folder).ok()?;
+    (folder.starts_with(&root) && folder.is_dir()).then_some(folder)
 }
 
 /// `root/relative`, `""` being the root itself.
@@ -1712,6 +1928,20 @@ fn shown_url(url: &str) -> String {
     match scheme {
         Some("https" | "http") | None => rest.to_string(),
         Some(scheme) => format!("{scheme}://{rest}"),
+    }
+}
+
+/// A git URL as written, less any credentials in it:
+/// `https://user:token@host/r.git` → `https://host/r.git`.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    match authority.rsplit_once('@') {
+        Some((_, host)) if !path.is_empty() => format!("{scheme}://{host}/{path}"),
+        Some((_, host)) => format!("{scheme}://{host}"),
+        None => url.to_string(),
     }
 }
 
@@ -1795,6 +2025,22 @@ mod tests {
         );
         assert_eq!(shown_url("file:///tmp/repo"), "file:///tmp/repo");
         assert_eq!(shown_url("git@github.com:o/r.git"), "github.com:o/r");
+    }
+
+    #[test]
+    fn a_fetched_url_is_named_without_its_credentials() {
+        assert_eq!(
+            without_credentials("https://user:token@example.com/t/r.git"),
+            "https://example.com/t/r.git"
+        );
+        assert_eq!(
+            without_credentials("file:///nonexistent/repo.git"),
+            "file:///nonexistent/repo.git"
+        );
+        assert_eq!(
+            without_credentials("git@github.com:o/r.git"),
+            "git@github.com:o/r.git"
+        );
     }
 
     #[test]

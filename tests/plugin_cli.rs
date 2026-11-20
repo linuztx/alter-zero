@@ -469,6 +469,7 @@ fn the_json_documents_are_one_line_each_in_the_documented_shapes() {
             "name": "notes",
             "marketplace": "team",
             "version": list["plugins"][0]["version"],
+            "installed_version": list["plugins"][0]["installed_version"],
             "enabled": true,
             "description": "The notes plugin",
         }]})
@@ -542,13 +543,28 @@ fn a_default_marketplace_is_fetched_the_first_time_it_is_needed() {
         world.ok(&["marketplace", "update", "team"]),
         "team is up to date (2 plugins)\n"
     );
-    // A default removed stays removed.
+    // A default removed stays removed, listed with the way back (named by
+    // its source: a default given in the environment has no name of its
+    // own).
     world.ok(&["marketplace", "remove", "team"]);
-    assert!(
-        world
-            .ok(&["marketplace", "list"])
-            .starts_with("No marketplaces.")
+    assert_eq!(
+        world.ok(&["marketplace", "list"]),
+        format!(
+            "  —   {url}   removed   default\n\n\
+             Restore {url} with: alter-zero plugin marketplace add {url}\n",
+            url = repo.url()
+        )
     );
+    let markets = world.json(&["marketplace", "list", "--json"]);
+    assert_eq!(markets["marketplaces"][0]["removed"], true);
+    let available = world.json(&["list", "--available", "--json"]);
+    let names: Vec<&str> = available["marketplaces"][0]["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["notes"], "only what is installed");
     let err = world.fails(&["marketplace", "remove", "team"], 1);
     assert_eq!(err, "error: no marketplace named `team` — you have none\n");
 }
@@ -681,4 +697,57 @@ fn a_renamed_plugin_installs_under_its_new_name_and_an_unsupported_one_not_at_al
             .ok(&["install", "old-review@team"])
             .starts_with("Installed review@team (v1.0.0)\n")
     );
+}
+
+#[test]
+fn a_failed_fetch_names_the_plugin_its_source_and_gits_own_reason() {
+    let world = World::new();
+    let mut market = Marketplace::new(&world.src.join("mk"), "mk", Layout::Claude);
+    market.entry(json!({
+        "name": "rocket",
+        "source": {"source": "url", "url": "file:///nonexistent/repo.git"},
+    }));
+    market.save();
+    world.ok(&["marketplace", "add", market.root.to_str().unwrap()]);
+    let err = world.fails(&["install", "rocket@mk"], 1);
+    assert_eq!(
+        err,
+        "error: couldn't fetch rocket@mk from file:///nonexistent/repo.git — \
+         '/nonexistent/repo.git' does not appear to be a git repository\n"
+    );
+}
+
+#[test]
+fn entries_a_marketplace_could_not_list_are_named_not_dropped() {
+    let world = World::new();
+    let mut market = claude_marketplace(&world.src.join("team"));
+    market
+        .entry(json!({"name": "日本語", "source": "./plugins/x"}))
+        .entry(json!({"name": "rocket-🚀-plugin", "source": "./plugins/y"}))
+        .entry(json!({"name": "third", "source": "./plugins/notes"}));
+    market.save();
+    let warning = "warning: skipped 2 entries: 日本語 — a plugin name is ASCII letters, digits, \
+                   ., _ and - only; rocket-🚀-plugin — a plugin name is ASCII letters, digits, ., \
+                   _ and - only\n";
+    let out = world.plugin(&["marketplace", "add", market.root.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("Added marketplace team (3 plugins)"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(stderr(&out), warning);
+    let out = world.plugin(&["marketplace", "update", "team"]);
+    assert_eq!(stdout(&out), "team is up to date (3 plugins)\n");
+    assert_eq!(stderr(&out), warning);
+    let listed = world.json(&["marketplace", "list", "--json"]);
+    assert_eq!(
+        listed["marketplaces"][0]["skipped"],
+        json!([
+            "日本語 — a plugin name is ASCII letters, digits, ., _ and - only",
+            "rocket-🚀-plugin — a plugin name is ASCII letters, digits, ., _ and - only"
+        ])
+    );
+    let err = world.fails(&["info", "日本語"], 1);
+    assert!(err.contains("ASCII letters"), "{err}");
 }

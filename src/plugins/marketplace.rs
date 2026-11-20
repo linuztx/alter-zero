@@ -29,7 +29,7 @@ use serde::de::{
 };
 use serde_json::value::RawValue;
 
-use super::id::validate_marketplace_name;
+use super::id::{plugin_name_rule, validate_marketplace_name};
 use super::source::{
     KeyName, MaybeString, PluginSource, RawSource, ignore_map, ignore_scalars, ignore_seq,
     ignore_str, safe_relative,
@@ -60,6 +60,13 @@ const NOT_AVAILABLE: &str = "NOT_AVAILABLE";
 /// the list.
 const ENTRY_STEP: usize = 64;
 
+/// How many skipped entries are given a sentence each; a manifest with more
+/// gets one more sentence counting the rest.
+pub const SKIPPED_REASONS_MAX: usize = 20;
+
+/// How many characters of a skipped entry's name its sentence quotes.
+const SKIPPED_NAME_CHARS: usize = 64;
+
 /// How many `renames` hops [`renamed`] follows before it stops.
 const RENAME_HOPS: usize = 8;
 
@@ -79,9 +86,10 @@ pub struct MarketplaceHeader {
     /// `renames` (`old → new`), in file order; a rename to `null` (a removed
     /// plugin) is left out.
     pub renames: Vec<(String, String)>,
-    /// Entries skipped because they could not be listed: no name or an
-    /// invalid one, no source, or not an object.
-    pub skipped: usize,
+    /// One sentence per entry skipped because it could not be listed — no
+    /// name or an invalid one, no source, or not an object — at most
+    /// [`SKIPPED_REASONS_MAX`], then one saying how many more there were.
+    pub skipped: Vec<String>,
 }
 
 /// One plugin as the marketplace lists it.
@@ -234,7 +242,7 @@ struct Top {
     renames: Vec<(String, String)>,
     plugins: Option<Vec<MarketplaceEntry>>,
     bare: Vec<usize>,
-    skipped: usize,
+    skipped: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for Top {
@@ -289,7 +297,7 @@ impl<'de> Deserialize<'de> for Top {
 struct PluginList {
     entries: Option<Vec<MarketplaceEntry>>,
     bare: Vec<usize>,
-    skipped: usize,
+    skipped: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for PluginList {
@@ -299,7 +307,7 @@ impl<'de> Deserialize<'de> for PluginList {
         const NOT_A_LIST: PluginList = PluginList {
             entries: None,
             bare: Vec::new(),
-            skipped: 0,
+            skipped: Vec::new(),
         };
 
         impl<'de> Visitor<'de> for ListVisitor {
@@ -312,10 +320,13 @@ impl<'de> Deserialize<'de> for PluginList {
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<PluginList, A::Error> {
                 let mut entries = Vec::new();
                 let mut bare = Vec::new();
-                let mut skipped = 0;
+                let mut skipped = Vec::new();
+                let mut unsaid = 0_usize;
+                let mut position = 0_usize;
                 while let Some(entry) = seq.next_element::<MaybeEntry>()? {
+                    position += 1;
                     match entry.0 {
-                        Some((entry, is_bare)) => {
+                        Ok((entry, is_bare)) => {
                             if is_bare {
                                 bare.push(entries.len());
                             }
@@ -324,8 +335,15 @@ impl<'de> Deserialize<'de> for PluginList {
                             }
                             entries.push(entry);
                         }
-                        None => skipped += 1,
+                        Err(_) if skipped.len() == SKIPPED_REASONS_MAX => unsaid += 1,
+                        Err(skip) => skipped.push(skip.sentence(position)),
                     }
+                }
+                if unsaid > 0 {
+                    skipped.push(format!(
+                        "{unsaid} more {} could not be read",
+                        if unsaid == 1 { "entry" } else { "entries" }
+                    ));
                 }
                 Ok(PluginList {
                     entries: Some(entries),
@@ -343,9 +361,37 @@ impl<'de> Deserialize<'de> for PluginList {
     }
 }
 
-/// An entry and whether its source is a bare name, or `None` when it cannot
-/// be listed.
-struct MaybeEntry(Option<(MarketplaceEntry, bool)>);
+/// An entry and whether its source is a bare name, or why it cannot be
+/// listed.
+struct MaybeEntry(Result<(MarketplaceEntry, bool), Skip>);
+
+/// Why an entry cannot be listed.
+enum Skip {
+    NotAnObject,
+    NoName,
+    /// The name, and the rule it breaks.
+    BadName(String, &'static str),
+    NoSource(String),
+}
+
+impl Skip {
+    /// One sentence, `position` counting entries from 1.
+    fn sentence(&self, position: usize) -> String {
+        let quoted = |name: &str| -> String {
+            let mut shown: String = name.chars().take(SKIPPED_NAME_CHARS).collect();
+            if shown.len() < name.len() {
+                shown.push('…');
+            }
+            shown
+        };
+        match self {
+            Self::NotAnObject => format!("entry {position} is not an object"),
+            Self::NoName => format!("entry {position} has no name"),
+            Self::BadName(name, rule) => format!("{} — {rule}", quoted(name)),
+            Self::NoSource(name) => format!("{} — it names no source", quoted(name)),
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for MaybeEntry {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -387,10 +433,16 @@ impl<'de> Deserialize<'de> for MaybeEntry {
                     }
                 }
                 let entry = match (name, source) {
-                    (Some(name), Some(raw)) if validate_name(&name) => {
+                    (None, _) => Err(Skip::NoName),
+                    (Some(name), _) if plugin_name_rule(&name).is_some() => {
+                        let rule = plugin_name_rule(&name).unwrap_or_default();
+                        Err(Skip::BadName(name, rule))
+                    }
+                    (Some(name), None) => Err(Skip::NoSource(name)),
+                    (Some(name), Some(raw)) => {
                         let is_bare = raw.is_bare();
                         let source = raw.resolve(None);
-                        Some((
+                        Ok((
                             MarketplaceEntry {
                                 installable: source.is_installable() && !withdrawn,
                                 name,
@@ -405,23 +457,17 @@ impl<'de> Deserialize<'de> for MaybeEntry {
                             is_bare,
                         ))
                     }
-                    _ => None,
                 };
                 Ok(MaybeEntry(entry))
             }
 
-            ignore_scalars!(MaybeEntry(None));
-            ignore_str!(MaybeEntry(None));
-            ignore_seq!(MaybeEntry(None));
+            ignore_scalars!(MaybeEntry(Err(Skip::NotAnObject)));
+            ignore_str!(MaybeEntry(Err(Skip::NotAnObject)));
+            ignore_seq!(MaybeEntry(Err(Skip::NotAnObject)));
         }
 
         deserializer.deserialize_any(EntryVisitor)
     }
-}
-
-/// Whether an entry's name can be an id's plugin half.
-fn validate_name(name: &str) -> bool {
-    super::id::validate_plugin_name(name).is_ok()
 }
 
 // ===== small field readers =====
@@ -827,7 +873,7 @@ mod tests {
             ],
             "a rename to null is a removal, not a rename"
         );
-        assert_eq!(header.skipped, 0);
+        assert!(header.skipped.is_empty(), "{:?}", header.skipped);
         assert_eq!(entries.len(), 7);
     }
 
@@ -984,19 +1030,43 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_missing_its_name_or_source_is_skipped_and_counted() {
+    fn an_entry_that_cannot_be_listed_is_skipped_with_a_reason() {
         let (header, entries) = read(
             r#"{"name": "t", "plugins": [
                 {"name": "ok", "source": "./ok"},
                 {"name": "no-source", "description": "x"},
                 {"source": "./no-name"},
-                {"name": "bad name", "source": "./x"},
+                {"name": "日本語", "source": "./x"},
+                {"name": "rocket-🚀-plugin", "source": "./x"},
+                {"name": "-x", "source": "./x"},
                 "not an object",
                 {"name": "ok2", "source": "./ok2"}]}"#,
         );
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["ok", "ok2"]);
-        assert_eq!(header.skipped, 4);
+        assert_eq!(
+            header.skipped,
+            [
+                "no-source — it names no source",
+                "entry 3 has no name",
+                "日本語 — a plugin name is ASCII letters, digits, ., _ and - only",
+                "rocket-🚀-plugin — a plugin name is ASCII letters, digits, ., _ and - only",
+                "-x — a plugin name starts and ends with an ASCII letter or digit",
+                "entry 7 is not an object",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_reasons_kept_are_bounded() {
+        let entries: Vec<String> = (0..500).map(|_| "1".to_string()).collect();
+        let text = format!(r#"{{"name": "t", "plugins": [{}]}}"#, entries.join(","));
+        let (header, _) = read(&text);
+        assert_eq!(header.skipped.len(), SKIPPED_REASONS_MAX + 1);
+        assert_eq!(
+            header.skipped.last().map(String::as_str),
+            Some("480 more entries could not be read")
+        );
     }
 
     #[test]

@@ -144,7 +144,15 @@ marketplace's name. Every `source` shape either reference writes is read:
 | `npm`, `archive`, `command`, anything else | listed, marked as one that cannot be installed here, **never run** |
 
 A marketplace is added by `owner/repo` (GitHub), any git URL (`#ref` or
-`@ref` names a branch or tag), or a local folder. Two are **defaults**:
+`@ref` names a branch or tag), or a local folder. Its name is its
+manifest's, compared ignoring ASCII case, and a built-in marketplace's name
+is taken only by that marketplace's own source. An entry that names a
+repository on this machine (`file://` or a path) is installed only from a
+marketplace that is itself on this machine — a folder, or one added by a
+`file://` URL. A manifest over 4 MiB is refused unread, and an entry that
+cannot be listed — no name, a name outside the plugin-name rule, no source
+— is named with its reason (`CatalogMarketplace::skipped`) rather than
+dropped without a word. Two are **defaults**:
 `anthropics/claude-plugins-official` and `openai/plugins`. A default is not
 fetched until it is first needed — opening `/plugins`, or a CLI command that
 has to look in it — and a default the user removes stays removed.
@@ -161,7 +169,7 @@ plugins/marketplaces/<marketplace>/           a marketplace's git checkout (dept
 plugins/cache/<marketplace>/<plugin>/         an installed plugin: a copy, without .git or symlinks
 plugins/cache/<marketplace>/<plugin>/.alter-zero-plugin/
     hooks.json  mcp.json                      generated at install (below)
-plugins/data/<plugin>-<marketplace>/          the plugin's own data directory, kept across updates
+plugins/data/<marketplace>/<plugin>/          the plugin's own data directory, kept across updates
 plugins/tmp/                                  staging for clones and installs
 ```
 
@@ -173,7 +181,11 @@ again only about a hook whose command actually changed.
 
 `plugins.json` is small, written atomically, always as a read-modify-write
 over the file as it is on disk at that moment, and never over a file that
-will not parse. Beside each plugin's state (`enabled`, `version`,
+will not parse. Every commit — the state re-read, the trees swapped into
+place, the state written — holds an exclusive lock on `plugins.lock` beside
+it, so two processes never write over each other's change; a slow fetch
+into staging happens before the lock is taken, and a filesystem that cannot
+lock is used without one. Beside each plugin's state (`enabled`, `version`,
 `revision`) it **records where its components are** — the `skills`,
 `commands` and `agents` paths and whether hooks and MCP files were generated
 — so a session never parses a manifest to start.
@@ -190,7 +202,12 @@ marketplace's own for an in-repository plugin, a one-commit fetch for a git
 source (the pinned `sha` when there is one, verified) — reads it
 (`plugins::layout::inspect`), copies it into staging without `.git` or
 symlinks, writes the two generated files, and swaps the result into place in
-one rename; then it records the plugin. A failure at any step leaves the
+one rename; then it records the plugin. The folder, links resolved, must
+sit inside the marketplace or the fetched repository: a path that is a link
+out of it is refused. A plugin whose name another installed plugin already
+holds — ignoring ASCII case, `.` read as `_`, since both would list the
+same `plugin:component` names and MCP servers — is refused, naming the one
+installed. A failure at any step leaves the
 previous install and the state file exactly as they were.
 
 **The two generated files are the whole trick on the session's side.** What
