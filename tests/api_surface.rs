@@ -687,6 +687,19 @@ use alter_zero::plugins::{
     write_atomic,
 };
 
+// --- `plugins` — the store (layout, store) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::plugins::{
+    Control,
+    InstallOutcome,
+    MarketplaceOutcome,
+    PluginLayout,
+    PluginStore,
+    Silent,
+    inspect,
+};
+
 /// Bodyless on purpose: the `use` declarations above are the assertion, and this
 /// gives `cargo test` a name to report if they stop resolving.
 #[test]

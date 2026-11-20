@@ -79,5 +79,7 @@ pub use vars::{PluginPaths, env_pairs, expand, expand_claude, sh_quote};
 
 // --- the store: layout, store ----------------------------------------------
 // (re-exports by name; never a glob)
+pub use layout::{PluginLayout, inspect};
+pub use store::{Control, InstallOutcome, MarketplaceOutcome, PluginStore, Silent};
 
 // --------------------------------------------------------------------------
