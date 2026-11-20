@@ -507,6 +507,11 @@ next use — so a second open adds nothing. A session that never opens
   enable and disable, uninstall, adding and removing a marketplace, an
   enabled plugin's command and skill working in the same session, and a
   14-row terminal.
+- `scripts/smoke.sh 163` — a plugin's commands at the boundary: `/q` still
+  quits beside a plugin's own `quit`, a template that renders blank is
+  refused, a follow-up queued with Tab is rendered when its turn starts, the
+  `[PROMPT]` shortcut and `-p` run the template, and a plugin disabled from
+  another terminal stops running at once.
 - Nothing in the suite reaches the network.
 
 ## Module layout
