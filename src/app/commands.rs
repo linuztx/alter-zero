@@ -49,6 +49,11 @@ pub const INIT_PROMPT: &str = include_str!("../../prompts/init.md");
 /// See `docs/init.md` / `docs/toast.md`.
 pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progress";
 
+/// The toast a plugin command picked or typed inside an agent session view
+/// is refused with: its turn would start in the main conversation, not the
+/// viewed agent's (`docs/plugins.md`).
+pub(super) const PLUGIN_AGENT_VIEW_NOTICE: &str = "Plugin commands run in the main session";
+
 /// The transient toast shown when `/compact` is run while a turn is active —
 /// codex disables it during a task (`available_during_task`); ours rejects with
 /// the `/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
@@ -733,9 +738,13 @@ impl App {
                 // takes arguments waits for them in the composer — the
                 // palette closes on the space, and Enter then runs the typed
                 // invocation (`keys.rs`). One that doesn't runs at once,
-                // refused mid-turn the way /init is.
+                // refused mid-turn the way /init is. Inside an agent
+                // session view it is refused outright: the turn it starts
+                // is the main conversation's, not the viewed agent's.
                 let name = cmd.name.into_owned();
-                if takes_arguments {
+                if self.agent_view.is_some() {
+                    Action::Toast(PLUGIN_AGENT_VIEW_NOTICE.to_string())
+                } else if takes_arguments {
                     self.input.set_text(&format!("/{name} "));
                     Action::None
                 } else if self.turn_active() {
@@ -783,8 +792,10 @@ impl App {
     /// ([`crate::plugins::match_invocation`] over the listed plugin
     /// commands). A first word that is a built-in's name is never routed to
     /// a plugin command through its last segment: `/model x` stays the text
-    /// it always was even beside a `p:model`.
-    pub(super) fn plugin_invocation(&self, draft: &str) -> Option<(String, String)> {
+    /// it always was even beside a `p:model`. The boundary asks it too, of a
+    /// startup prompt and a queued follow-up turn (`docs/plugins.md`).
+    #[must_use]
+    pub fn plugin_invocation(&self, draft: &str) -> Option<(String, String)> {
         if self.plugin_commands.is_empty() {
             return None;
         }

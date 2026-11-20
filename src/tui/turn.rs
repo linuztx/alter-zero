@@ -181,6 +181,12 @@ impl Session<'_> {
         if !self.headless {
             self.app.input_history.record(&prompt);
         }
+        // A plugin command's invocation runs the command, as Enter would
+        // (docs/plugins.md); anything else is the message itself.
+        if let Some((name, args)) = self.app.plugin_invocation(&prompt) {
+            self.submit_plugin_command(&name, &args, Vec::new());
+            return;
+        }
         self.start_turn(TurnInput {
             texts: vec![prompt],
             images: Vec::new(),
@@ -386,7 +392,16 @@ impl Session<'_> {
             // The batch's Ctrl+V attachments dispatch with it — the whole
             // (placeholder, path) pairs, so start_turn can record each path on
             // the message carrying its placeholder (docs/image-paste.md).
+            // A follow-up that is one plugin command's invocation runs the
+            // command, rendered now (docs/plugins.md); one that cannot
+            // render says why and the next entry goes instead.
             Some(QueuedTurn::Messages { texts, images }) => {
+                if let [text] = texts.as_slice()
+                    && let Some((name, args)) = self.app.plugin_invocation(text)
+                {
+                    return self.submit_plugin_command(&name, &args, images)
+                        || self.flush_next_queued();
+                }
                 self.start_turn(TurnInput { texts, images });
                 true
             }

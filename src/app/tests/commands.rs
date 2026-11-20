@@ -813,3 +813,43 @@ fn images_attached_to_a_plugin_invocation_travel_with_its_turn() {
         )]
     );
 }
+
+#[test]
+fn a_plugin_command_picked_in_an_agent_view_is_refused() {
+    let notice = Action::Toast("Plugin commands run in the main session".to_string());
+    let mut app = plugin_app();
+    app.open_agent_view("a1");
+    type_str(&mut app, "/commit");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), notice);
+    let mut app = plugin_app();
+    app.open_agent_view("a1");
+    type_str(&mut app, "/rev");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), notice);
+    assert_eq!(app.input.text(), "", "no invocation left to send the agent");
+}
+
+#[test]
+fn a_typed_plugin_invocation_in_an_agent_view_is_refused_and_kept() {
+    let mut app = plugin_app();
+    app.open_agent_view("a1");
+    type_str(&mut app, "/code-review:review 12");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast("Plugin commands run in the main session".to_string())
+    );
+    assert_eq!(app.input.text(), "/code-review:review 12");
+}
+
+#[test]
+fn ordinary_text_in_an_agent_view_still_goes_to_the_agent() {
+    let mut app = plugin_app();
+    app.open_agent_view("a1");
+    type_str(&mut app, "/usr/bin/env please");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::AgentChat {
+            id: "a1".to_string(),
+            text: "/usr/bin/env please".to_string()
+        }
+    );
+}

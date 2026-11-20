@@ -390,6 +390,14 @@ impl App {
                 }
                 if self.input.text().trim().is_empty() {
                     Action::None
+                } else if self.agent_view.is_some()
+                    && !self.shell_mode
+                    && self.plugin_invocation(self.input.text()).is_some()
+                {
+                    // A plugin command runs in the main conversation; inside
+                    // an agent session view it is refused, the draft kept
+                    // (docs/plugins.md).
+                    Action::Toast(super::commands::PLUGIN_AGENT_VIEW_NOTICE.to_string())
                 } else if let Some(id) = self.agent_view.clone() {
                     // Inside an agent session view the draft goes to *that
                     // agent*. How it lands is the registry's call, not ours —

@@ -72,7 +72,9 @@ impl Session<'_> {
         // Re-walk first (`docs/skills.md`). This is the surface where "why is
         // my skill not here?" gets asked, so it must not be able to answer
         // with what the session booted with — a menu that lied for one turn
-        // is worse than no menu.
+        // is worse than no menu. The plugins first, whose skills the walk
+        // reads (docs/plugins.md).
+        self.rescan_plugins();
         self.rescan_skills();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         // The same resolver the startup walk used, so the menu can only ever
@@ -206,32 +208,54 @@ impl Session<'_> {
         }
     }
 
-    /// Run a plugin's slash command (`docs/plugins.md`): its template read
-    /// now with `args` put in place, submitted as a user turn exactly as
-    /// `Action::Submit` is — the rendered prompt and what was typed noted
-    /// first, so an Esc-undo hands back the invocation.
+    /// Run a plugin's slash command (`docs/plugins.md`) with the
+    /// attachments its Enter staged: `Action::RunPluginCommand` handed to
+    /// [`Self::submit_plugin_command`].
     pub(crate) fn run_plugin_command(&mut self, name: &str, args: &str) {
-        let Some(command) = self
+        let images = self.app.take_submission_images();
+        self.submit_plugin_command(name, args, images);
+    }
+
+    /// Submit a plugin's slash command (`docs/plugins.md`): its template
+    /// read now with `args` put in place, submitted as a user turn exactly
+    /// as `Action::Submit` is — the rendered prompt and what was typed noted
+    /// first, so an Esc-undo hands back the invocation. `plugins.json` is
+    /// re-checked first (one `stat` when nothing moved), so a plugin
+    /// disabled from another terminal no longer runs. `true` when a turn
+    /// started; otherwise the toast says why and `images` are deleted, since
+    /// no message names them any more.
+    pub(crate) fn submit_plugin_command(
+        &mut self,
+        name: &str,
+        args: &str,
+        images: Vec<(String, std::path::PathBuf)>,
+    ) -> bool {
+        self.reload_plugins();
+        let rendered = self
             .plugin_commands
             .iter()
             .find(|command| command.name == name)
-        else {
-            self.toast(format!("/{name} is no longer installed"), ToastKind::Error);
-            return;
-        };
-        match alter_zero::llm::plugin::render_plugin_command(command, args) {
+            .map(|command| alter_zero::llm::plugin::render_plugin_command(command, args))
+            .unwrap_or_else(|| Err(format!("/{name} is no longer installed")));
+        match rendered {
             Ok(prompt) => {
                 self.app.remember_plugin_prompt(
                     &prompt,
                     &alter_zero::llm::plugin::invocation(name, args),
                 );
-                let images = self.app.take_submission_images();
                 self.start_turn(super::turn::TurnInput {
                     texts: vec![prompt],
                     images,
                 });
+                true
             }
-            Err(error) => self.toast(error, ToastKind::Error),
+            Err(error) => {
+                for (_, path) in images {
+                    let _ = std::fs::remove_file(path);
+                }
+                self.toast(error, ToastKind::Error);
+                false
+            }
         }
     }
 

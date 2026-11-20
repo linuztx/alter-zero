@@ -248,7 +248,18 @@ one failed `stat` and nothing else.
   lists them after every built-in, `/quit` included, so a built-in that
   matches what was typed is always the row Enter runs — a plugin's
   `commands/quit.md` never takes `/q` from `/quit` — and finds one by any
-  of its `:`-separated parts, so `/rev` finds `/code-review:review`.
+  of its `:`-separated parts, so `/rev` finds `/code-review:review`. The
+  invocation runs wherever a message can be sent from: Enter, the
+  `[PROMPT]` shortcut (`alter-zero "/code-review:review 123"`), `-p`
+  headless (`docs/headless.md`), and a follow-up queued with Tab mid-turn,
+  rendered when its turn dispatches; attachments pasted beside it ride the
+  turn. A name that is no installed command stays ordinary text. Each run
+  re-checks `plugins.json` first, so a plugin disabled from another
+  terminal stops running at once, and a template that renders blank — a
+  file that is only frontmatter — is refused with a toast naming it. Inside
+  an agent session view a plugin command is refused with a toast saying
+  plugin commands run in the main session: the turn it starts is the main
+  conversation's.
 - **Agents** join the subagent types as `plugin:agent`
   (`docs/subagents.md`), always on the session's own model, with a Claude
   Code agent's tool names mapped to the tools this app has.

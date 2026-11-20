@@ -198,7 +198,11 @@ byte is still worth reading.
    is over in seconds, so it waits until no server is `Pending` (each is
    bounded by its own startup timeout) before the first request.
 5. **The prompt is submitted** through the same path as the `[PROMPT]`
-   shortcut — redacted against the secrets, then `start_turn`. A
+   shortcut — redacted against the secrets, then `start_turn`; a prompt
+   that invokes an installed plugin's slash command (`-p "/code-review:review
+   123"`) submits the command's rendered template instead, the way Enter
+   does in the TUI, and one that cannot render (gone, or blank) is a
+   warning on stderr and a failed run (`docs/plugins.md`). A
    `--continue`d conversation already past its window compacts first: the
    TUI's idle-boundary auto-compaction (`docs/compact.md`), run once before
    the prompt and afterwards only while the run waits on its subagents —
