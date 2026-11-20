@@ -86,6 +86,14 @@ jobs:
   smoke:
     name: smoke suite (tmux)
     runs-on: ubuntu-latest
+    env:
+      # The idle text layout (docs/text-layout.md) is for release and dist
+      # builds, which no job here makes. Forced on for this job's dev build,
+      # the suite drives a binary linked the way a shipped one is, and the
+      # layout's own test below can see a list or a toolchain gone stale: a
+      # section the linker script asked for that is missing or near empty.
+      # Job-wide, so every cargo call here agrees and nothing is rebuilt.
+      ALTER_ZERO_TEXT_LAYOUT: "1"
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned toolchain
@@ -105,6 +113,8 @@ jobs:
       - name: The phase readers and the selector
         run: bash scripts/smoke/selftest.sh
       - run: cargo build
+      - name: The binary is laid out
+        run: cargo test --test text_layout
       - name: Run every phase, one worker per core
         # The suite's default of twice the core count is sized for a
         # developer's box; on a loaded four-core machine it stretched the
