@@ -1314,6 +1314,8 @@ pub struct AuthServerMeta {
     /// `token_endpoint_auth_methods_supported` — what a registration may ask
     /// to authenticate with (empty when the metadata doesn't say).
     pub token_auth_methods: Vec<String>,
+    /// The documentation link the metadata gives (`documentation_link`).
+    pub documentation: Option<String>,
 }
 
 impl AuthServerMeta {
@@ -1484,7 +1486,33 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
             .unwrap_or(false),
         resource,
         token_auth_methods: string_list(&meta, "token_endpoint_auth_methods_supported"),
+        documentation: documentation_link(&meta, resource_meta.as_ref()),
     })
+}
+
+/// The documentation link a server's metadata gives: the authorization
+/// server's `service_documentation` (RFC 8414 §2), else the protected
+/// resource's `resource_documentation` (RFC 9728 §2) — each kept only as a
+/// plain web address a click can open whole.
+#[must_use]
+pub fn documentation_link(auth_meta: &Value, resource_meta: Option<&Value>) -> Option<String> {
+    let usable = |url: &&str| {
+        url::Url::parse(url).is_ok_and(|parsed| {
+            matches!(parsed.scheme(), "http" | "https")
+                && parsed.host().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+        }) && crate::links::osc8_uri_len(url) <= crate::links::HYPERLINK_URI_MAX_BYTES
+    };
+    let read = |meta: &Value, key: &str| {
+        meta.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(usable)
+            .map(str::to_string)
+    };
+    read(auth_meta, "service_documentation")
+        .or_else(|| resource_meta.and_then(|meta| read(meta, "resource_documentation")))
 }
 
 /// How long the connect-time probe ([`protected_without_registration`])
@@ -1951,7 +1979,7 @@ pub enum AuthError {
     /// The flow has no client to present, or the one it presented was not
     /// enough: the user is asked for one — the `/mcp` auth page's client
     /// form, the spec's last registration step.
-    NeedsClient(ClientRequest),
+    NeedsClient(Box<ClientRequest>),
     /// Anything else, worded for the user.
     Failed(String),
 }
@@ -2061,6 +2089,7 @@ pub fn client_request_for(
                 .is_some()
                 .then(|| config.registered_redirect_uri())
                 .flatten(),
+            documentation: None,
             reason: None,
         });
     }
@@ -2077,6 +2106,7 @@ pub fn client_request_for(
                 .unwrap_or(DEFAULT_CALLBACK_PORT),
         ),
         redirect_uri: None,
+        documentation: None,
         reason: None,
     })
 }
@@ -2224,15 +2254,16 @@ pub fn run_auth_flow(
                has_secret: bool,
                callback_port: Option<u16>,
                reason: Option<String>| {
-        AuthError::NeedsClient(ClientRequest {
+        AuthError::NeedsClient(Box::new(ClientRequest {
             issuer: authority.clone(),
             client_id,
             fixed_id,
             has_secret,
             callback_port,
             redirect_uri: None,
+            documentation: meta.documentation.clone(),
             reason,
-        })
+        }))
     };
     let entry_port = configured.and_then(|config| config.callback_port);
     let (callback, redirect_uri, client, source) = if let Some((config, client_id)) =
@@ -2744,6 +2775,84 @@ mod tests {
         );
         assert_eq!(meta.resource, format!("{base}/"));
         assert_eq!(meta.scopes.as_deref(), Some("mcp:tools"));
+    }
+
+    /// What a server says about itself is a documentation link: the
+    /// authorization server's `service_documentation` (RFC 8414), else the
+    /// resource's `resource_documentation` (RFC 9728).
+    #[test]
+    fn discovery_reads_the_documentation_link_and_prefers_the_servers() {
+        let routes = |as_docs: &'static str| {
+            vec![
+                (
+                    "/.well-known/oauth-protected-resource/mcp",
+                    r#"{"resource":"{base}/mcp","authorization_servers":["{base}"],"resource_documentation":"https://docs.example.test/resource"}"#,
+                ),
+                ("/.well-known/oauth-authorization-server", as_docs),
+            ]
+        };
+        let base = discovery_fixture(routes(
+            r#"{"issuer":"{base}","authorization_endpoint":"{base}/auth","token_endpoint":"{base}/token","code_challenge_methods_supported":["S256"],"service_documentation":"https://docs.example.test/oauth"}"#,
+        ));
+        let meta = discover(&format!("{base}/mcp"), None).unwrap();
+        assert_eq!(
+            meta.documentation.as_deref(),
+            Some("https://docs.example.test/oauth")
+        );
+        let base = discovery_fixture(routes(
+            r#"{"issuer":"{base}","authorization_endpoint":"{base}/auth","token_endpoint":"{base}/token","code_challenge_methods_supported":["S256"]}"#,
+        ));
+        let meta = discover(&format!("{base}/mcp"), None).unwrap();
+        assert_eq!(
+            meta.documentation.as_deref(),
+            Some("https://docs.example.test/resource")
+        );
+    }
+
+    /// A documentation link is kept only as an `http(s)` URL with a host,
+    /// no user name or password, and no longer than a hyperlink carries.
+    #[test]
+    fn a_documentation_link_is_kept_only_when_it_is_a_plain_web_address() {
+        let long = format!(
+            "https://docs.example.test/{}",
+            "a".repeat(crate::links::HYPERLINK_URI_MAX_BYTES)
+        );
+        let as_meta = |docs: &str| serde_json::json!({ "service_documentation": docs });
+        for kept in [
+            "https://developers.example.test/identity/oauth2",
+            "http://127.0.0.1:8080/docs",
+        ] {
+            assert_eq!(
+                documentation_link(&as_meta(kept), None).as_deref(),
+                Some(kept)
+            );
+        }
+        for dropped in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "ftp://docs.example.test/",
+            "https://accounts.example.test@evil.example/docs",
+            "https://user:pw@docs.example.test/",
+            "not a url",
+            long.as_str(),
+        ] {
+            assert_eq!(
+                documentation_link(&as_meta(dropped), None),
+                None,
+                "{dropped}"
+            );
+        }
+        // A dropped server link leaves the resource's in its place.
+        let resource = serde_json::json!({ "resource_documentation": "https://r.example.test/" });
+        assert_eq!(
+            documentation_link(&as_meta("ftp://x/"), Some(&resource)).as_deref(),
+            Some("https://r.example.test/")
+        );
+        assert_eq!(documentation_link(&serde_json::json!({}), None), None);
+        assert_eq!(
+            documentation_link(&serde_json::json!({ "service_documentation": 5 }), None),
+            None
+        );
     }
 
     /// An issuer with a path whose server mounts its metadata at the origin
@@ -3547,6 +3656,7 @@ mod tests {
                 has_secret: true,
                 callback_port: Some(9001),
                 redirect_uri: None,
+                documentation: None,
                 reason: None,
             })
         );
@@ -3888,6 +3998,7 @@ mod tests {
             iss_required,
             resource: "https://mcp.test/mcp".to_string(),
             token_auth_methods: Vec::new(),
+            documentation: None,
         }
     }
 
@@ -4147,7 +4258,7 @@ mod tests {
                     "/.well-known/oauth-authorization-server" => (
                         200,
                         format!(
-                            r#"{{"issuer":"{base}","authorization_endpoint":"{base}/authorize","token_endpoint":"{base}/token",{registration}"code_challenge_methods_supported":["S256"]}}"#,
+                            r#"{{"issuer":"{base}","authorization_endpoint":"{base}/authorize","token_endpoint":"{base}/token",{registration}"code_challenge_methods_supported":["S256"],"service_documentation":"{base}/docs/oauth"}}"#,
                             registration = if registration {
                                 format!(r#""registration_endpoint":"{base}/register","#)
                             } else {
@@ -4342,7 +4453,7 @@ mod tests {
             panic!("expected a request for a client, got {result:?}");
         };
         assert_eq!(
-            request,
+            *request,
             ClientRequest {
                 issuer: fixture.base.clone(),
                 client_id: None,
@@ -4350,6 +4461,7 @@ mod tests {
                 has_secret: false,
                 callback_port: Some(DEFAULT_CALLBACK_PORT),
                 redirect_uri: None,
+                documentation: Some(format!("{}/docs/oauth", fixture.base)),
                 reason: None,
             }
         );

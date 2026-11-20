@@ -1336,6 +1336,7 @@ fn client_request() -> McpClientRequest {
         has_secret: false,
         callback_port: Some(8976),
         redirect_uri: None,
+        documentation: None,
         reason: None,
     }
 }
@@ -1413,6 +1414,7 @@ fn the_client_form_says_nothing_but_facts_and_fields() {
     let reason = "login.example.com wouldn't register this app (HTTP 403).";
     let mut stopped = client_form_app(&McpClientRequest {
         reason: Some(reason.to_string()),
+        documentation: Some("https://docs.example.test/oauth".to_string()),
         ..client_request()
     });
     stopped.on_key(key(KeyCode::Tab));
@@ -1438,6 +1440,7 @@ fn the_client_form_says_nothing_but_facts_and_fields() {
             || text == reason
             || text == error
             || text.starts_with("Issuer:")
+            || text == "Docs:          https://docs.example.test/oauth"
             || text.starts_with("Redirect URI:")
             || text.starts_with("Callback port >")
             || text.starts_with("Client ID     >")
@@ -1486,6 +1489,42 @@ fn the_client_form_never_draws_the_secret() {
     }
 }
 
+/// The documentation link the server's metadata gives is one more fact
+/// row, between the issuer and the redirect URI in their block — the URL
+/// itself, linked verbatim, at any width.
+#[test]
+fn the_documentation_link_is_a_fact_row_between_the_issuer_and_the_redirect() {
+    let docs = "https://developers.example.test/identity/protocols/oauth2";
+    let request = McpClientRequest {
+        documentation: Some(docs.to_string()),
+        ..client_request()
+    };
+    let lines = mcp_view_lines(&client_form_app(&request), 100);
+    let rows: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let issuer = rows
+        .iter()
+        .position(|r| r.starts_with("  Issuer:"))
+        .unwrap();
+    assert_eq!(rows[issuer + 1], format!("  Docs:          {docs}"));
+    assert!(rows[issuer + 2].starts_with("  Redirect URI:"), "{rows:?}");
+    assert_eq!(link_targets(&lines), [docs]);
+    // Narrow: under its label, still the one whole link.
+    let lines = mcp_view_lines(&client_form_app(&request), 40);
+    let rows: Vec<String> = lines.iter().map(|l| plain(l).trim().to_string()).collect();
+    let label = rows
+        .iter()
+        .position(|r| r == "Docs:")
+        .expect("the label row");
+    assert!(rows[label + 1].starts_with("https://"), "{rows:?}");
+    assert_eq!(link_targets(&lines), [docs]);
+    // None given: no row.
+    let all = texts(&client_form_app(&client_request())).join("\n");
+    assert!(!all.contains("Docs:"), "{all}");
+}
+
 /// An issuer dressed up with a user name — `accounts.google.com@` in front
 /// of the real host — is shown without it, so the row names the host the
 /// secret would go to.
@@ -1504,16 +1543,21 @@ fn an_issuer_dressed_up_with_user_info_shows_its_real_host() {
 }
 
 /// A Google issuer gets no text of its own: its page is any issuer's page
-/// with the issuer's name in it, and links nowhere.
+/// with the issuer's name in it, and links only where its own metadata
+/// gives a documentation link.
 #[test]
 fn a_google_issuer_gets_no_text_of_its_own() {
+    let docs = "https://developers.google.com/identity/protocols/oauth2";
     let google = McpClientRequest {
         issuer: "https://accounts.google.com".to_string(),
         ..client_request()
     };
+    let other = McpClientRequest {
+        documentation: Some(docs.to_string()),
+        ..client_request()
+    };
     for width in [40u16, 100] {
         let lines = mcp_view_lines(&client_form_app(&google), width);
-        let other = mcp_view_lines(&client_form_app(&client_request()), width);
         let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
         assert!(all.contains("https://accounts.google.com"), "{all}");
         assert!(!all.contains("console"), "{all}");
@@ -1522,6 +1566,15 @@ fn a_google_issuer_gets_no_text_of_its_own() {
             "{:?}",
             link_targets(&lines)
         );
+        // With the link its metadata gives, that link and nothing more.
+        let google = McpClientRequest {
+            documentation: Some(docs.to_string()),
+            ..google.clone()
+        };
+        let lines = mcp_view_lines(&client_form_app(&google), width);
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert_eq!(link_targets(&lines), [docs]);
+        let other = mcp_view_lines(&client_form_app(&other), width);
         let swapped = other
             .iter()
             .map(plain)
@@ -1821,6 +1874,26 @@ fn the_client_form_hugs_its_frame() {
                 client_id: Some("file-cid".to_string()),
                 fixed_id: true,
                 callback_port: None,
+                ..client_request()
+            }),
+        ),
+        (
+            "the client form with a documentation link",
+            with(McpClientRequest {
+                documentation: Some(
+                    "https://developers.example.test/identity/protocols/oauth2".to_string(),
+                ),
+                ..client_request()
+            }),
+        ),
+        (
+            "the secret-only form with only a documentation link",
+            with(McpClientRequest {
+                issuer: String::new(),
+                client_id: Some("file-cid".to_string()),
+                fixed_id: true,
+                callback_port: None,
+                documentation: Some("https://docs.example.test/".to_string()),
                 ..client_request()
             }),
         ),

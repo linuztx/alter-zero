@@ -21,20 +21,21 @@ release heading when a version is cut.
   `alter-zero mcp add --client-id … --client-secret`, and pressing
   **Authenticate** without one ended on a one-line error naming config keys.
   The page now turns into a form of facts and fields: the issuer, as the
-  server's metadata names it, and the redirect URI to register with the
-  client (it follows the callback port as you change it, and Ctrl+Y copies
-  it), over the client ID and its secret, which is only ever drawn as dots. The same form appears when a provider
-  refuses to register the app. What you enter is kept with the server's
-  tokens — owner-only, never written to a config file, and only ever
-  presented to the provider it was entered for — so it works alike for a
-  server from your own file, a project's or a plugin's. If the provider
-  turns the client away, the form comes back with what you entered and the
-  provider's own reason, rather than an error to start over from. A server's
-  page names the client it signs in with and offers **Change OAuth client**
-  and **Forget OAuth client**; a server whose entry already names its client
-  (`oauth.clientId`) is asked for the secret alone, and offers **Set client
-  secret**. `alter-zero mcp get` names a client entered this way too
-  (`docs/mcp.md`).
+  server's metadata names it, the server's own documentation link when its
+  metadata gives one, and the redirect URI to register with the client (it
+  follows the callback port as you change it, and Ctrl+Y copies it), over
+  the client ID and its secret, which is only ever drawn as dots. The same
+  form appears when a provider refuses to register the app. What you enter
+  is kept with the server's tokens — owner-only, never written to a config
+  file, and only ever presented to the provider it was entered for — so it
+  works alike for a server from your own file, a project's or a plugin's.
+  If the provider turns the client away, the form comes back with what you
+  entered and the provider's own reason, rather than an error to start over
+  from. A server's page names the client it signs in with and offers
+  **Change OAuth client** and **Forget OAuth client**; a server whose entry
+  already names its client (`oauth.clientId`) is asked for the secret alone,
+  and offers **Set client secret**. `alter-zero mcp get` names a client
+  entered this way too (`docs/mcp.md`).
 
 - **MCP entries written the way codex writes them.** An entry's `oauth`
   block is read under codex's snake_case keys too (`client_id`,

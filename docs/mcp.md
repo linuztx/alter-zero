@@ -1429,6 +1429,7 @@ mid-turn (the strip stays above it). Pages:
    OAuth client for calendar
 
    Issuer:        https://accounts.google.com
+   Docs:          https://developers.google.com/identity/protocols/oauth2
    Redirect URI:  http://localhost:8976/callback
 
    Callback port > 8976
@@ -1454,6 +1455,18 @@ mid-turn (the strip stays above it). Pages:
    otherwise, so a narrow terminal never breaks an address beside a label.
    When the form is back, the sign-in's own reason comes first, in the
    error colour, a blank row above the issuer.
+
+   Between the two sits the one thing a server says about itself: its
+   **documentation link**, the authorization server's
+   `service_documentation` (RFC 8414), else the resource's
+   `resource_documentation` (RFC 9728), read at discovery
+   (`AuthServerMeta::documentation`, `documentation_link`) and carried on
+   the request. It is shown as its own link — the URL alone under `Docs:`,
+   linked verbatim like the authorize URL, never a label of our own — and
+   kept only as an `http(s)` URL with a host, no user name or password, and
+   no longer than a hyperlink carries (`links::HYPERLINK_URI_MAX_BYTES`);
+   anything else is dropped without a word. A form opened from the
+   server's page, where no discovery ran, has none.
 
    The fields sit in page order — port, id, secret — with the caret
    starting on the first one still to give: the id, or the secret when the

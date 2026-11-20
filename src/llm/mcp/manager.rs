@@ -1273,7 +1273,7 @@ impl McpManager {
                 Err(oauth::AuthError::NeedsClient(request)) => {
                     manager.notify(McpEvent::AuthNeedsClient {
                         server: name.clone(),
-                        request,
+                        request: *request,
                     });
                 }
                 Err(oauth::AuthError::Failed(detail)) => manager.notify(McpEvent::AuthDone {
@@ -4774,6 +4774,7 @@ done
                 has_secret: true,
                 callback_port: Some(9001),
                 redirect_uri: None,
+                documentation: None,
                 reason: None,
             })
         );

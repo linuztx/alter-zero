@@ -205,6 +205,9 @@ pub struct McpClientForm {
     /// The server entry's own client id, when only its secret is asked for:
     /// shown, never a field.
     pub fixed_client_id: Option<String>,
+    /// The documentation link the server's metadata gives — what it says
+    /// about itself, shown as its own link.
+    pub documentation: Option<String>,
     /// The redirect URI that entry names for its client (`callbackUrl`),
     /// shown in place of the one the port makes.
     pub fixed_redirect_uri: Option<String>,
@@ -236,6 +239,7 @@ impl McpClientForm {
             issuer: request.issuer.clone(),
             fixed_client_id: fixed.then(|| known.clone()),
             fixed_redirect_uri: request.redirect_uri.clone().filter(|_| fixed),
+            documentation: request.documentation.clone(),
             field: if known.is_empty() {
                 McpClientField::ClientId
             } else {

@@ -909,6 +909,26 @@ fn client_fact_rows(
     lines
 }
 
+/// A fact row whose value is a URL: [`client_fact_rows`]' layout, the URL
+/// linked verbatim (`model_url_rows`, `whole_url_run`) so a click opens
+/// exactly what is shown, on every row it wraps onto.
+fn client_link_rows(label: &'static str, url: &str, width: u16) -> Vec<Line<'static>> {
+    let label_ink = Style::new().fg(mcp_detail_label_color());
+    let ink = model_id_color();
+    if cols(MODEL_INDENT) + cols(label) + cols(url) <= usize::from(width)
+        && let Some((text, style)) = whole_url_run(url, Style::new().fg(ink))
+    {
+        return vec![Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(label, label_ink),
+            Span::styled(text, style),
+        ])];
+    }
+    let mut lines = vec![mcp_line(label.trim_end(), label_ink, width)];
+    lines.extend(model_url_rows(url, ink, width));
+    lines
+}
+
 /// The redirect URI rows: the address the sign-in will send for the port
 /// typed, or what to do while the port is no port.
 fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
@@ -940,10 +960,10 @@ fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> 
 
 /// The client form (`docs/mcp.md` *Pre-registered clients*): facts and
 /// fields only — the sign-in's own reason, when the form is back; the
-/// issuer as discovery gave it over the redirect URI to register, one
-/// block; the fields; what stopped the last submit; the keys. An entry's
-/// own client is shown, not asked for: its secret is the one field, and its
-/// port its entry's.
+/// issuer, the server's documentation link and the redirect URI to
+/// register, one block; the fields; what stopped the last submit; the keys.
+/// An entry's own client is shown, not asked for: its secret is the one
+/// field, and its port its entry's.
 fn client_form_lines(
     form: &McpClientForm,
     server: &McpServerSnapshot,
@@ -970,6 +990,11 @@ fn client_form_lines(
             Style::new().fg(model_id_color()),
             width,
         ));
+    }
+    // What the server says about itself: its documentation link, the URL
+    // alone, linked.
+    if let Some(url) = &form.documentation {
+        facts.extend(client_link_rows(MCP_CLIENT_DOCS_LABEL, url, width));
     }
     if redirect {
         facts.extend(client_redirect_rows(form, width));

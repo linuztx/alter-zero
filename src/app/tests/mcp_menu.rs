@@ -497,6 +497,7 @@ fn client_request() -> McpClientRequest {
         has_secret: false,
         callback_port: Some(8976),
         redirect_uri: None,
+        documentation: None,
         reason: None,
     }
 }

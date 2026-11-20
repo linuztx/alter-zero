@@ -235,6 +235,11 @@ pub struct McpClientRequest {
     /// names one (`oauth.callbackUrl`) — what the form shows in place of
     /// [`oauth_redirect_uri`] of the port. `None` otherwise.
     pub redirect_uri: Option<String>,
+    /// The documentation link the server's metadata gives — the one thing
+    /// it says about itself: the authorization server's
+    /// `service_documentation`, else the resource's `resource_documentation`.
+    /// `None` where no discovery ran, or it gave none worth linking.
+    pub documentation: Option<String>,
     /// Why the client on hand was not enough — turned away by the
     /// authorization server, its port taken — in words for the page.
     pub reason: Option<String>,

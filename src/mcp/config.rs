@@ -504,8 +504,9 @@ fn parse_scopes(value: Option<&Value>, key: &str) -> Result<Option<String>, Stri
 }
 
 /// Check a `callbackUrl`: a loopback `http` address and its path (the root
-/// one included — no path at all is `/`) and nothing else — the redirect URI a native client registers (RFC 8252 §7.3).
-/// Returns the port it names, if any.
+/// one included — no path at all is `/`) and nothing else — the redirect
+/// URI a native client registers (RFC 8252 §7.3). Returns the port it
+/// names, if any.
 fn check_callback_url(url: &str, key: &str) -> Result<Option<u16>, String> {
     let bad = |what: &str| format!("\"oauth.{key}\" {what}");
     let parsed = url::Url::parse(url).map_err(|_| bad("must be a URL"))?;

@@ -2390,6 +2390,9 @@ pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
 /// The issuer row's label — the authorization server as discovery named it
 /// — padded to the redirect URI label's width so the two values line up.
 pub(super) const MCP_CLIENT_ISSUER_LABEL: &str = "Issuer:        ";
+/// The documentation row's label: the link the server's metadata gives,
+/// the same width as the other two.
+pub(super) const MCP_CLIENT_DOCS_LABEL: &str = "Docs:          ";
 /// The redirect URI row: its label, and what stands in for the address
 /// while the port typed is no port.
 pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI:  ";

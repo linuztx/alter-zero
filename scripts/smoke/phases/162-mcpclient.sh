@@ -71,7 +71,8 @@ class Stub(BaseHTTPRequestHandler):
                              "token_endpoint": f"{base}/oauth/token",
                              "response_types_supported": ["code"],
                              "code_challenge_methods_supported": ["S256"],
-                             "token_endpoint_auth_methods_supported": ["client_secret_post"]})
+                             "token_endpoint_auth_methods_supported": ["client_secret_post"],
+                             "service_documentation": f"{base}/docs/oauth"})
         else:
             self.reply(404, {})
 
@@ -194,6 +195,14 @@ note "the client form"
 printf '%s\n' "$form"
 expect_has "$form" -F "Issuer:        $AUTH_BASE" "the form does not show the issuer as discovery named it"
 expect_lacks "$form" -F "doesn't register this app" "the form still describes the provider"
+expect_has "$form" -F "Docs:          $AUTH_BASE/docs/oauth" "the form does not show the server's documentation link"
+# The documentation row is a link to exactly the URL it shows.
+docs_linked() {
+	grep -aoE $']8;id=az[0-9]+;[^\x1b]*' "$RAW" | sed -E 's/^\]8;id=az[0-9]+;//' | grep -qxF "$AUTH_BASE/docs/oauth"
+}
+if ! poll 5 docs_linked; then
+	fail "the documentation row carries no OSC 8 link to $AUTH_BASE/docs/oauth"
+fi
 expect_has "$form" -F "Redirect URI:  http://localhost:8976/callback" "the form does not show the redirect URI on the default port"
 expect_has "$form" -F "Callback port > 8976" "the port field is not prefilled"
 expect_has "$form" -F "Client ID     >" "the client ID field is missing"

@@ -294,7 +294,7 @@ impl Session<'_> {
                 // for where no page can ask.
                 if !self.app.ask_mcp_client(&server, &request) {
                     self.toast(
-                        format!("{server}: {}", AuthError::NeedsClient(request)),
+                        format!("{server}: {}", AuthError::NeedsClient(Box::new(request))),
                         ToastKind::Error,
                     );
                 }
