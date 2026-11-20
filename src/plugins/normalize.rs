@@ -34,8 +34,9 @@ pub struct NormalizeContext<'a> {
     pub plugin: &'a str,
     /// The install root and data directory the variables stand for.
     pub paths: PluginPaths<'a>,
-    /// Codex / Agent Plugins semantics: relative commands and `cwd` resolve
-    /// against the plugin root, which is also the default working directory.
+    /// agent-plugins.org semantics: the plugin root is every hook's and
+    /// stdio server's working directory. Otherwise a process runs where the
+    /// session runs, unless a server names a `cwd` (relative to the root).
     pub root_is_cwd: bool,
 }
 

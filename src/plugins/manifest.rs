@@ -187,6 +187,12 @@ pub struct PluginManifest {
     pub mcp_files: Vec<String>,
     /// Inline `mcpServers` maps, verbatim.
     pub mcp_inline: Vec<Value>,
+    /// The manifest has a `hooks` key at all — an empty object included,
+    /// which in the Codex format still replaces `hooks/hooks.json`.
+    pub declares_hooks: bool,
+    /// The manifest has an `mcpServers` key at all, which in the Codex
+    /// format replaces `.mcp.json`.
+    pub declares_mcp: bool,
     /// What this plugin carries that alter-zero does not use, as display
     /// phrases: `"2 LSP servers"`, `"output styles"`, `"apps"`.
     pub unsupported: Vec<String>,
@@ -219,6 +225,8 @@ impl PluginManifest {
             hooks_inline: Vec::new(),
             mcp_files: Vec::new(),
             mcp_inline: Vec::new(),
+            declares_hooks: false,
+            declares_mcp: false,
             unsupported: Vec::new(),
             warnings: Vec::new(),
         }
@@ -441,8 +449,14 @@ fn tolerant(fields: &Map<String, Value>, format: ManifestFormat) -> PluginManife
             }
             "commands" => m.commands = ComponentPaths::Listed(command_paths(&mut m, key, value)),
             "agents" => m.agents = ComponentPaths::Listed(path_list(&mut m, key, value, false)),
-            "hooks" => hooks(&mut m, key, value),
-            "mcpServers" => mcp_servers(&mut m, key, value),
+            "hooks" => {
+                m.declares_hooks = true;
+                hooks(&mut m, key, value);
+            }
+            "mcpServers" => {
+                m.declares_mcp = true;
+                mcp_servers(&mut m, key, value);
+            }
             "lspServers" => {
                 let phrase = match value {
                     Value::Object(servers) => count(servers.len(), "LSP server", "LSP servers"),

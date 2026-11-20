@@ -157,20 +157,19 @@ pub fn inspect(
             root: install_root,
             data: data_dir,
         },
-        root_is_cwd: matches!(
-            manifest.format,
-            ManifestFormat::Codex | ManifestFormat::AgentPlugins
-        ),
+        // Only agent-plugins.org starts a plugin's processes in its folder;
+        // the other formats run them where the session runs, and a server
+        // that wants its folder says so with `cwd`.
+        root_is_cwd: fixed,
     };
     let hook_documents = documents(
         &root,
-        &if fixed {
-            vec!["hooks.json".to_string()]
-        } else {
-            let mut files = vec!["hooks/hooks.json".to_string(), "hooks.json".to_string()];
-            files.extend(manifest.hook_files.iter().cloned());
-            files
-        },
+        &component_files(
+            &manifest,
+            ("hooks.json", "hooks/hooks.json"),
+            manifest.declares_hooks,
+            &manifest.hook_files,
+        ),
         if fixed { &[] } else { &manifest.hooks_inline },
         "hooks",
         &mut warnings,
@@ -178,13 +177,12 @@ pub fn inspect(
     let hooks = normalize_hooks(&hook_documents, &ctx);
     let mcp_documents = documents(
         &root,
-        &if fixed {
-            vec!["mcp.json".to_string()]
-        } else {
-            let mut files = vec![".mcp.json".to_string(), "mcp.json".to_string()];
-            files.extend(manifest.mcp_files.iter().cloned());
-            files
-        },
+        &component_files(
+            &manifest,
+            ("mcp.json", ".mcp.json"),
+            manifest.declares_mcp,
+            &manifest.mcp_files,
+        ),
         if fixed { &[] } else { &manifest.mcp_inline },
         "MCP",
         &mut warnings,
@@ -434,6 +432,26 @@ fn skill_name(dir: &Path, root: &Path, warnings: &mut Vec<String>) -> Option<Str
             warnings.push(format!("{shown}: {error} — the skill is not listed"));
             None
         }
+    }
+}
+
+/// The hooks or MCP files to read: agent-plugins.org's fixed root file
+/// alone; for Codex, the manifest's files when it declares the component
+/// (they replace the default) and the default file otherwise; for the rest,
+/// the default file and then the manifest's. A root `hooks.json` or
+/// `mcp.json` belongs to agent-plugins.org — no other format reads one.
+fn component_files(
+    manifest: &PluginManifest,
+    (fixed_file, default_file): (&str, &str),
+    declared: bool,
+    listed: &[String],
+) -> Vec<String> {
+    match manifest.format {
+        ManifestFormat::AgentPlugins => vec![fixed_file.to_string()],
+        ManifestFormat::Codex if declared => listed.to_vec(),
+        _ => std::iter::once(default_file.to_string())
+            .chain(listed.iter().cloned())
+            .collect(),
     }
 }
 
@@ -791,7 +809,7 @@ mod tests {
         assert_eq!(layout.skills, ["skills"]);
         assert_eq!(layout.hooks.summary, ["PreToolUse · Bash"]);
         assert_eq!(layout.mcp.summary, ["db (stdio)"]);
-        // Agent Plugins runs from the plugin root, like Codex.
+        // Agent Plugins runs from the plugin root.
         let hooks = layout.hooks.json.expect("hooks");
         assert!(hooks.contains("cd '/inst/demo' && ./check.sh"), "{hooks}");
     }
@@ -820,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_plugin_runs_from_its_root_and_takes_its_display_fields_from_interface() {
+    fn a_codex_plugin_takes_its_display_fields_from_interface_and_runs_in_the_sessions_directory() {
         let (_t, dir) = plugin_dir();
         write(
             &dir,
@@ -842,8 +860,14 @@ mod tests {
         write(&dir, "agents/openai.yaml", "interface: {}\n");
         write(
             &dir,
-            "hooks.json",
-            r#"{"hooks": {"PostToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "./scripts/check.sh"}]}]}}"#,
+            "hooks/hooks.json",
+            r#"{"hooks": {"PostToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "python3 ${PLUGIN_ROOT}/check.py"}]}]}}"#,
+        );
+        write(
+            &dir,
+            ".mcp.json",
+            r#"{"mcpServers": {"xcode": {"command": "npx", "args": ["-y", "xcodebuildmcp"]},
+                "local": {"command": "./bin/srv", "cwd": "."}}}"#,
         );
         write(
             &dir,
@@ -859,16 +883,84 @@ mod tests {
         );
         assert_eq!(layout.skills, ["skills"]);
         assert_eq!(layout.components.agents, ["demo:helper"]);
+        // Hooks run where the session runs, as the reference runs them.
         let hooks = layout.hooks.json.expect("hooks");
-        assert!(
-            hooks.contains("cd '/inst/demo' && ./scripts/check.sh"),
-            "{hooks}"
-        );
+        assert!(hooks.contains("python3 ${PLUGIN_ROOT}/check.py"), "{hooks}");
+        assert!(!hooks.contains("cd '"), "{hooks}");
+        // A server is started in the plugin's folder only when it asks.
+        let mcp = crate::mcp::parse_mcp_file(&layout.mcp.json.expect("mcp"));
+        let argv = |name: &str| match &mcp.servers.iter().find(|(n, _)| n == name).expect(name).1
+        {
+            crate::mcp::McpServerConfig::Stdio { command, args, .. } => {
+                std::iter::once(command.clone()).chain(args.clone()).collect::<Vec<_>>()
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(argv("plugin_demo_xcode"), ["npx", "-y", "xcodebuildmcp"]);
+        let local = argv("plugin_demo_local");
+        assert_eq!(local[0], "sh");
+        assert_eq!(local[4], ROOT);
         assert_eq!(layout.components.unsupported, ["2 apps"]);
     }
 
     #[test]
-    fn a_claude_plugin_keeps_its_hook_commands_as_written_with_variables_expanded() {
+    fn root_hooks_and_mcp_files_belong_to_agent_plugins_alone() {
+        let root_hooks = r#"{"hooks": {"PostToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "./draft.sh"}]}]}}"#;
+        let root_mcp = r#"{"mcpServers": {"draft": {"command": "draft"}}}"#;
+        for manifest in [
+            Some((".codex-plugin/plugin.json", r#"{"name": "demo"}"#)),
+            Some((".claude-plugin/plugin.json", r#"{"name": "demo"}"#)),
+            None,
+        ] {
+            let (_t, dir) = plugin_dir();
+            if let Some((file, text)) = manifest {
+                write(&dir, file, text);
+            }
+            write(&dir, "hooks.json", root_hooks);
+            write(&dir, "mcp.json", root_mcp);
+            let layout = read(&dir, None);
+            assert_eq!(layout.hooks.json, None, "{manifest:?}");
+            assert_eq!(layout.mcp.json, None, "{manifest:?}");
+        }
+    }
+
+    #[test]
+    fn a_codex_manifests_hooks_and_servers_replace_the_default_files() {
+        let (_t, dir) = plugin_dir();
+        write(
+            &dir,
+            ".codex-plugin/plugin.json",
+            r#"{"name": "demo", "hooks": "./more/hooks.json", "mcpServers": "./more/mcp.json"}"#,
+        );
+        write(
+            &dir,
+            "hooks/hooks.json",
+            r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "default"}]}]}}"#,
+        );
+        write(
+            &dir,
+            "more/hooks.json",
+            r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "named"}]}]}}"#,
+        );
+        write(&dir, ".mcp.json", r#"{"default": {"command": "d"}}"#);
+        write(&dir, "more/mcp.json", r#"{"named": {"command": "n"}}"#);
+        let layout = read(&dir, None);
+        assert_eq!(layout.hooks.summary, ["PreToolUse · Bash"]);
+        assert_eq!(layout.components.mcp_servers, ["named (stdio)"]);
+
+        // An empty `hooks` object still replaces the default file.
+        let (_t, dir) = plugin_dir();
+        write(&dir, ".codex-plugin/plugin.json", r#"{"name": "demo", "hooks": {}}"#);
+        write(
+            &dir,
+            "hooks/hooks.json",
+            r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "default"}]}]}}"#,
+        );
+        assert_eq!(read(&dir, None).hooks.json, None);
+    }
+
+    #[test]
+    fn a_claude_plugin_keeps_its_hook_commands_as_written() {
         let (_t, dir) = plugin_dir();
         write(&dir, ".claude-plugin/plugin.json", r#"{"name": "demo"}"#);
         write(
@@ -1029,22 +1121,14 @@ mod tests {
         );
         write(
             &dir,
-            "hooks.json",
-            r#"{"Stop": [{"hooks": [{"type": "command", "command": "b"}]}]}"#,
-        );
-        write(
-            &dir,
             "more/hooks.json",
             r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "c"}]}]}}"#,
         );
         let layout = read(&dir, None);
         let mut summary = layout.hooks.summary.clone();
         summary.sort();
-        assert_eq!(
-            summary,
-            ["PostToolUse", "PreToolUse · Bash", "SessionStart", "Stop"]
-        );
-        assert_eq!(layout.components.hooks.len(), 4);
+        assert_eq!(summary, ["PostToolUse", "PreToolUse · Bash", "SessionStart"]);
+        assert_eq!(layout.components.hooks.len(), 3);
     }
 
     #[test]

@@ -120,8 +120,8 @@ resolve inside the plugin; a bad one is dropped with a warning.
 | skills | `skills/<name>/SKILL.md`, the manifest's `skills` paths, a lone root `SKILL.md` | a skill named `plugin:skill` |
 | commands | `commands/**/*.md`, or the manifest's `commands` | the slash command `/plugin:command` |
 | agents | `agents/**/*.md`, or the manifest's `agents` | the subagent type `plugin:agent` |
-| hooks | `hooks/hooks.json`, a root `hooks.json`, the manifest's `hooks` (paths or inline) | one generated hooks file |
-| MCP servers | `.mcp.json`, a root `mcp.json`, the manifest's `mcpServers` (paths or inline) | one generated MCP file |
+| hooks | `hooks/hooks.json` and the manifest's `hooks` (paths or inline) — a Codex manifest's `hooks` *replaces* the file; agent-plugins.org's root `hooks.json` alone | one generated hooks file |
+| MCP servers | `.mcp.json` and the manifest's `mcpServers` (paths or inline) — a Codex manifest's `mcpServers` *replaces* the file; agent-plugins.org's root `mcp.json` alone | one generated MCP file |
 
 What a plugin carries that this app has no use for — ChatGPT apps, LSP
 servers, output styles, themes, workflows, monitors — is named on its detail
@@ -240,9 +240,13 @@ already reads:
   `callback_port` — either spelling) and a server-level `scopes` list carried
   into the `oauth` block the loader reads, an id still reading
   `<PLACEHOLDER>` left out, the
-  plugin's four variables set in a stdio server's environment, and — for
-  the two formats whose servers start in the plugin's folder — the command
-  wrapped in a `cd`.
+  plugin's four variables set in a stdio server's environment, and the
+  command wrapped in a `cd` when the server starts in a folder of its own:
+  always the plugin's for agent-plugins.org, and only a `cwd` the server
+  names (relative to the plugin) for the others, whose servers — and hooks
+  — run in the session's working directory as the reference implementation
+  runs them. Only agent-plugins.org hooks are prefixed with a `cd` to the
+  plugin root.
 
 ### What an enabled plugin adds to a session
 
