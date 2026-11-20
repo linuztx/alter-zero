@@ -24,7 +24,9 @@ use crate::cancel::CancelToken;
 use super::components::{PluginComponents, PluginContribution, load_plugin, preview_from_paths};
 use super::git::{GitError, GitRunner};
 use super::layout::PluginsLayout;
-use super::manifest::{ENTRY_FILE, ManifestError, ManifestFormat, classify, load_manifest};
+use super::manifest::{
+    ENTRY_FILE, ManifestError, ManifestFormat, classify, load_manifest, resolve_inside,
+};
 use super::marketplace::{
     Catalog, CatalogEntry, CatalogError, PluginSource, check_reserved, find_catalog,
     read_catalog_file, repository_name, single_plugin_catalog,
@@ -1270,7 +1272,7 @@ impl PluginStore {
                 )?;
                 let dir = match &subdir {
                     Some(sub) => checkout.join(sub),
-                    None => checkout,
+                    None => checkout.clone(),
                 };
                 if !dir.is_dir() {
                     return Err(PluginError::Unavailable {
@@ -1281,6 +1283,20 @@ impl PluginStore {
                         ),
                     });
                 }
+                // The folder is the repository's to name, so it is held to
+                // the checkout: a committed link out of it (`plugin ->
+                // ../../../../../.ssh`) must never become what is copied.
+                // The sparse checkout already leaves such a link out — a
+                // link is no folder — and this does not depend on that.
+                let Some(dir) = resolve_inside(&checkout, &dir) else {
+                    return Err(PluginError::Unavailable {
+                        id: id.to_string(),
+                        reason: format!(
+                            "its folder {} leaves the repository",
+                            subdir.as_deref().unwrap_or_default()
+                        ),
+                    });
+                };
                 Ok(Fetched {
                     dir,
                     revision: Some(revision),

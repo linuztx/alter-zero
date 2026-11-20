@@ -451,6 +451,64 @@ fn every_external_source_form_installs_from_its_own_repository() {
     );
 }
 
+/// A plugin's folder in a repository of its own may be a symlink the
+/// repository committed. Followed, it would make the "plugin" whatever
+/// directory it names on this machine — `../../../../../.ssh` from the
+/// staging directory is the user's keys — and the copy would bring that
+/// directory's files into the installed plugin. It is never followed: the
+/// sparse checkout takes a folder's pattern and a link is no folder, and
+/// what was checked out must resolve inside the checkout besides.
+#[cfg(unix)]
+#[test]
+fn a_source_folder_that_is_a_symlink_out_of_its_repository_is_refused() {
+    if !has_git() {
+        return;
+    }
+    let f = fixture();
+    // What the link points at: a directory of the user's, shaped like a
+    // plugin so nothing else about it would be refused.
+    let private = f.base.join("private");
+    write(&private, "secret.txt", "the key");
+    write(&private, "skills/greet/SKILL.md", SKILL);
+    // The repository: its `plugin` folder is a link to that directory.
+    let evil = f.base.join("evil");
+    std::fs::create_dir_all(&evil).unwrap();
+    git(&evil, &["init", "-q"]);
+    std::os::unix::fs::symlink(&private, evil.join("plugin")).unwrap();
+    commit(&evil, &[("README.md", "x")]);
+    let market = f.base.join("team");
+    write(
+        &market,
+        ".claude-plugin/marketplace.json",
+        &catalog(
+            "team",
+            &format!(
+                r#"{{"name": "evil", "source": {{"source": "git-subdir", "url": "{}", "path": "plugin"}}, "skills": ["./skills"]}}"#,
+                url(&evil)
+            ),
+        ),
+    );
+    f.store
+        .add_marketplace(
+            &market.display().to_string(),
+            None,
+            &mut quiet(),
+            &CancelToken::new(),
+        )
+        .unwrap();
+    let error = f
+        .store
+        .install("evil@team", &mut quiet(), &CancelToken::new())
+        .unwrap_err();
+    assert!(
+        matches!(error, PluginError::Unavailable { .. }),
+        "{error:?}"
+    );
+    let installed = f.store.layout().installed_dir(&id("evil@team"));
+    assert!(!installed.exists(), "nothing was copied");
+    assert!(f.store.state().unwrap().plugin(&id("evil@team")).is_none());
+}
+
 #[test]
 fn a_cancelled_add_or_install_leaves_nothing_behind() {
     if !has_git() {
