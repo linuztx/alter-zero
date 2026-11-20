@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
+use super::id::mcp_server_name;
 use super::vars::{self, PluginPaths};
 use crate::hooks::HookEvent;
 
@@ -559,27 +560,6 @@ fn pretty(value: &Value) -> String {
     let mut text = serde_json::to_string_pretty(value).unwrap_or_default();
     text.push('\n');
     text
-}
-
-// TODO(merge): use id::mcp_server_name
-fn sanitize_segment(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn mcp_server_name(plugin: &str, server: &str) -> String {
-    format!(
-        "plugin_{}_{}",
-        sanitize_segment(plugin),
-        sanitize_segment(server)
-    )
 }
 
 #[cfg(test)]

@@ -29,6 +29,29 @@ pub mod vars;
 
 // --- formats: id, source, manifest, marketplace, state, catalog -----------
 // (re-exports by name; never a glob)
+pub use catalog::{
+    CatalogMarketplace, CatalogPlugin, CatalogTab, Components, PluginCatalog, PluginDetail,
+    PluginStatus,
+};
+pub use id::{
+    LOCAL_MARKETPLACE, MAX_NAME_LEN, PluginId, PluginSelector, mcp_server_name, namespaced,
+    sanitize_segment, validate_marketplace_name, validate_plugin_name,
+};
+pub use manifest::{
+    ComponentPaths, MANIFEST_FILES, ManifestFormat, PluginManifest, agent_plugins_schema,
+    fill_display, manifest_from_entry, parse_manifest,
+};
+pub use marketplace::{
+    DESCRIPTION_CAP, MARKETPLACE_FILES, MarketplaceEntry, MarketplaceHeader, read_entry,
+    read_marketplace, renamed,
+};
+pub use source::{MarketplaceSource, PluginSource, safe_relative};
+pub use state::{
+    DefaultMarketplace, EnabledPlugin, GENERATED_DIR, GENERATED_HOOKS, GENERATED_MCP,
+    KnownMarketplace, MarketplaceRecord, PLUGINS_DIR, PluginRecord, PluginsFile, STATE_FILE,
+    builtin_defaults, data_dir, defaults_from_env, enabled_plugins, install_dir,
+    known_marketplaces, marketplace_dir, plugins_root, staging_dir, state_path, update_state,
+};
 
 // --------------------------------------------------------------------------
 
