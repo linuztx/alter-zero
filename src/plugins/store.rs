@@ -962,7 +962,16 @@ impl PluginStore {
             return Ok(self.recorded_detail(id, &record, &install_root, &data));
         };
         let raw = raw_entry(&market.root, &entry.name);
-        let blocked = blocked_reason(&entry);
+        let blocked = blocked_reason(&entry).or_else(|| match &entry.source {
+            // A folder the marketplace names but does not have: Install
+            // would only fail.
+            PluginSource::Local { path }
+                if record.is_none() && !join_relative(&market.root, path).is_dir() =>
+            {
+                Some(format!("its folder {path} is not in the marketplace"))
+            }
+            _ => None,
+        });
         let files = if record.is_some() && install_root.is_dir() {
             Some(install_root.clone())
         } else if let PluginSource::Local { path } = &entry.source {
