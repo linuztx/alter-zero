@@ -1270,6 +1270,34 @@ fn the_detail_reads_whichever_copy_of_the_files_is_at_hand() {
 }
 
 #[test]
+fn a_command_the_manifest_names_is_recorded_under_its_key() {
+    let world = World::new();
+    let dir = world.src.join("cmdmap");
+    write(
+        &dir,
+        ".claude-plugin/plugin.json",
+        r#"{"name": "cmdmap", "commands": {"about": {"source": "./docs/README.md", "description": "What this is"}}}"#,
+    );
+    write(&dir, "docs/README.md", "About this plugin.\n");
+    let store = world.store();
+    store.install_directory(&dir, &Silent).expect("installed");
+
+    // The page and `plugin info` call it by its key…
+    let detail = store.detail(&id("cmdmap@local")).expect("detail");
+    assert_eq!(
+        detail.components.expect("installed").commands,
+        ["/cmdmap:about"]
+    );
+    // …and so does a session, which reads the record and never the manifest.
+    let record = &world.state_json()["plugins"]["cmdmap@local"];
+    assert_eq!(record["commands"], json!(["docs/README.md"]));
+    assert_eq!(
+        record["named_commands"],
+        json!([{"name": "about", "path": "docs/README.md", "description": "What this is"}])
+    );
+}
+
+#[test]
 fn an_entry_whose_folder_the_marketplace_lacks_is_blocked_and_says_why() {
     let world = World::new();
     let (mut claude, _, _) = two_marketplaces(&world);

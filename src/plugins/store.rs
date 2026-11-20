@@ -1607,6 +1607,7 @@ impl PluginStore {
             source: local_source,
             skills,
             commands,
+            named_commands: manifest.named_commands.clone(),
             agents,
             hooks: hooks.json.is_some(),
             mcp: mcp.json.is_some(),

@@ -21,6 +21,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use super::id::PluginId;
+use super::manifest::NamedCommand;
 use super::source::{MarketplaceSource, safe_relative};
 
 /// The state file's name in the config home.
@@ -164,6 +165,10 @@ pub struct PluginRecord {
     /// Agent paths: a directory walked for `*.md`, or one `.md` file.
     #[serde(deserialize_with = "strings", skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
+    /// The commands the manifest names by key rather than by file, each
+    /// with the path it is recorded under in `commands`.
+    #[serde(deserialize_with = "items", skip_serializing_if = "Vec::is_empty")]
+    pub named_commands: Vec<NamedCommand>,
     /// The generated hooks file exists.
     #[serde(deserialize_with = "lenient", skip_serializing_if = "is_false")]
     pub hooks: bool,
@@ -379,6 +384,9 @@ pub struct EnabledPlugin {
     pub data: PathBuf,
     pub skills: Vec<PathBuf>,
     pub commands: Vec<PathBuf>,
+    /// The record's named commands that can be run: a path inside the
+    /// install root (still relative to it) and a name that can be typed.
+    pub named_commands: Vec<NamedCommand>,
     pub agents: Vec<PathBuf>,
     /// `root/.alter-zero-plugin/hooks.json` when the record says `hooks`.
     pub hooks_file: Option<PathBuf>,
@@ -413,6 +421,20 @@ pub fn enabled_plugins(file: &PluginsFile, plugins_root: &Path) -> Vec<EnabledPl
             Some(EnabledPlugin {
                 skills: join(&record.skills)?,
                 commands: join(&record.commands)?,
+                named_commands: record
+                    .named_commands
+                    .iter()
+                    .filter(|named| {
+                        super::command::typed_name(&named.name).as_deref() == Some(&named.name)
+                    })
+                    .filter_map(|named| {
+                        let path = safe_relative(&named.path)?;
+                        Some(NamedCommand {
+                            path,
+                            ..named.clone()
+                        })
+                    })
+                    .collect(),
                 agents: join(&record.agents)?,
                 hooks_file: record.hooks.then(|| generated.join(GENERATED_HOOKS)),
                 mcp_file: record.mcp.then(|| generated.join(GENERATED_MCP)),
@@ -477,6 +499,18 @@ fn strings<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
                 Value::String(text) => Some(text),
                 _ => None,
             })
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// The items of an array that read as `T`; anything else is empty.
+fn items<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Array(items) => items
+            .into_iter()
+            .filter(Value::is_object)
+            .filter_map(|item| T::deserialize(item).ok())
             .collect(),
         _ => Vec::new(),
     })
@@ -800,6 +834,47 @@ mod tests {
     }
 
     // ===== enabled plugins =====
+
+    #[test]
+    fn commands_a_manifest_names_ride_the_record_and_reach_the_session() {
+        let text = r#"{"plugins": {"cmdmap@m": {
+            "commands": ["docs/README.md"],
+            "named_commands": [
+                {"path": "docs/README.md", "name": "about", "description": "What this is"},
+                {"path": "../escape.md", "name": "out"},
+                {"path": "docs/README.md", "name": "not a name"},
+                {"path": "docs/README.md"},
+                "junk"
+            ]
+        }}}"#;
+        let file = PluginsFile::parse(text).unwrap();
+        // Everything that reads as a record is kept as written, and written
+        // back the same.
+        assert_eq!(file.plugins["cmdmap@m"].named_commands.len(), 4);
+        assert_eq!(
+            PluginsFile::parse(&file.to_json()).unwrap().plugins,
+            file.plugins
+        );
+        // A session gets only what it can run: a path inside the install and
+        // a name that can be typed.
+        let enabled = enabled_plugins(&file, Path::new("/c/plugins"));
+        assert_eq!(
+            enabled[0].named_commands,
+            [NamedCommand {
+                name: "about".into(),
+                path: "docs/README.md".into(),
+                description: Some("What this is".into()),
+                argument_hint: None,
+            }]
+        );
+        // A record without the key is unchanged on disk.
+        assert!(
+            !PluginsFile::parse(SAMPLE)
+                .unwrap()
+                .to_json()
+                .contains("named_commands")
+        );
+    }
 
     #[test]
     fn enabled_plugins_are_absolute_and_in_id_order() {

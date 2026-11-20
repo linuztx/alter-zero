@@ -24,8 +24,7 @@
 //! A manifest is one small file, so it is read as a `serde_json::Value`
 //! (unlike a marketplace, `super::marketplace`).
 
-use std::path::Path;
-
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::source::safe_relative;
@@ -158,16 +157,21 @@ pub enum ComponentPaths {
 }
 
 /// One entry of a `commands` object map: the command the key names, the
-/// file it runs, and what the map says about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// file it runs, and what the map says about it. It is also how the
+/// installed record keeps the name ([`super::state::PluginRecord`]), since a
+/// session never reads a manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NamedCommand {
     /// The map's key — the command is `/plugin:name`.
     pub name: String,
     /// The `source` path (already [`safe_relative`]).
     pub path: String,
     /// The map's `description`, which outranks the file's.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// The map's `argumentHint`, which outranks the file's.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub argument_hint: Option<String>,
 }
 
@@ -569,10 +573,7 @@ fn command_paths(m: &mut PluginManifest, key: &str, value: &Value) -> Vec<String
                 let listed = path_list(m, key, source, false);
                 // The key as the palette would spell it, or `None` when it
                 // cannot be typed.
-                let typed = (!name.contains(['/', '\\', ':']))
-                    .then(|| super::command::command_name("p", Path::new(&format!("{name}.md"))))
-                    .flatten()
-                    .and_then(|full| full.strip_prefix("p:").map(str::to_string));
+                let typed = super::command::typed_name(name);
                 match (typed, listed.as_slice()) {
                     (Some(typed), [path]) => {
                         let text = |field: &str| {

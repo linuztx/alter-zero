@@ -96,6 +96,20 @@ pub fn command_name(plugin: &str, relative: &Path) -> Option<String> {
     Some(format!("{plugin}:{}", segments.join(":")))
 }
 
+/// `name` as the last part of a command name — a `commands` map's key, say —
+/// spelled the way the palette spells one (lowercased), or `None` when it
+/// could not be typed: a separator in it, or a character [`command_name`]
+/// refuses.
+#[must_use]
+pub(crate) fn typed_name(name: &str) -> Option<String> {
+    if name.contains(['/', '\\', ':']) {
+        return None;
+    }
+    command_name("p", Path::new(&format!("{name}.md")))?
+        .strip_prefix("p:")
+        .map(str::to_string)
+}
+
 /// `body` with the user's argument text put in place.
 ///
 /// - `$ARGUMENTS` is the whole text, trimmed.

@@ -1635,6 +1635,7 @@ mod tests {
             data: tmp.join("data/p-mkt"),
             skills: vec![root.join("skills")],
             commands: Vec::new(),
+            named_commands: Vec::new(),
             agents: Vec::new(),
             hooks_file: None,
             mcp_file: None,

@@ -323,8 +323,18 @@ pub fn discover_plugin_commands(plugins: &[EnabledPlugin]) -> Vec<PluginCommand>
     let mut commands: Vec<PluginCommand> = Vec::new();
     for plugin in plugins {
         for (path, relative) in plugin.commands.iter().flat_map(|path| markdown_files(path)) {
-            let Some(name) = crate::plugins::command_name(&plugin.id.name, &relative) else {
-                continue;
+            // A command the manifest names by key runs under that key and
+            // says what the manifest said of it; any other by its path.
+            let named = plugin
+                .named_commands
+                .iter()
+                .find(|named| plugin.root.join(&named.path) == path);
+            let name = match named {
+                Some(named) => crate::plugins::namespaced(&plugin.id.name, &named.name),
+                None => match crate::plugins::command_name(&plugin.id.name, &relative) {
+                    Some(name) => name,
+                    None => continue,
+                },
             };
             if commands.iter().any(|command| command.name == name) {
                 continue;
@@ -335,8 +345,12 @@ pub fn discover_plugin_commands(plugins: &[EnabledPlugin]) -> Vec<PluginCommand>
             let (meta, _) = crate::plugins::parse_command(&contents);
             commands.push(PluginCommand {
                 name,
-                description: meta.description,
-                argument_hint: meta.argument_hint,
+                description: named
+                    .and_then(|named| named.description.clone())
+                    .unwrap_or(meta.description),
+                argument_hint: named
+                    .and_then(|named| named.argument_hint.clone())
+                    .or(meta.argument_hint),
                 takes_arguments: meta.takes_arguments,
                 path,
                 plugin_root: plugin.root.clone(),
@@ -742,6 +756,39 @@ mod tests {
                 ("code-review:review", "Review a PR", Some("[pr]"), true),
             ]
         );
+    }
+
+    #[test]
+    fn a_command_the_manifest_names_runs_under_its_key() {
+        let home = install();
+        let review = home.path().join("plugins/cache/mkt/code-review");
+        write(
+            &review.join("docs/README.md"),
+            "---\ndescription: The file's own\nargument-hint: [file]\n---\nAbout $ARGUMENTS.\n",
+        );
+        let mut plugins = snapshot(home.path()).plugins;
+        let plugin = plugins
+            .iter_mut()
+            .find(|plugin| plugin.id.name == "code-review")
+            .expect("installed");
+        plugin.commands.push(review.join("docs/README.md"));
+        plugin.named_commands.push(crate::plugins::NamedCommand {
+            name: "about".into(),
+            path: "docs/README.md".into(),
+            description: Some("What this is".into()),
+            argument_hint: None,
+        });
+        let commands = discover_plugin_commands(&plugins);
+        // Named by the key, never by the file, with the map's description
+        // and — where the map gives none — the file's own hint.
+        let about = commands
+            .iter()
+            .find(|c| c.name == "code-review:about")
+            .expect("named by its key");
+        assert_eq!(about.description, "What this is");
+        assert_eq!(about.argument_hint.as_deref(), Some("[file]"));
+        assert!(about.takes_arguments);
+        assert!(commands.iter().all(|c| c.name != "code-review:readme"));
     }
 
     #[test]
