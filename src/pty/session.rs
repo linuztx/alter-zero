@@ -1753,32 +1753,56 @@ mod tests {
         // asleep: a sleep ends when the scheduler gets back to it, which on
         // a loaded runner — macOS's three cores under the whole suite —
         // can come past the pacer's settle and split a frame at a pause
-        // that is not there.
-        use std::sync::atomic::{AtomicBool, Ordering};
+        // that is not there. Spinning does not stop the scheduler taking the
+        // writer off its core between the pieces, though, and then the pause
+        // is real: the writer times each frame from before its erase to after
+        // its glyph, and a half-drawn frame is excused only by a frame that
+        // took the pacer's whole settle to write.
+        //
+        // Nor may the call fall a frame behind. A call kept off its core
+        // longer than the pacer holds an update (`pty::pace::MAX_HOLD`)
+        // samples the moment it is back, wherever the spinner is, and one
+        // back just as a frame began caught it half drawn with no pause at
+        // all. So each frame is drawn only once the call has streamed the one
+        // before it. That also means every erase finds an update already
+        // due, so a pacer that sampled at the first piece would split every
+        // frame, not only the unlucky ones.
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const SPINNER: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼";
         let io = Arc::new(SessionIo::new(true));
+        let shown = Arc::new(Shown::default());
         let since = io.begin_wait();
         let done = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicUsize::new(0));
         {
             let io = Arc::clone(&io);
+            let shown = Arc::clone(&shown);
             let done = Arc::clone(&done);
+            let paused = Arc::clone(&paused);
             std::thread::spawn(move || {
-                io.absorb("installing\r\n⠋".as_bytes());
-                for glyph in "⠙⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸⠼".chars() {
+                let mut glyphs = SPINNER.chars();
+                let first = glyphs.next().expect("a spinner has frames");
+                io.absorb(format!("installing\r\n{first}").as_bytes());
+                shown.wait_for(&format!("installing\n{first}"));
+                for glyph in glyphs {
                     std::thread::sleep(Duration::from_millis(60));
+                    let began = Instant::now();
                     io.absorb(b"\x1b[1G\x1b[0K");
-                    let apart = std::time::Instant::now() + Duration::from_millis(1);
-                    while std::time::Instant::now() < apart {
+                    let apart = Instant::now() + Duration::from_millis(1);
+                    while Instant::now() < apart {
                         std::hint::spin_loop();
                     }
                     io.absorb(glyph.to_string().as_bytes());
+                    if began.elapsed() >= crate::pty::pace::FRAME_SETTLE {
+                        paused.fetch_add(1, Ordering::SeqCst);
+                    }
+                    shown.wait_for(&format!("installing\n{glyph}"));
                 }
-                std::thread::sleep(Duration::from_millis(60));
                 done.store(true, Ordering::SeqCst);
             });
         }
         let mut view = String::new();
         let mut live_len = 0;
-        let mut frames = Vec::new();
         let end = io.wait(
             WaitKind::Launch,
             since,
@@ -1787,21 +1811,31 @@ mod tests {
             &never,
             &mut |settled, live| {
                 live_len = crate::app::apply_tool_screen(&mut view, live_len, settled, live);
-                frames.push(view.clone());
+                shown.push(&view);
             },
         );
         assert_eq!(end, WaitEnd::Cancelled);
-        assert!(
-            frames.len() >= 5,
-            "it streamed as the spinner turned: {frames:?}"
-        );
-        assert!(
-            frames.iter().all(|frame| {
+        let frames = shown.frames();
+        let (drawn, half_drawn): (Vec<&str>, Vec<&str>) =
+            frames.iter().map(String::as_str).partition(|frame| {
                 frame
                     .strip_prefix("installing\n")
                     .is_some_and(|glyph| glyph.chars().count() == 1)
-            }),
-            "a frame reached the cell half drawn: {frames:?}"
+            });
+        let turned: Vec<String> = SPINNER
+            .chars()
+            .map(|glyph| format!("installing\n{glyph}"))
+            .collect();
+        assert_eq!(
+            drawn, turned,
+            "it streamed every frame as the spinner turned"
+        );
+        let paused = paused.load(Ordering::SeqCst);
+        assert!(
+            half_drawn.len() <= paused,
+            "a frame reached the cell half drawn ({}, with {paused} frames \
+             written slower than the settle): {frames:?}",
+            half_drawn.len()
         );
     }
 
