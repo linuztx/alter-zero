@@ -30,6 +30,7 @@ use alter_zero::app::{JobDone, JobGoto, PluginEvent, PluginOp};
 use alter_zero::plugins::{
     Control, GitControl, GitError, GitProgress, InstallOutcome, KnownMarketplace,
     LOCAL_MARKETPLACE, MarketplaceOutcome, MarketplaceSource, PluginId, PluginStore, git_available,
+    version_label,
 };
 use alter_zero::plugins::{PluginDetail, PluginStatus};
 use alter_zero::stream::CancelToken;
@@ -520,9 +521,12 @@ pub(crate) fn updated_done(name: &str, before: Option<&str>, outcome: &InstallOu
     let text = match (outcome.changed, outcome.version.as_deref()) {
         (false, _) => format!("{name} is already up to date"),
         (true, Some(version)) if before == Some(version) => {
-            format!("{name} is at v{version} — copied again from its marketplace")
+            format!(
+                "{name} is at {} — copied again from its marketplace",
+                version_label(version)
+            )
         }
-        (true, Some(version)) => format!("Updated {name} to v{version}"),
+        (true, Some(version)) => format!("Updated {name} to {}", version_label(version)),
         (true, None) => format!("Updated {name}"),
     };
     done(text, None, None)

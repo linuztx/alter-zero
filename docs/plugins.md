@@ -192,7 +192,10 @@ into staging happens before the lock is taken, and a filesystem that cannot
 lock is used without one. Beside each plugin's state (`enabled`, `version`,
 `revision`) it **records where its components are** — the `skills`,
 `commands` and `agents` paths and whether hooks and MCP files were generated
-— so a session never parses a manifest to start.
+— so a session never parses a manifest to start. A plugin that names no
+version is recorded under the first twelve characters of its commit, and is
+shown that way — `2de00883bd2b`, where a version reads `v1.0.1`
+(`plugins::version_label`).
 
 ### Installing
 

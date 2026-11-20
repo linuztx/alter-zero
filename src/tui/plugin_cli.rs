@@ -24,7 +24,7 @@ use alter_zero::cli::{self, HelpPage, MarketplaceCli, PluginCli};
 use alter_zero::plugins::{
     CatalogTab, Components, Control, DefaultMarketplace, GitControl, GitProgress, InstallOutcome,
     KnownMarketplace, LOCAL_MARKETPLACE, MarketplaceSource, PluginCatalog, PluginDetail, PluginId,
-    PluginSelector, PluginStatus, PluginStore, PluginsFile,
+    PluginSelector, PluginStatus, PluginStore, PluginsFile, version_label,
 };
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
@@ -936,10 +936,14 @@ fn checked_line(checked: usize, updated: usize) -> String {
 fn update_line(outcome: &InstallOutcome, old: Option<&str>) -> String {
     let id = &outcome.id;
     match (outcome.changed, outcome.version.as_deref()) {
-        (false, Some(version)) => format!("{id} is up to date (v{version})"),
+        (false, Some(version)) => {
+            format!("{id} is up to date ({})", version_label(version))
+        }
         (false, None) => format!("{id} is up to date"),
-        (true, Some(version)) if old != Some(version) => format!("Updated {id} to v{version}"),
-        (true, Some(version)) => format!("Updated {id} (v{version})"),
+        (true, Some(version)) if old != Some(version) => {
+            format!("Updated {id} to {}", version_label(version))
+        }
+        (true, Some(version)) => format!("Updated {id} ({})", version_label(version)),
         (true, None) => format!("Updated {id}"),
     }
 }
@@ -950,7 +954,7 @@ fn installed_outcome_text(outcome: &InstallOutcome, again: bool) -> String {
     let verb = if again { "Reinstalled" } else { "Installed" };
     let mut text = format!("{verb} {}", outcome.id);
     if let Some(version) = &outcome.version {
-        text.push_str(&format!(" (v{version})"));
+        text.push_str(&format!(" ({})", version_label(version)));
     }
     text.push('\n');
     let live = outcome.live_summary();
@@ -1271,7 +1275,7 @@ fn info_text(detail: &PluginDetail, paint: Paint, width: Option<usize>, bin: &st
             PluginStatus::Enabled | PluginStatus::Disabled
         )
     });
-    let shown = |v: &str| format!("v{v}");
+    let shown = |v: &str| version_label(v);
     if let Some(version) = version_step(
         installed.map(shown).as_deref(),
         detail.version.as_deref().map(shown).as_deref(),

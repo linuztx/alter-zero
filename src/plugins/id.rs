@@ -250,6 +250,20 @@ pub fn namespace_key(name: &str) -> String {
     name.to_ascii_lowercase().replace('.', "_")
 }
 
+/// A version as it is shown: `v1.2.0` for a version, the text itself for
+/// anything else. An install that names no version is recorded under the
+/// first characters of its commit, and `v2de00883bd2b` reads as neither a
+/// version nor a commit; one already written `v1.2.0` gets no second `v`.
+#[must_use]
+pub fn version_label(version: &str) -> String {
+    let commit = version.len() >= 7 && version.bytes().all(|b| b.is_ascii_hexdigit());
+    if version.starts_with(|c: char| c.is_ascii_digit()) && !commit {
+        format!("v{version}")
+    } else {
+        version.to_string()
+    }
+}
+
 /// `plugin:component` — how a plugin's skills, agents and commands are
 /// named, so two plugins' `review` never collide.
 #[must_use]
@@ -260,6 +274,20 @@ pub fn namespaced(plugin: &str, component: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_is_shown_with_a_v_and_a_commit_without() {
+        assert_eq!(version_label("1.0.1"), "v1.0.1");
+        assert_eq!(version_label("7"), "v7");
+        assert_eq!(version_label("2025.11"), "v2025.11");
+        // Already written with one: never a second.
+        assert_eq!(version_label("v2.0.0"), "v2.0.0");
+        // An install that names no version is recorded under the first
+        // characters of its commit, which is no version.
+        assert_eq!(version_label("2de00883bd2b"), "2de00883bd2b");
+        assert_eq!(version_label("0f487c9"), "0f487c9");
+        assert_eq!(version_label("main"), "main");
+    }
 
     // ===== names =====
 

@@ -35,7 +35,7 @@ pub use catalog::{
 };
 pub use id::{
     LOCAL_MARKETPLACE, MAX_NAME_LEN, PluginId, PluginSelector, mcp_server_name, namespaced,
-    sanitize_segment, validate_marketplace_name, validate_plugin_name,
+    sanitize_segment, validate_marketplace_name, validate_plugin_name, version_label,
 };
 pub use manifest::{
     ComponentPaths, MANIFEST_FILES, ManifestFormat, NamedCommand, PluginManifest,

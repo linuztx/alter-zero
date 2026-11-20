@@ -647,6 +647,7 @@ use alter_zero::plugins::{
     update_state,
     validate_marketplace_name,
     validate_plugin_name,
+    version_label,
 };
 
 // --- `plugins` — transforms and I/O primitives (vars, command, normalize, git, fsops) ---

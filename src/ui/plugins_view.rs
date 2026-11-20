@@ -43,6 +43,7 @@ use crate::app::{
     PluginsMenu, PluginsPage, PluginsTab, Spinner, format_elapsed,
 };
 use crate::plugins::catalog::{CatalogMarketplace, CatalogPlugin, PluginDetail, PluginStatus};
+use crate::plugins::version_label;
 
 // --- shared pieces ----------------------------------------------------------
 
@@ -531,10 +532,12 @@ fn update_suffix_cols() -> usize {
 /// v2.0.0`.
 fn version_text(installed: Option<&str>, offered: Option<&str>, update: bool) -> Option<String> {
     match (installed, offered) {
-        (Some(from), Some(to)) if update && from != to => {
-            Some(format!("v{from}{PLUGINS_VERSION_ARROW}v{to}"))
-        }
-        (installed, offered) => offered.or(installed).map(|v| format!("v{v}")),
+        (Some(from), Some(to)) if update && from != to => Some(format!(
+            "{}{PLUGINS_VERSION_ARROW}{}",
+            version_label(from),
+            version_label(to)
+        )),
+        (installed, offered) => offered.or(installed).map(version_label),
     }
 }
 
