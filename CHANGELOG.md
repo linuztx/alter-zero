@@ -125,6 +125,15 @@ release heading when a version is cut.
 
 ### Changed
 
+- **Signing in to an MCP server no longer opens a browser by itself.**
+  The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
+  macOS) on the authorize URL, which over SSH, in a container or on a
+  headless machine failed silently or opened a browser somewhere else.
+  The page now shows the URL with `Open this URL in your browser to
+  authenticate (c to copy)`; click it, or press `c` and paste it. The
+  callback and the paste-the-redirect fallback work as before
+  (`docs/mcp.md`).
+
 - **Auto mode's safety check answers in JSON, and a reply that is not
   exactly a verdict is never acted on.** The classifier that reviews a
   command in your place used to answer `<block>yes</block>` or
@@ -242,6 +251,59 @@ release heading when a version is cut.
   times could move one entry, and a PageDown pressed right after a → scrolled
   before the step instead of after it. Each press now moves the view in the
   order it was pressed (`docs/transcript-navigation.md`).
+
+- **Typing stays instant while a reply streams.** A key typed under a
+  streaming reply waited for the stream's next frame, 4 to 5 ms on average
+  and up to 10, and behind a burst of the stream's own events on top of
+  that. A key press, and a paste, now gets a frame of its own, ahead of
+  anything the stream is doing: under a streaming reply a typed character is
+  on screen in under a millisecond, as it is on an idle composer, where it
+  used to take two (`docs/input-latency.md`).
+
+- **The app no longer stops reading keys when a long reply or a big file
+  read lands.** Every finished reply and tool call was rendered for the
+  Ctrl+O transcript on the spot, between two keystrokes: 200 ms for a
+  2000-line `read`, most of a second at the end of a long code reply, and
+  the whole history at once after `/resume`. That rendering now happens on a
+  thread of its own. Ctrl+O still opens at once, and now does so after a
+  resize too, where it used to rebuild the whole conversation first.
+
+- **Typing under a command that prints a lot is no longer sluggish.** While a
+  command printed thousands of lines, each frame measured everything it had
+  printed, several times over, to show its last four rows and say how many
+  sit above them, so the longer a verbose build or test run went on the
+  slower each frame got: a key took 40 ms to show, over 100 ms under a
+  command printing long lines as fast as it could, and the app held most of
+  a CPU core. Each line is now measured once, as it scrolls past, and the
+  cell is built once a frame: the same key appears in about a millisecond.
+  A grouped search's `(12s · 34 lines)` count works the same way
+  (`docs/tool-streaming.md`).
+
+- **Typing stays instant while a model thinks at length.** The thinking
+  block re-wrapped the model's newest paragraph on every frame to show its
+  last three rows, and a model that thinks in one long paragraph made that
+  the whole thought, so typing slowed the longer it thought: twenty seconds
+  into a fast model's think, a typed key took a median of 21 ms to appear,
+  with a core fully busy. Rows that can no longer change are kept now, and
+  a frame wraps only what arrived since the last one
+  (`docs/thinking-stream.md`).
+
+- **Scrolling Ctrl+O while a reply streams is smooth.** The transcript
+  re-rendered the whole reply so far on every frame, so under a long code
+  reply each scroll key took about 150 ms. It renders each line once now,
+  and not again when the reply ends, where the open transcript used to stop
+  for a tenth of a second.
+
+- **More than a kilobyte typed in one go all arrives.** Text pasted into a
+  terminal without bracketed paste, typed by a dictation tool, or delivered
+  in one piece by a connection that had stalled showed its first 1024 bytes;
+  the rest appeared a kilobyte per further key press. The terminal library
+  is patched to read all of it (`vendor/README.md`).
+
+- **A frame reaches the terminal in one write.** It was meant to and did
+  not: a frame went out in three pieces on average, a frame that scrolled
+  sent the scroll ahead of the repaint, and a long commit was one write per
+  row. A terminal without synchronized updates could paint in between.
 
 ### Security
 

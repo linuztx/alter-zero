@@ -403,10 +403,13 @@ use alter_zero::tasks::{
 #[rustfmt::skip]
 #[allow(unused_imports)]
 use alter_zero::ui::{
+    RenderedTranscriptItem,
     Repin,
     StreamRender,
+    TRANSCRIPT_WARM_WINDOW,
     TranscriptCache,
     TranscriptEntry,
+    TranscriptJob,
     TranscriptPage,
     ViewFlow,
     COMPACTED_NOTICE,
@@ -464,6 +467,7 @@ use alter_zero::ui::{
     format_elapsed,
     format_timeout,
     format_token_count,
+    frame,
     header_lines,
     hook_report_lines,
     hooks_menu_height,

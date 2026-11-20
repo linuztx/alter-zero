@@ -840,31 +840,28 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
     }
 }
 
-/// The agent session view's strip preview — the main strip's branches over
-/// the viewed agent's own state, in the same order
-/// ([`super::live::preview_lines`]): its live tool cells (the batch queue,
-/// blank-separated, a running command tailing its output), else its open
-/// thinking block, else its streaming reply's frontier. Empty when idle.
+/// The viewed agent's **live cells** for its session view's strip — its tool
+/// queue (blank-separated, a running command tailing its output), the
+/// `write` it is generating, its open thinking phase, in the main strip's
+/// order — or `None` when the strip previews its reply's frontier instead
+/// (or nothing). The agent half of
+/// [`live_cell_lines`](super::live::live_cell_lines), so the rows the view
+/// reserves and the rows it draws are one build.
 ///
-/// `stream_preview` is the boundary's [`super::StreamRender::preview`] over
-/// the agent's buffer — **the rows its own commits have withheld**, which for
-/// a forming table or a fenced code line is the whole block, not one row. The
-/// fallback below (`None`: a unit test, or any caller without a render)
-/// re-renders the last line from the buffer, exactly as the main branch's
-/// does. Rendering that fallback while the commits withheld a whole block was
-/// the reported "streaming disappears" bug — `committed ++ preview` must be
+/// The frontier is the boundary's [`super::StreamRender::preview`] over the
+/// agent's buffer — **the rows its own commits have withheld**, which for a
+/// forming table or a fenced code line is the whole block, not one row —
+/// handed to [`super::live::preview_lines`] like the main view's. Rendering
+/// one batch-rendered row there while the commits withheld a whole block was
+/// the reported "streaming disappears" bug: `committed ++ preview` must be
 /// the reply here as much as in the main view (CLAUDE.md invariant 2,
 /// `docs/agent-view-streaming.md`).
-///
-/// The [`preview_lines`]/[`preview_rows`] pair calls this for a viewed agent
-/// so the two agree.
-pub(super) fn agent_view_preview_lines(
+pub(super) fn agent_view_cell_lines(
     run: &crate::agents::AgentRun,
     pulse: Duration,
     width: u16,
-    stream_preview: Option<&[Line<'static>]>,
     paths: &PathDisplay,
-) -> Vec<Line<'static>> {
+) -> Option<Vec<Line<'static>>> {
     if !run.tool_queue.is_empty() {
         let mut lines = Vec::new();
         // A queued previewed call keeps the file it streamed, the main
@@ -895,50 +892,22 @@ pub(super) fn agent_view_preview_lines(
                 paths,
             ));
         }
-        return lines;
+        return Some(lines);
     }
     // A `write` the agent is still generating streams into its cell, the
     // main strip's next branch (docs/write-streaming.md).
     if run.drafts().previews().next().is_some() {
-        return super::live::draft_preview_lines(run.drafts(), pulse, width, paths);
+        return Some(super::live::draft_preview_lines(
+            run.drafts(),
+            pulse,
+            width,
+            paths,
+        ));
     }
     // An open thinking phase previews its live block, after the tool branch
     // and before the reply's — what is genuinely executing is what the user
     // waits on, and the model cannot be streaming a reply while it thinks
     // (the main strip's order, `docs/thinking-stream.md`).
-    if let Some(text) = run.reasoning() {
-        return super::reasoning::live_reasoning_lines(text, pulse, width);
-    }
-    if let Some(lines) = stream_preview {
-        return lines.to_vec();
-    }
-    run.streaming
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .map(|text| {
-            message_lines(Role::Assistant, text, width)
-                .pop()
-                .unwrap_or_default()
-        })
-        .into_iter()
-        .collect()
-}
-
-/// The strip's preview row count for a viewed agent — [`preview_rows`]' agent
-/// branch, mirroring its main one: a live tool queue or an open thinking
-/// phase size from the same walk the strip draws, while a **streaming reply**
-/// reports the boundary-injected frontier height
-/// ([`crate::app::App::stream_preview_rows`]), because only the boundary's
-/// `StreamRender` knows how many rows it withheld
-/// (`docs/agent-view-streaming.md`, `docs/table-streaming.md`).
-pub(super) fn agent_preview_rows(app: &App, run: &crate::agents::AgentRun, width: u16) -> u16 {
-    if run.tool_queue.is_empty()
-        && run.drafts().previews().next().is_none()
-        && run.reasoning().is_none()
-        && run.streaming.as_deref().is_some_and(|t| !t.is_empty())
-    {
-        return app.stream_preview_rows();
-    }
-    u16::try_from(agent_view_preview_lines(run, app.pulse(), width, None, app.path_display()).len())
-        .unwrap_or(u16::MAX)
+    run.live_thought()
+        .map(|thought| super::reasoning::live_reasoning_lines(thought, pulse, width))
 }

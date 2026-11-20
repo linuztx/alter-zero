@@ -17,8 +17,11 @@ use super::cached_lines::CachedLines;
 use super::conversation::is_shell_header;
 use super::file_cell::draft_cell;
 use super::hook_cell::hook_report_full_cell;
-use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
+use super::message::{
+    assistant_message_rows, compaction_full_lines, hook_note_lines, user_stamp_lines,
+};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
+use super::stream_render::StreamRender;
 use super::theme::*;
 use super::tool::tool_full_cell;
 use super::wrap::{cols, truncate_cols};
@@ -234,11 +237,11 @@ fn transcript_build(app: &App, width: u16) -> TranscriptCache {
     cache
 }
 
-/// One history item's transcript rows ([`transcript_item_lines`]): the rows,
-/// the backtrack span, and what the rows hold as entries.
-struct ItemRows {
-    /// The rows, the trailing spacer included.
-    lines: Vec<Line<'static>>,
+/// What one history item put on a page ([`transcript_item_into`]): its
+/// backtrack span and what its rows hold as entries.
+struct ItemShape {
+    /// How many rows it put down, the trailing spacer included.
+    rows: usize,
     /// `Some(message-row count)` for a **user** message — the span the Esc-Esc
     /// backtrack preview reverses (its timestamp line below stays normal; see
     /// `docs/backtrack.md`) — `None` for everything else.
@@ -266,25 +269,42 @@ enum ItemCells {
     Agents(Vec<(usize, usize)>),
 }
 
-/// One history item's transcript rows — the message (or the tool's *expanded*
-/// output, or a summary/background notice) plus its trailing blank spacer,
-/// self-contained so [`TranscriptCache`] can render each committed item
-/// exactly once and only ever append. The spacer is skipped after a shell
-/// command's header ([`is_shell_header`]): its tool's `⎿` output sits flush
-/// below it, whether that tool is already in history or still the running
-/// live tail, so the overlay renders the same exec cell as the inline view.
-fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) -> ItemRows {
-    let mut lines = Vec::new();
+/// Put one history item's transcript rows on `page` — the message (or the
+/// tool's *expanded* output, or a summary/background notice) plus its
+/// trailing blank spacer, self-contained so [`TranscriptCache`] can render
+/// each committed item exactly once and only ever append. The spacer is
+/// skipped after a shell command's header ([`is_shell_header`]): its tool's
+/// `⎿` output sits flush below it, whether that tool is already in history or
+/// still the running live tail, so the overlay renders the same exec cell as
+/// the inline view.
+///
+/// The rows go **straight onto the page**, whatever form it keeps them in
+/// ([`RowSink`]) — an assistant reply's one at a time as its lines render —
+/// so the cache's compact rows are never a second copy of an item first
+/// built whole as lines: for a long code reply those lines are megabytes of
+/// strings made to be copied and freed, and a freed block that size is one
+/// the allocator keeps (`docs/memory.md`).
+fn transcript_item_into<R: RowSink>(
+    page: &mut R,
+    item: &HistoryItem,
+    width: u16,
+    paths: &PathDisplay,
+) -> ItemShape {
+    let top = page.row_count();
     let mut user_rows = None;
     let cells = match item {
+        HistoryItem::Message(m) if m.role == Role::Assistant => {
+            assistant_message_rows(&m.text, width, |row| page.push_row(row));
+            ItemCells::One { header: 0 }
+        }
         HistoryItem::Message(m) => {
             let message = message_lines(m.role, &m.text, width);
             if m.role == Role::User {
                 user_rows = Some(message.len());
             }
-            lines.extend(message);
+            page.push_rows(message);
             if m.role == Role::User {
-                lines.extend(user_stamp_lines(&m.timestamp, width));
+                page.push_rows(user_stamp_lines(&m.timestamp, width));
             }
             if m.role == Role::Shell {
                 ItemCells::ShellHeader
@@ -294,7 +314,7 @@ fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) ->
         }
         HistoryItem::Tool(t) => {
             let (cell, header) = tool_full_cell(t, width, paths);
-            lines.extend(cell);
+            page.push_rows(cell);
             if t.shell {
                 ItemCells::ShellOutput
             } else {
@@ -306,15 +326,15 @@ fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) ->
         // `● TaskCreate(subject)` over its `⎿` result (docs/task-tools.md).
         HistoryItem::TaskCall(t) => {
             let (cell, header) = tool_full_cell(&t.as_tool_call(), width, paths);
-            lines.extend(cell);
+            page.push_rows(cell);
             ItemCells::One { header }
         }
         HistoryItem::Summary(s) => {
-            lines.extend(summary_lines(s, width));
+            page.push_rows(summary_lines(s, width));
             ItemCells::None
         }
         HistoryItem::Background(n) => {
-            lines.extend(background_notice_lines(n, width));
+            page.push_rows(background_notice_lines(n, width));
             ItemCells::One { header: 0 }
         }
         // The transcript expands the group into one `● Agent({description})`
@@ -328,27 +348,27 @@ fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) ->
                 .enumerate()
             {
                 if i > 0 {
-                    lines.push(Line::default());
+                    page.push_row(Line::default());
                 }
-                agents.push((lines.len(), cell.len()));
-                lines.extend(cell);
+                agents.push((page.row_count() - top, cell.len()));
+                page.push_rows(cell);
             }
             ItemCells::Agents(agents)
         }
         HistoryItem::AgentNotice(n) => {
-            lines.extend(agent_notice_lines(n, width));
+            page.push_rows(agent_notice_lines(n, width));
             ItemCells::One { header: 0 }
         }
         // The transcript expands the marker with its summary body — the
         // inline view keeps it collapsed (docs/compact.md).
         HistoryItem::Compaction(c) => {
-            lines.extend(compaction_full_lines(c, width));
+            page.push_rows(compaction_full_lines(c, width));
             ItemCells::One { header: 1 }
         }
         // The transcript is where a thought's whole chain-of-thought lives —
         // inline it is the one collapsed line (docs/thinking-stream.md).
         HistoryItem::Reasoning(r) => {
-            lines.extend(reasoning_full_lines(r, width));
+            page.push_rows(reasoning_full_lines(r, width));
             ItemCells::One { header: 1 }
         }
         // What the hooks said, expanded — each hook that ran and what it
@@ -357,25 +377,38 @@ fn transcript_item_lines(item: &HistoryItem, width: u16, paths: &PathDisplay) ->
         HistoryItem::HookNote(n) => match &n.report {
             Some(report) => {
                 let (cell, header) = hook_report_full_cell(report, width);
-                lines.extend(cell);
+                page.push_rows(cell);
                 ItemCells::One { header }
             }
             None => {
-                lines.extend(hook_note_lines(n, width));
+                page.push_rows(hook_note_lines(n, width));
                 ItemCells::One { header: 1 }
             }
         },
     };
+    close_item(page, top, item, width, user_rows, cells)
+}
+
+/// What every item's rows end on, whoever rendered the cell above: its
+/// pictures, then the blank spacer — and the [`ItemShape`] of the whole.
+fn close_item<R: RowSink>(
+    page: &mut R,
+    top: usize,
+    item: &HistoryItem,
+    width: u16,
+    user_rows: Option<usize>,
+    cells: ItemCells,
+) -> ItemShape {
     // The transcript draws the same pictures the inline view does — the
     // reserved rows are ordinary lines, so the overlay's paint stamps them
     // exactly as scrollback's does (`docs/images.md`).
-    lines.extend(super::image::image_block_lines(item, width));
-    let content = lines.len();
+    page.push_rows(super::image::image_block_lines(item, width));
+    let content = page.row_count() - top;
     if !is_shell_header(item) {
-        lines.push(Line::default());
+        page.push_row(Line::default());
     }
-    ItemRows {
-        lines,
+    ItemShape {
+        rows: page.row_count() - top,
         user_rows,
         content,
         cells,
@@ -398,13 +431,20 @@ struct EntryWalk {
 }
 
 impl EntryWalk {
-    /// Record `item`'s entries, its rows starting at `at`.
-    fn item(&mut self, entries: &mut Vec<TranscriptEntry>, at: usize, item: &ItemRows) {
-        match &item.cells {
+    /// Record an item's entries: `content` rows before its spacer, starting
+    /// at `at`, holding `cells`.
+    fn item(
+        &mut self,
+        entries: &mut Vec<TranscriptEntry>,
+        at: usize,
+        content: usize,
+        cells: &ItemCells,
+    ) {
+        match cells {
             ItemCells::None => {}
-            ItemCells::One { header } => self.cell(entries, at, *header, item.content),
-            ItemCells::ShellHeader => self.shell_header(entries, at, item.content),
-            ItemCells::ShellOutput => self.shell_output(entries, at, item.content),
+            ItemCells::One { header } => self.cell(entries, at, *header, content),
+            ItemCells::ShellHeader => self.shell_header(entries, at, content),
+            ItemCells::ShellOutput => self.shell_output(entries, at, content),
             ItemCells::Agents(agents) => {
                 for &(first, rows) in agents {
                     self.cell(entries, at + first, AGENT_CELL_HEADER_ROWS, rows);
@@ -465,6 +505,8 @@ trait RowSink {
     fn row_count(&self) -> usize;
     /// Append `lines`.
     fn push_rows(&mut self, lines: Vec<Line<'static>>);
+    /// Append one row.
+    fn push_row(&mut self, line: Line<'static>);
 }
 
 impl RowSink for CachedLines {
@@ -475,6 +517,10 @@ impl RowSink for CachedLines {
     fn push_rows(&mut self, lines: Vec<Line<'static>>) {
         self.extend(lines);
     }
+
+    fn push_row(&mut self, line: Line<'static>) {
+        self.extend([line]);
+    }
 }
 
 impl RowSink for Vec<Line<'static>> {
@@ -484,6 +530,10 @@ impl RowSink for Vec<Line<'static>> {
 
     fn push_rows(&mut self, lines: Vec<Line<'static>>) {
         self.extend(lines);
+    }
+
+    fn push_row(&mut self, line: Line<'static>) {
+        self.push(line);
     }
 }
 
@@ -498,7 +548,14 @@ struct CellWriter<'a, R: RowSink> {
 impl<R: RowSink> CellWriter<'_, R> {
     /// A cell, its first `header` rows its header (0: none).
     fn cell(&mut self, lines: Vec<Line<'static>>, header: usize) {
-        let (at, rows) = (self.rows.row_count(), lines.len());
+        self.cell_after(0, lines, header);
+    }
+
+    /// A cell whose first `kept` rows are the page's last ones already:
+    /// `lines` are the rows after them.
+    fn cell_after(&mut self, kept: usize, lines: Vec<Line<'static>>, header: usize) {
+        let at = self.rows.row_count() - kept;
+        let rows = kept + lines.len();
         self.rows.push_rows(lines);
         self.walk.cell(self.entries, at, header, rows);
         self.rows.push_rows(vec![Line::default()]);
@@ -536,9 +593,9 @@ pub fn agent_transcript(app: &App, width: u16) -> Option<TranscriptPage> {
     let chrome_rows = page.lines.len();
     let mut walk = EntryWalk::default();
     for item in &run.history {
-        let rows = transcript_item_lines(item, width, app.path_display());
-        walk.item(&mut page.entries, page.lines.len(), &rows);
-        page.lines.extend(rows.lines);
+        let at = page.lines.len();
+        let item = transcript_item_into(&mut page.lines, item, width, app.path_display());
+        walk.item(&mut page.entries, at, item.content, &item.cells);
     }
     let mut out = CellWriter {
         rows: &mut page.lines,
@@ -625,7 +682,7 @@ pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize 
 /// interrupt-undo pop) bumps [`App::history_generation`]. That makes
 /// `(generation, width)` pin the **frozen prefix** exactly: the first `frozen_rows`
 /// holds the banner chrome plus every committed item, rendered once
-/// (`transcript_item_lines`); each refresh truncates the volatile live tail
+/// (`transcript_item_into`); each refresh truncates the volatile live tail
 /// (in-progress reply, live tool queue, queued backlog) off the end and
 /// re-renders just that. The Esc-Esc backtrack highlight — REVERSED rows
 /// *inside* the frozen prefix — is applied as an in-place style diff
@@ -655,7 +712,7 @@ pub struct TranscriptCache {
     frozen_rows: usize,
     /// Per rendered history item: its row count (for selection offsets) and,
     /// for a user message, the reversible message-row span of the backtrack
-    /// preview ([`transcript_item_lines`]).
+    /// preview ([`transcript_item_into`]).
     items: Vec<RenderedItem>,
     /// The frozen rows currently carrying the backtrack preview's REVERSED
     /// styling, so a selection step can undo exactly what it applied.
@@ -672,6 +729,18 @@ pub struct TranscriptCache {
     /// the prefix for an output that is still the live tail. The tail walks
     /// on from a copy, so every refresh sees it again.
     walk: EntryWalk,
+    /// Counts the frozen prefix's resets ([`Self::epoch`]).
+    epoch: u64,
+    /// The next history item to hand out as a job ([`Self::warm_jobs`]):
+    /// everything below it is in the prefix or out with a worker.
+    requested: usize,
+    /// The reply still streaming, as the pager last showed it
+    /// ([`LiveReply`]) — `None` until a pager draws one.
+    live: Option<LiveReply>,
+    /// How many of that reply's rows — the ones right after the frozen
+    /// prefix — are settled and stay on the page through the tail's next
+    /// rebuild. Zero whenever the page is cut back to the prefix.
+    live_kept: usize,
     /// Test-only: how many refreshes did any rebuild work — so a test can
     /// prove a scroll (unchanged signature) is a cache hit, not a rebuild.
     #[cfg(test)]
@@ -680,6 +749,77 @@ pub struct TranscriptCache {
     /// prove the frozen prefix is reused, not re-rendered.
     #[cfg(test)]
     pub(super) item_renders: usize,
+}
+
+/// The reply still streaming, for the pager's live tail: its rows, each
+/// source line rendered **once**.
+///
+/// The tail is rebuilt on every refresh, and rendering the reply whole there
+/// put the grammar over every line so far on every frame — a scroll key in
+/// the pager waited ~150 ms behind a 60 KB reply (`docs/input-latency.md`).
+/// A [`StreamRender`] of the cache's own keeps the finished lines' rows, so
+/// a refresh renders the lines that completed since the last.
+///
+/// It is only as good as the claim that the buffer it is shown is the one
+/// it rendered, grown. That does not hold across a turn — a tool call
+/// finalises the segment and another starts, a failed attempt is withdrawn
+/// and made again — so the text the rows came from is kept, and a buffer
+/// that does not start with it starts the render over: one comparison of
+/// bytes, where a length or a counter could be fooled by a longer buffer.
+struct LiveReply {
+    /// The buffer the rows were rendered from, as last seen.
+    text: String,
+    /// The width they were rendered at.
+    width: u16,
+    render: StreamRender,
+}
+
+/// What [`LiveReply::rows`] answers a rebuild of the page's tail with.
+struct LiveRows {
+    /// How many of the reply's rows already on the page stay there.
+    keep: usize,
+    /// The rows that follow them.
+    rows: Vec<Line<'static>>,
+    /// How many of the reply's rows — the kept and the new together — are
+    /// settled, and so may stay through the next rebuild.
+    settled: usize,
+}
+
+impl LiveReply {
+    fn new(width: u16) -> Self {
+        Self {
+            text: String::new(),
+            width,
+            render: StreamRender::new(),
+        }
+    }
+
+    /// The reply's rows for the buffer as it is now — the batch render's
+    /// ([`message_lines`]), by [`StreamRender::whole`]'s contract — past the
+    /// `held` settled ones the page still has from the last rebuild. A buffer
+    /// that is not the last one grown, or another width, keeps none of them.
+    fn rows(&mut self, text: &str, width: u16, held: usize) -> LiveRows {
+        let grown = width == self.width && text.starts_with(self.text.as_str());
+        if !grown {
+            *self = Self::new(width);
+        }
+        let keep = if grown { held } else { 0 };
+        let (rows, settled) = self.render.whole_after(text, width, keep);
+        // `self.text` is a prefix of `text`, so this is a char boundary.
+        self.text.push_str(&text[self.text.len()..]);
+        LiveRows {
+            keep,
+            rows,
+            settled,
+        }
+    }
+
+    /// Whether `text` at `width` is the buffer these rows were rendered
+    /// from, grown — the one case [`rows`](Self::rows) answers without
+    /// starting over.
+    fn follows(&self, text: &str, width: u16) -> bool {
+        width == self.width && !self.text.is_empty() && text.starts_with(self.text.as_str())
+    }
 }
 
 /// What pins [`TranscriptCache`]'s frozen prefix — see the struct docs.
@@ -701,6 +841,70 @@ struct RenderedItem {
     /// `Some(message-row count)` for a user message — the span the backtrack
     /// preview reverses; `None` otherwise.
     user_rows: Option<usize>,
+}
+
+/// How many history items may be out with a worker at once
+/// ([`TranscriptCache::warm_jobs`]): enough that it never waits on the loop
+/// for its next one, few enough that a resumed session's whole history is
+/// not copied in one go.
+pub const TRANSCRIPT_WARM_WINDOW: usize = 8;
+
+/// One history item to render for the transcript **off the loop thread**
+/// ([`TranscriptCache::warm_jobs`], `docs/input-latency.md`): the item, and
+/// everything its rows depend on that a thread other than the loop's does
+/// not have — the theme and the way a labelled link shows its target are
+/// per-thread cells, so the job carries the loop's and renders under them.
+pub struct TranscriptJob {
+    epoch: u64,
+    index: usize,
+    item: HistoryItem,
+    width: u16,
+    paths: PathDisplay,
+    theme: crate::app::Theme,
+    links: crate::links::TargetDisplay,
+}
+
+impl TranscriptJob {
+    /// The cache epoch this job was handed out in — a worker skips a job
+    /// from an epoch already over ([`TranscriptCache::epoch`]).
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Render the item — the rows [`TranscriptCache`] would have rendered on
+    /// the loop thread, already compacted.
+    #[must_use]
+    pub fn run(self) -> RenderedTranscriptItem {
+        // Compact from the start, on the thread that renders them: the loop
+        // is left a copy of some bytes, and the small strings a rendered row
+        // is made of are freed by the thread that allocated them.
+        let mut rows = CachedLines::default();
+        let item = super::palette::with_theme(self.theme, || {
+            crate::links::with_target_display(self.links, || {
+                transcript_item_into(&mut rows, &self.item, self.width, &self.paths)
+            })
+        });
+        RenderedTranscriptItem {
+            epoch: self.epoch,
+            index: self.index,
+            rows,
+            user_rows: item.user_rows,
+            content: item.content,
+            cells: item.cells,
+        }
+    }
+}
+
+/// A [`TranscriptJob`]'s result, for [`TranscriptCache::accept`].
+pub struct RenderedTranscriptItem {
+    epoch: u64,
+    index: usize,
+    /// The item's rows, spacer included, compacted.
+    rows: CachedLines,
+    user_rows: Option<usize>,
+    content: usize,
+    cells: ItemCells,
 }
 
 /// The cheap fingerprint of every input to a [`TranscriptCache`] refresh — see
@@ -793,15 +997,17 @@ impl TranscriptCache {
         *self = Self::new();
     }
 
-    /// Pre-render the frozen prefix at the boundary, ahead of any overlay
-    /// draw — after a `/resume` load, after each committed item — so pressing
-    /// Ctrl+O finds every history item already rendered and pays only the
-    /// live tail. When nothing changed this is a few integer compares.
+    /// Pre-render the frozen prefix **on this thread**, ahead of any overlay
+    /// draw, so the pager finds every history item already rendered and
+    /// pays only the live tail. When nothing changed this is a few integer
+    /// compares. The loop itself hands the rendering to a worker instead
+    /// ([`warm_jobs`](Self::warm_jobs)); this is for a caller with no worker
+    /// to hand it to.
     ///
     /// A **width-only** mismatch is deliberately skipped: resize events arrive
     /// in bursts (a drag delivers dozens), and a full O(history) re-render per
-    /// event would freeze the loop — the first overlay draw at the new width
-    /// pays the rebuild instead (behind the still-painted inline screen).
+    /// event would freeze the caller — the first overlay draw at the new
+    /// width pays the rebuild instead.
     pub fn warm(&mut self, app: &App, width: u16) {
         let width_only_miss = self.key.as_ref().is_some_and(|k| {
             k.generation == app.history_generation()
@@ -820,61 +1026,246 @@ impl TranscriptCache {
         }
     }
 
+    /// [`warm`](Self::warm) without the rendering: the history items not yet
+    /// in the frozen prefix, handed out as jobs for a worker thread, each
+    /// once, at most [`TRANSCRIPT_WARM_WINDOW`] out at a time. The loop calls
+    /// this where it used to call `warm` and gives every result to
+    /// [`accept`](Self::accept), so a committed item's rows are rendered —
+    /// grammar highlighting and all — while the loop goes on reading keys
+    /// (`docs/input-latency.md`). Unlike `warm` it follows a width change at
+    /// once: re-keying is a few rows of banner, and the old width's jobs are
+    /// refused when they come back.
+    pub fn warm_jobs(&mut self, app: &App, width: u16) -> Vec<TranscriptJob> {
+        if !self.key_matches(app, width) {
+            self.reset_frozen(app, width);
+            self.expanded = None;
+            self.sig = None;
+        }
+        // A reply that has ended leaves no rows to keep for the pager.
+        if app.streaming_text().is_none_or(str::is_empty) && self.live.take().is_some() {
+            self.cut_to_frozen();
+            self.sig = None;
+        }
+        let start = self.requested.max(self.items.len());
+        let end = app
+            .history
+            .len()
+            .min(self.items.len() + TRANSCRIPT_WARM_WINDOW);
+        self.requested = start.max(end);
+        let (theme, links) = (
+            super::palette::active_theme(),
+            crate::links::target_display(),
+        );
+        (start..end)
+            .filter_map(|index| {
+                Some(TranscriptJob {
+                    epoch: self.epoch,
+                    index,
+                    item: app.history.get(index)?.clone(),
+                    width,
+                    paths: app.path_display().clone(),
+                    theme,
+                    links,
+                })
+            })
+            .collect()
+    }
+
+    /// Splice a [`TranscriptJob`]'s rows onto the frozen prefix. Refused —
+    /// `false`, nothing changed — unless it is the very next item of the
+    /// prefix as it stands: a result from before a reset (another width, a
+    /// rewound history, another theme), or for an item a draw has rendered
+    /// itself meanwhile, is dropped.
+    pub fn accept(&mut self, done: RenderedTranscriptItem) -> bool {
+        if done.epoch != self.epoch || done.index != self.items.len() {
+            // Out of turn in this epoch: whatever was handed out past the
+            // prefix's end will be refused the same way, so hand it out
+            // again rather than wait on it for ever.
+            if done.epoch == self.epoch && done.index > self.items.len() {
+                self.requested = self.items.len();
+            }
+            return false;
+        }
+        // The live tail goes, as it does when a draw appends an item.
+        self.cut_to_frozen();
+        let rows = done.rows.len();
+        self.walk.item(
+            &mut self.entries,
+            self.frozen_rows,
+            done.content,
+            &done.cells,
+        );
+        self.items.push(RenderedItem {
+            rows,
+            user_rows: done.user_rows,
+        });
+        self.frozen_rows += rows;
+        self.rows.append(done.rows);
+        self.frozen_entries = self.entries.len();
+        self.expanded = None;
+        self.sig = None;
+        true
+    }
+
+    /// Test-only: how many rows were ever put down on the page — so a test
+    /// can prove a refresh appended what changed, not the reply again.
+    #[cfg(test)]
+    pub(super) fn rows_appended(&self) -> usize {
+        self.rows.appended
+    }
+
+    /// Counts the frozen prefix's resets. A job is of the epoch it was
+    /// handed out in, and only the current epoch's results are accepted; a
+    /// worker reads it to skip the jobs of an epoch already over.
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Whether the frozen prefix was rendered for `app`'s history as it is,
+    /// at `width`, in the active theme.
+    fn key_matches(&self, app: &App, width: u16) -> bool {
+        self.key.as_ref().is_some_and(|k| {
+            k.generation == app.history_generation()
+                && k.width == width
+                && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
+                && k.theme == super::palette::active_theme()
+        })
+    }
+
+    /// Start the frozen prefix over for `app` at `width`: the banner chrome
+    /// and no item — a new epoch, so nothing rendered for the old one can be
+    /// spliced into it.
+    fn reset_frozen(&mut self, app: &App, width: u16) {
+        self.key = Some(FrozenKey {
+            generation: app.history_generation(),
+            width,
+            cwd: app.session.as_ref().map(|s| s.cwd.clone()),
+            theme: super::palette::active_theme(),
+        });
+        // The header banner tops the transcript exactly as it tops the
+        // inline conversation (docs/header.md) — the overlay mirrors the
+        // real scrollback, so Ctrl+O never hides it.
+        self.rows.clear();
+        self.rows.extend(header_lines(app, width));
+        self.rows.extend([Line::default()]);
+        self.chrome_rows = self.rows.len();
+        self.frozen_rows = self.chrome_rows;
+        self.items.clear();
+        self.reversed = None;
+        self.entries.clear();
+        self.frozen_entries = 0;
+        self.walk = EntryWalk::default();
+        self.epoch += 1;
+        self.requested = 0;
+        // The live reply's rows were another width's, or another theme's.
+        self.live = None;
+        self.live_kept = 0;
+    }
+
+    /// Cut the page back to the frozen prefix: the live tail goes, the
+    /// streaming reply's kept rows with it.
+    fn cut_to_frozen(&mut self) {
+        self.rows.truncate(self.frozen_rows);
+        self.entries.truncate(self.frozen_entries);
+        self.live_kept = 0;
+    }
+
     /// Bring the frozen prefix up to date with `app.history` at `width`:
     /// reset it when the [`FrozenKey`] mismatches, then render and append any
     /// items not yet cached. Returns whether anything changed; when it did,
     /// `rows` holds **only** chrome + frozen items (the live tail was
     /// truncated off) and the caller must rebuild the tail.
     fn ensure_frozen(&mut self, app: &App, width: u16) -> bool {
-        let key_matches = self.key.as_ref().is_some_and(|k| {
-            k.generation == app.history_generation()
-                && k.width == width
-                && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
-                && k.theme == super::palette::active_theme()
-        });
-        if !key_matches {
-            self.key = Some(FrozenKey {
-                generation: app.history_generation(),
-                width,
-                cwd: app.session.as_ref().map(|s| s.cwd.clone()),
-                theme: super::palette::active_theme(),
-            });
-            // The header banner tops the transcript exactly as it tops the
-            // inline conversation (docs/header.md) — the overlay mirrors the
-            // real scrollback, so Ctrl+O never hides it.
-            self.rows.clear();
-            self.rows.extend(header_lines(app, width));
-            self.rows.extend([Line::default()]);
-            self.chrome_rows = self.rows.len();
-            self.frozen_rows = self.chrome_rows;
-            self.items.clear();
-            self.reversed = None;
-            self.entries.clear();
-            self.frozen_entries = 0;
-            self.walk = EntryWalk::default();
+        if !self.key_matches(app, width) {
+            self.reset_frozen(app, width);
         } else if self.items.len() == app.history.len() {
             return false;
-        } else {
-            self.rows.truncate(self.frozen_rows);
-            self.entries.truncate(self.frozen_entries);
+        } else if !self.freeze_landed_reply(app, width) {
+            self.cut_to_frozen();
         }
         // Append the not-yet-rendered items (all of them after a reset). The
         // generation guarantees the cached prefix is a prefix of `history`.
         for item in app.history.get(self.items.len()..).unwrap_or(&[]) {
-            let rows = transcript_item_lines(item, width, app.path_display());
-            self.walk.item(&mut self.entries, self.frozen_rows, &rows);
+            let item = transcript_item_into(&mut self.rows, item, width, app.path_display());
+            self.walk.item(
+                &mut self.entries,
+                self.frozen_rows,
+                item.content,
+                &item.cells,
+            );
             self.items.push(RenderedItem {
-                rows: rows.lines.len(),
-                user_rows: rows.user_rows,
+                rows: item.rows,
+                user_rows: item.user_rows,
             });
-            self.frozen_rows += rows.lines.len();
-            self.rows.extend(rows.lines);
+            self.frozen_rows += item.rows;
             #[cfg(test)]
             {
                 self.item_renders += 1;
             }
         }
         self.frozen_entries = self.entries.len();
+        true
+    }
+
+    /// Freeze the reply the page was following as the history item it has
+    /// become — at the turn's end, or at a tool call that finalised the text
+    /// before it — where it stands, and say whether it did.
+    ///
+    /// The next item of the prefix is then an assistant message with the
+    /// reply's text, and so with its rows; with the pager open it was
+    /// rendered again from its first line, on the loop, the grammar over the
+    /// whole reply while a scroll key waited (`docs/input-latency.md`). The
+    /// rows of its finished lines are on the page already, right after the
+    /// prefix, and the reply's own render ([`LiveReply`]) knows the rest: the
+    /// page is cut back to those rows, what follows them is appended — the
+    /// lines that arrived since the last refresh are all that is rendered —
+    /// and the item is closed like any other. Nothing is copied, either: the
+    /// kept rows stay in the page's own storage.
+    ///
+    /// Only for a message the render follows: one whose text starts with the
+    /// text its rows came from. A render is a function of its text and width
+    /// alone, so that is the message's render whatever became of the reply
+    /// it was made for; any other message leaves the page as it was, for the
+    /// caller to cut and render.
+    fn freeze_landed_reply(&mut self, app: &App, width: u16) -> bool {
+        let Some(item) = app.history.get(self.items.len()) else {
+            return false;
+        };
+        let HistoryItem::Message(message) = item else {
+            return false;
+        };
+        if message.role != Role::Assistant {
+            return false;
+        }
+        // Taken, not borrowed: the reply is over, and whatever streams next
+        // is another buffer.
+        let Some(mut live) = self
+            .live
+            .take()
+            .filter(|live| live.follows(&message.text, width))
+        else {
+            return false;
+        };
+        let reply = live.rows(&message.text, width, self.live_kept);
+        let top = self.frozen_rows;
+        self.rows.truncate(top + reply.keep);
+        self.entries.truncate(self.frozen_entries);
+        self.live_kept = 0;
+        self.rows.push_rows(reply.rows);
+        let cells = ItemCells::One { header: 0 };
+        let item = close_item(&mut self.rows, top, item, width, None, cells);
+        self.walk
+            .item(&mut self.entries, top, item.content, &item.cells);
+        self.items.push(RenderedItem {
+            rows: item.rows,
+            user_rows: None,
+        });
+        self.frozen_rows += item.rows;
+        #[cfg(test)]
+        {
+            self.item_renders += 1;
+        }
         true
     }
 
@@ -919,15 +1310,30 @@ impl TranscriptCache {
     /// going on from the frozen prefix's — so a `!` command's running output
     /// joins the header committed above it.
     fn build_tail(&mut self, app: &App, width: u16) {
+        // The reply so far: each of its lines rendered once, and the rows of
+        // the finished ones left where the last rebuild put them
+        // ([`LiveReply`]) — the page is cut back to those, not to the prefix.
+        let reply = match app.streaming_text().filter(|text| !text.is_empty()) {
+            Some(text) => {
+                let live = self.live.get_or_insert_with(|| LiveReply::new(width));
+                Some(live.rows(text, width, self.live_kept))
+            }
+            None => {
+                self.live = None;
+                None
+            }
+        };
+        self.live_kept = reply.as_ref().map_or(0, |reply| reply.keep);
+        self.rows.truncate(self.frozen_rows + self.live_kept);
+        self.entries.truncate(self.frozen_entries);
         let mut out = CellWriter {
             rows: &mut self.rows,
             entries: &mut self.entries,
             walk: self.walk.clone(),
         };
-        if let Some(text) = app.streaming_text()
-            && !text.is_empty()
-        {
-            out.cell(message_lines(Role::Assistant, text, width), 0);
+        if let Some(reply) = reply {
+            out.cell_after(reply.keep, reply.rows, 0);
+            self.live_kept = reply.settled;
         }
         // An open thinking phase, whole (the pager has no row budget, unlike
         // the strip's windowed block) — docs/thinking-stream.md.
@@ -975,11 +1381,9 @@ impl TranscriptCache {
             return;
         }
         self.expanded = None;
-        if !self.ensure_frozen(app, width) {
-            // Only the volatile tail changed: drop it, keep the frozen prefix.
-            self.rows.truncate(self.frozen_rows);
-            self.entries.truncate(self.frozen_entries);
-        }
+        // The prefix first; the tail's rebuild then cuts the page back to
+        // what it keeps (`build_tail`).
+        self.ensure_frozen(app, width);
         self.restyle_selection(app);
         self.build_tail(app, width);
         self.sig = Some(sig);

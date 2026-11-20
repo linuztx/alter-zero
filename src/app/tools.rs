@@ -305,7 +305,7 @@ impl App {
             && tool.status == ToolStatus::Running
         {
             tool.output.push_str(chunk);
-            self.tool_live.reset();
+            self.tool_live.settle();
             self.tool_revision += 1;
         }
     }
@@ -529,15 +529,208 @@ pub const LIVE_ACTIVE_SPAN: Duration = Duration::from_secs(2);
 /// all `live`, and a window pinned to the output's end showed exactly the
 /// rows that had stopped while the motion hid behind `+N lines`
 /// ([`anchor`](LiveTail::anchor), `docs/tool-streaming.md`).
+///
+/// It also answers the cell's other per-frame question, **how many rows sit
+/// above the window**, without measuring the whole output again
+/// ([`settled_lines`](LiveTail::settled_lines)).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LiveTail {
     /// How many bytes at the end of the output are the live rows.
     len: usize,
     /// One stamp per live row, in order: when its text last changed.
     changed: Vec<Duration>,
+    /// The settled lines' display rows, counted as they settle — filled by
+    /// the render path ([`settled_lines`](LiveTail::settled_lines)).
+    counts: SettledCounts,
+}
+
+/// What the running cell knows of its output's **settled** lines: every
+/// complete line before the live rows. That part of the output only ever
+/// grows while the call runs — a screen update appends what scrolled out of
+/// the terminal's reach and replaces only the live rows
+/// ([`apply_tool_screen`]), a piped chunk only appends — so a line is
+/// measured once, the frame it settles, rather than every frame after
+/// (`docs/tool-streaming.md` *A flood costs what it adds*).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettledLines {
+    /// Where the counted lines end in the display body: just past a `'\n'`,
+    /// or 0 when none has settled. The body from here on — a line still
+    /// arriving, the live rows — is the caller's to measure.
+    pub end: usize,
+    /// How many lines those are.
+    pub lines: usize,
+    /// Their display rows at the width asked for.
+    pub rows: usize,
+    /// The last of them (as many as asked for), oldest first: each line's
+    /// byte range in the body and its rows — what a window ending near the
+    /// output's end can reach back into.
+    pub recent: Vec<(std::ops::Range<usize>, usize)>,
+}
+
+/// The counts behind [`LiveTail::settled_lines`], and what they were taken
+/// against. A render-path cache behind a `RefCell` — the textarea's
+/// wrap-cache pattern — so it is no part of the tail's identity: tails that
+/// agree on their live rows are equal whatever has been counted, and a
+/// clone starts cold.
+#[derive(Default)]
+struct SettledCounts(std::cell::RefCell<Counts>);
+
+/// The state inside [`SettledCounts`]: the rows, which depend on the width
+/// they were counted at, and the lines, which do not — kept apart so the
+/// two readers never undo each other's work.
+#[derive(Default)]
+struct Counts {
+    rows: CountedRows,
+    lines: CountedLines,
+}
+
+/// What [`LiveTail::line_count`] has counted.
+#[derive(Default)]
+struct CountedLines {
+    /// Where the display body starts in the output.
+    base: usize,
+    /// The counted lines' end in the body (just past a `'\n'`, or 0).
+    end: usize,
+    lines: usize,
+}
+
+/// What [`LiveTail::settled_lines`] has counted.
+#[derive(Default)]
+struct CountedRows {
+    /// The wrap width the rows were counted at.
+    width: u16,
+    /// Where the display body starts in the output (past a session frame).
+    base: usize,
+    /// How many recent lines are kept.
+    keep: usize,
+    /// The counted lines' end in the body (just past a `'\n'`, or 0).
+    end: usize,
+    lines: usize,
+    rows: usize,
+    recent: std::collections::VecDeque<(std::ops::Range<usize>, usize)>,
+}
+
+impl Clone for SettledCounts {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for SettledCounts {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SettledCounts {}
+
+impl std::fmt::Debug for SettledCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SettledCounts(..)")
+    }
 }
 
 impl LiveTail {
+    /// The settled lines of a running call's display `body` — the suffix of
+    /// its `output` the cell shows — each measured by `rows_of` at `width`,
+    /// with the last `keep` of them by name ([`SettledLines`]). Brought up to
+    /// date on the way out, which costs the lines settled since the last call
+    /// and nothing more: the counts are kept across frames, and start over
+    /// only when what they were taken against changes — the width, where the
+    /// body starts, `keep`, or text they covered (a new call resets them,
+    /// [`reset`](LiveTail::reset)).
+    pub fn settled_lines(
+        &self,
+        output: &str,
+        body: &str,
+        width: u16,
+        keep: usize,
+        rows_of: impl Fn(&str) -> usize,
+    ) -> SettledLines {
+        let base = output.len().saturating_sub(body.len());
+        let stable = self.settled_end(body);
+        let mut cache = self.counts.0.borrow_mut();
+        let counts = &mut cache.rows;
+        let stale = counts.width != width
+            || counts.base != base
+            || counts.keep != keep
+            || counts.end > stable
+            || (counts.end > 0 && body.as_bytes()[counts.end - 1] != b'\n');
+        if stale {
+            *counts = CountedRows {
+                width,
+                base,
+                keep,
+                ..CountedRows::default()
+            };
+        }
+        let mut at = counts.end;
+        while at < stable {
+            // `stable` is just past a newline, so every line here closes.
+            let stop = body[at..stable].find('\n').map_or(stable, |i| at + i);
+            let rows = rows_of(&body[at..stop]);
+            counts.lines += 1;
+            counts.rows += rows;
+            counts.recent.push_back((at..stop, rows));
+            if counts.recent.len() > keep {
+                counts.recent.pop_front();
+            }
+            at = stop + 1;
+        }
+        counts.end = counts.end.max(stable);
+        SettledLines {
+            end: counts.end,
+            lines: counts.lines,
+            rows: counts.rows,
+            recent: counts.recent.iter().cloned().collect(),
+        }
+    }
+
+    /// How many display lines a running call's `body` — the suffix of its
+    /// `output` the cell shows — holds: one per `'\n'`-separated line, a
+    /// trailing newline opening none. The settled lines are counted once,
+    /// as they settle ([`settled_lines`](LiveTail::settled_lines)'s rule,
+    /// without the width), so this costs what printed since the last call
+    /// plus the live rows.
+    pub fn line_count(&self, output: &str, body: &str) -> usize {
+        let base = output.len().saturating_sub(body.len());
+        let stable = self.settled_end(body);
+        let mut cache = self.counts.0.borrow_mut();
+        let counts = &mut cache.lines;
+        if counts.base != base
+            || counts.end > stable
+            || (counts.end > 0 && body.as_bytes()[counts.end - 1] != b'\n')
+        {
+            *counts = CountedLines {
+                base,
+                ..CountedLines::default()
+            };
+        }
+        counts.lines += body.as_bytes()[counts.end..stable]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
+        counts.end = counts.end.max(stable);
+        let rest = &body[counts.end..];
+        let open = if rest.is_empty() {
+            0
+        } else {
+            rest.split('\n').count() - usize::from(rest.ends_with('\n'))
+        };
+        counts.lines + open
+    }
+
+    /// Where `body`'s settled lines end: just past the last newline before
+    /// the live rows (the output's last `len` bytes), or 0.
+    fn settled_end(&self, body: &str) -> usize {
+        let live_start = body.len().saturating_sub(self.len);
+        if body.is_char_boundary(live_start) {
+            body[..live_start].rfind('\n').map_or(0, |i| i + 1)
+        } else {
+            0
+        }
+    }
+
     /// Fold one screen update into `output` ([`apply_tool_screen`]) and
     /// stamp the rows: a row whose text differs from the row it replaces is
     /// stamped `now`, one that reads the same keeps its stamp. `settled`
@@ -569,9 +762,16 @@ impl LiveTail {
         self.changed = changed;
     }
 
-    /// Forget the live rows: a call started or resolved, or appended text
-    /// made them final.
+    /// Forget everything: a call started or resolved.
     pub fn reset(&mut self) {
+        self.settle();
+        self.counts = SettledCounts::default();
+    }
+
+    /// Forget the live rows only: appended text made them final. The
+    /// settled lines' counts stay — the text they cover is unchanged, and
+    /// the rows just made final are counted the next frame.
+    pub fn settle(&mut self) {
         self.len = 0;
         self.changed.clear();
     }

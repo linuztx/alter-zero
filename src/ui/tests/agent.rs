@@ -979,7 +979,7 @@ fn an_agent_views_strip_shows_every_waiting_sibling_of_a_parallel_batch() {
     // dim `⎿ Waiting…` sibling, blank-separated (docs/parallel-tools.md).
     // The agent session view is the same picture over the agent's own queue:
     // its `ToolBatch` fills `AgentRun::tool_queue` exactly as the main turn's
-    // fills `App::tool_queue`, and `agent_view_preview_lines` walks it through
+    // fills `App::tool_queue`, and `agent_view_cell_lines` walks it through
     // the shared `live_call_lines`.
     let mut app = App::new();
     app.begin_stream();

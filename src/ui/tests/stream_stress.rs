@@ -304,6 +304,81 @@ fn fuzz_stream_render_agrees_with_batch_on_hostile_soup() {
     }
 }
 
+/// The reply so far, whole ([`StreamRender::whole`]) — what the Ctrl+O pager
+/// shows of a reply still streaming — is the batch render of that prefix at
+/// each of `ends`: text, colour, modifiers and carriers, every row. One
+/// render across the whole document, so each call stands on the rows the
+/// calls before it kept.
+fn assert_whole_matches_batch(
+    full: &str,
+    ends: impl Iterator<Item = usize>,
+    width: u16,
+    ctx: &str,
+) {
+    let mut render = StreamRender::new();
+    for end in ends {
+        let prefix = &full[..end];
+        assert_eq!(
+            render.whole(prefix, width),
+            message_lines(Role::Assistant, prefix, width),
+            "{ctx}: the reply so far at {prefix:?} (w={width})"
+        );
+    }
+}
+
+#[test]
+fn the_reply_so_far_is_the_batch_render_at_every_prefix() {
+    // The pager's live reply renders a line once and keeps its rows
+    // (`docs/input-latency.md`): nothing it shows may differ from rendering
+    // the reply whole, whatever a hostile stream interleaves — at every
+    // character of the soup, and at every token of the tour of block kinds.
+    let mut rng = Rng(0x5EED_CAFE_F00D_0003);
+    for case in 0..60 {
+        let doc = hostile_doc(&mut rng);
+        let ends = doc.char_indices().skip(1).map(|(end, _)| end);
+        for width in [3u16, 38] {
+            assert_whole_matches_batch(
+                &doc,
+                ends.clone().chain([doc.len()]),
+                width,
+                &format!("whole case {case}"),
+            );
+        }
+    }
+    let tour = crate::stream::MARKDOWN_TOUR;
+    let ends: Vec<usize> = crate::stream::tokens(tour)
+        .iter()
+        .scan(0, |end, token| {
+            *end += token.len();
+            Some(*end)
+        })
+        .collect();
+    for width in [24u16, 100] {
+        assert_whole_matches_batch(tour, ends.iter().copied(), width, "the markdown tour");
+    }
+}
+
+#[test]
+fn the_reply_so_far_never_ends_the_reply() {
+    // `whole` reads the trailing line and an open table off a clone: the
+    // commits that follow it must be the ones that would have happened
+    // without it, or a pager opened mid-reply would change scrollback.
+    let doc = "intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```rust\nfn f() {}\n```\nend";
+    for width in [12u16, 60] {
+        let (mut plain, mut peeked) = (StreamRender::new(), StreamRender::new());
+        for (end, _) in doc.char_indices().skip(1).chain([(doc.len(), ' ')]) {
+            let prefix = &doc[..end];
+            let _ = peeked.whole(prefix, width);
+            assert_eq!(
+                peeked.commit(prefix, width),
+                plain.commit(prefix, width),
+                "the commit at {prefix:?} (w={width})"
+            );
+        }
+        assert_eq!(peeked.finish(doc, width), plain.finish(doc, width));
+    }
+}
+
 #[test]
 fn label_only_links_stream_exactly_as_they_render_whole() {
     // Where the terminal opens hyperlinks a link is its label alone, the

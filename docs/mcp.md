@@ -1229,10 +1229,14 @@ mid-turn (the strip stays above it). Pages:
    (the wire `mcp__{server}__{tool}` the model actually calls),
    the description, and the `Parameters:` listing derived from the
    `input_schema` (`● {name} (required): {type} - {description}`).
-5. **Authenticate** — `Authenticating with {server}…`: the flow opens the
-   browser (`open` on macOS, `xdg-open` elsewhere — never `open` on Linux,
-   which is `openvt` — the launcher reaped on a thread of its own), shows
-   the authorize URL (`c` copies it via the `/copy` clipboard seam), and
+5. **Authenticate** — `Authenticating with {server}…`: the flow shows the
+   authorize URL under `Open this URL in your browser to authenticate (c
+   to copy)` — `c` copies it via the `/copy` clipboard seam, and the URL is
+   a real link — and **launches nothing**: it used to run `xdg-open`/`open`
+   on the URL, which on a remote, container or headless machine either
+   failed silently or opened a browser on the wrong machine, and a sign-in
+   the user did not ask a browser for still popped one up. The URL on the
+   page is the one way in, the `/login` device page's posture. It also
    offers the `URL >` paste-the-redirect fallback (a single-line field;
    paste routed to it while the page is up); the loopback callback
    resolves it from either side. A paste the flow turns away — not a
@@ -1264,8 +1268,9 @@ mid-turn (the strip stays above it). Pages:
    `cancelled` as a red failure that closed the new page. A flow that ends
    cancelled (Esc) or superseded reports nothing but a snapshot refresh,
    and `App::finish_mcp_auth` closes only the page of the server whose flow
-   finished. `McpSources::open_browser` injects the launcher, so a test
-   signs in without one.
+   finished. `oauth::run_auth_flow` hands the URL to its `AuthProgress`
+   and nothing else, so a test signs in by approving from `on_url`, as a
+   user opening the link would.
 
 ### Where the colour goes
 

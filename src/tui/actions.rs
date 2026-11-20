@@ -658,7 +658,9 @@ impl Session<'_> {
             View::ToolOutput | View::ContextDebug => {}
         }
         self.burst.reset();
-        self.frame.schedule_frame();
+        // A paste is the user's own input, shown at once like a key
+        // (`docs/input-latency.md`).
+        self.frame.schedule_input_frame();
     }
 
     /// Esc-Esc backtrack confirmed: history is already truncated to the chosen

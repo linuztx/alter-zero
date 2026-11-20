@@ -1,21 +1,32 @@
 //! The async event loop: a `select!` over every source that can wake the app.
 //!
-//! Eleven sources fan onto one thread — terminal input, the streamed reply,
-//! coalesced draw ticks, `@` file-search results, finished Ctrl+V clipboard
-//! reads, the `/login` sign-in worker, `/model` list fetches, the startup
-//! capability probe, background-shell events, subagent events, MCP server
-//! events and the telemetry ping's report. `select!` polls its branches in
-//! randomized order, so input and draws can't starve each other — the
-//! round-robin fairness codex builds explicitly.
+//! Seventeen sources fan onto one thread — terminal input, coalesced draw
+//! ticks, the streamed reply, `@` file-search results, finished Ctrl+V
+//! clipboard reads, the git review's workers, the `/login` sign-in worker,
+//! `/usage` reads, the `/plugins` page's jobs, `/model` list fetches, the
+//! startup capability probe, background-shell events, subagent events, MCP
+//! server events, the telemetry ping's report, the update check's, and the
+//! rows the transcript worker has rendered.
+//!
+//! **Input and a due frame come first, in that order** (`biased`), and every
+//! other source is chosen fairly among the rest ([`next_wake`]'s own
+//! unbiased `select!`). A key is what the user is waiting on and a frame is
+//! what shows it, and neither can crowd the others out: keys arrive at a
+//! person's pace and frames at the scheduler's floor. The reverse was not
+//! true. With every branch drawn at random a due frame won one poll in
+//! fourteen against a reply channel that always had an event ready, so a fast
+//! stream held each keystroke's paint behind a dozen more of its own events
+//! (`docs/input-latency.md`).
 //!
 //! Every branch is one call on the [`Session`] that owns both ends of all the
 //! channels, then [`Session::after_iteration`] for the loop-bottom bookkeeping.
 //! That works — receiver and handler on the same struct — because `select!`
-//! scopes its futures: each one it builds borrows a *distinct field*, and all
-//! of them are dropped before the winning branch's body runs, so that body is
-//! free to take `&mut session`. A handler that needs to drain a second channel
-//! reads it the same way (`try_recv` returns an owned value, so no borrow
-//! outlives the call).
+//! scopes its futures: each one it builds borrows a *distinct field*
+//! ([`Sources`] names the data channels' fields one by one for that reason),
+//! and all of them are dropped before the winning branch's body runs, so that
+//! body is free to take `&mut session`. A handler that needs to drain a second
+//! channel reads it the same way (`try_recv` returns an owned value, so no
+//! borrow outlives the call).
 //!
 //! **Invariant 1:** the `EventStream` is the sole stdin reader.
 //! `InlineViewport::init` already queried the cursor position over stdin,
@@ -25,23 +36,35 @@
 //! first `select!`, through the same handler.
 //!
 //! ```text
-//! keyboard / resize ──► EventStream ─┐
-//! reply backend ─────► tokio mpsc ───┼─► select! ─► Session::on_* ─► schedule_frame
-//! frame scheduler ───► draw-tick ────┤
-//! file / image / model workers ──────┤
-//! background shells + subagents ─────┘
+//! keyboard / resize ──► EventStream ─┐  first
+//! frame scheduler ───► draw-tick ────┤  second
+//! reply backend ─────► tokio mpsc ───┤
+//! file / image / model workers ──────┼─► select! ─► Session::on_* ─► schedule_frame
+//! background shells + subagents ─────┘  fairly, among themselves
 //!                                    └─ turn active? re-arm a frame in 32ms
 //! ```
 
 use std::io;
+use std::path::PathBuf;
 
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::StreamExt;
 
+use alter_zero::agents::AgentEvent;
+use alter_zero::background::BgEvent;
+use alter_zero::llm::mcp::McpEvent;
+use alter_zero::stream::StreamEvent;
+use alter_zero::telemetry::Delivery;
 use alter_zero::term::InlineViewport;
+use alter_zero::ui;
 
 use super::Session;
 use super::actions::Flow;
+use super::diff::DiffResult;
+use super::plugins::PluginResult;
 use super::startup::Startup;
+use super::usage::UsageResult;
+use super::workers::{DeviceEvent, FileSearchResult, ModelFetch, ProbeFetch};
 
 /// Run the app to completion.
 ///
@@ -62,8 +85,11 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
     }
     loop {
         tokio::select! {
-            // 1. Terminal input. The events branch always matches (it binds the
-            //    Option), so `select!` can never run out of armed branches.
+            biased;
+
+            // 1. Terminal input, ahead of everything: a key waits behind
+            //    nothing. The branch always matches (it binds the Option), so
+            //    `select!` can never run out of armed branches.
             maybe_read = next_event(&mut session.events) => {
                 // Stdin closing (or `read?` bailing below) can leave the loop
                 // with an overlay still up — no exit_overlay runs on these
@@ -75,67 +101,168 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
                 }
             }
 
-            // 2. A streamed reply event. App state is always updated; lines are
-            //    only committed to scrollback in the conversation view (in an
-            //    overlay we hold off and repaint on return).
-            Some(event) = session.reply_rx.recv() => session.on_reply_event(event),
-
-            // 3. A coalesced draw tick: refresh the injected times, then paint.
+            // 2. A coalesced draw tick, ahead of whatever it would show:
+            //    refresh the injected times, then paint. The scheduler emits
+            //    at most one per frame floor, so painting first costs the
+            //    sources below nothing they would notice.
             Some(()) = session.draw_rx.recv() => session.on_draw_tick()?,
 
-            // 4. A file-search result for the open `@` picker.
-            Some(result) = session.file_rx.recv() => session.on_file_matches(result),
-
-            // 5. A finished Ctrl+V clipboard read.
-            Some(result) = session.img_rx.recv() => session.on_image_paste(result),
-            Some(result) = session.diff_rx.recv() => session.on_diff_result(result)?,
-
-            // 5b. The `/login` device flow's worker: the code to show, then
-            //     the sign-in's verdict (`docs/copilot.md`).
-            Some(event) = session.device_rx.recv() => session.on_device_event(event),
-
-            // 5c. One subscription's `/usage` read (docs/usage.md).
-            Some(result) = session.usage_rx.recv() => session.on_usage_result(result),
-
-            // 5d. The `/plugins` page's one job — a read, an install, a
-            //     clone — answered (docs/plugins.md).
-            Some(result) = session.plugin_rx.recv() => session.on_plugin_result(result),
-
-            // 6. A finished `/model` fetch from one provider's worker thread.
-            Some(fetch) = session.model_rx.recv() => session.on_model_fetch(fetch),
-
-            // 7. The startup capability probe answered. Guarded so a `/model`
-            //    switch that raced it (and already knows its support first-hand)
-            //    wins.
-            Some((provider, result)) = session.probe_rx.recv(),
-                if session.models.probe_pending() =>
-            {
-                session.apply_capability_probe(&provider, result);
-            }
-
-            // 8. A background-shell event from the registry's monitors.
-            Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
-
-            // 9. A subagent event — its own stream, its settle, or the lead's
-            //    stop or resume of it (docs/agent-tools.md).
-            Some(event) = session.agent_rx.recv() => session.on_agent_message(event),
-
-            // 10. An MCP server's state changed (a connect resolved, an auth
-            //     flow progressed) — docs/mcp.md.
-            Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
-
-            // 11. The day's telemetry ping was delivered: record the day and
-            //     the version so the next launch today on this version sends
-            //     nothing (docs/telemetry.md).
-            Some(delivered) = session.telemetry_rx.recv() => session.on_telemetry_result(&delivered),
-
-            // 12. The update check answered: record what it found and, if
-            //     newer, announce it once the session is idle (docs/update.md).
-            Some(latest) = session.update_rx.recv() => session.on_update_result(&latest),
+            // 3. Every other source, fairly among themselves.
+            wake = next_wake(Sources {
+                reply: &mut session.reply_rx,
+                file: &mut session.file_rx,
+                image: &mut session.img_rx,
+                diff: &mut session.diff_rx,
+                device: &mut session.device_rx,
+                usage: &mut session.usage_rx,
+                plugin: &mut session.plugin_rx,
+                model: &mut session.model_rx,
+                probe: &mut session.probe_rx,
+                probe_pending: session.models.probe_pending(),
+                background: &mut session.bg_rx,
+                agent: &mut session.agent_rx,
+                mcp: &mut session.mcp_rx,
+                telemetry: &mut session.telemetry_rx,
+                update: &mut session.update_rx,
+                transcript: &mut session.transcript_rx,
+                transcript_open: session.transcript_worker.is_some(),
+            }) => session.on_wake(wake)?,
         }
         session.after_iteration();
     }
     Ok(session.shutdown())
+}
+
+/// What woke the loop besides a key or a frame — one event off one of the
+/// data channels ([`next_wake`]).
+enum Wake {
+    /// A streamed reply event. App state is always updated; lines are only
+    /// committed to scrollback in the conversation view (in an overlay we
+    /// hold off and repaint on return).
+    Reply(StreamEvent),
+    /// A file-search result for the open `@` picker.
+    File(FileSearchResult),
+    /// A finished Ctrl+V clipboard read.
+    Image(Result<PathBuf, String>),
+    /// A git review worker's update.
+    Diff(DiffResult),
+    /// The `/login` device flow's worker: the code to show, then the
+    /// sign-in's verdict (`docs/copilot.md`).
+    Device(DeviceEvent),
+    /// One subscription's `/usage` read (`docs/usage.md`).
+    Usage(UsageResult),
+    /// The `/plugins` page's one job — a read, an install, a clone —
+    /// answered (`docs/plugins.md`).
+    Plugin(PluginResult),
+    /// A finished `/model` fetch from one provider's worker thread.
+    Model(ModelFetch),
+    /// The startup capability probe answered.
+    Probe(ProbeFetch),
+    /// A background-shell event from the registry's monitors.
+    Background(BgEvent),
+    /// A subagent event — its own stream, its settle, or the lead's stop or
+    /// resume of it (`docs/agent-tools.md`).
+    Agent(AgentEvent),
+    /// An MCP server's state changed (a connect resolved, an auth flow
+    /// progressed) — `docs/mcp.md`.
+    Mcp(McpEvent),
+    /// The day's telemetry ping was delivered (`docs/telemetry.md`).
+    Telemetry(Delivery),
+    /// The update check answered (`docs/update.md`).
+    Update(String),
+    /// A history item's rows for the Ctrl+O transcript, rendered off this
+    /// thread — or `None`: the worker is gone, which only a render that
+    /// panicked does (`docs/input-latency.md`).
+    Transcript(Option<ui::RenderedTranscriptItem>),
+}
+
+/// The data channels [`next_wake`] waits on — each receiver borrowed by its
+/// own field, so the loop's `select!` can hold them beside the terminal's
+/// events and the draw ticks (the module docs).
+struct Sources<'a> {
+    reply: &'a mut UnboundedReceiver<StreamEvent>,
+    file: &'a mut UnboundedReceiver<FileSearchResult>,
+    image: &'a mut UnboundedReceiver<Result<PathBuf, String>>,
+    diff: &'a mut UnboundedReceiver<DiffResult>,
+    device: &'a mut UnboundedReceiver<DeviceEvent>,
+    usage: &'a mut UnboundedReceiver<UsageResult>,
+    plugin: &'a mut UnboundedReceiver<PluginResult>,
+    model: &'a mut UnboundedReceiver<ModelFetch>,
+    probe: &'a mut UnboundedReceiver<ProbeFetch>,
+    /// Whether the startup probe's answer is still wanted — a `/model`
+    /// switch that raced it (and already knows its support first-hand) wins,
+    /// so its channel is only read while this holds.
+    probe_pending: bool,
+    background: &'a mut UnboundedReceiver<BgEvent>,
+    agent: &'a mut UnboundedReceiver<AgentEvent>,
+    mcp: &'a mut UnboundedReceiver<McpEvent>,
+    telemetry: &'a mut UnboundedReceiver<Delivery>,
+    update: &'a mut UnboundedReceiver<String>,
+    transcript: &'a mut UnboundedReceiver<ui::RenderedTranscriptItem>,
+    /// Whether a transcript worker was started at all — a headless session
+    /// has none, and its closed channel is nobody's news.
+    transcript_open: bool,
+}
+
+/// The next event off any data channel. `select!` polls these branches in
+/// randomized order, so none of them can starve another — the round-robin
+/// fairness codex builds explicitly, kept among the sources that can each
+/// arrive in a flood (a reply, a subagent's own stream, a shell's output).
+async fn next_wake(sources: Sources<'_>) -> Wake {
+    tokio::select! {
+        Some(event) = sources.reply.recv() => Wake::Reply(event),
+        Some(result) = sources.file.recv() => Wake::File(result),
+        Some(result) = sources.image.recv() => Wake::Image(result),
+        Some(result) = sources.diff.recv() => Wake::Diff(result),
+        Some(event) = sources.device.recv() => Wake::Device(event),
+        Some(result) = sources.usage.recv() => Wake::Usage(result),
+        Some(result) = sources.plugin.recv() => Wake::Plugin(result),
+        Some(fetch) = sources.model.recv() => Wake::Model(fetch),
+        Some(answer) = sources.probe.recv(), if sources.probe_pending => Wake::Probe(answer),
+        Some(event) = sources.background.recv() => Wake::Background(event),
+        Some(event) = sources.agent.recv() => Wake::Agent(event),
+        Some(event) = sources.mcp.recv() => Wake::Mcp(event),
+        Some(delivered) = sources.telemetry.recv() => Wake::Telemetry(delivered),
+        Some(latest) = sources.update.recv() => Wake::Update(latest),
+        // No `Some(…)` pattern: this channel closing is itself the event.
+        done = sources.transcript.recv(), if sources.transcript_open => Wake::Transcript(done),
+        // Every channel closed (the session holds a sender of each, so this
+        // is the teardown's own business): nothing more will arrive, and the
+        // loop goes on serving keys and frames.
+        else => std::future::pending().await,
+    }
+}
+
+impl Session<'_> {
+    /// Handle one data-channel event — the routing table from a [`Wake`] to
+    /// the method of the area that owns it.
+    fn on_wake(&mut self, wake: Wake) -> io::Result<()> {
+        match wake {
+            Wake::Reply(event) => self.on_reply_event(event),
+            Wake::File(result) => self.on_file_matches(result),
+            Wake::Image(result) => self.on_image_paste(result),
+            Wake::Diff(result) => self.on_diff_result(result)?,
+            Wake::Device(event) => self.on_device_event(event),
+            Wake::Usage(result) => self.on_usage_result(result),
+            Wake::Plugin(result) => self.on_plugin_result(result),
+            Wake::Model(fetch) => self.on_model_fetch(fetch),
+            Wake::Probe((provider, result)) => self.apply_capability_probe(&provider, result),
+            Wake::Background(event) => self.on_bg_event(event),
+            Wake::Agent(event) => self.on_agent_message(event),
+            Wake::Mcp(event) => self.on_mcp_event(event),
+            Wake::Telemetry(delivered) => self.on_telemetry_result(&delivered),
+            Wake::Update(latest) => self.on_update_result(&latest),
+            Wake::Transcript(Some(done)) => self.on_transcript_item(done),
+            // The worker's thread ended, which it does only by panicking in
+            // a render: the hook has printed why and put the terminal back,
+            // and the session ends here as it did when this thread rendered
+            // the item itself.
+            Wake::Transcript(None) => {
+                return Err(io::Error::other("the transcript worker stopped"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The next terminal event — or never, for a session with no terminal (a

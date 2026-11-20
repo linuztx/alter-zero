@@ -610,12 +610,14 @@ fn the_auth_page_shows_the_url_and_paste_field() {
     assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
     let all = texts(&app).join("\n");
     assert!(all.contains("Authenticating with linear…"));
-    assert!(all.contains("A browser window will open"));
+    // Nothing is launched: the page never promises a browser window.
+    assert!(!all.contains("will open"));
     // No URL yet: the waiting note stands in.
     assert!(all.contains("Preparing the authorization request…"));
     app.set_mcp_auth_url("linear", "https://as.test/authorize?client_id=c1");
     let all = texts(&app).join("\n");
-    assert!(all.contains("copy this URL manually (c to copy)"));
+    assert!(all.contains("Open this URL in your browser to authenticate (c to copy)"));
+    assert!(!all.contains("open automatically"));
     assert!(all.contains("https://as.test/authorize?client_id=c1"));
     assert!(all.contains("URL > "));
     assert!(all.contains("Press Esc to go back"));

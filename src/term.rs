@@ -58,18 +58,19 @@
 //! [`reflow`]: InlineViewport::reflow
 
 use std::collections::VecDeque;
-use std::io::{self, Stdout, Write};
+use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell, CellDiffOption, CellWidth};
-use ratatui::crossterm::cursor::{Hide, Show};
+use ratatui::crossterm::cursor::{Hide, MoveTo, Show};
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
+use ratatui::crossterm::style::Print;
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, Clear as CrosstermClear, ClearType as CrosstermClearType,
     EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -88,7 +89,10 @@ use crate::links;
 use crate::ui;
 
 mod anchor;
+mod output;
 pub mod query;
+
+use self::output::Output;
 
 /// A content-anchored inline viewport whose height can change between draws (its
 /// top stays put; it grows downward in place).
@@ -241,32 +245,6 @@ pub struct InlineViewport {
     anchor: Option<anchor::Anchor>,
 }
 
-/// Where a viewport's escapes go: the terminal — or, for a headless run,
-/// which keeps the session but shows nothing, nowhere (`docs/headless.md`).
-/// The sink is defence in depth under [`InlineViewport::headless`]'s early
-/// returns: stdout is a headless run's answer, and an escape that reached
-/// it would corrupt the JSON a script parses.
-enum Output {
-    Terminal(Stdout),
-    Nowhere,
-}
-
-impl Write for Output {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Terminal(out) => out.write(buf),
-            Self::Nowhere => Ok(buf.len()),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Terminal(out) => out.flush(),
-            Self::Nowhere => Ok(()),
-        }
-    }
-}
-
 /// The size a headless viewport pretends to have — what the session's
 /// renderers wrap to for rows nobody sees.
 const HEADLESS_SIZE: (u16, u16) = (100, 50);
@@ -310,7 +288,7 @@ impl InlineViewport {
     ///
     /// [`init`]: InlineViewport::init
     fn init_in_raw_mode(min_height: u16, keyboard_enhanced: bool) -> io::Result<Self> {
-        let mut backend = CrosstermBackend::new(Output::Terminal(io::stdout()));
+        let mut backend = CrosstermBackend::new(Output::terminal()?);
         let size = backend.size()?;
         let screen = Rect::new(0, 0, size.width, size.height);
 
@@ -783,12 +761,13 @@ impl InlineViewport {
     /// live region and show it again.
     fn seat_cursor(&mut self, app: &App) -> io::Result<()> {
         let (x, y) = ui::cursor_position(self.view, app);
-        self.backend.set_cursor_position(Position::new(x, y))?;
+        self.queue_cursor(x, y)?;
         // Re-show the cursor at its final prompt seat, undoing the frame-start
         // Hide ([`draw`]/[`reflow`]) now that every scroll and blit that would
         // have dragged it around is done — so it appears only here, never
-        // mid-flight. Queue the Show (ratatui's `show_cursor` would `execute!` —
-        // an extra flush mid-synchronized-update); the frame goes out in one write.
+        // mid-flight. Queue the Show, as the move above is queued (ratatui's
+        // `show_cursor` and `set_cursor_position` would `execute!` — an extra
+        // flush mid-synchronized-update); the frame goes out in one write.
         //
         // Unless the frame shows none at all ([`ui::cursor_visible`] — a
         // permission prompt's option list is a menu, not a text field): then
@@ -1188,7 +1167,7 @@ impl InlineViewport {
         // overflow into the now-empty scrollback — no duplicated or stale row
         // can survive.
         self.clear_scrollback_and_screen()?;
-        self.backend.set_cursor_position(Position::new(0, 0))?;
+        self.queue_cursor(0, 0)?;
         self.prev = None; // the screen is being rebuilt out from under `prev`
         self.view = Rect::new(0, 0, self.screen.width, height);
         self.write_above(tail)?;
@@ -1353,9 +1332,7 @@ impl InlineViewport {
         // opening Ctrl+O / Ctrl+D used to streak the animation to nowhere;
         // now it lands on the hint. The inline `paint_frame` seats its
         // cursor the same way, via [`ui::cursor_position`].
-        let seated = self
-            .backend
-            .set_cursor_position(Position::new(seat_x, seat_y));
+        let seated = self.queue_cursor(seat_x, seat_y);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         let painted = drawn
             .and(seated)
@@ -1537,12 +1514,24 @@ impl InlineViewport {
     /// here, at the one place the screen scrolls.
     fn scroll_up(&mut self, n: u16) -> io::Result<()> {
         if n > 0 {
-            self.backend
-                .set_cursor_position(Position::new(0, self.screen.height.saturating_sub(1)))?;
-            self.backend.append_lines(n)?;
+            self.queue_cursor(0, self.screen.height.saturating_sub(1))?;
+            // Queued, where the backend's `append_lines` would flush: the
+            // scroll and the repaint it makes room for are one write.
+            for _ in 0..n {
+                queue!(self.backend, Print("\n"))?;
+            }
             self.painted_bottom = self.painted_bottom.saturating_sub(n);
         }
         Ok(())
+    }
+
+    /// Move the cursor — queued, where the backend's `set_cursor_position`
+    /// would flush on the spot. A frame is written once, at its end: a flush
+    /// part-way sent the terminal a scroll, or every painted cell, ahead of
+    /// the escape that closes the synchronized update (`term::output`,
+    /// `docs/input-latency.md`).
+    fn queue_cursor(&mut self, x: u16, y: u16) -> io::Result<()> {
+        queue!(self.backend, MoveTo(x, y))
     }
 
     /// Blank `n` rows starting at terminal row `y` — the rows a shrinking box
@@ -1550,8 +1539,11 @@ impl InlineViewport {
     /// rows beneath it are free).
     fn clear_rows(&mut self, y: u16, n: u16) -> io::Result<()> {
         for row in y..y.saturating_add(n) {
-            self.backend.set_cursor_position(Position::new(0, row))?;
-            self.backend.clear_region(ClearType::CurrentLine)?;
+            self.queue_cursor(0, row)?;
+            queue!(
+                self.backend,
+                CrosstermClear(CrosstermClearType::CurrentLine)
+            )?;
         }
         Ok(())
     }

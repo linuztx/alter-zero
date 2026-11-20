@@ -351,7 +351,7 @@ pub struct AgentRun {
     /// only when the display is on, so with `/settings` **Hide thinking**
     /// set a delta is counted and dropped exactly as it always was
     /// (`docs/thinking-stream.md`, `docs/agent-view-streaming.md`).
-    reasoning: Option<String>,
+    reasoning: Option<crate::app::LiveThought>,
     /// Where this round's settled thinking cells landed in
     /// [`history`](Self::history), so the round's own [`StreamEvent::Usage`]
     /// frame can snap their token estimates to the provider's
@@ -635,8 +635,8 @@ impl AgentRun {
             StreamEvent::ThinkingChunk(text) => {
                 self.tokens += crate::app::count_tokens(text) as u64;
                 self.recovered();
-                if let Some(buffer) = self.reasoning.as_mut() {
-                    buffer.push_str(text);
+                if let Some(thought) = self.reasoning.as_mut() {
+                    thought.push(text);
                 }
             }
             // A piece of a call being generated — counted so the footer
@@ -762,7 +762,7 @@ impl AgentRun {
                     && front.status == ToolStatus::Running
                 {
                     front.output.push_str(chunk);
-                    self.tool_live.reset();
+                    self.tool_live.settle();
                 }
             }
             // A terminal session's live output and a refined header, folded
@@ -1348,7 +1348,7 @@ impl AgentRun {
     /// `ThinkingStart` dance the main session does.
     pub fn begin_reasoning(&mut self) {
         self.flush_segment();
-        self.reasoning = Some(String::new());
+        self.reasoning = Some(crate::app::LiveThought::default());
     }
 
     /// The chain-of-thought streamed so far in the open phase, or `None` when
@@ -1357,7 +1357,15 @@ impl AgentRun {
     /// real before its first delta, and the block should say so.
     #[must_use]
     pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref()
+        self.reasoning.as_ref().map(crate::app::LiveThought::text)
+    }
+
+    /// The open phase's thought with its live tail — what the session
+    /// view's block is built from ([`crate::app::LiveThought::tail_rows`]);
+    /// `None` when no phase is open.
+    #[must_use]
+    pub fn live_thought(&self) -> Option<&crate::app::LiveThought> {
+        self.reasoning.as_ref()
     }
 
     /// Inject the open phase's elapsed (the boundary's thinking clock, the
@@ -1397,7 +1405,7 @@ impl AgentRun {
     /// session's rule exactly (`docs/thinking-stream.md`).
     pub fn finish_reasoning(&mut self, secs: u64) -> Option<crate::app::Reasoning> {
         self.thinking = None;
-        let text = self.reasoning.take()?;
+        let text = self.reasoning.take()?.into_text();
         if text.trim().is_empty() {
             return None;
         }

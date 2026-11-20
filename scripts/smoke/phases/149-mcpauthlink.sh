@@ -21,8 +21,8 @@ smoke_begin
 #   once per row it is painted on — and no open anywhere carries a piece of
 #   it: the only other target is the server page's `URL:` row, a link to the
 #   server's own address;
-# - the link opens exactly what the browser was handed (a stand-in xdg-open
-#   records it);
+# - no browser is launched: the page is the only place the URL goes (a
+#   stand-in xdg-open/open on PATH records any launch, and none may come);
 # - the link-id carrier never leaks as an SGR 58 underline colour.
 S149="${S}_mcpauthlink"
 AUTH_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -95,8 +95,9 @@ if ! poll 5 stub_up; then
 	fail "the stub MCP server never came up on port $AUTH_PORT"
 fi
 
-# The browser the flow opens: a stand-in on PATH that records the URL it was
-# handed (`xdg-open` on Linux, `open` on macOS — llm::mcp::manager).
+# A tripwire for the launcher the flow used to run (`xdg-open` on Linux,
+# `open` on macOS): a stand-in on PATH that records any URL it is handed.
+# The sign-in shows its URL and launches nothing, so the log stays empty.
 AUTH_BIN="$SMOKE_TMP/bin"
 BROWSER_LOG="$SMOKE_TMP/browser.log"
 mkdir -p "$AUTH_BIN"
@@ -130,23 +131,17 @@ if ! wait_for 5 "$S149" -F "1. Authenticate"; then
 	fail "the server page offers no Authenticate action"
 fi
 keys "$S149" Enter # Authenticate
-# The browser stand-in is handed the authorize URL as soon as the flow has
-# built it — the one URL the page and its link are held to below.
-browser_url=""
-if wait_file 15 "$BROWSER_LOG" -F "$AUTH_BASE/oauth/authorize"; then
-	browser_url="$(head -1 "$BROWSER_LOG")"
-else
-	fail "the flow never handed the browser its URL"
-fi
 
 # The URL as the page spells it: the rows from the one its scheme opens down
-# to the blank row under them, each without its inset. Polled until it is the
-# browser's URL whole, since a capture taken while tmux is still part-way
-# through a repaint (a loaded machine splits the frame) spells half of the
-# new page over half of the old one.
+# to the blank row under them, each without its inset. Polled until two
+# captures in a row spell the same complete URL (its last parameter, the
+# scope, is on it), since a capture taken while tmux is still part-way through a
+# repaint (a loaded machine splits the frame) spells half of the new page
+# over half of the old one.
 auth_page=""
 shown_url=""
 shown_rows=0
+previous_url=""
 spell_url() {
 	local spelled
 	auth_page="$(tmux capture-pane -t "$S149" -p)"
@@ -157,10 +152,18 @@ spell_url() {
 		END { printf "\n%d\n", rows }')"
 	shown_url="$(printf '%s\n' "$spelled" | sed -n 1p)"
 	shown_rows="$(printf '%s\n' "$spelled" | sed -n 2p)"
-	[ -n "$browser_url" ] && [ "$shown_url" = "$browser_url" ]
+	local settled=1
+	case "$shown_url" in *"&scope="*) [ "$shown_url" = "$previous_url" ] && settled=0 ;; esac
+	previous_url="$shown_url"
+	return "$settled"
 }
-if ! poll 10 spell_url; then
-	fail "the page never spelled the URL the browser was handed (it spelled '$shown_url')"
+if ! poll 15 spell_url; then
+	fail "the page never spelled a whole authorize URL (it spelled '$shown_url')"
+fi
+if [ -s "$BROWSER_LOG" ]; then
+	note "the launcher was handed"
+	cat "$BROWSER_LOG"
+	fail "the sign-in launched a browser; it should only show the URL"
 fi
 note "the auth page in a 60-col pane"
 printf '%s\n' "$auth_page"
@@ -185,8 +188,7 @@ read_links() {
 poll 5 read_links
 note "the OSC 8 targets in the raw stream"
 if [ -n "$link_targets" ]; then printf '%s\n' "$link_targets" | sort | uniq -c; else echo "(none)"; fi
-# Every open is the whole authorize URL — the one the page spells and the
-# browser was handed — or the server page's address; never a row's fragment
+# Every open is the whole authorize URL — the one the page spells — or the server page's address; never a row's fragment
 # of either.
 strays="$(printf '%s\n' "$link_targets" | grep -v '^$' | grep -vxF -e "$shown_url" -e "$AUTH_BASE/mcp")"
 expect_eq "$strays" "" "an OSC 8 open carries something other than a whole URL the walk shows"

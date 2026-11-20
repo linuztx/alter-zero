@@ -37,6 +37,7 @@ scripts/release.sh npm X.Y.Z dist [--dry-run]   # the npm packages from the rele
 scripts/release.sh prepare X.Y.Z            # bump the version everywhere, roll [Unreleased] into a dated section, then tag
 cargo run --release --example mem_probe     # /model parse RSS (docs/memory.md)
 cargo run --release --example link_probe    # what a link-heavy reply costs to render, both presentations (docs/links.md)
+cargo build --release && cargo run --release --example latency_probe   # key-to-paint latency of the real binary in a pty while a loopback stub provider streams; its header lists the scenarios
 PROVIDER=openrouter MODEL=… cargo run --example classifier_probe   # a labelled corpus through the real auto mode classifier, live: verdict, time and requests per action (docs/permissions.md)
 cargo build --example pty_oracle && scripts/pty_oracle.sh 'btop' steps.jsonl   # a program's screen in the session emulator vs tmux, cell for cell (docs/interactive-shell.md)
 cargo build --release --timings && scripts/build_timings.py   # where a release build's time goes (docs/build-time.md)
@@ -184,7 +185,7 @@ rustc into a failed install; `options=('!lto')`, since makepkg's
 debug info Cargo would strip; and `RUSTONIG_SYSTEM_LIBONIG=1`, linking Arch's
 `oniguruma` — so a C library newly linked in `Cargo.toml` is a new
 `depends` entry there. Its `check()` runs the dev-profile suite without
-debug info and `--skip`s the eight frame-budget gates by name (a redraw under
+debug info and `--skip`s the ten frame-budget gates by name (a redraw under
 25 ms measures the user's machine, not the package), so a new wall-clock
 gate belongs on that list too. It follows a release and never leads it: the
 tag's tarball has no checksum until the tag is pushed.
@@ -284,7 +285,7 @@ the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `inline_diff`, `tool_group`, `status`, `tips`, `offline`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `plugins_view`, `config_review_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mascot_view`, `spinner_view`, `palette`, `theme_view`, `donate_view`, `sponsor_view`, `export_view`, `context_usage_view`, `usage_view`, `secrets_view`, `mcp_view`, `plugins_view`, `config_review_view`, `view_flow`, `stream_render`, `frame_memo`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -345,7 +346,10 @@ bookkeeping (`init`'s anchor math, `write_above`'s scroll plan, `resized`'s
 re-clamp) is its own, smoke-covered.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
-`docs/async-rewrite.md`; the editable input (textarea) design in
+`docs/async-rewrite.md`; what stands between a key press and the frame that
+shows it — the frame scheduler's two floors, the loop's order, the per-draw
+frame scope, the transcript's render worker, the vendored terminal library —
+in `docs/input-latency.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
 that history in `docs/history-search.md`; the **cross-session persistence** of
@@ -3896,17 +3900,34 @@ other way would not.
 
 ### Data flow
 
-The loop is an async (`tokio`, current-thread) `select!` over five sources —
-input, reply events, draw ticks, `@` file-search results, and finished Ctrl+V
+The loop is an async (`tokio`, current-thread) `select!` over its sources —
+input, draw ticks, reply events, `@` file-search results, finished Ctrl+V
 clipboard reads (each paste's read — a byte copy on Linux, a decode + encode
 on the fallback path — runs on its own worker thread so the loop — and the
-status animations — never block on it);
-`select!`'s randomized branch order gives input/draw fairness for free. Every state
+status animations — never block on it), and a dozen more workers' channels.
+**Input is polled first and a due draw tick second** (`biased`); every other
+source is chosen at random among the rest by `tui::event_loop`'s `next_wake`,
+so none of those can starve another. The order matters: with every branch
+drawn at random a due frame won one poll in fourteen against a reply channel
+that always had an event ready, and a fast stream held each keystroke's paint
+behind a dozen of its own events (`docs/input-latency.md`). Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
-single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
+single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`) — a frame
+already due emitted at once, never through the runtime's millisecond timer —
+while a **key press** or a paste asks for an input frame
+(`schedule_input_frame`), which is drawn at once: it waits neither the rest
+of the floor a stream's frames keep nor one of its own, since any wait goes
+through that millisecond timer. A paste/fast-type
 run is caught by `paste::PasteBurst` so its characters request relaxed frames
 (`schedule_frame_in` — the rate-limit floor does the coalescing; the scheduler
-keeps the soonest pending deadline). *While a turn is active* the draw branch **re-arms** the next
+keeps the soonest pending deadline). **Nothing that takes long runs between
+two keystrokes**: each draw is one `ui::frame` scope, in which the strip's
+live cells are built once however many of the geometry helpers ask for them;
+a committed item's rows for the Ctrl+O transcript are rendered by a worker
+thread (`TranscriptCache::warm_jobs` hands them out at the loop bottom,
+`accept` splices them in), never by the loop; and a frame reaches the
+terminal as one `write` (`term::output::FrameWriter`). `examples/latency_probe.rs`
+measures all of it against the real binary. *While a turn is active* the draw branch **re-arms** the next
 animation frame (`schedule_frame_in(32ms)`, codex's status-widget cadence) so the
 status line's shimmer sweeps and its timer advances with no events; before each
 draw the loop writes the computed `elapsed`/`thinking` `Duration`s onto the status
@@ -3917,17 +3938,19 @@ pattern — no flushed state ever lacks the box, the flicker fix; `reflow` paint
 same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md`).
 One kind of tick is not a whole frame: the banner mascot asks for its
 frames on its own account (`schedule_banner_frame_in`, the one request
-`FrameRequester::asked` does not count), and a tick before which nothing
-else asked (`frame::FrameLedger`) repaints the banner's cells alone —
+`FrameRequester::asked` does not count — a key's input frame counts like
+any other), and a tick before which nothing else asked
+(`frame::FrameLedger`) repaints the banner's cells alone —
 `docs/mascot-animation.md` *A frame of its own*.
-(See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
+(See `docs/async-rewrite.md`, `docs/status-indicator.md`, `docs/input-latency.md`.)
 
 ```
-keyboard / resize ──► EventStream ─┐
+keyboard / resize ──► EventStream ─┐  first
+frame scheduler ───► draw-tick ────┤  second                                coalesce + 120fps ─► draw / draw_overlay
 reply backend ─────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_file_matches / attach_image / set_status_times / … ─► schedule_frame
-frame scheduler ───► draw-tick ────┤                                        coalesce + 120fps ─► draw / draw_overlay
 file-search worker ► tokio mpsc ───┤
-image-paste worker ► tokio mpsc ───┘
+image-paste worker ► tokio mpsc ───┤  …and the other workers, fairly among themselves
+transcript worker ─► tokio mpsc ───┘
                                         └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 

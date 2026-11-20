@@ -25,7 +25,7 @@ use super::tool::bullet_span;
 use super::wrap::{cols, wrap_output};
 use super::*;
 
-use crate::app::Reasoning;
+use crate::app::{LiveThought, Reasoning};
 
 /// One row of the thought's body in the `⎿` gutter — dim and italic, the cue
 /// that separates it from a tool's output in the same gutter. Row 0 opens with
@@ -189,29 +189,24 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 ///
 /// Blank source lines are skipped: reasoning is full of paragraph breaks, and
 /// spending the small window on them would show a third as much thought.
-/// Walking newest-first wraps only what the window can show, so redrawing this
-/// every animation frame costs O(window), not O(reasoning).
-pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> Vec<Line<'static>> {
+/// The rows come from the thought's own tail ([`LiveThought::tail_rows`]),
+/// which keeps the rows a later delta cannot change, so a build wraps what
+/// arrived since the last one plus a row — not the newest paragraph whole,
+/// which a model thinking in one long paragraph made the cost of every frame
+/// (`docs/thinking-stream.md` *A long thought costs what it adds*).
+pub(super) fn live_reasoning_lines(
+    thought: &LiveThought,
+    pulse: Duration,
+    width: u16,
+) -> Vec<Line<'static>> {
     let mut lines = vec![thinking_header(
         Some(pulse),
         shimmer_spans_from(REASONING_RUNNING, pulse, reasoning_shimmer_base()),
     )];
     let inner = body_width(width);
-    let mut window: VecDeque<String> = VecDeque::new();
-    for source in text.split('\n').rev() {
-        if source.trim().is_empty() {
-            continue;
-        }
-        for row in wrap_output(source, inner).into_iter().rev() {
-            window.push_front(row);
-        }
-        if window.len() >= REASONING_PEEK_LINES {
-            break;
-        }
-    }
-    while window.len() > REASONING_PEEK_LINES {
-        window.pop_front();
-    }
+    let window = thought.tail_rows(REASONING_PEEK_LINES, inner, |line| {
+        super::wrap::output_tail(line, inner)
+    });
     lines.extend(
         window
             .into_iter()

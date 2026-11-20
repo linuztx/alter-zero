@@ -963,3 +963,78 @@ fn wrap_mode_rows_agrees_with_wrap_when_a_token_fills_the_row() {
         );
     }
 }
+
+// --- The short-line rule (docs/input-latency.md) ---
+
+#[test]
+fn no_character_is_wider_than_its_bytes() {
+    // What the short-line rule rests on: a line's display width never
+    // exceeds its length in bytes, so a line no longer than its row in bytes
+    // fits it. One byte is at most one column, and a two-column character is
+    // at least three bytes.
+    for c in (0..=0x0010_FFFFu32).filter_map(char::from_u32) {
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
+        assert!(
+            cols(s) <= s.len(),
+            "U+{:04X} is {} columns in {} bytes",
+            c as u32,
+            cols(s),
+            s.len()
+        );
+    }
+}
+
+#[test]
+fn a_line_no_longer_than_its_row_is_counted_without_a_scan() {
+    // A command's output is mostly lines shorter than the terminal, and the
+    // running cell counts every one of them on every build to say how many
+    // rows its window hides. Walking each a grapheme at a time to learn it is
+    // one row was most of what a noisy command cost a frame.
+    let text = (0..500)
+        .map(|i| format!("line {i} of the command's output"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let before = crate::ui::wrap::scanned_lines();
+    assert_eq!(WrapMode::Output.rows(&text, 80), 500);
+    assert_eq!(WrapMode::Verbatim.rows(&text, 80), 500);
+    assert_eq!(WrapMode::Output.wrap(&text, 80).len(), 500);
+    assert_eq!(
+        crate::ui::wrap::scanned_lines() - before,
+        0,
+        "a line no longer than its row is one row: there is nothing to walk"
+    );
+}
+
+#[test]
+fn the_short_line_rule_wraps_exactly_as_the_scan_does() {
+    // The rule is a shortcut, never a second opinion: wherever it applies,
+    // the grapheme scan gives the same rows.
+    let corpus = [
+        "",
+        "short",
+        "a  b   c",
+        "   leading",
+        "trailing   ",
+        "    ",
+        "你好世界",
+        "e\u{301}x combining",
+        "👩\u{200D}💻 dev",
+        "❤\u{FE0F} vs16",
+        "ｶ\u{FF9E} dakuten",
+        "\u{7}bell and \u{1b}[31m escape",
+        "zero\u{200B}width",
+        "tab\there",
+    ];
+    for mode in [WrapMode::Output, WrapMode::Verbatim] {
+        for line in corpus {
+            for width in line.len().max(1)..line.len() + 4 {
+                let mut ruled = Vec::new();
+                mode.scan(line, width, &mut |row| ruled.push(row));
+                let mut scanned = Vec::new();
+                mode.scan_graphemes(line, width, width, &mut |row| scanned.push(row));
+                assert_eq!(ruled, scanned, "{mode:?} at width {width} on {line:?}");
+            }
+        }
+    }
+}

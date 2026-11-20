@@ -5,7 +5,7 @@
 //! builds lines, and that only the boundary ever *writes* — the same shape
 //! [`crate::links`]' URL interner has, and for the same reason: threading
 //! them through `conversation_lines`, `tool_commit_lines`,
-//! `transcript_item_lines` and every caller would put an argument on a dozen
+//! `transcript_item_into` and every caller would put an argument on a dozen
 //! signatures to carry one session-wide fact.
 //!
 //! - The **policy** is the `/settings` rows plus what the terminal turned out
