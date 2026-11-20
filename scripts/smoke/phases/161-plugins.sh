@@ -7,10 +7,10 @@ smoke_begin
 # The `/plugins` page (docs/plugins.md), end to end against a REAL local
 # marketplace this phase plants — a directory, whose plugins load in place,
 # so nothing is cloned or copied: open the page from the palette on an
-# empty config home (it lands on the Marketplaces tab, the official
-# catalogs one Enter away over the row that adds any other), add the
-# marketplace by typing its folder into that row's field — the page lists
-# its plugins — install `hello` (a skill and a command) from its page,
+# empty config home (it lands on the + Add tab, the official catalogs one
+# Enter away over the row that adds any other), add the marketplace by
+# typing its folder into that row's field — the page lands on its tab and
+# says nothing more — install `hello` (a skill and a command) from its page,
 # install `guard` (a hook and an MCP server) and answer the review that
 # opens for it — no line saying either went right: the page shows it — then
 # prove the plugin's
@@ -69,17 +69,16 @@ type_text "$S161" "/plugi"
 sleep 0.4
 expect_has "$(pane "$S161")" -F "Browse, install and manage plugins" "/plugins is missing from the slash-command palette"
 keys "$S161" Enter
-pl_empty="$(wait_pane 5 "$S161" -F "Add a marketplace…")"
+pl_empty="$(wait_pane 5 "$S161" -F "anthropics/claude-plugins-official")"
 dump "the page on an empty config home" "$pl_empty"
 expect_has "$pl_empty" -E "^  Plugins *$" "the page does not open on its title"
-expect_has "$pl_empty" -E "^  Installed · Discover · Marketplaces *$" "the tab strip is not Installed · Discover · Marketplaces"
-expect_lacks "$pl_empty" -F "Marketplaces (" "the tab strip counts its tabs"
-expect_has "$pl_empty" -E "^  → claude-plugins-official +\+ available +Claude Code's official plugin directory" "an empty page does not offer Claude Code's catalog first"
-expect_has "$pl_empty" -E "^    openai-curated +\+ available +Codex's official plugin directory" "an empty page does not offer Codex's catalog"
-expect_has "$pl_empty" -E "^    Add a marketplace… +owner/repo, git URL or directory" "an empty page offers no way to add any other marketplace"
+expect_has "$pl_empty" -F " All (0)    Installed (0)    + Add" "the tab strip is not All / Installed / + Add"
+expect_has "$pl_empty" -E "^  → anthropics/claude-plugins-official +Claude Code's official plugin directory" "an empty page does not offer Claude Code's catalog first"
+expect_has "$pl_empty" -E "^    openai/plugins +Codex's official plugin directory" "an empty page does not offer Codex's catalog"
+expect_has "$pl_empty" -E "^    Add a marketplace… +owner/repo, git URL or path *$" "an empty page offers no way to add any other marketplace"
 
 # Add the marketplace by typing its folder into the add row's field: the
-# page lists its plugins, and says nothing more.
+# page lands on its tab, and says nothing more.
 keys "$S161" End
 sleep 0.2
 keys "$S161" Enter
@@ -89,11 +88,12 @@ expect_has "$pl_field" -E "^  Add a marketplace *$" "the add row did not open it
 type_text "$S161" "$PL_MARKET"
 sleep 0.3
 keys "$S161" Enter
-pl_added="$(wait_pane 10 "$S161" -E "^  ❯ @demo *$")"
+pl_added="$(wait_pane 10 "$S161" -F " demo (2) ")"
 dump "the marketplace added" "$pl_added"
+expect_has "$pl_added" -F " All (2)    Installed (0)    demo (2)    + Add" "the new marketplace has no tab"
 expect_has "$pl_added" -E "^  → guard +\+ available +Refuses dangerous shell commands" "guard is not listed as available"
 expect_has "$pl_added" -E "^    hello +\+ available +Greets people" "hello is not listed as available"
-expect_has "$pl_added" -F "←/→ tabs · Enter to open" "the hint is not in its row"
+expect_has "$pl_added" -F "Ctrl+R remove · ←/→ tabs · Enter to open" "a marketplace's tab does not offer its own keys in the hint's row"
 expect_lacks "$pl_added" -F "Added demo" "the page said what the add did"
 
 # Install hello from its page: it loads in place.
@@ -134,10 +134,7 @@ dump "guard's page after the review" "$pl_trusted"
 expect_has "$pl_trusted" -E "Hooks: +Stop" "guard's page does not name its hook's event"
 expect_has "$pl_trusted" -E "MCP servers: +plugin:guard:probe" "guard's page does not name its server"
 
-# Out to the composer (three Escapes: the page, the list's search, the
-# list).
-keys "$S161" Escape
-sleep 0.3
+# Out to the composer (two Escapes: the page, then the list).
 keys "$S161" Escape
 sleep 0.3
 keys "$S161" Escape
@@ -185,7 +182,7 @@ launch "$S161" 100 40 "$APP_PL"
 type_text "$S161" "/plugins"
 sleep 0.3
 keys "$S161" Enter
-pl_again="$(wait_pane 5 "$S161" -E "^  → guard +✔ enabled")"
+pl_again="$(wait_pane 5 "$S161" -F "2 installed · 2 on in this directory")"
 dump "a fresh process" "$pl_again"
 expect_has "$pl_again" -E "^  → guard +✔ enabled" "a fresh process does not open on the installed plugins"
 expect_lacks "$pl_again" -F "Reading the marketplaces" "the page did not open on the catalog it read at startup"
@@ -211,11 +208,12 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 	expect_eq "$(rule_row)" "$before_rule" "the page moved while the toggle ran"
 	sleep 0.05
 done
-pl_off="$(wait_pane 3 "$S161" -E "^  → guard +◯ disabled")"
+pl_off="$(wait_pane 3 "$S161" -F "2 installed · 1 on in this directory")"
 sleep 0.5
 tmux pipe-pane -t "$S161"
 pl_off="$(pane "$S161")"
 dump "after Space" "$pl_off"
+expect_has "$pl_off" -E "^  → guard +◯ disabled" "Space did not turn the highlighted plugin off"
 expect_has "$pl_off" -F "←/→ tabs · Enter to open · Space to toggle" "the hint left its row"
 expect_lacks "$pl_off" -F "Disabled guard" "the page said what the toggle did"
 expect_eq "$(rule_row)" "$before_rule" "the page moved once the toggle was done"

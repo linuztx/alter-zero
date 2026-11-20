@@ -3338,24 +3338,23 @@ it will not parse — `layout`, `components`, `mcp`, `agents`, `git`, `store`,
 `catalog` with `build_catalog` and `load_enabled`), everything kept under
 `{config_home}/plugins/` (`ALTER_ZERO_PLUGINS_DIR` moves it; plugins are **on
 per directory** until one turns them off, `skills.json`'s shape). The page
-(`app::PluginsMenu`, `ui::plugins_view`) is a search-line picker under
-Claude Code's three tabs on one quiet line under the title,
-`Installed · Discover · Marketplaces` (the current one accent and bold, no
-counts, no chips) — *Installed*, *Discover* (every plugin;
-`@{marketplace}` searches one) and *Marketplaces*: the added ones, Claude Code's and Codex's official catalogs
-not added yet (`plugins::SUGGESTED_MARKETPLACES`, one Enter each) and **`Add
-a marketplace…`**, a field for any owner/repo, git URL or directory, an add
-landing on *Discover* searched for it (a tab per marketplace, codex's, was
-dropped: with one marketplace *All* and its tab were one list twice) — with
-the picker ladder on a short terminal, a `/mcp`-style page per plugin and
-per marketplace (Browse, Update, Remove), and a confirmation before anything
-is deleted whose highlighted answer is the action, so Enter confirms;
-**acting on it never moves it** (`docs/plugins.md` *No flicker*: a job is
-said in the hint's own row once it has run `PLUGINS_JOB_DELAY`, what went
-right is never said — the rows and pages show it — a failure is red until
-the next key, no toast goes over the open page, the list's details are two
-rows at every selection, and a reopened page shows the catalog the session
-kept, read behind the first frame); every operation is a typed `PluginOp` run on
+(`app::PluginsMenu`, `ui::plugins_view`) is codex's `/plugins`: a search-line
+picker under the ask modal's chip strip of tabs — *All*, *Installed*, **one
+per marketplace** (its header its source, age and skipped entries; Ctrl+U
+updates a git one, Ctrl+R removes it) and **+ Add**, whose field is the search
+line and whose rows are Claude Code's and codex's official catalogs
+(`plugins::SUGGESTED_MARKETPLACES`) over **`Add a marketplace…`**, which
+opens a field for any owner/repo, git URL or directory (three fixed tabs,
+`Installed · Discover · Marketplaces`, were tried in this strip's place and
+dropped) — with the picker ladder on a short terminal, a `/mcp`-style page
+per plugin, and a confirmation before anything is deleted whose highlighted
+answer is the action, so Enter confirms; **acting on it never moves it**
+(`docs/plugins.md` *No flicker*: a job is said in the hint's own row once it
+has run `PLUGINS_JOB_DELAY`, what went right is never said — the rows and
+pages show it — a failure is red until the next key, no toast goes over the
+open page, the list's details are two rows at every selection, and a
+reopened page shows the catalog the session kept, read behind the first
+frame); every operation is a typed `PluginOp` run on
 one worker under a round (`/usage`'s rule, `tui::plugins`), the answer
 carrying a fresh catalog,
 and anything that changed what is installed or on is taken into the running

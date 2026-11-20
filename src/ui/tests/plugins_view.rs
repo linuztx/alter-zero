@@ -10,7 +10,8 @@ use crate::plugins::{
     PluginFormat, PluginId,
 };
 use crate::ui::theme::{
-    PLUGINS_TRUST_NOTE, ask_warning_color, model_active_color, toast_error_color,
+    PLUGINS_TRUST_NOTE, ask_chip_current_bg, ask_warning_color, model_active_color,
+    toast_error_color,
 };
 
 const TALL: u16 = 200;
@@ -120,17 +121,19 @@ fn has(texts: &[String], needle: &str) -> bool {
 #[test]
 fn the_list_shows_the_tabs_the_rows_and_the_highlighted_plugins_facts() {
     let texts = page(&plugins_app());
-    // The title, and the three tabs under it as one quiet line: no counts,
-    // no chips — `Installed (2)    Discover (4)    Marketplaces (2)` was a
-    // heavy bar of numbers that changed width with every install, over a
-    // subtitle that only repeated the tab's name.
-    assert_eq!(texts[1], "  Plugins", "{texts:#?}");
-    assert_eq!(
-        texts[2], "  Installed · Discover · Marketplaces",
+    assert!(has(&texts, "Plugins"), "{texts:#?}");
+    assert!(
+        has(&texts, "2 installed · 1 on in this directory"),
         "{texts:#?}"
     );
-    assert_eq!(texts[3], "", "{texts:#?}");
-    assert_eq!(texts[4], "  ❯", "{texts:#?}");
+    assert!(
+        has(
+            &texts,
+            " All (4)    Installed (2)    team (3)    local (1)    + Add"
+        ),
+        "{texts:#?}"
+    );
+    assert!(texts.iter().any(|t| t == "  ❯"), "{texts:#?}");
     let hookify = texts
         .iter()
         .find(|t| t.contains("→ hookify"))
@@ -227,10 +230,10 @@ fn a_long_name_never_crowds_the_descriptions_off_the_rows() {
     // marketplace was cut to `clau…` — and at 80 an All row read
     // `claude-plugins-official …`.
     let mut app = open_with(official_like());
-    for list in ["Discover", "one marketplace's plugins"] {
+    for tab in ["All", "claude-plugins-official"] {
         for width in [60_u16, 80, 120] {
             let texts = page_at(&app, width, TALL);
-            let context = format!("{list} at {width} columns: {texts:#?}");
+            let context = format!("the {tab} tab at {width} columns: {texts:#?}");
             assert!(
                 row_of(&texts, "→ 42crunch").contains("Automate API"),
                 "{context}"
@@ -253,9 +256,8 @@ fn a_long_name_never_crowds_the_descriptions_off_the_rows() {
                 "{context}"
             );
         }
-        for c in "@claude-plugins-official".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
     }
     let texts = page_at(&open_with(official_like()), 60, TALL);
     let (name, _) = row_of(&texts, "→ 42crunch")
@@ -332,46 +334,35 @@ fn moving_through_the_list_never_resizes_the_page() {
     press(&mut app, KeyCode::End);
     assert!(has(&page(&app), "No description"), "{:#?}", page(&app));
 
-    // The Marketplaces tab's marketplaces, its official ones not added and
-    // its add row alike.
-    let mut catalog = official_like();
-    catalog.marketplaces.remove(1);
-    let mut app = open_with(catalog);
-    press(&mut app, KeyCode::Right);
-    assert_eq!(
-        app.plugins_menu.as_ref().unwrap().tab,
-        PluginsTab::Marketplaces
-    );
-    for width in [60_u16, 80, 120] {
-        press(&mut app, KeyCode::Home);
-        let mut heights = Vec::new();
-        for _ in 0..3 {
-            heights.push(page_at(&app, width, TALL).len());
-            press(&mut app, KeyCode::Down);
-        }
-        assert!(
-            heights.windows(2).all(|pair| pair[0] == pair[1]),
-            "the Marketplaces tab at {width} columns: {heights:?}"
-        );
+    // The add tab's typed source and its suggestions alike.
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::Add);
+    for c in "anthropics".chars() {
+        press(&mut app, KeyCode::Char(c));
     }
+    let typed = page(&app);
+    press(&mut app, KeyCode::Down);
+    let suggestion = page(&app);
+    assert_eq!(typed.len(), suggestion.len(), "{typed:#?}\n{suggestion:#?}");
 }
 
 #[test]
 fn a_list_from_one_marketplace_does_not_name_it_on_every_row() {
-    // Browsing a marketplace — or having added just one — lists its
-    // plugins alone: a column repeating its name says nothing.
-    let mut app = plugins_app();
-    press(&mut app, KeyCode::Right);
-    for c in "@team".chars() {
-        press(&mut app, KeyCode::Char(c));
-    }
+    // With one marketplace added, every row on *All* and *Installed* is
+    // its own: a column repeating its name says nothing.
+    let mut one = catalog();
+    one.marketplaces.retain(|market| market.name == "team");
+    one.plugins.retain(|plugin| plugin.id.marketplace == "team");
+    let mut app = open_with(one);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::All);
     let texts = page(&app);
     let deploy = row_of(&texts, "deploy");
     assert!(!deploy.contains(" team "), "{deploy}");
     assert!(deploy.contains("Ships builds to staging"), "{deploy}");
     // Two marketplaces' plugins name their own.
     let mut app = plugins_app();
-    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
     let deploy = row_of(&page(&app), "deploy").to_string();
     assert!(deploy.contains(" team "), "{deploy}");
 }
@@ -400,203 +391,87 @@ fn a_row_never_ends_on_a_stub() {
 }
 
 #[test]
-fn the_current_tab_is_lit_and_the_others_dim() {
+fn the_current_tab_is_a_lit_chip() {
+    let app = plugins_app();
+    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
+    let strip = lines
+        .iter()
+        .find(|line| plain(line).contains("+ Add"))
+        .expect("the strip");
+    let lit: Vec<&str> = strip
+        .spans
+        .iter()
+        .filter(|span| span.style.bg == Some(ask_chip_current_bg()))
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(lit, [" Installed (2) "]);
+}
+
+#[test]
+fn a_marketplace_tab_lists_its_plugins_under_what_it_is() {
     let mut app = plugins_app();
-    let strip = |app: &App| {
-        crate::ui::plugins_view::plugins_view_lines(app, 80, TALL)
-            .into_iter()
-            .find(|line| plain(line).contains("Installed · Discover"))
-            .expect("the strip")
-    };
-    let style_of = |line: &Line, word: &str| {
-        line.spans
-            .iter()
-            .find(|span| span.content == word)
-            .unwrap_or_else(|| panic!("{word} in {line:?}"))
-            .style
-    };
-    let line = strip(&app);
-    let current = style_of(&line, "Installed");
-    assert_eq!(current.fg, Some(crate::ui::theme::model_selected_color()));
-    assert!(current.add_modifier.contains(Modifier::BOLD));
-    for other in ["Discover", "Marketplaces"] {
-        assert_eq!(
-            style_of(&line, other).fg,
-            Some(crate::ui::theme::model_meta_color()),
-            "{other}"
-        );
-    }
-    assert!(
-        line.spans.iter().all(|span| span.style.bg.is_none()),
-        "no chip behind any tab: {line:?}"
-    );
     press(&mut app, KeyCode::Right);
-    let line = strip(&app);
-    assert_eq!(
-        style_of(&line, "Discover").fg,
-        Some(crate::ui::theme::model_selected_color())
-    );
-    assert_eq!(
-        style_of(&line, "Installed").fg,
-        Some(crate::ui::theme::model_meta_color())
-    );
-}
-
-/// `app` on its Marketplaces tab, from whichever tab it opened on.
-fn on_marketplaces(mut app: App) -> App {
-    while app.plugins_menu.as_ref().unwrap().tab != PluginsTab::Marketplaces {
-        press(&mut app, KeyCode::Right);
-    }
-    app
-}
-
-#[test]
-fn the_marketplaces_tab_lists_each_with_its_count_and_the_way_to_add_any() {
-    let mut app = on_marketplaces(plugins_app());
-    let texts = page(&app);
-    assert_eq!(
-        texts[2], "  Installed · Discover · Marketplaces",
-        "{texts:#?}"
-    );
-    let team = row_of(&texts, "→ team");
-    assert!(team.contains("✔ 3 plugins"), "{team}");
-    assert!(team.contains("The team catalog"), "{team}");
-    // The official ones not added yet, under the names they will have.
-    let claude = row_of(&texts, "claude-plugins-official");
-    assert!(claude.contains("+ available"), "{claude}");
-    assert!(claude.contains("Claude Code's official plugin"), "{claude}");
+    let mut texts = page(&app);
+    assert!(has(&texts, "The team catalog"), "{texts:#?}");
+    assert!(has(&texts, "3 plugins · 1 installed"), "{texts:#?}");
     assert!(
-        row_of(&texts, "openai-curated").contains("Codex's official plugin directory"),
+        has(&texts, "https://example.com/team.git · 1a2b3c4"),
         "{texts:#?}"
     );
-    // And the row that takes any other source, last.
-    let add = row_of(&texts, "Add a marketplace…");
-    assert!(add.contains("owner/repo, git URL or directory"), "{add}");
-    assert!(has(&texts, "(1/5)"), "{texts:#?}");
+    let deploy = texts.iter().find(|t| t.contains("deploy")).expect("deploy");
+    assert!(deploy.contains("+ available"), "{deploy}");
+    // Its own tab does not name it on every row.
+    assert!(deploy.contains("  Ships builds to staging"), "{deploy}");
+    assert!(!deploy.contains("team ·"), "{deploy}");
+    let npm = texts.iter().find(|t| t.contains("npm-thing")).expect("npm");
+    assert!(npm.contains("– unavailable"), "{npm}");
+    assert!(has(&texts, "(1/3)"), "{texts:#?}");
     assert!(
-        has(&texts, "←/→ tabs · Enter to select · Esc to close"),
-        "{texts:#?}"
+        has(&texts, "Ctrl+U update"),
+        "a git marketplace: {texts:#?}"
     );
-    // Under the list, the highlighted marketplace's facts.
-    assert!(
-        has(&texts, "1 installed · https://example.com/team.git"),
-        "{texts:#?}"
-    );
+    assert!(has(&texts, "Ctrl+R remove"), "{texts:#?}");
+    assert!(!has(&texts, "updated"), "no clock yet: {texts:#?}");
     app.set_plugins_clock(std::time::Duration::ZERO, 1_000 + 7_200);
+    texts = page(&app);
     assert!(
-        has(
-            &page(&app),
-            "1 installed · updated 2h ago · https://example.com/team.git"
-        ),
-        "{:#?}",
-        page(&app)
+        has(&texts, "3 plugins · 1 installed · updated 2h ago"),
+        "{texts:#?}"
     );
-    press(&mut app, KeyCode::End);
+    // A directory has nothing to update.
+    press(&mut app, KeyCode::Right);
     let texts = page(&app);
-    assert!(
-        has(
-            &texts,
-            "Use owner/repo, a git URL, or a path to a directory"
-        ),
-        "{texts:#?}"
-    );
-    assert!(has(&texts, "owner/repo@ref, or #ref"), "{texts:#?}");
-    assert_frame_hugs_content(
-        "the Marketplaces tab",
-        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
-    );
+    assert!(!has(&texts, "Ctrl+U update"), "{texts:#?}");
+    assert!(has(&texts, "Ctrl+R remove"), "{texts:#?}");
 }
 
 #[test]
-fn a_marketplaces_name_is_whole_where_the_row_has_room() {
-    // A few rows, each named by what its plugins' ids end in: the cap that
-    // keeps hundreds of plugin names from crowding their descriptions cut
-    // `claude-plugins-official` to `claude-plugins-offici…` at 80 columns.
-    let app = on_marketplaces(open_with(official_like()));
-    for width in [60_u16, 80] {
-        let texts = page_at(&app, width, TALL);
-        assert!(
-            has(&texts, "→ claude-plugins-official "),
-            "{width} columns: {texts:#?}"
-        );
-    }
-    let texts = page_at(&app, 80, TALL);
-    assert!(
-        row_of(&texts, "Add a marketplace…").ends_with("owner/repo, git URL or directory"),
-        "{texts:#?}"
-    );
-}
-
-#[test]
-fn a_marketplace_that_could_not_be_read_or_skipped_entries_says_so() {
+fn a_marketplace_says_in_its_header_why_it_could_not_be_read_or_what_it_skipped() {
     let mut catalog = catalog();
     catalog.marketplaces[1].error = Some("no marketplace.json".to_string());
     catalog.marketplaces[0].notes = vec![
         "entry 4 skipped: `evil`: `ref` `--x` is not a branch or tag name".to_string(),
         "entry 5 skipped: `bad name`: invalid plugin name".to_string(),
     ];
-    let mut app = on_marketplaces(open_with(catalog));
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Right);
     let texts = page(&app);
-    assert!(has(&texts, "2 entries skipped"), "{texts:#?}");
-    let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
-    let local = lines
-        .iter()
-        .find(|line| plain(line).contains("local"))
-        .expect("the row");
-    assert!(plain(local).contains("✘ not read"), "{}", plain(local));
-    let mark = local
-        .spans
-        .iter()
-        .find(|span| span.content == "✘")
-        .expect("the mark");
-    assert_eq!(mark.style.fg, Some(crate::ui::theme::tool_fail_color()));
-    // Its page says why, and each entry it skipped.
-    press(&mut app, KeyCode::Enter);
-    let texts = page(&app);
-    assert!(has(&texts, "is not a branch or tag name"), "{texts:#?}");
-    assert!(has(&texts, "invalid plugin name"), "{texts:#?}");
-    press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Enter);
+    assert!(has(&texts, "2 entries skipped — `evil`"), "{texts:#?}");
+    assert!(
+        has(&texts, "is not a branch or tag name"),
+        "the reason, whole: {texts:#?}"
+    );
+    press(&mut app, KeyCode::Right);
     let lines = crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL);
     let error = lines
         .iter()
-        .find(|line| plain(line).contains("no marketplace.json"))
-        .expect("the failure on its page");
+        .find(|line| plain(line).contains("✘ no marketplace.json"))
+        .expect("the failure in the header");
     assert!(
         error
             .spans
             .iter()
             .any(|span| span.style.fg == Some(toast_error_color()))
-    );
-}
-
-#[test]
-fn a_marketplaces_page_shows_its_facts_over_its_actions() {
-    let mut app = on_marketplaces(plugins_app());
-    app.set_plugins_clock(std::time::Duration::ZERO, 1_000 + 7_200);
-    press(&mut app, KeyCode::Enter);
-    let texts = page(&app);
-    assert_eq!(texts[1], "  team", "{texts:#?}");
-    assert_eq!(
-        texts[2], "  ✔ 3 plugins · 1 installed · updated 2h ago",
-        "{texts:#?}"
-    );
-    assert!(has(&texts, "The team catalog"), "{texts:#?}");
-    assert!(
-        has(&texts, "Source:    https://example.com/team.git"),
-        "{texts:#?}"
-    );
-    assert!(has(&texts, "Revision:  1a2b3c4d5e6f"), "{texts:#?}");
-    assert!(has(&texts, "Location:  /m/team"), "{texts:#?}");
-    assert!(has(&texts, "❯ 1. Browse its plugins"), "{texts:#?}");
-    assert!(has(&texts, "2. Update"), "{texts:#?}");
-    assert!(has(&texts, "3. Remove"), "{texts:#?}");
-    assert!(has(&texts, "4. Back to marketplaces"), "{texts:#?}");
-    assert!(!cursor_visible(&app), "a page of actions hides the cursor");
-    assert_frame_hugs_content(
-        "a marketplace's page",
-        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
     );
 }
 
@@ -736,7 +611,7 @@ fn two_plugins_of_one_name_name_their_marketplaces() {
     let mut catalog = catalog();
     catalog.plugins.push(plugin("lint@team", None));
     let mut app = open_with(catalog);
-    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
     let texts = page(&app);
     assert!(has(&texts, "lint@local"), "{texts:#?}");
     assert!(has(&texts, "lint@team"), "{texts:#?}");
@@ -759,8 +634,8 @@ fn the_first_read_waits_a_moment_then_shows_its_clock_where_the_rows_will_be() {
     assert_eq!(reading.len(), 1, "once: {texts:#?}");
     assert!(reading[0].contains("(3s · esc to cancel)"), "{texts:#?}");
     assert!(
-        has(&texts, "  Installed · Discover · Marketplaces"),
-        "the tabs before the first read: {texts:#?}"
+        has(&texts, " All    Installed    + Add"),
+        "no counts yet: {texts:#?}"
     );
 }
 
@@ -771,7 +646,7 @@ fn an_empty_tab_names_where_to_go() {
         plugins: vec![plugin("deploy@team", None)],
         error: None,
     });
-    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Right);
     assert_eq!(
         app.plugins_menu.as_ref().unwrap().tab,
         PluginsTab::Installed
@@ -814,8 +689,7 @@ fn a_short_terminal_sheds_rows_down_to_the_search_line() {
     let compact: Vec<usize> = (1..=30)
         .filter(|h| {
             let texts = page_at(&app, 80, *h);
-            has(&texts, "Installed · Discover · Marketplaces")
-                && !texts.iter().any(|t| t == "  Plugins")
+            has(&texts, "+ Add") && !has(&texts, "1 on in this directory")
         })
         .map(usize::from)
         .collect();
@@ -900,27 +774,31 @@ fn the_caret_follows_the_search() {
 
 #[test]
 fn the_tab_strip_scrolls_to_keep_the_current_tab_in_view() {
-    let mut app = plugins_app();
+    let mut catalog = catalog();
+    for i in 0..8 {
+        catalog
+            .marketplaces
+            .push(market(&format!("market-{i}"), true));
+    }
+    let mut app = open_with(catalog);
     // The strip is two rows over the search line, past its gap.
-    let strip = |app: &App, width: u16| {
-        let texts = page_at(app, width, TALL);
+    let strip = |app: &App| {
+        let texts = page_at(app, 60, TALL);
         let search = texts
             .iter()
             .position(|t| t.starts_with("  ❯"))
             .expect("the search line");
         texts[search - 2].clone()
     };
-    // Three tabs fit an 80-column terminal whole…
-    let whole = strip(&app, 80);
-    assert!(!whole.contains('‹') && !whole.contains('›'), "{whole}");
-    // …and on a narrow one the current tab stays in view.
-    let first = strip(&app, 30);
-    assert!(first.contains("Installed · Discover"), "{first}");
+    let first = strip(&app);
+    assert!(first.contains(" Installed (2) "), "{first}");
     assert!(first.ends_with('›'), "more to the right: {first}");
-    assert!(crate::ui::wrap::cols(&first) <= 30, "{first}");
-    press(&mut app, KeyCode::Left);
-    let last = strip(&app, 30);
-    assert!(last.contains("Discover · Marketplaces"), "{last}");
+    assert!(crate::ui::wrap::cols(&first) <= 60, "{first}");
+    for _ in 0..9 {
+        press(&mut app, KeyCode::Right);
+    }
+    let last = strip(&app);
+    assert!(last.contains(" market-7 (0) "), "{last}");
     assert!(
         last.trim_start().starts_with('‹'),
         "more to the left: {last}"
@@ -1014,7 +892,6 @@ fn a_plugin_that_brings_hooks_says_they_wait_for_review() {
     let mut app = plugins_app();
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
     open_plugin_page(&mut app);
     let texts = page(&app);
     assert!(has(&texts, "+ not installed"), "{texts:#?}");
@@ -1038,7 +915,6 @@ fn a_plugin_whose_contents_are_not_read_yet_warns_all_the_same() {
     let mut app = open_with(catalog);
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
     open_plugin_page(&mut app);
     let texts = page(&app);
     assert!(has(&texts, "read once it is installed"), "{texts:#?}");
@@ -1051,7 +927,6 @@ fn a_plugin_whose_contents_are_not_read_yet_warns_all_the_same() {
     catalog.plugins[2].installed = None;
     let mut app = open_with(catalog);
     press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     open_plugin_page(&mut app);
     let texts = page(&app);
@@ -1168,9 +1043,9 @@ fn the_hidden_cursor_seats_on_the_highlighted_action() {
 
 #[test]
 fn removing_a_marketplace_names_what_it_uninstalls() {
-    let mut app = on_marketplaces(plugins_app());
-    press(&mut app, KeyCode::Enter);
-    press(&mut app, KeyCode::Char('3'));
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Right);
+    app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
     let texts = page(&app);
     assert!(has(&texts, "Remove the team marketplace?"), "{texts:#?}");
     assert!(
@@ -1190,8 +1065,72 @@ fn removing_a_marketplace_names_what_it_uninstalls() {
 }
 
 #[test]
-fn the_add_row_opens_a_field_for_any_source() {
-    let mut app = on_marketplaces(plugins_app());
+fn the_add_tab_offers_the_official_marketplaces_under_its_field() {
+    let mut catalog = catalog();
+    let mut official = market("openai-curated", true);
+    official.source = "https://github.com/openai/plugins.git".to_string();
+    catalog.marketplaces.push(official);
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::Add);
+    let texts = page(&app);
+    assert!(
+        has(
+            &texts,
+            "Add a marketplace: owner/repo, a git URL, or a directory"
+        ),
+        "what the field takes: {texts:#?}"
+    );
+    let claude = texts
+        .iter()
+        .find(|t| t.contains("anthropics/claude-plugins-official"))
+        .expect("Claude Code's catalog");
+    assert!(claude.contains("→ "), "highlighted first: {claude}");
+    assert!(claude.contains("Claude Code"), "{claude}");
+    let codex = texts
+        .iter()
+        .find(|t| t.contains("openai/plugins"))
+        .expect("codex's catalog");
+    assert!(codex.contains("✔ added"), "it is added already: {codex}");
+    // Under them, the row that adds any other source, saying what it takes.
+    let other = texts
+        .iter()
+        .find(|t| t.contains("Add a marketplace…"))
+        .expect("the row for any other source");
+    assert!(other.ends_with("owner/repo, git URL or path"), "{other}");
+    assert_eq!(
+        cols_before(claude, "anthropics"),
+        cols_before(other, "Add a marketplace…"),
+        "{texts:#?}"
+    );
+    assert!(has(&texts, "Enter to add"), "{texts:#?}");
+    assert!(cursor_visible(&app));
+    assert_caret_on_search_line(&app, &texts, 80, "");
+    assert_frame_hugs_content(
+        "the add tab",
+        &crate::ui::plugins_view::plugins_view_lines(&app, 80, TALL),
+    );
+    for c in "acme/tools".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let texts = page(&app);
+    assert_caret_on_search_line(&app, &texts, 80, "acme/tools");
+    let typed = texts
+        .iter()
+        .find(|t| t.contains("→ acme/tools"))
+        .expect("the typed source, highlighted");
+    assert!(typed.contains("Press Enter to add it"), "{typed}");
+    // The typed source is that row now.
+    assert!(!has(&texts, "Add a marketplace…"), "{texts:#?}");
+}
+
+#[test]
+fn the_other_row_opens_a_field_for_any_source() {
+    let mut app = plugins_app();
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.plugins_menu.as_ref().unwrap().tab, PluginsTab::Add);
     press(&mut app, KeyCode::End);
     press(&mut app, KeyCode::Enter);
     let texts = page(&app);

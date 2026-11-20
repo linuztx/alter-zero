@@ -116,9 +116,8 @@ pub use self::config_review::{
     ReviewPage, ReviewSection,
 };
 pub use self::plugins_menu::{
-    MarketplaceAction, MarketplaceRow, PLUGINS_JOB_DELAY, PluginAction, PluginDone, PluginJob,
-    PluginOp, PluginsConfirm, PluginsMenu, PluginsPage, PluginsTab, marketplace_actions,
-    plugin_actions,
+    AddRow, PLUGINS_JOB_DELAY, PluginAction, PluginDone, PluginJob, PluginOp, PluginsConfirm,
+    PluginsMenu, PluginsPage, PluginsTab, plugin_actions,
 };
 pub(crate) use self::reasoning::snap_reasoning_tokens;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};

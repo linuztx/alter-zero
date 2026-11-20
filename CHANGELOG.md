@@ -24,22 +24,22 @@ release heading when a version is cut.
   plugin written for Claude Code finds its own tools. Hooks and servers are
   code that runs, so nothing of them runs until you have trusted it:
   installing one opens the same review the startup review shows for a
-  project's hooks and servers, with the commands on screen first. The page has
-  three tabs — Installed, Discover and Marketplaces, where Claude Code's and
-  Codex's official marketplaces are one Enter away and `Add a marketplace…`
-  takes any owner/repo, git URL or directory; a search; a page per plugin
-  saying first whether it is on and then exactly what it adds, warning before
-  you install one that may run code, and a page per marketplace to browse,
-  update or remove it; and Space to turn a plugin on or off for the directory
-  you are in. The page never moves under you: it says nothing about what went
-  right — the rows show it — and neither a toggle nor moving through the list
-  resizes it. A marketplace kept in a directory has its plugins load in place,
-  so editing one needs no reinstall. Updates are something you ask for:
-  `Update` on a plugin's or a marketplace's page, or
-  `alter-zero plugin update`, which reinstalls the plugins their marketplace
-  has a newer copy of. Everything is kept under `~/.alter-zero/plugins/` and
-  `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads no plugin for a run
-  (`docs/plugins.md`).
+  project's hooks and servers, with the commands on screen first. The page is
+  Codex's: tabs for every plugin, the installed ones, each marketplace and
+  `+ Add`, where Claude Code's and Codex's official marketplaces are one Enter
+  away and `Add a marketplace…` takes any owner/repo, git URL or directory; a
+  search; a page per plugin saying first whether it is on and then exactly
+  what it adds, warning before you install one that may run code; and Space
+  to turn a plugin on or off for the directory you are in. The page never
+  moves under you: it says nothing about what went right — the rows show it —
+  neither a toggle nor moving through the list resizes it, and a narrow
+  terminal cuts a long name before a description. A marketplace kept in a
+  directory has its plugins load in place, so editing one needs no reinstall.
+  Updates are something you ask for: `Update` on a plugin's page, Ctrl+U on a
+  marketplace's tab, or `alter-zero plugin update`, which reinstalls the
+  plugins their marketplace has a newer copy of. Everything is kept under
+  `~/.alter-zero/plugins/` and `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads no
+  plugin for a run (`docs/plugins.md`).
 
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model
