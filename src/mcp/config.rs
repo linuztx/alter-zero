@@ -74,7 +74,9 @@ pub enum McpServerConfig {
 /// its console, the loopback port its redirect URI names, the scopes to ask
 /// for. A secret is better kept out of the file — `mcp add --client-secret`
 /// keeps it with the tokens — but a `clientSecret` here, `${VAR}` expanded,
-/// is read too.
+/// is read too. A client typed into `/mcp` is not written here at all: it
+/// is kept with the tokens whole ([`StoredClient`](super::StoredClient)),
+/// and signs in ahead of this one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OAuthClientConfig {
     /// `clientId`: the client to sign in as.

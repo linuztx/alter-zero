@@ -90,9 +90,10 @@ fn sign_in_discovery(url: &str, challenge: Option<&str>) {
             println!("  token        : {}", meta.token_endpoint);
             println!(
                 "  registration : {}",
-                meta.registration_endpoint
-                    .as_deref()
-                    .unwrap_or("none — signing in needs a pre-registered client (oauth.clientId)")
+                meta.registration_endpoint.as_deref().unwrap_or(
+                    "none — signing in needs an OAuth client of your own: /mcp asks for \
+                         it, or give it as oauth.clientId",
+                )
             );
             println!(
                 "  scopes       : {}",
