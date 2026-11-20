@@ -1444,6 +1444,31 @@ fn the_search_line_cuts_a_long_query_from_the_left_with_an_ellipsis() {
 }
 
 #[test]
+fn a_narrow_detail_page_keeps_the_keys_that_act_in_its_hint() {
+    let app = on_plugin(Some(Ok(full_detail())));
+    // With room, the whole hint.
+    let wide = texts(&plugins_view_lines(&app, 96, 200));
+    assert!(
+        wide.iter()
+            .any(|t| t.trim() == "↑/↓ or 1–9 to choose · Enter to confirm · Esc to go back"),
+        "{wide:#?}"
+    );
+    // At forty columns the clause the list already shows goes and the two
+    // keys that act stay whole — never a hint cut in the middle of a word.
+    let narrow = texts(&plugins_view_lines(&app, 40, 200));
+    let hint = narrow
+        .iter()
+        .rev()
+        .find(|t| t.contains("Enter to"))
+        .expect("a hint row");
+    assert_eq!(
+        hint.trim(),
+        "Enter to confirm · Esc to go back",
+        "{narrow:#?}"
+    );
+}
+
+#[test]
 fn the_subtitle_counts_only_the_marketplaces_the_user_has() {
     let app = failing_markets();
     let shown = texts(&plugins_view_lines(&app, 120, 200));

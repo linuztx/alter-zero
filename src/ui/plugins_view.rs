@@ -304,6 +304,16 @@ fn fitted_hint(clauses: &[&str], optional: &[&str], width: u16) -> Line<'static>
     hint_row(&kept, width)
 }
 
+/// The Plugin and Marketplace pages' hint, whole where it fits and without
+/// its first clause where it does not.
+fn detail_hint(width: u16) -> Line<'static> {
+    fitted_hint(
+        &[PLUGINS_HINT_CHOOSE, PLUGINS_HINT_CONFIRM, PLUGINS_HINT_BACK],
+        &[PLUGINS_HINT_CHOOSE],
+        width,
+    )
+}
+
 /// While a job runs, every page's hint is the one key that does anything.
 fn cancel_hint(width: u16) -> Line<'static> {
     hint_row(&[PLUGINS_HINT_CANCEL], width)
@@ -1805,7 +1815,7 @@ fn plugin_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
         Some(job) => (vec![job_row(app, menu, job, width)], cancel_hint(width)),
         None => (
             action_rows(&actions, menu.action(), armed, width),
-            hint_row(&[PLUGINS_DETAIL_HINT], width),
+            detail_hint(width),
         ),
     };
     let result = menu
@@ -2072,7 +2082,7 @@ fn market_lines(app: &App, menu: &PluginsMenu, width: u16, height: u16) -> Vec<L
         Some(job) => (vec![job_row(app, menu, job, width)], cancel_hint(width)),
         None => (
             action_rows(&actions, menu.action(), armed, width),
-            hint_row(&[PLUGINS_DETAIL_HINT], width),
+            detail_hint(width),
         ),
     };
     let mut result = fetch_rows(app, menu, &name, width);

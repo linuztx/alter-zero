@@ -3802,10 +3802,13 @@ pub(super) const PLUGINS_HINT_CLOSE: &str = "Esc to close";
 pub(super) const PLUGINS_HINT_CLEAR: &str = "Esc to clear";
 pub(super) const PLUGINS_HINT_REFRESH: &str = "Ctrl+R to refresh";
 pub(super) const PLUGINS_HINT_CANCEL: &str = "Esc to cancel";
-/// The Plugin and Marketplace pages' hint: a digit only moves the
-/// highlight, Enter alone runs an action.
-pub(super) const PLUGINS_DETAIL_HINT: &str =
-    "↑/↓ or 1–9 to choose · Enter to confirm · Esc to go back";
+/// The Plugin and Marketplace pages' hint, clause by clause: a digit only
+/// moves the highlight, Enter alone runs an action. On a row too narrow for
+/// all three the first goes — the list shows its own `❯` and numbers — so
+/// the two keys that act are never cut.
+pub(super) const PLUGINS_HINT_CHOOSE: &str = "↑/↓ or 1–9 to choose";
+pub(super) const PLUGINS_HINT_CONFIRM: &str = "Enter to confirm";
+pub(super) const PLUGINS_HINT_BACK: &str = "Esc to go back";
 /// The Add page's.
 pub(super) const PLUGINS_ADD_HINT: &str = "Enter to add · Esc to go back";
 
