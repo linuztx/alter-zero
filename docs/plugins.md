@@ -248,7 +248,10 @@ one failed `stat` and nothing else.
   `Base directory` header.
 - **Slash commands** are prompt templates the *user* runs: `/plugin:command
   arguments` submits the template with `$ARGUMENTS`, `$1`…`$9` and
-  `$ARGUMENTS[n]` filled in, the way `/init` submits its prompt. The palette
+  `$ARGUMENTS[n]` filled in, the way `/init` submits its prompt — a
+  positional with no word typed for it is left as written, since `$1` in a
+  template's `awk '{print $1}'` belongs to awk, and text that filled no
+  placeholder is appended under `ARGUMENTS:`. The palette
   lists them after every built-in, `/quit` included, so a built-in that
   matches what was typed is always the row Enter runs — a plugin's
   `commands/quit.md` never takes `/q` from `/quit` — and finds one by any

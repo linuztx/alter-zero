@@ -64,7 +64,7 @@ fn body_description(body: &str) -> String {
 
 /// Does `body` name any argument placeholder [`expand_arguments`] fills?
 fn has_placeholder(body: &str) -> bool {
-    scan(body, None).1
+    scan(body, None).1.found
 }
 
 /// The command name for the file at `relative` below a plugin's commands
@@ -101,36 +101,40 @@ pub fn command_name(plugin: &str, relative: &Path) -> Option<String> {
 /// - `$ARGUMENTS` is the whole text, trimmed.
 /// - `$ARGUMENTS[N]` is word `N`, counted from 0; `$1`…`$9` are words 1 to 9,
 ///   counted from 1 — one digit only, so `$10` is `$1` then `0`. Words are
-///   split the way a shell splits them (`"a b" c` is two words); a word that
-///   is not there is empty.
+///   split the way a shell splits them (`"a b" c` is two words). A
+///   positional whose word is not there is left as written: `$1` in
+///   `awk '{print $1}'` is the awk program's, not an empty argument.
 /// - `\$` is a literal `$`, so `\$1` stays `$1`.
-/// - A body with no placeholder that is given non-blank text gets
+/// - A body in which nothing was replaced that is given non-blank text gets
 ///   `\n\nARGUMENTS: {text}` appended, so the words are never lost.
 #[must_use]
 pub fn expand_arguments(body: &str, args: &str) -> String {
     let args = args.trim();
     let words = shell_words(args);
-    let (mut out, placed) = scan(body, Some((args, &words)));
-    if !placed && !args.is_empty() {
+    let (mut out, seen) = scan(body, Some((args, &words)));
+    if !seen.placed && !args.is_empty() {
         out.push_str("\n\nARGUMENTS: ");
         out.push_str(args);
     }
     out
 }
 
+/// What one [`scan`] met: a placeholder at all, and one it replaced.
+#[derive(Debug, Clone, Copy, Default)]
+struct Seen {
+    found: bool,
+    placed: bool,
+}
+
 /// One pass over `body` with each placeholder replaced from `args` (the
-/// whole text and its words), or by nothing when `args` is `None` — which
-/// only asks whether there is a placeholder at all. The second value says
-/// whether one was found.
-fn scan(body: &str, args: Option<(&str, &[String])>) -> (String, bool) {
+/// whole text and its words). A positional whose word is missing — and every
+/// placeholder when `args` is `None`, which only asks whether there is one —
+/// is copied as written.
+fn scan(body: &str, args: Option<(&str, &[String])>) -> (String, Seen) {
     const ARGUMENTS: &str = "$ARGUMENTS";
-    let word = |index: usize| {
-        args.and_then(|(_, words)| words.get(index))
-            .map_or("", String::as_str)
-    };
-    let all = args.map_or("", |(all, _)| all);
+    let word = |index: usize| args.and_then(|(_, words)| words.get(index));
     let mut out = String::with_capacity(body.len());
-    let mut placed = false;
+    let mut seen = Seen::default();
     let mut index = 0;
     while let Some(next) = body[index..].chars().next() {
         let rest = &body[index..];
@@ -139,39 +143,43 @@ fn scan(body: &str, args: Option<(&str, &[String])>) -> (String, bool) {
             index += 2;
             continue;
         }
+        let mut placeholder = None;
         if let Some(after) = rest.strip_prefix(ARGUMENTS) {
             if let Some((number, length)) = bracket_index(after) {
-                out.push_str(word(number));
-                placed = true;
-                index += ARGUMENTS.len() + length;
-                continue;
-            }
-            if !after
+                placeholder = Some((ARGUMENTS.len() + length, word(number).map(String::as_str)));
+            } else if !after
                 .chars()
                 .next()
                 .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
             {
-                out.push_str(all);
-                placed = true;
-                index += ARGUMENTS.len();
-                continue;
+                placeholder = Some((ARGUMENTS.len(), args.map(|(all, _)| all)));
             }
         }
-        if let Some(digit) = rest
-            .strip_prefix('$')
-            .and_then(|after| after.chars().next())
-            .and_then(|c| c.to_digit(10))
-            .filter(|digit| *digit >= 1)
+        if placeholder.is_none()
+            && let Some(digit) = rest
+                .strip_prefix('$')
+                .and_then(|after| after.chars().next())
+                .and_then(|c| c.to_digit(10))
+                .filter(|digit| *digit >= 1)
         {
-            out.push_str(word(digit as usize - 1));
-            placed = true;
-            index += 2;
+            placeholder = Some((2, word(digit as usize - 1).map(String::as_str)));
+        }
+        if let Some((length, value)) = placeholder {
+            seen.found = true;
+            match value {
+                Some(value) => {
+                    out.push_str(value);
+                    seen.placed = true;
+                }
+                None => out.push_str(&rest[..length]),
+            }
+            index += length;
             continue;
         }
         out.push(next);
         index += next.len_utf8();
     }
-    (out, placed)
+    (out, seen)
 }
 
 /// `[N]` at the front of `text`: the index and how many bytes it spans.
@@ -377,7 +385,7 @@ mod tests {
     fn positionals_are_one_based_and_shell_split() {
         assert_eq!(
             expand_arguments("[$1] [$2] [$3]", "\"a b\" c"),
-            "[a b] [c] []"
+            "[a b] [c] [$3]"
         );
         assert_eq!(expand_arguments("'$1'", "it\\'s 'x y'"), "'it's'");
         assert_eq!(expand_arguments("$2", "it\\'s 'x y'"), "x y");
@@ -387,8 +395,26 @@ mod tests {
     fn the_bracket_form_is_zero_based() {
         assert_eq!(
             expand_arguments("$ARGUMENTS[0]/$ARGUMENTS[1]/$ARGUMENTS[5]", "a b"),
-            "a/b/"
+            "a/b/$ARGUMENTS[5]"
         );
+    }
+
+    #[test]
+    fn a_positional_with_no_word_is_left_as_written() {
+        // An awk program is not an argument: with nothing typed, `$1` must
+        // reach the model as it was written.
+        let body = "git branch -v | awk '{print $1}' | xargs -n1 echo $ARGUMENTS[0]";
+        assert_eq!(expand_arguments(body, ""), body);
+        assert_eq!(expand_arguments("say $ARGUMENTS.", ""), "say .");
+    }
+
+    #[test]
+    fn arguments_left_unplaced_are_appended() {
+        assert_eq!(
+            expand_arguments("awk '{print $2}'", "main"),
+            "awk '{print $2}'\n\nARGUMENTS: main"
+        );
+        assert_eq!(expand_arguments("go $1 $2", "a"), "go a $2");
     }
 
     #[test]
