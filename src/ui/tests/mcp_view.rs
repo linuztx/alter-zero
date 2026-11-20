@@ -48,6 +48,7 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             tools_list_changed: false,
         }),
         excluded: Vec::new(),
+        kept_client: None,
         tools: vec![McpToolInfo {
             name: "ask_question".to_string(),
             description: "Ask any question about a GitHub repository.".to_string(),

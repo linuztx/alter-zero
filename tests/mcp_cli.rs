@@ -158,6 +158,41 @@ fn get_masks_secret_values() {
     assert!(text.contains("mcp remove api"), "{text}");
 }
 
+/// A client entered on the `/mcp` auth page lives with the tokens, not in
+/// the file — `get` names it all the same, and never its secret.
+#[test]
+fn get_names_a_client_entered_in_the_tui_never_its_secret() {
+    let (dir, file) = scratch("get_entered_client");
+    let out = mcp(&file, &["add", "calendar", "--url", "https://cal.test/mcp"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    std::fs::write(
+        dir.join("mcp-auth.json"),
+        r#"{"clients":{"https://cal.test/mcp":{"client_id":"typed-cid.apps.example","client_secret":"GOCSPX-hunter2","callback_port":9001,"issuer":"https://accounts.example.com"}}}"#,
+    )
+    .expect("write the store");
+    let out = Command::new(bin())
+        .args(["mcp", "get", "calendar"])
+        .env("ALTER_ZERO_MCP_FILE", &file)
+        .env("ALTER_ZERO_CONFIG_DIR", &dir)
+        .output()
+        .expect("binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("OAuth client: typed-cid.apps.example (entered in /mcp)"),
+        "{text}"
+    );
+    assert!(text.contains("Callback port: 9001"), "{text}");
+    assert!(
+        text.contains("Client secret: kept with the tokens"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("GOCSPX"),
+        "the secret is never printed: {text}"
+    );
+}
+
 #[test]
 fn add_json_routes_through_the_same_schema() {
     let (_dir, file) = scratch("add_json");

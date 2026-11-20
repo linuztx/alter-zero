@@ -24,6 +24,7 @@ fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnaps
         auth,
         identity: None,
         excluded: Vec::new(),
+        kept_client: None,
         tools: (0..tools)
             .map(|i| McpToolInfo {
                 name: format!("tool_{i}"),

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use alter_zero::app::{McpOp, ToastKind};
-use alter_zero::llm::mcp::{McpEvent, McpHold, McpSources};
+use alter_zero::llm::mcp::{AuthError, McpEvent, McpHold, McpSources};
 use alter_zero::mcp;
 
 use super::Session;
@@ -244,6 +244,14 @@ impl Session<'_> {
             }
             McpEvent::AuthPasteRejected { server, reason } => {
                 self.app.reject_mcp_auth_paste(&server, &reason);
+            }
+            McpEvent::AuthNeedsClient { server, request } => {
+                // No page asks for a client yet: the sign-in's own words for
+                // where none can — both ways to give it one.
+                self.toast(
+                    format!("{server}: {}", AuthError::NeedsClient(request)),
+                    ToastKind::Error,
+                );
             }
             McpEvent::AuthDone { server, ok, detail } => {
                 // A failure the open auth page took stays there, whole; only

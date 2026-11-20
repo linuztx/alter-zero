@@ -235,26 +235,16 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
             }
         }
     }
-    if let Some(oauth) = config.oauth() {
-        if let Some(id) = &oauth.client_id {
-            println!("  OAuth client: {id}");
-        }
-        if let Some(port) = oauth.callback_port {
-            println!("  Callback port: {port}");
-        }
-        if let Some(scopes) = &oauth.scopes {
-            println!("  Scopes: {scopes}");
-        }
-        // Where the secret is — never the secret.
-        let kept = alter_zero::llm::mcp::load_client_secret(
+    // The OAuth client the server signs in with: the entry's own, or the one
+    // entered on the `/mcp` auth page and kept with the tokens — and where
+    // its secret is, never the secret.
+    if config.is_remote() {
+        let kept = alter_zero::llm::mcp::load_client(
             config::mcp_auth_path().as_deref(),
             &resolved_url(config),
-        )
-        .is_some();
-        match (&oauth.client_secret, kept) {
-            (Some(_), _) => println!("  Client secret: ***** (in the file)"),
-            (None, true) => println!("  Client secret: kept with the tokens"),
-            (None, false) => {}
+        );
+        for line in alter_zero::llm::mcp::client_summary(config.oauth(), kept.as_ref()) {
+            println!("  {line}");
         }
     }
     println!("  File: {}", path.display());
