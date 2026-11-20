@@ -154,7 +154,10 @@ is loadable on the very next message — no restart:
    which root it came from, and never create a second copy in a different root:
    the first root wins and the other becomes dead weight nobody edits.
 2. **Read the whole file** before changing anything. It may be the user's own
-   work, or a seeded default they have edited.
+   work, or a built-in they have edited. A built-in file (one the app wrote
+   into `~/.alter-zero/skills`) follows app updates only while it is
+   untouched: once edited it is kept as it is. Say so when you change one,
+   and that deleting the file brings the built-in back at the next launch.
 3. **Edit, do not rewrite.** Change the lines the request is about and leave
    the rest — including the `name`, which is how the model, the listing and
    `skills.json` all refer to it. Renaming means a new folder and a stale
