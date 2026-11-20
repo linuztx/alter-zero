@@ -542,3 +542,66 @@ fn the_project_directory_is_substituted_into_a_plugin_servers_config() {
         }
     );
 }
+
+/// The `oauth` a Codex plugin's server carries, read in codex's spelling.
+fn legacy_oauth(body: &str) -> (McpServerConfig, crate::mcp::OAuthClientConfig) {
+    let mcp = legacy(body);
+    assert!(mcp.notes.is_empty(), "{:?}", mcp.notes);
+    assert_eq!(mcp.servers.len(), 1);
+    let config = mcp.servers[0].config.clone();
+    let oauth = config.oauth().cloned().expect("an oauth client");
+    (config, oauth)
+}
+
+/// OpenAI's gmail plugin, verbatim: placeholders where its client would
+/// be, so no client is read — the sign-in asks for one in `/mcp` — while its
+/// port and the scopes on the entry are.
+#[test]
+fn a_codex_plugins_placeholder_client_is_no_client_but_its_port_and_scopes_hold() {
+    let (config, oauth) = legacy_oauth(
+        r#"{ "mcpServers": { "gmail": {
+    "type": "http",
+    "url": "https://gmailmcp.googleapis.com/mcp/v1",
+    "scopes": ["https://mail.google.com/", "https://www.googleapis.com/auth/gmail.modify"],
+    "oauth": { "callback_port": 12798,
+               "client_id": "<GMAIL_PUBLIC_CLIENT_ID>",
+               "client_secret": "<GMAIL_CLIENT_SECRET>" } } } }"#,
+    );
+    assert!(matches!(config, McpServerConfig::Http { .. }), "{config:?}");
+    assert_eq!(oauth.callback_port, Some(12798));
+    assert_eq!(
+        oauth.scopes.as_deref(),
+        Some("https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify")
+    );
+    assert_eq!(oauth.client_id, None);
+    assert_eq!(oauth.client_secret, None);
+    assert_eq!(oauth.callback_url, None);
+}
+
+/// A plugin that ships a real client — github's shape — is signed in to as
+/// that client, on the redirect it was registered with.
+#[test]
+fn a_codex_plugins_real_client_keeps_its_redirect() {
+    let (_, oauth) = legacy_oauth(
+        r#"{"mcpServers":{"github":{"type":"http","url":"https://api.example.test/mcp/",
+            "oauth":{"client_id":"Iv1.fake","client_secret":"fake-secret","callback_port":12799,
+                     "callback_url":"http://127.0.0.1:12799/callback/fakePath"}}}}"#,
+    );
+    assert_eq!(oauth.client_id.as_deref(), Some("Iv1.fake"));
+    assert_eq!(oauth.client_secret.as_deref(), Some("fake-secret"));
+    assert_eq!(oauth.callback_port, Some(12799));
+    assert_eq!(
+        oauth.callback_url.as_deref(),
+        Some("http://127.0.0.1:12799/callback/fakePath")
+    );
+    // slack's: an id alone, presented the way codex presents it.
+    let (_, slack) = legacy_oauth(
+        r#"{"mcpServers":{"slack":{"type":"http","url":"https://mcp.example.test/mcp",
+            "oauth":{"client_id":"1234.5678"}}}}"#,
+    );
+    assert_eq!(slack.client_id.as_deref(), Some("1234.5678"));
+    assert_eq!(
+        slack.callback_url.as_deref(),
+        Some("http://127.0.0.1/callback")
+    );
+}

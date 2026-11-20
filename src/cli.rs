@@ -1304,6 +1304,7 @@ where
             client_secret: None,
             callback_port,
             scopes: None,
+            callback_url: None,
         });
         match &mut config {
             McpServerConfig::Http { oauth: slot, .. }

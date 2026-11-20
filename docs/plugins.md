@@ -109,6 +109,18 @@ plugin. `.mcp.json` is read in both shapes the ecosystem writes — wrapped in
 keys we do not model (`modules`), which are skipped rather than failing the
 file the way the user's own `hooks.json` would.
 
+A Codex plugin's server writes its OAuth client in codex's spelling — an
+`oauth` object of `client_id`, `client_secret`, `callback_port` and
+`callback_url`, the `scopes` on the entry beside it — and the shared parser
+reads all of it (`docs/mcp.md` *Pre-registered clients*); `oauth_resource`
+and codex's `.app.json` connectors are not read. A plugin that ships a real
+client is signed in to as that client, on the redirect codex would send. One
+that ships a **placeholder** (`<GMAIL_PUBLIC_CLIENT_ID>`, as OpenAI's gmail
+and google-drive do) has no client: Authenticate in `/mcp` asks for one, on
+the plugin's callback port, and the sign-in asks for the plugin's scopes.
+What is typed there is kept in the token store under the server's URL, not
+in the plugin's files, so updating or reinstalling the plugin never loses it.
+
 `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` (and `${PLUGIN_ROOT}` /
 `${PLUGIN_DATA}`, codex's spellings) expand in an MCP entry's `command`,
 `args`, `env` and `cwd`, and in skill, command and agent bodies. Hook

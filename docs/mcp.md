@@ -802,6 +802,52 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   read too — under the same provider-key guard, which covers the `oauth`
   values of a project's remote server.
 
+  **codex's spelling reads too.** A Codex plugin's `.mcp.json` — and any
+  other file, since every entry goes through `parse_server_entry` — writes
+  the same object in `snake_case`: `client_id`, `client_secret`,
+  `callback_port`, `callback_url`. Each key is read in either spelling, the
+  camelCase one first, and is written back in ours. codex keeps the scopes
+  on the **entry**, beside `url`: an entry-level `scopes` (a string or a
+  list) is what the sign-in asks for when the `oauth` object names none —
+  and an entry with no `oauth` object at all still asks for them. Remote
+  entries only; a local server has no sign-in.
+
+  **A placeholder is not a value.** Six of OpenAI's plugins (gmail,
+  google-drive, google-calendar, shopify, airtable, zoom) ship
+  `"client_id": "<GMAIL_PUBLIC_CLIENT_ID>"` where OpenAI's own client was
+  — the public repository leaves it out. codex never fills these in, and
+  never signs in with them: signed in to ChatGPT it drops a plugin's MCP
+  server for the hosted app connector the plugin also names (`.app.json`),
+  and its API-key marketplace does not list those six. Here the server is
+  the only way in, and the client is the user's own. A client id or secret
+  wholly in angle brackets is read as unset, in either spelling and in any
+  file, so such an entry has no client: Authenticate opens the form (*The
+  client form*, below) on the entry's `callback_port`, and the client
+  entered there signs in asking for the entry's scopes, on that port. What
+  the form keeps is in the token store, under the server's URL — a plugin
+  update never loses it.
+
+  **`callbackUrl`** is the redirect URI the entry's client was registered
+  with. It must be an `http` address on this machine (`127.0.0.1`,
+  `localhost` or `[::1]`) — a redirect is received here, so anything else
+  is refused when the file is read — and a port it names must agree with
+  `callbackPort`. A sign-in as that client listens on its port (else
+  `callbackPort`, else any free one) and its path, and sends it as
+  `redirect_uri` as written, the listening port filled in when it names
+  none (`PreRegistered::callback`, `PreRegistered::redirect_uri`). A client
+  id written in **codex's** spelling with no callback URL gets codex's own,
+  `http://127.0.0.1/callback`: a client registered for codex is presented
+  the way codex presents it — on `127.0.0.1`, where ours is
+  `http://localhost:{port}/callback` — so a plugin that ships a real client
+  (OpenAI's `slack`, `github`) signs in as that client with the redirect its
+  provider was told, as codex does for its API-key users: the consent
+  screen names the publisher's app, since that is whose client it is. A
+  camelCase `clientId` keeps ours, and a placeholder id
+  gets none. It is part of the rendered `oauth`, so the review's fingerprint
+  names a changed callback URL as *the OAuth client*, and `mcp get` prints
+  it (`Callback URL:`). A client **entered** in `/mcp` never uses it: that
+  is the user's own client, on the redirect the form shows.
+
   **Or the user types it in `/mcp`.** The spec's registration order is a
   pre-registered client, then a client metadata document, then dynamic
   registration, then *"prompt the user to enter the client information if

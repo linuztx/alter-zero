@@ -14,6 +14,19 @@ release heading when a version is cut.
 
 ### Added
 
+- **A Codex plugin's MCP sign-in is read the way codex writes it.** A
+  server's `oauth` object is now read in codex's spelling too (`client_id`,
+  `client_secret`, `callback_port`, `callback_url`), and the `scopes` codex
+  keeps on the entry itself are what the sign-in asks for; both used to be
+  ignored. A plugin that ships a placeholder where a client goes — OpenAI's
+  gmail, Google Drive and Calendar plugins write `<GMAIL_PUBLIC_CLIENT_ID>`
+  — is not taken to name one: Authenticate in `/mcp` asks for your own, on
+  the plugin's callback port and with the plugin's scopes, and keeps it with
+  your logins, so a plugin update never loses it. A plugin that ships a real
+  client signs in as it — the provider's consent screen names the plugin
+  publisher's app — with the redirect it was registered with (`callbackUrl`,
+  or codex's `http://127.0.0.1/callback` for a client written codex's way),
+  and `mcp get` shows that redirect.
 - **`/mcp` asks for the OAuth client a server can't register.** Some
   sign-in providers register no apps themselves — Google's, for its MCP
   servers — so signing in needs an OAuth client you create with them, and

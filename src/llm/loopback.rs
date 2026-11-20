@@ -297,15 +297,19 @@ pub(crate) struct CallbackServer {
     /// The port both addresses listen on.
     pub(crate) port: u16,
     /// The request path a response arrives on — `/callback`,
-    /// `/auth/callback`.
-    path: &'static str,
+    /// `/auth/callback`, or the path an MCP entry's own callback URL names.
+    path: std::borrow::Cow<'static, str>,
 }
 
 impl CallbackServer {
     /// Bind the first of `ports` free on loopback (`0` asks for an ephemeral
     /// one), answering responses on `path`. A port free on IPv4 but taken on
     /// IPv6 alone is kept as the fallback while the rest are tried.
-    pub(crate) fn bind(ports: &[u16], path: &'static str) -> Result<Self, String> {
+    pub(crate) fn bind(
+        ports: &[u16],
+        path: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Result<Self, String> {
+        let path = path.into();
         let mut v4_only = None;
         let mut last_error = None;
         for &port in ports {
@@ -328,14 +332,14 @@ impl CallbackServer {
                     return Ok(Self {
                         listeners: vec![v4, v6],
                         port,
-                        path,
+                        path: path.clone(),
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                     v4_only.get_or_insert(Self {
                         listeners: vec![v4],
                         port,
-                        path,
+                        path: path.clone(),
                     });
                 }
                 // No IPv6 loopback here, so `localhost` can only mean
@@ -344,7 +348,7 @@ impl CallbackServer {
                     return Ok(Self {
                         listeners: vec![v4],
                         port,
-                        path,
+                        path: path.clone(),
                     });
                 }
             }
@@ -466,9 +470,9 @@ pub(crate) fn wait_for_code(
                         serving.fetch_add(1, Ordering::SeqCst);
                         let hits = hits_tx.clone();
                         let serving = std::sync::Arc::clone(&serving);
-                        let (path, pages) = (server.path, *pages);
+                        let (path, pages) = (server.path.clone(), *pages);
                         std::thread::spawn(move || {
-                            serve_connection(stream, path, &pages, &hits);
+                            serve_connection(stream, &path, &pages, &hits);
                             serving.fetch_sub(1, Ordering::SeqCst);
                         });
                     }

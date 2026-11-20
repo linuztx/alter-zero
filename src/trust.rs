@@ -753,6 +753,21 @@ mod tests {
         assert!(!json.contains("oauth"), "{json}");
     }
 
+    /// The redirect a client was registered with is part of that client: a
+    /// changed callback URL is a change of the OAuth client.
+    #[test]
+    fn another_callback_url_is_a_change_of_the_oauth_client() {
+        let entry = |url: &str| {
+            crate::mcp::parse_server_entry(&format!(
+                r#"{{"url":"https://x.test/mcp","oauth":{{"client_id":"c","callback_url":"{url}"}}}}"#
+            ))
+            .unwrap()
+        };
+        let was = ServerParts::of(&entry("http://127.0.0.1:4000/callback/a"));
+        let now = ServerParts::of(&entry("http://127.0.0.1:4000/callback/b"));
+        assert_eq!(was.changes(&now), [ServerChange::OAuthClient]);
+    }
+
     const USER: &str = "/home/u/.alter-zero/hooks.json";
     const PROJECT: &str = "/repo/.alter-zero/hooks.json";
     const MCP: &str = "/repo/.mcp.json";

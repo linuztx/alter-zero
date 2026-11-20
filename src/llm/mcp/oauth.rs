@@ -2019,14 +2019,15 @@ pub fn run_auth_flow(
     let (callback, redirect_uri, client) = match &preregistered {
         // The client the user registered with the provider: on exactly the
         // port its redirect URI names — the provider was told that one —
-        // else any (a native client takes any loopback port, RFC 8252).
+        // else any (a native client takes any loopback port, RFC 8252). An
+        // entry's client registered with a redirect of its own (codex's
+        // `callback_url`) listens on that one's port and path and sends it
+        // as written, the port filled in when it names none.
         Some(chosen) => {
-            let ports = chosen
-                .callback_port
-                .map_or_else(|| vec![0; 9], |port| vec![port]);
-            let callback = CallbackServer::bind(&ports, "/callback")
-                .map_err(|e| port_taken(chosen.callback_port, e))?;
-            let redirect_uri = callback_redirect(Some(callback.port));
+            let (fixed, path) = chosen.callback()?;
+            let ports = fixed.map_or_else(|| vec![0; 9], |port| vec![port]);
+            let callback = CallbackServer::bind(&ports, path).map_err(|e| port_taken(fixed, e))?;
+            let redirect_uri = chosen.redirect_uri(callback.port)?;
             let client = ClientIdentity {
                 client_id: chosen.client_id.clone(),
                 client_secret: chosen.client_secret.clone(),
@@ -3857,12 +3858,14 @@ mod tests {
     fn approve(authorize_url: &str, code: &'static str) {
         let redirect = redirect_param(authorize_url, "redirect_uri").expect("redirect_uri");
         let state = redirect_param(authorize_url, "state").expect("state");
-        let port = url::Url::parse(&redirect).unwrap().port().expect("a port");
+        let redirect = url::Url::parse(&redirect).unwrap();
+        let port = redirect.port().expect("a port");
+        let path = redirect.path().to_string();
         std::thread::spawn(move || {
             let _ = hit(
                 port,
                 &format!(
-                    "GET /callback?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    "GET {path}?code={code}&state={} HTTP/1.1\r\nHost: localhost\r\n\r\n",
                     url_encode(&state)
                 ),
             );
@@ -3970,6 +3973,7 @@ mod tests {
             client_secret: Some("pre-secret".to_string()),
             callback_port: Some(port),
             scopes: Some("calendar openid".to_string()),
+            callback_url: None,
         };
         let (result, progress) =
             sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
@@ -3994,6 +3998,107 @@ mod tests {
         let stored = load_tokens(Some(&store), &format!("{}/mcp", fixture.base)).unwrap();
         assert_eq!(stored.client_id, "pre-cid");
         assert_eq!(stored.client_secret.as_deref(), Some("pre-secret"));
+    }
+
+    /// An entry's client registered with a redirect of its own — codex's
+    /// `callback_url` — signs in with exactly that redirect: listening on
+    /// its port and its path, the URL sent as written.
+    #[test]
+    fn a_configured_callback_url_is_the_redirect_sent() {
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let redirect = format!("http://127.0.0.1:{port}/callback/ymAt1Jnt6ghN");
+        let client = crate::mcp::OAuthClientConfig {
+            client_id: Some("gh-cid".to_string()),
+            client_secret: Some("gh-secret".to_string()),
+            callback_port: Some(port),
+            callback_url: Some(redirect.clone()),
+            ..Default::default()
+        };
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), Some(&client));
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(redirect_param(&url, "redirect_uri"), Some(redirect.clone()));
+        let requests = fixture.token_requests.lock().unwrap();
+        assert!(
+            requests[0]
+                .1
+                .contains(&format!("redirect_uri={}", url_encode(&redirect))),
+            "{}",
+            requests[0].1
+        );
+    }
+
+    /// codex's default — `http://127.0.0.1/callback` — is sent with the
+    /// port the sign-in listens on.
+    #[test]
+    fn codexs_default_redirect_names_the_listening_port() {
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let config = crate::mcp::parse_server_entry(
+            r#"{"type":"http","url":"https://x/mcp","oauth":{"client_id":"slack-cid"}}"#,
+        )
+        .unwrap();
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), config.oauth());
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        let port = port_of(&url);
+        assert_eq!(
+            redirect_param(&url, "redirect_uri"),
+            Some(format!("http://127.0.0.1:{port}/callback"))
+        );
+    }
+
+    /// A Codex plugin's gmail entry ships placeholders for its client: the
+    /// sign-in asks for one on the entry's port, and a client entered there
+    /// asks for the entry's scopes on that port.
+    #[test]
+    fn a_placeholder_client_asks_and_an_entered_one_signs_in_with_the_entrys_scopes() {
+        let fixture = spawn_auth_server_with(false, None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let config = crate::mcp::parse_server_entry(&format!(
+            r#"{{"type":"http","url":"https://gmailmcp.googleapis.com/mcp/v1","scopes":["https://mail.google.com/","https://www.googleapis.com/auth/gmail.modify"],"oauth":{{"callback_port":{port},"client_id":"<GMAIL_PUBLIC_CLIENT_ID>","client_secret":"<GMAIL_CLIENT_SECRET>"}}}}"#
+        ))
+        .unwrap();
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), config.oauth());
+        let request = asked(result);
+        assert_eq!(request.need, ClientNeed::NoRegistration);
+        assert_eq!(request.client_id, None);
+        assert!(!request.has_secret);
+        assert_eq!(request.callback_port, Some(port));
+        assert!(progress.urls.lock().unwrap().is_empty());
+        enter_client(
+            &fixture,
+            &store,
+            StoredClient {
+                callback_port: Some(port),
+                ..typed("mine.apps.googleusercontent.com", Some("mine-secret"))
+            },
+        );
+        let (result, progress) =
+            sign_in_with(&fixture, &store, "c", &CancelToken::new(), config.oauth());
+        result.expect("signed in");
+        let url = progress.urls.lock().unwrap()[0].clone();
+        assert_eq!(
+            redirect_param(&url, "scope").as_deref(),
+            Some("https://mail.google.com/ https://www.googleapis.com/auth/gmail.modify")
+        );
+        assert_eq!(
+            redirect_param(&url, "redirect_uri"),
+            Some(format!("http://localhost:{port}/callback"))
+        );
+        assert_eq!(
+            redirect_param(&url, "client_id").as_deref(),
+            Some("mine.apps.googleusercontent.com")
+        );
     }
 
     /// An `oauth` block naming only a `callbackPort` keeps the registration

@@ -142,7 +142,120 @@ pub struct PreRegistered {
     pub client_secret: Option<String>,
     /// The port to listen on, exactly — or any free one.
     pub callback_port: Option<u16>,
+    /// The redirect URI an **entry's** client was registered with
+    /// (`callbackUrl`) — never one entered in `/mcp`, which is the user's
+    /// own client on our own redirect.
+    pub callback_url: Option<String>,
     pub source: ClientSource,
+}
+
+impl PreRegistered {
+    /// Where a sign-in as this client listens: the port — exactly, or
+    /// `None` for any free one — and the path its redirect arrives on. A
+    /// callback URL decides both (its port, else `callbackPort`); without
+    /// one it is `callbackPort` on `/callback`.
+    ///
+    /// # Errors
+    /// A callback URL that is not an http address on this machine — one a
+    /// `${VAR}` expanded to somewhere else.
+    pub fn callback(&self) -> Result<(Option<u16>, String), String> {
+        match &self.callback_url {
+            Some(text) => {
+                let url = LoopbackUrl::parse(text)
+                    .map_err(|why| format!("the callback URL {text} {why}"))?;
+                Ok((url.port.or(self.callback_port), url.url.path().to_string()))
+            }
+            None => Ok((self.callback_port, CALLBACK_PATH.to_string())),
+        }
+    }
+
+    /// The `redirect_uri` a sign-in listening on `port` sends: the callback
+    /// URL as written, the port filled in when it names none (codex's
+    /// shape); else [`callback_redirect`].
+    ///
+    /// # Errors
+    /// As [`callback`](Self::callback).
+    pub fn redirect_uri(&self, port: u16) -> Result<String, String> {
+        match &self.callback_url {
+            Some(text) => {
+                let url = LoopbackUrl::parse(text)
+                    .map_err(|why| format!("the callback URL {text} {why}"))?;
+                if url.port.is_some() {
+                    return Ok(text.trim().to_string());
+                }
+                let mut with_port = url.url;
+                with_port
+                    .set_port(Some(port))
+                    .map_err(|()| format!("the callback URL {text} takes no port"))?;
+                Ok(with_port.to_string())
+            }
+            None => Ok(callback_redirect(Some(port))),
+        }
+    }
+}
+
+/// The path our own redirect URI names.
+const CALLBACK_PATH: &str = "/callback";
+
+/// codex's redirect for a client written its way with none of its own: on
+/// `127.0.0.1`, the listening port filled in at sign-in.
+pub(crate) const CODEX_CALLBACK_URL: &str = "http://127.0.0.1/callback";
+
+/// Why a callback URL is refused: a redirect is received here, so it must
+/// name this machine.
+const NOT_LOOPBACK: &str =
+    "must be an http address on this machine (127.0.0.1, localhost or [::1])";
+
+/// A callback URL read: an http address on a loopback host, and the port it
+/// names explicitly (an explicit `:80` included).
+struct LoopbackUrl {
+    url: url::Url,
+    port: Option<u16>,
+}
+
+impl LoopbackUrl {
+    fn parse(text: &str) -> Result<Self, &'static str> {
+        let text = text.trim();
+        let url = url::Url::parse(text).map_err(|_| NOT_LOOPBACK)?;
+        let loopback = match url.host() {
+            Some(url::Host::Domain(host)) => host == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip == std::net::Ipv4Addr::LOCALHOST,
+            Some(url::Host::Ipv6(ip)) => ip == std::net::Ipv6Addr::LOCALHOST,
+            None => false,
+        };
+        if url.scheme() != "http" || !loopback {
+            return Err(NOT_LOOPBACK);
+        }
+        // `Url::port` hides the scheme's default; written out it was meant.
+        let authority = text
+            .split_once("://")
+            .map_or("", |(_, rest)| rest)
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or_default();
+        let written = authority
+            .rsplit_once(':')
+            .is_some_and(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+        let port = url
+            .port()
+            .or_else(|| written.then(|| url.port_or_known_default()).flatten());
+        Ok(Self { url, port })
+    }
+}
+
+/// Check a callback URL an entry writes, against its `callbackPort`.
+///
+/// # Errors
+/// Not an http address on this machine, or a port that disagrees with
+/// `port` — each worded to follow the key's name.
+pub(crate) fn check_callback_url(text: &str, port: Option<u16>) -> Result<(), String> {
+    let url = LoopbackUrl::parse(text).map_err(str::to_string)?;
+    match (url.port, port) {
+        (Some(named), Some(port)) if named != port => Err(format!(
+            "names port {named}, but the callback port is {port}"
+        )),
+        _ => Ok(()),
+    }
 }
 
 impl std::fmt::Debug for PreRegistered {
@@ -154,6 +267,7 @@ impl std::fmt::Debug for PreRegistered {
                 &self.client_secret.as_ref().map(|_| REDACTED),
             )
             .field("callback_port", &self.callback_port)
+            .field("callback_url", &self.callback_url)
             .field("source", &self.source)
             .finish()
     }
@@ -206,6 +320,7 @@ pub fn preregistered_client(
             client_id: client_id.clone(),
             client_secret: client.client_secret.clone().or(lent),
             callback_port: client.callback_port,
+            callback_url: None,
             source: ClientSource::Entered,
         });
     }
@@ -218,6 +333,7 @@ pub fn preregistered_client(
                 .and_then(|client| client.client_secret.clone())
         }),
         callback_port: config.callback_port,
+        callback_url: config.callback_url.clone(),
         source: ClientSource::Config,
     })
 }
@@ -427,7 +543,97 @@ mod tests {
             client_secret: secret.map(str::to_string),
             callback_port: port,
             scopes: None,
+            callback_url: None,
         }
+    }
+
+    fn with_url(url: &str, port: Option<u16>) -> PreRegistered {
+        PreRegistered {
+            client_id: "cid".to_string(),
+            client_secret: None,
+            callback_port: port,
+            callback_url: Some(url.to_string()),
+            source: ClientSource::Config,
+        }
+    }
+
+    /// An entry's client with a callback URL listens where that URL says —
+    /// its port, else `callbackPort`, else any — on its path, and is sent as
+    /// written, the listening port filled in when it names none.
+    #[test]
+    fn a_callback_url_decides_where_the_sign_in_listens_and_what_it_sends() {
+        let github = with_url("http://127.0.0.1:12799/callback/ymAt1Jnt6ghN", Some(12799));
+        assert_eq!(
+            github.callback(),
+            Ok((Some(12799), "/callback/ymAt1Jnt6ghN".to_string()))
+        );
+        assert_eq!(
+            github.redirect_uri(12799),
+            Ok("http://127.0.0.1:12799/callback/ymAt1Jnt6ghN".to_string())
+        );
+        let codex = with_url("http://127.0.0.1/callback", None);
+        assert_eq!(codex.callback(), Ok((None, "/callback".to_string())));
+        assert_eq!(
+            codex.redirect_uri(41234),
+            Ok("http://127.0.0.1:41234/callback".to_string())
+        );
+        let fixed = with_url("http://127.0.0.1/callback", Some(12798));
+        assert_eq!(fixed.callback(), Ok((Some(12798), "/callback".to_string())));
+        assert_eq!(
+            fixed.redirect_uri(12798),
+            Ok("http://127.0.0.1:12798/callback".to_string())
+        );
+        let local = with_url("http://localhost/oauth", None);
+        assert_eq!(
+            local.redirect_uri(5000),
+            Ok("http://localhost:5000/oauth".to_string())
+        );
+        // An explicit default port is still the one registered.
+        let eighty = with_url("http://localhost:80/cb", None);
+        assert_eq!(eighty.callback(), Ok((Some(80), "/cb".to_string())));
+        assert_eq!(
+            eighty.redirect_uri(80),
+            Ok("http://localhost:80/cb".to_string())
+        );
+        // Without one, our own redirect.
+        let plain = PreRegistered {
+            callback_url: None,
+            ..with_url("", Some(8976))
+        };
+        assert_eq!(plain.callback(), Ok((Some(8976), "/callback".to_string())));
+        assert_eq!(
+            plain.redirect_uri(8976),
+            Ok("http://localhost:8976/callback".to_string())
+        );
+        // One that expanded to somewhere else is refused at the sign-in.
+        let elsewhere = with_url("http://example.com/cb", None);
+        assert!(elsewhere.callback().unwrap_err().contains("this machine"));
+    }
+
+    /// A client entered in `/mcp` is the user's own: it never takes the
+    /// redirect its server's entry names.
+    #[test]
+    fn an_entered_client_never_takes_the_entrys_callback_url() {
+        let entry = OAuthClientConfig {
+            callback_url: Some("http://127.0.0.1:12799/callback/x".to_string()),
+            ..config(Some("cid"), Some("shh"), Some(12799))
+        };
+        let from_entry = preregistered_client(Some(&entry), None, Some(GOOGLE)).unwrap();
+        assert_eq!(
+            from_entry.callback_url.as_deref(),
+            Some("http://127.0.0.1:12799/callback/x")
+        );
+        let typed = StoredClient {
+            callback_port: Some(12799),
+            ..entered("cid", None, Some(GOOGLE))
+        };
+        let chosen = preregistered_client(Some(&entry), Some(&typed), Some(GOOGLE)).unwrap();
+        assert_eq!(chosen.source, ClientSource::Entered);
+        assert_eq!(chosen.callback_url, None);
+        assert_eq!(
+            chosen.redirect_uri(12799),
+            Ok("http://localhost:12799/callback".to_string())
+        );
     }
 
     fn entered(id: &str, secret: Option<&str>, issuer: Option<&str>) -> StoredClient {

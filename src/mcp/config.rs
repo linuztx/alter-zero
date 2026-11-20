@@ -79,7 +79,8 @@ pub enum McpServerConfig {
 /// and signs in ahead of this one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OAuthClientConfig {
-    /// `clientId`: the client to sign in as.
+    /// `clientId` (or codex's `client_id`): the client to sign in as — never
+    /// a placeholder like `<GMAIL_PUBLIC_CLIENT_ID>`.
     pub client_id: Option<String>,
     /// `clientSecret`: the client's secret, for a confidential client.
     pub client_secret: Option<String>,
@@ -89,6 +90,11 @@ pub struct OAuthClientConfig {
     pub callback_port: Option<u16>,
     /// `scopes`: what to ask for, in place of what discovery suggests.
     pub scopes: Option<String>,
+    /// `callbackUrl`: the redirect URI the client was registered with — an
+    /// http address on this machine, sent as written (its port, when it names
+    /// none, the one the sign-in listens on). A client id written in codex's
+    /// spelling with none gets codex's, `http://127.0.0.1/callback`.
+    pub callback_url: Option<String>,
 }
 
 impl McpServerConfig {
@@ -399,7 +405,7 @@ pub fn render_server(config: &McpServerConfig) -> Value {
 }
 
 /// The `oauth` object as the file spells it — `clientId`, `clientSecret`,
-/// `callbackPort`, `scopes` — with only the fields set.
+/// `callbackPort`, `scopes`, `callbackUrl` — with only the fields set.
 fn render_oauth(oauth: &OAuthClientConfig) -> Value {
     let mut obj = serde_json::Map::new();
     if let Some(id) = &oauth.client_id {
@@ -414,35 +420,97 @@ fn render_oauth(oauth: &OAuthClientConfig) -> Value {
     if let Some(scopes) = &oauth.scopes {
         obj.insert("scopes".to_string(), scopes.as_str().into());
     }
+    if let Some(url) = &oauth.callback_url {
+        obj.insert("callbackUrl".to_string(), url.as_str().into());
+    }
     Value::Object(obj)
 }
 
-/// Parse a remote entry's `oauth` object (absent or `null` is none).
-fn parse_oauth(value: Option<&Value>) -> Result<Option<OAuthClientConfig>, String> {
+/// Parse a remote entry's `oauth` object (absent or `null` is none), with
+/// the entry's own `scopes` beside it — codex's place for them, asked for
+/// when the object names none, and an `oauth` of their own when there is no
+/// object at all.
+///
+/// Each key reads in our spelling or codex's (`clientId` or `client_id`, the
+/// first written winning), and a client id or secret wholly in angle
+/// brackets — `<GMAIL_PUBLIC_CLIENT_ID>`, a plugin's blank to fill in — is
+/// no value. A client id in codex's spelling with no callback URL of its own
+/// gets codex's redirect, [`CODEX_CALLBACK_URL`](super::client::CODEX_CALLBACK_URL).
+fn parse_oauth(
+    value: Option<&Value>,
+    entry_scopes: Option<&Value>,
+) -> Result<Option<OAuthClientConfig>, String> {
+    let entry_scopes = parse_scopes(entry_scopes, "scopes")?;
     let Some(value) = value.filter(|v| !v.is_null()) else {
-        return Ok(None);
+        return Ok(entry_scopes.map(|scopes| OAuthClientConfig {
+            scopes: Some(scopes),
+            ..OAuthClientConfig::default()
+        }));
     };
     let Some(obj) = value.as_object() else {
         return Err("\"oauth\" must be an object".to_string());
     };
-    let text = |key: &str| -> Result<Option<String>, String> {
-        match obj.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(text)) if text.trim().is_empty() => Ok(None),
-            Some(Value::String(text)) => Ok(Some(text.trim().to_string())),
-            Some(_) => Err(format!("\"oauth.{key}\" must be a string")),
+    // The first spelling written: a key that is absent, `null` or blank
+    // leaves the other to say.
+    let written = |keys: [&'static str; 2]| -> Option<(&'static str, &Value)> {
+        keys.into_iter().find_map(|key| {
+            obj.get(key)
+                .filter(|value| match value {
+                    Value::Null => false,
+                    Value::String(text) => !text.trim().is_empty(),
+                    _ => true,
+                })
+                .map(|value| (key, value))
+        })
+    };
+    let text = |keys: [&'static str; 2]| -> Result<Option<(&'static str, String)>, String> {
+        match written(keys) {
+            None => Ok(None),
+            Some((key, Value::String(text))) => Ok(Some((key, text.trim().to_string()))),
+            Some((key, _)) => Err(format!("\"oauth.{key}\" must be a string")),
         }
     };
-    let callback_port = match obj.get("callbackPort") {
-        None | Some(Value::Null) => None,
-        Some(port) => Some(
+    let client_id = text(["clientId", "client_id"])?.filter(|(_, id)| !is_placeholder(id));
+    let client_secret = text(["clientSecret", "client_secret"])?
+        .filter(|(_, secret)| !is_placeholder(secret))
+        .map(|(_, secret)| secret);
+    let callback_port = match written(["callbackPort", "callback_port"]) {
+        None => None,
+        Some((key, port)) => Some(
             port.as_u64()
                 .and_then(|port| u16::try_from(port).ok())
                 .filter(|port| *port != 0)
-                .ok_or_else(|| "\"oauth.callbackPort\" must be a port number".to_string())?,
+                .ok_or_else(|| format!("\"oauth.{key}\" must be a port number"))?,
         ),
     };
-    let scopes = match obj.get("scopes") {
+    let callback_url = match text(["callbackUrl", "callback_url"])? {
+        // A `${VAR}` is checked once it is expanded, at the sign-in.
+        Some((key, url)) => {
+            if !url.contains("${") {
+                super::client::check_callback_url(&url, callback_port)
+                    .map_err(|why| format!("\"oauth.{key}\" {why}"))?;
+            }
+            Some(url)
+        }
+        None => client_id
+            .as_ref()
+            .filter(|(key, _)| *key == "client_id")
+            .map(|_| super::client::CODEX_CALLBACK_URL.to_string()),
+    };
+    let scopes = parse_scopes(obj.get("scopes"), "oauth.scopes")?.or(entry_scopes);
+    Ok(Some(OAuthClientConfig {
+        client_id: client_id.map(|(_, id)| id),
+        client_secret,
+        callback_port,
+        scopes,
+        callback_url,
+    }))
+}
+
+/// Scopes as a string or a list of strings, joined by single spaces (absent,
+/// `null` or empty is none); `key` names them in an error.
+fn parse_scopes(value: Option<&Value>, key: &str) -> Result<Option<String>, String> {
+    let scopes = match value {
         None | Some(Value::Null) => None,
         Some(Value::String(scopes)) => {
             Some(scopes.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -453,20 +521,21 @@ fn parse_oauth(value: Option<&Value>) -> Result<Option<OAuthClientConfig>, Strin
                 .map(|item| {
                     item.as_str()
                         .map(str::trim)
-                        .ok_or_else(|| "\"oauth.scopes\" must be strings".to_string())
+                        .ok_or_else(|| format!("\"{key}\" must be strings"))
                 })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(" "),
         ),
-        Some(_) => return Err("\"oauth.scopes\" must be a string or a list of strings".to_string()),
-    }
-    .filter(|scopes| !scopes.is_empty());
-    Ok(Some(OAuthClientConfig {
-        client_id: text("clientId")?,
-        client_secret: text("clientSecret")?,
-        callback_port,
-        scopes,
-    }))
+        Some(_) => return Err(format!("\"{key}\" must be a string or a list of strings")),
+    };
+    Ok(scopes.filter(|scopes| !scopes.is_empty()))
+}
+
+/// Is `value` a placeholder for one the user is to fill in —
+/// `<GMAIL_PUBLIC_CLIENT_ID>`, wholly in angle brackets?
+fn is_placeholder(value: &str) -> bool {
+    let value = value.trim();
+    value.len() >= 2 && value.starts_with('<') && value.ends_with('>')
 }
 
 /// Parse the whole document for a CLI write: empty/whitespace contents are a
@@ -615,18 +684,18 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: false,
-            oauth: parse_oauth(obj.get("oauth"))?,
+            oauth: parse_oauth(obj.get("oauth"), obj.get("scopes"))?,
         }),
         Some("sse") => Ok(McpServerConfig::Sse {
             url: url()?,
             headers: string_map("headers")?,
-            oauth: parse_oauth(obj.get("oauth"))?,
+            oauth: parse_oauth(obj.get("oauth"), obj.get("scopes"))?,
         }),
         None if obj.contains_key("url") => Ok(McpServerConfig::Http {
             url: url()?,
             headers: string_map("headers")?,
             sse_fallback: true,
-            oauth: parse_oauth(obj.get("oauth"))?,
+            oauth: parse_oauth(obj.get("oauth"), obj.get("scopes"))?,
         }),
         Some(other) => Err(format!("unsupported transport type \"{other}\"")),
         None => Err("entry needs a \"command\" (stdio) or a \"url\" (http/sse)".to_string()),
@@ -781,7 +850,8 @@ pub fn expand_config(
     ))
 }
 
-/// An `oauth` block with its client id, secret and scopes expanded.
+/// An `oauth` block with its client id, secret, scopes and callback URL
+/// expanded.
 fn expand_oauth(
     oauth: &OAuthClientConfig,
     expand: &mut dyn FnMut(&str, String) -> String,
@@ -796,6 +866,7 @@ fn expand_oauth(
         client_secret: field(&oauth.client_secret, "clientSecret"),
         callback_port: oauth.callback_port,
         scopes: field(&oauth.scopes, "scopes"),
+        callback_url: field(&oauth.callback_url, "callbackUrl"),
     }
 }
 
@@ -1609,6 +1680,185 @@ mod tests {
                 &|name| name == "OPENAI_API_KEY"
             )
             .is_err()
+        );
+    }
+
+    fn oauth_of(entry: &str) -> OAuthClientConfig {
+        parse_server_entry(entry)
+            .unwrap()
+            .oauth()
+            .cloned()
+            .expect("an oauth block")
+    }
+
+    /// codex writes the same client in `snake_case`; every key reads in
+    /// either spelling, the camelCase one first.
+    #[test]
+    fn an_oauth_block_reads_in_codexs_spelling_too() {
+        let snake = oauth_of(
+            r#"{"type":"http","url":"https://x/mcp","oauth":{"client_id":"cid","client_secret":"sec","callback_port":12799,"callback_url":"http://127.0.0.1:12799/callback/abc"}}"#,
+        );
+        assert_eq!(snake.client_id.as_deref(), Some("cid"));
+        assert_eq!(snake.client_secret.as_deref(), Some("sec"));
+        assert_eq!(snake.callback_port, Some(12799));
+        assert_eq!(
+            snake.callback_url.as_deref(),
+            Some("http://127.0.0.1:12799/callback/abc")
+        );
+        let camel = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"cid","clientSecret":"sec","callbackPort":12799,"callbackUrl":"http://localhost:12799/cb"}}"#,
+        );
+        assert_eq!(camel.client_id.as_deref(), Some("cid"));
+        assert_eq!(camel.client_secret.as_deref(), Some("sec"));
+        assert_eq!(
+            camel.callback_url.as_deref(),
+            Some("http://localhost:12799/cb")
+        );
+        // A mix reads, and where both are written the camelCase one wins.
+        let mixed = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"camel","client_id":"snake","client_secret":"sec","callbackPort":4000,"callback_port":5000}}"#,
+        );
+        assert_eq!(mixed.client_id.as_deref(), Some("camel"));
+        assert_eq!(mixed.client_secret.as_deref(), Some("sec"));
+        assert_eq!(mixed.callback_port, Some(4000));
+        assert_eq!(mixed.callback_url, None, "a camelCase id keeps localhost");
+    }
+
+    /// codex keeps the scopes on the entry itself; they are what the sign-in
+    /// asks for when the `oauth` object names none — with or without one.
+    #[test]
+    fn entry_level_scopes_are_asked_for_unless_the_oauth_block_names_its_own() {
+        let list = oauth_of(r#"{"type":"http","url":"https://x/mcp","scopes":["a","b"]}"#);
+        assert_eq!(list.scopes.as_deref(), Some("a b"));
+        assert_eq!(list.client_id, None);
+        let text = oauth_of(r#"{"url":"https://x/mcp","scopes":" a  b "}"#);
+        assert_eq!(text.scopes.as_deref(), Some("a b"));
+        let beside =
+            oauth_of(r#"{"url":"https://x/mcp","scopes":["a"],"oauth":{"client_id":"c"}}"#);
+        assert_eq!(beside.scopes.as_deref(), Some("a"));
+        assert_eq!(beside.client_id.as_deref(), Some("c"));
+        let own = oauth_of(
+            r#"{"url":"https://x/mcp","scopes":["a"],"oauth":{"clientId":"c","scopes":["own"]}}"#,
+        );
+        assert_eq!(own.scopes.as_deref(), Some("own"));
+        // A local server has no sign-in to ask for them.
+        assert_eq!(
+            parse_server_entry(r#"{"command":"srv","scopes":["a"]}"#)
+                .unwrap()
+                .oauth(),
+            None
+        );
+        let bad = parse_server_entry(r#"{"url":"https://x/mcp","scopes":5}"#).unwrap_err();
+        assert!(bad.contains("scopes"), "{bad}");
+    }
+
+    /// A plugin ships `<GMAIL_PUBLIC_CLIENT_ID>` for a value the user is to
+    /// fill in: a placeholder is no client, in either spelling.
+    #[test]
+    fn a_placeholder_client_is_no_client() {
+        let both = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"client_id":"<GMAIL_PUBLIC_CLIENT_ID>","client_secret":"<GMAIL_CLIENT_SECRET>","callback_port":12798}}"#,
+        );
+        assert_eq!(both.client_id, None);
+        assert_eq!(both.client_secret, None);
+        assert_eq!(both.callback_port, Some(12798));
+        assert_eq!(both.callback_url, None, "no client, no codex redirect");
+        let id = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"<your-client-id>","clientSecret":"real"}}"#,
+        );
+        assert_eq!(id.client_id, None);
+        assert_eq!(id.client_secret.as_deref(), Some("real"));
+        let secret = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"real","clientSecret":" <SECRET> "}}"#,
+        );
+        assert_eq!(secret.client_id.as_deref(), Some("real"));
+        assert_eq!(secret.client_secret, None);
+    }
+
+    /// `callbackUrl` is a redirect on this machine — the only kind a sign-in
+    /// here can receive — and agrees with `callbackPort`.
+    #[test]
+    fn a_callback_url_must_be_a_loopback_http_address() {
+        for good in [
+            "http://127.0.0.1:12799/callback/abc",
+            "http://localhost/callback",
+            "http://[::1]:9000/cb",
+            "http://127.0.0.1/callback",
+        ] {
+            let oauth = oauth_of(&format!(
+                r#"{{"url":"https://x/mcp","oauth":{{"clientId":"c","callbackUrl":"{good}"}}}}"#
+            ));
+            assert_eq!(oauth.callback_url.as_deref(), Some(good));
+        }
+        for (bad, needle) in [
+            ("https://127.0.0.1/callback", "callbackUrl"),
+            ("http://example.com/callback", "callbackUrl"),
+            ("http://10.0.0.1:80/callback", "callbackUrl"),
+            ("not a url", "callbackUrl"),
+        ] {
+            let error = parse_server_entry(&format!(
+                r#"{{"url":"https://x/mcp","oauth":{{"clientId":"c","callbackUrl":"{bad}"}}}}"#
+            ))
+            .unwrap_err();
+            assert!(error.contains(needle), "{bad}: {error}");
+            assert!(error.contains("this machine"), "{bad}: {error}");
+        }
+        let clash = parse_server_entry(
+            r#"{"url":"https://x/mcp","oauth":{"client_id":"c","callback_port":4000,"callback_url":"http://127.0.0.1:5000/callback"}}"#,
+        )
+        .unwrap_err();
+        assert!(clash.contains("5000") && clash.contains("4000"), "{clash}");
+        // The same port twice is no clash.
+        assert!(
+            parse_server_entry(
+                r#"{"url":"https://x/mcp","oauth":{"clientId":"c","callbackPort":5000,"callbackUrl":"http://127.0.0.1:5000/callback"}}"#,
+            )
+            .is_ok()
+        );
+    }
+
+    /// A client written the way codex writes it is presented the way codex
+    /// presents it: on `127.0.0.1`, its port filled in at sign-in.
+    #[test]
+    fn a_client_in_codexs_spelling_gets_codexs_redirect() {
+        let codex = oauth_of(r#"{"url":"https://x/mcp","oauth":{"client_id":"slack-cid"}}"#);
+        assert_eq!(
+            codex.callback_url.as_deref(),
+            Some("http://127.0.0.1/callback")
+        );
+        let ours = oauth_of(r#"{"url":"https://x/mcp","oauth":{"clientId":"cid"}}"#);
+        assert_eq!(ours.callback_url, None);
+        let given = oauth_of(
+            r#"{"url":"https://x/mcp","oauth":{"client_id":"c","callback_url":"http://localhost:7/x"}}"#,
+        );
+        assert_eq!(given.callback_url.as_deref(), Some("http://localhost:7/x"));
+        let no_id = oauth_of(r#"{"url":"https://x/mcp","oauth":{"callback_port":7}}"#);
+        assert_eq!(no_id.callback_url, None);
+    }
+
+    /// Rendered back, the client reads the same — in our spelling, the
+    /// callback URL included — and its `${VAR}`s expand like the others.
+    #[test]
+    fn a_callback_url_renders_back_and_expands() {
+        let config = parse_server_entry(
+            r#"{"type":"http","url":"https://x/mcp","scopes":["a","b"],"oauth":{"client_id":"c","client_secret":"s","callback_port":12799}}"#,
+        )
+        .unwrap();
+        let rendered = render_server(&config);
+        assert_eq!(
+            rendered["oauth"]["callbackUrl"], "http://127.0.0.1/callback",
+            "{rendered}"
+        );
+        assert_eq!(rendered["oauth"]["clientId"], "c");
+        assert_eq!(parse_server_entry(&rendered.to_string()).unwrap(), config);
+        let templated = parse_server_entry(
+            r#"{"url":"https://x/mcp","oauth":{"clientId":"c","callbackUrl":"http://127.0.0.1:${PORT}/callback"}}"#,
+        )
+        .unwrap();
+        let expanded = expand_config(&templated, &env_of(&[("PORT", "4100")])).unwrap();
+        assert_eq!(
+            expanded.oauth().unwrap().callback_url.as_deref(),
+            Some("http://127.0.0.1:4100/callback")
         );
     }
 

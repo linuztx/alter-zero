@@ -310,6 +310,11 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
         if let Some(port) = oauth.callback_port {
             println!("  Callback port: {port}");
         }
+        // The redirect the entry's client was registered with — what its
+        // sign-in sends (an entered client never uses it).
+        if let Some(url) = &oauth.callback_url {
+            println!("  Callback URL: {url}");
+        }
         if let Some(scopes) = &oauth.scopes {
             println!("  Scopes: {scopes}");
         }

@@ -117,7 +117,8 @@ alter-zero mcp list
   of stdin — and keeps it in the owner-only token store's `clients`
   section under the server's URL (`llm::mcp::save_client_secret`), never
   in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
-  `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
+  `Callback URL:` (the redirect an entry's client was registered with,
+  codex's `callback_url`, when it has one), `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
   `***** (in the file)` for a `clientSecret` written there), never what.
   A client **entered in `/mcp`** is kept in that same store, not in the
   file, and is the one a sign-in uses: `get` names it — `OAuth client: …

@@ -568,3 +568,36 @@ fn add_naming_its_client_keeps_the_secret_kept_for_it() {
     assert_eq!(kept_clients(&dir)[server], kept);
     assert!(!stdout(&out).contains("Forgot"), "{}", stdout(&out));
 }
+
+/// An entry's client registered with a redirect of its own — codex's
+/// `callback_url` — has `get` name it; one entered in `/mcp` never uses it.
+#[test]
+fn get_names_the_callback_url_of_an_entrys_client() {
+    let (_dir, file) = scratch("get_callback_url");
+    std::fs::write(
+        &file,
+        r#"{"mcpServers":{"gh":{"type":"http","url":"https://api.example.test/mcp/",
+            "oauth":{"client_id":"Iv1.fake","callback_port":12799,
+                     "callback_url":"http://127.0.0.1:12799/callback/fakePath"}}}}"#,
+    )
+    .unwrap();
+    let out = mcp(&file, &["get", "gh"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("OAuth client: Iv1.fake\n"), "{text}");
+    assert!(
+        text.contains("Callback URL: http://127.0.0.1:12799/callback/fakePath\n"),
+        "{text}"
+    );
+    // codex's spelling of an id alone is presented on codex's redirect.
+    std::fs::write(
+        &file,
+        r#"{"mcpServers":{"slack":{"type":"http","url":"https://mcp.example.test/mcp","oauth":{"client_id":"1.2"}}}}"#,
+    )
+    .unwrap();
+    let text = stdout(&mcp(&file, &["get", "slack"]));
+    assert!(
+        text.contains("Callback URL: http://127.0.0.1/callback\n"),
+        "{text}"
+    );
+}
