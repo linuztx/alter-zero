@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use super::tools::{ToolCallRequest, ToolOutcome};
 use super::{ChatMessage, MessageContent};
 use crate::skills::{
-    SKILL_FILE_NAME, SKILL_LOADED_DISPLAY, SkillError, SkillMetadata, SkillRegistry, parse_skill,
-    render_skill_body,
+    SKILL_FILE_NAME, SKILL_LOADED_DISPLAY, SkillError, SkillMetadata, SkillRegistry,
+    parse_plugin_skill, parse_skill,
 };
 
 /// The built-in skills the binary carries, as `<name>/SKILL.md` → its bytes.
@@ -262,6 +262,8 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
                         description: parsed.description,
                         dir,
                         path,
+                        plugin_root: None,
+                        plugin_data: None,
                     });
                 }
                 Err(err) => errors.push(SkillError {
@@ -285,6 +287,43 @@ pub fn load_skills(
     config_home: Option<&Path>,
 ) -> (Vec<SkillMetadata>, Vec<SkillError>) {
     discover_skills(&resolved_skill_roots(cwd, config_home))
+}
+
+/// [`load_skills`] with the enabled plugins' skills after it
+/// ([`crate::llm::plugin::discover_plugin_skills`], `docs/plugins.md`).
+///
+/// Plugin skills are found even when `ALTER_ZERO_SKILLS_DIR` replaced the
+/// roots: that variable says which *directories* hold the user's skills,
+/// and plugins have a switch of their own, `ALTER_ZERO_PLUGINS`, which the
+/// boundary applies by handing in no plugins at all.
+#[must_use]
+pub fn load_all_skills(
+    cwd: &Path,
+    config_home: Option<&Path>,
+    plugins: &[crate::plugins::EnabledPlugin],
+) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    with_plugin_skills(
+        load_skills(cwd, config_home),
+        crate::llm::plugin::discover_plugin_skills(plugins),
+    )
+}
+
+/// `found` with `plugins`' skills appended, the first of a name winning
+/// across the whole list — so a user's or a project's skill shadows a
+/// plugin's of the same name, the walk's own rule carried on.
+fn with_plugin_skills(
+    found: (Vec<SkillMetadata>, Vec<SkillError>),
+    plugins: (Vec<SkillMetadata>, Vec<SkillError>),
+) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    let (mut skills, mut errors) = found;
+    let (from_plugins, plugin_errors) = plugins;
+    for skill in from_plugins {
+        if !skills.iter().any(|known| known.name == skill.name) {
+            skills.push(skill);
+        }
+    }
+    errors.extend(plugin_errors);
+    (skills, errors)
 }
 
 /// The roots this environment resolves to — [`skill_roots`] with the two
@@ -352,7 +391,7 @@ impl LoadedSkills {
             .snapshot()
             .into_iter()
             .map(|skill| {
-                let header = render_skill_body(&skill.dir, "");
+                let header = skill.render_body("");
                 let redacted = secrets.map(|secrets| secrets.redact(&header));
                 (skill.dir, header, redacted)
             })
@@ -432,13 +471,33 @@ pub fn run_skill_tool(
     };
     // Read fresh on the first load into this context. A failed read or parse
     // must remain retryable; only a successfully rendered body marks a load.
-    let body = match parse_skill(&contents, &skill.name) {
+    let parsed = match skill.name.split_once(':') {
+        // A plugin's skill is parsed the way its discovery parsed it: its
+        // own name was validated bare, under its directory's.
+        Some((plugin, _)) if skill.plugin_root.is_some() => {
+            let dir_name = skill
+                .dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            parse_plugin_skill(&contents, plugin, dir_name)
+        }
+        _ => parse_skill(&contents, &skill.name),
+    };
+    let body = match parsed {
         Ok(parsed) => parsed.body,
         Err(err) => {
             return ToolOutcome::error(format!("Skill {} could not be loaded: {err}", skill.name));
         }
     };
-    let rendered = render_skill_body(&skill.dir, &body);
+    // A plugin's data directory exists once a body that names it is loaded:
+    // the skill's own commands may write there straight away.
+    if let Some(data) = &skill.plugin_data
+        && body.contains("${CLAUDE_PLUGIN_DATA}")
+    {
+        let _ = std::fs::create_dir_all(data);
+    }
+    let rendered = skill.render_body(&body);
     loaded.directories.insert(skill.dir);
     ToolOutcome::ok(SKILL_LOADED_DISPLAY).with_context(rendered)
 }
@@ -457,6 +516,7 @@ fn unknown_skill_message(wanted: &str, available: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::render_skill_body;
 
     fn write_skill(root: &Path, name: &str, contents: &str) {
         let dir = root.join(name);
@@ -1560,5 +1620,139 @@ mod tests {
         let kept = std::fs::read_to_string(root.join("skill-creator").join(SKILL_FILE_NAME))
             .expect("read");
         assert!(kept.contains("my own body"), "the edit survives: {kept}");
+    }
+
+    // ===== plugin skills (docs/skills.md, docs/plugins.md) =====
+
+    /// One plugin skill on disk: `{root}/skills/{name}/SKILL.md` of `body`,
+    /// discovered the way the session discovers it.
+    fn plugin_skill(tmp: &Path, body: &str) -> SkillMetadata {
+        let root = tmp.join("cache/mkt/p");
+        write_skill(&root.join("skills"), "lint", &skill_md("Lint.", body));
+        let plugin = crate::plugins::EnabledPlugin {
+            id: crate::plugins::PluginId::new("p", "mkt").expect("id"),
+            root: root.clone(),
+            data: tmp.join("data/p-mkt"),
+            skills: vec![root.join("skills")],
+            commands: Vec::new(),
+            agents: Vec::new(),
+            hooks_file: None,
+            mcp_file: None,
+        };
+        let (mut skills, errors) = crate::llm::plugin::discover_plugin_skills(&[plugin]);
+        assert!(errors.is_empty(), "{errors:?}");
+        skills.remove(0)
+    }
+
+    #[test]
+    fn a_plugin_skill_loads_with_its_plugin_root_and_variables() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skill = plugin_skill(tmp.path(), "Run ${CLAUDE_PLUGIN_ROOT}/bin/lint.");
+        let root = tmp.path().join("cache/mkt/p");
+        let registry = SkillRegistry::new(vec![skill.clone()]);
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"p:lint"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(
+            outcome.context.as_deref(),
+            Some(
+                format!(
+                    "Base directory for this skill: {}\nPlugin root: {}\n\nRun {}/bin/lint.",
+                    skill.dir.display(),
+                    root.display(),
+                    root.display()
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            !tmp.path().join("data/p-mkt").exists(),
+            "unnamed, uncreated"
+        );
+    }
+
+    #[test]
+    fn a_plugin_skill_is_found_by_its_bare_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let registry = SkillRegistry::new(vec![plugin_skill(tmp.path(), "Body.")]);
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"lint"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+    }
+
+    #[test]
+    fn a_plugin_skill_naming_its_data_directory_has_it_created() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let registry = SkillRegistry::new(vec![plugin_skill(
+            tmp.path(),
+            "Cache to ${CLAUDE_PLUGIN_DATA}/cache.",
+        )]);
+        let outcome = run_skill_tool(
+            &registry,
+            &mut LoadedSkills::default(),
+            &call(r#"{"skill":"p:lint"}"#),
+        );
+        assert!(outcome.ok, "{}", outcome.output);
+        assert!(tmp.path().join("data/p-mkt").is_dir());
+    }
+
+    #[test]
+    fn a_plugin_skill_load_in_context_is_not_loaded_twice() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let skill = plugin_skill(tmp.path(), "Body.");
+        let registry = SkillRegistry::new(vec![skill.clone()]);
+        let request = call(r#"{"skill":"p:lint"}"#);
+        let messages = vec![
+            ChatMessage::assistant_tool_calls(
+                "",
+                vec![super::super::ToolCallSpec::function(
+                    "c",
+                    "skill",
+                    &request.arguments,
+                )],
+            ),
+            ChatMessage::tool_result("c", skill.render_body("Body.")),
+        ];
+        let mut loaded = LoadedSkills::from_messages(&registry, &messages, None);
+        let outcome = run_skill_tool(&registry, &mut loaded, &request);
+        assert!(outcome.ok, "{}", outcome.output);
+        assert!(outcome.context.is_none(), "already loaded");
+    }
+
+    #[test]
+    fn the_user_and_project_skills_shadow_a_plugins_same_named_one() {
+        let personal = |name: &str| SkillMetadata {
+            name: name.to_string(),
+            description: "mine".to_string(),
+            dir: PathBuf::from("/s").join(name),
+            path: PathBuf::from("/s").join(name).join(SKILL_FILE_NAME),
+            plugin_root: None,
+            plugin_data: None,
+        };
+        let from_plugin = SkillMetadata {
+            description: "theirs".to_string(),
+            plugin_root: Some(PathBuf::from("/p")),
+            plugin_data: Some(PathBuf::from("/d")),
+            ..personal("p:lint")
+        };
+        let other = SkillMetadata {
+            name: "p:other".to_string(),
+            ..from_plugin.clone()
+        };
+        let (skills, _) = with_plugin_skills(
+            (vec![personal("p:lint")], Vec::new()),
+            (vec![from_plugin, other], Vec::new()),
+        );
+        let rows: Vec<(&str, &str)> = skills
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+            .collect();
+        assert_eq!(rows, [("p:lint", "mine"), ("p:other", "theirs")]);
     }
 }

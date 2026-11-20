@@ -608,6 +608,14 @@ pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, 
     }
 }
 
+/// Whether installed plugins join the session at all (`docs/plugins.md`) —
+/// `ALTER_ZERO_PLUGINS`, default on. Falsy = `plugins.json` is never read,
+/// so no plugin skill, agent type or command is offered: the switch for a
+/// session that must not see what is installed, the smoke suite's among them.
+pub(crate) fn plugins_enabled() -> bool {
+    env_flag("ALTER_ZERO_PLUGINS")
+}
+
 /// Whether the project-level `.alter-zero` config layer is discovered at all
 /// (`docs/project-config.md`) — `ALTER_ZERO_PROJECT_CONFIG`, default on.
 /// Falsy = no project hooks/MCP discovery and so nothing of a project's in

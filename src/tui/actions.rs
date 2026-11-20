@@ -106,6 +106,11 @@ impl Session<'_> {
                     images,
                 });
             }
+            Action::RunPluginCommand { name, args } => {
+                // A plugin's slash command (docs/plugins.md): its template is
+                // read and rendered here, then submitted as Submit's turn.
+                self.run_plugin_command(&name, &args);
+            }
             Action::PasteImage => {
                 // Ctrl+V: the clipboard I/O happens at the boundary (on_key
                 // stayed pure) but on a worker thread, not here — the read +

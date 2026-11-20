@@ -402,6 +402,21 @@ impl App {
                     self.skill_picker = None;
                     self.input_history.record(&text);
                     Action::AgentChat { id, text }
+                } else if !self.shell_mode
+                    && let Some((name, args)) = self.plugin_invocation(self.input.text())
+                {
+                    // An installed plugin's command typed with its
+                    // arguments (docs/plugins.md): the boundary renders its
+                    // template and submits that. Refused mid-turn the way
+                    // /init is, the draft kept for when the turn ends.
+                    if self.turn_active() {
+                        return Action::Toast(Self::plugin_busy_notice(&name));
+                    }
+                    let text = self.take_input();
+                    self.file_search = None;
+                    self.skill_picker = None;
+                    self.input_history.record(&text);
+                    Action::RunPluginCommand { name, args }
                 } else if self.turn_steerable() {
                     // A model turn is in flight — hand the draft to *that
                     // turn* (codex's steering): it reaches the model at the

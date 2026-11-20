@@ -759,12 +759,11 @@ impl App {
             // reopens the palette on it — the exact pre-submit state. (A
             // hand-typed submission of the identical text lands here too;
             // "/init" resubmits the same prompt, so nothing is lost.)
-            let text = if text == INIT_PROMPT.trim_end() {
-                "/init".to_string()
-            } else {
-                text
-            };
+            let (text, invocation) = self.typed_form_of(text);
             self.recall_input(&text);
+            if invocation {
+                self.command_menu = None;
+            }
             // recall_input replaced the draft, unanchoring any pairs that
             // backed it — discard those (the boundary deletes the orphaned
             // temp files) and restore the undone submission's own pairs so
@@ -913,12 +912,11 @@ impl App {
         if let Some((text, pairs)) = restored {
             // The /init special case, the interrupt-undo's rule: the user
             // typed "/init", not the canned prompt (docs/init.md).
-            let text = if text == INIT_PROMPT.trim_end() {
-                "/init".to_string()
-            } else {
-                text
-            };
+            let (text, invocation) = self.typed_form_of(text);
             self.recall_input(&text);
+            if invocation {
+                self.command_menu = None;
+            }
             let stale = std::mem::take(&mut self.images);
             self.discarded_images
                 .extend(stale.into_iter().map(|(_, path)| path));

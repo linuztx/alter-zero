@@ -402,6 +402,17 @@ pub(crate) struct Session<'t> {
     /// as a toast — [`reported_skill_errors`](Self::reported_skill_errors)'s
     /// twin, one feature over (`alter_zero::subagents::unreported_errors`).
     reported_agent_errors: std::collections::BTreeSet<std::path::PathBuf>,
+    /// The enabled plugins as `plugins.json` last said (`docs/plugins.md`):
+    /// read before the skills walk at startup and re-stat'ed at each turn
+    /// start ([`Session::rescan_plugins`]). Empty — and never read — with
+    /// `ALTER_ZERO_PLUGINS` off.
+    plugins: alter_zero::llm::plugin::PluginSnapshot,
+    /// The enabled plugins' slash commands, re-walked wherever the skills
+    /// are; what `Action::RunPluginCommand` looks a command up in.
+    plugin_commands: Vec<alter_zero::llm::plugin::PluginCommand>,
+    /// The `plugins.json` error last shown, so a malformed file is said once
+    /// (`alter_zero::llm::plugin::fresh_error`).
+    reported_plugins_error: Option<String>,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

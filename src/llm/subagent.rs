@@ -234,15 +234,41 @@ pub fn with_builtins(
     (agents, errors)
 }
 
+/// `found` with `plugins`' agent types appended, the first of a name winning
+/// across the whole list — so a user's or a project's type shadows a
+/// plugin's of the same name, the walk's own rule carried on.
+fn with_plugin_agents(
+    found: (Vec<AgentDefinition>, Vec<AgentFileError>),
+    plugins: (Vec<AgentDefinition>, Vec<AgentFileError>),
+) -> (Vec<AgentDefinition>, Vec<AgentFileError>) {
+    let (mut agents, mut errors) = found;
+    let (from_plugins, plugin_errors) = plugins;
+    for agent in from_plugins {
+        if !agents.iter().any(|known| known.name == agent.name) {
+            agents.push(agent);
+        }
+    }
+    errors.extend(plugin_errors);
+    (agents, errors)
+}
+
 /// The definitions this environment resolves to: the walk over
-/// [`resolved_agent_roots`], backed by the embedded defaults. What the
-/// bootstrap and the per-turn rescan both call.
+/// [`resolved_agent_roots`], then the enabled plugins' agent types
+/// ([`crate::llm::plugin::discover_plugin_agents`], `docs/plugins.md`),
+/// backed by the embedded defaults. What the bootstrap and the per-turn
+/// rescan both call. Like the plugins' skills, their agent types are found
+/// even when `ALTER_ZERO_AGENTS_DIR` replaced the roots — plugins have their
+/// own switch, which the boundary applies by handing in none.
 #[must_use]
 pub fn load_agents(
     cwd: &Path,
     config_home: Option<&Path>,
+    plugins: &[crate::plugins::EnabledPlugin],
 ) -> (Vec<AgentDefinition>, Vec<AgentFileError>) {
-    with_builtins(discover_agents(&resolved_agent_roots(cwd, config_home)))
+    with_builtins(with_plugin_agents(
+        discover_agents(&resolved_agent_roots(cwd, config_home)),
+        crate::llm::plugin::discover_plugin_agents(plugins),
+    ))
 }
 
 #[cfg(test)]
@@ -442,5 +468,45 @@ mod tests {
             "the found one keeps precedence; the missing one is appended"
         );
         assert_eq!(agents[0].description, "Mine.");
+    }
+
+    // ===== plugin agents (docs/subagents.md, docs/plugins.md) =====
+
+    #[test]
+    fn plugin_agents_sit_between_the_walk_and_the_builtins() {
+        let file = |name: &str, description: &str| AgentDefinition {
+            name: name.to_string(),
+            description: description.to_string(),
+            model: AgentModel::Inherit,
+            tools: AgentTools::All,
+            system_prompt: None,
+            path: Some(PathBuf::from("/a").join(name)),
+        };
+        let found = (
+            vec![file("mine", "d"), file("p:reviewer", "mine")],
+            Vec::new(),
+        );
+        let plugins = (
+            vec![file("p:reviewer", "theirs"), file("p:helper", "theirs")],
+            Vec::new(),
+        );
+        let (agents, _) = with_builtins(with_plugin_agents(found, plugins));
+        let rows: Vec<(&str, &str)> = agents
+            .iter()
+            .map(|agent| (agent.name.as_str(), agent.description.as_str()))
+            .collect();
+        assert_eq!(
+            rows[..3],
+            [
+                ("mine", "d"),
+                ("p:reviewer", "mine"),
+                ("p:helper", "theirs")
+            ]
+        );
+        assert_eq!(
+            rows.len(),
+            3 + builtin_agents().len(),
+            "the built-ins stay last"
+        );
     }
 }

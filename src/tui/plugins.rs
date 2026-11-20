@@ -131,9 +131,10 @@ impl Session<'_> {
     /// of the enabled plugins, so their skills, agents and commands are
     /// offered from the very next message (and their hooks and MCP servers
     /// queue for the startup review at the next launch). Called once per
-    /// operation that worked; the reload itself lands with the session's
-    /// plugin wiring.
-    pub(crate) fn plugins_changed(&mut self) {}
+    /// operation that worked — [`Session::reload_plugins`].
+    pub(crate) fn plugins_changed(&mut self) {
+        self.reload_plugins();
+    }
 }
 
 /// Whether `op` is the page's foreground job — what Esc cancels — rather

@@ -80,8 +80,8 @@ pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, Bg
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
     COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
-    CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
-    command_query, matching_commands,
+    CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, PluginCommandRow,
+    RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
 };
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
@@ -545,6 +545,18 @@ pub struct App {
     /// beside every skill-listing render) so the picker, the listing, and
     /// the `skill` tool always agree. Empty when none are offered.
     skills: Vec<crate::skills::SkillMetadata>,
+    /// The installed plugins' slash commands the palette lists after the
+    /// built-ins, injected at the boundary
+    /// ([`set_plugin_commands`](Self::set_plugin_commands), beside every
+    /// plugin rescan). Plain data: a command's body is read only when it runs
+    /// (`docs/plugins.md`). Empty with no plugin installed.
+    plugin_commands: Vec<PluginCommandRow>,
+    /// The prompt the last plugin command submitted and the invocation that
+    /// produced it, so an Esc-undo of exactly that turn hands back what was
+    /// typed (`/code-review:review 123`) rather than the rendered template —
+    /// `/init`'s rule for a prompt the user never held. One pair: a later
+    /// command replaces it.
+    plugin_prompt: Option<(String, String)>,
     /// The open `/resume` session picker; `Some` exactly while
     /// [`View::ResumePicker`] is showing ([`App::open_resume_picker`] /
     /// [`App::close_resume_picker`] keep the two in step). See

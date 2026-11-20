@@ -23,6 +23,16 @@ pub enum Action {
     /// Ctrl+V-attached images travel separately — the loop drains
     /// [`App::take_submission_images`] for their paths. See `docs/image-paste.md`.
     Submit(String),
+    /// Run the installed plugin's slash command `name` (`plugin:command`, no
+    /// slash) with `args`: the boundary reads its template, puts the
+    /// arguments in place and submits the result as a user turn
+    /// ([`Action::Submit`]'s path). See `docs/plugins.md`.
+    RunPluginCommand {
+        /// The command's full name.
+        name: String,
+        /// The argument text after the command word, trimmed at its start.
+        args: String,
+    },
     /// The user pressed Ctrl+V (or Ctrl+Alt+V) to paste an image. The decision is
     /// pure; the loop does the clipboard I/O ([`crate::clipboard`]) and calls
     /// [`App::attach_image`] on success (or commits a red notice on failure). See

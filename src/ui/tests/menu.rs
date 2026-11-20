@@ -1764,6 +1764,8 @@ fn smeta(name: &str, description: &str) -> crate::skills::SkillMetadata {
         path: std::path::PathBuf::from("/skills")
             .join(name)
             .join("SKILL.md"),
+        plugin_root: None,
+        plugin_data: None,
     }
 }
 

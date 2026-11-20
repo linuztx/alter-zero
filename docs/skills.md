@@ -93,6 +93,21 @@ the developer's own `~/.claude/skills` in every session, which is exactly how
 listing displaced the context rows that phase asserts on. The suite now points
 the variable at an empty temp dir.
 
+After the roots come the **installed plugins' skills** (`docs/plugins.md`):
+each enabled plugin's recorded `skills` paths, a path being one skill
+directory or a directory of them, every skill named `plugin:skill` —
+validated as the plugin wrote it, then namespaced, so a frontmatter name
+already written `plugin:skill` is not doubled. The first name still wins
+across the whole list, so a skill of yours shadows a plugin's of the same
+name. `ALTER_ZERO_SKILLS_DIR` does **not** remove them: it says which
+directories hold *your* skills, and plugins have their own switch,
+`ALTER_ZERO_PLUGINS`, which keeps `plugins.json` from being read at all.
+`llm::skill::load_all_skills` is the walk plus the plugins; `load_skills`
+stays the walk alone. A bare name with no `:` that matches nothing exactly
+finds the **one** plugin skill ending in it (`lint` reaches
+`code-review:lint`), and nothing once two plugins ship a `lint` — the
+"unknown skill" error then lists the full names.
+
 The `.claude/` rows are the pragmatic half of the design: skills are portable
 markdown with no tool-specific behaviour in them, the ecosystem writes them to
 `.claude/skills`, and reading that directory costs one `read_dir` that usually
@@ -500,6 +515,15 @@ Base directory for this skill: /home/u/.claude/skills/dataviz
 same directory (the second spelling for ecosystem compatibility). That
 expansion is the **only** rewrite the loader performs; everything else in a
 body reaches the model exactly as its author wrote it.
+
+A plugin's skill is the one exception, and only by its plugin's two
+variables (`skills::render_plugin_skill_body`): `${CLAUDE_PLUGIN_ROOT}` and
+`${CLAUDE_PLUGIN_DATA}` expand to the install and its data directory, and a
+`Plugin root: {root}` line sits under the base-directory header — a
+Codex-format skill names `$PLUGIN_ROOT` in its prose for the reader to
+substitute, and that line is where the model reads it. A body that names the
+data directory has it created on that load. Every other skill renders
+byte-for-byte as before (`SkillMetadata::render_body` picks the renderer).
 
 ### Load once while the instructions remain in context
 

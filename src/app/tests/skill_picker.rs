@@ -13,6 +13,8 @@ fn skill(name: &str, description: &str) -> SkillMetadata {
         path: std::path::PathBuf::from("/skills")
             .join(name)
             .join(crate::skills::SKILL_FILE_NAME),
+        plugin_root: None,
+        plugin_data: None,
     }
 }
 
@@ -280,4 +282,35 @@ fn the_palette_wins_over_the_skill_picker() {
     type_str(&mut app, "/qu");
     assert!(app.command_menu.is_some());
     assert!(app.skill_picker.is_none());
+}
+
+// ===== plugin skills (`plugin:skill`, docs/plugins.md) =====
+
+#[test]
+fn a_plugin_skill_is_found_by_part_of_its_name_and_inserted_whole() {
+    let mut app = App::new();
+    app.set_skills(vec![
+        skill("code-review:lint", "Lint the diff"),
+        skill("dataviz", "Charts"),
+    ]);
+    type_str(&mut app, "please $lin");
+    assert!(app.skill_picker.is_some());
+    let names: Vec<String> = app.skill_matches().into_iter().map(|m| m.name).collect();
+    assert_eq!(names, vec!["code-review:lint".to_string()]);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.input.text(), "please $code-review:lint ");
+}
+
+#[test]
+fn a_colon_just_typed_keeps_listing_the_plugins_skills() {
+    let mut app = App::new();
+    app.set_skills(vec![
+        skill("code-review:lint", "Lint the diff"),
+        skill("code-review:review", "Review a PR"),
+    ]);
+    type_str(&mut app, "$code-review:");
+    assert!(app.skill_picker.is_some());
+    assert_eq!(app.skill_matches().len(), 2);
+    app.on_key(key(KeyCode::Enter));
+    assert_eq!(app.input.text(), "$code-review:lint ");
 }

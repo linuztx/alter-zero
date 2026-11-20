@@ -114,6 +114,14 @@ sentence codex's eager injection cannot read and this design can.
 - `mention_token(text, cursor) -> Option<MentionToken>` — the codex grammar
   above; `MentionToken { range, query }` is the `AtToken` of the `$` band
   (`range` spans the `$` through the name run, never trailing punctuation).
+  One addition, for a plugin's `plugin:skill` names (`docs/plugins.md`): a
+  `:` continues the name **only when a name character follows it**, so
+  `$code-review:lint` is one mention while `$review:` before a space is still
+  the mention `review` and a colon, and `$a::b` is the mention `a`. A colon
+  just typed at the caret, nothing after it yet, keeps the band open on the
+  name before it — the query `code-review`, still listing `code-review:*` —
+  with the colon inside the range, so an accept writes `$code-review:lint `
+  over everything typed.
 - `shell_flavored_query(query) -> bool` — the popup-side rejection, kept a
   separate predicate so the scanner stays a truthful parse.
 - `SkillMatch { name, description, score, indices }` +

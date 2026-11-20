@@ -172,8 +172,31 @@ pub enum CommandEffect {
     /// composer, and a change reaches the very next tool call. See
     /// `docs/secrets.md`.
     Secrets,
+    /// Run an installed plugin's slash command — a prompt template submitted
+    /// as a user turn (`docs/plugins.md`). One that takes arguments leaves
+    /// `/{name} ` in the composer for them; one that doesn't runs at once.
+    /// Refused mid-turn like `/init`.
+    PluginPrompt {
+        /// Whether the command expects argument text after its name.
+        takes_arguments: bool,
+    },
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
+}
+
+/// One installed plugin's slash command as the palette lists it — plain
+/// data the boundary injects ([`App::set_plugin_commands`]); where its body
+/// lives stays at the boundary (`docs/plugins.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCommandRow {
+    /// `plugin:command`, without the leading slash.
+    pub name: String,
+    /// The one-line description its file gives.
+    pub description: String,
+    /// The `argument-hint` its file gives, as written (`[pr]`).
+    pub argument_hint: Option<String>,
+    /// Whether it expects argument text after its name.
+    pub takes_arguments: bool,
 }
 
 /// One entry in the slash-command palette: how it shows (`name`/`description`)
@@ -361,16 +384,26 @@ pub fn command_query(input: &str) -> Option<&str> {
 /// The rows of `commands` whose name starts with `query` (case-insensitive),
 /// in their order — the palette's filter over [`App::commands`], the
 /// session's rows with the tier commands spliced in. An empty query matches
-/// everything.
+/// everything. A plugin command matches when the query starts any of its
+/// `:`-segments too ([`crate::plugins::matches_query`]), so `/rev` finds
+/// `/code-review:review` (`docs/plugins.md`).
 #[must_use]
 pub fn matching_commands<'a>(commands: &'a [SlashCommand], query: &str) -> Vec<&'a SlashCommand> {
     let q = query.to_lowercase();
-    commands.iter().filter(|c| c.name.starts_with(&q)).collect()
+    commands
+        .iter()
+        .filter(|c| match c.effect {
+            CommandEffect::PluginPrompt { .. } => crate::plugins::matches_query(&c.name, &q),
+            _ => c.name.starts_with(&q),
+        })
+        .collect()
 }
 
 impl App {
     /// The palette's rows for this session: [`COMMANDS`] with one row per
-    /// speed tier the active model lists spliced in **right after `/model`**
+    /// speed tier the active model lists spliced in **right after `/model`**,
+    /// and the installed plugins' commands after every built-in but `/quit`
+    /// (`docs/plugins.md`)
     /// — where codex inserts its tier commands, a tier being a fact about
     /// the model just switched to (`docs/fast-mode.md`). Built from
     /// [`App::speed`] on demand rather than stored, so the rows can never
@@ -385,8 +418,12 @@ impl App {
             .speed
             .as_ref()
             .map_or(&[][..], |speed| speed.tiers.as_slice());
-        let mut commands: Vec<SlashCommand> = Vec::with_capacity(COMMANDS.len() + tiers.len());
+        let mut commands: Vec<SlashCommand> =
+            Vec::with_capacity(COMMANDS.len() + tiers.len() + self.plugin_commands.len());
         for command in COMMANDS {
+            if command.effect == CommandEffect::Quit {
+                self.push_plugin_rows(&mut commands);
+            }
             commands.push(command.clone());
             if command.effect != CommandEffect::Model {
                 continue;
@@ -399,6 +436,32 @@ impl App {
             }
         }
         commands
+    }
+
+    /// The installed plugins' commands as palette rows, pushed onto
+    /// `commands` — the built-ins and tier rows before them, `/quit` after
+    /// (`docs/plugins.md`). Each is described by its file's description and
+    /// argument hint; one whose name is a row's already gets none, so a
+    /// built-in is never shadowed.
+    fn push_plugin_rows(&self, commands: &mut Vec<SlashCommand>) {
+        for row in &self.plugin_commands {
+            let taken = |c: &SlashCommand| c.name.eq_ignore_ascii_case(&row.name);
+            if COMMANDS.iter().any(taken) || commands.iter().any(taken) {
+                continue;
+            }
+            let description = match &row.argument_hint {
+                Some(hint) if row.description.is_empty() => hint.clone(),
+                Some(hint) => format!("{} {hint}", row.description),
+                None => row.description.clone(),
+            };
+            commands.push(SlashCommand {
+                name: Cow::Owned(row.name.clone()),
+                description: Cow::Owned(description),
+                effect: CommandEffect::PluginPrompt {
+                    takes_arguments: row.takes_arguments,
+                },
+            });
+        }
     }
 
     /// Re-derive the palette after an edit. Opens it when the input *becomes* a
@@ -655,7 +718,92 @@ impl App {
                 self.open_secrets_page();
                 Action::OpenSecretsPage
             }
+            CommandEffect::PluginPrompt { takes_arguments } => {
+                // A plugin's prompt template (docs/plugins.md). One that
+                // takes arguments waits for them in the composer — the
+                // palette closes on the space, and Enter then runs the typed
+                // invocation (`keys.rs`). One that doesn't runs at once,
+                // refused mid-turn the way /init is.
+                let name = cmd.name.into_owned();
+                if takes_arguments {
+                    self.input.set_text(&format!("/{name} "));
+                    Action::None
+                } else if self.turn_active() {
+                    Action::Toast(Self::plugin_busy_notice(&name))
+                } else {
+                    Action::RunPluginCommand {
+                        name,
+                        args: String::new(),
+                    }
+                }
+            }
             CommandEffect::Quit => Action::Quit,
         }
+    }
+
+    /// Inject the installed plugins' slash commands (the boundary, beside
+    /// every plugin rescan — `docs/plugins.md`).
+    pub fn set_plugin_commands(&mut self, commands: Vec<PluginCommandRow>) {
+        self.plugin_commands = commands;
+    }
+
+    /// Note the prompt a plugin command is about to submit and the
+    /// invocation it came from (the boundary, before the turn starts), so an
+    /// Esc-undo of that turn restores the invocation.
+    pub fn remember_plugin_prompt(&mut self, rendered: &str, literal: &str) {
+        self.plugin_prompt = Some((rendered.to_string(), literal.to_string()));
+    }
+
+    /// What an undone turn's text hands back to the composer: `/init` for
+    /// `/init`'s canned prompt, the invocation for the last plugin command's
+    /// rendered prompt, else the text itself — the user typed the command,
+    /// never the template (`docs/init.md`, `docs/plugins.md`). The flag says
+    /// it was a plugin invocation, whose palette stays closed.
+    pub(super) fn typed_form_of(&self, text: String) -> (String, bool) {
+        if text == INIT_PROMPT.trim_end() {
+            return ("/init".to_string(), false);
+        }
+        match &self.plugin_prompt {
+            Some((rendered, literal)) if *rendered == text => (literal.clone(), true),
+            _ => (text, false),
+        }
+    }
+
+    /// The plugin command a typed draft invokes and its argument text
+    /// ([`crate::plugins::match_invocation`] over the listed plugin
+    /// commands). A first word that is a built-in's name is never routed to
+    /// a plugin command through its last segment: `/model x` stays the text
+    /// it always was even beside a `p:model`.
+    pub(super) fn plugin_invocation(&self, draft: &str) -> Option<(String, String)> {
+        if self.plugin_commands.is_empty() {
+            return None;
+        }
+        let names: Vec<&str> = self
+            .plugin_commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect();
+        let (name, args) = crate::plugins::match_invocation(draft, &names)?;
+        let word = draft
+            .trim_start()
+            .trim_start_matches('/')
+            .split(char::is_whitespace)
+            .next()
+            .unwrap_or_default();
+        if !name.eq_ignore_ascii_case(word)
+            && self.commands().iter().any(|command| {
+                command.name.eq_ignore_ascii_case(word)
+                    && !matches!(command.effect, CommandEffect::PluginPrompt { .. })
+            })
+        {
+            return None;
+        }
+        Some((name, args.to_string()))
+    }
+
+    /// The toast a plugin command run mid-turn is refused with — `/init`'s
+    /// rule: submitting would race the running stream with a second turn.
+    pub(super) fn plugin_busy_notice(name: &str) -> String {
+        format!("/{name} is disabled while a task is in progress")
     }
 }

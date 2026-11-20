@@ -91,6 +91,28 @@ pub struct SkillMetadata {
     pub dir: PathBuf,
     /// The `SKILL.md` itself.
     pub path: PathBuf,
+    /// The install root of the plugin that ships this skill — what a body's
+    /// `${CLAUDE_PLUGIN_ROOT}` and the rendered `Plugin root:` line name.
+    /// `None` for every skill a user or project root holds
+    /// (`docs/plugins.md`).
+    pub plugin_root: Option<PathBuf>,
+    /// The plugin's data directory, kept across updates — what
+    /// `${CLAUDE_PLUGIN_DATA}` names. `None` outside a plugin.
+    pub plugin_data: Option<PathBuf>,
+}
+
+impl SkillMetadata {
+    /// The text a load of this skill hands the model for `body`:
+    /// [`render_plugin_skill_body`] for a plugin's skill,
+    /// [`render_skill_body`] for every other — so an ordinary skill renders
+    /// byte-for-byte as it always has.
+    #[must_use]
+    pub fn render_body(&self, body: &str) -> String {
+        match (&self.plugin_root, &self.plugin_data) {
+            (Some(root), Some(data)) => render_plugin_skill_body(&self.dir, body, root, data),
+            _ => render_skill_body(&self.dir, body),
+        }
+    }
 }
 
 /// A `SKILL.md` that could not be read, parsed, or validated. Collected
@@ -182,13 +204,44 @@ pub fn validate_skill_name(name: &str) -> Result<(), String> {
 /// [`SkillParseError`] when the frontmatter is absent, the description is
 /// missing, or the resolved name is unusable.
 pub fn parse_skill(contents: &str, default_name: &str) -> Result<ParsedSkill, SkillParseError> {
+    parse_skill_in(contents, default_name, None)
+}
+
+/// [`parse_skill`] for a `SKILL.md` an installed plugin ships: the name is
+/// validated as the plugin wrote it, then namespaced `{plugin}:{name}`
+/// ([`crate::plugins::namespaced`]) so two plugins' `review` never collide
+/// (`docs/plugins.md`). A frontmatter name already written
+/// `{plugin}:{name}` has the prefix taken off first rather than doubled.
+///
+/// # Errors
+/// As [`parse_skill`].
+pub fn parse_plugin_skill(
+    contents: &str,
+    plugin: &str,
+    default_name: &str,
+) -> Result<ParsedSkill, SkillParseError> {
+    parse_skill_in(contents, default_name, Some(plugin))
+}
+
+/// The one parse behind [`parse_skill`] and [`parse_plugin_skill`]; `plugin`
+/// names the plugin a skill is namespaced under, `None` for any other.
+fn parse_skill_in(
+    contents: &str,
+    default_name: &str,
+    plugin: Option<&str>,
+) -> Result<ParsedSkill, SkillParseError> {
     let (block, body) = frontmatter::split(contents).ok_or(SkillParseError::MissingFrontmatter)?;
     let fields = frontmatter::scalars(&block);
 
-    let name = frontmatter::field(&fields, "name")
-        .map(str::to_string)
-        .unwrap_or_else(|| default_name.to_string());
-    validate_skill_name(&name).map_err(SkillParseError::InvalidName)?;
+    let name = frontmatter::field(&fields, "name").unwrap_or(default_name);
+    let name = plugin
+        .and_then(|plugin| name.strip_prefix(plugin)?.strip_prefix(':'))
+        .unwrap_or(name);
+    validate_skill_name(name).map_err(SkillParseError::InvalidName)?;
+    let name = plugin.map_or_else(
+        || name.to_string(),
+        |plugin| crate::plugins::namespaced(plugin, name),
+    );
 
     let description = frontmatter::field(&fields, "description")
         .map(str::to_string)
@@ -317,10 +370,37 @@ pub fn listing_message(listing: &str) -> String {
 #[must_use]
 pub fn render_skill_body(dir: &Path, body: &str) -> String {
     let dir = dir.display().to_string();
-    let text = body
-        .replace("${CLAUDE_SKILL_DIR}", &dir)
-        .replace("${ALTER_ZERO_SKILL_DIR}", &dir);
-    let rendered = format!("Base directory for this skill: {dir}\n\n{text}");
+    let text = expand_skill_dir(body, &dir);
+    cap_body(format!("Base directory for this skill: {dir}\n\n{text}"))
+}
+
+/// [`render_skill_body`] for a plugin's skill: the plugin's
+/// `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` expanded too
+/// ([`crate::plugins::expand_claude`]), and a `Plugin root: {root}` line under
+/// the base-directory header. A Codex-format skill names `$PLUGIN_ROOT` in its
+/// prose for the reader to substitute, so that line is where the model reads
+/// it from (`docs/plugins.md`). Capped at [`SKILL_BODY_MAX_BYTES`] like any
+/// other body.
+#[must_use]
+pub fn render_plugin_skill_body(dir: &Path, body: &str, root: &Path, data: &Path) -> String {
+    let dir = dir.display().to_string();
+    let text = expand_skill_dir(body, &dir);
+    let text = crate::plugins::expand_claude(&text, &crate::plugins::PluginPaths { root, data });
+    cap_body(format!(
+        "Base directory for this skill: {dir}\nPlugin root: {}\n\n{text}",
+        root.display()
+    ))
+}
+
+/// `body` with both spellings of the skill-directory placeholder expanded.
+fn expand_skill_dir(body: &str, dir: &str) -> String {
+    body.replace("${CLAUDE_SKILL_DIR}", dir)
+        .replace("${ALTER_ZERO_SKILL_DIR}", dir)
+}
+
+/// `rendered` cut to [`SKILL_BODY_MAX_BYTES`] on a char boundary, the
+/// truncation marker closing a cut one.
+pub(crate) fn cap_body(rendered: String) -> String {
     if rendered.len() <= SKILL_BODY_MAX_BYTES {
         return rendered;
     }
@@ -377,6 +457,20 @@ fn is_mention_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
+/// Does the character at byte `at` of `text` continue a mention name? A
+/// name character does; so does a `:` **followed by** one, which is how a
+/// plugin skill's `plugin:skill` name stays one mention while `$review:`
+/// before a space is still the mention `review` and a colon
+/// (`docs/skill-mentions.md`).
+fn continues_mention(text: &str, at: usize) -> bool {
+    let mut chars = text[at..].chars();
+    match chars.next() {
+        Some(':') => chars.next().is_some_and(is_mention_name_char),
+        Some(c) => is_mention_name_char(c),
+        None => false,
+    }
+}
+
 /// The `$`-skill mention at `cursor` in `text`, if the cursor sits in one.
 ///
 /// The grammar is codex's: the `$` must open its whitespace-delimited word
@@ -386,16 +480,32 @@ fn is_mention_name_char(c: char) -> bool {
 /// `$dataviz,` closes the picker). Unlike [`crate::file_search::at_token`]'s
 /// whitespace scan, the range never swallows trailing punctuation, so an
 /// accept can't eat a comma the user already typed.
+///
+/// One addition for plugin skills (`docs/skill-mentions.md`): a `:` between
+/// two name characters belongs to the name, so `$code-review:lint` is one
+/// mention — and a `:` just typed at the caret, with nothing after it yet,
+/// keeps the mention open on the name before it (the query `code-review`,
+/// still listing `code-review:*`), its range taking the colon so an accept
+/// replaces what was typed whole.
 #[must_use]
 pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     let cursor = cursor.min(text.len());
+    // A colon the caret sits right after, with no name character beyond it,
+    // is one being typed: the name ends before it.
+    let typing_colon =
+        text[..cursor].ends_with(':') && !continues_mention(text, cursor) && cursor > 0;
+    let scan_end = if typing_colon { cursor - 1 } else { cursor };
     // Scan back over name characters to where the run begins…
-    let run_start = text[..cursor]
+    let run_start = text[..scan_end]
         .char_indices()
         .rev()
-        .take_while(|&(_, c)| is_mention_name_char(c))
+        .take_while(|&(i, _)| continues_mention(text, i))
         .last()
-        .map_or(cursor, |(i, _)| i);
+        .map_or(scan_end, |(i, _)| i);
+    // …a name opens on a name character, never a colon…
+    if text[run_start..].starts_with(':') || (typing_colon && run_start == scan_end) {
+        return None;
+    }
     // …the character just before the run must be the `$` — found by char
     // boundary, never byte arithmetic: with a multi-byte char there (typing
     // `—` puts the cursor right after one), `run_start - 1` lands inside it
@@ -413,10 +523,17 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     {
         return None;
     }
-    // The mention extends forward to the first non-name character.
+    if typing_colon {
+        return Some(MentionToken {
+            range: prefix_start..cursor,
+            query: text[run_start..scan_end].to_string(),
+        });
+    }
+    // The mention extends forward to the first character that doesn't
+    // continue it.
     let end = text[cursor..]
         .char_indices()
-        .find(|&(_, c)| !is_mention_name_char(c))
+        .find(|&(i, _)| !continues_mention(text, cursor + i))
         .map_or(text.len(), |(i, _)| cursor + i);
     Some(MentionToken {
         range: prefix_start..end,
@@ -580,17 +697,37 @@ impl SkillRegistry {
     /// bare name. A disabled skill is not found — so a model that remembers
     /// the name from an earlier turn gets the recoverable "unknown skill"
     /// error rather than loading something the user turned off.
+    ///
+    /// A bare name with no `:` that matches nothing exactly falls back to
+    /// the **one** enabled plugin skill whose last `:`-segment it is, so
+    /// `lint` reaches `code-review:lint` until a second plugin also ships a
+    /// `lint` — then neither is found, and the unknown-skill error lists the
+    /// full names (`docs/plugins.md`).
     #[must_use]
     pub fn find(&self, name: &str) -> Option<SkillMetadata> {
         let wanted = name.trim().trim_start_matches('/').trim().to_lowercase();
         let state = self.lock();
-        state
+        let enabled = state
             .skills
             .iter()
-            .find(|skill| {
-                skill.name.to_lowercase() == wanted && !state.disabled.contains(&skill.name)
-            })
-            .cloned()
+            .filter(|skill| !state.disabled.contains(&skill.name));
+        if let Some(exact) = enabled
+            .clone()
+            .find(|skill| skill.name.to_lowercase() == wanted)
+        {
+            return Some(exact.clone());
+        }
+        if wanted.contains(':') {
+            return None;
+        }
+        let mut by_segment = enabled.filter(|skill| {
+            skill
+                .name
+                .rsplit_once(':')
+                .is_some_and(|(_, last)| last.to_lowercase() == wanted)
+        });
+        let only = by_segment.next()?;
+        by_segment.next().is_none().then(|| only.clone())
     }
 
     /// Every **enabled** skill's name, in order — the "did you mean" list an
@@ -842,6 +979,8 @@ mod tests {
             description: description.to_string(),
             dir: PathBuf::from("/skills").join(name),
             path: PathBuf::from("/skills").join(name).join(SKILL_FILE_NAME),
+            plugin_root: None,
+            plugin_data: None,
         }
     }
 
@@ -1309,5 +1448,189 @@ mod tests {
         let fresh = unreported_errors(&reported, &[err("/a/SKILL.md"), err("/b/SKILL.md")]);
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].path, PathBuf::from("/b/SKILL.md"));
+    }
+
+    // ===== plugin skills (docs/skills.md, docs/plugins.md) =====
+
+    fn plugin_meta(name: &str) -> SkillMetadata {
+        SkillMetadata {
+            plugin_root: Some(PathBuf::from("/p")),
+            plugin_data: Some(PathBuf::from("/d")),
+            ..meta(name, "d")
+        }
+    }
+
+    #[test]
+    fn a_plugin_skill_is_named_after_its_plugin() {
+        let parsed = parse_plugin_skill(
+            "---\ndescription: Lint it\n---\nBody",
+            "code-review",
+            "lint",
+        )
+        .expect("parses");
+        assert_eq!(parsed.name, "code-review:lint");
+        assert_eq!(parsed.description, "Lint it");
+        assert_eq!(parsed.body, "Body");
+    }
+
+    #[test]
+    fn a_plugin_skill_already_named_after_its_plugin_is_not_doubled() {
+        let parsed = parse_plugin_skill(
+            "---\nname: code-review:lint\ndescription: d\n---\n",
+            "code-review",
+            "dir",
+        )
+        .expect("parses");
+        assert_eq!(parsed.name, "code-review:lint");
+        let parsed = parse_plugin_skill("---\nname: style\ndescription: d\n---\n", "p", "dir")
+            .expect("parses");
+        assert_eq!(
+            parsed.name, "p:style",
+            "the frontmatter name outranks the dir"
+        );
+    }
+
+    #[test]
+    fn a_plugin_skill_with_an_unusable_name_is_still_refused() {
+        assert!(matches!(
+            parse_plugin_skill("---\nname: Bad Name\ndescription: d\n---\n", "p", "dir"),
+            Err(SkillParseError::InvalidName(_))
+        ));
+    }
+
+    #[test]
+    fn an_ordinary_skill_keeps_its_plain_name() {
+        let parsed = parse_skill("---\ndescription: d\n---\n", "lint").expect("parses");
+        assert_eq!(parsed.name, "lint");
+    }
+
+    #[test]
+    fn a_plugin_body_expands_its_variables_under_a_plugin_root_line() {
+        let rendered = render_plugin_skill_body(
+            Path::new("/p/skills/lint"),
+            "Run ${CLAUDE_PLUGIN_ROOT}/bin/x into ${CLAUDE_PLUGIN_DATA} from ${CLAUDE_SKILL_DIR}; $PLUGIN_ROOT stays",
+            Path::new("/p"),
+            Path::new("/d"),
+        );
+        assert_eq!(
+            rendered,
+            "Base directory for this skill: /p/skills/lint\nPlugin root: /p\n\n\
+             Run /p/bin/x into /d from /p/skills/lint; $PLUGIN_ROOT stays"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_body_renders_exactly_as_before() {
+        let skill = meta("commit", "d");
+        assert_eq!(
+            skill.render_body("Use ${CLAUDE_PLUGIN_ROOT} here"),
+            render_skill_body(&skill.dir, "Use ${CLAUDE_PLUGIN_ROOT} here")
+        );
+        assert_eq!(
+            plugin_meta("p:x").render_body("b"),
+            render_plugin_skill_body(
+                &plugin_meta("p:x").dir,
+                "b",
+                Path::new("/p"),
+                Path::new("/d")
+            )
+        );
+    }
+
+    #[test]
+    fn a_plugin_body_is_capped_like_any_other() {
+        let rendered = render_plugin_skill_body(
+            Path::new("/s"),
+            &"x".repeat(SKILL_BODY_MAX_BYTES * 2),
+            Path::new("/p"),
+            Path::new("/d"),
+        );
+        assert!(rendered.ends_with(SKILL_TRUNCATION_MARKER));
+        assert!(rendered.len() <= SKILL_BODY_MAX_BYTES + SKILL_TRUNCATION_MARKER.len());
+    }
+
+    #[test]
+    fn a_bare_name_finds_the_one_plugin_skill_ending_in_it() {
+        let registry = SkillRegistry::new(vec![
+            plugin_meta("code-review:lint"),
+            plugin_meta("code-review:review"),
+            plugin_meta("other:review"),
+            meta("commit", "d"),
+        ]);
+        assert_eq!(
+            registry.find("lint").expect("found").name,
+            "code-review:lint"
+        );
+        assert_eq!(
+            registry.find("Code-Review:Lint").expect("found").name,
+            "code-review:lint"
+        );
+        assert!(
+            registry.find("review").is_none(),
+            "two candidates is no match"
+        );
+        assert!(
+            registry.find("x:lint").is_none(),
+            "a namespaced miss never falls back"
+        );
+        assert_eq!(registry.find("commit").expect("found").name, "commit");
+    }
+
+    #[test]
+    fn an_exact_name_outranks_the_bare_fallback() {
+        let registry = SkillRegistry::new(vec![plugin_meta("p:lint"), meta("lint", "personal")]);
+        assert_eq!(registry.find("lint").expect("found").name, "lint");
+    }
+
+    #[test]
+    fn the_bare_fallback_skips_a_disabled_skill() {
+        let registry = SkillRegistry::new(vec![plugin_meta("p:lint")]);
+        registry.set_disabled(BTreeSet::from(["p:lint".to_string()]));
+        assert!(registry.find("lint").is_none());
+    }
+
+    #[test]
+    fn a_colon_continues_a_mention_only_before_a_name_character() {
+        let t = mention_token("$code-review:lint", 17).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("code-review:lint", 0..17));
+        // The cursor mid-name reaches across the colon both ways.
+        let t = mention_token("$a:b", 2).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("a:b", 0..4));
+        let t = mention_token("$a:b", 3).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("a:b", 0..4));
+    }
+
+    #[test]
+    fn a_colon_before_a_space_is_punctuation() {
+        let t = mention_token("$review: done", 7).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("review", 0..7));
+        assert!(mention_token("$review: done", 9).is_none());
+    }
+
+    #[test]
+    fn a_doubled_colon_ends_the_mention() {
+        let t = mention_token("$a::b", 2).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("a", 0..2));
+        assert!(mention_token("$a::b", 5).is_none());
+    }
+
+    #[test]
+    fn a_colon_never_makes_a_mid_word_dollar_a_mention() {
+        assert!(mention_token("US$5:x", 6).is_none());
+        assert!(
+            mention_token("$:x", 3).is_none(),
+            "a name opens on a name character"
+        );
+    }
+
+    #[test]
+    fn a_colon_just_typed_keeps_the_mention_open() {
+        // `$a:` at the end of the text, the caret after the colon: the query is
+        // still `a`, and the range takes the colon so an accept replaces it.
+        let t = mention_token("$a:", 3).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("a", 0..3));
+        let t = mention_token("say $a: ", 7).expect("token");
+        assert_eq!((t.query.as_str(), t.range), ("a", 4..7));
+        assert!(mention_token("$:", 2).is_none());
     }
 }

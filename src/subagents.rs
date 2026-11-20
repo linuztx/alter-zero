@@ -301,8 +301,73 @@ pub fn parse_agent(contents: &str, default_name: &str) -> Result<AgentDefinition
         .map(str::to_string)
         .unwrap_or_else(|| default_name.to_string());
     validate_agent_name(&name).map_err(AgentParseError::InvalidName)?;
+    definition(name, &fields, &body)
+}
 
-    let description = frontmatter::field(&fields, "description")
+/// [`parse_agent`] for an agent file an installed plugin ships
+/// (`docs/plugins.md`). Four things differ, each because the file was written
+/// for another tool and arrived with a plugin rather than from the user:
+///
+/// - the name is namespaced `{plugin}:{name}` ([`crate::plugins::namespaced`])
+///   — a frontmatter name already written that way is not doubled;
+/// - the model is always [`AgentModel::Inherit`]: a plugin does not choose
+///   which model the user runs, or what it bills;
+/// - a `tools:` list goes through [`crate::plugins::map_agent_tools`], so a
+///   Claude Code agent's `Glob, Grep` can still search (through `bash`) — and
+///   a list none of whose tools exist here (`TodoWrite, ExitPlanMode`) leaves
+///   the agent `Read` alone, never every tool: the narrowest list a file
+///   wrote must not become the widest;
+/// - the body has its `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}`
+///   expanded ([`crate::plugins::expand_claude`]).
+///
+/// # Errors
+/// As [`parse_agent`].
+pub fn parse_plugin_agent(
+    contents: &str,
+    plugin: &str,
+    default_name: &str,
+    paths: &crate::plugins::PluginPaths<'_>,
+) -> Result<AgentDefinition, AgentParseError> {
+    let (block, body) = frontmatter::split(contents).ok_or(AgentParseError::MissingFrontmatter)?;
+    let fields = frontmatter::scalars(&block);
+
+    let name = frontmatter::field(&fields, "name").unwrap_or(default_name);
+    let name = name
+        .strip_prefix(plugin)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(name);
+    validate_agent_name(name).map_err(AgentParseError::InvalidName)?;
+    let mut agent = definition(crate::plugins::namespaced(plugin, name), &fields, &body)?;
+    agent.model = AgentModel::Inherit;
+    agent.tools = frontmatter::field(&fields, "tools").map_or(AgentTools::All, plugin_agent_tools);
+    agent.system_prompt = agent
+        .system_prompt
+        .map(|prompt| crate::plugins::expand_claude(&prompt, paths));
+    Ok(agent)
+}
+
+/// A plugin agent's `tools:` value as alter-zero's allowlist: `*` (or an
+/// empty value) is every tool, any other list is mapped, and a list that maps
+/// to nothing is `Read` alone ([`parse_plugin_agent`]).
+fn plugin_agent_tools(value: &str) -> AgentTools {
+    if AgentTools::parse(value) == AgentTools::All {
+        return AgentTools::All;
+    }
+    let mapped = crate::plugins::map_agent_tools(value);
+    if mapped.trim().is_empty() {
+        return AgentTools::Only(vec!["Read".to_string()]);
+    }
+    AgentTools::parse(&mapped)
+}
+
+/// The definition a validated `name` and the file's `fields`/`body` make —
+/// the half of the parse [`parse_agent`] and [`parse_plugin_agent`] share.
+fn definition(
+    name: String,
+    fields: &[(String, String)],
+    body: &str,
+) -> Result<AgentDefinition, AgentParseError> {
+    let description = frontmatter::field(fields, "description")
         .map(str::to_string)
         .ok_or(AgentParseError::MissingDescription)?;
 
@@ -313,8 +378,8 @@ pub fn parse_agent(contents: &str, default_name: &str) -> Result<AgentDefinition
             &description,
             crate::skills::MAX_LISTING_DESC_CHARS,
         ),
-        model: frontmatter::field(&fields, "model").map_or(AgentModel::Inherit, AgentModel::parse),
-        tools: frontmatter::field(&fields, "tools").map_or(AgentTools::All, AgentTools::parse),
+        model: frontmatter::field(fields, "model").map_or(AgentModel::Inherit, AgentModel::parse),
+        tools: frontmatter::field(fields, "tools").map_or(AgentTools::All, AgentTools::parse),
         system_prompt: (!body.is_empty()).then_some(body),
         // The walk stamps the file it read this from; a built-in keeps
         // `None`, which is what `is_builtin` reads.
@@ -998,6 +1063,104 @@ mod tests {
         assert_eq!(
             unknown_agent_message("x", &[]),
             "Unknown agent type \"x\": no agent types are available."
+        );
+    }
+
+    // ===== plugin agents (docs/subagents.md, docs/plugins.md) =====
+
+    fn plugin_paths() -> crate::plugins::PluginPaths<'static> {
+        crate::plugins::PluginPaths {
+            root: std::path::Path::new("/p"),
+            data: std::path::Path::new("/d"),
+        }
+    }
+
+    #[test]
+    fn a_plugin_agent_is_namespaced_inherits_the_model_and_expands_its_body() {
+        let agent = parse_plugin_agent(
+            "---\nname: reviewer\ndescription: Reviews code\nmodel: opus\n---\nRun ${CLAUDE_PLUGIN_ROOT}/x and keep ${CLAUDE_PLUGIN_DATA}; $PLUGIN_ROOT stays.",
+            "code-review",
+            "file-stem",
+            &plugin_paths(),
+        )
+        .expect("parses");
+        assert_eq!(agent.name, "code-review:reviewer");
+        assert_eq!(
+            agent.model,
+            AgentModel::Inherit,
+            "a plugin never picks the model"
+        );
+        assert_eq!(agent.tools, AgentTools::All);
+        assert_eq!(
+            agent.system_prompt.as_deref(),
+            Some("Run /p/x and keep /d; $PLUGIN_ROOT stays.")
+        );
+        assert_eq!(agent.path, None, "the walk stamps the path");
+    }
+
+    #[test]
+    fn a_plugin_agent_named_after_its_plugin_is_not_doubled() {
+        let agent = parse_plugin_agent(
+            "---\nname: p:reviewer\ndescription: d\n---\n",
+            "p",
+            "stem",
+            &plugin_paths(),
+        )
+        .expect("parses");
+        assert_eq!(agent.name, "p:reviewer");
+        let agent = parse_plugin_agent("---\ndescription: d\n---\n", "p", "stem", &plugin_paths())
+            .expect("parses");
+        assert_eq!(agent.name, "p:stem");
+    }
+
+    #[test]
+    fn a_plugin_agents_tools_are_mapped_to_the_ones_alter_zero_has() {
+        let agent = parse_plugin_agent(
+            "---\ndescription: d\ntools: Glob, Grep, Read, WebFetch\n---\n",
+            "p",
+            "a",
+            &plugin_paths(),
+        )
+        .expect("parses");
+        assert_eq!(
+            agent.tools,
+            AgentTools::Only(vec!["Bash".into(), "Read".into(), "Skill".into()])
+        );
+    }
+
+    #[test]
+    fn a_plugin_agent_whose_tools_all_vanish_can_only_read() {
+        let agent = parse_plugin_agent(
+            "---\ndescription: d\ntools: TodoWrite, ExitPlanMode\n---\n",
+            "p",
+            "a",
+            &plugin_paths(),
+        )
+        .expect("parses");
+        assert_eq!(agent.tools, AgentTools::Only(vec!["Read".into()]));
+    }
+
+    #[test]
+    fn a_plugin_agent_listing_every_tool_keeps_every_tool() {
+        let agent = parse_plugin_agent(
+            "---\ndescription: d\ntools: \"*\"\n---\n",
+            "p",
+            "a",
+            &plugin_paths(),
+        )
+        .expect("parses");
+        assert_eq!(agent.tools, AgentTools::All);
+    }
+
+    #[test]
+    fn a_plugin_agent_without_frontmatter_or_description_is_refused() {
+        assert_eq!(
+            parse_plugin_agent("just prose", "p", "a", &plugin_paths()),
+            Err(AgentParseError::MissingFrontmatter)
+        );
+        assert_eq!(
+            parse_plugin_agent("---\nname: a\n---\n", "p", "a", &plugin_paths()),
+            Err(AgentParseError::MissingDescription)
         );
     }
 }

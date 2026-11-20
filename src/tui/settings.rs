@@ -115,9 +115,17 @@ impl Session<'_> {
     /// skill appeared still carried no `<system-reminder>` — the listing
     /// arrived a turn late, which reads exactly like the rescan not working.
     pub(crate) fn rescan_skills(&mut self) {
-        let (skills, errors) =
-            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
+        let (skills, errors) = alter_zero::llm::skill::load_all_skills(
+            &self.cwd,
+            config::config_home().as_deref(),
+            &self.plugins.plugins,
+        );
         self.skill_registry.replace(skills);
+        // The plugins' commands are re-walked with their skills, so the
+        // palette and the skill listing always describe the same install.
+        self.plugin_commands =
+            alter_zero::llm::plugin::discover_plugin_commands(&self.plugins.plugins);
+        self.publish_plugin_commands();
         self.sync_setting_availability();
         self.sync_listings();
         self.models.refresh_skills();
@@ -142,13 +150,89 @@ impl Session<'_> {
     /// depend on which types exist (the tool set does not name them — the
     /// reminder does).
     pub(crate) fn rescan_agents(&mut self) {
-        let (agents, errors) =
-            alter_zero::llm::subagent::load_agents(&self.cwd, config::config_home().as_deref());
+        let (agents, errors) = alter_zero::llm::subagent::load_agents(
+            &self.cwd,
+            config::config_home().as_deref(),
+            &self.plugins.plugins,
+        );
         self.subagents.replace(agents);
         self.sync_listings();
         let fresh = alter_zero::subagents::unreported_errors(&self.reported_agent_errors, &errors);
         self.reported_agent_errors = errors.iter().map(|error| error.path.clone()).collect();
         self.report_agent_errors(&fresh);
+    }
+
+    /// Re-read `plugins.json` if it moved (`docs/plugins.md`), showing a
+    /// newly malformed file once; `true` when the enabled plugins changed. Run
+    /// at every turn start right before the skill and agent rescans, which
+    /// read the snapshot this leaves — so a plugin installed from another
+    /// terminal is offered from the next message. One `stat` while nothing
+    /// moved, and nothing at all with `ALTER_ZERO_PLUGINS` off.
+    pub(crate) fn rescan_plugins(&mut self) -> bool {
+        if !config::plugins_enabled() {
+            return false;
+        }
+        let (changed, error) = self.plugins.refresh(config::config_home().as_deref());
+        self.report_plugins_error(error);
+        changed
+    }
+
+    /// [`rescan_plugins`](Self::rescan_plugins), and when the enabled set
+    /// changed, everything that reads it re-walked now rather than at the
+    /// next turn: the skills (with the plugins' commands) and the agent
+    /// types. The `/plugins` page calls it after every operation, so an
+    /// install shows in `/skills`, the `$` picker and the `/` palette at once.
+    pub(crate) fn reload_plugins(&mut self) {
+        if self.rescan_plugins() {
+            self.rescan_skills();
+            self.rescan_agents();
+        }
+    }
+
+    /// Hand `App` the palette rows for the plugins' commands.
+    pub(crate) fn publish_plugin_commands(&mut self) {
+        self.app
+            .set_plugin_commands(alter_zero::llm::plugin::command_rows(&self.plugin_commands));
+    }
+
+    /// A `plugins.json` that will not parse, said once per distinct error —
+    /// the skills toast's rule: a file that silently turns every plugin off
+    /// reads as the plugins being broken (`docs/plugins.md`).
+    pub(crate) fn report_plugins_error(&mut self, error: Option<String>) {
+        if let Some(error) =
+            alter_zero::llm::plugin::fresh_error(&mut self.reported_plugins_error, error)
+        {
+            self.toast(error, ToastKind::Error);
+        }
+    }
+
+    /// Run a plugin's slash command (`docs/plugins.md`): its template read
+    /// now with `args` put in place, submitted as a user turn exactly as
+    /// `Action::Submit` is — the rendered prompt and what was typed noted
+    /// first, so an Esc-undo hands back the invocation.
+    pub(crate) fn run_plugin_command(&mut self, name: &str, args: &str) {
+        let Some(command) = self
+            .plugin_commands
+            .iter()
+            .find(|command| command.name == name)
+        else {
+            self.toast(format!("/{name} is no longer installed"), ToastKind::Error);
+            return;
+        };
+        match alter_zero::llm::plugin::render_plugin_command(command, args) {
+            Ok(prompt) => {
+                self.app.remember_plugin_prompt(
+                    &prompt,
+                    &alter_zero::llm::plugin::invocation(name, args),
+                );
+                let images = self.app.take_submission_images();
+                self.start_turn(super::turn::TurnInput {
+                    texts: vec![prompt],
+                    images,
+                });
+            }
+            Err(error) => self.toast(error, ToastKind::Error),
+        }
     }
 
     /// Apply the `/skills` menu's toggle: make it true of the running session

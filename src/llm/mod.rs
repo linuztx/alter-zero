@@ -41,6 +41,7 @@ pub mod model_cache;
 pub mod models;
 pub mod ollama;
 pub mod openai;
+pub mod plugin;
 pub mod reasoning;
 pub mod responses;
 pub mod retry;

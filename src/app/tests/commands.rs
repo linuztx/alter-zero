@@ -487,3 +487,238 @@ fn a_tier_command_works_mid_turn_for_the_next_turn() {
     );
     assert!(app.turn_active(), "the turn keeps running underneath");
 }
+
+// ===== plugin commands (`/plugin:command`, docs/plugins.md) =====
+
+fn plugin_row(name: &str, description: &str, hint: Option<&str>) -> PluginCommandRow {
+    PluginCommandRow {
+        name: name.to_string(),
+        description: description.to_string(),
+        argument_hint: hint.map(str::to_string),
+        takes_arguments: hint.is_some(),
+    }
+}
+
+/// An app with two plugin commands: one that takes arguments, one that
+/// doesn't (the boundary's `set_plugin_commands` injection).
+fn plugin_app() -> App {
+    let mut app = App::new();
+    app.set_plugin_commands(vec![
+        plugin_row("code-review:commit", "Commit the work", None),
+        plugin_row("code-review:review", "Review a PR", Some("[pr]")),
+    ]);
+    app
+}
+
+#[test]
+fn no_plugin_commands_leave_the_palette_exactly_the_built_ins() {
+    let app = App::new();
+    let names: Vec<String> = app.commands().iter().map(|c| c.name.to_string()).collect();
+    let builtins: Vec<String> = COMMANDS.iter().map(|c| c.name.to_string()).collect();
+    assert_eq!(names, builtins);
+}
+
+#[test]
+fn plugin_commands_list_after_the_built_ins_and_before_quit() {
+    let app = plugin_app();
+    let commands = app.commands();
+    let names: Vec<&str> = commands.iter().map(|c| c.name.as_ref()).collect();
+    let n = names.len();
+    assert_eq!(
+        names[n - 3..],
+        ["code-review:commit", "code-review:review", "quit"]
+    );
+    assert_eq!(n, COMMANDS.len() + 2);
+    assert_eq!(commands[n - 3].description, "Commit the work");
+    assert_eq!(commands[n - 2].description, "Review a PR [pr]");
+    assert_eq!(
+        commands[n - 2].effect,
+        CommandEffect::PluginPrompt {
+            takes_arguments: true
+        }
+    );
+}
+
+#[test]
+fn a_plugin_command_never_shadows_a_built_in() {
+    let mut app = App::new();
+    app.set_plugin_commands(vec![plugin_row("model", "Not the picker", None)]);
+    let commands = app.commands();
+    let models: Vec<&SlashCommand> = commands.iter().filter(|c| c.name == "model").collect();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].effect, CommandEffect::Model);
+}
+
+#[test]
+fn a_plugin_command_is_found_by_any_segment_of_its_name() {
+    let app = plugin_app();
+    let commands = app.commands();
+    let names = |query: &str| -> Vec<String> {
+        matching_commands(&commands, query)
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect()
+    };
+    assert_eq!(names("rev"), ["code-review:review"]);
+    assert_eq!(names("code"), ["code-review:commit", "code-review:review"]);
+    assert_eq!(
+        names("co"),
+        [
+            "copy",
+            "compact",
+            "context",
+            "code-review:commit",
+            "code-review:review"
+        ]
+    );
+    // A built-in still matches by prefix alone.
+    assert_eq!(names("lear"), Vec::<String>::new());
+}
+
+#[test]
+fn running_a_plugin_command_that_takes_arguments_leaves_it_in_the_composer() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/rev");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert_eq!(app.input.text(), "/code-review:review ");
+    assert_eq!(app.input.cursor(), app.input.text().len());
+    assert!(app.command_menu.is_none());
+}
+
+#[test]
+fn running_a_plugin_command_without_arguments_runs_it() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/commit");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunPluginCommand {
+            name: "code-review:commit".to_string(),
+            args: String::new(),
+        }
+    );
+    assert_eq!(app.input.text(), "");
+}
+
+#[test]
+fn enter_on_a_typed_invocation_runs_the_command_with_its_arguments() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/code-review:review 123 fast");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunPluginCommand {
+            name: "code-review:review".to_string(),
+            args: "123 fast".to_string(),
+        }
+    );
+    assert_eq!(app.input.text(), "");
+    assert_eq!(
+        app.input_history.up().as_deref(),
+        Some("/code-review:review 123 fast"),
+        "recalled as typed"
+    );
+}
+
+#[test]
+fn a_bare_last_segment_reaches_the_command() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/review 9");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunPluginCommand {
+            name: "code-review:review".to_string(),
+            args: "9".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_built_in_word_is_never_routed_to_a_plugin_command() {
+    let mut app = App::new();
+    app.set_plugin_commands(vec![plugin_row("p:model", "d", Some("[x]"))]);
+    type_str(&mut app, "/model gpt");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("/model gpt".to_string())
+    );
+}
+
+#[test]
+fn an_unknown_slash_word_is_still_an_ordinary_message() {
+    let mut app = plugin_app();
+    type_str(&mut app, "/usr/bin/env is where it lives");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Submit("/usr/bin/env is where it lives".to_string())
+    );
+}
+
+#[test]
+fn a_plugin_command_mid_turn_is_refused_and_the_draft_kept() {
+    let mut app = plugin_app();
+    app.record_user_message("hello");
+    app.begin_stream();
+    type_str(&mut app, "/code-review:review 123");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast("/code-review:review is disabled while a task is in progress".to_string())
+    );
+    assert_eq!(app.input.text(), "/code-review:review 123");
+    assert!(app.steered.is_empty(), "not handed to the running turn");
+}
+
+#[test]
+fn a_plugin_command_from_the_palette_mid_turn_is_refused() {
+    let mut app = plugin_app();
+    app.record_user_message("hello");
+    app.begin_stream();
+    type_str(&mut app, "/commit");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast("/code-review:commit is disabled while a task is in progress".to_string())
+    );
+}
+
+#[test]
+fn a_plugin_command_typed_in_shell_mode_is_a_shell_command() {
+    let mut app = plugin_app();
+    type_str(&mut app, "!/review 1");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::RunShell("/review 1".to_string())
+    );
+}
+
+#[test]
+fn esc_undo_of_a_plugin_command_turn_restores_the_invocation() {
+    let mut app = plugin_app();
+    let rendered = "Review PR 123 with the rules.".to_string();
+    app.remember_plugin_prompt(&rendered, "/code-review:review 123");
+    app.record_user_message(&rendered); // mirror start_turn's recording
+    app.begin_stream();
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
+    assert_eq!(app.input.text(), "/code-review:review 123");
+    assert!(app.command_menu.is_none());
+    assert!(app.history.is_empty());
+}
+
+#[test]
+fn esc_undo_of_a_no_argument_plugin_command_keeps_the_palette_closed() {
+    let mut app = plugin_app();
+    app.remember_plugin_prompt("Commit now.", "/code-review:commit");
+    app.record_user_message("Commit now.");
+    app.begin_stream();
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
+    assert_eq!(app.input.text(), "/code-review:commit");
+    assert!(app.command_menu.is_none());
+}
+
+#[test]
+fn only_the_last_plugin_prompt_is_mapped_back() {
+    let mut app = plugin_app();
+    app.remember_plugin_prompt("first", "/code-review:commit");
+    app.remember_plugin_prompt("second", "/code-review:review 2");
+    app.record_user_message("first");
+    app.begin_stream();
+    assert_eq!(app.interrupt_turn(0), Some(InterruptedTurn::Undone));
+    assert_eq!(app.input.text(), "first");
+}

@@ -281,8 +281,20 @@ impl<'t> Session<'t> {
             Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
             None => Vec::new(),
         };
-        let (found_skills, walk_errors) =
-            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
+        // The installed plugins (docs/plugins.md), read before the walk so
+        // their skills are in it: `plugins.json` alone, one failed `stat`
+        // when there is none, and nothing at all with ALTER_ZERO_PLUGINS off.
+        let (plugins, plugins_error) = if config::plugins_enabled() {
+            alter_zero::llm::plugin::PluginSnapshot::load(config::config_home().as_deref())
+        } else {
+            (alter_zero::llm::plugin::PluginSnapshot::empty(), None)
+        };
+        let plugin_commands = alter_zero::llm::plugin::discover_plugin_commands(&plugins.plugins);
+        let (found_skills, walk_errors) = alter_zero::llm::skill::load_all_skills(
+            &cwd,
+            config::config_home().as_deref(),
+            &plugins.plugins,
+        );
         skill_errors.extend(walk_errors);
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
         // …and this project's saved on/off choices from `skills.json`, applied
@@ -305,8 +317,11 @@ impl<'t> Session<'t> {
                 Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
                 None => Vec::new(),
             };
-        let (found_agents, walk_errors) =
-            alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref());
+        let (found_agents, walk_errors) = alter_zero::llm::subagent::load_agents(
+            &cwd,
+            config::config_home().as_deref(),
+            &plugins.plugins,
+        );
         agent_errors.extend(walk_errors);
         let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
 
@@ -654,6 +669,9 @@ impl<'t> Session<'t> {
                 .iter()
                 .map(|error| error.path.clone())
                 .collect(),
+            plugins,
+            plugin_commands,
+            reported_plugins_error: None,
             recorder,
             hist_store,
             checkpoints,
@@ -668,10 +686,12 @@ impl<'t> Session<'t> {
             cwd_display,
         };
         session.seed_app(settings);
+        session.publish_plugin_commands();
         session.seed_checkpoints(refusal, checkpoints_wanted)?;
         // After the checkpoint toast, so a session with both problems ends up
         // showing the hooks one — the actionable typo beats the size refusal.
         session.report_hooks_error(hooks_error);
+        session.report_plugins_error(plugins_error);
         session.report_skill_errors(&skill_errors);
         session.report_agent_errors(&agent_errors);
         session.report_mcp_errors();

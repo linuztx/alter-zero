@@ -35,6 +35,7 @@ use alter_zero::app::{
     BgCompletion,
     CommandEffect,
     CommandMenu,
+    PluginCommandRow,
     Compaction,
     ContextUsagePage,
     EntryJump,
@@ -268,8 +269,10 @@ use alter_zero::skills::{
     listing_budget,
     listing_message,
     mention_token,
+    parse_plugin_skill,
     parse_skill,
     rank_skills,
+    render_plugin_skill_body,
     render_skill_body,
     shell_flavored_query,
     skill_listing,
@@ -299,6 +302,7 @@ use alter_zero::subagents::{
     agent_section,
     listing_sections,
     parse_agent,
+    parse_plugin_agent,
     system_prompt_for,
     unknown_agent_message,
     unreported_errors as unreported_agent_errors,
@@ -714,6 +718,22 @@ use alter_zero::cli::{
     help,
     parse,
     usage_error,
+};
+
+// --- `llm::plugin` — installed plugins at the session's boundary (docs/plugins.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::llm::plugin::{
+    COMMAND_MAX_BYTES,
+    PluginCommand,
+    PluginSnapshot,
+    command_rows,
+    discover_plugin_agents,
+    discover_plugin_commands,
+    discover_plugin_skills,
+    fresh_error,
+    invocation,
+    render_plugin_command,
 };
 
 /// Bodyless on purpose: the `use` declarations above are the assertion, and this

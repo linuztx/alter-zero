@@ -70,6 +70,21 @@ what it may touch.
 `ALTER_ZERO_AGENTS_DIR` **replaces** the whole list (the `*_DIR` convention),
 which is also what makes a test run hermetic.
 
+The **installed plugins' agent types** follow the roots and come before the
+built-in fallback (`docs/plugins.md`; `llm::plugin::discover_plugin_agents`,
+read even under `ALTER_ZERO_AGENTS_DIR`, since plugins have their own switch,
+`ALTER_ZERO_PLUGINS`). A recorded `agents` path is one `.md` file or a
+directory walked for them — a Codex `openai.yaml` beside them is not read,
+and a file with no frontmatter or no description is skipped without a toast,
+since real plugins ship such files. Each is named `plugin:agent` and parsed
+by `subagents::parse_plugin_agent`, which differs from `parse_agent` in three
+ways the `.claude/agents` reasoning above asks for: the model is always
+`inherit` (a plugin does not pick your model or your bill), a `tools:` list
+is rewritten to the tools that exist here (`plugins::map_agent_tools` —
+`Glob, Grep` become `Bash`), and a list none of whose tools exist
+(`TodoWrite, ExitPlanMode`) leaves the type `Read` alone, never every tool.
+The first name still wins across all of it.
+
 ### Seeding, and the built-in fallback
 
 The two defaults ship embedded in the binary (`prompts/agents/*.md` in the

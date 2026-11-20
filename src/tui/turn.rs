@@ -125,7 +125,11 @@ impl Session<'_> {
         // …and re-walk the skill roots for the same reason (docs/skills.md):
         // the turn that just ended may have written a `SKILL.md`, and a skill
         // the user drops in mid-session must not need a restart to be seen.
-        // Re-renders the listing this turn's context is about to carry.
+        // Re-renders the listing this turn's context is about to carry. The
+        // installed plugins first: their skills and agent types are in both
+        // walks, so a plugin enabled since the last turn is offered in this
+        // one (docs/plugins.md).
+        self.rescan_plugins();
         self.rescan_skills();
         self.rescan_agents();
         // The daily ping's day rollover (`docs/telemetry.md`): a session left
@@ -243,7 +247,9 @@ impl Session<'_> {
         self.clocks.start_turn();
         // The agent that just finished in the background may have written a
         // skill; this turn is a real model turn, so it re-walks like any other
-        // (docs/skills.md).
+        // (docs/skills.md). The installed plugins first, as at any turn start
+        // (docs/plugins.md).
+        self.rescan_plugins();
         self.rescan_skills();
         self.rescan_agents();
         let context = context::context_messages_full(
