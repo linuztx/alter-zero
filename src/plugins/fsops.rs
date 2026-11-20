@@ -296,7 +296,9 @@ pub fn read_capped(path: &Path, max: u64) -> Result<String, String> {
         let flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOCTTY;
         options.custom_flags(flags.bits().cast_signed());
     }
-    let file = options.open(path).map_err(|error| read_error(path, &error))?;
+    let file = options
+        .open(path)
+        .map_err(|error| read_error(path, &error))?;
     // The path may have been swapped between the check and the open.
     if !file.metadata().is_ok_and(|meta| meta.is_file()) {
         return Err(not_regular());
@@ -585,7 +587,12 @@ mod tests {
         assert!(made.success());
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&fifo, &link).expect("link");
-        for path in [&fifo, &link, &dir.path().to_path_buf(), &PathBuf::from("/dev/null")] {
+        for path in [
+            &fifo,
+            &link,
+            &dir.path().to_path_buf(),
+            &PathBuf::from("/dev/null"),
+        ] {
             let error = read_capped(path, 64).expect_err("refused");
             assert!(error.contains("not a regular file"), "{error}");
         }

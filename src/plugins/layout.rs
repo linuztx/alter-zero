@@ -982,10 +982,11 @@ mod tests {
         assert!(!hooks.contains("cd '"), "{hooks}");
         // A server is started in the plugin's folder only when it asks.
         let mcp = crate::mcp::parse_mcp_file(&layout.mcp.json.expect("mcp"));
-        let argv = |name: &str| match &mcp.servers.iter().find(|(n, _)| n == name).expect(name).1
-        {
+        let argv = |name: &str| match &mcp.servers.iter().find(|(n, _)| n == name).expect(name).1 {
             crate::mcp::McpServerConfig::Stdio { command, args, .. } => {
-                std::iter::once(command.clone()).chain(args.clone()).collect::<Vec<_>>()
+                std::iter::once(command.clone())
+                    .chain(args.clone())
+                    .collect::<Vec<_>>()
             }
             other => panic!("{other:?}"),
         };
@@ -1000,7 +1001,11 @@ mod tests {
     #[test]
     fn a_codex_plugins_skills_are_found_at_any_depth_to_six() {
         let (temp, dir) = plugin_dir();
-        write(&dir, ".codex-plugin/plugin.json", r#"{"name": "demo", "skills": "./skills/"}"#);
+        write(
+            &dir,
+            ".codex-plugin/plugin.json",
+            r#"{"name": "demo", "skills": "./skills/"}"#,
+        );
         skill(&dir, "skills/report", "report");
         skill(&dir, "skills/report/report-to-pdf", "report-to-pdf");
         skill(&dir, "skills/group/meetings", "meetings");
@@ -1157,7 +1162,11 @@ mod tests {
 
         // An empty `hooks` object still replaces the default file.
         let (_t, dir) = plugin_dir();
-        write(&dir, ".codex-plugin/plugin.json", r#"{"name": "demo", "hooks": {}}"#);
+        write(
+            &dir,
+            ".codex-plugin/plugin.json",
+            r#"{"name": "demo", "hooks": {}}"#,
+        );
         write(
             &dir,
             "hooks/hooks.json",
@@ -1334,7 +1343,10 @@ mod tests {
         let layout = read(&dir, None);
         let mut summary = layout.hooks.summary.clone();
         summary.sort();
-        assert_eq!(summary, ["PostToolUse", "PreToolUse · Bash", "SessionStart"]);
+        assert_eq!(
+            summary,
+            ["PostToolUse", "PreToolUse · Bash", "SessionStart"]
+        );
         assert_eq!(layout.components.hooks.len(), 3);
     }
 

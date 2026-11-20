@@ -4173,7 +4173,11 @@ mod tests {
         .with_plugins_root(Some(root.clone()));
         let cancel = CancelToken::new();
         let _ = hooks.pre_tool_use(&call("bash", "{}"), &cancel);
-        let _ = hooks.post_tool_use(&call("bash", "{}"), &ToolOutcome::ok("ok".to_string()), &cancel);
+        let _ = hooks.post_tool_use(
+            &call("bash", "{}"),
+            &ToolOutcome::ok("ok".to_string()),
+            &cancel,
+        );
         let _ = hooks.user_prompt_submit("hi", &cancel);
         let _ = hooks.stop(false, "done", &cancel);
         let _ = hooks.session_start(&cancel);
@@ -4181,11 +4185,7 @@ mod tests {
         let id = crate::plugins::PluginId::parse("review@m").expect("id");
         let install = crate::plugins::install_dir(&root, &id);
         let data = crate::plugins::data_dir(&root, &id);
-        let expected = format!(
-            "{0}|{0}|{1}|{1}",
-            install.display(),
-            data.display()
-        );
+        let expected = format!("{0}|{0}|{1}|{1}", install.display(), data.display());
         for event in events {
             let written = std::fs::read_to_string(probes.join(event))
                 .unwrap_or_else(|_| panic!("the {event} hook ran"));

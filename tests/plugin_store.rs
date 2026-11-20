@@ -457,10 +457,8 @@ fn assert_review_installed(world: &World, text: &str) {
     let hooks = fs::read_to_string(root.join(".alter-zero-plugin/hooks.json")).expect("hooks");
     let parsed = HooksFile::parse(&hooks).expect("hooks parse");
     assert!(!parsed.hooks.is_empty(), "{hooks}");
-    assert!(
-        hooks.contains(&root.join("check.sh").display().to_string()),
-        "{hooks}"
-    );
+    // The shell expands the variable from the hook's environment.
+    assert!(hooks.contains("${CLAUDE_PLUGIN_ROOT}/check.sh"), "{hooks}");
     let mcp = fs::read_to_string(root.join(".alter-zero-plugin/mcp.json")).expect("mcp");
     let parsed = parse_mcp_file(&mcp);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -592,7 +590,7 @@ fn plugins_install_from_a_pinned_repository_and_from_one_folder_of_one() {
 }
 
 #[test]
-fn a_codex_plugin_installs_with_its_hooks_run_from_its_root() {
+fn a_codex_plugin_installs_with_its_hooks_run_where_the_session_runs() {
     let world = World::new();
     let mut market = Marketplace::new(&world.src.join("codex"), "codex-team", Layout::Codex);
     market.in_repo(&Plugin::new("helper").skill("a").hook());
@@ -607,10 +605,8 @@ fn a_codex_plugin_installs_with_its_hooks_run_from_its_root() {
     let root = world.install_dir("helper@codex-team");
     let hooks = fs::read_to_string(root.join(".alter-zero-plugin/hooks.json")).expect("hooks");
     HooksFile::parse(&hooks).expect("hooks parse");
-    assert!(
-        hooks.contains(&format!("cd '{}' && ./check.sh", root.display())),
-        "{hooks}"
-    );
+    assert!(hooks.contains("${PLUGIN_ROOT}/check.sh"), "{hooks}");
+    assert!(!hooks.contains("cd '"), "{hooks}");
     assert_eq!(
         world.state_json()["plugins"]["helper@codex-team"]["format"],
         "codex"

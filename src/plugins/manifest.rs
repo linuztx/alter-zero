@@ -570,9 +570,7 @@ fn command_paths(m: &mut PluginManifest, key: &str, value: &Value) -> Vec<String
                 // The key as the palette would spell it, or `None` when it
                 // cannot be typed.
                 let typed = (!name.contains(['/', '\\', ':']))
-                    .then(|| {
-                        super::command::command_name("p", Path::new(&format!("{name}.md")))
-                    })
+                    .then(|| super::command::command_name("p", Path::new(&format!("{name}.md"))))
                     .flatten()
                     .and_then(|full| full.strip_prefix("p:").map(str::to_string));
                 match (typed, listed.as_slice()) {

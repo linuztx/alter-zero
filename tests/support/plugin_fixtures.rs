@@ -82,8 +82,8 @@ pub enum Layout {
     /// `hooks/hooks.json`, `${CLAUDE_PLUGIN_ROOT}` paths.
     Claude,
     /// `.agents/plugins/marketplace.json` (no descriptions in it),
-    /// `.codex-plugin/plugin.json`, a root `hooks.json`, `./`-relative
-    /// commands run from the plugin root.
+    /// `.codex-plugin/plugin.json`, `hooks/hooks.json`, `${PLUGIN_ROOT}`
+    /// paths, run in the session's working directory.
     Codex,
 }
 
@@ -188,7 +188,7 @@ impl Plugin {
         if self.hook {
             let (file, command) = match layout {
                 Layout::Claude => ("hooks/hooks.json", "${CLAUDE_PLUGIN_ROOT}/check.sh"),
-                Layout::Codex => ("hooks.json", "./check.sh"),
+                Layout::Codex => ("hooks/hooks.json", "${PLUGIN_ROOT}/check.sh"),
             };
             let hooks = json!({"hooks": {"PreToolUse": [
                 {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}

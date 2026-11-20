@@ -441,7 +441,10 @@ fn server(entry: &Value, ctx: &NormalizeContext<'_>) -> Result<(Value, &'static 
 /// an id, a port out of range — and an id or secret still reading
 /// `<PLACEHOLDER>` are left out, so one bad field never costs the server.
 /// `None` when nothing is left.
-fn oauth(server: &Map<String, Value>, expand: &dyn Fn(&str) -> String) -> Option<Map<String, Value>> {
+fn oauth(
+    server: &Map<String, Value>,
+    expand: &dyn Fn(&str) -> String,
+) -> Option<Map<String, Value>> {
     let block = server.get("oauth").and_then(Value::as_object);
     let field = |snake: &str, camel: &str| {
         block.and_then(|block| block.get(snake).or_else(|| block.get(camel)))
@@ -497,7 +500,10 @@ fn scope_list(value: &Value) -> Option<String> {
 /// `<GMAIL_PUBLIC_CLIENT_ID>`: a value a marketplace left for its own build
 /// to fill in, which no provider would accept.
 fn is_placeholder(text: &str) -> bool {
-    text.len() > 2 && text.starts_with('<') && text.ends_with('>') && !text.contains(char::is_whitespace)
+    text.len() > 2
+        && text.starts_with('<')
+        && text.ends_with('>')
+        && !text.contains(char::is_whitespace)
 }
 
 /// A server's `cwd` as an absolute path: `.` is the root, a relative path is
@@ -929,7 +935,10 @@ mod tests {
             String::from_utf8_lossy(&out.stdout),
             format!("[{}]", root.display())
         );
-        assert!(!dir.path().join("pwned").exists(), "nothing in the path ran");
+        assert!(
+            !dir.path().join("pwned").exists(),
+            "nothing in the path ran"
+        );
     }
 
     // --- MCP --------------------------------------------------------------
