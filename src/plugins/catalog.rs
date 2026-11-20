@@ -119,15 +119,21 @@ impl PluginCatalog {
             .count()
     }
 
-    /// Indices into `plugins` for a tab and a query, **installed first, then
-    /// by name (case-insensitive)**. The query matches case-insensitively as
-    /// a substring of the name, display name, description, category, author
-    /// and marketplace name; every whitespace-separated word must match
-    /// somewhere.
+    /// Indices into `plugins` for a tab and a query. The query matches
+    /// case-insensitively as a substring of the name, display name,
+    /// category, author, description and marketplace name; every
+    /// whitespace-separated word must match somewhere.
+    ///
+    /// An empty query lists **installed first, then by name**
+    /// (case-insensitive). A query ranks by **where** it matched — each word
+    /// scored by its best place (`MatchRank`) and the scores summed, the
+    /// name ahead of everything else — with installed first and then the
+    /// name breaking ties. Nothing is allocated per plugin: the words are
+    /// lowercased once and every field is compared in place.
     #[must_use]
     pub fn filter(&self, tab: CatalogTab, query: &str) -> Vec<usize> {
         let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-        let mut shown: Vec<(usize, String)> = self
+        let mut shown: Vec<(usize, usize)> = self
             .plugins
             .iter()
             .enumerate()
@@ -136,42 +142,30 @@ impl PluginCatalog {
                 CatalogTab::Installed => plugin.status.is_installed(),
                 CatalogTab::Marketplace(index) => plugin.marketplace == index,
             })
-            .filter(|(_, plugin)| words.is_empty() || self.matches(plugin, &words))
-            .map(|(index, plugin)| (index, plugin.name.to_lowercase()))
+            .filter_map(|(index, plugin)| Some((index, self.rank(plugin, &words)?)))
             .collect();
-        shown.sort_by(|(a, a_name), (b, b_name)| {
-            let not_installed = |i: usize| !self.plugins[i].status.is_installed();
-            (not_installed(*a), a_name, &self.plugins[*a].name, *a).cmp(&(
-                not_installed(*b),
-                b_name,
-                &self.plugins[*b].name,
-                *b,
-            ))
+        shown.sort_by(|(a, a_rank), (b, b_rank)| {
+            let (pa, pb) = (&self.plugins[*a], &self.plugins[*b]);
+            a_rank
+                .cmp(b_rank)
+                .then(pb.status.is_installed().cmp(&pa.status.is_installed()))
+                .then_with(|| cmp_ignoring_case(&pa.name, &pb.name))
+                .then_with(|| pa.name.cmp(&pb.name))
+                .then(a.cmp(b))
         });
         shown.into_iter().map(|(index, _)| index).collect()
     }
 
-    /// Whether every word is in one of the plugin's searched fields.
-    fn matches(&self, plugin: &CatalogPlugin, words: &[String]) -> bool {
+    /// The summed rank of every word's best match, or `None` when a word
+    /// matches nowhere. No words rank `0`.
+    fn rank(&self, plugin: &CatalogPlugin, words: &[String]) -> Option<usize> {
         let marketplace = self
             .marketplaces
             .get(plugin.marketplace)
-            .map(|m| m.name.as_str());
-        let fields: Vec<String> = [
-            Some(plugin.name.as_str()),
-            plugin.display_name.as_deref(),
-            Some(plugin.description.as_str()),
-            plugin.category.as_deref(),
-            plugin.author.as_deref(),
-            marketplace,
-        ]
-        .into_iter()
-        .flatten()
-        .map(str::to_lowercase)
-        .collect();
-        words
-            .iter()
-            .all(|word| fields.iter().any(|field| field.contains(word.as_str())))
+            .map_or("", |m| m.name.as_str());
+        words.iter().try_fold(0, |sum, word| {
+            Some(sum + MatchRank::best(plugin, marketplace, word)? as usize)
+        })
     }
 
     /// The index of the plugin `id` names.
@@ -185,6 +179,93 @@ impl PluginCatalog {
                     .is_some_and(|m| m.name == id.marketplace)
         })
     }
+}
+
+/// Where one word of a query matched a plugin, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MatchRank {
+    /// The name begins with it.
+    NamePrefix,
+    /// A word of the name (after a `-`, `_`, `.` or space) begins with it.
+    NameWord,
+    /// Anywhere in the name.
+    Name,
+    /// The display name.
+    DisplayName,
+    /// The category or the author.
+    CategoryOrAuthor,
+    /// The description or the marketplace's name.
+    Description,
+}
+
+impl MatchRank {
+    /// The best place `word` (already lowercase) matches `plugin`.
+    fn best(plugin: &CatalogPlugin, marketplace: &str, word: &str) -> Option<Self> {
+        if let Some(at_start) = find_ignoring_case(&plugin.name, word) {
+            return Some(match at_start {
+                Found::Start => Self::NamePrefix,
+                Found::WordStart => Self::NameWord,
+                Found::Inside => Self::Name,
+            });
+        }
+        let found =
+            |field: Option<&str>| field.is_some_and(|f| find_ignoring_case(f, word).is_some());
+        if found(plugin.display_name.as_deref()) {
+            Some(Self::DisplayName)
+        } else if found(plugin.category.as_deref()) || found(plugin.author.as_deref()) {
+            Some(Self::CategoryOrAuthor)
+        } else if found(Some(&plugin.description)) || found(Some(marketplace)) {
+            Some(Self::Description)
+        } else {
+            None
+        }
+    }
+}
+
+/// Where a match of a word in a field begins, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Found {
+    Start,
+    WordStart,
+    Inside,
+}
+
+/// The best place `needle` (lowercase) occurs in `hay`, compared
+/// case-insensitively char by char, without allocating.
+fn find_ignoring_case(hay: &str, needle: &str) -> Option<Found> {
+    if needle.is_empty() {
+        return Some(Found::Start);
+    }
+    let mut best = None;
+    let mut previous: Option<char> = None;
+    for (at, c) in hay.char_indices() {
+        if starts_with_ignoring_case(&hay[at..], needle) {
+            let here = match previous {
+                None => Found::Start,
+                Some(p) if !p.is_alphanumeric() => Found::WordStart,
+                Some(_) => Found::Inside,
+            };
+            match here {
+                Found::Start | Found::WordStart => return Some(here),
+                Found::Inside => best = best.or(Some(here)),
+            }
+        }
+        previous = Some(c);
+    }
+    best
+}
+
+/// Whether `hay` begins with `needle` (lowercase), ignoring case.
+fn starts_with_ignoring_case(hay: &str, needle: &str) -> bool {
+    let mut hay = hay.chars().flat_map(char::to_lowercase);
+    needle.chars().all(|n| hay.next() == Some(n))
+}
+
+/// `a` and `b` compared as their lowercase forms, without allocating.
+fn cmp_ignoring_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
 }
 
 /// Everything the detail page and `plugin info` show about one plugin.
@@ -421,6 +502,76 @@ mod tests {
         assert_eq!(
             names(&c, &c.filter(CatalogTab::Installed, "official")),
             ["zeta"]
+        );
+    }
+
+    /// A catalog for ranking: every way a query can match.
+    fn ranked() -> PluginCatalog {
+        use PluginStatus::{Available, Enabled};
+        let mut plugins = vec![
+            plugin("playground", 0, Available, "Live preview of a page"),
+            plugin("pr-review-toolkit", 0, Available, "Review agents"),
+            plugin("review", 0, Available, "Reviews"),
+            plugin("code-review", 0, Available, "Automated review"),
+            plugin("aardvark", 0, Available, "Nothing to see"),
+            plugin("zebra-tools", 0, Enabled, "Has a review step"),
+            plugin("42crunch-api", 0, Available, "Scan code for API issues"),
+            plugin("altimate-code", 0, Available, "Data work"),
+            plugin("unreviewed", 0, Available, "Something"),
+        ];
+        plugins[4].display_name = Some("Review Board".into());
+        let mut by_category = plugin("ledger", 0, Available, "Books");
+        by_category.category = Some("review".into());
+        plugins.push(by_category);
+        PluginCatalog {
+            marketplaces: vec![marketplace("m")],
+            plugins,
+        }
+    }
+
+    #[test]
+    fn a_query_ranks_the_name_first_then_the_display_name_category_and_description() {
+        let c = ranked();
+        assert_eq!(
+            names(&c, &c.filter(CatalogTab::All, "review")),
+            [
+                // The name begins with it.
+                "review",
+                // A word of the name begins with it.
+                "code-review",
+                "pr-review-toolkit",
+                // Anywhere in the name.
+                "unreviewed",
+                // The display name.
+                "aardvark",
+                // The category.
+                "ledger",
+                // The description: installed first, then by name.
+                "zebra-tools",
+                "playground",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_match_outranks_a_description_match_whatever_the_alphabet_says() {
+        let c = ranked();
+        assert_eq!(
+            names(&c, &c.filter(CatalogTab::All, "code")),
+            ["code-review", "altimate-code", "42crunch-api"]
+        );
+    }
+
+    #[test]
+    fn every_word_of_a_ranked_query_is_still_required() {
+        let c = ranked();
+        assert_eq!(
+            names(&c, &c.filter(CatalogTab::All, "code review")),
+            ["code-review"]
+        );
+        assert_eq!(
+            names(&c, &c.filter(CatalogTab::All, "REVIEW toolkit")),
+            ["pr-review-toolkit"]
         );
     }
 
