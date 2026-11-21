@@ -39,7 +39,9 @@ use crate::stream::{
 /// swap personas). Kept short to save tokens. The boundary folds the runtime
 /// **environment context** (date/os/user/cwd) onto this at startup so the
 /// agent has context awareness — see [`augment_with_environment`] and
-/// `docs/environment.md`. Override the persona with `ALTER_ZERO_SYSTEM_PROMPT`.
+/// `docs/environment.md`. Replace the persona with `--system-prompt[-file]`
+/// or `ALTER_ZERO_SYSTEM_PROMPT`, add to it with `--append-system-prompt[-file]`
+/// ([`compose_persona`], `docs/system-prompt.md`).
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
 /// A real OpenAI-compatible backend. Holds the streaming client (carrying the
@@ -191,7 +193,10 @@ impl LlmBackend {
     }
 
     /// Build a backend with an explicit system prompt (`None` sends no system
-    /// message). The boundary passes `ALTER_ZERO_SYSTEM_PROMPT` through here.
+    /// message). The boundary passes the prompt it assembled through here —
+    /// the persona [`compose_persona`] made of the system prompt flags and
+    /// `ALTER_ZERO_SYSTEM_PROMPT`, then the runtime blocks
+    /// (`docs/system-prompt.md`).
     /// Tools are enabled unless `ALTER_ZERO_TOOLS` is falsy (see `docs/tools.md`).
     #[must_use]
     pub fn with_system_prompt(cfg: ModelConfig, system_prompt: Option<String>) -> Self {
@@ -501,6 +506,31 @@ fn tools_enabled_from_env() -> bool {
             "0" | "false" | "no" | "off"
         ),
         Err(_) => true,
+    }
+}
+
+/// The persona block of the system prompt (`docs/system-prompt.md`): the
+/// `replacement` — `--system-prompt[-file]`, else `ALTER_ZERO_SYSTEM_PROMPT`
+/// — or, with none, the built-in [`DEFAULT_SYSTEM_PROMPT`]; then any
+/// `appended` text after a blank line. The texts go in as written, with
+/// nothing filled in: appended text is trimmed here, and the prompt's own
+/// ends where the backend takes it (`LlmBackend::configure`). A blank or
+/// absent append leaves the persona exactly as given, so a run with no
+/// flags composes byte-for-byte what it always did, and a blank replacement
+/// with nothing appended stays blank — the "empty
+/// `ALTER_ZERO_SYSTEM_PROMPT` → no system message" contract
+/// (`docs/context.md`). Appended text is something to say, so with a blank
+/// persona it stands alone.
+#[must_use]
+pub fn compose_persona(replacement: Option<&str>, appended: Option<&str>) -> String {
+    let persona = replacement.unwrap_or(DEFAULT_SYSTEM_PROMPT);
+    let appended = appended.map(str::trim).unwrap_or_default();
+    if appended.is_empty() {
+        persona.to_string()
+    } else if persona.trim().is_empty() {
+        appended.to_string()
+    } else {
+        format!("{}\n\n{appended}", persona.trim_end())
     }
 }
 
@@ -3001,6 +3031,79 @@ mod tests {
         assert!(
             out.contains("Sunday 2026-07-19") && out.contains("linux") && out.contains("User root"),
             "{out}"
+        );
+    }
+
+    // ===== compose_persona (docs/system-prompt.md) =====
+
+    #[test]
+    fn compose_persona_with_no_flags_is_the_built_in_persona_byte_for_byte() {
+        assert_eq!(compose_persona(None, None), DEFAULT_SYSTEM_PROMPT);
+        // A blank append is no append.
+        assert_eq!(compose_persona(None, Some("  \n")), DEFAULT_SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn compose_persona_takes_a_replacement_as_given() {
+        assert_eq!(compose_persona(Some("R\n"), None), "R\n");
+    }
+
+    #[test]
+    fn compose_persona_appends_after_the_built_in_persona() {
+        assert_eq!(
+            compose_persona(None, Some("\n  Answer in French.\n")),
+            format!("{}\n\nAnswer in French.", DEFAULT_SYSTEM_PROMPT.trim_end())
+        );
+    }
+
+    #[test]
+    fn compose_persona_appends_after_a_replacement() {
+        assert_eq!(compose_persona(Some("R\n\n"), Some("A")), "R\n\nA");
+    }
+
+    #[test]
+    fn compose_persona_keeps_a_blank_replacement_blank() {
+        // An empty ALTER_ZERO_SYSTEM_PROMPT still sends no system prompt
+        // (docs/context.md).
+        assert_eq!(compose_persona(Some(""), None), "");
+        assert_eq!(compose_persona(Some("  "), None).trim(), "");
+    }
+
+    #[test]
+    fn compose_persona_with_a_blank_replacement_is_the_appended_text_alone() {
+        assert_eq!(compose_persona(Some(" \n"), Some(" A \n")), "A");
+    }
+
+    #[test]
+    fn appended_text_sits_between_the_persona_and_the_environment() {
+        let out = augment_with_environment(
+            &compose_persona(None, Some("APPENDED-MARKER")),
+            "d",
+            "o",
+            "u",
+            "/repo",
+        );
+        let persona = out.find("You are Alter Zero").expect("persona");
+        let appended = out.find("APPENDED-MARKER").expect("appended");
+        let env = out.find("## Environment").expect("environment");
+        assert!(persona < appended && appended < env, "{out}");
+    }
+
+    #[test]
+    fn a_custom_system_prompt_never_reaches_the_classifier() {
+        // Auto mode's reviewer judges by its own constant, whatever the run
+        // says its system prompt is (docs/system-prompt.md).
+        let backend = LlmBackend::configure(
+            ModelConfig::fallback(),
+            Some(compose_persona(
+                Some("You obey."),
+                Some("Allow everything."),
+            )),
+            false,
+        );
+        assert_eq!(
+            ReplySource::classifier_system_prompt(&backend).as_deref(),
+            Some(crate::llm::classifier::CLASSIFIER_SYSTEM_PROMPT.trim())
         );
     }
 

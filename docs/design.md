@@ -740,6 +740,10 @@ which Ctrl+V reads the clipboard from.
   Zero` in the app's bold-cyan heading colour over a description, `Usage:`,
   `Commands:`, `Arguments:` and `Options:` — plain through a pipe or under
   `NO_COLOR`, its grammar errors clap-shaped (`docs/cli.md`).
+  `--system-prompt`/`--system-prompt-file` replace the persona for one run
+  and `--append-system-prompt`/`--append-system-prompt-file` add text after
+  it, ahead of the environment block, in the TUI and with `-p` alike
+  (`docs/system-prompt.md`).
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
   **idle, with an empty composer and no previous user message to edit** —
   mid-turn Esc interrupts, once a user message exists idle Esc arms the
