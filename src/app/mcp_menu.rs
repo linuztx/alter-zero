@@ -13,7 +13,10 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::mcp::{McpAuthState, McpClientRequest, McpServerSnapshot, McpServerStatus};
+use crate::mcp::{
+    McpAuthState, McpClientRequest, McpClientSource, McpEntryClient, McpServerSnapshot,
+    McpServerStatus,
+};
 use crate::secrets::SecretValue;
 
 use super::{Action, App, McpOp, wrap_step};
@@ -40,11 +43,12 @@ pub enum McpServerAction {
     Authenticate,
     Reauthenticate,
     ClearAuth,
-    /// Change the OAuth client entered for the server on the auth page.
+    /// Give the server an OAuth client, where none is in effect.
+    SetClient,
+    /// Change the OAuth client in effect — one entered here, or the entry's
+    /// own.
     ChangeClient,
-    /// Give the client the server's entry names its secret.
-    SetClientSecret,
-    /// Forget the entered client, and the login it was granted.
+    /// Forget the client entered here, and the login it was granted.
     ForgetClient,
     Reconnect,
     Disable,
@@ -60,8 +64,8 @@ impl McpServerAction {
             Self::Authenticate => "Authenticate",
             Self::Reauthenticate => "Re-authenticate",
             Self::ClearAuth => "Clear authentication",
+            Self::SetClient => "Set OAuth client",
             Self::ChangeClient => "Change OAuth client",
-            Self::SetClientSecret => "Set client secret",
             Self::ForgetClient => "Forget OAuth client",
             Self::Reconnect => "Reconnect",
             Self::Disable => "Disable",
@@ -75,40 +79,36 @@ impl McpServerAction {
 #[must_use]
 pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     use McpServerAction as A;
+    // The OAuth client a sign-in presents (`docs/mcp.md` *Pre-registered
+    // clients*), one row under the sign-in itself wherever a sign-in can be
+    // made: given where none is in effect, changed where one is — entered
+    // here, or the entry's own, whose shipped client a project's or a
+    // plugin's file would otherwise hold for good — and forgotten only where
+    // it was entered here; an entry's own is its file's to remove.
+    let client_actions = |out: &mut Vec<A>| match server.oauth_client() {
+        None => out.push(A::SetClient),
+        Some((_, source)) => {
+            out.push(A::ChangeClient);
+            if source == McpClientSource::Entered {
+                out.push(A::ForgetClient);
+            }
+        }
+    };
     // What the auth row affords: a stored grant can be re-run and cleared, a
     // server that never issued one can only be logged into, and a written-in
     // header or a public server affords neither — there is nothing stored to
-    // re-run (`docs/mcp.md`).
+    // re-run (`docs/mcp.md`) — and no client to change.
     let auth_actions = |out: &mut Vec<A>| match server.auth {
         Some(McpAuthState::Authenticated | McpAuthState::Expired) => {
             out.push(A::Reauthenticate);
             out.push(A::ClearAuth);
+            client_actions(out);
         }
-        Some(McpAuthState::NotAuthenticated) => out.push(A::Authenticate),
+        Some(McpAuthState::NotAuthenticated) => {
+            out.push(A::Authenticate);
+            client_actions(out);
+        }
         Some(McpAuthState::Header | McpAuthState::NotRequired) | None => {}
-    };
-    // The OAuth client the sign-in presents, where the user has one on hand
-    // (`docs/mcp.md` *Pre-registered clients*): the entry's own outranks one
-    // entered here, and can only be given its secret — unless the entry
-    // spells that too, which is the file's to change; one entered on the
-    // auth page can be changed or forgotten. Nothing for a server that signs
-    // in with a written-in header, or not at all.
-    let client_actions = |out: &mut Vec<A>| {
-        if matches!(server.auth, None | Some(McpAuthState::Header)) {
-            return;
-        }
-        match server.config.oauth() {
-            Some(oauth) if oauth.client_id.is_some() => {
-                if oauth.client_secret.is_none() {
-                    out.push(A::SetClientSecret);
-                }
-            }
-            _ if server.kept_client.is_some() => {
-                out.push(A::ChangeClient);
-                out.push(A::ForgetClient);
-            }
-            _ => {}
-        }
     };
     match &server.status {
         McpServerStatus::Disabled => vec![A::Enable],
@@ -128,7 +128,6 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
         McpServerStatus::Failed(_) => {
             let mut out = Vec::new();
             auth_actions(&mut out);
-            client_actions(&mut out);
             out.push(A::Reconnect);
             out.push(A::Disable);
             out
@@ -139,7 +138,6 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
                 out.push(A::ViewTools);
             }
             auth_actions(&mut out);
-            client_actions(&mut out);
             out.push(A::Reconnect);
             out.push(A::Disable);
             out
@@ -180,7 +178,7 @@ pub struct McpAuthView {
     /// closed away with the page it explains, and the toast row it used to
     /// be was cut at the width.
     pub failed: Option<String>,
-    /// The page was opened to enter a client (`Change OAuth client`), and
+    /// The page was opened to enter a client (`Set`/`Change OAuth client`), and
     /// the server's authorization server is being looked up for the form:
     /// nothing is signed in to, so there is nothing to type into yet. It
     /// stays set on a failed page, so Enter repeats the lookup.
@@ -221,8 +219,14 @@ pub struct McpClientForm {
     /// The callback port as typed — the redirect URI on the page follows it.
     /// Empty for an entry's own client whose sign-in takes any free port.
     pub port: String,
-    /// A secret is already kept for this client: an empty field keeps it.
-    pub has_secret: bool,
+    /// The client a secret is already kept for — the one the form opened
+    /// over: while the id typed is still that one, an empty secret field
+    /// keeps it.
+    pub kept_secret_for: Option<String>,
+    /// The server entry's own client, on a form whose id can change: typed
+    /// back as its id on its exact port, the form describes that client
+    /// ([`describes_entry_client`](Self::describes_entry_client)).
+    pub entry: Option<McpEntryClient>,
     /// The field taking keys.
     pub field: McpClientField,
     /// Why the form is back — the authorization server turned the client
@@ -250,16 +254,62 @@ impl McpClientForm {
             } else {
                 McpClientField::Secret
             },
+            kept_secret_for: (request.has_secret && !known.is_empty()).then(|| known.clone()),
+            entry: request.entry.clone().filter(|_| !fixed),
             client_id: if fixed { String::new() } else { known },
             secret: SecretValue::default(),
             port: request
                 .callback_port
                 .map(|port| port.to_string())
                 .unwrap_or_default(),
-            has_secret: request.has_secret,
             reason: request.reason.clone(),
             error: None,
         }
+    }
+
+    /// The id the form names — the entry's own, on a form that asks only
+    /// for its secret — as typed, trimmed.
+    fn typed_id(&self) -> &str {
+        self.fixed_client_id
+            .as_deref()
+            .unwrap_or_else(|| self.client_id.trim())
+    }
+
+    /// The port field read: empty is no port, digits a port from 1 to
+    /// 65535, anything else neither (`Err`).
+    fn port_value(&self) -> Result<Option<u16>, ()> {
+        let text = self.port.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .map(Some)
+            .ok_or(())
+    }
+
+    /// Does the form, as typed, describe the server entry's own client — its
+    /// id on its exact port, both ports empty counting as one? Then the
+    /// sign-in after it sends that entry's own redirect URI, and a submit
+    /// keeps at most a secret for that client.
+    #[must_use]
+    pub fn describes_entry_client(&self) -> bool {
+        self.entry.as_ref().is_some_and(|entry| {
+            self.client_id.trim() == entry.client_id && self.port_value() == Ok(entry.port)
+        })
+    }
+
+    /// Would an empty secret field keep a secret already kept — what the
+    /// field calls `unchanged`? On the entry's own client, whether one is in
+    /// effect for it; on another, only while the id typed is the one the
+    /// form opened over with a kept secret — another id's is not its.
+    #[must_use]
+    pub fn keeps_secret(&self) -> bool {
+        if self.describes_entry_client() {
+            return self.entry.as_ref().is_some_and(|entry| entry.has_secret);
+        }
+        self.kept_secret_for.as_deref() == Some(self.typed_id())
     }
 
     /// The fields the caret visits, in page order — the secret alone when
@@ -328,15 +378,36 @@ impl McpClientForm {
         self.port.parse::<u16>().ok().filter(|port| *port != 0)
     }
 
-    /// The redirect URI the sign-in will send — the one an entry names for
-    /// its own client, else the one for the port typed: what a provider
-    /// that matches redirect URIs exactly must have registered. `None`
-    /// while the port is no port, or the sign-in takes any.
+    /// The redirect URI the sign-in will send — what a provider that matches
+    /// redirect URIs exactly must have registered: the entry's own, while
+    /// the form describes the entry's own client; else the one for the port
+    /// typed. `None` while the port is no port, or the sign-in takes any.
     #[must_use]
     pub fn redirect_uri(&self) -> Option<String> {
-        self.fixed_redirect_uri
-            .clone()
-            .or_else(|| self.callback_port().map(crate::mcp::oauth_redirect_uri))
+        if self.fixed_client_id.is_some() {
+            return self
+                .fixed_redirect_uri
+                .clone()
+                .or_else(|| self.callback_port().map(crate::mcp::oauth_redirect_uri));
+        }
+        if self.describes_entry_client() {
+            return self
+                .entry
+                .as_ref()
+                .and_then(|entry| entry.redirect_uri.clone());
+        }
+        self.callback_port().map(crate::mcp::oauth_redirect_uri)
+    }
+
+    /// Does the page show a redirect URI row? Always for a client entered
+    /// here — saying so while the port is no port — and for the entry's own
+    /// only where it has an address: one that takes any free port has none.
+    #[must_use]
+    pub fn shows_redirect(&self) -> bool {
+        if self.fixed_client_id.is_some() || self.describes_entry_client() {
+            return self.redirect_uri().is_some();
+        }
+        true
     }
 
     /// The client the form holds, checked — or the field at fault and what
@@ -344,13 +415,15 @@ impl McpClientForm {
     fn checked(&self) -> Result<EnteredClient, (McpClientField, &'static str)> {
         let secret = self.secret.expose().trim();
         let client_secret = (!secret.is_empty()).then(|| SecretValue::new(secret));
+        let keep_secret = client_secret.is_none() && self.keeps_secret();
         if let Some(client_id) = &self.fixed_client_id {
-            if client_secret.is_none() && !self.has_secret {
+            if client_secret.is_none() && !keep_secret {
                 return Err((McpClientField::Secret, CLIENT_SECRET_MISSING));
             }
             return Ok(EnteredClient {
                 client_id: client_id.clone(),
                 client_secret,
+                keep_secret,
                 callback_port: self.callback_port(),
             });
         }
@@ -361,13 +434,20 @@ impl McpClientForm {
         if client_id.contains(char::is_whitespace) {
             return Err((McpClientField::ClientId, CLIENT_ID_SPACES));
         }
-        let Some(callback_port) = self.callback_port() else {
-            return Err((McpClientField::Port, CLIENT_PORT_INVALID));
+        // The entry's own client on its own port — none, for one that
+        // takes any; any other client on the port typed.
+        let callback_port = match &self.entry {
+            Some(entry) if self.describes_entry_client() => entry.port,
+            _ => Some(
+                self.callback_port()
+                    .ok_or((McpClientField::Port, CLIENT_PORT_INVALID))?,
+            ),
         };
         Ok(EnteredClient {
             client_id: client_id.to_string(),
             client_secret,
-            callback_port: Some(callback_port),
+            keep_secret,
+            callback_port,
         })
     }
 }
@@ -376,6 +456,7 @@ impl McpClientForm {
 struct EnteredClient {
     client_id: String,
     client_secret: Option<SecretValue>,
+    keep_secret: bool,
     callback_port: Option<u16>,
 }
 
@@ -532,7 +613,7 @@ impl App {
 
     /// `server`'s auth page becomes the client form over `request`: its
     /// sign-in has no OAuth client to present, or the user's own was turned
-    /// away — or the lookup `Change OAuth client` started has found the
+    /// away — or the lookup `Set`/`Change OAuth client` started has found the
     /// authorization server. `false` when that page is no longer open for
     /// the server.
     pub fn ask_mcp_client(&mut self, server: &str, request: &McpClientRequest) -> bool {
@@ -662,7 +743,7 @@ impl App {
                 // The page a sign-in opens — looking the authorization
                 // server up, not signing in: the form arrives with the
                 // issuer it found.
-                McpServerAction::ChangeClient | McpServerAction::SetClientSecret => {
+                McpServerAction::SetClient | McpServerAction::ChangeClient => {
                     menu.page = McpPage::Auth;
                     menu.selected = 0;
                     menu.auth = McpAuthView {
@@ -743,7 +824,7 @@ impl App {
             return Action::None;
         };
         // A failed sign-in's page: Enter tries again what failed — the
-        // sign-in, or the lookup `Change OAuth client` runs — and Esc goes
+        // sign-in, or the lookup `Set`/`Change OAuth client` runs — and Esc goes
         // back. Nothing is typed there, and nothing is running to cancel.
         if menu.auth.failed.is_some() {
             match key.code {
@@ -863,6 +944,7 @@ impl App {
                             issuer,
                             client_id: entered.client_id,
                             client_secret: entered.client_secret,
+                            keep_secret: entered.keep_secret,
                             callback_port: entered.callback_port,
                         });
                     }

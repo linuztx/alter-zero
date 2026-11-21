@@ -20,7 +20,7 @@ use crate::mcp::{
 use crate::stream::CancelToken;
 
 use super::client::{ConnectError, connect_with_helper};
-use super::oauth::{self, AuthProgress};
+use super::oauth::{self, AuthProgress, EnteredClient};
 use super::transport::{Transport, TransportError};
 use crate::llm::tools::{ToolCallRequest, ToolOutcome};
 
@@ -53,7 +53,7 @@ pub enum McpEvent {
         server: String,
         request: oauth::ClientRequest,
     },
-    /// The lookup `Change OAuth client` started found the server's
+    /// The lookup `Set`/`Change OAuth client` started found the server's
     /// authorization server: the auth page becomes the client form over
     /// `request` ([`McpManager::look_up_client`]). Nothing is said when the
     /// page has been left — the user called the lookup off.
@@ -61,35 +61,6 @@ pub enum McpEvent {
         server: String,
         request: oauth::ClientRequest,
     },
-}
-
-/// What the auth page's client form submits ([`McpManager::save_client`]).
-#[derive(Clone, PartialEq, Eq)]
-pub struct EnteredClient {
-    /// The authorization server the client was created with — the request's
-    /// own `issuer`; empty when no sign-in had seen the server.
-    pub issuer: String,
-    pub client_id: String,
-    /// The secret typed, if any. `None` keeps the one already kept for this
-    /// same client; for another client it means a public one.
-    pub client_secret: Option<String>,
-    /// The port of the redirect URI the client was registered with.
-    pub callback_port: Option<u16>,
-}
-
-impl std::fmt::Debug for EnteredClient {
-    /// Never the secret: whether one was typed is all a log may know.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EnteredClient")
-            .field("issuer", &self.issuer)
-            .field("client_id", &self.client_id)
-            .field(
-                "client_secret",
-                &self.client_secret.as_ref().map(|_| "<redacted>"),
-            )
-            .field("callback_port", &self.callback_port)
-            .finish()
-    }
 }
 
 /// Why the session is holding a project server back
@@ -1167,7 +1138,7 @@ impl McpManager {
         self.sign_in(name, SignInPurpose::Authenticate);
     }
 
-    /// `Change OAuth client` on a server's page: find its authorization
+    /// `Set`/`Change OAuth client` on a server's page: find its authorization
     /// server on a worker — the sign-in's own, so Esc calls it off and a
     /// sign-in supersedes it — and answer with the client form over the
     /// client on hand ([`McpEvent::ClientForm`], [`oauth::client_lookup`]).
@@ -1368,50 +1339,16 @@ impl McpManager {
     /// Keep the client the user entered on the auth page's form, then start
     /// the sign-in again — this time it has one to present. The client goes
     /// in the token store, never in a config file, bound to the
-    /// authorization server it was entered for: whole when the user gave its
-    /// id, or as the secret of the entry's own `oauth.clientId` when that is
-    /// the id (what `mcp add --client-secret` keeps). No secret typed keeps
-    /// the one already kept for the same client. A client that can't be kept
-    /// is reported as a failed sign-in — never a flow that would only ask
-    /// for it again.
+    /// authorization server it was entered for, as [`oauth::client_to_keep`]
+    /// decides: the entry's own client keeps at most a secret, any other is
+    /// kept whole. A client that can't be kept is reported as a failed
+    /// sign-in — never a flow that would only ask for it again.
     pub fn save_client(&self, name: &str, entered: &EnteredClient) {
         let Some((url, auth_path, configured)) = self.sign_in_target(name) else {
             return;
         };
         let existing = oauth::load_client(auth_path.as_deref(), &url);
-        // The entry names this very client: only its secret is kept.
-        let entrys_own = configured
-            .as_ref()
-            .and_then(|oauth| oauth.client_id.as_deref())
-            == Some(entered.client_id.as_str());
-        let kept_secret = existing.as_ref().and_then(|kept| {
-            if entrys_own {
-                kept.secret_for(&entered.client_id)
-            } else {
-                (kept.client_id.as_deref() == Some(entered.client_id.as_str()))
-                    .then_some(kept.client_secret.as_deref())
-                    .flatten()
-            }
-        });
-        let client_secret = entered
-            .client_secret
-            .clone()
-            .or_else(|| kept_secret.map(str::to_string));
-        let issuer = (!entered.issuer.is_empty()).then(|| entered.issuer.clone());
-        let record = if entrys_own {
-            client_secret.map(|secret| oauth::StoredClient {
-                client_secret: Some(secret),
-                issuer,
-                ..Default::default()
-            })
-        } else {
-            Some(oauth::StoredClient {
-                client_id: Some(entered.client_id.clone()),
-                client_secret,
-                callback_port: entered.callback_port,
-                issuer,
-            })
-        };
+        let record = oauth::client_to_keep(entered, existing.as_ref(), configured.as_ref());
         if let Err(error) = oauth::save_client(auth_path.as_deref(), &url, record.as_ref()) {
             self.notify(McpEvent::AuthDone {
                 server: name.to_string(),
@@ -4613,13 +4550,100 @@ done
         )
     }
 
+    /// What the form submits for `id` on `port`: the secret typed, or —
+    /// none typed — the secret field left on whatever is kept.
     fn entered(issuer: &str, id: &str, secret: Option<&str>, port: u16) -> EnteredClient {
         EnteredClient {
             issuer: issuer.to_string(),
             client_id: id.to_string(),
             client_secret: secret.map(str::to_string),
+            keep_secret: secret.is_none(),
             callback_port: Some(port),
         }
+    }
+
+    /// Change OAuth client on an entry's own client, Enter through the form
+    /// unedited: still the entry's own client — nothing is kept, and the
+    /// next sign-in sends the redirect URI that entry registered (its
+    /// `callbackUrl`), not one made up from the port.
+    #[test]
+    fn the_entrys_own_client_saved_unchanged_keeps_its_callback_url() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let port = free_port();
+        let registered = format!("http://127.0.0.1:{port}/callback/abc");
+        let oauth_block = crate::mcp::OAuthClientConfig {
+            client_id: Some("hub-client".to_string()),
+            client_secret: Some("hub-secret".to_string()),
+            callback_port: Some(port),
+            callback_url: Some(registered.clone()),
+            ..Default::default()
+        };
+        let (manager, mut rx) = signin_manager_naming(&base, &store, Some(oauth_block));
+        let request = look_up(&manager, &mut rx, "srv");
+        assert_eq!(request.client_id.as_deref(), Some("hub-client"));
+        assert_eq!(request.callback_port, Some(port));
+        let entry = request
+            .entry
+            .clone()
+            .expect("the form knows the entry's client");
+        assert_eq!(entry.redirect_uri.as_deref(), Some(registered.as_str()));
+        // What the unedited form submits.
+        manager.save_client(
+            "srv",
+            &EnteredClient {
+                issuer: request.issuer.clone(),
+                client_id: "hub-client".to_string(),
+                client_secret: None,
+                keep_secret: request.has_secret,
+                callback_port: request.callback_port,
+            },
+        );
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        let param = |key| crate::llm::mcp::redirect_param(&url, key);
+        assert_eq!(param("client_id").as_deref(), Some("hub-client"));
+        assert_eq!(param("redirect_uri").as_deref(), Some(registered.as_str()));
+        assert_eq!(
+            oauth::load_client(Some(&store), &format!("{base}/mcp")),
+            None,
+            "nothing was kept"
+        );
+        manager.shutdown();
+    }
+
+    /// A client of another id saved for a server whose entry names its own
+    /// is entered whole and outranks it; the entry's own id on its own port
+    /// puts the entry's client back, the entered one gone.
+    #[test]
+    fn a_server_page_changes_between_the_entrys_client_and_an_entered_one() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{base}/mcp");
+        let port = free_port();
+        let oauth_block = crate::mcp::OAuthClientConfig {
+            client_id: Some("file-cid".to_string()),
+            callback_port: Some(port),
+            ..Default::default()
+        };
+        let (manager, mut rx) = signin_manager_naming(&base, &store, Some(oauth_block));
+        manager.save_client("srv", &entered(&base, "mine", Some("s"), free_port()));
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        assert_eq!(
+            crate::llm::mcp::redirect_param(&url, "client_id").as_deref(),
+            Some("mine")
+        );
+        assert_eq!(manager.snapshot()[0].kept_client.as_deref(), Some("mine"));
+        manager.save_client("srv", &entered(&base, "file-cid", None, port));
+        let url = next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        assert_eq!(
+            crate::llm::mcp::redirect_param(&url, "client_id").as_deref(),
+            Some("file-cid")
+        );
+        assert_eq!(oauth::load_client(Some(&store), &server), None);
+        assert_eq!(manager.snapshot()[0].kept_client, None);
+        manager.shutdown();
     }
 
     /// A server whose authorization server registers no clients asks for one
@@ -4665,6 +4689,7 @@ done
                 client_secret: Some("right".to_string()),
                 callback_port: Some(port),
                 issuer: Some(base.clone()),
+                secret_from_entry: false,
             })
         );
         assert_eq!(
@@ -4736,6 +4761,7 @@ done
                 client_secret: None,
                 callback_port: Some(port),
                 issuer: Some(base.clone()),
+                secret_from_entry: false,
             })
         );
         let snapshot = manager.snapshot();
@@ -4815,8 +4841,13 @@ done
             oauth::ClientRequest {
                 issuer: base.clone(),
                 client_id: Some("file-cid".to_string()),
-                fixed_id: true,
                 callback_port: Some(port),
+                entry: Some(crate::mcp::McpEntryClient {
+                    client_id: "file-cid".to_string(),
+                    port: Some(port),
+                    redirect_uri: Some(crate::mcp::oauth_redirect_uri(port)),
+                    has_secret: false,
+                }),
                 ..Default::default()
             }
         );
@@ -4836,7 +4867,8 @@ done
         );
         assert_eq!(manager.snapshot()[0].kept_client, None);
         let again = look_up(&manager, &mut rx, "srv");
-        assert!(again.fixed_id && again.has_secret);
+        assert!(!again.fixed_id && again.has_secret);
+        assert!(again.entry.is_some_and(|entry| entry.has_secret));
         manager.shutdown();
     }
 
@@ -4859,6 +4891,7 @@ done
                 client_secret: Some("s".to_string()),
                 callback_port: Some(9001),
                 issuer: Some(base.clone()),
+                secret_from_entry: false,
             }),
         )
         .unwrap();
@@ -4873,6 +4906,7 @@ done
                 redirect_uri: None,
                 documentation: None,
                 reason: None,
+                entry: None,
             }
         );
         manager.shutdown();
@@ -4932,6 +4966,7 @@ done
             &url,
             Some(&oauth::StoredClient {
                 client_id: Some("typed-cid".to_string()),
+                issuer: Some("https://as.test".to_string()),
                 ..Default::default()
             }),
         )

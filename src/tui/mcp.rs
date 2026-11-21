@@ -227,6 +227,7 @@ impl Session<'_> {
                 issuer,
                 client_id,
                 client_secret,
+                keep_secret,
                 callback_port,
             } => manager.save_client(
                 &server,
@@ -234,6 +235,7 @@ impl Session<'_> {
                     issuer,
                     client_id,
                     client_secret: client_secret.map(|secret| secret.expose().to_string()),
+                    keep_secret,
                     callback_port,
                 },
             ),

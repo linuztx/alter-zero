@@ -539,15 +539,11 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     } else {
         field_lines("Command:", &target, value, width)
     });
-    // The OAuth client the sign-in presents, when the user has one on hand:
-    // the entry's own, else the one entered on the auth page — seeing it is
-    // how they know which client the server signs in as. Never a secret.
-    if let Some(client_id) = server
-        .config
-        .oauth()
-        .and_then(|oauth| oauth.client_id.as_deref())
-        .or(server.kept_client.as_deref())
-    {
+    // The OAuth client the sign-in presents, when one is in effect: one
+    // entered on the auth page, which outranks the entry's own, else the
+    // entry's — seeing it is how the user knows which client the server
+    // signs in as. Never a secret.
+    if let Some((client_id, _)) = server.oauth_client() {
         lines.extend(field_lines("OAuth client:", client_id, value, width));
     }
     lines.extend(field_lines(
@@ -978,10 +974,10 @@ fn client_form_lines(
     if let Some(reason) = &form.reason {
         lines.extend(model_linked_rows(reason, error_color(), width));
     }
-    // The address to register: always for a client entered here, and for an
-    // entry's own only where the entry pins the port — one that takes any
-    // free port has no address to show.
-    let redirect = !fixed || form.redirect_uri().is_some();
+    // The address the sign-in will send: always for a client entered here,
+    // and for an entry's own only where the entry pins the port — one that
+    // takes any free port has no address to show.
+    let redirect = form.shows_redirect();
     let mut facts = Vec::new();
     if !form.issuer.is_empty() {
         facts.extend(client_fact_rows(
@@ -1010,10 +1006,12 @@ fn client_form_lines(
         lines.push(client_field_row(form, McpClientField::Port, "", width));
     }
     lines.push(client_field_row(form, McpClientField::ClientId, "", width));
-    let secret_note = match (form.has_secret, fixed) {
-        (true, _) => MCP_CLIENT_SECRET_KEPT,
-        (false, false) => MCP_CLIENT_SECRET_OPTIONAL,
-        (false, true) => "",
+    let secret_note = if form.keeps_secret() {
+        MCP_CLIENT_SECRET_KEPT
+    } else if fixed {
+        ""
+    } else {
+        MCP_CLIENT_SECRET_OPTIONAL
     };
     lines.push(client_field_row(
         form,
@@ -1026,7 +1024,8 @@ fn client_form_lines(
     }
     lines.push(Line::default());
     let hint = match (fixed, redirect) {
-        (false, _) => MCP_CLIENT_HINT,
+        (false, true) => MCP_CLIENT_HINT,
+        (false, false) => MCP_CLIENT_NO_REDIRECT_HINT,
         (true, true) => MCP_CLIENT_SECRET_HINT,
         (true, false) => MCP_CLIENT_SECRET_ONLY_HINT,
     };
@@ -1035,7 +1034,7 @@ fn client_form_lines(
     lines
 }
 
-/// The page `Change OAuth client` shows while the server's authorization
+/// The page `Set`/`Change OAuth client` shows while the server's authorization
 /// server is looked up for the form: the form's title over one status line
 /// and the one key — nothing to type, and nothing said about the provider.
 fn lookup_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {

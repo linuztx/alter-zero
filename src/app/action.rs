@@ -542,18 +542,19 @@ pub enum McpOp {
     SubmitAuthUrl { text: String },
     /// The auth page's client form, submitted: keep the OAuth client the user
     /// entered for this server — created with `issuer` — and start the
-    /// sign-in again (`docs/mcp.md` *Pre-registered clients*). No secret
-    /// keeps the one already kept for the same client.
+    /// sign-in again (`docs/mcp.md` *Pre-registered clients*). With no
+    /// secret typed, `keep_secret` says the field was left on a kept one.
     SaveAuthClient {
         server: String,
         issuer: String,
         client_id: String,
         client_secret: Option<crate::secrets::SecretValue>,
+        keep_secret: bool,
         callback_port: Option<u16>,
     },
-    /// `Change OAuth client` / `Set client secret` on a server's page: look
+    /// `Set OAuth client` / `Change OAuth client` on a server's page: look
     /// up the server's authorization server on a worker, then open the
-    /// client form over the client on hand, under the issuer and the
+    /// client form over the client in effect, under the issuer and the
     /// documentation link the lookup found (`docs/mcp.md` *The client
     /// form*). The auth page waits on it meanwhile.
     LookUpAuthClient { server: String },

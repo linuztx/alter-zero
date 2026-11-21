@@ -1248,9 +1248,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
         // A failed sign-in's page has no field, nor has a lookup's: the
         // hidden cursor seats as on any page without a marker.
-        if menu.page == crate::app::McpPage::Auth
-            && menu.auth.failed.is_none()
-            && !menu.auth.lookup
+        if menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none() && !menu.auth.lookup
         {
             // The field taking keys: the client form's focused one, at the
             // column its builder reports, else the `URL >` paste field.

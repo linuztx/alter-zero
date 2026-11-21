@@ -184,13 +184,40 @@ pub struct McpServerSnapshot {
     pub excluded: Vec<ExcludedTool>,
     /// The id of the OAuth client entered for this server on the `/mcp`
     /// auth page and kept with its tokens (`docs/mcp.md` *Pre-registered
-    /// clients*) — what the `OAuth client:` row shows and the change/forget
-    /// actions work on. `None` when none was entered; the entry's own
-    /// `oauth.clientId` is in `config`.
+    /// clients*) — it outranks the entry's own `oauth.clientId`, which is in
+    /// `config`. `None` when none was entered.
     pub kept_client: Option<String>,
 }
 
+/// Where the OAuth client a server signs in as comes from
+/// ([`McpServerSnapshot::oauth_client`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpClientSource {
+    /// Entered on the `/mcp` auth page and kept with the tokens.
+    Entered,
+    /// The server entry's own `oauth.clientId`.
+    Entry,
+}
+
 impl McpServerSnapshot {
+    /// The OAuth client a sign-in presents, and where it is from: one
+    /// entered in `/mcp`, which outranks the entry's own, else the entry's
+    /// `oauth.clientId` — what the `OAuth client:` row names and the
+    /// Set/Change/Forget rows work on. Which authorization server the
+    /// sign-in will find is not known here, so an entered client reads as
+    /// the one in effect whatever it was entered for.
+    #[must_use]
+    pub fn oauth_client(&self) -> Option<(&str, McpClientSource)> {
+        if let Some(id) = &self.kept_client {
+            return Some((id, McpClientSource::Entered));
+        }
+        self.config
+            .oauth()?
+            .client_id
+            .as_deref()
+            .map(|id| (id, McpClientSource::Entry))
+    }
+
     /// The list row's full status text: `✔ connected · 3 tools`,
     /// `△ needs authentication`, …
     #[must_use]
@@ -243,6 +270,28 @@ pub struct McpClientRequest {
     /// Why the client on hand was not enough — turned away by the
     /// authorization server, its port taken — in words for the page.
     pub reason: Option<String>,
+    /// The server entry's own client, when it names one: what a form whose
+    /// id can change needs to tell, from what is typed, whether it still
+    /// describes that client.
+    pub entry: Option<McpEntryClient>,
+}
+
+/// A server entry's own OAuth client as the client form needs it
+/// (`docs/mcp.md` *The client form*): typed back as its id on its exact
+/// port — both empty counting as one — the form describes that client, and
+/// the sign-in after it sends that client's own redirect URI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpEntryClient {
+    /// `oauth.clientId`.
+    pub client_id: String,
+    /// The port its sign-in listens on exactly; `None` takes any free port.
+    pub port: Option<u16>,
+    /// The redirect URI its sign-in sends — its `callbackUrl`, else the
+    /// standard one on its port; `None` where it takes any free port.
+    pub redirect_uri: Option<String>,
+    /// A secret is in effect for it — one kept for it with the tokens, else
+    /// its file's — so an empty secret field leaves that one in effect.
+    pub has_secret: bool,
 }
 
 /// The redirect URI a sign-in listening on `port` sends — and so the one a
@@ -382,6 +431,32 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// The OAuth client a server's page names: one entered in `/mcp`, which
+    /// outranks the entry's own, else the entry's — and where it is from.
+    #[test]
+    fn the_client_in_effect_is_the_entered_one_else_the_entrys() {
+        let mut server = snapshot(McpServerStatus::NeedsAuth, 0);
+        assert_eq!(server.oauth_client(), None);
+        server.config = McpServerConfig::Http {
+            url: "https://mcp.deepwiki.com/mcp".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: false,
+            oauth: Some(crate::mcp::OAuthClientConfig {
+                client_id: Some("file-cid".to_string()),
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            server.oauth_client(),
+            Some(("file-cid", McpClientSource::Entry))
+        );
+        server.kept_client = Some("typed-cid".to_string());
+        assert_eq!(
+            server.oauth_client(),
+            Some(("typed-cid", McpClientSource::Entered))
+        );
     }
 
     #[test]

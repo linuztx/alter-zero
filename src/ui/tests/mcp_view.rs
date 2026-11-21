@@ -240,8 +240,11 @@ fn the_server_detail_shows_facts_and_actions() {
     assert!(all.contains("https://linear.test/mcp"));
     assert!(all.contains("Config location:"));
     assert!(all.contains("1. Authenticate"));
-    assert!(all.contains("2. Disable"));
+    assert!(all.contains("2. Set OAuth client"));
+    assert!(all.contains("3. Disable"));
     assert!(all.contains("❯ 1. Authenticate"), "first action selected");
+    // No client is in effect, so no `OAuth client:` row.
+    assert!(!all.contains("OAuth client:"), "{all}");
 }
 
 #[test]
@@ -1338,6 +1341,7 @@ fn client_request() -> McpClientRequest {
         redirect_uri: None,
         documentation: None,
         reason: None,
+        entry: None,
     }
 }
 
@@ -1733,9 +1737,17 @@ fn the_secret_field_says_what_leaving_it_empty_means() {
         has_secret: true,
         ..client_request()
     };
-    let lines = mcp_view_lines(&client_form_app(&kept), 100);
+    let mut over_kept = client_form_app(&kept);
+    let lines = mcp_view_lines(&over_kept, 100);
     let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
     assert!(secret.contains("unchanged"), "{secret:?}");
+    // That secret is the one client's: under another id, the field is
+    // optional again.
+    over_kept.on_key(key(KeyCode::Up)); // the id
+    type_text(&mut over_kept, "2");
+    let lines = mcp_view_lines(&over_kept, 100);
+    let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(secret.contains("optional"), "{secret:?}");
     let mut app = client_form_app(&client_request());
     let lines = mcp_view_lines(&app, 100);
     let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
@@ -1941,6 +1953,32 @@ fn the_client_form_hugs_its_frame() {
                 ..client_request()
             }),
         ),
+        (
+            "the form over the entry's own client",
+            with(McpClientRequest {
+                client_id: Some("file-cid".to_string()),
+                callback_port: Some(12799),
+                entry: Some(crate::mcp::McpEntryClient {
+                    client_id: "file-cid".to_string(),
+                    port: Some(12799),
+                    redirect_uri: Some("http://127.0.0.1:12799/callback/abc".to_string()),
+                    has_secret: true,
+                }),
+                ..client_request()
+            }),
+        ),
+        (
+            "the form over the entry's own client on any free port",
+            with(McpClientRequest {
+                client_id: Some("file-cid".to_string()),
+                callback_port: None,
+                entry: Some(crate::mcp::McpEntryClient {
+                    client_id: "file-cid".to_string(),
+                    ..Default::default()
+                }),
+                ..client_request()
+            }),
+        ),
     ] {
         for width in [40u16, 100] {
             let lines = mcp_view_lines(&app, width);
@@ -2009,9 +2047,57 @@ fn the_lookup_page_is_one_status_line() {
     assert!(x < 100 && usize::from(y) < lines.len());
 }
 
-/// The server's page names the OAuth client it signs in with — the entry's
-/// own, else the one entered here — beside the rows that change it. Never a
-/// secret.
+/// The whole form over the entry's own client shows the redirect URI that
+/// entry registered while the fields still describe that client, and the
+/// address the port makes once they don't; an entry that takes any free port
+/// has no address to show and no copy key to offer.
+#[test]
+fn the_form_over_the_entrys_own_client_shows_the_redirect_it_will_send() {
+    let registered = "http://127.0.0.1:12799/callback/abc";
+    let request = |port: Option<u16>, redirect: Option<&str>| McpClientRequest {
+        client_id: Some("file-cid".to_string()),
+        has_secret: true,
+        callback_port: port,
+        entry: Some(crate::mcp::McpEntryClient {
+            client_id: "file-cid".to_string(),
+            port,
+            redirect_uri: redirect.map(str::to_string),
+            has_secret: true,
+        }),
+        ..client_request()
+    };
+    let mut app = client_form_app(&request(Some(12799), Some(registered)));
+    let all = texts(&app).join("\n");
+    assert!(
+        all.contains(&format!("Redirect URI:  {registered}")),
+        "{all}"
+    );
+    assert!(all.contains("Callback port > 12799"), "{all}");
+    assert!(all.contains("Client ID     > file-cid"), "{all}");
+    assert!(all.contains("Client secret > unchanged"), "{all}");
+    assert!(all.contains("ctrl+y to copy the redirect URI"), "{all}");
+    app.on_key(key(KeyCode::Up)); // the id
+    app.on_key(key(KeyCode::Up)); // the port
+    app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    type_text(&mut app, "9000");
+    let all = texts(&app).join("\n");
+    assert!(
+        all.contains("Redirect URI:  http://localhost:9000/callback"),
+        "{all}"
+    );
+    assert!(!all.contains(registered), "{all}");
+    // Any free port: no address, no copy key.
+    let app = client_form_app(&request(None, None));
+    let all = texts(&app).join("\n");
+    assert!(!all.contains("Redirect URI"), "{all}");
+    assert!(!all.contains("ctrl+y"), "{all}");
+    assert!(all.contains("Tab to switch fields"), "{all}");
+    assert!(all.contains("Callback port >"), "{all}");
+}
+
+/// The server's page names the OAuth client it signs in with — one entered
+/// here, which outranks the entry's own, else the entry's — beside the rows
+/// that change it. Never a secret.
 #[test]
 fn the_server_page_names_its_oauth_client_never_its_secret() {
     let mut entered = snapshot("linear", McpScope::User, McpServerStatus::NeedsAuth);
@@ -2027,9 +2113,9 @@ fn the_server_page_names_its_oauth_client_never_its_secret() {
     );
     assert!(all.contains("Change OAuth client"), "{all}");
     assert!(all.contains("Forget OAuth client"), "{all}");
-    // The entry's own client, and the row that gives it a secret.
+    // The entry's own client, which Change covers — and one entered here
+    // outranks it.
     let mut named = snapshot("linear", McpScope::User, McpServerStatus::NeedsAuth);
-    named.kept_client = Some("typed-cid".to_string());
     named.config = McpServerConfig::Http {
         url: "https://linear.test/mcp".to_string(),
         headers: Default::default(),
@@ -2039,31 +2125,38 @@ fn the_server_page_names_its_oauth_client_never_its_secret() {
             ..Default::default()
         }),
     };
-    let mut app = App::new();
-    app.open_mcp_menu(vec![named.clone()]);
-    app.on_key(key(KeyCode::Enter));
-    let all = texts(&app).join("\n");
+    let page = |server: &McpServerSnapshot| {
+        let mut app = App::new();
+        app.open_mcp_menu(vec![server.clone()]);
+        app.on_key(key(KeyCode::Enter));
+        texts(&app).join("\n")
+    };
+    let all = page(&named);
     assert!(
         all.lines()
             .any(|l| l.contains("OAuth client:") && l.contains("file-cid")),
         "{all}"
     );
+    assert!(all.contains("Change OAuth client"), "{all}");
+    assert!(!all.contains("Forget OAuth client"), "{all}");
+    assert!(!all.contains("Set client secret"), "{all}");
+    named.kept_client = Some("typed-cid".to_string());
+    let all = page(&named);
     assert!(
-        !all.contains("typed-cid"),
-        "the entry's own client wins: {all}"
+        all.lines()
+            .any(|l| l.contains("OAuth client:") && l.contains("typed-cid")),
+        "the entered client outranks the entry's: {all}"
     );
-    assert!(all.contains("Set client secret"), "{all}");
+    assert!(!all.contains("file-cid"), "{all}");
     // A secret the entry spells is never drawn.
+    named.kept_client = None;
     if let McpServerConfig::Http {
         oauth: Some(oauth), ..
     } = &mut named.config
     {
         oauth.client_secret = Some("GOCSPX-in-the-file".to_string());
     }
-    let mut app = App::new();
-    app.open_mcp_menu(vec![named]);
-    app.on_key(key(KeyCode::Enter));
-    let all = texts(&app).join("\n");
+    let all = page(&named);
     assert!(!all.contains("GOCSPX"), "{all}");
     // A server with no client of the user's has no such row.
     let mut plain_server = mcp_app();
