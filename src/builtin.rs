@@ -8,7 +8,7 @@
 //! digest the app last settled against, and installs older than the manifest
 //! are recognised by the frozen [`LEGACY_TABLE`]. Everything here takes
 //! digests and returns decisions — [`Manifest::read`] for whose root it is,
-//! [`verdict`] for a shipped file, [`retired`] and [`unit_retires`] for the
+//! [`verdict`] for a shipped file, [`retired`] and [`retired_unit`] for the
 //! ones the binary no longer carries, decided per unit — so every row of
 //! every table is a unit test with no file anywhere; looking at, hashing and
 //! writing the files is [`crate::llm::builtin`]'s.
@@ -302,15 +302,49 @@ pub fn retired(disk: Disk<'_>, recorded: Option<&str>, legacy: bool) -> Retired 
     }
 }
 
-/// Whether a unit's retired files are removed — decided for the whole unit,
-/// since a removal cannot be taken back: only when nothing in it is the
-/// user's. `retired` is the state of each of its retired paths, `kept`
-/// whether any of its shipped files was kept or left this launch, `shipped`
-/// whether the binary still carries any file of it, and `holds_only_ours`
-/// whether its folder holds nothing but its [`Retired::Ours`] files.
+/// What happens to a unit's retired files ([`retired_unit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetiredUnit {
+    /// Nothing in the unit is the user's: its files with the app's own bytes
+    /// are removed.
+    Remove,
+    /// Something in the unit is the user's: every file stays, and its record
+    /// goes — the unit is the user's now.
+    Forget,
+    /// A shipped file of the unit could not be written: nothing is removed
+    /// this launch, and every record stays, so the next launch decides again.
+    Retry,
+}
+
+/// What happens to a unit's retired files — decided for the whole unit,
+/// since a removal cannot be taken back: they are removed only when nothing
+/// in it is the user's. `retired` is the state of each of its retired paths,
+/// `kept` whether any of its shipped files was kept or left this launch,
+/// `failed` whether one could not be written, `shipped` whether the binary
+/// still carries any file of it, and `holds_only_ours` whether its folder
+/// holds nothing but its [`Retired::Ours`] files.
+///
+/// The user's comes first: a failed write in a unit that is theirs anyway
+/// changes nothing. A failed write alone is not the user's, though — taken
+/// for theirs, its retired files would lose their records, read as the
+/// user's at the next launch, and stay for good.
 #[must_use]
-pub fn unit_retires(retired: &[Retired], kept: bool, shipped: bool, holds_only_ours: bool) -> bool {
-    !kept && !retired.contains(&Retired::Theirs) && (shipped || holds_only_ours)
+pub fn retired_unit(
+    retired: &[Retired],
+    kept: bool,
+    failed: bool,
+    shipped: bool,
+    holds_only_ours: bool,
+) -> RetiredUnit {
+    if kept || retired.contains(&Retired::Theirs) {
+        RetiredUnit::Forget
+    } else if failed {
+        RetiredUnit::Retry
+    } else if shipped || holds_only_ours {
+        RetiredUnit::Remove
+    } else {
+        RetiredUnit::Forget
+    }
 }
 
 /// Whether a manifest path may be acted on at all: non-empty, relative, and
@@ -350,6 +384,8 @@ pub struct Report {
     pub removed: Vec<String>,
     /// Edited files kept over a changed built-in.
     pub kept: Vec<String>,
+    /// Retired files left where they are, since their unit is the user's.
+    pub retained: Vec<String>,
 }
 
 impl Report {
@@ -360,6 +396,17 @@ impl Report {
             && self.updated.is_empty()
             && self.removed.is_empty()
             && self.kept.is_empty()
+            && self.retained.is_empty()
+    }
+
+    /// What a launch whose manifest could not be written may still say: a
+    /// file written or removed did change, but a kept or retained file is
+    /// told only once through the record that settles it, and told without
+    /// one it would be told again at every launch. Withdrawn, it waits for
+    /// the first launch that can leave that record.
+    pub fn withdraw_unsettled(&mut self) {
+        self.kept.clear();
+        self.retained.clear();
     }
 }
 
@@ -393,6 +440,18 @@ fn units<'a>(paths: impl IntoIterator<Item = &'a String>) -> BTreeSet<&'a str> {
     paths.into_iter().map(|path| unit(path)).collect()
 }
 
+/// `paths` sorted and distinct, each named where it is: under `root`, the
+/// root as the user is shown it.
+fn located(root: &str, paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<&str>>()
+        .into_iter()
+        .map(|path| format!("{root}/{path}"))
+        .collect()
+}
+
 /// `{verb} built-in {noun}[s]{tail}: a, b`.
 fn named(verb: &str, noun: &str, tail: &str, names: &BTreeSet<&str>) -> Option<String> {
     if names.is_empty() {
@@ -407,9 +466,14 @@ fn named(verb: &str, noun: &str, tail: &str, names: &BTreeSet<&str>) -> Option<S
 /// it names something: added, updated and removed **units** (`shipped` is
 /// every path the binary carries for the root, which tells a file retired
 /// from a still-shipped unit — an update — from a whole retired unit), then
-/// each kept file by its **path**, since that is the thing to delete.
+/// each kept file by **where it is**, since that is the thing to delete:
+/// `root`, the root as the user is shown it (`~/.alter-zero/skills`, handed
+/// in by the boundary, which knows the home), then its path under the root.
+/// Last, the same way, each retired file that stays because its unit is the
+/// user's. Files are named sorted and once each, never in the order the
+/// binary embeds them.
 #[must_use]
-pub fn notices(kind: Kind, report: &Report, shipped: &[&str]) -> Vec<String> {
+pub fn notices(kind: Kind, report: &Report, shipped: &[&str], root: &str) -> Vec<String> {
     let noun = kind.noun();
     let shipped_units: BTreeSet<&str> = shipped.iter().map(|path| unit(path)).collect();
     let added = units(&report.added);
@@ -432,7 +496,7 @@ pub fn notices(kind: Kind, report: &Report, shipped: &[&str]) -> Vec<String> {
     .into_iter()
     .flatten()
     .collect();
-    match report.kept.as_slice() {
+    match located(root, &report.kept).as_slice() {
         [] => {}
         [one] => lines.push(format!(
             "Kept your version of built-in {noun} file {one} (delete it to get the built-in's)"
@@ -441,6 +505,24 @@ pub fn notices(kind: Kind, report: &Report, shipped: &[&str]) -> Vec<String> {
             "Kept your versions of built-in {noun} files {} (delete one to get the built-in's)",
             several.join(", ")
         )),
+    }
+    // Last: often there because of the kept file just named.
+    match located(root, &report.retained).as_slice() {
+        [] => {}
+        [one] => lines.push(format!(
+            "Kept built-in {noun} file no longer shipped, since the {noun} has your changes: {one}"
+        )),
+        several => {
+            let whose = if units(&report.retained).len() == 1 {
+                format!("the {noun} has")
+            } else {
+                format!("the {noun}s have")
+            };
+            lines.push(format!(
+                "Kept built-in {noun} files no longer shipped, since {whose} your changes: {}",
+                several.join(", ")
+            ));
+        }
     }
     lines
 }
@@ -485,6 +567,10 @@ mod tests {
     fn the_shipped_bytes_are_current() {
         assert_eq!(verdict(Disk::File(A), A, None, false), Verdict::Current);
         assert_eq!(verdict(Disk::File(A), A, Some(B), false), Verdict::Current);
+        assert_eq!(verdict(Disk::File(A), A, Some(A), false), Verdict::Current);
+        // Current is asked before the legacy table: a pre-manifest file that
+        // is already up to date is recorded, never rewritten.
+        assert_eq!(verdict(Disk::File(A), A, None, true), Verdict::Current);
     }
 
     #[test]
@@ -563,20 +649,74 @@ mod tests {
         assert_eq!(retired(Disk::Oversize, Some(A), true), Retired::Theirs);
     }
 
+    // `retired_unit(retired, kept, failed, shipped, holds_only_ours)`.
+
     #[test]
-    fn a_unit_retires_only_when_nothing_in_it_is_the_users() {
-        use Retired::{Absent, Ours, Theirs};
+    fn a_unit_with_nothing_of_the_users_is_removed() {
+        use Retired::{Absent, Ours};
         // A unit still shipped: its folder may hold anything.
-        assert!(unit_retires(&[Ours], false, true, false));
-        assert!(unit_retires(&[Ours, Absent], false, true, false));
-        assert!(unit_retires(&[], false, true, false));
-        assert!(!unit_retires(&[Ours], true, true, true), "a kept file");
-        assert!(!unit_retires(&[Ours, Theirs], false, true, true));
-        assert!(!unit_retires(&[Theirs], false, true, true));
-        // A wholly retired unit: its folder must hold only our files.
-        assert!(unit_retires(&[Ours, Ours], false, false, true));
-        assert!(!unit_retires(&[Ours], false, false, false));
-        assert!(!unit_retires(&[Ours, Theirs], false, false, true));
+        assert_eq!(
+            retired_unit(&[Ours], false, false, true, false),
+            RetiredUnit::Remove
+        );
+        assert_eq!(
+            retired_unit(&[Ours, Absent], false, false, true, false),
+            RetiredUnit::Remove
+        );
+        assert_eq!(
+            retired_unit(&[], false, false, true, false),
+            RetiredUnit::Remove
+        );
+        // A wholly retired unit: its folder holds only our files.
+        assert_eq!(
+            retired_unit(&[Ours, Ours], false, false, false, true),
+            RetiredUnit::Remove
+        );
+    }
+
+    #[test]
+    fn a_unit_with_anything_of_the_users_is_forgotten() {
+        use Retired::{Absent, Ours, Theirs};
+        // A shipped file kept or left — over a failed write too.
+        assert_eq!(
+            retired_unit(&[Ours], true, false, true, true),
+            RetiredUnit::Forget
+        );
+        assert_eq!(
+            retired_unit(&[Ours], true, true, true, true),
+            RetiredUnit::Forget
+        );
+        // A retired file of theirs, whatever else holds.
+        assert_eq!(
+            retired_unit(&[Ours, Theirs], false, false, true, true),
+            RetiredUnit::Forget
+        );
+        assert_eq!(
+            retired_unit(&[Theirs], false, true, true, true),
+            RetiredUnit::Forget
+        );
+        assert_eq!(
+            retired_unit(&[Theirs, Absent], false, false, false, true),
+            RetiredUnit::Forget
+        );
+        // A wholly retired unit whose folder holds something else.
+        assert_eq!(
+            retired_unit(&[Ours], false, false, false, false),
+            RetiredUnit::Forget
+        );
+    }
+
+    #[test]
+    fn a_unit_whose_write_failed_is_retried() {
+        use Retired::{Absent, Ours};
+        assert_eq!(
+            retired_unit(&[Ours], false, true, true, false),
+            RetiredUnit::Retry
+        );
+        assert_eq!(
+            retired_unit(&[Ours, Absent], false, true, true, true),
+            RetiredUnit::Retry
+        );
     }
 
     // ===== Manifest =====
@@ -688,6 +828,20 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_release_orders_below_its_release() {
+        let at =
+            |version: &str| format!(r#"{{"schema": 1, "version": "{version}", "files": {{}}}}"#);
+        assert_eq!(
+            Manifest::read(&at("0.20.0"), "skills", "0.20.0-rc.1"),
+            Read::Deferred
+        );
+        assert!(matches!(
+            Manifest::read(&at("0.20.0-rc.1"), "skills", "0.20.0"),
+            Read::Ours(_)
+        ));
+    }
+
+    #[test]
     fn an_equal_older_missing_or_unreadable_version_is_ours() {
         for version in [r#""0.20.0""#, r#""0.9.3""#, r#""garbage""#, "3", "null"] {
             let text = format!(r#"{{"schema": 1, "version": {version}, "files": {{}}}}"#);
@@ -737,8 +891,15 @@ mod tests {
         assert!(!skills.knows("old/SKILL.md", A));
         assert!(!skills.knows("explore.md", C));
         assert!(Legacy::new(&table, "agents").knows("explore.md", C));
-        // Comments and blank lines are not entries.
-        assert!(!skills.knows("", "# a comment"));
+    }
+
+    #[test]
+    fn a_commented_out_entry_is_not_known() {
+        let table = format!("# {A}  skills/x/SKILL.md\n{B}  skills/y/SKILL.md\n");
+        let skills = Legacy::new(&table, "skills");
+        assert!(!skills.knows("x/SKILL.md", A));
+        assert!(skills.knows("y/SKILL.md", B));
+        assert_eq!(skills.paths(), vec!["y/SKILL.md"]);
     }
 
     #[test]
@@ -806,9 +967,13 @@ mod tests {
         "flaredantic/SKILL.md",
     ];
 
+    /// The roots as the user is shown them, the way the boundary hands them in.
+    const SKILLS: &str = "~/.alter-zero/skills";
+    const AGENTS: &str = "/srv/cfg/agents";
+
     #[test]
     fn an_empty_report_says_nothing() {
-        assert!(notices(Kind::Skills, &Report::default(), &SHIPPED).is_empty());
+        assert!(notices(Kind::Skills, &Report::default(), &SHIPPED, SKILLS).is_empty());
         assert!(Report::default().is_empty());
     }
 
@@ -824,7 +989,7 @@ mod tests {
         };
         assert!(!report.is_empty());
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec!["Added built-in skills: flaredantic, yt-dlp"]
         );
         let one = Report {
@@ -832,7 +997,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Agents, &one, &["explore.md"]),
+            notices(Kind::Agents, &one, &["explore.md"], AGENTS),
             vec!["Added built-in agent: explore"]
         );
     }
@@ -848,7 +1013,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec!["Updated built-in skills: web-search, yt-dlp"]
         );
         let agents = Report {
@@ -856,7 +1021,12 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Agents, &agents, &["explore.md", "general-purpose.md"]),
+            notices(
+                Kind::Agents,
+                &agents,
+                &["explore.md", "general-purpose.md"],
+                AGENTS
+            ),
             vec!["Updated built-in agents: explore, general-purpose"]
         );
         let one = Report {
@@ -864,7 +1034,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Agents, &one, &["explore.md"]),
+            notices(Kind::Agents, &one, &["explore.md"], AGENTS),
             vec!["Updated built-in agent: explore"]
         );
     }
@@ -876,7 +1046,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec!["Updated built-in skill: web-search"]
         );
     }
@@ -888,7 +1058,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec!["Removed built-in skill no longer shipped: old-skill"]
         );
         let two = Report {
@@ -896,7 +1066,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Agents, &two, &["explore.md"]),
+            notices(Kind::Agents, &two, &["explore.md"], AGENTS),
             vec!["Removed built-in agents no longer shipped: a, b"]
         );
     }
@@ -909,7 +1079,7 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec![
                 "Added built-in skill: flaredantic",
                 "Updated built-in skill: yt-dlp"
@@ -918,15 +1088,17 @@ mod tests {
     }
 
     #[test]
-    fn kept_files_are_named_by_path() {
+    fn kept_files_are_named_where_they_are() {
+        // By the path to type to delete one — the root as the user is shown
+        // it, then the path under it — not by a path only the manifest knows.
         let one = Report {
             kept: strings(&["web-search/SKILL.md"]),
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Skills, &one, &SHIPPED),
+            notices(Kind::Skills, &one, &SHIPPED, SKILLS),
             vec![
-                "Kept your version of built-in skill file web-search/SKILL.md (delete it to get the built-in's)"
+                "Kept your version of built-in skill file ~/.alter-zero/skills/web-search/SKILL.md (delete it to get the built-in's)"
             ]
         );
         let two = Report {
@@ -934,10 +1106,138 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            notices(Kind::Agents, &two, &["explore.md"]),
+            notices(Kind::Agents, &two, &["explore.md"], AGENTS),
             vec![
-                "Kept your versions of built-in agent files explore.md, general-purpose.md (delete one to get the built-in's)"
+                "Kept your versions of built-in agent files /srv/cfg/agents/explore.md, /srv/cfg/agents/general-purpose.md (delete one to get the built-in's)"
             ]
+        );
+    }
+
+    #[test]
+    fn kept_files_are_named_once_sorted() {
+        // In the order of the path, never of the binary's embedded table.
+        let report = Report {
+            kept: strings(&[
+                "yt-dlp/SKILL.md",
+                "web-search/scripts/x.py",
+                "web-search/SKILL.md",
+                "yt-dlp/SKILL.md",
+            ]),
+            ..Report::default()
+        };
+        assert_eq!(
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
+            vec![
+                "Kept your versions of built-in skill files ~/.alter-zero/skills/web-search/SKILL.md, \
+                 ~/.alter-zero/skills/web-search/scripts/x.py, ~/.alter-zero/skills/yt-dlp/SKILL.md \
+                 (delete one to get the built-in's)"
+            ]
+        );
+        let twice = Report {
+            kept: strings(&["explore.md", "explore.md"]),
+            ..Report::default()
+        };
+        assert_eq!(
+            notices(Kind::Agents, &twice, &["explore.md"], AGENTS),
+            vec![
+                "Kept your version of built-in agent file /srv/cfg/agents/explore.md (delete it to get the built-in's)"
+            ]
+        );
+    }
+
+    #[test]
+    fn retained_files_are_named_where_they_are_once_sorted() {
+        let retained = |paths: &[&str]| Report {
+            retained: strings(paths),
+            ..Report::default()
+        };
+        assert!(!retained(&["web-search/scripts/old.py"]).is_empty());
+        assert_eq!(
+            notices(
+                Kind::Skills,
+                &retained(&["web-search/scripts/old.py"]),
+                &SHIPPED,
+                SKILLS
+            ),
+            vec![
+                "Kept built-in skill file no longer shipped, since the skill has your changes: \
+                 ~/.alter-zero/skills/web-search/scripts/old.py"
+            ]
+        );
+        assert_eq!(
+            notices(
+                Kind::Skills,
+                &retained(&[
+                    "web-search/scripts/b.py",
+                    "web-search/scripts/a.py",
+                    "web-search/scripts/b.py"
+                ]),
+                &SHIPPED,
+                SKILLS
+            ),
+            vec![
+                "Kept built-in skill files no longer shipped, since the skill has your changes: \
+                 ~/.alter-zero/skills/web-search/scripts/a.py, ~/.alter-zero/skills/web-search/scripts/b.py"
+            ]
+        );
+        assert_eq!(
+            notices(
+                Kind::Skills,
+                &retained(&["yt-dlp/old-notes.md", "gone/SKILL.md"]),
+                &SHIPPED,
+                SKILLS
+            ),
+            vec![
+                "Kept built-in skill files no longer shipped, since the skills have your changes: \
+                 ~/.alter-zero/skills/gone/SKILL.md, ~/.alter-zero/skills/yt-dlp/old-notes.md"
+            ]
+        );
+        assert_eq!(
+            notices(
+                Kind::Agents,
+                &retained(&["old.md"]),
+                &["explore.md"],
+                AGENTS
+            ),
+            vec![
+                "Kept built-in agent file no longer shipped, since the agent has your changes: \
+                 /srv/cfg/agents/old.md"
+            ]
+        );
+        assert_eq!(
+            notices(
+                Kind::Agents,
+                &retained(&["b.md", "a.md"]),
+                &["explore.md"],
+                AGENTS
+            ),
+            vec![
+                "Kept built-in agent files no longer shipped, since the agents have your changes: \
+                 /srv/cfg/agents/a.md, /srv/cfg/agents/b.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_report_whose_manifest_did_not_persist_withdraws_what_only_a_record_settles() {
+        let mut report = Report {
+            added: strings(&["flaredantic/SKILL.md"]),
+            updated: strings(&["yt-dlp/SKILL.md"]),
+            removed: strings(&["old-skill/SKILL.md"]),
+            kept: strings(&["web-search/SKILL.md"]),
+            retained: strings(&["web-search/scripts/old.py"]),
+        };
+        report.withdraw_unsettled();
+        // Those files did change; a kept or retained file is told once only
+        // through a record, which this launch could not leave.
+        assert_eq!(
+            report,
+            Report {
+                added: strings(&["flaredantic/SKILL.md"]),
+                updated: strings(&["yt-dlp/SKILL.md"]),
+                removed: strings(&["old-skill/SKILL.md"]),
+                ..Report::default()
+            }
         );
     }
 
@@ -948,14 +1248,18 @@ mod tests {
             updated: strings(&["yt-dlp/SKILL.md"]),
             removed: strings(&["old-skill/SKILL.md"]),
             kept: strings(&["web-search/SKILL.md"]),
+            retained: strings(&["web-search/scripts/old.py"]),
         };
         assert_eq!(
-            notices(Kind::Skills, &report, &SHIPPED),
+            notices(Kind::Skills, &report, &SHIPPED, SKILLS),
             vec![
                 "Added built-in skill: flaredantic",
                 "Updated built-in skill: yt-dlp",
                 "Removed built-in skill no longer shipped: old-skill",
-                "Kept your version of built-in skill file web-search/SKILL.md (delete it to get the built-in's)",
+                "Kept your version of built-in skill file ~/.alter-zero/skills/web-search/SKILL.md (delete it to get the built-in's)",
+                // Last, after the kept file it is there because of.
+                "Kept built-in skill file no longer shipped, since the skill has your changes: \
+                 ~/.alter-zero/skills/web-search/scripts/old.py",
             ]
         );
     }

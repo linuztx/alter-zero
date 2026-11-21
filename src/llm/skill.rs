@@ -184,8 +184,9 @@ pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf
 ///
 /// Only the config home's root is handed here — `ALTER_ZERO_SKILLS_DIR` is
 /// never seeded ([`builtin_skills_dir`]). `announce` is whether this launch
-/// can show the report ([`builtin_skill_notices`]); a headless one cannot,
-/// and leaves a kept file to be named by the next launch that can.
+/// can show the report ([`builtin_skill_notices`]); one that cannot leaves a
+/// kept file, or a retired one that stays for the user, to be named by the
+/// next launch that can.
 ///
 /// Failures are collected, never thrown: a read-only config home costs the
 /// update, not the session.
@@ -206,11 +207,13 @@ pub fn seed_builtin_skills(root: &Path, announce: bool) -> Seeded<SkillError> {
 }
 
 /// The rows a launch's skills [`Report`] is told in, under the banner or in
-/// a headless run's step log (`docs/builtin-updates.md`).
+/// a headless run's step log (`docs/builtin-updates.md`). `root` is the
+/// seeded root as the user is shown it (`~/.alter-zero/skills`), which names
+/// a file where it is.
 #[must_use]
-pub fn builtin_skill_notices(report: &Report) -> Vec<String> {
+pub fn builtin_skill_notices(report: &Report, root: &str) -> Vec<String> {
     let shipped: Vec<&str> = BUILTIN_SKILL_FILES.iter().map(|(path, _)| *path).collect();
-    crate::builtin::notices(Kind::Skills, report, &shipped)
+    crate::builtin::notices(Kind::Skills, report, &shipped, root)
 }
 
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
@@ -1451,6 +1454,20 @@ mod tests {
     }
 
     #[test]
+    fn every_built_in_file_is_within_what_the_update_reads() {
+        // The update reads a file at a built-in path only up to this bound
+        // (docs/builtin-updates.md): a built-in past it would be seeded, then
+        // read back as oversize and kept as the user's for good.
+        for (path, contents) in BUILTIN_SKILL_FILES {
+            let len = u64::try_from(contents.len()).expect("fits");
+            assert!(
+                len <= crate::builtin::MAX_FILE_BYTES,
+                "{path} is {len} bytes"
+            );
+        }
+    }
+
+    #[test]
     fn every_extra_built_in_file_is_one_its_skill_points_at() {
         // A skill is a directory, so a built-in may seed reference files
         // beside its SKILL.md — but only the body can send the model to one.
@@ -1603,16 +1620,18 @@ mod tests {
                 "web-search/scripts/old.py".into(),
                 "old-skill/SKILL.md".into(),
             ],
+            kept: vec!["yt-dlp/SKILL.md".into()],
             ..Report::default()
         };
         assert_eq!(
-            builtin_skill_notices(&report),
+            builtin_skill_notices(&report, "~/.alter-zero/skills"),
             vec![
                 "Updated built-in skill: web-search",
                 "Removed built-in skill no longer shipped: old-skill",
+                "Kept your version of built-in skill file ~/.alter-zero/skills/yt-dlp/SKILL.md (delete it to get the built-in's)",
             ]
         );
-        assert!(builtin_skill_notices(&Report::default()).is_empty());
+        assert!(builtin_skill_notices(&Report::default(), "~/.alter-zero/skills").is_empty());
     }
 
     #[test]

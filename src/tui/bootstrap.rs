@@ -280,16 +280,23 @@ impl<'t> Session<'t> {
         //
         // What the built-in update did (docs/builtin-updates.md) — the skills'
         // rows then the agents' — told once the first frame is up, or in a
-        // headless run's step log. A headless seed leaves a kept file's record
-        // for the next launch that can show it.
+        // headless run's step log. A kept or retained file is told once, and
+        // the seed settles it as told, so a launch that cannot show the rows
+        // leaves its record for the next one that can: a headless run, and a
+        // bare `--resume`, whose pick purge-rebuilds the screen — and the rows
+        // queued under the banner go with it.
+        let announce = !headless && !matches!(startup, Some(StartupSession::Picker));
         let mut builtin_notices: Vec<String> = Vec::new();
         let mut skill_errors = match alter_zero::llm::skill::resolved_builtin_skills_dir(
             config::config_home().as_deref(),
         ) {
             Some(root) => {
-                let seeded = alter_zero::llm::skill::seed_builtin_skills(&root, !headless);
+                let seeded = alter_zero::llm::skill::seed_builtin_skills(&root, announce);
+                // A file is named where it is — `~/.alter-zero/skills/…` —
+                // so the row says what to delete.
                 builtin_notices.extend(alter_zero::llm::skill::builtin_skill_notices(
                     &seeded.report,
+                    &ui::display_cwd(&root, home.as_deref()),
                 ));
                 seeded.errors
             }
@@ -319,10 +326,11 @@ impl<'t> Session<'t> {
                 Some(dir) => {
                     let seeded = alter_zero::llm::subagent::seed_default_agents(
                         &dir,
-                        alter_zero::llm::subagent::agents_seed_mode(!headless),
+                        alter_zero::llm::subagent::agents_seed_mode(announce),
                     );
                     builtin_notices.extend(alter_zero::llm::subagent::default_agent_notices(
                         &seeded.report,
+                        &ui::display_cwd(&dir, home.as_deref()),
                     ));
                     seeded.errors
                 }

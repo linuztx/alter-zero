@@ -165,11 +165,13 @@ fn seed_mode(overridden: bool, announce: bool) -> Mode {
 }
 
 /// The rows a launch's agents [`Report`] is told in, under the banner or in
-/// a headless run's step log (`docs/builtin-updates.md`).
+/// a headless run's step log (`docs/builtin-updates.md`). `root` is the
+/// seeded folder as the user is shown it (`~/.alter-zero/agents`), which
+/// names a file where it is.
 #[must_use]
-pub fn default_agent_notices(report: &Report) -> Vec<String> {
+pub fn default_agent_notices(report: &Report, root: &str) -> Vec<String> {
     let shipped: Vec<&str> = BUILTIN_FILES.iter().map(|(name, _)| *name).collect();
-    crate::builtin::notices(Kind::Agents, report, &shipped)
+    crate::builtin::notices(Kind::Agents, report, &shipped, root)
 }
 
 /// The embedded definitions, parsed. They carry **no** path — nothing read
@@ -481,7 +483,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
         std::fs::create_dir_all(&dir).unwrap();
-        // A version some release shipped, so a followed folder would update it.
+        // No release shipped these bytes, so a followed folder would keep the
+        // file too: what tells seed-only apart is that it reports nothing and
+        // leaves no manifest behind.
         let old = "---\ndescription: An older explore.\n---\n";
         std::fs::write(dir.join("explore.md"), old).unwrap();
 
@@ -504,12 +508,56 @@ mod tests {
             ..Report::default()
         };
         assert_eq!(
-            default_agent_notices(&report),
+            default_agent_notices(&report, "~/.alter-zero/agents"),
             vec![
                 "Updated built-in agent: explore",
-                "Kept your version of built-in agent file general-purpose.md (delete it to get the built-in's)",
+                "Kept your version of built-in agent file ~/.alter-zero/agents/general-purpose.md (delete it to get the built-in's)",
             ]
         );
+    }
+
+    #[test]
+    fn every_authored_definition_is_embedded() {
+        // A definition authored under `prompts/agents/` ships only when it is
+        // listed in `BUILTIN_FILES`: one added there and forgotten here passes
+        // every other test and is missing from every install.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/agents");
+        let authored: Vec<String> = std::fs::read_dir(&root)
+            .expect("read prompts/agents")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case(AGENT_FILE_EXT))
+            })
+            .filter_map(|path| Some(path.file_name()?.to_str()?.to_string()))
+            .collect();
+        assert!(
+            !authored.is_empty(),
+            "the walk found the authored definitions"
+        );
+        for name in authored {
+            assert!(
+                BUILTIN_FILES.iter().any(|(file, _)| *file == name),
+                "prompts/agents/{name} is authored but not in BUILTIN_FILES"
+            );
+        }
+    }
+
+    #[test]
+    fn every_built_in_definition_is_within_what_the_update_reads() {
+        // The update reads a file at a built-in path only up to this bound
+        // (docs/builtin-updates.md): a built-in past it would be seeded, then
+        // read back as oversize and kept as the user's for good.
+        for (name, contents) in BUILTIN_FILES {
+            let len = u64::try_from(contents.len()).expect("fits");
+            assert!(
+                len <= crate::builtin::MAX_FILE_BYTES,
+                "{name} is {len} bytes"
+            );
+        }
     }
 
     #[test]

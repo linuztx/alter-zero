@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::builtin::{
     Disk, Kind, Legacy, MANIFEST_FILE_NAME, MAX_FILE_BYTES, Manifest, Read, Report, Retired,
-    SCHEMA, Verdict, digest, is_safe_path, retired, unit, unit_retires, verdict,
+    RetiredUnit, SCHEMA, Verdict, digest, is_safe_path, retired, retired_unit, unit, verdict,
 };
 
 /// A file [`sync`] could not write or remove: the startup toast's material.
@@ -50,8 +50,9 @@ impl<E> Seeded<E> {
 pub enum Mode {
     /// The app's own folder: everything `docs/builtin-updates.md` describes.
     /// `announce` is whether this launch can show the user what it did; one
-    /// that cannot (a headless run) leaves a kept file's record alone, so the
-    /// next launch that can still says which file was kept.
+    /// that cannot (a headless run, a bare `--resume`) leaves the record of a
+    /// kept file, or of a retired one that stays for the user, alone, so the
+    /// next launch that can still names it.
     Follow { announce: bool },
     /// Somebody else's folder (`ALTER_ZERO_AGENTS_DIR`): write each absent
     /// file and nothing more — no replacement, no removal, no manifest.
@@ -65,8 +66,11 @@ pub enum Mode {
 /// read under [`Kind::scope`], for installs older than the manifest.
 ///
 /// A root whose manifest a newer app (or another scope) wrote is left
-/// entirely alone. The manifest is written last, atomically, and only when
-/// it changed, so a launch with nothing to do writes nothing at all.
+/// entirely alone, and so is one whose manifest cannot be read at all, with
+/// an error saying so. The manifest is written last, atomically, and only
+/// when it changed, so a launch with nothing to do writes nothing at all;
+/// one that cannot be written costs only the notices it would have settled
+/// ([`Report::withdraw_unsettled`]), never an error.
 pub fn sync(
     root: &Path,
     files: &[(&str, &str)],
@@ -97,9 +101,13 @@ pub fn sync(
     let manifest_path = root.join(MANIFEST_FILE_NAME);
     // `None` is a first settle: no manifest, or none worth the name.
     let read = match read_manifest(&manifest_path, scope, version) {
-        Read::Deferred => return seeded,
-        Read::Absent => None,
-        Read::Ours(manifest) => Some(manifest),
+        Ok(Read::Deferred) => return seeded,
+        Ok(Read::Absent) => None,
+        Ok(Read::Ours(manifest)) => Some(manifest),
+        Err(err) => {
+            seeded.errors.push(sync_error(&manifest_path, &err));
+            return seeded;
+        }
     };
     let settled = read.clone().unwrap_or_else(|| Manifest::new(scope));
     // The legacy table speaks only for a root's first settle — no manifest,
@@ -124,11 +132,15 @@ pub fn sync(
         .map(|(path, _)| unit(path))
         .collect();
     let fresh = present.is_empty();
-    // Units none of whose retired files may be removed this launch: one of
-    // their shipped files was kept, left, or failed to be written — a release
-    // that renames a script and rewrites the `SKILL.md` naming it must not
-    // remove the old script when the new `SKILL.md` did not land.
-    let mut held_units = BTreeSet::new();
+    // Units none of whose retired files may be removed this launch, for one
+    // of two reasons that end differently. One of their shipped files is the
+    // user's — kept, or left as a link — and the unit is theirs now: its
+    // retired files stay for good. Or one failed to be written, which the
+    // next launch tries again, the retirement with it: a release that renames
+    // a script and rewrites the `SKILL.md` naming it must not remove the old
+    // script when the new `SKILL.md` did not land.
+    let mut kept_units = BTreeSet::new();
+    let mut failed_units = BTreeSet::new();
 
     for (path, contents) in files {
         let target = root.join(path);
@@ -140,7 +152,7 @@ pub fn sync(
             Verdict::Seed => {
                 if let Err(error) = seed_file(root, path, contents) {
                     errors.push(error);
-                    held_units.insert(unit(path));
+                    failed_units.insert(unit(path));
                     continue;
                 }
                 manifest.files.insert((*path).to_string(), shipped);
@@ -157,17 +169,8 @@ pub fn sync(
             Verdict::Update => {
                 if let Err(err) = write_atomically(&target, contents.as_bytes(), true) {
                     errors.push(sync_error(&target, &err));
-                    held_units.insert(unit(path));
-                    // A built-in only the legacy table recognised: recording
-                    // its bytes is what lets the next launch, no longer a
-                    // first settle, still know it as the app's and retry.
-                    if recorded.is_none()
-                        && let Some(on_disk) = disk.digest()
-                    {
-                        manifest
-                            .files
-                            .insert((*path).to_string(), on_disk.to_string());
-                    }
+                    failed_units.insert(unit(path));
+                    keep_on_record(&mut manifest, &settled, path, &disk);
                     continue;
                 }
                 manifest.files.insert((*path).to_string(), shipped);
@@ -177,7 +180,7 @@ pub fn sync(
                 manifest.files.insert((*path).to_string(), shipped);
             }
             Verdict::Kept { news } => {
-                held_units.insert(unit(path));
+                kept_units.insert(unit(path));
                 // Settling is what makes the notice once-only, so a launch
                 // nobody watches leaves it for the next one.
                 if news && announce {
@@ -186,7 +189,7 @@ pub fn sync(
                 }
             }
             Verdict::Leave => {
-                held_units.insert(unit(path));
+                kept_units.insert(unit(path));
             }
         }
     }
@@ -197,7 +200,9 @@ pub fn sync(
             files,
             settled: &settled,
             legacy,
-            held_units: &held_units,
+            kept_units: &kept_units,
+            failed_units: &failed_units,
+            announce,
         },
         &mut manifest,
         report,
@@ -207,8 +212,13 @@ pub fn sync(
     if read.as_ref() != Some(&manifest) {
         let written = std::fs::create_dir_all(root)
             .and_then(|()| write_atomically(&manifest_path, manifest.render().as_bytes(), true));
-        if let Err(err) = written {
-            errors.push(sync_error(&manifest_path, &err));
+        // Silently: a folder whose files are all current but whose manifest
+        // cannot be written (a read-only mount, a Nix or dotfiles link) was
+        // never an error the seed raised, and would be one at every launch.
+        // What it costs is the record that tells a kept or retained file
+        // only once, so this launch does not tell them either.
+        if written.is_err() {
+            seeded.report.withdraw_unsettled();
         }
     }
     seeded
@@ -221,7 +231,26 @@ struct Retirement<'a> {
     settled: &'a Manifest,
     /// The legacy table, on a root's first settle only.
     legacy: Option<Legacy<'a>>,
-    held_units: &'a BTreeSet<&'a str>,
+    /// Units with a shipped file the user's this launch, kept or left.
+    kept_units: &'a BTreeSet<&'a str>,
+    /// Units with a shipped file that could not be written this launch.
+    failed_units: &'a BTreeSet<&'a str>,
+    /// Whether this launch can show what it did ([`Mode::Follow`]).
+    announce: bool,
+}
+
+/// Keep `path` on record, so the next launch decides on it again — a file
+/// whose bytes are the app's own whose write or removal failed this launch.
+/// One only the legacy table knew gets a record of the bytes it holds: the
+/// next launch is no longer a first settle, and only that record still makes
+/// the file the app's own. Never for anyone else's file, which a record of
+/// its own bytes would make the app's.
+fn keep_on_record(manifest: &mut Manifest, settled: &Manifest, path: &str, disk: &Look) {
+    if !settled.files.contains_key(path)
+        && let Some(on_disk) = disk.digest()
+    {
+        manifest.files.insert(path.to_string(), on_disk.to_string());
+    }
 }
 
 /// Whether the legacy table, when it may speak at all, knows what is on disk
@@ -234,12 +263,14 @@ fn knows(legacy: Option<Legacy<'_>>, path: &str, disk: &Look) -> bool {
 }
 
 /// Settle every path on record (and, on a first settle, in the legacy table)
-/// that the binary no longer ships — **per unit**: its files are removed only
-/// when nothing in the unit is the user's ([`unit_retires`]); otherwise all
-/// of them stay and their records go. A path that is not [`is_safe_path`] is
-/// dropped unread, and one equal to a shipped path but for letter case is
-/// forgotten, never removed — on a case-insensitive filesystem it *is* the
-/// file just written.
+/// that the binary no longer ships — **per unit** ([`retired_unit`]): its
+/// files are removed only when nothing in the unit is the user's; when
+/// something is, all of them stay and their records go; and when a shipped
+/// file of it could not be written, all of them stay on record for the next
+/// launch to decide again. A path that is not [`is_safe_path`] is dropped
+/// unread, and one equal to a shipped path but for letter case is forgotten,
+/// never removed — on a case-insensitive filesystem it *is* the file just
+/// written.
 fn retire(
     retirement: &Retirement<'_>,
     manifest: &mut Manifest,
@@ -251,7 +282,9 @@ fn retire(
         files,
         settled,
         legacy,
-        held_units,
+        kept_units,
+        failed_units,
+        announce,
     } = *retirement;
     let shipped: BTreeSet<&str> = files.iter().map(|(path, _)| *path).collect();
     let shipped_units: BTreeSet<&str> = shipped.iter().map(|path| unit(path)).collect();
@@ -289,36 +322,63 @@ fn retire(
         // An agent is a file: its unit has no folder of its own to look in,
         // and a folder of the same name beside it is something else.
         let foldered = paths.iter().any(|(path, _, _)| path.contains('/'));
-        let retires = unit_retires(
+        let fate = retired_unit(
             &states,
-            held_units.contains(name),
+            kept_units.contains(name),
+            failed_units.contains(name),
             still_shipped,
             still_shipped || !foldered || holds_only(root, name, &ours),
         );
         for (path, state, disk) in paths {
-            if retires && state == Retired::Ours {
-                let target = root.join(path);
-                match remove_retired(&target) {
-                    Ok(true) => {
-                        remove_empty_parents(root, &target);
-                        report.removed.push(path.to_string());
+            match (fate, state) {
+                // Nothing there: nothing to remove, retry or keep.
+                (_, Retired::Absent) => {
+                    manifest.files.remove(path);
+                }
+                (RetiredUnit::Remove, Retired::Ours) => {
+                    let target = root.join(path);
+                    match remove_retired(&target) {
+                        Ok(true) => {
+                            remove_empty_parents(root, &target);
+                            report.removed.push(path.to_string());
+                            manifest.files.remove(path);
+                        }
+                        // Gone already — another launch retired it first.
+                        Ok(false) => {
+                            manifest.files.remove(path);
+                        }
+                        Err(err) => {
+                            errors.push(sync_error(&target, &err));
+                            keep_on_record(manifest, settled, path, &disk);
+                        }
                     }
-                    // Gone already — another launch retired it first.
-                    Ok(false) => {}
-                    Err(err) => {
-                        errors.push(sync_error(&target, &err));
-                        // Kept on record (or recorded, when only the legacy
-                        // table knew it) so the next launch retries.
-                        if !settled.files.contains_key(path)
-                            && let Some(on_disk) = disk.digest()
-                        {
-                            manifest.files.insert(path.to_string(), on_disk.to_string());
+                }
+                (RetiredUnit::Retry, Retired::Ours) => {
+                    keep_on_record(manifest, settled, path, &disk);
+                }
+                // The unit is the user's: the file stays. (A file of theirs
+                // never reaches the arms above — one makes the whole unit
+                // theirs.) A regular file is named once, and the record going
+                // is what makes it once, so a launch that cannot show the row
+                // keeps the record for the next one that can — recording the
+                // bytes of one only the legacy table knew, as a failed
+                // removal does. A link, or anything else that is not a
+                // regular file, is somebody managing that path, and is left
+                // silently, as one at a shipped path is.
+                _ => {
+                    let told = matches!(disk, Look::File(_) | Look::Oversize);
+                    if told && !announce {
+                        if state == Retired::Ours {
+                            keep_on_record(manifest, settled, path, &disk);
                         }
                         continue;
                     }
+                    if told {
+                        report.retained.push(path.to_string());
+                    }
+                    manifest.files.remove(path);
                 }
             }
-            manifest.files.remove(path);
         }
     }
 }
@@ -433,10 +493,19 @@ impl Look {
 
 /// Look at `path` without trusting it: a link is never followed, nothing but
 /// a regular file is opened (a FIFO would stall the launch), and nothing past
-/// [`MAX_FILE_BYTES`] is read.
+/// [`MAX_FILE_BYTES`] is read. A regular file where one of its folders must
+/// be leaves nothing at the path: a file to seed, whose write then fails and
+/// says so — never something somebody manages, which is left silently.
 fn look(path: &Path) -> Look {
     match std::fs::symlink_metadata(path) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Look::Absent,
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Look::Absent
+        }
         Err(_) => Look::NotAFile,
         Ok(meta) if !meta.file_type().is_file() => Look::NotAFile,
         Ok(meta) if meta.len() > MAX_FILE_BYTES => Look::Oversize,
@@ -469,19 +538,25 @@ fn look_under(root: &Path, path: &str) -> Look {
 
 /// The manifest at `path`, read for this binary, looked at without following
 /// a link. Only a regular file within [`MAX_FILE_BYTES`] is read; anything
-/// else there (a link, dangling or not, a directory) or a file that cannot be
-/// read is [`Read::Deferred`] — not knowing who is in charge of a root, the launch
-/// touches nothing rather than settle it afresh and take every file for an
-/// edit. Bytes that are not UTF-8 are not a manifest ([`Read::Absent`]).
-fn read_manifest(path: &Path, scope: &str, version: &str) -> Read {
+/// else there (a link, dangling or not, a directory) is [`Read::Deferred`] —
+/// not knowing who is in charge of a root, the launch touches nothing rather
+/// than settle it afresh and take every file for an edit. Bytes that are not
+/// UTF-8 are not a manifest ([`Read::Absent`]).
+///
+/// A manifest that cannot be looked at or read at all — the root a regular
+/// file, a folder without permission, a failing disk — is the error, so the
+/// caller touches nothing and says why: deferred as silently as a link, a
+/// broken root would never be mentioned again.
+fn read_manifest(path: &Path, scope: &str, version: &str) -> std::io::Result<Read> {
     match std::fs::symlink_metadata(path) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Read::Absent,
-        Ok(meta) if meta.is_file() && meta.len() <= MAX_FILE_BYTES => match std::fs::read(path) {
-            Ok(bytes) => String::from_utf8(bytes)
-                .map_or(Read::Absent, |text| Manifest::read(&text, scope, version)),
-            Err(_) => Read::Deferred,
-        },
-        _ => Read::Deferred,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Read::Absent),
+        Err(err) => Err(err),
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_FILE_BYTES => {
+            let bytes = std::fs::read(path)?;
+            Ok(String::from_utf8(bytes)
+                .map_or(Read::Absent, |text| Manifest::read(&text, scope, version)))
+        }
+        Ok(_) => Ok(Read::Deferred),
     }
 }
 
@@ -520,7 +595,12 @@ fn write_atomically(path: &Path, contents: &[u8], keep_mode: bool) -> std::io::R
         if let Some(permissions) = permissions {
             file.set_permissions(permissions)?;
         }
-        file.sync_all()?;
+        // Best-effort: the rename below is what makes a killed write
+        // harmless (a stray temp file, never a truncated one). On macOS this
+        // flush is `F_FULLFSYNC`, which some network filesystems (SMB)
+        // refuse — fatal, it failed every seed and update there, where a
+        // plain write always worked.
+        let _ = file.sync_all();
         drop(file);
         std::fs::rename(&temp, path)
     })();
@@ -791,6 +871,54 @@ mod tests {
         assert_eq!(seeded.report.updated, strings(&["two/SKILL.md"]));
         assert!(seeded.report.kept.is_empty());
         assert_eq!(read(&root.join("two/SKILL.md")), "two body\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_manifest_install_already_current_is_recorded_and_never_rewritten() {
+        // The commonest first launch of all: the release before this one
+        // wrote exactly these bytes, so the table knows every file — and
+        // each is current, not an update.
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let table: String = FILES
+            .iter()
+            .map(|(path, contents)| format!("{}  skills/{path}\n", digest(contents.as_bytes())))
+            .collect();
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut before = Vec::new();
+        for (path, contents) in FILES {
+            let file = root.join(path);
+            put(&file, contents);
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .expect("open")
+                .set_modified(old)
+                .expect("set mtime");
+            before.push(std::fs::metadata(&file).expect("meta").ino());
+        }
+
+        let seeded = follow(&root, &FILES, &table);
+        quiet(&seeded);
+        assert_eq!(seeded.report, Report::default());
+        for ((path, contents), inode) in FILES.iter().zip(before) {
+            let meta = std::fs::metadata(root.join(path)).expect("meta");
+            assert_eq!(meta.ino(), inode, "{path} was not replaced");
+            assert_eq!(
+                meta.modified().expect("mtime"),
+                old,
+                "{path} was not rewritten"
+            );
+            assert_eq!(read(&root.join(path)), *contents);
+        }
+        let manifest = manifest(&root);
+        assert_eq!(manifest.version, V);
+        assert_eq!(manifest.files.len(), FILES.len());
+        for (path, contents) in FILES {
+            assert_eq!(manifest.files[path], digest(contents.as_bytes()), "{path}");
+        }
     }
 
     #[test]
@@ -1112,7 +1240,13 @@ mod tests {
 
         let seeded = follow(&root, &FILES, "");
         quiet(&seeded);
-        assert!(seeded.report.is_empty(), "{:?}", seeded.report);
+        assert_eq!(
+            seeded.report,
+            Report {
+                retained: strings(&["gone/SKILL.md", "gone/scripts/x.py"]),
+                ..Report::default()
+            }
+        );
         assert_eq!(read(&root.join("gone/SKILL.md")), "g\n");
         assert_eq!(read(&root.join("gone/scripts/x.py")), "mine\n");
         assert!(
@@ -1176,6 +1310,103 @@ mod tests {
         assert!(!manifest(&root).files.contains_key("one/scripts/old.py"));
     }
 
+    #[test]
+    fn a_retired_file_that_stays_for_the_user_is_named_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        quiet(&follow(
+            &root,
+            &with(&[("one/scripts/old.py", "old\n")]),
+            "",
+        ));
+        put(&root.join("one/SKILL.md"), "my own body\n");
+        let mut newer = FILES;
+        newer[0].1 = "one body, revised\n";
+
+        let told = follow(&root, &newer, "");
+        quiet(&told);
+        assert_eq!(told.report.kept, strings(&["one/SKILL.md"]));
+        assert_eq!(told.report.retained, strings(&["one/scripts/old.py"]));
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old\n");
+
+        let again = follow(&root, &newer, "");
+        quiet(&again);
+        assert!(again.report.is_empty(), "{:?}", again.report);
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old\n");
+    }
+
+    #[test]
+    fn a_launch_that_cannot_announce_leaves_a_retained_files_record() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        quiet(&follow(
+            &root,
+            &with(&[("one/scripts/old.py", "old\n")]),
+            "",
+        ));
+        put(&root.join("one/SKILL.md"), "my own body\n");
+        let mut newer = FILES;
+        newer[0].1 = "one body, revised\n";
+
+        let silent = sync(
+            &root,
+            &newer,
+            Kind::Skills,
+            "",
+            V,
+            Mode::Follow { announce: false },
+        );
+        quiet(&silent);
+        assert!(silent.report.is_empty(), "{:?}", silent.report);
+        assert_eq!(
+            manifest(&root).files["one/scripts/old.py"],
+            digest(b"old\n")
+        );
+
+        let told = follow(&root, &newer, "");
+        quiet(&told);
+        assert_eq!(told.report.retained, strings(&["one/scripts/old.py"]));
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old\n");
+    }
+
+    #[test]
+    fn a_launch_that_cannot_announce_records_a_legacy_retired_file_to_tell() {
+        // A first settle: unrecorded, `old.py` would be known by nobody at
+        // the next launch, which no longer asks the table.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        for (path, contents) in FILES {
+            put(&root.join(path), contents);
+        }
+        put(&root.join("one/SKILL.md"), "my own body\n");
+        put(&root.join("one/scripts/old.py"), "old as released\n");
+        let table = format!(
+            "{}  skills/one/scripts/old.py\n",
+            digest(b"old as released\n")
+        );
+
+        let silent = sync(
+            &root,
+            &FILES,
+            Kind::Skills,
+            &table,
+            V,
+            Mode::Follow { announce: false },
+        );
+        quiet(&silent);
+        assert!(silent.report.is_empty(), "{:?}", silent.report);
+        assert_eq!(
+            manifest(&root).files["one/scripts/old.py"],
+            digest(b"old as released\n")
+        );
+
+        let told = follow(&root, &FILES, &table);
+        quiet(&told);
+        assert_eq!(told.report.kept, strings(&["one/SKILL.md"]));
+        assert_eq!(told.report.retained, strings(&["one/scripts/old.py"]));
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old as released\n");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_retired_symlink_is_never_removed() {
@@ -1190,7 +1421,8 @@ mod tests {
 
         let seeded = follow(&root, &FILES, "");
         quiet(&seeded);
-        assert!(seeded.report.removed.is_empty());
+        // Left silently, as a link at a shipped path is: somebody manages it.
+        assert!(seeded.report.is_empty(), "{:?}", seeded.report);
         assert!(
             std::fs::symlink_metadata(&link)
                 .expect("meta")
@@ -1359,6 +1591,31 @@ mod tests {
     }
 
     #[test]
+    fn a_file_where_a_folder_must_be_is_a_seed_that_fails_and_says_so() {
+        // Nothing is at `one/scripts/run.py`, so it is seeded — and the seed
+        // fails, loudly, as a failed seed always did. Taken for something at
+        // the path (a link somebody manages), it was left without a word.
+        for mode in [FOLLOW, Mode::SeedOnly] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().to_path_buf();
+            put(&root.join("one/scripts"), "a file of mine\n");
+
+            let seeded = sync(&root, &FILES, Kind::Skills, "", V, mode);
+            assert_eq!(
+                seeded
+                    .errors
+                    .iter()
+                    .map(|err| err.path.clone())
+                    .collect::<Vec<_>>(),
+                vec![root.join("one/scripts")],
+                "{mode:?}"
+            );
+            assert_eq!(read(&root.join("one/scripts")), "a file of mine\n");
+            assert_eq!(read(&root.join("one/SKILL.md")), "one body\n", "{mode:?}");
+        }
+    }
+
+    #[test]
     fn an_unsafe_path_is_never_looked_at() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
@@ -1391,6 +1648,84 @@ mod tests {
         );
         assert!(seeded.report.removed.is_empty(), "{:?}", seeded.report);
         assert_eq!(read(&root.join("one/scripts/old.py")), "old\n");
+    }
+
+    #[test]
+    fn a_failed_write_keeps_its_units_retired_files_for_the_next_launch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let v1 = [
+            ("one/SKILL.md", "one body\n"),
+            ("one/scripts/old.py", "old\n"),
+        ];
+        for (path, contents) in v1 {
+            put(&root.join(path), contents);
+        }
+        write_manifest(&root, V, &v1);
+        // v2 renames the script, and a file of the user's stands where its
+        // new folder must go.
+        let v2 = [
+            ("one/SKILL.md", "one body, revised\n"),
+            ("one/tools/new.py", "new\n"),
+        ];
+        put(&root.join("one/tools"), "in the way\n");
+
+        let first = follow(&root, &v2, "");
+        assert_eq!(
+            first
+                .errors
+                .iter()
+                .map(|err| err.path.clone())
+                .collect::<Vec<_>>(),
+            vec![root.join("one/tools")]
+        );
+        assert!(first.report.removed.is_empty(), "{:?}", first.report);
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old\n");
+        assert_eq!(
+            manifest(&root).files["one/scripts/old.py"],
+            digest(b"old\n"),
+            "still recorded, so the next launch retries the retirement"
+        );
+
+        std::fs::remove_file(root.join("one/tools")).expect("rm");
+        let second = follow(&root, &v2, "");
+        quiet(&second);
+        assert_eq!(read(&root.join("one/tools/new.py")), "new\n");
+        assert_eq!(second.report.removed, strings(&["one/scripts/old.py"]));
+        assert!(!root.join("one/scripts").exists());
+        assert!(!manifest(&root).files.contains_key("one/scripts/old.py"));
+    }
+
+    #[test]
+    fn a_failed_write_records_a_retired_file_only_the_legacy_table_knew() {
+        // A first settle: the table is all that knows `old.py` for the app's,
+        // and the next launch will not ask it — so the bytes are recorded.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        for (path, contents) in FILES {
+            put(&root.join(path), contents);
+        }
+        put(&root.join("one/scripts/old.py"), "old as released\n");
+        let table = format!(
+            "{}  skills/one/scripts/old.py\n",
+            digest(b"old as released\n")
+        );
+        let name = unwritable_name();
+        let mut files = FILES.to_vec();
+        files.push((name.as_str(), "new in this release\n"));
+
+        let seeded = follow(&root, &files, &table);
+        assert!(
+            seeded.errors.iter().any(|err| err.path == root.join(&name)),
+            "{:?}",
+            seeded.errors
+        );
+        assert!(seeded.report.removed.is_empty(), "{:?}", seeded.report);
+        assert_eq!(read(&root.join("one/scripts/old.py")), "old as released\n");
+        assert_eq!(
+            manifest(&root).files["one/scripts/old.py"],
+            digest(b"old as released\n")
+        );
     }
 
     #[test]
@@ -1475,12 +1810,93 @@ mod tests {
         assert!(!root.join("gone").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_manifest_that_cannot_be_written_is_silent_and_settles_nothing() {
+        // A read-only skills folder (a Nix or dotfiles link, a read-only
+        // mount) whose files the app can still bring up to date: the update
+        // is said, but no error at every launch, and no kept or retained
+        // file told at every launch either — nothing recorded them as told.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        for (path, contents) in FILES {
+            put(&root.join(path), contents);
+        }
+        put(&root.join("one/SKILL.md"), "my own body\n");
+        put(&root.join("two/SKILL.md"), "two as released\n");
+        put(&root.join("one/scripts/old.py"), "old as released\n");
+        let table = format!(
+            "{}  skills/two/SKILL.md\n{}  skills/one/scripts/old.py\n",
+            digest(b"two as released\n"),
+            digest(b"old as released\n"),
+        );
+        if !refuse_writes(&root) {
+            return; // running as root: the manifest write cannot be made to fail
+        }
+
+        let first = follow(&root, &FILES, &table);
+        allow_writes(&root);
+        quiet(&first);
+        assert_eq!(
+            first.report,
+            Report {
+                updated: strings(&["two/SKILL.md"]),
+                ..Report::default()
+            }
+        );
+        assert_eq!(read(&root.join("two/SKILL.md")), "two body\n");
+        assert!(!root.join(MANIFEST_FILE_NAME).exists());
+
+        let second = follow(&root, &FILES, &table);
+        quiet(&second);
+        assert_eq!(second.report.kept, strings(&["one/SKILL.md"]));
+        assert_eq!(second.report.retained, strings(&["one/scripts/old.py"]));
+        assert!(root.join(MANIFEST_FILE_NAME).is_file());
+    }
+
     #[test]
     fn a_retired_file_already_gone_is_no_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         assert!(!remove_retired(&tmp.path().join("gone.md")).expect("not an error"));
         put(&tmp.path().join("here.md"), "x");
         assert!(remove_retired(&tmp.path().join("here.md")).expect("removed"));
+    }
+
+    #[test]
+    fn a_root_that_cannot_be_read_says_so_and_touches_nothing() {
+        // Not knowing who is in charge, the launch touches nothing, as for a
+        // manifest it may not read — but this root is broken, and says so.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        put(&root, "a file where the folder should be\n");
+
+        let seeded = follow(&root, &FILES, "");
+        assert_eq!(
+            seeded
+                .errors
+                .iter()
+                .map(|err| err.path.clone())
+                .collect::<Vec<_>>(),
+            vec![root.join(MANIFEST_FILE_NAME)]
+        );
+        assert!(seeded.report.is_empty(), "{:?}", seeded.report);
+        assert_eq!(read(&root), "a file where the folder should be\n");
+    }
+
+    #[test]
+    fn an_oversize_manifest_defers_silently() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().to_path_buf();
+        let padding =
+            " ".repeat(usize::try_from(crate::builtin::MAX_FILE_BYTES).expect("fits") + 1);
+        put(
+            &root.join(MANIFEST_FILE_NAME),
+            &format!("{{\"schema\": 1, \"files\": {{}}}}{padding}"),
+        );
+        quiet(&follow(&root, &FILES, ""));
+        for (path, _) in FILES {
+            assert!(!root.join(path).exists(), "{path} was not seeded");
+        }
     }
 
     #[test]

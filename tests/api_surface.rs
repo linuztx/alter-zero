@@ -234,14 +234,15 @@ use alter_zero::builtin::{
     Read,
     Report,
     Retired,
+    RetiredUnit,
     SCHEMA,
     Verdict,
     digest,
     is_safe_path,
     notices,
     retired,
+    retired_unit,
     unit,
-    unit_retires,
     verdict,
 };
 
