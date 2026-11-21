@@ -58,11 +58,19 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
                             config.target()
                         );
                         println!("File: {}", path.display());
+                        // An entry naming its own client is the statement
+                        // about its address: a client entered in `/mcp` for
+                        // it would sign in in its place, unseen, and so would
+                        // the login made as that one (`docs/mcp.md`). Its
+                        // secret replaces whatever was kept; without one,
+                        // only an entered client goes — a secret kept for the
+                        // entry's own client stays.
+                        let store = config::mcp_auth_path();
+                        let url = resolved_url(config);
                         if let Some(secret) = &secret {
-                            let store = config::mcp_auth_path();
-                            alter_zero::llm::mcp::save_client_secret(
+                            let change = alter_zero::llm::mcp::save_client_secret(
                                 store.as_deref(),
-                                &resolved_url(config),
+                                &url,
                                 Some(secret),
                             )
                             .map_err(|e| {
@@ -70,9 +78,25 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
                                     "Added the server, but couldn't keep its client secret: {e}"
                                 )
                             })?;
-                            if let Some(store) = store {
+                            if let Some(store) = &store {
                                 println!("Client secret: kept in {}", store.display());
                             }
+                            say_forgotten(change);
+                        } else if config
+                            .oauth()
+                            .is_some_and(|oauth| oauth.client_id.is_some())
+                        {
+                            let change = alter_zero::llm::mcp::forget_entered_client(
+                                store.as_deref(),
+                                &url,
+                            )
+                            .map_err(|e| {
+                                format!(
+                                    "Added the server, but couldn't forget the OAuth client \
+                                     entered in /mcp for it: {e}"
+                                )
+                            })?;
+                            say_forgotten(change);
                         }
                         Ok(())
                     }
@@ -130,6 +154,19 @@ pub(crate) fn run(cmd: &McpCli) -> i32 {
             print_server(name, config, path);
             Ok(())
         }),
+    }
+}
+
+/// What an `add` took out of the token store, said: a client entered in
+/// `/mcp` for the server's address, and the login made as it.
+fn say_forgotten(change: alter_zero::llm::mcp::ClientChange) {
+    if !change.forgot_entered {
+        return;
+    }
+    if change.signed_out {
+        println!("Forgot the OAuth client entered in /mcp for this server, and its login");
+    } else {
+        println!("Forgot the OAuth client entered in /mcp for this server");
     }
 }
 
@@ -235,9 +272,10 @@ fn print_server(name: &str, config: &McpServerConfig, path: &Path) {
             }
         }
     }
-    // The OAuth client the server signs in with: the entry's own, or the one
-    // entered on the `/mcp` auth page and kept with the tokens — and where
-    // its secret is, never the secret.
+    // The OAuth client the server signs in with and where it is from: one
+    // entered on the `/mcp` auth page and kept with the tokens, which
+    // outranks the entry's own, else the entry's — and where its secret is,
+    // never the secret.
     if config.is_remote() {
         let kept = alter_zero::llm::mcp::load_client(
             config::mcp_auth_path().as_deref(),

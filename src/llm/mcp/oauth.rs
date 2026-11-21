@@ -319,17 +319,6 @@ impl StoredClient {
         })
     }
 
-    /// The secret kept for the client `client_id` names: this record's own
-    /// client, or — a record with no id — the one the server's entry names.
-    /// Never another client's.
-    #[must_use]
-    pub fn secret_for(&self, client_id: &str) -> Option<&str> {
-        match &self.client_id {
-            Some(own) if own != client_id => None,
-            _ => self.client_secret.as_deref(),
-        }
-    }
-
     /// May this client be presented to the authorization server `authority`
     /// names ([`AuthServerMeta::authority`])? Only the one it was created
     /// with — compared as written, the spec's simple string comparison — or
@@ -483,7 +472,9 @@ pub fn save_client(
 /// owner-only and never in `mcp.json`, and apart from the login, so "Clear
 /// authentication" leaves the client the user configured. It replaces
 /// whatever was kept for the server — the entry's own client is the one in
-/// use from here on.
+/// use from here on — and a client entered in `/mcp` it replaces takes the
+/// login made as it along, in the same locked write ([`record_entry_secret`]).
+/// What else it did comes back.
 ///
 /// # Errors
 /// Nowhere to keep a secret, or a store that can't be read or written.
@@ -491,12 +482,52 @@ pub fn save_client_secret(
     path: Option<&Path>,
     server_url: &str,
     secret: Option<&str>,
-) -> Result<(), String> {
-    let client = secret.map(|secret| StoredClient {
-        client_secret: Some(secret.to_string()),
-        ..Default::default()
-    });
-    save_client(path, server_url, client.as_ref())
+) -> Result<ClientChange, String> {
+    let Some(path) = path else {
+        return match secret {
+            Some(_) => Err("there is no config directory to keep the client in".to_string()),
+            None => Ok(ClientChange::default()),
+        };
+    };
+    let mut change = ClientChange::default();
+    let mut unreadable = false;
+    rewrite_store(path, |contents| {
+        unreadable = clients_unreadable(contents);
+        if unreadable {
+            return None;
+        }
+        let (updated, made) = record_entry_secret(contents, server_url, secret)?;
+        change = made;
+        Some(updated)
+    })?;
+    if unreadable {
+        return Err(format!(
+            "the clients section of {} isn't an object",
+            path.display()
+        ));
+    }
+    Ok(change)
+}
+
+/// Re-render the store with the secret of the client `server_url`'s entry
+/// names kept in place of whatever was (`None` keeps none): a client
+/// entered in `/mcp` it replaces is forgotten, and the login made as that
+/// client removed with it. `None` when there is nothing to write, or the
+/// `clients` section is no object.
+#[must_use]
+pub fn record_entry_secret(
+    contents: &str,
+    server_url: &str,
+    secret: Option<&str>,
+) -> Option<(String, ClientChange)> {
+    rewrite_client_and_login(contents, server_url, |kept, login| {
+        let replaced = kept.and_then(|kept| kept.client_id.as_deref());
+        let client = secret.map(|secret| StoredClient {
+            client_secret: Some(secret.to_string()),
+            ..StoredClient::default()
+        });
+        Some((client, replaced.is_some_and(|id| login == Some(id))))
+    })
 }
 
 /// The client secret kept for `server_url`, if any.
@@ -2455,10 +2486,14 @@ pub fn client_lookup(target: &SignIn<'_>, cancel: &CancelToken) -> Result<Client
 }
 
 /// What `mcp get` says of the OAuth client a server signs in with
-/// (`docs/mcp-cli.md`), a line each: the entry's own — its port, its scopes,
-/// and where its secret is — or, where the entry names none, the client
-/// entered on the `/mcp` auth page and the port it signs in on. Where a
-/// secret is, never what it is. Empty when the sign-in has no client of the
+/// (`docs/mcp-cli.md`), a line each, naming where it is from: a client
+/// entered on the `/mcp` auth page — it outranks the entry's own, which is
+/// then named as not used — with the port it signs in on; else the entry's
+/// own, with its port and the redirect URI its `callbackUrl` names; then the
+/// entry's scopes, and where the secret in effect is — a secret kept with
+/// the tokens outranks the file's — never what it is. Which authorization
+/// server the sign-in will find is not known here, so an entered client
+/// reads as the one in effect. Empty when the sign-in has no client of the
 /// user's.
 #[must_use]
 pub fn client_summary(
@@ -2467,11 +2502,32 @@ pub fn client_summary(
 ) -> Vec<String> {
     let mut lines = Vec::new();
     let entry_id = configured.and_then(|config| config.client_id.as_deref());
-    let entered = kept.filter(|kept| entry_id.is_none() && kept.client_id.is_some());
     let entry_port = configured.and_then(|config| config.callback_port);
-    match (entry_id, entered.and_then(|kept| kept.client_id.as_deref())) {
-        (Some(id), _) => {
-            lines.push(format!("OAuth client: {id}"));
+    let scopes = configured
+        .and_then(|config| config.scopes.as_deref())
+        .map(|scopes| format!("Scopes: {scopes}"));
+    let in_file = configured.is_some_and(|config| config.client_secret.is_some());
+    if let Some((entered, id)) = kept.and_then(|kept| Some((kept, kept.client_id.as_deref()?))) {
+        lines.push(format!("OAuth client: {id} (entered in /mcp)"));
+        let port = entered
+            .callback_port
+            .or(entry_port)
+            .unwrap_or(DEFAULT_CALLBACK_PORT);
+        lines.push(format!("Callback port: {port}"));
+        lines.extend(scopes);
+        if entered.client_secret.is_some() {
+            lines.push("Client secret: kept with the tokens".to_string());
+        } else if entered.secret_in_effect(configured).is_some() {
+            lines.push("Client secret: ***** (in the file)".to_string());
+        }
+        lines.extend(entry_id.map(|own| {
+            format!("Entry's own client: {own} (not used while the one entered in /mcp is kept)")
+        }));
+        return lines;
+    }
+    match entry_id {
+        Some(id) => {
+            lines.push(format!("OAuth client: {id} (in the file)"));
             lines.extend(entry_port.map(|port| format!("Callback port: {port}")));
             lines.extend(
                 configured
@@ -2480,28 +2536,18 @@ pub fn client_summary(
                     .map(|uri| format!("Redirect URI: {uri}")),
             );
         }
-        (None, Some(id)) => {
-            lines.push(format!("OAuth client: {id} (entered in /mcp)"));
-            let port = entered
-                .and_then(|kept| kept.callback_port)
-                .or(entry_port)
-                .unwrap_or(DEFAULT_CALLBACK_PORT);
-            lines.push(format!("Callback port: {port}"));
+        None => lines.extend(entry_port.map(|port| format!("Callback port: {port}"))),
+    }
+    lines.extend(scopes);
+    if entry_id.is_some() {
+        let kept_secret = kept.is_some_and(|kept| kept.client_secret.is_some());
+        match (kept_secret, in_file) {
+            (true, true) => lines
+                .push("Client secret: kept with the tokens (the file's is not used)".to_string()),
+            (true, false) => lines.push("Client secret: kept with the tokens".to_string()),
+            (false, true) => lines.push("Client secret: ***** (in the file)".to_string()),
+            (false, false) => {}
         }
-        (None, None) => lines.extend(entry_port.map(|port| format!("Callback port: {port}"))),
-    }
-    if let Some(scopes) = configured.and_then(|config| config.scopes.as_deref()) {
-        lines.push(format!("Scopes: {scopes}"));
-    }
-    let in_file = configured.is_some_and(|config| config.client_secret.is_some());
-    let kept_secret = match entry_id {
-        Some(id) => kept.is_some_and(|kept| kept.secret_for(id).is_some()),
-        None => entered.is_some_and(|kept| kept.client_secret.is_some()),
-    };
-    if in_file && entry_id.is_some() {
-        lines.push("Client secret: ***** (in the file)".to_string());
-    } else if kept_secret {
-        lines.push("Client secret: kept with the tokens".to_string());
     }
     lines
 }
@@ -3875,6 +3921,50 @@ mod tests {
         assert!(save_client_secret(None, server, Some("x")).is_err());
     }
 
+    /// `mcp add --client-secret` keeps the secret of the client the entry
+    /// names in place of whatever was kept: a client entered in `/mcp` it
+    /// replaces is said, and the login made as that client goes with it; a
+    /// login made as another stays.
+    #[test]
+    fn a_secret_kept_from_the_command_line_replaces_an_entered_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        let typed = StoredClient {
+            client_id: Some("typed".to_string()),
+            issuer: Some("https://as.test".to_string()),
+            ..Default::default()
+        };
+        let login = |id: &str| StoredTokens {
+            access_token: "at".to_string(),
+            client_id: id.to_string(),
+            ..Default::default()
+        };
+        save_client(Some(&path), server, Some(&typed)).unwrap();
+        save_tokens(Some(&path), server, Some(&login("typed"))).unwrap();
+        assert_eq!(
+            save_client_secret(Some(&path), server, Some("for-the-entry")),
+            Ok(ClientChange {
+                forgot_entered: true,
+                signed_out: true
+            })
+        );
+        assert_eq!(
+            load_client(Some(&path), server),
+            Some(StoredClient {
+                client_secret: Some("for-the-entry".to_string()),
+                ..Default::default()
+            })
+        );
+        assert!(load_tokens(Some(&path), server).is_none());
+        save_tokens(Some(&path), server, Some(&login("file-cid"))).unwrap();
+        assert_eq!(
+            save_client_secret(Some(&path), server, Some("newer")),
+            Ok(ClientChange::default())
+        );
+        assert!(load_tokens(Some(&path), server).is_some());
+    }
+
     /// A client entered on the `/mcp` auth page is kept whole — its id, its
     /// secret, its port and the authorization server it was created with —
     /// in the same `clients` section, apart from the login, beside the
@@ -3933,10 +4023,12 @@ mod tests {
         assert!(save_client(None, server, None).is_ok());
     }
 
-    /// A kept secret belongs to one client: the entry's own, or — an entry
-    /// with no id, the command line's — the one the server's config names.
-    /// And a kept client belongs to the authorization server it was created
-    /// with (SEP-2352), one recorded before any sign-in saw it to any.
+    /// A kept client is entered when it names its own id — a record with
+    /// none, the command line's, is the secret of the client the server's
+    /// entry names — and belongs to the authorization server it was created
+    /// with (SEP-2352), one recorded before any sign-in saw it to any. An
+    /// entered client uses its entry's secret only on its own word, and
+    /// only while the entry names it.
     #[test]
     fn a_kept_client_answers_only_for_itself_and_its_issuer() {
         let entered = StoredClient {
@@ -3946,8 +4038,7 @@ mod tests {
             issuer: Some("https://as.test".to_string()),
             secret_from_entry: false,
         };
-        assert_eq!(entered.secret_for("mine"), Some("s"));
-        assert_eq!(entered.secret_for("another"), None);
+        assert!(entered.is_entered());
         assert!(entered.belongs_to("https://as.test"));
         assert!(!entered.belongs_to("https://as.test/"));
         assert!(!entered.belongs_to("https://evil.test"));
@@ -3955,8 +4046,33 @@ mod tests {
             client_secret: Some("s".to_string()),
             ..Default::default()
         };
-        assert_eq!(cli.secret_for("whatever"), Some("s"));
+        assert!(!cli.is_entered());
         assert!(cli.belongs_to("https://anything.test"));
+        let entry = crate::mcp::OAuthClientConfig {
+            client_id: Some("mine".to_string()),
+            client_secret: Some("in-file".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(entered.secret_in_effect(Some(&entry)).as_deref(), Some("s"));
+        let lent = StoredClient {
+            client_secret: None,
+            secret_from_entry: true,
+            ..entered.clone()
+        };
+        assert_eq!(
+            lent.secret_in_effect(Some(&entry)).as_deref(),
+            Some("in-file")
+        );
+        let renamed = crate::mcp::OAuthClientConfig {
+            client_id: Some("other".to_string()),
+            ..entry.clone()
+        };
+        assert_eq!(lent.secret_in_effect(Some(&renamed)), None);
+        let own = StoredClient {
+            secret_from_entry: false,
+            ..lent
+        };
+        assert_eq!(own.secret_in_effect(Some(&entry)), None);
     }
 
     /// A kept client printed for a log or a failed assertion says a secret
@@ -4514,9 +4630,10 @@ mod tests {
         assert!(client_lookup(&target, &cancel).is_err());
     }
 
-    /// What `mcp get` says of the client a server signs in with: the
-    /// entry's own and where its secret is, or the one entered in `/mcp`
-    /// with its port — and never a secret itself.
+    /// What `mcp get` says of the client a server signs in with, and where
+    /// it is from: one entered in `/mcp` with its port — and the entry's
+    /// own, named as not used while it is kept — else the entry's own; and
+    /// where the secret in effect is, never the secret itself.
     #[test]
     fn the_client_a_server_signs_in_with_is_summed_up_without_its_secret() {
         let entered = StoredClient {
@@ -4548,8 +4665,8 @@ mod tests {
                 format!("Callback port: {DEFAULT_CALLBACK_PORT}"),
             ]
         );
-        // The entry's own client, as before — its secret in the file, kept
-        // with the tokens, or nowhere.
+        // The entry's own client — its secret kept with the tokens, in the
+        // file, or nowhere; a kept one outranks the file's.
         let configured = crate::mcp::OAuthClientConfig {
             client_id: Some("file-cid".to_string()),
             callback_port: Some(8976),
@@ -4563,19 +4680,10 @@ mod tests {
         assert_eq!(
             client_summary(Some(&configured), Some(&cli)),
             [
-                "OAuth client: file-cid",
+                "OAuth client: file-cid (in the file)",
                 "Callback port: 8976",
                 "Scopes: calendar openid",
                 "Client secret: kept with the tokens",
-            ]
-        );
-        // Another client's secret is not this one's.
-        assert_eq!(
-            client_summary(Some(&configured), Some(&entered)),
-            [
-                "OAuth client: file-cid",
-                "Callback port: 8976",
-                "Scopes: calendar openid",
             ]
         );
         let in_file = crate::mcp::OAuthClientConfig {
@@ -4587,6 +4695,37 @@ mod tests {
                 .last()
                 .map(String::as_str),
             Some("Client secret: ***** (in the file)")
+        );
+        assert_eq!(
+            client_summary(Some(&in_file), Some(&cli))
+                .last()
+                .map(String::as_str),
+            Some("Client secret: kept with the tokens (the file's is not used)")
+        );
+        // One entered here outranks the entry's own: the entered one is
+        // named, and the entry's as not used.
+        assert_eq!(
+            client_summary(Some(&configured), Some(&entered)),
+            [
+                "OAuth client: typed-cid (entered in /mcp)",
+                "Callback port: 9001",
+                "Scopes: calendar openid",
+                "Client secret: kept with the tokens",
+                "Entry's own client: file-cid (not used while the one entered in /mcp is kept)",
+            ]
+        );
+        // The entry's id entered on another port, on the file's secret.
+        let lent = StoredClient {
+            client_id: Some("file-cid".to_string()),
+            client_secret: None,
+            secret_from_entry: true,
+            ..entered.clone()
+        };
+        assert!(
+            client_summary(Some(&in_file), Some(&lent))
+                .contains(&"Client secret: ***** (in the file)".to_string()),
+            "{:?}",
+            client_summary(Some(&in_file), Some(&lent))
         );
         // An entry with scopes alone still shows them beside an entered client.
         let scopes_only = crate::mcp::OAuthClientConfig {
