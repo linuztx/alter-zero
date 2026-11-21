@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 163 — a codex plugin's OAUTH CLIENT: an unfilled one asked for in /mcp, a filled one used as written
+# Phase 164 — a codex plugin's OAUTH CLIENT: an unfilled one asked for in /mcp, a filled one used as written
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -30,7 +30,7 @@ smoke_begin
 #   and the redirect it sends, on the authorize URL and at the token
 #   exchange, is the plugin's callback URL, answered on that URL's path; its
 #   secret is never drawn.
-S163="${S}_pluginclient"
+S164="${S}_pluginclient"
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 AUTH_PORT="$(free_port)"
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
@@ -260,13 +260,13 @@ az plugin marketplace add "$MARKET" >/dev/null 2>&1 || fail "the marketplace cou
 az plugin install mail@codexish >/dev/null 2>&1 || fail "the mail plugin could not be installed"
 RAW="$SMOKE_TMP/mail.raw"
 : >"$RAW"
-open_server_page "$S163" "plugin:mail:mail"
-keys "$S163" Enter # Authenticate
-if ! wait_for 15 "$S163" -F "OAuth client for plugin:mail:mail"; then
-	dump "$S163"
+open_server_page "$S164" "plugin:mail:mail"
+keys "$S164" Enter # Authenticate
+if ! wait_for 15 "$S164" -F "OAuth client for plugin:mail:mail"; then
+	dump "$S164"
 	fail "Authenticate on a plugin's server with an unfilled client did not end on the client form"
 fi
-form="$(pane "$S163")"
+form="$(pane "$S164")"
 note "the client form over a plugin's server"
 printf '%s\n' "$form"
 expect_has "$form" -F "Redirect URI:  http://localhost:$MAIL_PORT/callback" "the redirect URI is not on the plugin's callback port"
@@ -275,14 +275,14 @@ expect_has "$form" -E "Client ID +> *$" "the client ID field is not empty"
 expect_lacks "$form" -F "MAIL_PUBLIC_CLIENT_ID" "THE PLACEHOLDER IS SHOWN AS A CLIENT ID"
 expect_lacks "$form" -F "MAIL_CLIENT_SECRET" "the placeholder secret is on the page"
 
-type_text "$S163" "smoke-client" # the caret opens on the client ID
-keys "$S163" Enter               # on to the secret
-type_text "$S163" "right-secret"
+type_text "$S164" "smoke-client" # the caret opens on the client ID
+keys "$S164" Enter               # on to the secret
+type_text "$S164" "right-secret"
 sleep "$SMOKE_TYPE_SETTLE"
-expect_lacks "$(pane "$S163")" -F "right-secret" "THE SECRET IS ON SCREEN"
-keys "$S163" Enter # submit: kept, and the sign-in starts
+expect_lacks "$(pane "$S164")" -F "right-secret" "THE SECRET IS ON SCREEN"
+keys "$S164" Enter # submit: kept, and the sign-in starts
 if ! next_authorize_url; then
-	dump "$S163"
+	dump "$S164"
 	fail "no authorize URL followed the form"
 fi
 note "the authorize URL the entered client signs in with"
@@ -291,15 +291,15 @@ expect_eq "$(url_param "$new_url" client_id)" "smoke-client" "the sign-in does n
 expect_eq "$(url_param "$new_url" redirect_uri)" "http://localhost:$MAIL_PORT/callback" "the redirect is not on the plugin's callback port"
 expect_eq "$(url_param "$new_url" scope)" "mail.read mail.send" "the sign-in does not ask for the plugin's scopes"
 browser "$new_url" "code=smoke-code-1"
-if ! wait_for 15 "$S163" -F "Authenticated with plugin:mail:mail"; then
-	dump "$S163"
+if ! wait_for 15 "$S164" -F "Authenticated with plugin:mail:mail"; then
+	dump "$S164"
 	fail "the entered client did not sign in to the plugin's server"
 fi
-if ! wait_for 15 "$S163" -F "✔ connected"; then
-	dump "$S163"
+if ! wait_for 15 "$S164" -F "✔ connected"; then
+	dump "$S164"
 	fail "the plugin's server did not connect after the sign-in"
 fi
-tmux kill-session -t "$S163" 2>/dev/null
+tmux kill-session -t "$S164" 2>/dev/null
 
 # Kept with the tokens, under the server's address, bound to its issuer and
 # the plugin's port — and the plugin's file is as it was.
@@ -327,28 +327,28 @@ az plugin uninstall mail@codexish >/dev/null 2>&1 || fail "the mail plugin could
 az plugin install hub@codexish >/dev/null 2>&1 || fail "the hub plugin could not be installed"
 RAW="$SMOKE_TMP/hub.raw"
 : >"$RAW"
-open_server_page "$S163" "plugin:hub:hub"
-keys "$S163" Enter # Authenticate
+open_server_page "$S164" "plugin:hub:hub"
+keys "$S164" Enter # Authenticate
 if ! next_authorize_url; then
-	dump "$S163"
+	dump "$S164"
 	fail "a plugin's own client did not go straight to the authorize URL"
 fi
 note "the authorize URL the plugin's own client signs in with"
 printf '%s\n' "$new_url"
-expect_lacks "$(pane "$S163")" -F "OAuth client for" "a plugin that names its client was asked for one"
+expect_lacks "$(pane "$S164")" -F "OAuth client for" "a plugin that names its client was asked for one"
 expect_eq "$(url_param "$new_url" client_id)" "hub-client" "the sign-in does not present the plugin's client"
 expect_eq "$(url_param "$new_url" redirect_uri)" "$HUB_CALLBACK" "the redirect is not the callback URL the plugin's client registered"
 browser "$new_url" "code=smoke-code-2"
-if ! wait_for 15 "$S163" -F "Authenticated with plugin:hub:hub"; then
-	dump "$S163"
+if ! wait_for 15 "$S164" -F "Authenticated with plugin:hub:hub"; then
+	dump "$S164"
 	fail "the plugin's own client did not sign in on its callback URL"
 fi
-if ! wait_for 15 "$S163" -F "✔ connected"; then
-	dump "$S163"
+if ! wait_for 15 "$S164" -F "✔ connected"; then
+	dump "$S164"
 	fail "the plugin's server did not connect after the sign-in"
 fi
-expect_lacks "$(pane "$S163")" -F "hub-secret" "THE PLUGIN'S CLIENT SECRET IS ON SCREEN"
-tmux kill-session -t "$S163" 2>/dev/null
+expect_lacks "$(pane "$S164")" -F "hub-secret" "THE PLUGIN'S CLIENT SECRET IS ON SCREEN"
+tmux kill-session -t "$S164" 2>/dev/null
 grep -qF "client_id=hub-client redirect_uri=$HUB_CALLBACK ok=True" "$AUTH_LOG" ||
 	fail "the token exchange did not send the plugin's callback URL"
 if grep -aqF "hub-secret" "$RAW"; then

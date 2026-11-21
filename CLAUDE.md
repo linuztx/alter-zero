@@ -1637,7 +1637,7 @@ section, bound to its issuer and never written to a config file
 (`oauth::StoredClient`), signs in on exactly its own port
 (`DEFAULT_CALLBACK_PORT`), and is changed or forgotten from the server's
 page; a sign-in that fails stays on its page with the whole reason
-(`McpAuthView::failed`); `smoke.sh` Phase 162) in
+(`McpAuthView::failed`); `smoke.sh` Phase 163) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
@@ -3421,7 +3421,7 @@ project's and switched live (`McpManager::set_plugin_servers`), a legacy
 plugin's `.mcp.json` read by the one `mcp::parse_server_entry`, so codex's
 snake_case `oauth` keys, top-level `scopes` and `callbackUrl` hold there too
 and a `<…>` template client counts as none, which `/mcp` then asks for
-(`smoke.sh` Phase 163); of two
+(`smoke.sh` Phase 164); of two
 enabled plugins of one name only the first in id order loads — **nothing that
 runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,

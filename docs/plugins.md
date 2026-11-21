@@ -182,7 +182,7 @@ snake_case `oauth` keys (`client_id`, `client_secret`, `callback_port`,
 template slot — `"client_id": "<GMAIL_PUBLIC_CLIENT_ID>"` — names no client,
 so `/mcp` asks for one when the server is authenticated, prefilled with the
 entry's callback port; the entry's scopes are what the sign-in asks for.
-`oauth_resource` is ignored. `smoke.sh` Phase 163 installs one plugin of each
+`oauth_resource` is ignored. `smoke.sh` Phase 164 installs one plugin of each
 shape from a marketplace in codex's own format — a client left as a template
 slot, and a client the entry names with its callback URL — and signs in to
 both against a stub authorization server.

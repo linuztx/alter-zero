@@ -843,7 +843,7 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   An entry's top-level `oauth_resource` is ignored on purpose: the spec
   binds the RFC 8707 `resource` to the MCP server's own URL, and the sign-in
   already derives it from discovery and checks it there (`discover`).
-  `smoke.sh` Phase 163 drives both codex shapes on the real binary, each a
+  `smoke.sh` Phase 164 drives both codex shapes on the real binary, each a
   plugin's server: a client left as a template slot is asked for on the
   entry's port and signs in with the entry's scopes, and an entry's own
   client signs in on its `callback_url`.
@@ -1507,7 +1507,7 @@ mid-turn (the strip stays above it). Pages:
    (`mcp_view::client_caret`, shared with `client_field_row` so the two
    cannot disagree); a value wider than its room shows its end, the part
    being typed. Like every page here it hugs its rules and flows rather
-   than clips on a short terminal. `smoke.sh` Phase 162 drives all of it on
+   than clips on a short terminal. `smoke.sh` Phase 163 drives all of it on
    the real binary against a stub authorization server that registers no
    clients.
 

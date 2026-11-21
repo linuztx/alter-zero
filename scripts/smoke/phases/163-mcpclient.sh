@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 162 — the /mcp CLIENT FORM: an OAuth client typed in, turned away, fixed, forgotten
+# Phase 163 — the /mcp CLIENT FORM: an OAuth client typed in, turned away, fixed, forgotten
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -29,7 +29,7 @@ smoke_begin
 # - `mcp get` names the client and never its secret;
 # - Forget OAuth client drops the client and the login together;
 # - a sign-in that FAILS stays on its page with the whole reason.
-S162="${S}_mcpclient"
+S163="${S}_mcpclient"
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 AUTH_PORT="$(free_port)"
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
@@ -134,8 +134,8 @@ STORE="$SMOKE_CFG/mcp-auth.json"
 
 RAW="$SMOKE_TMP/mcpclient.raw"
 : >"$RAW"
-launch "$S162" 100 44 "$APP"
-tmux pipe-pane -t "$S162" -o "cat >> '$RAW'"
+launch "$S163" 100 44 "$APP"
+tmux pipe-pane -t "$S163" -o "cat >> '$RAW'"
 
 # The newest authorize URL the page has linked: every OSC 8 open in the raw
 # stream carries its whole target.
@@ -167,30 +167,30 @@ except Exception as error:  # the page may answer an error status; the app has t
 PY
 }
 
-type_text "$S162" "/mcp"
+type_text "$S163" "/mcp"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-if ! wait_for 15 "$S162" -F "needs authentication"; then
-	dump "$S162"
+keys "$S163" Enter
+if ! wait_for 15 "$S163" -F "needs authentication"; then
+	dump "$S163"
 	fail "the stub server never read as needing authentication"
 fi
-keys "$S162" Enter # the server's detail
-if ! wait_for 5 "$S162" -F "1. Authenticate"; then
-	dump "$S162"
+keys "$S163" Enter # the server's detail
+if ! wait_for 5 "$S163" -F "1. Authenticate"; then
+	dump "$S163"
 	fail "the server page offers no Authenticate action"
 fi
-if pane_has "$S162" -F "OAuth client"; then
-	dump "$S162"
+if pane_has "$S163" -F "OAuth client"; then
+	dump "$S163"
 	fail "a server with no client of the user's shows client rows"
 fi
-keys "$S162" Enter # Authenticate
+keys "$S163" Enter # Authenticate
 
 # --- the form ---------------------------------------------------------------
-if ! wait_for 15 "$S162" -F "OAuth client for stub"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "OAuth client for stub"; then
+	dump "$S163"
 	fail "Authenticate did not end on the client form"
 fi
-form="$(pane "$S162")"
+form="$(pane "$S163")"
 note "the client form"
 printf '%s\n' "$form"
 expect_has "$form" -F "Issuer:        $AUTH_BASE" "the form does not show the issuer as discovery named it"
@@ -212,41 +212,41 @@ expect_lacks "$form" -F "URL > " "the paste field is still on the page"
 
 # The port field: the redirect URI follows it as it is typed.
 CB_PORT="$(free_port)"
-keys "$S162" Up # the port, above the client ID
-keys "$S162" C-u
-type_text "$S162" "$CB_PORT"
-if ! wait_for 5 "$S162" -F "Redirect URI:  http://localhost:$CB_PORT/callback"; then
-	dump "$S162"
+keys "$S163" Up # the port, above the client ID
+keys "$S163" C-u
+type_text "$S163" "$CB_PORT"
+if ! wait_for 5 "$S163" -F "Redirect URI:  http://localhost:$CB_PORT/callback"; then
+	dump "$S163"
 	fail "the redirect URI did not follow the port typed"
 fi
 # Ctrl+Y copies it (OSC 52 here: the suite runs headless).
-keys "$S162" C-y
-if ! wait_for 5 "$S162" -F "Copied redirect URI"; then
-	dump "$S162"
+keys "$S163" C-y
+if ! wait_for 5 "$S163" -F "Copied redirect URI"; then
+	dump "$S163"
 	fail "Ctrl+Y did not copy the redirect URI"
 fi
 
 # A submit with no client ID says so, and sends nothing.
-keys "$S162" Down  # the client ID
-keys "$S162" Down  # the secret: the last field
-keys "$S162" Enter # submit
-if ! wait_for 5 "$S162" -F "Enter the client ID"; then
-	dump "$S162"
+keys "$S163" Down  # the client ID
+keys "$S163" Down  # the secret: the last field
+keys "$S163" Enter # submit
+if ! wait_for 5 "$S163" -F "Enter the client ID"; then
+	dump "$S163"
 	fail "a submit with no client ID was not refused on the page"
 fi
-type_text "$S162" "smoke-client" # the caret went to the field at fault
-keys "$S162" Enter               # on to the secret
-type_text "$S162" "wrong-secret"
+type_text "$S163" "smoke-client" # the caret went to the field at fault
+keys "$S163" Enter               # on to the secret
+type_text "$S163" "wrong-secret"
 sleep "$SMOKE_TYPE_SETTLE"
-typed="$(pane "$S162")"
+typed="$(pane "$S163")"
 expect_has "$typed" -F "Client ID     > smoke-client" "the typed client ID is not on its row"
 expect_has "$typed" -F "Client secret > ••••••••••••" "the secret is not drawn as a mask, a mark a character"
 expect_lacks "$typed" -F "wrong-secret" "THE SECRET IS ON SCREEN"
-keys "$S162" Enter # submit: kept, and the sign-in starts again
+keys "$S163" Enter # submit: kept, and the sign-in starts again
 
 # --- the browser round with a client the server turns away -------------------
 if ! next_authorize_url ""; then
-	dump "$S162"
+	dump "$S163"
 	fail "no authorize URL followed the form"
 fi
 first_url="$new_url"
@@ -255,11 +255,11 @@ printf '%s\n' "$first_url"
 expect_has "$first_url" -F "client_id=smoke-client" "the sign-in does not present the entered client"
 expect_has "$first_url" -F "redirect_uri=http%3A%2F%2Flocalhost%3A$CB_PORT%2Fcallback" "the redirect is not on the port the form named"
 browser "$first_url" "code=smoke-code-1"
-if ! wait_for 15 "$S162" -F "turned this client away"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "turned this client away"; then
+	dump "$S163"
 	fail "a client the server turned away did not reopen the form with the reason"
 fi
-back="$(pane "$S162")"
+back="$(pane "$S163")"
 note "the form, back with the server's reason"
 printf '%s\n' "$back"
 expect_has "$back" -F "invalid_client" "the reason lacks the server's error"
@@ -273,22 +273,22 @@ expect_has "$back" -F "Client secret > unchanged" "the form does not say the kep
 expect_lacks "$back" -F "wrong-secret" "THE SECRET IS ON SCREEN"
 
 # --- the right secret --------------------------------------------------------
-type_text "$S162" "right-secret" # the caret is on the secret
-keys "$S162" Enter
+type_text "$S163" "right-secret" # the caret is on the secret
+keys "$S163" Enter
 if ! next_authorize_url "$first_url"; then
-	dump "$S162"
+	dump "$S163"
 	fail "no second authorize URL followed the corrected client"
 fi
 browser "$new_url" "code=smoke-code-2"
-if ! wait_for 15 "$S162" -F "Authenticated with stub"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "Authenticated with stub"; then
+	dump "$S163"
 	fail "the corrected client did not sign in"
 fi
-if ! wait_for 15 "$S162" -F "✔ connected"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "✔ connected"; then
+	dump "$S163"
 	fail "the server did not connect after the sign-in"
 fi
-signed_in="$(pane "$S162")"
+signed_in="$(pane "$S163")"
 note "the server's page, signed in"
 printf '%s\n' "$signed_in"
 expect_has "$signed_in" -E "OAuth client: +smoke-client" "the page does not name the client it signs in with"
@@ -323,32 +323,32 @@ expect_lacks "$got" -F "right-secret" "mcp get printed the secret"
 
 # --- Change opens the form over the kept client; Esc leaves it be -----------
 change="$(printf '%s\n' "$signed_in" | grep -oE '[0-9]+\. Change OAuth client' | grep -oE '^[0-9]+')"
-keys "$S162" "$change"
-if ! wait_for 5 "$S162" -F "Client ID     > smoke-client"; then
-	dump "$S162"
+keys "$S163" "$change"
+if ! wait_for 5 "$S163" -F "Client ID     > smoke-client"; then
+	dump "$S163"
 	fail "Change OAuth client did not open the form over the kept client"
 fi
-expect_has "$(pane "$S162")" -F "Client secret > unchanged" "the form does not say the kept secret stays"
-keys "$S162" Escape
-if ! wait_for 5 "$S162" -F "Forget OAuth client"; then
-	dump "$S162"
+expect_has "$(pane "$S163")" -F "Client secret > unchanged" "the form does not say the kept secret stays"
+keys "$S163" Escape
+if ! wait_for 5 "$S163" -F "Forget OAuth client"; then
+	dump "$S163"
 	fail "Esc did not return from the form to the server page"
 fi
 
 # --- Forget drops the client and the login together -------------------------
-forget="$(pane "$S162" | grep -oE '[0-9]+\. Forget OAuth client' | grep -oE '^[0-9]+')"
-keys "$S162" "$forget"
-if ! wait_for 5 "$S162" -F "Forgot the OAuth client for stub"; then
-	dump "$S162"
+forget="$(pane "$S163" | grep -oE '[0-9]+\. Forget OAuth client' | grep -oE '^[0-9]+')"
+keys "$S163" "$forget"
+if ! wait_for 5 "$S163" -F "Forgot the OAuth client for stub"; then
+	dump "$S163"
 	fail "Forget OAuth client did not say it forgot the client"
 fi
-if ! wait_for 15 "$S162" -F "needs authentication"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "needs authentication"; then
+	dump "$S163"
 	fail "the server is still signed in after its client was forgotten"
 fi
-forgotten() { ! pane_has "$S162" -F "Forget OAuth client" && ! pane_has "$S162" -F "OAuth client:"; }
+forgotten() { ! pane_has "$S163" -F "Forget OAuth client" && ! pane_has "$S163" -F "OAuth client:"; }
 if ! poll 5 forgotten; then
-	dump "$S162"
+	dump "$S163"
 	fail "the page still names a client after it was forgotten"
 fi
 python3 - "$STORE" "$AUTH_BASE" <<'PY' || fail "the token store still holds the forgotten client or its login"
@@ -360,38 +360,38 @@ assert url not in doc.get("servers", {}), doc
 PY
 
 # --- a sign-in that fails stays on its page with the whole reason ----------
-keys "$S162" 1 # Authenticate
-if ! wait_for 15 "$S162" -F "OAuth client for stub"; then
-	dump "$S162"
+keys "$S163" 1 # Authenticate
+if ! wait_for 15 "$S163" -F "OAuth client for stub"; then
+	dump "$S163"
 	fail "the sign-in did not ask for a client again once it was forgotten"
 fi
-keys "$S162" Up
-keys "$S162" C-u
-type_text "$S162" "$CB_PORT"
-keys "$S162" Down
-type_text "$S162" "smoke-client"
-keys "$S162" Enter
-type_text "$S162" "right-secret"
-keys "$S162" Enter
+keys "$S163" Up
+keys "$S163" C-u
+type_text "$S163" "$CB_PORT"
+keys "$S163" Down
+type_text "$S163" "smoke-client"
+keys "$S163" Enter
+type_text "$S163" "right-secret"
+keys "$S163" Enter
 if ! next_authorize_url "$new_url"; then
-	dump "$S162"
+	dump "$S163"
 	fail "no authorize URL followed the client entered again"
 fi
 browser "$new_url" "error=access_denied&error_description=The%20user%20said%20no"
-if ! wait_for 15 "$S162" -F "Couldn't authenticate with stub"; then
-	dump "$S162"
+if ! wait_for 15 "$S163" -F "Couldn't authenticate with stub"; then
+	dump "$S163"
 	fail "a refused sign-in did not stay on its page"
 fi
-failed="$(pane "$S162")"
+failed="$(pane "$S163")"
 note "the failed sign-in's page"
 printf '%s\n' "$failed"
 failed_flat="$(printf '%s\n' "$failed" | tr '\n' ' ' | tr -s ' ')"
 expect_has "$failed_flat" -F "access_denied" "the failed page lacks the server's error"
 expect_has "$failed_flat" -F "The user said no" "the failed page lacks the server's own words"
 expect_has "$failed" -F "Enter to try again" "the failed page does not say how to retry"
-keys "$S162" Escape
-if ! wait_for 5 "$S162" -F "1. Authenticate"; then
-	dump "$S162"
+keys "$S163" Escape
+if ! wait_for 5 "$S163" -F "1. Authenticate"; then
+	dump "$S163"
 	fail "Esc did not return from the failed page to the server page"
 fi
 
@@ -412,4 +412,4 @@ expect_file_has "$AUTH_LOG" -F "client_id=smoke-client redirect_uri=http://local
 if grep -qF "/oauth/register" "$AUTH_LOG"; then
 	fail "the sign-in tried to register a client with a server that registers none"
 fi
-tmux kill-session -t "$S162" 2>/dev/null
+tmux kill-session -t "$S163" 2>/dev/null
