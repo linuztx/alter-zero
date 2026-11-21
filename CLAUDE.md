@@ -1654,7 +1654,7 @@ itself): a `<PLACEHOLDER>` where a client goes — OpenAI's gmail plugin ships
 port and for the plugin's scopes, while a real shipped client signs in on
 the redirect it was registered with (`callbackUrl`; codex's
 `http://127.0.0.1/callback` for a client written codex's way);
-`smoke.sh` Phases 162 and 163) in
+`smoke.sh` Phases 163 and 164) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —

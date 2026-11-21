@@ -442,7 +442,7 @@ Signing in to Google's with such a client is still **experimental**: it
 follows Google's published metadata (the trailing-slash issuer, the 401
 whose metadata URL names the tool rather than the server, the parameters
 that get a refresh token), and the form is driven end to end against a stub
-of that shape (`smoke.sh` Phase 162), but not against Google itself. What
+of that shape (`smoke.sh` Phase 163), but not against Google itself. What
 stays future work: Client ID Metadata Documents for the providers that
 offer them (Devin's), and a verified Google sign-in.
 
@@ -1837,7 +1837,7 @@ endpoint turns the client away — under `oauth`'s and the manager's tests
 (the request the flow ends on, the kept entry, the issuer binding, a
 secret left out staying out on the wire, the login that goes with a
 forgotten or replaced client), its state machine and rendering under
-`app::tests::mcp_menu` and `ui::tests::mcp_view`, and `smoke.sh` Phase 162
+`app::tests::mcp_menu` and `ui::tests::mcp_view`, and `smoke.sh` Phase 163
 drives it on screen against a stub of that shape with `curl` as the
 browser: the suggested port and the emptied one, a wrong secret, the
 reopened form, the right one, the kept entry (owner-only, never in

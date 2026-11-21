@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 162 — /mcp ASKS FOR THE OAUTH CLIENT a server can't register
+# Phase 163 — /mcp ASKS FOR THE OAUTH CLIENT a server can't register
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -40,10 +40,10 @@ smoke_begin
 #   terminal's width — with Enter trying again once the port is free.
 #
 # Through all of it neither secret may appear on screen, scrollback included.
-S162="${S}_mcpclientform"
-CLIENT_ID="smoke-162-client.apps.example"
-SECRET="GOCSPX-smoke162-right-secret"
-WRONG="GOCSPX-smoke162-wrong-secret"
+S163="${S}_mcpclientform"
+CLIENT_ID="smoke-163-client.apps.example"
+SECRET="GOCSPX-smoke163-right-secret"
+WRONG="GOCSPX-smoke163-wrong-secret"
 AUTH_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 FIXED_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
@@ -55,7 +55,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 port, log, client_id, secret = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 base = f"http://127.0.0.1:{port}"
-TOKEN = "smoke-162-access-token"
+TOKEN = "smoke-163-access-token"
 
 class Stub(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -99,7 +99,7 @@ class Stub(BaseHTTPRequestHandler):
             form = urllib.parse.parse_qs(body)
             if form.get("client_id") == [client_id] and form.get("client_secret") == [secret]:
                 self.reply(200, {"access_token": TOKEN, "token_type": "Bearer",
-                                 "expires_in": 3600, "refresh_token": "smoke-162-refresh"})
+                                 "expires_in": 3600, "refresh_token": "smoke-163-refresh"})
             else:
                 self.reply(401, {"error": "invalid_client",
                                  "error_description": "The OAuth client was not found."})
@@ -146,7 +146,7 @@ CONFIG_BEFORE="$(cat "$SMOKE_CFG/mcp.json")"
 
 never_shows_a_secret() { # $1 label
 	local screen
-	screen="$(pane "$S162" -S -600)"
+	screen="$(pane "$S163" -S -600)"
 	if printf '%s\n' "$screen" | grep -qF -e "$SECRET" -e "$WRONG"; then
 		dump "a secret leaked ($1)" "$screen"
 		fail "a client secret is on screen ($1)"
@@ -154,13 +154,13 @@ never_shows_a_secret() { # $1 label
 }
 paste() { # TEXT — a bracketed paste into the focused field
 	tmux set-buffer -b client "$1"
-	tmux paste-buffer -p -b client -t "$S162"
+	tmux paste-buffer -p -b client -t "$S163"
 }
 # The authorize URL as the page spells it, squeezed back together (it holds
 # no spaces), once it is whole — its last parameter is the scope.
 auth_url=""
 read_url() {
-	auth_url="$(pane "$S162" | tr -d ' \n' | grep -oE "${AUTH_BASE}/oauth/authorize\?[^[:space:]]*scope=mcp%3Atools" | head -1)"
+	auth_url="$(pane "$S163" | tr -d ' \n' | grep -oE "${AUTH_BASE}/oauth/authorize\?[^[:space:]]*scope=mcp%3Atools" | head -1)"
 	[ -n "$auth_url" ]
 }
 # Play the browser: approve, and follow the redirect to the loopback listener.
@@ -171,26 +171,26 @@ approve() {
 	[ -n "$state" ] || fail "no state could be read off the authorize URL"
 	[ -n "$cb_port" ] || fail "no callback port could be read off the authorize URL"
 	REDIRECT_PORT="$cb_port"
-	curl -s --noproxy '*' "http://127.0.0.1:$cb_port/callback?code=code-162&state=$state" >/dev/null || true
+	curl -s --noproxy '*' "http://127.0.0.1:$cb_port/callback?code=code-163&state=$state" >/dev/null || true
 }
 
-launch "$S162" 100 44 "env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
-type_text "$S162" "/mcp"
+launch "$S163" 100 44 "env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+type_text "$S163" "/mcp"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-if ! wait_for 15 "$S162" -F "needs authentication"; then
-	dump "$S162"
+keys "$S163" Enter
+if ! wait_for 15 "$S163" -F "needs authentication"; then
+	dump "$S163"
 	fail "the stub server never read as needing authentication"
 fi
-keys "$S162" Enter # the server's detail
-detail="$(wait_pane 5 "$S162" -F "2. Set OAuth client")" ||
+keys "$S163" Enter # the server's detail
+detail="$(wait_pane 5 "$S163" -F "2. Set OAuth client")" ||
 	fail "the server page does not offer Set OAuth client under the sign-in"
 dump "the server page before any client" "$detail"
 expect_lacks "$detail" -F "OAuth client:" "the page names a client before one was given"
 
 # Authenticate: no registration, no client — the page ASKS instead of failing.
-keys "$S162" Enter
-form="$(wait_pane 15 "$S162" -F "registers no clients itself")" || {
+keys "$S163" Enter
+form="$(wait_pane 15 "$S163" -F "registers no clients itself")" || {
 	dump "the page after Authenticate" "$form"
 	fail "Authenticate did not turn into the client form"
 }
@@ -209,36 +209,36 @@ expect_lacks "$form" -F "PORT" "the redirect URI still stands in for a port the 
 expect_lacks "$form" -F "URL > " "the form still shows the sign-in's redirect field"
 
 # The id typed, the WRONG secret pasted: one dot a character, never its text.
-type_text "$S162" "$CLIENT_ID"
+type_text "$S163" "$CLIENT_ID"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-wait_for 5 "$S162" -F "❯ Client secret" || fail "Enter did not move to the secret field"
+keys "$S163" Enter
+wait_for 5 "$S163" -F "❯ Client secret" || fail "Enter did not move to the secret field"
 paste "$WRONG"
 dots="$(printf '%*s' "${#WRONG}" '' | sed 's/ /•/g')"
-masked="$(wait_pane 5 "$S162" -F "$dots")" || fail "the pasted secret is not masked one dot per character"
+masked="$(wait_pane 5 "$S163" -F "$dots")" || fail "the pasted secret is not masked one dot per character"
 dump "the form with the id typed and the secret pasted" "$masked"
 expect_has "$masked" -F "$CLIENT_ID" "the typed client id is not on its row"
 never_shows_a_secret "the secret field"
-keys "$S162" Enter
-hint="$(wait_pane 5 "$S162" -F "Enter to sign in")" || fail "the last field's hint does not say Enter signs in"
+keys "$S163" Enter
+hint="$(wait_pane 5 "$S163" -F "Enter to sign in")" || fail "the last field's hint does not say Enter signs in"
 expect_has "$hint" -F "❯ Callback port" "Enter did not move to the callback port"
 # The suggestion is an ordinary field: emptied, any free port is used — and
 # the page says so (this phase must not listen on a port another may want).
-keys "$S162" C-u
-any_port="$(wait_pane 5 "$S162" -F "Redirect URI: http://localhost:PORT/callback")" ||
+keys "$S163" C-u
+any_port="$(wait_pane 5 "$S163" -F "Redirect URI: http://localhost:PORT/callback")" ||
 	fail "emptying the port did not turn the redirect URI back to any port"
 expect_has "$any_port" -F "any free port" "the emptied port field does not say what empty means"
-keys "$S162" Enter # no port: any free one
+keys "$S163" Enter # no port: any free one
 
 # The sign-in runs as the typed client; the browser approves; the token
 # endpoint turns the client away — and the form comes back, on the id.
 poll 15 read_url || {
-	dump "the page after the form" "$(pane "$S162")"
+	dump "the page after the form" "$(pane "$S163")"
 	fail "the sign-in never showed an authorize URL for the entered client"
 }
 expect_has "$auth_url" -F "client_id=$CLIENT_ID" "the authorize URL does not name the entered client"
 approve
-again="$(wait_pane 15 "$S162" -F "turned this client away")" || {
+again="$(wait_pane 15 "$S163" -F "turned this client away")" || {
 	dump "the page after the wrong secret" "$again"
 	fail "a client the token endpoint turned away did not reopen the form"
 }
@@ -254,13 +254,13 @@ never_shows_a_secret "the reopened form"
 # The right secret: signed in, and the server connects.
 paste "$SECRET"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-wait_for 5 "$S162" -F "❯ Callback port" || fail "Enter did not move to the callback port"
-keys "$S162" Enter
+keys "$S163" Enter
+wait_for 5 "$S163" -F "❯ Callback port" || fail "Enter did not move to the callback port"
+keys "$S163" Enter
 auth_url=""
 poll 15 read_url || fail "the second sign-in never showed its authorize URL"
 approve
-signed_in="$(wait_pane 20 "$S162" -F "✔ connected")" || {
+signed_in="$(wait_pane 20 "$S163" -F "✔ connected")" || {
 	dump "the page after the right secret" "$signed_in"
 	fail "the server never connected after signing in with the entered client"
 }
@@ -306,8 +306,8 @@ expect_lacks "$got" -F "$SECRET" "mcp get printed the client secret"
 # sign-in listens on, exactly.
 change_row="$(printf '%s\n' "$signed_in" | grep -oE '[0-9]\. Change OAuth client' | cut -c1)"
 [ -n "$change_row" ] || fail "no numbered Change OAuth client row"
-keys "$S162" "$change_row"
-changing="$(wait_pane 15 "$S162" -F "Sign in as an OAuth client you created with")" || {
+keys "$S163" "$change_row"
+changing="$(wait_pane 15 "$S163" -F "Sign in as an OAuth client you created with")" || {
 	dump "the page after Change OAuth client" "$changing"
 	fail "Change OAuth client did not open the form"
 }
@@ -315,18 +315,18 @@ dump "the form over the kept client" "$changing"
 expect_has "$changing" -F "$CLIENT_ID" "the form did not start from the kept id"
 expect_has "$changing" -F "leave empty to keep the secret already kept" \
 	"the form does not offer to keep the kept secret"
-keys "$S162" Enter # the secret left empty → the port
-wait_for 5 "$S162" -F "❯ Callback port" || fail "Enter did not move to the callback port"
-type_text "$S162" "$FIXED_PORT"
-fixed="$(wait_pane 5 "$S162" -F "Redirect URI: http://localhost:$FIXED_PORT/callback")" ||
+keys "$S163" Enter # the secret left empty → the port
+wait_for 5 "$S163" -F "❯ Callback port" || fail "Enter did not move to the callback port"
+type_text "$S163" "$FIXED_PORT"
+fixed="$(wait_pane 5 "$S163" -F "Redirect URI: http://localhost:$FIXED_PORT/callback")" ||
 	fail "the redirect URI did not follow the port typed"
 expect_lacks "$fixed" -F "PORT is any free port" "the any-port note stayed over a fixed port"
-keys "$S162" Enter
+keys "$S163" Enter
 auth_url=""
 poll 15 read_url || fail "the sign-in on the fixed port never showed its authorize URL"
 approve
 expect_eq "$REDIRECT_PORT" "$FIXED_PORT" "the sign-in did not listen on the callback port typed"
-wait_for 20 "$S162" -F "✔ connected" || fail "the server did not reconnect after the client was changed"
+wait_for 20 "$S163" -F "✔ connected" || fail "the server did not reconnect after the client was changed"
 python3 - "$AUTH_LOG" "$STORE" "$AUTH_BASE" "$SECRET" "$FIXED_PORT" <<'PY' || fail "the changed client was not kept as expected (see above)"
 import json, sys, urllib.parse
 log, store, base, secret, port = sys.argv[1:6]
@@ -341,14 +341,14 @@ PY
 never_shows_a_secret "the changed client"
 
 # Forget OAuth client: the client goes, and the login made with it.
-page="$(pane "$S162")"
+page="$(pane "$S163")"
 forget_row="$(printf '%s\n' "$page" | grep -oE '[0-9]\. Forget OAuth client' | cut -c1)"
 [ -n "$forget_row" ] || {
 	dump "the page before forgetting" "$page"
 	fail "no numbered Forget OAuth client row"
 }
-keys "$S162" "$forget_row"
-forgotten="$(wait_pane 15 "$S162" -F "needs authentication")" || {
+keys "$S163" "$forget_row"
+forgotten="$(wait_pane 15 "$S163" -F "needs authentication")" || {
 	dump "the page after Forget OAuth client" "$forgotten"
 	fail "forgetting the client did not sign the server out"
 }
@@ -378,22 +378,22 @@ SQUAT_PID="$!"
 smoke_on_exit kill "$SQUAT_PID"
 port_taken() { python3 -c "import socket; socket.create_connection(('127.0.0.1', $SQUAT_PORT), 0.2)" 2>/dev/null; }
 poll 5 port_taken || fail "the port squatter never came up on $SQUAT_PORT"
-keys "$S162" 2 # Set OAuth client
-wait_for 15 "$S162" -F "Sign in as an OAuth client you created with" ||
+keys "$S163" 2 # Set OAuth client
+wait_for 15 "$S163" -F "Sign in as an OAuth client you created with" ||
 	fail "Set OAuth client did not open the form"
-type_text "$S162" "$CLIENT_ID"
+type_text "$S163" "$CLIENT_ID"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-wait_for 5 "$S162" -F "❯ Client secret" || fail "Enter did not move to the secret field"
+keys "$S163" Enter
+wait_for 5 "$S163" -F "❯ Client secret" || fail "Enter did not move to the secret field"
 paste "$SECRET"
 sleep "$SMOKE_TYPE_SETTLE"
-keys "$S162" Enter
-wait_for 5 "$S162" -F "❯ Callback port" || fail "Enter did not move to the callback port"
-keys "$S162" C-u # over the suggested port
-type_text "$S162" "$SQUAT_PORT"
-wait_for 5 "$S162" -F "http://localhost:$SQUAT_PORT/callback" || fail "the redirect did not follow the taken port"
-keys "$S162" Enter
-failed="$(wait_pane 15 "$S162" -F "Couldn't authenticate with stub")" || {
+keys "$S163" Enter
+wait_for 5 "$S163" -F "❯ Callback port" || fail "Enter did not move to the callback port"
+keys "$S163" C-u # over the suggested port
+type_text "$S163" "$SQUAT_PORT"
+wait_for 5 "$S163" -F "http://localhost:$SQUAT_PORT/callback" || fail "the redirect did not follow the taken port"
+keys "$S163" Enter
+failed="$(wait_pane 15 "$S163" -F "Couldn't authenticate with stub")" || {
 	dump "the page after the sign-in failed" "$failed"
 	fail "a failed sign-in did not keep its page"
 }
@@ -410,14 +410,14 @@ kill "$SQUAT_PID" 2>/dev/null
 wait "$SQUAT_PID" 2>/dev/null || true
 port_free() { ! port_taken; }
 poll 5 port_free || fail "the squatted port was never released"
-keys "$S162" Enter
+keys "$S163" Enter
 auth_url=""
 poll 15 read_url || {
-	dump "the page after trying again" "$(pane "$S162")"
+	dump "the page after trying again" "$(pane "$S163")"
 	fail "Enter on the failed page did not start the sign-in again"
 }
 expect_has "$auth_url" -F "client_id=$CLIENT_ID" "the retry did not sign in as the kept client"
 expect_has "$auth_url" -F "localhost%3A$SQUAT_PORT%2Fcallback" "the retry did not listen on the kept callback port"
-keys "$S162" Escape
-wait_for 5 "$S162" -F "$CLIENT_ID (entered here)" || fail "Esc did not return to the server page naming the kept client"
-tmux kill-session -t "$S162" 2>/dev/null
+keys "$S163" Escape
+wait_for 5 "$S163" -F "$CLIENT_ID (entered here)" || fail "Esc did not return to the server page naming the kept client"
+tmux kill-session -t "$S163" 2>/dev/null
