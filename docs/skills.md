@@ -138,9 +138,12 @@ stay out on purpose). The seed runs *before* the walk, so the session that
 installed the app can already use it — and the one after an update already
 has the new release's files. A copy you have not edited follows the release:
 a release that changes it replaces it. One you edited is yours: it is kept,
-and named once under the banner so you can delete it to take the new version.
-A deleted file comes back next launch, so the off-switch is `/skills` (which
-persists) rather than `rm -rf` (`docs/builtin-updates.md`).
+and named once under the banner by where it is
+(`~/.alter-zero/skills/web-search/SKILL.md`) so you can delete it to take
+the new version. A file a release drops from a skill whose built-in files
+you edited stays with it, and is named once too. A deleted file comes back
+next launch, so the off-switch is `/skills` (which persists) rather than
+`rm -rf` (`docs/builtin-updates.md`).
 
 One difference from the agent definitions: `ALTER_ZERO_SKILLS_DIR` is **never
 seeded into**. That variable replaces the root list — it says "these are the
@@ -334,7 +337,8 @@ reaches a third party. Like the other built-ins its seeded copy is editable
 shadow it, `/skills` disables it, and an `ALTER_ZERO_SKILLS_DIR` override is
 never seeded. Smoke Phase 102 checks that the first launch seeds every file,
 that each seeded script starts, and that a deleted script is restored; Phase
-102b that an outdated script is updated and an edited one kept.
+102b that an outdated script is updated while an edited one beside it is
+kept and named.
 
 #### `yt-dlp`
 

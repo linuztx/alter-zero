@@ -115,13 +115,14 @@ release heading when a version is cut.
   time the app ran, and never again, so an install kept its first release's
   `web-search` scripts and descriptions however many updates followed. Now a
   built-in file you have not edited is replaced by the new release's when
-  you update. A file you edited is kept, and named once under the banner so
-  you know which one it is; delete it to take the new version. Installs made
-  before this release are recognised too, so their untouched files update
-  like any other. A built-in the app no longer ships is removed, unless you
-  edited it. A skills folder set with `ALTER_ZERO_SKILLS_DIR` is still left
-  alone, and an agents folder set with `ALTER_ZERO_AGENTS_DIR` still only
-  gets the definitions it is missing (`docs/builtin-updates.md`).
+  you update. A file you edited is kept, and named once under the banner by
+  its full path; delete it to take the new version. Installs made before
+  this release are recognised too, so their untouched files update like any
+  other. A built-in file the app no longer ships is removed, unless you
+  changed it or another file of its skill; then it is kept, and named once
+  too. A skills folder set with `ALTER_ZERO_SKILLS_DIR` is still left alone,
+  and an agents folder set with `ALTER_ZERO_AGENTS_DIR` still only gets the
+  definitions it is missing (`docs/builtin-updates.md`).
 
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on

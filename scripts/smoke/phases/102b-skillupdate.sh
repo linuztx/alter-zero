@@ -6,18 +6,26 @@ smoke_begin
 
 # Built-in skills and agent definitions follow the release (docs/builtin-
 # updates.md): a file the user has not touched is replaced when the binary
-# ships other bytes, a file the user changed is kept and named once, and a
-# file a release no longer ships is removed only when nothing in its unit is
-# the user's. Every decision is made against `.builtin.json`, a manifest in
-# the folder it describes — so what this phase checks is filesystem behaviour
-# across real launches: the manifest a fresh install writes, an install staged
-# one release behind being brought forward, the next launch saying nothing,
-# a folder a newer app settled being left alone, and an override folder only
-# ever being seeded. The pure decision table is unit-tested; this is the half
-# that writes, renames and unlinks in a real config home.
+# ships other bytes, a file the user changed is kept and named once by where
+# it is, and a file a release no longer ships is removed only when no built-in
+# file of its unit is the user's — and named once when it stays for that
+# reason.
+# Every decision is made against `.builtin.json`, a manifest in the folder it
+# describes — so what this phase checks is filesystem behaviour across real
+# launches: the manifest a fresh install writes, an install staged one release
+# behind being brought forward (an edited script kept while its skill's
+# outdated one updates), the next launch saying nothing, a bare `--resume`
+# settling nothing its pick would erase unread, a folder a newer app settled
+# being left alone, and an override folder only ever being seeded. The pure
+# decision table is unit-tested; this is the half that writes, renames and
+# unlinks in a real config home.
 S102B="${S}_skillupdate"
-BU_CFG="$(mktemp -d)"
 BU_HOME="$(mktemp -d)"
+# The config home is HOME's own `.alter-zero`, as a real user's is: a row
+# names a file under its root as the user is shown it (`~/.alter-zero/skills/
+# …`), which is also what keeps the rows short enough to read.
+BU_CFG="$BU_HOME/.alter-zero"
+mkdir -p "$BU_CFG"
 BU_OUT="$(mktemp -d)"
 BU_SK="$BU_CFG/skills"
 BU_AG="$BU_CFG/agents"
@@ -63,15 +71,30 @@ bu_manifest() {
 bu_record() {
 	grep -F "\"$2\":" "$1" 2>/dev/null | sed 's/.*": *"\([0-9a-f]*\)".*/\1/' | head -n 1
 }
-# bu_run TITLE — launch, let the startup rows land, capture the screen, quit.
-# Sets BU_SCREEN. The rows commit under the banner after the first frame, so
-# the capture waits for a screen that has stopped changing, never a fixed nap.
+# bu_joined SCREEN — the screen's rows as one line: each row's indent
+# dropped, the rows joined by single spaces. A startup row word-wraps at the
+# width (`ui::startup_paragraph_lines`, breaking only between words), so a
+# sentence naming several files spans rows; joined, it reads as written.
+bu_joined() {
+	printf '%s\n' "$1" | sed 's/^ *//' | tr '\n' ' ' | tr -s ' '
+}
+# bu_run TITLE [CMD [ROW]] — launch, let the startup rows land, capture the
+# screen, quit. Sets BU_SCREEN, and BU_ROWS (bu_joined). The rows commit under
+# the banner after the first frame, so the capture waits for a screen that has
+# stopped changing — showing ROW, when given — never a fixed nap.
 bu_run() {
-	local title="$1" cmd="${2:-$APP_BU}"
+	local title="$1" cmd="${2:-$APP_BU}" row="${3:-}"
+	BU_SCREEN=""
+	BU_ROWS=""
 	tmux kill-session -t "$S102B" 2>/dev/null
 	launch "$S102B" 120 30 "$cmd" || return 1
-	wait_settled 10 "$S102B" -E '^❯' >/dev/null
+	if [ -n "$row" ]; then
+		wait_settled 10 "$S102B" -F "$row" >/dev/null || fail "$title never showed '$row'"
+	else
+		wait_settled 10 "$S102B" -E '^❯' >/dev/null
+	fi
 	BU_SCREEN="$(pane "$S102B" -S -100)"
+	BU_ROWS="$(bu_joined "$BU_SCREEN")"
 	dump "$title" "$BU_SCREEN"
 	submit "$S102B" "/quit"
 	wait_gone 10 "$S102B" || fail "the app did not quit after /quit ($title)"
@@ -123,6 +146,10 @@ expect_eq "$(bu_record "$BU_AGM" "explore.md")" \
 # outdated and untouched: old bytes the manifest says the app wrote.
 printf '# an exa_search.py from an older release\nprint("old")\n' >"$BU_SK/web-search/scripts/exa_search.py"
 d_exa="$(bu_sha "$BU_SK/web-search/scripts/exa_search.py")"
+# the user's version of a script in that same skill: the decision is per file,
+# so this one is kept while exa_search.py beside it still updates.
+printf '# my own parallel_search.py\nprint("mine")\n' >"$BU_SK/web-search/scripts/parallel_search.py"
+cp "$BU_SK/web-search/scripts/parallel_search.py" "$BU_OUT/parallel-mine.py"
 # the user's version: bytes on disk that are neither the record nor shipped.
 printf '%s\n' "---" "name: yt-dlp" "description: MY-OWN-YTDLP-MARKER." "---" "my body" >"$BU_SK/yt-dlp/SKILL.md"
 cp "$BU_SK/yt-dlp/SKILL.md" "$BU_OUT/ytdlp-mine.md"
@@ -151,6 +178,7 @@ rm -f "$BU_SK/jina-reader/SKILL.md"
 ln -s "$BU_OUT/linked/SKILL.md" "$BU_SK/jina-reader/SKILL.md"
 bu_manifest "$BU_SKM" skills "$BU_VERSION" \
 	"web-search/scripts/exa_search.py" "$d_exa" \
+	"web-search/scripts/parallel_search.py" "$BU_ZEROS" \
 	"yt-dlp/SKILL.md" "$BU_ZEROS" \
 	"old-skill/SKILL.md" "$d_old_md" \
 	"old-skill/scripts/run.py" "$d_old_py" \
@@ -167,25 +195,20 @@ cat "$BU_SKM"
 # ---------------------------------------------------------------------------
 # Launch 2 — the update.
 # ---------------------------------------------------------------------------
-tmux kill-session -t "$S102B" 2>/dev/null
-launch "$S102B" 120 30 "$APP_BU" || fail "could not launch the app (launch 2)"
-BU_SCREEN="$(wait_settled 10 "$S102B" -F "Updated built-in agent: explore")" ||
-	fail "launch 2 never showed 'Updated built-in agent: explore'"
-BU_SCREEN="$(pane "$S102B" -S -100)"
-dump "launch 2: the update" "$BU_SCREEN"
+# The agents' row is the last one, so waiting for it waits for them all.
+bu_run "launch 2: the update" "$APP_BU" "Updated built-in agent: explore"
 # A skill that lost a retired file but still ships was UPDATED, not removed:
 # `Removed` must name only what is gone for good.
-expect_has "$BU_SCREEN" -F "Updated built-in skills: flaredantic, web-search" "launch 2 did not report flaredantic and web-search as updated (sorted, one row)"
-expect_has "$BU_SCREEN" -F "Removed built-in skill no longer shipped: old-skill" "launch 2 did not report old-skill as removed"
-expect_has "$BU_SCREEN" -F "Kept your version of built-in skill file yt-dlp/SKILL.md (delete it to get the built-in's)" "launch 2 did not name the user's kept yt-dlp/SKILL.md"
-expect_has "$BU_SCREEN" -F "Updated built-in agent: explore" "launch 2 did not report the explore agent as updated"
-# kept-skill holds an edit, so it is the user's now and nothing happens to it;
-# a symlink is somebody managing that file, and is left silently.
-expect_lacks "$BU_SCREEN" -F "kept-skill" "a withdrawn skill holding the user's edit was named on screen"
+expect_has "$BU_ROWS" -F "Updated built-in skills: flaredantic, web-search" "launch 2 did not report flaredantic and web-search as updated (sorted, one row)"
+expect_has "$BU_ROWS" -F "Removed built-in skill no longer shipped: old-skill" "launch 2 did not report old-skill as removed"
+# Each kept file by where it is — the path to type to delete it — sorted.
+expect_has "$BU_ROWS" -F "Kept your versions of built-in skill files ~/.alter-zero/skills/web-search/scripts/parallel_search.py, ~/.alter-zero/skills/yt-dlp/SKILL.md (delete one to get the built-in's)" "launch 2 did not name the user's kept parallel_search.py and yt-dlp/SKILL.md by their paths under ~/.alter-zero/skills"
+# kept-skill holds an edit and yt-dlp's SKILL.md is the user's, so both units
+# are the user's now: their retired files stay, and are named once, last.
+expect_has "$BU_ROWS" -F "Kept built-in skill files no longer shipped, since the skills have your changes: ~/.alter-zero/skills/kept-skill/SKILL.md, ~/.alter-zero/skills/kept-skill/scripts/run.py, ~/.alter-zero/skills/yt-dlp/old-notes.md" "launch 2 did not name the retired files left in the units that are the user's"
+expect_has "$BU_ROWS" -F "Updated built-in agent: explore" "launch 2 did not report the explore agent as updated"
+# A symlink is somebody managing that file, and is left silently.
 expect_lacks "$BU_SCREEN" -F "jina-reader" "a symlinked built-in was named on screen"
-submit "$S102B" "/quit"
-wait_gone 10 "$S102B" || fail "the app did not quit after /quit (launch 2)"
-tmux kill-session -t "$S102B" 2>/dev/null
 
 cmp -s "$SMOKE_ROOT/prompts/skills/web-search/scripts/exa_search.py" "$BU_SK/web-search/scripts/exa_search.py" ||
 	fail "the outdated, untouched exa_search.py was not replaced by the shipped one"
@@ -194,6 +217,8 @@ cmp -s "$SMOKE_ROOT/prompts/agents/explore.md" "$BU_AG/explore.md" ||
 # The one promise the whole feature rests on: an edit is never overwritten.
 cmp -s "$BU_OUT/ytdlp-mine.md" "$BU_SK/yt-dlp/SKILL.md" ||
 	fail "the user's yt-dlp/SKILL.md was overwritten"
+cmp -s "$BU_OUT/parallel-mine.py" "$BU_SK/web-search/scripts/parallel_search.py" ||
+	fail "the user's web-search/scripts/parallel_search.py was overwritten"
 # A kept SKILL.md may still name the file a release retired, so nothing is
 # retired out of a skill that holds the user's version.
 [ -f "$BU_SK/yt-dlp/old-notes.md" ] ||
@@ -220,6 +245,10 @@ done
 expect_eq "$(bu_record "$BU_SKM" "web-search/scripts/exa_search.py")" \
 	"$(bu_sha "$SMOKE_ROOT/prompts/skills/web-search/scripts/exa_search.py")" \
 	"the record for the updated exa_search.py is not the shipped file's SHA-256"
+# Settling a kept file against the shipped version is what makes it told once.
+expect_eq "$(bu_record "$BU_SKM" "web-search/scripts/parallel_search.py")" \
+	"$(bu_sha "$SMOKE_ROOT/prompts/skills/web-search/scripts/parallel_search.py")" \
+	"the kept parallel_search.py was not settled against the shipped file's SHA-256"
 # Every write goes through a temp file and a rename; a leftover is a write
 # that died, and one left beside an agent could be read later.
 leftovers="$(find "$BU_SK" "$BU_AG" -name '*.tmp' 2>/dev/null)"
@@ -236,6 +265,54 @@ expect_lacks "$BU_SCREEN" -F "built-in" "a launch with nothing to settle still p
 cmp -s "$BU_OUT/skills-after-2.json" "$BU_SKM" || fail "launch 3 rewrote the skills manifest though nothing changed"
 cmp -s "$BU_OUT/agents-after-2.json" "$BU_AGM" || fail "launch 3 rewrote the agents manifest though nothing changed"
 cmp -s "$BU_OUT/ytdlp-mine.md" "$BU_SK/yt-dlp/SKILL.md" || fail "launch 3 overwrote the user's yt-dlp/SKILL.md"
+
+# ---------------------------------------------------------------------------
+# A bare --resume settles nothing that is told once. It boots into the
+# /resume picker, and a pick purge-rebuilds the screen, taking the rows queued
+# under the banner with it — so, like a headless run, it brings files up to
+# date but leaves a kept file's record for the next launch that can name it.
+# Dismissed, the picker's return still shows the rows it queued.
+# ---------------------------------------------------------------------------
+# the user's general-purpose.md, under a record that is not the shipped digest
+# (a release changed it since the folder settled), so it would be named...
+printf '%s\n' "---" "name: general-purpose" "description: MY-OWN-GENERAL-PURPOSE." "---" "my body" >"$BU_AG/general-purpose.md"
+cp "$BU_AG/general-purpose.md" "$BU_OUT/gp-mine.md"
+# ...and an outdated, untouched explore.md, which is updated whatever the launch.
+printf '%s\n' "---" "name: explore" "description: An explore agent from an older release." "---" "old body" >"$BU_AG/explore.md"
+bu_manifest "$BU_AGM" agents "$BU_VERSION" \
+	"explore.md" "$(bu_sha "$BU_AG/explore.md")" \
+	"general-purpose.md" "$BU_ZEROS"
+tmux kill-session -t "$S102B" 2>/dev/null
+# The sessions folder is empty (no launch here has recorded a turn), so the
+# picker opens on its empty state.
+launch -w "R E S U M E" "$S102B" 120 30 "$APP_BU --resume" || fail "a bare --resume did not boot into the picker"
+dump "launch 3b: a bare --resume's picker" "$(pane "$S102B")"
+keys "$S102B" Escape
+wait_settled 10 "$S102B" -F "Updated built-in agent: explore" >/dev/null ||
+	fail "the dismissed picker's return never showed 'Updated built-in agent: explore'"
+BU_SCREEN="$(pane "$S102B" -S -100)"
+dump "launch 3b: the picker dismissed" "$BU_SCREEN"
+expect_lacks "$BU_SCREEN" -F "Kept your version" "a bare --resume named a kept file, which a pick would have erased unread"
+submit "$S102B" "/quit"
+wait_gone 10 "$S102B" || fail "the app did not quit after /quit (launch 3b)"
+tmux kill-session -t "$S102B" 2>/dev/null
+note "the agents manifest after a bare --resume"
+cat "$BU_AGM"
+expect_eq "$(bu_record "$BU_AGM" "general-purpose.md")" "$BU_ZEROS" \
+	"a bare --resume settled the kept general-purpose.md (its record moved, so no launch would name it)"
+cmp -s "$BU_OUT/gp-mine.md" "$BU_AG/general-purpose.md" || fail "a bare --resume overwrote the user's general-purpose.md"
+cmp -s "$SMOKE_ROOT/prompts/agents/explore.md" "$BU_AG/explore.md" ||
+	fail "a bare --resume did not update the outdated, untouched explore.md"
+
+# The next launch that can show the rows names the kept file — and only it.
+bu_run "launch 3c: the next launch names what the bare --resume kept" "$APP_BU" \
+	"general-purpose.md (delete it to get the built-in's)"
+expect_has "$BU_ROWS" -F "Kept your version of built-in agent file ~/.alter-zero/agents/general-purpose.md (delete it to get the built-in's)" "the launch after a bare --resume did not name the kept general-purpose.md"
+expect_lacks "$BU_SCREEN" -F "Updated built-in agent" "the launch after a bare --resume reported explore's update a second time"
+expect_eq "$(bu_record "$BU_AGM" "general-purpose.md")" \
+	"$(bu_sha "$SMOKE_ROOT/prompts/agents/general-purpose.md")" \
+	"the launch that named the kept general-purpose.md did not settle it against the shipped file's SHA-256"
+cmp -s "$BU_OUT/gp-mine.md" "$BU_AG/general-purpose.md" || fail "launch 3c overwrote the user's general-purpose.md"
 
 # ---------------------------------------------------------------------------
 # A folder a newer app settled is left alone: two versions sharing a config
@@ -276,4 +353,4 @@ cmp -s "$BU_OUT/team-explore.md" "$BU_OVR/explore.md" || fail "the override fold
 [ -e "$BU_OVR/.builtin.json" ] && fail "a manifest was left in an ALTER_ZERO_AGENTS_DIR override"
 
 rm -rf "$BU_CFG" "$BU_CFG2" "$BU_HOME" "$BU_OUT" "$BU_OVR"
-echo "==== Phase 102b: built-in files follow the release, keep the user's version, retire only untouched units, defer to a newer app, and only seed an override ===="
+echo "==== Phase 102b: built-in files follow the release, keep the user's version, retire only untouched units, name what stays, settle nothing a bare --resume cannot show, defer to a newer app, and only seed an override ===="

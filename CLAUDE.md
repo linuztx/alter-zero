@@ -3267,29 +3267,41 @@ the manifest are recognised by the embedded `builtin::LEGACY_TABLE`
 pure `builtin::verdict` decides per file over what is at its path
 (`builtin::Disk` → `Seed`, `Leave`, `Current`, `Update`, `Kept`), and a file
 the binary no longer ships is decided per **unit** — a skill's folder, an
-agent's file — by `builtin::retired` and `builtin::unit_retires`;
-`llm::builtin::sync` applies them (every write through a temp file and a
-rename, an update keeping the file's mode, the manifest written last and
-only when it changed) and `builtin::notices` turns the `Report` into dim rows
-under the banner (`Updated built-in skills: web-search`, `Kept your version
-of built-in skill file …`), on `--verbose`'s step log headless. What must not
-break: **an edit is never overwritten**, since the only way to `Update` is a
-digest the app itself produced; **a retired file is removed only when
-nothing in its unit is the user's** — its own bytes the app's, every other
-retired file of the unit untouched, no shipped file of it kept, left or
-failed to write, and a wholly withdrawn unit's folder holding nothing else —
-and only at a relative, plain-named path (`builtin::is_safe_path`); **a
+agent's file — by `builtin::retired` and `builtin::retired_unit`
+(`RetiredUnit::Remove`, `Forget` or `Retry`); `llm::builtin::sync` applies
+them (every write through a temp file and a rename, an update keeping the
+file's mode, the manifest written last and only when it changed) and
+`builtin::notices` turns the `Report` into dim rows under the banner
+(`Updated built-in skill: web-search`, `Kept your version of built-in skill
+file ~/.alter-zero/skills/…`, each file by its path under the root as
+`ui::display_cwd` shows it, sorted and once each), on `--verbose`'s step log
+headless. What must not break: **an edit is never overwritten**, since the
+only way to `Update` is a digest the app itself produced; **a retired file
+is removed only when no built-in file of its unit is the user's** — its own
+bytes the app's, every other retired file of the unit untouched, no shipped
+file of it kept or left, and a wholly withdrawn unit's folder holding
+nothing else — and only at a relative, plain-named path
+(`builtin::is_safe_path`); a unit that is the user's keeps its retired files
+for good and names each regular one once (`Forget`, `Report::retained`),
+while one whose shipped file failed to write is not the user's but removes
+nothing and keeps every record, for the next launch to decide again
+(`Retry`); **a
 symlink is never read, written through or removed**, the file's own or a
 folder's on the way to it below the root, and only a regular file under
 `builtin::MAX_FILE_BYTES` is read at all, where the old seed's `exists()`
 could not be stalled by a FIFO; a manifest of a newer `schema` or `version`,
 or of another `scope`, makes the launch do **nothing at all** in that folder
-(`Manifest::read` → `Read::Deferred`), so an older binary never undoes a
-newer one and never re-seeds what it retired; the legacy table is **frozen**
-and never grows after the first release that carries a manifest; a headless
-run settles no kept file (`Mode::Follow { announce: false }`), so the one
-notice waits for a launch that can show it; and the update runs **once, at
-startup**, never per turn. `smoke.sh` Phase 102b.
+(`Manifest::read` → `Read::Deferred`), so an older binary that carries this
+feature never undoes a newer one and never re-seeds what it retired (a
+release from before it, v0.19.0 and earlier, ignores the manifest and can);
+the legacy table is **frozen** and never grows after the first release that
+carries a manifest; a launch that cannot show the rows — headless, or a bare
+`--resume`, whose pick purge-rebuilds the screen — settles no kept or
+retained file (`Mode::Follow { announce: false }`), and one whose manifest
+cannot be written withdraws those rows, silently
+(`Report::withdraw_unsettled`), so the one notice waits for a launch that
+can show it; and the update runs **once, at startup**, never per turn.
+`smoke.sh` Phase 102b.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by
