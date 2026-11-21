@@ -534,7 +534,7 @@ fn a_sign_in_with_no_client_turns_the_auth_page_into_the_client_form() {
     let mut app = form_app(&client_request());
     let opened = form(&app);
     assert_eq!(opened.issuer, "https://accounts.google.com");
-    assert_eq!(opened.port, "8976");
+    assert_eq!(opened.port.text(), "8976");
     assert_eq!(opened.field, McpClientField::ClientId);
     assert_eq!(opened.fixed_client_id, None);
     type_text(&mut app, "123.apps.example");
@@ -581,23 +581,23 @@ fn the_client_form_cycles_its_fields_and_edits_the_focused_one() {
     }
     // The port takes digits, five at most.
     app.on_key(ctrl('u'));
-    assert_eq!(form(&app).port, "");
+    assert_eq!(form(&app).port.text(), "");
     type_text(&mut app, "9x0-01 23");
-    assert_eq!(form(&app).port, "90012");
+    assert_eq!(form(&app).port.text(), "90012");
     app.on_key(key(KeyCode::Backspace));
-    assert_eq!(form(&app).port, "9001");
+    assert_eq!(form(&app).port.text(), "9001");
     // Enter on a field that is not the last moves on.
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
     assert_eq!(form(&app).field, ClientId);
     type_text(&mut app, "abc");
     app.on_key(key(KeyCode::Backspace));
-    assert_eq!(form(&app).client_id, "ab");
+    assert_eq!(form(&app).client_id.text(), "ab");
     app.on_key(key(KeyCode::Tab));
     type_text(&mut app, "pw");
     assert_eq!(form(&app).secret, SecretValue::new("pw"));
     app.on_key(ctrl('u'));
     assert!(form(&app).secret.is_empty());
-    assert_eq!(form(&app).client_id, "ab", "only the focused field");
+    assert_eq!(form(&app).client_id.text(), "ab", "only the focused field");
 }
 
 /// The secret is optional: a public client submits without one.
@@ -738,7 +738,7 @@ fn a_fixed_id_with_no_id_asks_for_the_whole_client() {
     assert_eq!(form(&app).fixed_client_id, None);
     assert_eq!(form(&app).field, McpClientField::ClientId);
     type_text(&mut app, "cid");
-    assert_eq!(form(&app).client_id, "cid");
+    assert_eq!(form(&app).client_id.text(), "cid");
 }
 
 /// A form that is back because the client was turned away opens with what
@@ -756,8 +756,8 @@ fn a_form_reopened_with_a_reason_keeps_what_was_entered() {
     };
     let mut app = form_app(&request);
     let reopened = form(&app);
-    assert_eq!(reopened.client_id, "typed-cid");
-    assert_eq!(reopened.port, "9001");
+    assert_eq!(reopened.client_id.text(), "typed-cid");
+    assert_eq!(reopened.port.text(), "9001");
     assert_eq!(reopened.kept_secret_for, None);
     assert!(!reopened.keeps_secret());
     assert_eq!(reopened.reason, request.reason);
@@ -830,7 +830,7 @@ fn ctrl_y_copies_the_redirect_uri_the_form_shows() {
     // A typed `y` is a letter, never the copy.
     app.on_key(key(KeyCode::Down));
     type_text(&mut app, "y");
-    assert_eq!(form(&app).client_id, "y");
+    assert_eq!(form(&app).client_id.text(), "y");
 }
 
 /// An entry whose own client names its redirect URI (`callbackUrl`) is
@@ -863,20 +863,93 @@ fn the_entrys_own_redirect_uri_is_the_one_the_form_names() {
 #[test]
 fn pastes_into_the_client_form_land_in_the_focused_field() {
     let mut app = form_app(&client_request());
-    assert!(app.paste_into_mcp_auth("  123.apps\r\n.example \n"));
-    assert_eq!(form(&app).client_id, "123.apps.example");
+    assert!(app.paste_into_mcp_auth("  123.apps\r\n.example\t \n"));
+    assert_eq!(form(&app).client_id.text(), "123.apps.example");
+    // At the caret, not at the end.
+    app.on_key(key(KeyCode::Home));
+    assert!(app.paste_into_mcp_auth("x-"));
+    assert_eq!(form(&app).client_id.text(), "x-123.apps.example");
+    // A pasted port replaces the field's value: the form opened on 8976,
+    // and 12798 pasted is 12798, not 89761. One with no digits leaves it.
     app.on_key(key(KeyCode::Up)); // the port
-    app.on_key(ctrl('u'));
+    assert_eq!(form(&app).port.text(), "8976");
+    assert!(app.paste_into_mcp_auth(" 12798\n"));
+    assert_eq!(form(&app).port.text(), "12798");
     assert!(app.paste_into_mcp_auth(" 80 80\n"));
-    assert_eq!(form(&app).port, "8080");
+    assert_eq!(form(&app).port.text(), "8080");
+    assert!(app.paste_into_mcp_auth("port"));
+    assert_eq!(form(&app).port.text(), "8080");
     app.on_key(key(KeyCode::BackTab)); // the secret
     assert!(app.paste_into_mcp_auth("GOCSPX-abc\n"));
-    assert_eq!(form(&app).secret, SecretValue::new("GOCSPX-abc"));
+    assert!(app.paste_into_mcp_auth("\u{7}def"));
+    assert_eq!(form(&app).secret, SecretValue::new("GOCSPX-abcdef"));
     assert_eq!(
         app.mcp_menu.as_ref().unwrap().auth.input,
         "",
         "never the URL field behind the form"
     );
+}
+
+/// The id and the port are edited at the caret: ←/→ move it, Home and End
+/// go to the ends, Delete takes the character under it and Backspace the
+/// one before. The secret has no caret to move: it takes keys at its end.
+#[test]
+fn the_id_and_port_fields_edit_at_the_caret() {
+    let mut app = form_app(&client_request());
+    type_text(&mut app, "acd");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Left));
+    type_text(&mut app, "b");
+    assert_eq!(form(&app).client_id.text(), "abcd");
+    app.on_key(key(KeyCode::Delete));
+    assert_eq!(form(&app).client_id.text(), "abd");
+    app.on_key(key(KeyCode::Home));
+    type_text(&mut app, "<");
+    app.on_key(key(KeyCode::End));
+    type_text(&mut app, ">");
+    assert_eq!(form(&app).client_id.text(), "<abd>");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(form(&app).client_id.text(), "<ab>");
+    assert_eq!(form(&app).client_id.cursor(), 3);
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(form(&app).client_id.cursor(), 4);
+    // The port: digits, at the caret.
+    app.on_key(key(KeyCode::Up)); // the port: 8976
+    app.on_key(key(KeyCode::Home));
+    app.on_key(key(KeyCode::Delete));
+    type_text(&mut app, "7");
+    assert_eq!(form(&app).port.text(), "7976");
+    // The secret: nothing to move through.
+    app.on_key(key(KeyCode::BackTab)); // the secret
+    type_text(&mut app, "pw");
+    for press in [KeyCode::Left, KeyCode::Home, KeyCode::Delete] {
+        app.on_key(key(press));
+    }
+    type_text(&mut app, "!");
+    assert_eq!(form(&app).secret, SecretValue::new("pw!"));
+}
+
+/// Each field takes so much and no more, typed or pasted: an id 512
+/// characters, a secret 4096, a port five digits.
+#[test]
+fn the_client_form_fields_have_their_limits() {
+    let mut app = form_app(&client_request());
+    assert!(app.paste_into_mcp_auth(&"i".repeat(600)));
+    assert_eq!(form(&app).client_id.text().chars().count(), 512);
+    type_text(&mut app, "x");
+    assert_eq!(form(&app).client_id.text().chars().count(), 512);
+    app.on_key(key(KeyCode::Up)); // the port
+    app.on_key(ctrl('u'));
+    type_text(&mut app, "1234567");
+    assert_eq!(form(&app).port.text(), "12345");
+    assert!(app.paste_into_mcp_auth("9876543"));
+    assert_eq!(form(&app).port.text(), "98765");
+    app.on_key(key(KeyCode::BackTab)); // the secret
+    assert!(app.paste_into_mcp_auth(&"s".repeat(5000)));
+    assert_eq!(form(&app).secret.char_count(), 4096);
+    type_text(&mut app, "x");
+    assert_eq!(form(&app).secret.char_count(), 4096);
 }
 
 /// The typed secret is held redacted: nothing that prints the menu's state
@@ -1038,8 +1111,8 @@ fn entry_client_request(
 fn the_form_over_the_entrys_own_client_knows_when_it_still_describes_it() {
     let registered = "http://127.0.0.1:12799/callback/abc";
     let mut app = form_app(&entry_client_request(Some(12799), Some(registered), true));
-    assert_eq!(form(&app).client_id, "file-cid");
-    assert_eq!(form(&app).port, "12799");
+    assert_eq!(form(&app).client_id.text(), "file-cid");
+    assert_eq!(form(&app).port.text(), "12799");
     assert_eq!(form(&app).fixed_client_id, None, "the whole form");
     assert!(form(&app).describes_entry_client());
     assert_eq!(form(&app).redirect_uri().as_deref(), Some(registered));
@@ -1100,7 +1173,7 @@ fn the_form_over_the_entrys_own_client_knows_when_it_still_describes_it() {
 #[test]
 fn an_entry_on_any_free_port_needs_no_port_on_the_form() {
     let mut app = form_app(&entry_client_request(None, None, false));
-    assert_eq!(form(&app).port, "");
+    assert_eq!(form(&app).port.text(), "");
     assert!(form(&app).describes_entry_client());
     assert_eq!(form(&app).redirect_uri(), None);
     assert_eq!(app.on_key(ctrl('y')), Action::None);
@@ -1212,8 +1285,8 @@ fn the_client_rows_look_up_the_authorization_server_before_the_form() {
     );
     assert!(app.ask_mcp_client("linear", &request));
     assert!(!app.mcp_menu.as_ref().unwrap().auth.lookup);
-    assert_eq!(form(&app).client_id, "typed-cid");
-    assert_eq!(form(&app).port, "9001");
+    assert_eq!(form(&app).client_id.text(), "typed-cid");
+    assert_eq!(form(&app).port.text(), "9001");
     assert_eq!(form(&app).issuer, "https://accounts.google.com");
     assert_eq!(
         form(&app).documentation.as_deref(),

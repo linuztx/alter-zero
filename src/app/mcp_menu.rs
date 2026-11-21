@@ -18,6 +18,7 @@ use crate::mcp::{
     McpServerStatus,
 };
 use crate::secrets::SecretValue;
+use crate::textarea::TextArea;
 
 use super::{Action, App, McpOp, wrap_step};
 
@@ -214,11 +215,13 @@ pub struct McpClientForm {
     /// The redirect URI that entry names for its client (`callbackUrl`),
     /// shown in place of the one the port makes.
     pub fixed_redirect_uri: Option<String>,
-    pub client_id: String,
+    /// The client id as typed, edited at its caret.
+    pub client_id: TextArea,
     pub secret: SecretValue,
-    /// The callback port as typed — the redirect URI on the page follows it.
-    /// Empty for an entry's own client whose sign-in takes any free port.
-    pub port: String,
+    /// The callback port as typed, edited at its caret — the redirect URI on
+    /// the page follows it. Empty for an entry's own client whose sign-in
+    /// takes any free port.
+    pub port: TextArea,
     /// The client a secret is already kept for — the one the form opened
     /// over: while the id typed is still that one, an empty secret field
     /// keeps it.
@@ -256,12 +259,14 @@ impl McpClientForm {
             },
             kept_secret_for: (request.has_secret && !known.is_empty()).then(|| known.clone()),
             entry: request.entry.clone().filter(|_| !fixed),
-            client_id: if fixed { String::new() } else { known },
+            client_id: TextArea::from_text(if fixed { "" } else { &known }),
             secret: SecretValue::default(),
-            port: request
-                .callback_port
-                .map(|port| port.to_string())
-                .unwrap_or_default(),
+            port: TextArea::from_text(
+                &request
+                    .callback_port
+                    .map(|port| port.to_string())
+                    .unwrap_or_default(),
+            ),
             reason: request.reason.clone(),
             error: None,
         }
@@ -272,13 +277,13 @@ impl McpClientForm {
     fn typed_id(&self) -> &str {
         self.fixed_client_id
             .as_deref()
-            .unwrap_or_else(|| self.client_id.trim())
+            .unwrap_or_else(|| self.client_id.text().trim())
     }
 
     /// The port field read: empty is no port, digits a port from 1 to
     /// 65535, anything else neither (`Err`).
     fn port_value(&self) -> Result<Option<u16>, ()> {
-        let text = self.port.trim();
+        let text = self.port.text().trim();
         if text.is_empty() {
             return Ok(None);
         }
@@ -296,7 +301,7 @@ impl McpClientForm {
     #[must_use]
     pub fn describes_entry_client(&self) -> bool {
         self.entry.as_ref().is_some_and(|entry| {
-            self.client_id.trim() == entry.client_id && self.port_value() == Ok(entry.port)
+            self.client_id.text().trim() == entry.client_id && self.port_value() == Ok(entry.port)
         })
     }
 
@@ -333,41 +338,97 @@ impl McpClientForm {
         self.field = fields[wrap_step(at, fields.len(), step)];
     }
 
-    /// Type `text` into the focused field: the port takes digits, five at
-    /// most; the others whatever was typed.
-    fn type_text(&mut self, text: &str) {
+    /// Type `c` into the focused field at its caret: the port takes digits,
+    /// five at most; the id and the secret any character but a control one,
+    /// to their limits — the secret at its end, having no caret to move.
+    fn type_char(&mut self, c: char) {
         match self.field {
             McpClientField::Port => {
-                let room = PORT_DIGITS.saturating_sub(self.port.len());
-                self.port
-                    .extend(text.chars().filter(char::is_ascii_digit).take(room));
+                if c.is_ascii_digit() && self.port.text().len() < PORT_DIGITS {
+                    self.port.insert_char(c);
+                }
             }
-            McpClientField::ClientId => self.client_id.push_str(text),
-            McpClientField::Secret => self.secret.push_str(text),
+            McpClientField::ClientId => {
+                if !c.is_control() && self.client_id.text().chars().count() < CLIENT_ID_MAX_CHARS {
+                    self.client_id.insert_char(c);
+                }
+            }
+            McpClientField::Secret => {
+                if !c.is_control() && self.secret.char_count() < CLIENT_SECRET_MAX_CHARS {
+                    self.secret.push(c);
+                }
+            }
         }
         self.error = None;
     }
 
-    fn backspace(&mut self) {
+    /// Paste `text` into the focused field: its control characters dropped
+    /// and its ends trimmed — a console's copy button brings a line break
+    /// along — then at the id's caret, at the secret's end, each to its
+    /// limit; and a port's digits replace the field's value, since a pasted
+    /// port is the whole port (a form opened on one would otherwise run the
+    /// two together).
+    fn paste(&mut self, text: &str) {
+        let line: String = text.chars().filter(|c| !c.is_control()).collect();
+        let line = line.trim();
         match self.field {
             McpClientField::Port => {
-                self.port.pop();
+                let digits: String = line
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .take(PORT_DIGITS)
+                    .collect();
+                if !digits.is_empty() {
+                    self.port = TextArea::from_text(&digits);
+                }
             }
             McpClientField::ClientId => {
-                self.client_id.pop();
+                let room =
+                    CLIENT_ID_MAX_CHARS.saturating_sub(self.client_id.text().chars().count());
+                self.client_id
+                    .insert_str(&line.chars().take(room).collect::<String>());
             }
             McpClientField::Secret => {
+                let room = CLIENT_SECRET_MAX_CHARS.saturating_sub(self.secret.char_count());
+                self.secret
+                    .push_str(&line.chars().take(room).collect::<String>());
+            }
+        }
+        self.error = None;
+    }
+
+    /// The focused field's editor — `None` on the secret, which has no caret
+    /// to move: a mask has nothing to move through.
+    fn focused_text(&mut self) -> Option<&mut TextArea> {
+        match self.field {
+            McpClientField::Port => Some(&mut self.port),
+            McpClientField::ClientId => Some(&mut self.client_id),
+            McpClientField::Secret => None,
+        }
+    }
+
+    fn backspace(&mut self) {
+        match self.focused_text() {
+            Some(text) => text.delete_backward(),
+            None => {
                 self.secret.pop();
             }
         }
         self.error = None;
     }
 
+    /// Delete: the character under the caret, in the id or the port.
+    fn delete_forward(&mut self) {
+        if let Some(text) = self.focused_text() {
+            text.delete_forward();
+            self.error = None;
+        }
+    }
+
     fn clear_focused(&mut self) {
-        match self.field {
-            McpClientField::Port => self.port.clear(),
-            McpClientField::ClientId => self.client_id.clear(),
-            McpClientField::Secret => self.secret.clear(),
+        match self.focused_text() {
+            Some(text) => text.clear(),
+            None => self.secret.clear(),
         }
         self.error = None;
     }
@@ -375,7 +436,11 @@ impl McpClientForm {
     /// The port the form names, when what is typed is one.
     #[must_use]
     pub fn callback_port(&self) -> Option<u16> {
-        self.port.parse::<u16>().ok().filter(|port| *port != 0)
+        self.port
+            .text()
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
     }
 
     /// The redirect URI the sign-in will send — what a provider that matches
@@ -427,7 +492,7 @@ impl McpClientForm {
                 callback_port: self.callback_port(),
             });
         }
-        let client_id = self.client_id.trim();
+        let client_id = self.client_id.text().trim();
         if client_id.is_empty() {
             return Err((McpClientField::ClientId, CLIENT_ID_MISSING));
         }
@@ -462,6 +527,12 @@ struct EnteredClient {
 
 /// The most digits a port has.
 const PORT_DIGITS: usize = 5;
+
+/// The most characters a client id takes: real ones run to some seventy.
+const CLIENT_ID_MAX_CHARS: usize = 512;
+
+/// The most characters a client secret takes.
+const CLIENT_SECRET_MAX_CHARS: usize = 4096;
 
 /// What stops a submit, in the form's own words.
 const CLIENT_ID_MISSING: &str = "Enter the client ID the provider gave the client.";
@@ -902,11 +973,11 @@ impl App {
         Action::None
     }
 
-    /// The client form's keys: Tab and the arrows walk the fields, Enter
-    /// moves on and — on the last — submits, Ctrl+U empties the focused
-    /// field, Ctrl+Y copies the redirect URI, and Esc goes back to the
-    /// server's page: the sign-in that asked has ended, so there is nothing
-    /// to cancel.
+    /// The client form's keys: Tab and ↑/↓ walk the fields, ←/→, Home, End
+    /// and Delete work at the id's and the port's caret, Enter moves on and
+    /// — on the last — submits, Ctrl+U empties the focused field, Ctrl+Y
+    /// copies the redirect URI, and Esc goes back to the server's page: the
+    /// sign-in that asked has ended, so there is nothing to cancel.
     fn on_key_mcp_client(&mut self, key: KeyEvent) -> Action {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
@@ -955,13 +1026,29 @@ impl App {
                 }
             }
             KeyCode::Backspace => form.backspace(),
+            KeyCode::Delete => form.delete_forward(),
+            // The caret moves through the id and the port; the secret has
+            // nothing to move through.
+            KeyCode::Left => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_left),
+            KeyCode::Right => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_right),
+            KeyCode::Home => form
+                .focused_text()
+                .into_iter()
+                .for_each(TextArea::move_home),
+            KeyCode::End => form.focused_text().into_iter().for_each(TextArea::move_end),
             KeyCode::Char('u') if ctrl => form.clear_focused(),
             KeyCode::Char('y') if ctrl => {
                 if let Some(uri) = form.redirect_uri() {
                     return Action::McpOp(McpOp::CopyRedirectUri { uri });
                 }
             }
-            KeyCode::Char(c) if !ctrl => form.type_text(c.encode_utf8(&mut [0; 4])),
+            KeyCode::Char(c) if !ctrl => form.type_char(c),
             _ => {}
         }
         Action::None
@@ -977,11 +1064,11 @@ impl App {
             && menu.auth.failed.is_none()
             && !menu.auth.lookup
         {
-            let text = text.replace(['\n', '\r'], "");
             if let Some(form) = &mut menu.auth.client {
-                form.type_text(text.trim());
+                form.paste(text);
                 return true;
             }
+            let text = text.replace(['\n', '\r'], "");
             menu.auth.input.push_str(text.trim());
             menu.auth.submitted = false;
             menu.auth.error = None;

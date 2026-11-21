@@ -795,30 +795,79 @@ fn client_field_room(width: u16) -> usize {
         .max(1)
 }
 
-/// The end of `value` that fits `room` columns — the end being typed stays
-/// in view.
-fn field_tail(value: &str, room: usize) -> &str {
-    let mut tail = value;
-    while cols(tail) > room {
-        let mut chars = tail.chars();
-        chars.next();
-        tail = chars.as_str();
+/// The part of a field's `text` a row of `room` columns shows — a byte
+/// range on grapheme boundaries — and the caret's column in it, `cursor`
+/// being a byte offset on a grapheme boundary. All of it where it fits;
+/// else the end while the caret is within the last `room` columns, so a
+/// value being typed keeps its end in view, the start while the caret is
+/// within the first, and otherwise a window ending at the caret. One pass
+/// over the graphemes, never more.
+pub(super) fn field_window(
+    text: &str,
+    cursor: usize,
+    room: usize,
+) -> (std::ops::Range<usize>, usize) {
+    let before = cols(&text[..cursor]);
+    if cols(text) <= room {
+        return (0..text.len(), before);
     }
-    tail
+    let graphemes: Vec<(usize, usize, usize)> = text
+        .grapheme_indices(true)
+        .map(|(at, g)| (at, at + g.len(), cols(g)))
+        .collect();
+    // Where the widest run of whole graphemes ending at `end` that fits
+    // `room` starts.
+    let fit_back = |end: usize| {
+        let mut start = end;
+        let mut width = 0;
+        for &(at, _, w) in graphemes.iter().rev().filter(|&&(at, _, _)| at < end) {
+            if width + w > room {
+                break;
+            }
+            width += w;
+            start = at;
+        }
+        start
+    };
+    let tail = fit_back(text.len());
+    if cursor >= tail {
+        return (tail..text.len(), cols(&text[tail..cursor]));
+    }
+    if before <= room {
+        let mut end = 0;
+        let mut width = 0;
+        for &(_, stop, w) in &graphemes {
+            if width + w > room {
+                break;
+            }
+            width += w;
+            end = stop;
+        }
+        return (0..end, before);
+    }
+    let start = fit_back(cursor);
+    (start..cursor, cols(&text[start..cursor]))
 }
 
-/// What a client-form field shows: the id and the port as typed, the secret
-/// as a mask — one mark a character, the value itself never drawn, since a
-/// flowed row is committed to scrollback as text.
-fn client_field_text(form: &McpClientForm, field: McpClientField) -> String {
+/// What a client-form field's row shows of its value at `room` columns, and
+/// the caret's column in it ([`field_window`]): the id and the port around
+/// their caret, the entry's own id from its end, and the secret as a mask —
+/// one mark a character, the last `room` of them, its value never drawn,
+/// since a flowed row is committed to scrollback as text.
+fn client_field_shown(form: &McpClientForm, field: McpClientField, room: usize) -> (String, usize) {
+    let window = |text: &str, cursor: usize| {
+        let (range, caret) = field_window(text, cursor, room);
+        (text[range].to_string(), caret)
+    };
     match field {
-        McpClientField::Port => form.port.clone(),
-        McpClientField::ClientId => form
-            .fixed_client_id
-            .clone()
-            .unwrap_or_else(|| form.client_id.clone()),
+        McpClientField::Port => window(form.port.text(), form.port.cursor()),
+        McpClientField::ClientId => match &form.fixed_client_id {
+            Some(id) => window(id, id.len()),
+            None => window(form.client_id.text(), form.client_id.cursor()),
+        },
         McpClientField::Secret => {
-            std::iter::repeat_n(LOGIN_MASK_CHAR, form.secret.char_count()).collect()
+            let shown = form.secret.char_count().min(room);
+            (std::iter::repeat_n(LOGIN_MASK_CHAR, shown).collect(), shown)
         }
     }
 }
@@ -833,13 +882,12 @@ const fn client_prompt(field: McpClientField) -> &'static str {
 }
 
 /// Where the client form's caret sits: the focused field's prompt — the row
-/// is found by it in the built page — and the column just past the text
-/// that field shows. What [`client_field_row`] draws, so the two agree.
+/// is found by it in the built page — and the column of that field's caret
+/// in what it shows. What [`client_field_row`] draws, so the two agree.
 pub(super) fn client_caret(form: &McpClientForm, width: u16) -> (&'static str, usize) {
     let prompt = client_prompt(form.field);
-    let shown = client_field_text(form, form.field);
-    let typed = cols(field_tail(&shown, client_field_room(width)));
-    (prompt, cols(MODEL_INDENT) + cols(prompt) + typed)
+    let (_, caret) = client_field_shown(form, form.field, client_field_room(width));
+    (prompt, cols(MODEL_INDENT) + cols(prompt) + caret)
 }
 
 /// One form field row: the prompt — lit on the field taking keys — then the
@@ -858,7 +906,7 @@ fn client_field_row(
         model_meta_color()
     };
     let room = client_field_room(width);
-    let shown = client_field_text(form, field);
+    let (shown, _) = client_field_shown(form, field, room);
     let (text, ink) = if shown.is_empty() {
         (ellipsize(note, room), model_meta_color())
     } else {
@@ -869,7 +917,7 @@ fn client_field_row(
         } else {
             model_id_color()
         };
-        (field_tail(&shown, room).to_string(), ink)
+        (shown, ink)
     };
     Line::from(vec![
         Span::raw(MODEL_INDENT),

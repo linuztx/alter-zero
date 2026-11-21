@@ -1824,6 +1824,69 @@ fn the_client_form_caret_ends_the_focused_field() {
     assert!(x < 40, "the caret stays on the row: {x}");
 }
 
+/// The part of a field a row shows: all of it when it fits; else a window
+/// of the room around the caret — the end while the caret is within the
+/// last of it, the start while it is within the first, else a window ending
+/// at the caret — and the caret's column in it. A wide character counts two
+/// and is never cut in half at an edge.
+#[test]
+fn a_field_window_keeps_the_caret_in_view() {
+    use crate::ui::mcp_view::field_window;
+    assert_eq!(field_window("short", 5, 10), (0..5, 5));
+    assert_eq!(field_window("short", 2, 10), (0..5, 2));
+    let text = "abcdefghij";
+    assert_eq!(field_window(text, 10, 4), (6..10, 4));
+    assert_eq!(field_window(text, 8, 4), (6..10, 2));
+    assert_eq!(field_window(text, 0, 4), (0..4, 0));
+    assert_eq!(field_window(text, 3, 4), (0..4, 3));
+    assert_eq!(field_window(text, 4, 4), (0..4, 4));
+    assert_eq!(field_window(text, 5, 4), (1..5, 4));
+    let wide = "日本語のテキスト";
+    let (range, caret) = field_window(wide, wide.len(), 5);
+    assert_eq!(&wide[range.clone()], "スト");
+    assert_eq!(caret, 4);
+    let (range, caret) = field_window(wide, 0, 5);
+    assert_eq!(&wide[range], "日本");
+    assert_eq!(caret, 0);
+}
+
+/// A value wider than its row shows the part around the caret — the end
+/// while the caret is at the end, the start once it has gone home — and
+/// the caret seats at the caret's own column on that row.
+#[test]
+fn a_long_field_shows_the_part_around_the_caret() {
+    let long = "1234567890-abcdefghijklmnopqrstuvwxyz0123456789.apps.googleusercontent.com";
+    let width = 40u16;
+    let mut app = client_form_app(&client_request());
+    type_text(&mut app, long);
+    let seat = |app: &App| {
+        let lines = mcp_view_lines(app, width);
+        let (row, text) = field_row(&lines, MCP_CLIENT_ID_PROMPT);
+        assert!(cols(&text) <= usize::from(width), "{text:?}");
+        let area = Rect::new(0, 0, width, lines.len() as u16);
+        let (x, y) = crate::ui::cursor_position(area, app);
+        assert_eq!(y, row as u16);
+        (text, usize::from(x))
+    };
+    let value_col = 2 + cols(MCP_CLIENT_ID_PROMPT);
+    let (text, x) = seat(&app);
+    assert!(
+        text.trim_end().ends_with("googleusercontent.com"),
+        "{text:?}"
+    );
+    assert_eq!(x, cols(text.trim_end()), "the caret ends the shown text");
+    app.on_key(key(KeyCode::Home));
+    let (text, x) = seat(&app);
+    assert!(text[value_col..].starts_with("1234567890-"), "{text:?}");
+    assert_eq!(x, value_col, "the caret at the start of the value");
+    for _ in 0..3 {
+        app.on_key(key(KeyCode::Right));
+    }
+    let (again, x) = seat(&app);
+    assert_eq!(again, text, "the row holds while the caret moves along it");
+    assert_eq!(x, value_col + 3);
+}
+
 /// Every framed page is bottom-anchored, so on a terminal too short for the
 /// whole form its tail is what stays on screen — and the tail is the fields
 /// and the keys, with the caret on its field. What flows away is the notes
