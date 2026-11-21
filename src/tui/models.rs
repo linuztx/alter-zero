@@ -267,6 +267,7 @@ impl ModelSession {
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
         round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
+        system_prompt_flags: &super::startup::SystemPromptFlags,
     ) -> Self {
         let (providers, provider_issues) = config::startup_providers(home);
         // The persistent API-key store: `.env` in the config home (or
@@ -340,15 +341,16 @@ impl ModelSession {
         let skills_enabled = settings.skills;
         let skills = skills.clone();
         let subagents = subagents.clone();
-        let system_prompt = config::system_prompt(cwd, scratchpad).map(|prompt| {
-            // A headless run — the one session that carries a reply budget —
-            // tells the model nobody is watching (docs/headless.md).
-            if round_budget.is_some() {
-                llm::backend::augment_with_headless(&prompt)
-            } else {
-                prompt
-            }
-        });
+        let system_prompt =
+            config::system_prompt(cwd, scratchpad, system_prompt_flags).map(|prompt| {
+                // A headless run — the one session that carries a reply budget —
+                // tells the model nobody is watching (docs/headless.md).
+                if round_budget.is_some() {
+                    llm::backend::augment_with_headless(&prompt)
+                } else {
+                    prompt
+                }
+            });
         // The runtime half alone, for an agent definition whose body replaces
         // the persona (docs/subagents.md).
         let prompt_context = config::prompt_context(cwd, scratchpad);

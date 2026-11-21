@@ -46,7 +46,7 @@ tmux kill-session -t "$S108" 2>/dev/null
 # The help page on a real tty: the raw pane (escapes kept — tmux re-encodes
 # the binary's `ESC[1;36m` as its own `ESC[1m ESC[36m`, so the check is on
 # the cyan `36m` landing right before the word) opens on the bold-cyan title.
-tmux new-session -d -s "$S108" -x 100 -y 40 "$BIN --help; echo CLI_APP_EXITED; sleep 60"
+tmux new-session -d -s "$S108" -x 100 -y 60 "$BIN --help; echo CLI_APP_EXITED; sleep 60"
 wait_for 4 "$S108" -F "CLI_APP_EXITED"
 clip_help_raw="$(tmux capture-pane -t "$S108" -p -e)"
 clip_help_text="$(tmux capture-pane -t "$S108" -p)"
@@ -58,7 +58,7 @@ tmux kill-session -t "$S108" 2>/dev/null
 # is honouring untested — so pin it here, where it is ours rather than
 # crossterm's. `cli::colour_enabled` must fall to `HelpStyle::Plain`: the words
 # stay, every escape goes.
-tmux new-session -d -s "$S108" -x 100 -y 40 "env NO_COLOR=1 $BIN --help; echo CLI_APP_EXITED; sleep 60"
+tmux new-session -d -s "$S108" -x 100 -y 60 "env NO_COLOR=1 $BIN --help; echo CLI_APP_EXITED; sleep 60"
 wait_for 4 "$S108" -F "CLI_APP_EXITED"
 clip_help_nocolor_raw="$(tmux capture-pane -t "$S108" -p -e)"
 clip_help_nocolor="$(tmux capture-pane -t "$S108" -p)"

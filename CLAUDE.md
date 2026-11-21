@@ -1540,7 +1540,22 @@ from one `cli::help(page, style)` renderer that `mcp --help` shares
 `TERM=dumb` (`cli::colour_enabled`, ANDed with `IsTerminal` at the boundary),
 and a grammar error the clap-shaped `error: {message}` + `Usage:` block +
 `For more information, try '--help'.` (`cli::usage_error`, stderr, exit 2)
-instead of the old whole-page dump — the loaded
+instead of the old whole-page dump — and the **system prompt flags**
+(`--system-prompt <TEXT>`/`--system-prompt-file <PATH>` replacing the
+built-in persona for one run, the flag form of `ALTER_ZERO_SYSTEM_PROMPT`
+and outranking it, `--append-system-prompt <TEXT>`/`--append-system-prompt-file
+<PATH>` adding text after whichever persona the run has, all four in the TUI
+and with `-p`, never saved: the text lands in the persona block ahead of
+`## Environment` (`llm::backend::compose_persona`, composed once in
+`tui::config::system_prompt`), so a replaced persona keeps the environment,
+scratchpad and headless blocks; a `-file` flag is read in `tui::startup`'s
+`prepare` after `-C`, bounded at `cli::SYSTEM_PROMPT_FILE_MAX_BYTES` (1 MiB),
+an unreadable, oversized, non-UTF-8 or blank file failing with exit 1 before
+the terminal boots; a subagent type with a body keeps its own persona and
+never sees them, the auto mode classifier's prompt is never touched; and the
+help page gained clap's long-cell rule for them, a cell wider than
+`HELP_CELL_MAX` (28) starting its description on the next line rather than
+widening the page's one column; `docs/system-prompt.md`) — the loaded
 transcript committed under the banner through `insert_before` — never a
 startup Purge, the user's terminal scrollback survives — and a quit that
 recorded anything printing `Resume this session with: {bin} --resume {id}`
@@ -4636,7 +4651,9 @@ paste (`images::remember_attachment`, `docs/memory.md`); and a model
   and **old rollouts light up too**; both body builders share the pass, so the
   Ctrl+O expansion and the **permission prompt's preview** — where "what
   exactly am I approving?" is load-bearing — get it as well. The backend's **system prompt** is assembled from two
-  `include_str!`d markdown files — the persona (`prompts/alter_zero.md`) and the
+  `include_str!`d markdown files — the persona (`prompts/alter_zero.md`, or
+  the run's own when `--system-prompt` or `ALTER_ZERO_SYSTEM_PROMPT` names one,
+  any `--append-system-prompt` text following it, `docs/system-prompt.md`) and the
   runtime **environment context** of date/os/user/cwd (`prompts/environment.md`,
   folded in at the boundary via `backend::augment_with_environment` so the agent
   has context awareness — the `User` line decided by the effective uid, so it

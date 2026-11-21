@@ -17,7 +17,9 @@ one-line installer, `docs/update.md`; each is routed by its first argument
 before the flag grammar below applies.) **`-p` runs the same session with no
 screen** — one prompt in, the answer on stdout, an exit status out — with
 its own section on the page; the run itself is `docs/headless.md`, and this
-page covers only its grammar.
+page covers only its grammar. Either kind of run can also set its system
+prompt (`--system-prompt`, `--append-system-prompt` and their `-file`
+forms, `docs/system-prompt.md`).
 
 ```
 $ alter-zero --help
@@ -47,6 +49,14 @@ Options:
                                  prints — or pick it from a list, given no ID
   -C, --cwd <DIR>                Run in DIR instead of the current directory
       --permission-mode <MODE>   manual, edit, auto or master, for this run only
+      --system-prompt <TEXT>     Use TEXT as the system prompt for this run, in
+                                 place of the built-in one
+      --system-prompt-file <PATH>
+                                 The same, with the prompt read from PATH
+      --append-system-prompt <TEXT>
+                                 Add TEXT to the system prompt for this run
+      --append-system-prompt-file <PATH>
+                                 The same, with the text read from PATH
   -h, --help                     Print help
   -V, --version                  Print version
 
@@ -195,6 +205,12 @@ to look:
   that same column. Nothing wraps at render time — every description is
   pre-wrapped in the source, so the page reads on disk exactly as it
   prints and a test can pin it.
+- **A long cell does not widen the column.** A cell wider than
+  `HELP_CELL_MAX` (28 columns) is left out of the column's width and its
+  description starts on the next line, at that column — clap's rule for a
+  long flag. The system prompt flags are why (`--append-system-prompt-file
+  <PATH>`): fitted to them, the page's one description column would leave
+  37 columns for every description (`docs/system-prompt.md`).
 - **Styles.** `HelpStyle::Plain` emits no escapes at all — the string the
   tests compare against and what a pipe receives. `HelpStyle::Ansi`
   dresses headings and the title in **bold cyan** (`ESC[1;36m` — the app's
@@ -235,9 +251,12 @@ page's grammar errors take the same shape over its six usage lines. Exit
   how to start, plus the optional prompt), `Help`, `Version`,
   `Mcp(McpCli)`, `Update` (the `update` subcommand — `tui::update_cli::run`
   does the work, `docs/update.md`).
-  `SessionArgs { start, prompt, cwd, permission_mode, print }` with
+  `SessionArgs { start, prompt, cwd, permission_mode, system_prompt,
+  append_system_prompt, print }` with
   `SessionStart::{Fresh, Continue, Resume(Option<String>)}`, `cwd` the
   `-C`/`--cwd` directory, `permission_mode` the `--permission-mode` seed,
+  `system_prompt`/`append_system_prompt` each an `Option<SystemText>`
+  (`Inline(String)` or `File(PathBuf)`, `docs/system-prompt.md`),
   and `print: Option<PrintOptions { output_format, max_turns }>` — `Some`
   for a headless run (`docs/headless.md`), `None` for the TUI.
 - `parse(args)` — over `std::env::args().skip(1)`: a first argument of
@@ -265,6 +284,16 @@ page's grammar errors take the same shape over its six usage lines. Exit
   picker is a screen, so a headless run names its session. At the boundary
   `-C` is a `chdir` before anything reads the working directory, which is
   why `--continue` then looks for the newest conversation *there*.
+- The system prompt flags (`docs/system-prompt.md`): `--system-prompt`,
+  `--system-prompt-file`, `--append-system-prompt` and
+  `--append-system-prompt-file` work in either kind of run and read their
+  value like every value flag. A blank value is refused, and a
+  dash-leading next argument is refused with a hint to attach it with `=`
+  (`--append-system-prompt="-…"`). At most one of each pair is given; a
+  replacement and an append combine. Two pure helpers judge a file flag's
+  read: `system_prompt_file_text` turns the bytes into the text, refusing
+  a file over `SYSTEM_PROMPT_FILE_MAX_BYTES` (1 MiB), not UTF-8, or blank,
+  and `system_prompt_file_unreadable` words a file that could not be read.
 - `help(page, style)` / `usage_error(page, message, style)` — the two
   pages above, in either style; `colour_enabled(no_color, term)` the
   colour rule.
@@ -293,9 +322,16 @@ page's grammar errors take the same shape over its six usage lines. Exit
   `resolve_cli` prints it: as text for the TUI, through
   `headless::not_started` for a headless run, so `--output-format json`
   still hands a script its result object (`docs/headless.md`).
+- **A system prompt file is read in `prepare`, after `-C`**, so a relative
+  path names a file in the run's directory. The read is bounded at
+  `cli::SYSTEM_PROMPT_FILE_MAX_BYTES`, and a file that cannot be read, is
+  over the cap, is not UTF-8 or is blank is a failure (exit 1) before the
+  terminal is touched. The texts ride `Startup::system_prompt`, a
+  `SystemPromptFlags { replace, append }`, to the one place the prompt is
+  composed (`tui::config::system_prompt`, `docs/system-prompt.md`).
 - **Flags resolve to a `Startup` before `InlineViewport::init`** —
-  `Startup { session: Option<StartupSession>, prompt: Option<String> }`,
-  fail fast, no TUI flash:
+  `Startup { session: Option<StartupSession>, prompt: Option<String>,
+  permission_mode, print, system_prompt }`, fail fast, no TUI flash:
   - `--continue`: `list_sessions(root, None)` (the `/resume` scan —
     eligibility included, so a session you never typed into doesn't
     continue) filtered by `session::latest_for_cwd` against
@@ -377,7 +413,11 @@ page's grammar errors take the same shape over its six usage lines. Exit
   title/headings carrying the heading escape and `alter-zero` the bold
   one; `usage_error`'s three-part shape; `colour_enabled`'s three rules;
   `resume_hint` matches the printed shape; `bin_name` basenames a path and
-  falls back on `None`/empty.
+  falls back on `None`/empty. The system prompt flags parse to
+  `SystemText` separate and `=`-attached, combine across the pairs, and
+  refuse a pair, a repeat, a missing or blank value and a dash-leading one
+  (with its hint); the file helpers' four outcomes; the page's long-cell
+  rule leaving the `mcp` page unchanged (`docs/system-prompt.md`).
 - `session`: `rollout_file_id` round-trips the id `rollout_rel_path` embeds
   (dashed ids included), rejects foreign/stampless names; `latest_for_cwd`
   picks the newest `updated_secs` among matching-cwd rows only, `None`
@@ -387,7 +427,10 @@ page's grammar errors take the same shape over its six usage lines. Exit
   escapes off a tty — and `mcp --help` the `Mcp` page; `--version` prints
   `alter-zero {version}`; a grammar error exits 2 with the `error:` shape
   on stderr and an empty stdout; two positionals name the second with the
-  quote hint; a prompt with the bare picker is refused.
+  quote hint; a prompt with the bare picker is refused; a system prompt
+  flag with no value, both flags of a pair, or a blank value exits 2, and
+  a `-file` flag naming a file that cannot be read exits 1 with its line
+  before any interface starts.
 - `scripts/smoke.sh` Phase 61 (the I/O boundary): quitting a session that
   recorded a turn prints `Resume this session with:` + a `--resume {id}`
   line whose id names the rollout file; `--continue` relaunches straight
@@ -402,7 +445,10 @@ page's grammar errors take the same shape over its six usage lines. Exit
   `--help` on the pane's tty opens on `Alter Zero`, carries `[PROMPT]`,
   and is coloured (the raw pane holds the bold-cyan escape) while the same
   page through a pipe holds none; a usage error prints the clap-shaped
-  trailer and exits 2.
+  trailer and exits 2. **Phase 162**: launched with `--system-prompt-file`
+  and `--append-system-prompt` against a stub provider, the request opens
+  on the file's text, then the appended line, then `## Environment`
+  (`docs/system-prompt.md`).
 - `scripts/live_smoke.sh` Phase L4: against a real provider, the prompt
   shortcut's turn streams and settles, and `--resume {id} "…"` continues
   it.
