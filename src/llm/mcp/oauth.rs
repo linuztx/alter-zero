@@ -2055,31 +2055,34 @@ fn client_refused(body: &str) -> bool {
     })
 }
 
-/// The client form the server's own `/mcp` page opens, with no sign-in
-/// running: the client on hand, to change. An entered client's id, port and
-/// issuer; or the entry's own `oauth.clientId`, fixed, whose secret is the
-/// one thing to enter — unless the entry spells that too, which outranks
-/// anything typed here. `None` where there is no client to change: the
-/// sign-in itself asks for the first one.
+/// The client form a server's own `/mcp` page opens once its authorization
+/// server is known ([`client_lookup`]): under that server's issuer and the
+/// documentation link its metadata gives, the client on hand, to change —
+/// the entry's own `oauth.clientId`, fixed, whose secret is the one thing to
+/// enter; or an entered client's id and port — and, where none is on hand,
+/// a new one, on the port the next sign-in listens on.
 #[must_use]
 pub fn client_request_for(
     configured: Option<&crate::mcp::OAuthClientConfig>,
     kept: Option<&StoredClient>,
-) -> Option<ClientRequest> {
+    meta: &AuthServerMeta,
+) -> ClientRequest {
+    let entry_port = configured.and_then(|config| config.callback_port);
+    let base = ClientRequest {
+        issuer: meta.authority(),
+        documentation: meta.documentation.clone(),
+        ..ClientRequest::default()
+    };
     if let Some((config, client_id)) =
         configured.and_then(|config| Some((config, config.client_id.clone()?)))
     {
-        if config.client_secret.is_some() {
-            return None;
-        }
         // Only a record that is this client's says anything about it.
         let own = kept.filter(|kept| {
             kept.client_id
                 .as_deref()
                 .is_none_or(|kept_id| kept_id == client_id)
         });
-        return Some(ClientRequest {
-            issuer: own.and_then(|kept| kept.issuer.clone()).unwrap_or_default(),
+        return ClientRequest {
             has_secret: own.is_some_and(|kept| kept.client_secret.is_some()),
             client_id: Some(client_id),
             fixed_id: true,
@@ -2089,26 +2092,52 @@ pub fn client_request_for(
                 .is_some()
                 .then(|| config.registered_redirect_uri())
                 .flatten(),
-            documentation: None,
-            reason: None,
-        });
+            ..base
+        };
     }
-    let kept = kept?;
-    let client_id = kept.client_id.clone()?;
-    Some(ClientRequest {
-        issuer: kept.issuer.clone().unwrap_or_default(),
-        client_id: Some(client_id),
-        fixed_id: false,
-        has_secret: kept.client_secret.is_some(),
+    if let Some((kept, client_id)) = kept.and_then(|kept| Some((kept, kept.client_id.clone()?))) {
+        return ClientRequest {
+            client_id: Some(client_id),
+            has_secret: kept.client_secret.is_some(),
+            callback_port: Some(
+                kept.callback_port
+                    .or(entry_port)
+                    .unwrap_or(DEFAULT_CALLBACK_PORT),
+            ),
+            ..base
+        };
+    }
+    ClientRequest {
         callback_port: Some(
-            kept.callback_port
-                .or(configured.and_then(|config| config.callback_port))
+            entry_port
+                .or(kept.and_then(|kept| kept.callback_port))
                 .unwrap_or(DEFAULT_CALLBACK_PORT),
         ),
-        redirect_uri: None,
-        documentation: None,
-        reason: None,
-    })
+        ..base
+    }
+}
+
+/// The lookup `Change OAuth client` runs before its form opens: discovery
+/// alone — nothing registered, no URL shown, no token asked for — then the
+/// form over the client on hand ([`client_request_for`]), so the form names
+/// the issuer a client is created with and the server's documentation link.
+/// `cancel` is checked on either side of discovery.
+///
+/// # Errors
+/// Discovery failed, or the lookup was called off — in words.
+pub fn client_lookup(target: &SignIn<'_>, cancel: &CancelToken) -> Result<ClientRequest, String> {
+    let still_wanted = || {
+        if cancel.is_cancelled() {
+            Err("cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    still_wanted()?;
+    let meta = discover(target.server_url, target.challenge)?;
+    still_wanted()?;
+    let kept = load_client(target.store_path, target.server_url);
+    Ok(client_request_for(target.client, kept.as_ref(), &meta))
 }
 
 /// What `mcp get` says of the OAuth client a server signs in with
@@ -3636,11 +3665,16 @@ mod tests {
         );
     }
 
-    /// The form the server's page opens (no sign-in running): an entered
-    /// client's own values to change; a configured id's secret, when the
-    /// entry leaves it out; nothing where the form could change nothing.
+    /// The form a server's own page opens, once its authorization server is
+    /// known: under that server's issuer and documentation link, an entered
+    /// client's own values to change; a configured id's secret; a new client,
+    /// on the port the next sign-in listens on, where none is on hand.
     #[test]
     fn the_client_on_hand_fills_the_form_the_server_page_opens() {
+        let meta = AuthServerMeta {
+            documentation: Some("https://as.test/docs".to_string()),
+            ..meta_for("https://as.test", false)
+        };
         let entered = StoredClient {
             client_id: Some("typed".to_string()),
             client_secret: Some("s".to_string()),
@@ -3648,17 +3682,17 @@ mod tests {
             issuer: Some("https://as.test".to_string()),
         };
         assert_eq!(
-            client_request_for(None, Some(&entered)),
-            Some(ClientRequest {
+            client_request_for(None, Some(&entered), &meta),
+            ClientRequest {
                 issuer: "https://as.test".to_string(),
                 client_id: Some("typed".to_string()),
                 fixed_id: false,
                 has_secret: true,
                 callback_port: Some(9001),
                 redirect_uri: None,
-                documentation: None,
+                documentation: Some("https://as.test/docs".to_string()),
                 reason: None,
-            })
+            }
         );
         // An entry naming its client: only the secret, kept or not yet.
         let configured = crate::mcp::OAuthClientConfig {
@@ -3670,30 +3704,69 @@ mod tests {
             client_secret: Some("kept".to_string()),
             ..Default::default()
         };
-        let request = client_request_for(Some(&configured), Some(&cli)).unwrap();
+        let request = client_request_for(Some(&configured), Some(&cli), &meta);
         assert_eq!(request.client_id.as_deref(), Some("file-cid"));
         assert!(request.fixed_id && request.has_secret);
         assert_eq!(request.callback_port, Some(8080));
+        assert_eq!(request.issuer, "https://as.test");
         // Another client's secret is not this one's.
-        let request = client_request_for(Some(&configured), Some(&entered)).unwrap();
+        let request = client_request_for(Some(&configured), Some(&entered), &meta);
         assert!(request.fixed_id && !request.has_secret);
-        let request = client_request_for(Some(&configured), None).unwrap();
+        let request = client_request_for(Some(&configured), None, &meta);
         assert!(request.fixed_id && !request.has_secret);
-        // The file's own secret outranks anything typed: nothing to ask.
-        let with_secret = crate::mcp::OAuthClientConfig {
-            client_secret: Some("in the file".to_string()),
-            ..configured.clone()
-        };
-        assert_eq!(client_request_for(Some(&with_secret), Some(&cli)), None);
-        // No client anywhere: nothing to change.
-        assert_eq!(client_request_for(None, None), None);
-        assert_eq!(client_request_for(None, Some(&cli)), None);
-        // A port alone in the entry is no client.
+        // No client anywhere: a new one, on the port the next sign-in
+        // listens on — the entry's, where it names one.
+        let new = client_request_for(None, None, &meta);
+        assert_eq!(new.client_id, None);
+        assert!(!new.fixed_id && !new.has_secret);
+        assert_eq!(new.callback_port, Some(DEFAULT_CALLBACK_PORT));
+        assert_eq!(new.documentation.as_deref(), Some("https://as.test/docs"));
+        assert_eq!(client_request_for(None, Some(&cli), &meta).client_id, None);
         let port_only = crate::mcp::OAuthClientConfig {
             callback_port: Some(8080),
             ..Default::default()
         };
-        assert_eq!(client_request_for(Some(&port_only), None), None);
+        let request = client_request_for(Some(&port_only), None, &meta);
+        assert_eq!(request.client_id, None);
+        assert_eq!(request.callback_port, Some(8080));
+    }
+
+    /// The lookup Set and Change OAuth client run before the form opens:
+    /// discovery alone — nothing registered, no URL, no token requested —
+    /// and the form's request under the issuer it found and the
+    /// documentation link that server's metadata gives, over the client on
+    /// hand. A lookup called off says so.
+    #[test]
+    fn a_client_lookup_names_the_issuer_and_registers_nothing() {
+        use std::sync::atomic::Ordering;
+        let fixture = spawn_auth_server(None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{}/mcp", fixture.base);
+        let target = SignIn {
+            server_url: &server,
+            challenge: None,
+            store_path: Some(&store),
+            client: None,
+        };
+        let request = client_lookup(&target, &CancelToken::new()).expect("looked up");
+        assert_eq!(request.issuer, fixture.base);
+        assert_eq!(
+            request.documentation,
+            Some(format!("{}/docs/oauth", fixture.base))
+        );
+        assert_eq!(request.client_id, None);
+        assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+        assert!(fixture.token_requests.lock().unwrap().is_empty());
+        // Over a client entered for the server: its values.
+        save_client(Some(&store), &server, Some(&entered(&fixture, 9001))).unwrap();
+        let request = client_lookup(&target, &CancelToken::new()).expect("looked up");
+        assert_eq!(request.client_id.as_deref(), Some("typed-cid"));
+        assert_eq!(request.callback_port, Some(9001));
+        assert!(request.has_secret);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(client_lookup(&target, &cancel).is_err());
     }
 
     /// What `mcp get` says of the client a server signs in with: the
@@ -4713,7 +4786,8 @@ mod tests {
             callback_url: Some("http://127.0.0.1:5555/callback/file-cid".to_string()),
             ..Default::default()
         };
-        let request = client_request_for(Some(&configured), None).unwrap();
+        let meta = meta_for("https://as.test", false);
+        let request = client_request_for(Some(&configured), None, &meta);
         assert_eq!(request.callback_port, Some(5555));
         assert_eq!(
             request.redirect_uri.as_deref(),
@@ -4732,7 +4806,7 @@ mod tests {
             ..configured.clone()
         };
         assert_eq!(
-            client_request_for(Some(&plain), None).unwrap().redirect_uri,
+            client_request_for(Some(&plain), None, &meta).redirect_uri,
             None
         );
         // Turned away for want of a secret, the request says it too.

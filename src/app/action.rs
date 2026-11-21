@@ -551,9 +551,12 @@ pub enum McpOp {
         client_secret: Option<crate::secrets::SecretValue>,
         callback_port: Option<u16>,
     },
-    /// `Change OAuth client` / `Set client secret` on a server's page: open
-    /// the client form over the client on hand — the boundary knows it.
-    EditAuthClient { server: String },
+    /// `Change OAuth client` / `Set client secret` on a server's page: look
+    /// up the server's authorization server on a worker, then open the
+    /// client form over the client on hand, under the issuer and the
+    /// documentation link the lookup found (`docs/mcp.md` *The client
+    /// form*). The auth page waits on it meanwhile.
+    LookUpAuthClient { server: String },
     /// `Forget OAuth client` on a server's page: drop the client entered for
     /// it, and the login that client was granted.
     ForgetAuthClient { server: String },

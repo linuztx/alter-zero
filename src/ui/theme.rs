@@ -2387,6 +2387,9 @@ pub(super) const MCP_AUTH_FAILED_HINT: &str = "Enter to try again · Esc to go b
 /// name. The page states facts and asks for fields — MCP describes no
 /// provider, so it describes none.
 pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
+/// What the auth page says while `Change OAuth client` looks the server's
+/// authorization server up for the form — one status line, nothing to type.
+pub(super) const MCP_CLIENT_LOOKUP: &str = "Looking up the authorization server…";
 /// The issuer row's label — the authorization server as discovery named it
 /// — padded to the redirect URI label's width so the two values line up.
 pub(super) const MCP_CLIENT_ISSUER_LABEL: &str = "Issuer:        ";

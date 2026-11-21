@@ -180,6 +180,11 @@ pub struct McpAuthView {
     /// closed away with the page it explains, and the toast row it used to
     /// be was cut at the width.
     pub failed: Option<String>,
+    /// The page was opened to enter a client (`Change OAuth client`), and
+    /// the server's authorization server is being looked up for the form:
+    /// nothing is signed in to, so there is nothing to type into yet. It
+    /// stays set on a failed page, so Enter repeats the lookup.
+    pub lookup: bool,
 }
 
 /// The client form's fields, in the order they sit on the page.
@@ -518,41 +523,25 @@ impl App {
         }
         menu.auth = McpAuthView {
             failed: Some(detail.to_string()),
+            // What failed is what Enter tries again: a lookup stays one.
+            lookup: menu.auth.lookup,
             ..McpAuthView::default()
         };
         true
     }
 
-    /// `server`'s sign-in has no OAuth client to present, or the user's own
-    /// was turned away: its auth page becomes the client form over
-    /// `request`. `false` when that page is no longer open for the server —
-    /// the boundary says it in a toast instead.
+    /// `server`'s auth page becomes the client form over `request`: its
+    /// sign-in has no OAuth client to present, or the user's own was turned
+    /// away — or the lookup `Change OAuth client` started has found the
+    /// authorization server. `false` when that page is no longer open for
+    /// the server.
     pub fn ask_mcp_client(&mut self, server: &str, request: &McpClientRequest) -> bool {
-        self.open_mcp_client_form(server, request, &McpPage::Auth)
-    }
-
-    /// The client form opened from `server`'s own page (`Change OAuth
-    /// client`, `Set client secret`) over the client on hand. `false` unless
-    /// that page is the one open.
-    pub fn edit_mcp_client(&mut self, server: &str, request: &McpClientRequest) -> bool {
-        self.open_mcp_client_form(server, request, &McpPage::Server)
-    }
-
-    /// Put the client form on the auth page of `server`, when the menu is
-    /// open on that server's `from` page.
-    fn open_mcp_client_form(
-        &mut self,
-        server: &str,
-        request: &McpClientRequest,
-        from: &McpPage,
-    ) -> bool {
         let Some(menu) = &mut self.mcp_menu else {
             return false;
         };
-        if menu.page != *from || menu.current_server().is_none_or(|s| s.name != server) {
+        if menu.page != McpPage::Auth || menu.current_server().is_none_or(|s| s.name != server) {
             return false;
         }
-        menu.page = McpPage::Auth;
         menu.selected = 0;
         menu.auth = McpAuthView {
             client: Some(McpClientForm::over(request)),
@@ -670,10 +659,17 @@ impl App {
                     Action::McpOp(McpOp::Authenticate { server: name })
                 }
                 McpServerAction::ClearAuth => Action::McpOp(McpOp::ClearAuth { server: name }),
-                // The form opens over the client on hand, which only the
-                // boundary knows: the page stays until it answers.
+                // The page a sign-in opens — looking the authorization
+                // server up, not signing in: the form arrives with the
+                // issuer it found.
                 McpServerAction::ChangeClient | McpServerAction::SetClientSecret => {
-                    Action::McpOp(McpOp::EditAuthClient { server: name })
+                    menu.page = McpPage::Auth;
+                    menu.selected = 0;
+                    menu.auth = McpAuthView {
+                        lookup: true,
+                        ..McpAuthView::default()
+                    };
+                    Action::McpOp(McpOp::LookUpAuthClient { server: name })
                 }
                 McpServerAction::ForgetClient => {
                     Action::McpOp(McpOp::ForgetAuthClient { server: name })
@@ -746,16 +742,25 @@ impl App {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
         };
-        // A failed sign-in's page: Enter tries again, Esc goes back. Nothing
-        // is typed there, and no sign-in is running to cancel.
+        // A failed sign-in's page: Enter tries again what failed — the
+        // sign-in, or the lookup `Change OAuth client` runs — and Esc goes
+        // back. Nothing is typed there, and nothing is running to cancel.
         if menu.auth.failed.is_some() {
             match key.code {
                 KeyCode::Enter => {
                     let Some(server) = menu.current_server().map(|s| s.name.clone()) else {
                         return Action::None;
                     };
-                    menu.auth = McpAuthView::default();
-                    return Action::McpOp(McpOp::Authenticate { server });
+                    let lookup = menu.auth.lookup;
+                    menu.auth = McpAuthView {
+                        lookup,
+                        ..McpAuthView::default()
+                    };
+                    return Action::McpOp(if lookup {
+                        McpOp::LookUpAuthClient { server }
+                    } else {
+                        McpOp::Authenticate { server }
+                    });
                 }
                 KeyCode::Esc | KeyCode::Backspace => {
                     menu.page = McpPage::Server;
@@ -768,6 +773,17 @@ impl App {
         }
         if menu.auth.client.is_some() {
             return self.on_key_mcp_client(key);
+        }
+        // The lookup's page: nothing to type into yet, and Esc calls the
+        // lookup off.
+        if menu.auth.lookup {
+            if key.code == KeyCode::Esc {
+                menu.page = McpPage::Server;
+                menu.selected = 0;
+                menu.auth = McpAuthView::default();
+                return Action::McpOp(McpOp::CancelAuth);
+            }
+            return Action::None;
         }
         match key.code {
             KeyCode::Esc => {
@@ -871,11 +887,13 @@ impl App {
 
     /// Route a bracketed paste into the auth page's field — the client
     /// form's focused one, else the `URL >` field (the redirect URL is long —
-    /// pasting is the point). A failed page takes none.
+    /// pasting is the point). A failed page takes none, and neither does a
+    /// lookup's.
     pub fn paste_into_mcp_auth(&mut self, text: &str) -> bool {
         if let Some(menu) = &mut self.mcp_menu
             && menu.page == McpPage::Auth
             && menu.auth.failed.is_none()
+            && !menu.auth.lookup
         {
             let text = text.replace(['\n', '\r'], "");
             if let Some(form) = &mut menu.auth.client {

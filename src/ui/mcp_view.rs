@@ -1035,16 +1035,38 @@ fn client_form_lines(
     lines
 }
 
+/// The page `Change OAuth client` shows while the server's authorization
+/// server is looked up for the form: the form's title over one status line
+/// and the one key — nothing to type, and nothing said about the provider.
+fn lookup_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_CLIENT_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(dim_wrapped(MCP_CLIENT_LOOKUP, width));
+    lines.extend([
+        Line::default(),
+        dim_line(HOOKS_DETAIL_HINT, width),
+        model_rule(width),
+    ]);
+    lines
+}
+
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
 /// and the `URL >` paste-the-redirect fallback — or, while the sign-in
-/// waits on the user for an OAuth client, the client form; or, once it has
-/// failed, the reason.
+/// waits on the user for an OAuth client, the client form; or, while the
+/// authorization server is looked up for that form, a status line; or,
+/// once it has failed, the reason.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
     if let Some(reason) = &menu.auth.failed {
         return auth_failed_lines(reason, server, width);
     }
     if let Some(form) = &menu.auth.client {
         return client_form_lines(form, server, width);
+    }
+    if menu.auth.lookup {
+        return lookup_lines(server, width);
     }
     let mut lines = vec![
         model_rule(width),

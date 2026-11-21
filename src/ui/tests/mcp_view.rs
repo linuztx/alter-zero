@@ -1964,6 +1964,51 @@ fn the_client_form_hugs_its_frame() {
     }
 }
 
+/// While Change OAuth client looks the authorization server up, the auth
+/// page is one plain status line under the form's title, over its one key —
+/// nothing to type, so no caret — framed like every page.
+#[test]
+fn the_lookup_page_is_one_status_line() {
+    let mut linear = snapshot("linear", McpScope::User, McpServerStatus::NeedsAuth);
+    linear.kept_client = Some("typed-cid".to_string());
+    let mut app = App::new();
+    app.open_mcp_menu(vec![linear.clone()]);
+    app.on_key(key(KeyCode::Enter));
+    let change = server_actions(&linear)
+        .iter()
+        .position(|action| *action == crate::app::McpServerAction::ChangeClient)
+        .expect("Change OAuth client is offered");
+    let digit = char::from_digit(u32::try_from(change + 1).unwrap(), 10).unwrap();
+    app.on_key(key(KeyCode::Char(digit)));
+    assert!(app.mcp_menu.as_ref().unwrap().auth.lookup);
+    for width in [40u16, 100] {
+        let lines = mcp_view_lines(&app, width);
+        assert_frame_hugs_content(&format!("the lookup page at width {width}"), &lines);
+        let rows: Vec<String> = lines
+            .iter()
+            .map(|line| plain(line).trim().to_string())
+            .filter(|row| !row.starts_with('─'))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "OAuth client for linear",
+                "",
+                "Looking up the authorization server…",
+                "",
+                HOOKS_DETAIL_HINT,
+            ],
+            "at width {width}"
+        );
+    }
+    assert!(!crate::ui::cursor_visible(&app));
+    // The hidden cursor still has a seat on the page.
+    let lines = mcp_view_lines(&app, 100);
+    let area = Rect::new(0, 0, 100, lines.len() as u16);
+    let (x, y) = crate::ui::cursor_position(area, &app);
+    assert!(x < 100 && usize::from(y) < lines.len());
+}
+
 /// The server's page names the OAuth client it signs in with — the entry's
 /// own, else the one entered here — beside the rows that change it. Never a
 /// secret.

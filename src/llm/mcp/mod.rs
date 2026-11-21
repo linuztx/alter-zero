@@ -22,7 +22,8 @@ pub use self::manager::{
 pub use self::oauth::{
     AUTH_FLOW_TIMEOUT, AuthError, AuthProgress, AuthServerMeta, ClientIdentity, ClientRequest,
     DEFAULT_CALLBACK_PORT, RefreshFailure, SignIn, StoredClient, StoredTokens, b64url,
-    build_authorize_url, challenge_resource_metadata, client_request_for, client_summary,
+    build_authorize_url, challenge_resource_metadata, client_lookup, client_request_for,
+    client_summary,
     connect_bearer, discover, form_encode, load_client, load_client_secret, load_tokens,
     parse_client_store, parse_redirect, parse_token_store, pkce_and_state,
     provider_authorize_params, record_client, record_tokens, redirect_param, refresh_failure_kind,

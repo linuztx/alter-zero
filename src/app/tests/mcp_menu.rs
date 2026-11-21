@@ -980,46 +980,106 @@ fn server_actions_offer_the_client_rows_where_a_client_is_on_hand() {
     }
 }
 
-/// The client rows hand the boundary their ops; the form the server's page
-/// opens comes back from it, over the client on hand.
-#[test]
-fn the_client_rows_dispatch_their_ops_and_open_the_form() {
+/// linear's page, with a client entered for it.
+fn entered_client_app() -> App {
     let mut app = App::new();
     let mut linear = snapshot("linear", McpServerStatus::NeedsAuth, 0);
     linear.kept_client = Some("typed-cid".to_string());
     app.open_mcp_menu(vec![linear]);
     app.on_key(key(KeyCode::Enter)); // linear's page
+    app
+}
+
+/// Change OAuth client looks the server's authorization server up before
+/// the form opens: the auth page waits on the lookup with nothing to type
+/// into, and the form opens over its answer — the client in effect, under
+/// the issuer and the documentation link the lookup found. Esc calls a
+/// lookup off; Forget dispatches its own op.
+#[test]
+fn the_client_rows_look_up_the_authorization_server_before_the_form() {
+    let mut app = entered_client_app();
     // 2. Change OAuth client
     assert_eq!(
         app.on_key(key(KeyCode::Char('2'))),
-        Action::McpOp(McpOp::EditAuthClient {
+        Action::McpOp(McpOp::LookUpAuthClient {
             server: "linear".to_string()
         })
     );
-    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Server);
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Auth);
+    assert!(menu.auth.lookup);
+    // Nothing to type into while it looks.
+    type_text(&mut app, "x");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+    assert!(!app.paste_into_mcp_auth("https://x.test/cb?code=1"));
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert!(auth.lookup && auth.input.is_empty() && auth.client.is_none());
+    // The answer opens the form.
     let request = McpClientRequest {
         client_id: Some("typed-cid".to_string()),
         has_secret: true,
         callback_port: Some(9001),
+        documentation: Some("https://accounts.google.com/docs".to_string()),
         ..client_request()
     };
     assert!(
-        !app.edit_mcp_client("deepwiki", &request),
+        !app.ask_mcp_client("deepwiki", &request),
         "another server's"
     );
-    assert!(app.edit_mcp_client("linear", &request));
-    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    assert!(app.ask_mcp_client("linear", &request));
+    assert!(!app.mcp_menu.as_ref().unwrap().auth.lookup);
     assert_eq!(form(&app).client_id, "typed-cid");
     assert_eq!(form(&app).port, "9001");
-    // Back out, and forget it instead: 3. Forget OAuth client.
+    assert_eq!(form(&app).issuer, "https://accounts.google.com");
+    assert_eq!(
+        form(&app).documentation.as_deref(),
+        Some("https://accounts.google.com/docs")
+    );
+    // Back out, look again, and call that lookup off.
     app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Char('2')));
+    assert_eq!(
+        app.on_key(key(KeyCode::Esc)),
+        Action::McpOp(McpOp::CancelAuth)
+    );
+    let menu = app.mcp_menu.as_ref().unwrap();
+    assert_eq!(menu.page, McpPage::Server);
+    assert_eq!(menu.auth, Default::default());
+    // 3. Forget OAuth client
     assert_eq!(
         app.on_key(key(KeyCode::Char('3'))),
         Action::McpOp(McpOp::ForgetAuthClient {
             server: "linear".to_string()
         })
     );
-    // The form opens only from the server's own page.
+}
+
+/// A lookup that fails lands on the failed page, as a sign-in does — and
+/// its Enter repeats the lookup, never a sign-in, which would sign in to a
+/// server that registers clients itself instead of opening the form.
+#[test]
+fn a_failed_lookup_is_tried_again_as_a_lookup() {
+    let mut app = entered_client_app();
+    app.on_key(key(KeyCode::Char('2'))); // Change OAuth client: the lookup
+    let reason = "the authorization server http://127.0.0.1:1 couldn't be reached";
+    assert!(app.finish_mcp_auth("linear", false, reason));
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert_eq!(auth.failed.as_deref(), Some(reason));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::LookUpAuthClient {
+            server: "linear".to_string()
+        })
+    );
+    let auth = &app.mcp_menu.as_ref().unwrap().auth;
+    assert!(auth.lookup && auth.failed.is_none());
+    // A failed sign-in still tries the sign-in again.
     let mut app = auth_page_app();
-    assert!(!app.edit_mcp_client("linear", &request));
+    assert!(app.finish_mcp_auth("linear", false, reason));
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::McpOp(McpOp::Authenticate {
+            server: "linear".to_string()
+        })
+    );
 }

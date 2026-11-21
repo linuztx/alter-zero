@@ -915,9 +915,12 @@ pub fn cursor_visible(app: &App) -> bool {
     }
     // The auth page's fields are typed into — its `URL >` paste field, its
     // client form — unless the sign-in failed, when the page is a reason to
-    // read with nothing to type.
+    // read, or the form's authorization server is still being looked up:
+    // nothing to type on either.
     if let Some(menu) = &app.mcp_menu {
-        return menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none();
+        return menu.page == crate::app::McpPage::Auth
+            && menu.auth.failed.is_none()
+            && !menu.auth.lookup;
     }
     // The `/plugins` list's search line — the add tab's field too — and its
     // add page's field are typed into; its other pages are menus
@@ -1243,9 +1246,12 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // `docs/mcp.md`.
     if let Some(menu) = &app.mcp_menu {
         let lines = super::mcp_view::mcp_view_lines(app, area.width);
-        // A failed sign-in's page has no field: its hidden cursor seats as
-        // any page without a marker does.
-        if menu.page == crate::app::McpPage::Auth && menu.auth.failed.is_none() {
+        // A failed sign-in's page has no field, nor has a lookup's: the
+        // hidden cursor seats as on any page without a marker.
+        if menu.page == crate::app::McpPage::Auth
+            && menu.auth.failed.is_none()
+            && !menu.auth.lookup
+        {
             // The field taking keys: the client form's focused one, at the
             // column its builder reports, else the `URL >` paste field.
             let (prompt, x) = match &menu.auth.client {

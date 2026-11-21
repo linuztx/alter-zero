@@ -237,17 +237,9 @@ impl Session<'_> {
                     callback_port,
                 },
             ),
-            // The form over the client on hand — read from the token store
-            // here, since only the boundary knows it.
-            McpOp::EditAuthClient { server } => match manager.client_request(&server) {
-                Some(request) => {
-                    self.app.edit_mcp_client(&server, &request);
-                }
-                None => self.toast(
-                    format!("{server} has no OAuth client to change"),
-                    ToastKind::Error,
-                ),
-            },
+            // The form over the client on hand, once a worker has found the
+            // server's authorization server (`docs/mcp.md`).
+            McpOp::LookUpAuthClient { server } => manager.look_up_client(&server),
             McpOp::ForgetAuthClient { server } => match manager.forget_client(&server) {
                 Ok(()) => self.toast(
                     format!("Forgot the OAuth client for {server}"),
@@ -298,6 +290,11 @@ impl Session<'_> {
                         ToastKind::Error,
                     );
                 }
+            }
+            // The lookup's answer: the form, on the page that asked. A page
+            // the user has left called the lookup off — nothing to say.
+            McpEvent::ClientForm { server, request } => {
+                self.app.ask_mcp_client(&server, &request);
             }
             McpEvent::AuthDone { server, ok, detail } => {
                 // A failure the open auth page took stays there, whole; only
