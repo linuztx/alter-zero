@@ -1341,37 +1341,63 @@ impl McpManager {
     /// in the token store, never in a config file, bound to the
     /// authorization server it was entered for, as [`oauth::client_to_keep`]
     /// decides: the entry's own client keeps at most a secret, any other is
-    /// kept whole. A client that can't be kept is reported as a failed
-    /// sign-in — never a flow that would only ask for it again.
+    /// kept whole. A login made as another client goes in the same write
+    /// ([`oauth::keep_entered_client`]), and the live connection with it — it
+    /// still carries that login's bearer. A client that can't be kept is
+    /// reported as a failed sign-in — never a flow that would only ask for
+    /// it again.
     pub fn save_client(&self, name: &str, entered: &EnteredClient) {
         let Some((url, auth_path, configured)) = self.sign_in_target(name) else {
             return;
         };
-        let existing = oauth::load_client(auth_path.as_deref(), &url);
-        let record = oauth::client_to_keep(entered, existing.as_ref(), configured.as_ref());
-        if let Err(error) = oauth::save_client(auth_path.as_deref(), &url, record.as_ref()) {
-            self.notify(McpEvent::AuthDone {
-                server: name.to_string(),
-                ok: false,
-                detail: format!("couldn't keep the client: {error}"),
-            });
-            return;
-        }
+        // The store's I/O runs outside the manager's lock: its file lock may
+        // wait on another session's write.
+        let change = match oauth::keep_entered_client(
+            auth_path.as_deref(),
+            &url,
+            entered,
+            configured.as_ref(),
+        ) {
+            Ok(change) => change,
+            Err(error) => {
+                self.notify(McpEvent::AuthDone {
+                    server: name.to_string(),
+                    ok: false,
+                    detail: format!("couldn't keep the client: {error}"),
+                });
+                return;
+            }
+        };
+        let kept_client = kept_client_id(auth_path.as_deref(), &url);
         if let Some(server) = self
             .lock()
             .servers
             .iter_mut()
             .find(|s| s.entry.name == name)
         {
-            server.kept_client = record.and_then(|record| record.client_id);
+            server.kept_client = kept_client;
+            if change.signed_out {
+                server.has_tokens = false;
+                if matches!(
+                    server.status,
+                    McpServerStatus::Connected
+                        | McpServerStatus::Failed(_)
+                        | McpServerStatus::Pending
+                ) {
+                    server.drop_connection();
+                    server.status = McpServerStatus::NeedsAuth;
+                }
+            }
         }
+        self.notify(McpEvent::Changed);
         self.authenticate(name);
     }
 
-    /// Forget the client entered for a server — and its login with it, which
-    /// that client was granted (the `/mcp` "Forget OAuth client" action).
-    /// The server reconnects as [`clear_auth`](Self::clear_auth)'s does, and
-    /// its next sign-in registers, or asks, afresh.
+    /// Forget the client entered for a server — and its login with it, when
+    /// that login was made as it (the `/mcp` "Forget OAuth client" action):
+    /// one locked write ([`oauth::forget_entered_client`]). The server
+    /// reconnects as [`clear_auth`](Self::clear_auth)'s does, and its next
+    /// sign-in uses the entry's own client, registers, or asks, afresh.
     ///
     /// # Errors
     /// The store couldn't be rewritten — the client is still there.
@@ -1379,15 +1405,16 @@ impl McpManager {
         let Some((url, auth_path, _)) = self.sign_in_target(name) else {
             return Ok(());
         };
-        oauth::save_client(auth_path.as_deref(), &url, None)?;
-        oauth::save_tokens(auth_path.as_deref(), &url, None)?;
+        let change = oauth::forget_entered_client(auth_path.as_deref(), &url)?;
         let reconnect = {
             let mut inner = self.lock();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return Ok(());
             };
             server.kept_client = None;
-            server.has_tokens = false;
+            if change.signed_out {
+                server.has_tokens = false;
+            }
             matches!(
                 server.status,
                 McpServerStatus::Connected | McpServerStatus::Failed(_)
@@ -4609,6 +4636,54 @@ done
             None,
             "nothing was kept"
         );
+        manager.shutdown();
+    }
+
+    /// A login goes with the client it was made as: the same client saved
+    /// again — another port — keeps it; a client of another id takes it out
+    /// in the same write, and the page says so before any sign-in.
+    #[test]
+    fn saving_another_client_signs_out_of_the_old_one() {
+        let base = spawn_signin_server_with(false);
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("mcp-auth.json");
+        let server = format!("{base}/mcp");
+        oauth::save_client(
+            Some(&store),
+            &server,
+            Some(&oauth::StoredClient {
+                client_id: Some("typed-cid".to_string()),
+                callback_port: Some(free_port()),
+                issuer: Some(base.clone()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        oauth::save_tokens(
+            Some(&store),
+            &server,
+            Some(&oauth::StoredTokens {
+                access_token: "tok".to_string(),
+                client_id: "typed-cid".to_string(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let (manager, mut rx) = signin_manager(&base, &store);
+        assert_eq!(
+            manager.snapshot()[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.save_client("srv", &entered(&base, "typed-cid", None, free_port()));
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
+        assert!(oauth::load_tokens(Some(&store), &server).is_some());
+        manager.save_client("srv", &entered(&base, "other-cid", Some("s"), free_port()));
+        assert!(oauth::load_tokens(Some(&store), &server).is_none());
+        let after = &manager.snapshot()[0];
+        assert_eq!(after.kept_client.as_deref(), Some("other-cid"));
+        assert_eq!(after.status, McpServerStatus::NeedsAuth);
+        assert_eq!(after.auth, Some(crate::mcp::McpAuthState::NotAuthenticated));
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL");
         manager.shutdown();
     }
 

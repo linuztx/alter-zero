@@ -611,6 +611,155 @@ pub fn client_to_keep(
     })
 }
 
+/// What a write to the store's `clients` section did besides keeping the
+/// client: a client entered in `/mcp` it took out, and a login it removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientChange {
+    /// A client entered in `/mcp` was kept for the server and no longer is
+    /// — replaced by another, or forgotten.
+    pub forgot_entered: bool,
+    /// The server's login went with the client it was made as.
+    pub signed_out: bool,
+}
+
+/// The `clients` and `servers` sections rewritten for `server_url` in one
+/// go — the core of every client write that touches a login. `decide` gets
+/// the client kept for the server and the id its login was made as, and
+/// answers the record to keep in its place (`None` keeps none) and whether
+/// the login goes; or `None` to leave the store as it is. `None` back when
+/// there is nothing to write, or the `clients` section is no object.
+fn rewrite_client_and_login(
+    contents: &str,
+    server_url: &str,
+    decide: impl FnOnce(Option<&StoredClient>, Option<&str>) -> Option<(Option<StoredClient>, bool)>,
+) -> Option<(String, ClientChange)> {
+    let kept = parse_client_store(contents).remove(server_url);
+    let login = parse_token_store(contents)
+        .remove(server_url)
+        .map(|login| login.client_id);
+    let (client, drop_login) = decide(kept.as_ref(), login.as_deref())?;
+    let signed_out = drop_login && login.is_some();
+    // Nothing kept, nothing to keep, no login to take: no write, and no
+    // store made for it.
+    if kept.is_none() && client.is_none() && !signed_out {
+        return None;
+    }
+    let mut updated = record_client(contents, server_url, client.as_ref())?;
+    if signed_out {
+        updated = record_tokens(&updated, server_url, None);
+    }
+    let kept_id = kept.as_ref().and_then(|kept| kept.client_id.as_deref());
+    let now_id = client
+        .as_ref()
+        .and_then(|client| client.client_id.as_deref());
+    let change = ClientChange {
+        forgot_entered: kept_id.is_some() && kept_id != now_id,
+        signed_out,
+    };
+    Some((updated, change))
+}
+
+/// Re-render the store with the client a submitted form describes kept for
+/// `server_url` ([`client_to_keep`]) — and, in the same write, the server's
+/// login removed when it was made as another client than that one: a login
+/// goes with the client it was made as, and keeps its own copy of that
+/// client's id and secret, so left behind it would go on presenting a
+/// client nothing names. The same id — a new secret, a new port — keeps it.
+/// `None` when there is nothing to write, or the `clients` section is no
+/// object.
+#[must_use]
+pub fn record_entered_client(
+    contents: &str,
+    server_url: &str,
+    entered: &EnteredClient,
+    configured: Option<&crate::mcp::OAuthClientConfig>,
+) -> Option<(String, ClientChange)> {
+    rewrite_client_and_login(contents, server_url, |kept, login| {
+        let client = client_to_keep(entered, kept, configured);
+        let drop_login = login.is_some_and(|made_as| made_as != entered.client_id);
+        Some((client, drop_login))
+    })
+}
+
+/// Re-render the store with the client entered in `/mcp` for `server_url`
+/// forgotten — and its login, only when that login was made as it. `None`
+/// when no entered client is kept: a secret kept for the entry's own client
+/// is not one, and stays.
+#[must_use]
+pub fn forget_entered_record(contents: &str, server_url: &str) -> Option<(String, ClientChange)> {
+    rewrite_client_and_login(contents, server_url, |kept, login| {
+        let id = kept?.client_id.as_deref()?;
+        Some((None, login == Some(id)))
+    })
+}
+
+/// Does the store's `clients` section exist and fail to be an object?
+/// Nothing is written over one that can't be read.
+fn clients_unreadable(contents: &str) -> bool {
+    serde_json::from_str::<Value>(contents.trim())
+        .ok()
+        .and_then(|value| value.get("clients").map(|clients| !clients.is_object()))
+        .unwrap_or(false)
+}
+
+/// Keep the client a submitted form describes for `server_url`, removing a
+/// login made as another client in the same locked read-modify-write
+/// ([`record_entered_client`]). What else it did comes back.
+///
+/// # Errors
+/// Nowhere to keep a client, or a store that can't be read or written.
+pub fn keep_entered_client(
+    path: Option<&Path>,
+    server_url: &str,
+    entered: &EnteredClient,
+    configured: Option<&crate::mcp::OAuthClientConfig>,
+) -> Result<ClientChange, String> {
+    let Some(path) = path else {
+        return Err("there is no config directory to keep the client in".to_string());
+    };
+    let mut change = ClientChange::default();
+    let mut unreadable = false;
+    rewrite_store(path, |contents| {
+        unreadable = clients_unreadable(contents);
+        if unreadable {
+            return None;
+        }
+        let (updated, made) = record_entered_client(contents, server_url, entered, configured)?;
+        change = made;
+        Some(updated)
+    })?;
+    if unreadable {
+        return Err(format!(
+            "the clients section of {} isn't an object",
+            path.display()
+        ));
+    }
+    Ok(change)
+}
+
+/// Forget the client entered in `/mcp` for `server_url`, and its login when
+/// that login was made as it, in one locked read-modify-write
+/// ([`forget_entered_record`]) — and nothing else.
+///
+/// # Errors
+/// A store that can't be read or written.
+pub fn forget_entered_client(
+    path: Option<&Path>,
+    server_url: &str,
+) -> Result<ClientChange, String> {
+    // Nothing to forget where there is no store: not even its lock is made.
+    let Some(path) = path.filter(|path| path.exists()) else {
+        return Ok(ClientChange::default());
+    };
+    let mut change = ClientChange::default();
+    rewrite_store(path, |contents| {
+        let (updated, made) = forget_entered_record(contents, server_url)?;
+        change = made;
+        Some(updated)
+    })?;
+    Ok(change)
+}
+
 /// The server entry's own client, as the client form needs it — `None`
 /// where the entry names none. A secret is in effect for it when one is
 /// kept for it for this authorization server (`authority`), or its file
@@ -3870,6 +4019,214 @@ mod tests {
         let unbound =
             r#"{"clients":{"https://s.test/mcp":{"client_id":"cid","client_secret":"shh"}}}"#;
         assert_eq!(parse_client_store(unbound).get(server), None);
+    }
+
+    /// A store holding `client` and a login made as `login_as` for `server`
+    /// — and another server's login, which no write here may touch.
+    fn store_with(server: &str, client: Option<&StoredClient>, login_as: Option<&str>) -> String {
+        let other = StoredTokens {
+            access_token: "other-at".to_string(),
+            client_id: "other-cid".to_string(),
+            ..Default::default()
+        };
+        let mut contents = record_tokens("", "https://other.test/mcp", Some(&other));
+        if let Some(client) = client {
+            contents = record_client(&contents, server, Some(client)).unwrap();
+        }
+        if let Some(id) = login_as {
+            let login = StoredTokens {
+                access_token: "at".to_string(),
+                client_id: id.to_string(),
+                ..Default::default()
+            };
+            contents = record_tokens(&contents, server, Some(&login));
+        }
+        contents
+    }
+
+    /// A login goes with the client it was made as: keeping a client of
+    /// another id than the login's removes the login in the same write as
+    /// the client, and the same id — a new secret, a new port — keeps it.
+    /// Putting the entry's own client back takes an entered one out, and
+    /// its login with it.
+    #[test]
+    fn keeping_a_client_removes_a_login_made_as_another() {
+        const AS: &str = "https://as.test";
+        let server = "https://s.test/mcp";
+        let typed = StoredClient {
+            client_id: Some("typed".to_string()),
+            client_secret: Some("typed-secret".to_string()),
+            callback_port: Some(9001),
+            issuer: Some(AS.to_string()),
+            secret_from_entry: false,
+        };
+        let form = |id: &str, secret: Option<&str>, port: Option<u16>| EnteredClient {
+            issuer: AS.to_string(),
+            client_id: id.to_string(),
+            client_secret: secret.map(str::to_string),
+            keep_secret: true,
+            callback_port: port,
+        };
+        let login_of = |contents: &str| {
+            parse_token_store(contents)
+                .remove(server)
+                .map(|login| login.client_id)
+        };
+        let before = store_with(server, Some(&typed), Some("typed"));
+        // Another id: the login goes too.
+        let (after, change) =
+            record_entered_client(&before, server, &form("mine", Some("s"), Some(9002)), None)
+                .expect("written");
+        assert_eq!(login_of(&after), None);
+        assert_eq!(
+            change,
+            ClientChange {
+                forgot_entered: true,
+                signed_out: true
+            }
+        );
+        assert_eq!(
+            parse_client_store(&after)[server].client_id.as_deref(),
+            Some("mine")
+        );
+        assert!(parse_token_store(&after).contains_key("https://other.test/mcp"));
+        // The same id on another port: the login stays.
+        let (after, change) =
+            record_entered_client(&before, server, &form("typed", None, Some(9002)), None)
+                .expect("written");
+        assert_eq!(login_of(&after).as_deref(), Some("typed"));
+        assert_eq!(change, ClientChange::default());
+        assert_eq!(parse_client_store(&after)[server].callback_port, Some(9002));
+        // The entry's own client back: the entered one goes, and the login
+        // it made with it.
+        let entry = crate::mcp::OAuthClientConfig {
+            client_id: Some("file-cid".to_string()),
+            callback_port: Some(8000),
+            ..Default::default()
+        };
+        let (after, change) = record_entered_client(
+            &before,
+            server,
+            &form("file-cid", None, Some(8000)),
+            Some(&entry),
+        )
+        .expect("written");
+        assert_eq!(parse_client_store(&after).get(server), None);
+        assert_eq!(login_of(&after), None);
+        assert!(change.forgot_entered && change.signed_out);
+        // A login made as the entry's own client stays with it.
+        let entrys_login = store_with(server, None, Some("file-cid"));
+        let (after, change) = record_entered_client(
+            &entrys_login,
+            server,
+            &form("file-cid", Some("new"), Some(8000)),
+            Some(&entry),
+        )
+        .expect("written");
+        assert_eq!(login_of(&after).as_deref(), Some("file-cid"));
+        assert_eq!(change, ClientChange::default());
+        // Nothing kept, nothing to keep and no login: nothing to write.
+        assert_eq!(
+            record_entered_client(
+                "",
+                server,
+                &form("file-cid", None, Some(8000)),
+                Some(&entry)
+            ),
+            None
+        );
+    }
+
+    /// Forgetting an entered client is one write: the client goes, and its
+    /// login only when that login was made as it. A secret kept for the
+    /// entry's own client is no entered client: nothing to forget.
+    #[test]
+    fn forgetting_an_entered_client_takes_only_its_own_login() {
+        let server = "https://s.test/mcp";
+        let typed = StoredClient {
+            client_id: Some("typed".to_string()),
+            issuer: Some("https://as.test".to_string()),
+            ..Default::default()
+        };
+        let login_of = |contents: &str| {
+            parse_token_store(contents)
+                .remove(server)
+                .map(|login| login.client_id)
+        };
+        let (after, change) =
+            forget_entered_record(&store_with(server, Some(&typed), Some("typed")), server)
+                .expect("written");
+        assert_eq!(parse_client_store(&after).get(server), None);
+        assert_eq!(login_of(&after), None);
+        assert_eq!(
+            change,
+            ClientChange {
+                forgot_entered: true,
+                signed_out: true
+            }
+        );
+        assert!(parse_token_store(&after).contains_key("https://other.test/mcp"));
+        let (after, change) =
+            forget_entered_record(&store_with(server, Some(&typed), Some("someone")), server)
+                .expect("written");
+        assert_eq!(parse_client_store(&after).get(server), None);
+        assert_eq!(login_of(&after).as_deref(), Some("someone"));
+        assert!(change.forgot_entered && !change.signed_out);
+        let cli = StoredClient {
+            client_secret: Some("kept".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            forget_entered_record(&store_with(server, Some(&cli), Some("x")), server),
+            None
+        );
+        assert_eq!(forget_entered_record("", server), None);
+    }
+
+    /// The writes behind the form and Forget: each one locked
+    /// read-modify-write, a store whose `clients` is no object refused
+    /// rather than written over, and nothing made where there is nothing to
+    /// forget.
+    #[test]
+    fn the_client_writes_are_one_locked_rewrite_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let server = "https://s.test/mcp";
+        let typed = EnteredClient {
+            issuer: "https://as.test".to_string(),
+            client_id: "typed".to_string(),
+            client_secret: Some("s".to_string()),
+            keep_secret: false,
+            callback_port: Some(9001),
+        };
+        assert_eq!(
+            forget_entered_client(Some(&path), server),
+            Ok(ClientChange::default())
+        );
+        assert!(!path.exists(), "nothing to forget made a store");
+        assert_eq!(
+            keep_entered_client(Some(&path), server, &typed, None),
+            Ok(ClientChange::default())
+        );
+        assert_eq!(
+            load_client(Some(&path), server).and_then(|c| c.client_id),
+            Some("typed".to_string())
+        );
+        assert_eq!(
+            forget_entered_client(Some(&path), server),
+            Ok(ClientChange {
+                forgot_entered: true,
+                signed_out: false
+            })
+        );
+        assert_eq!(load_client(Some(&path), server), None);
+        std::fs::write(&path, r#"{"clients": []}"#).unwrap();
+        assert!(keep_entered_client(Some(&path), server, &typed, None).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"clients": []}"#
+        );
+        assert!(keep_entered_client(None, server, &typed, None).is_err());
     }
 
     /// The record a submitted form becomes. The entry's own client — its id
