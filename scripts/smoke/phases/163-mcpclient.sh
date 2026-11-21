@@ -21,9 +21,11 @@ smoke_begin
 #   redirect URI, which follows the port as it is typed;
 # - the secret is never drawn — not on the pane, not in the byte stream;
 # - a client the server turns away (a wrong secret, after the whole browser
-#   round) reopens the form with the id kept and the server's own reason;
+#   round) reopens the form with the id kept and the server's own reason,
+#   the refused secret no longer offered as kept;
 # - the right secret signs in: the server connects, its page names the
-#   client and offers to change or forget it;
+#   client and offers to change or forget it, and Change looks the
+#   authorization server up before its form opens;
 # - the client is kept with the tokens, owner-only, bound to its issuer and
 #   port — and mcp.json is never written;
 # - `mcp get` names the client and never its secret;
@@ -179,9 +181,13 @@ if ! wait_for 5 "$S163" -F "1. Authenticate"; then
 	dump "$S163"
 	fail "the server page offers no Authenticate action"
 fi
-if pane_has "$S163" -F "OAuth client"; then
+if pane_has "$S163" -F "OAuth client:"; then
 	dump "$S163"
-	fail "a server with no client of the user's shows client rows"
+	fail "a server with no client of the user's names one"
+fi
+if ! pane_has "$S163" -F "2. Set OAuth client"; then
+	dump "$S163"
+	fail "a server with no client of the user's does not offer to set one"
 fi
 keys "$S163" Enter # Authenticate
 
@@ -269,7 +275,7 @@ expect_has "$back_flat" -F "check its ID and its secret" "the reason does not sa
 expect_has "$back_flat" -F "The OAuth client was not found." "the reason lacks the server's own words"
 expect_has "$back" -F "Client ID     > smoke-client" "the client ID was not kept on the form"
 expect_has "$back" -F "Callback port > $CB_PORT" "the port was not kept on the form"
-expect_has "$back" -F "Client secret > unchanged" "the form does not say the kept secret stays"
+expect_has "$back" -F "Client secret > optional" "the reopened form still offers the refused secret as kept"
 expect_lacks "$back" -F "wrong-secret" "THE SECRET IS ON SCREEN"
 
 # --- the right secret --------------------------------------------------------
@@ -328,7 +334,10 @@ if ! wait_for 5 "$S163" -F "Client ID     > smoke-client"; then
 	dump "$S163"
 	fail "Change OAuth client did not open the form over the kept client"
 fi
-expect_has "$(pane "$S163")" -F "Client secret > unchanged" "the form does not say the kept secret stays"
+changing="$(pane "$S163")"
+expect_has "$changing" -F "Client secret > unchanged" "the form does not say the kept secret stays"
+# The documentation link comes from discovery alone: the lookup ran.
+expect_has "$changing" -F "Docs:          $AUTH_BASE/docs/oauth" "Change OAuth client opened its form without looking the authorization server up"
 keys "$S163" Escape
 if ! wait_for 5 "$S163" -F "Forget OAuth client"; then
 	dump "$S163"

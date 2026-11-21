@@ -1636,8 +1636,12 @@ register, the callback port it follows, the client ID and a masked secret
 section, bound to its issuer and never written to a config file
 (`oauth::StoredClient`), signs in on exactly its own port
 (`DEFAULT_CALLBACK_PORT`), and is changed or forgotten from the server's
-page; a sign-in that fails stays on its page with the whole reason
-(`McpAuthView::failed`); `smoke.sh` Phase 163) in
+page; an entered client outranks the entry's own `oauth.clientId`, the
+form the server's page opens waits on a lookup of the authorization server
+(`McpManager::look_up_client`), and a login goes with the client it was
+made as (`oauth::keep_entered_client`); a sign-in that fails stays on its
+page with the whole reason (`McpAuthView::failed`); `smoke.sh` Phases 163
+and 164) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —

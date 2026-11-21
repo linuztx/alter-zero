@@ -29,7 +29,11 @@ smoke_begin
 # - `hub`: Authenticate asks for nothing — the plugin's own client signs in,
 #   and the redirect it sends, on the authorize URL and at the token
 #   exchange, is the plugin's callback URL, answered on that URL's path; its
-#   secret is never drawn.
+#   secret is never drawn;
+# - `hub` again: Change OAuth client opens the whole form over the plugin's
+#   own client, and Enter through it unedited keeps nothing — the next
+#   sign-in still sends the plugin's callback URL, where an entered copy of
+#   the client would have sent http://localhost:{port}/callback.
 S164="${S}_pluginclient"
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 AUTH_PORT="$(free_port)"
@@ -204,6 +208,15 @@ next_authorize_url() {
 	}
 	poll 15 fresh
 }
+# Wait for an authorize URL other than `$1` (the previous attempt's).
+next_authorize_url_after() {
+	local previous="$1"
+	fresher() {
+		new_url="$(authorize_url)"
+		[ -n "$new_url" ] && [ "$new_url" != "$previous" ]
+	}
+	poll 15 fresher
+}
 # Play the browser: follow `$1`'s redirect back to the app with `$2` as the
 # authorization server's answer.
 browser() {
@@ -348,9 +361,61 @@ if ! wait_for 15 "$S164" -F "✔ connected"; then
 	fail "the plugin's server did not connect after the sign-in"
 fi
 expect_lacks "$(pane "$S164")" -F "hub-secret" "THE PLUGIN'S CLIENT SECRET IS ON SCREEN"
-tmux kill-session -t "$S164" 2>/dev/null
 grep -qF "client_id=hub-client redirect_uri=$HUB_CALLBACK ok=True" "$AUTH_LOG" ||
 	fail "the token exchange did not send the plugin's callback URL"
+
+# --- hub: Change OAuth client, Enter through the unedited form --------------
+# The form decides from its fields which client it describes: unedited, it
+# is still the plugin's own, so nothing is kept and the next sign-in sends
+# the callback URL that client registered.
+hub_page="$(pane "$S164")"
+note "the plugin server's page, signed in"
+printf '%s\n' "$hub_page"
+expect_has "$hub_page" -E "OAuth client: +hub-client" "the page does not name the plugin's client"
+expect_lacks "$hub_page" -F "Forget OAuth client" "the page offers to forget the plugin's own client"
+change="$(printf '%s\n' "$hub_page" | grep -oE '[0-9]+\. Change OAuth client' | grep -oE '^[0-9]+')"
+if [ -z "$change" ]; then
+	dump "$S164"
+	fail "the page does not offer to change the plugin's client"
+fi
+keys "$S164" "$change"
+if ! wait_for 15 "$S164" -F "Client ID     > hub-client"; then
+	dump "$S164"
+	fail "Change OAuth client did not open the form over the plugin's own client"
+fi
+form="$(pane "$S164")"
+note "the form over the plugin's own client"
+printf '%s\n' "$form"
+expect_has "$form" -F "Callback port > $HUB_PORT" "the form does not show the plugin's callback port"
+expect_has "$form" -F "Redirect URI:  $HUB_CALLBACK" "the form does not show the callback URL the plugin's client registered"
+expect_has "$form" -F "Client secret > unchanged" "the form does not say the plugin's secret stays"
+first_hub_url="$new_url"
+keys "$S164" Enter # the caret opens on the secret: submit, unedited
+if ! next_authorize_url_after "$first_hub_url"; then
+	dump "$S164"
+	fail "no authorize URL followed the unedited form"
+fi
+note "the authorize URL after Change OAuth client"
+printf '%s\n' "$new_url"
+expect_eq "$(url_param "$new_url" client_id)" "hub-client" "the sign-in after the unedited form does not present the plugin's client"
+expect_eq "$(url_param "$new_url" redirect_uri)" "$HUB_CALLBACK" "the unedited form lost the callback URL the plugin's client registered"
+browser "$new_url" "code=smoke-code-3"
+signed_in_twice() {
+	[ "$(grep -cF "client_id=hub-client redirect_uri=$HUB_CALLBACK ok=True" "$AUTH_LOG")" -ge 2 ]
+}
+if ! poll 15 signed_in_twice; then
+	dump "$S164"
+	fail "the plugin's client did not sign in again on its callback URL"
+fi
+python3 - "$STORE" "$AUTH_BASE" <<'PY' || fail "a client was kept for the plugin's server after an unedited Change"
+import json, sys
+store, base = json.load(open(sys.argv[1])), sys.argv[2]
+kept = store.get("clients", {}).get(f"{base}/hub")
+if kept is not None:
+    sys.exit(f"kept for {base}/hub: {sorted(kept)}")
+print("nothing was kept for the plugin's server")
+PY
+tmux kill-session -t "$S164" 2>/dev/null
 if grep -aqF "hub-secret" "$RAW"; then
 	fail "THE PLUGIN'S CLIENT SECRET IS IN THE BYTE STREAM"
 fi
