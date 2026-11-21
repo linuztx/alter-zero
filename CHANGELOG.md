@@ -14,6 +14,33 @@ release heading when a version is cut.
 
 ### Added
 
+- **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
+  GitHub `owner/repo`, any git URL, or a directory — and install the plugins
+  it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex
+  plugins all install the same way. A plugin's skills and commands become
+  skills named `plugin:skill` (a `$plugin:skill` mention loads one), its
+  agents become subagent types, and its hooks and MCP servers join yours — its
+  servers under Claude Code's names, `mcp__plugin_<plugin>_<server>__…`, so a
+  plugin written for Claude Code finds its own tools. Hooks and servers are
+  code that runs, so nothing of them runs until you have trusted it:
+  installing one opens the same review the startup review shows for a
+  project's hooks and servers, with the commands on screen first. The page is
+  Codex's: tabs for every plugin, the installed ones, each marketplace and
+  `+ Add`, where Claude Code's and Codex's official marketplaces are one Enter
+  away and `Add a marketplace…` takes any owner/repo, git URL or directory; a
+  search; a page per plugin saying first whether it is on and then exactly
+  what it adds, warning before you install one that may run code; and Space
+  to turn a plugin on or off for the directory you are in. The page never
+  moves under you: it says nothing about what went right — the rows show it —
+  neither a toggle nor moving through the list resizes it, and a narrow
+  terminal cuts a long name before a description. A marketplace kept in a
+  directory has its plugins load in place, so editing one needs no reinstall.
+  Updates are something you ask for: `Update` on a plugin's page, Ctrl+U on a
+  marketplace's tab, or `alter-zero plugin update`, which reinstalls the
+  plugins their marketplace has a newer copy of. Everything is kept under
+  `~/.alter-zero/plugins/` and `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads no
+  plugin for a run (`docs/plugins.md`).
+
 - **`--system-prompt` and `--append-system-prompt` set the system prompt
   for a run.** `alter-zero --append-system-prompt "Answer in French."`
   keeps the built-in prompt and adds to it, and `--system-prompt "…"`
@@ -108,6 +135,24 @@ release heading when a version is cut.
   `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 
 ### Changed
+
+- **A session at rest takes about 40% less memory on Linux.** Most of
+  what an idle session kept in memory was the app's own code, and it ran
+  only a small part of it: the rest was resident because the linker had
+  scattered the functions a session runs across the whole binary, and
+  memory is held by the page. Release builds now place the functions an
+  idle session runs side by side. The installed binary, signed in to a
+  provider and sitting at its prompt, takes about 8.02 MB where
+  the same binary laid out the old way takes 13.96 MB
+  (8.90 MB against 15.86 MB once it has been read
+  back from disk, as after a reboot), and the figure no longer moves by a
+  megabyte when unrelated code is added. Nothing else about the binary
+  changes: the same code, in a different order. macOS builds are laid out
+  as before. Building from source, `ALTER_ZERO_TEXT_LAYOUT=0` turns it off
+  (`docs/text-layout.md`). The plugin system adds nothing to a session that
+  has no plugin on: nothing about plugins is read at startup, and the
+  `/plugins` page reads its catalog only while it is open
+  (`docs/plugins.md`).
 
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on

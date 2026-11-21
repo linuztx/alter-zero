@@ -711,6 +711,29 @@ is 0.04 MB larger, which is what the churn of building one banner's rows a
 frame leaves in glibc's heap. valgrind's dhat puts the heap's peak at
 191,187 bytes with the mascot moving against 191,082 with it still.
 
+## Most of an idle session was code it never ran
+
+Everything above is about data. Measured as a whole, though, an idle
+session is mostly **the binary's own code**: 8 to 10 MB of it resident, of
+which a session at rest runs about one and a half. Code is resident by the
+page and the kernel maps the block around each page touched, so what
+decides the figure is how scattered the megabyte that runs is — and the
+linker's default order scatters it across all twelve, in a way that shifts
+by a megabyte with any unrelated change. The plugin system
+(`docs/plugins.md`) is what brought it to light: its code, none of which
+runs without a plugin, moved a configured session's idle figure by
+0.95 MB.
+
+The fix is a layout, not a diet: `build.rs` has the linker put the
+functions an idle session runs side by side (`.text.idle`), and a
+configured session of the shipped binary went from 13.96 to
+8.02 MB at rest (15.86 to 8.90 MB once
+read back from disk). `docs/text-layout.md` holds the measurement, the
+mechanism, what it costs and what it leaves. Its consequence for everything
+else on this page: **an idle figure is only comparable between two builds
+laid out the same way and measured in the same page-cache state** —
+`scripts/text_layout.sh measure` does both.
+
 ## The rule
 
 The pattern generalises past this one function: **do not build a tree of a
@@ -751,3 +774,9 @@ And a sixth for work moved off the loop: **a new thread is a new arena.** A
 transient that was harmless on the loop thread, where the next allocation
 filled the hole it left, is a high-water mark of its own on a worker. Build
 the final form directly, in pieces the size of a line.
+
+And a seventh for the code itself: **what runs at startup is resident for
+good, with whatever the linker left beside it.** Keep the functions an idle
+session runs listed (`layout/idle-functions.txt`, `docs/text-layout.md`),
+so a session keeps in memory the megabyte it runs and not the eight around
+it, and take the list again when startup changes.

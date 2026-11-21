@@ -1384,6 +1384,23 @@ event channel, which re-injects the snapshot (`App::set_mcp_snapshot`) and
 schedules a frame — the picker is always looking at live state, and a
 pending row shows `… connecting` until its thread reports.
 
+## Plugin servers
+
+An enabled plugin's MCP servers (`docs/plugins.md`) are a third scope,
+`McpScope::Plugin` (`Plugin MCPs` in `/mcp`), declared after the project's
+and the user's — a name either already uses stays theirs. They are held for
+the review like a project's (`docs/config-review.md`), and because a plugin
+can be installed, turned off or removed mid-session, the manager takes a new
+set live: `McpManager::set_plugin_servers` stops the ones no longer declared,
+keeps an unchanged one's connection, and adds the new ones, held or
+connecting. A stdio entry may name its own `cwd` (a plugin's server runs
+from its plugin's directory). An Agent Plugins entry is `literal`: its
+`${PLUGIN_ROOT}`/`${PLUGIN_DATA}` were expanded once when the file was read,
+and nothing else in it is expanded at connect time — the spec's rule — while
+a Claude Code plugin's `.mcp.json` keeps `${VAR}` expansion as the user's
+file does. A plugin's remote server may not reference the providers' key
+variables, a project's rule.
+
 ## What stays out (v1)
 
 Resources, prompts, sampling, elicitation, and roots are not modeled — the

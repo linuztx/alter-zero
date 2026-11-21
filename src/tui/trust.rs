@@ -82,6 +82,18 @@ impl ProjectLayer {
     }
 }
 
+/// The enabled plugins' share of what the review decides over
+/// (`docs/plugins.md` *Trust*): each plugin's hooks file and MCP file, by
+/// absolute path — the key every decision about them is recorded under, as a
+/// project file's is.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PluginLayer {
+    hooks: Vec<(PathBuf, hooks::HooksFile)>,
+    mcp: Vec<(PathBuf, mcp::McpFile)>,
+    /// Each file's plugin (`hello@demo`), which the review names it by.
+    owners: std::collections::BTreeMap<PathBuf, String>,
+}
+
 /// What the review decides over: `trust.json` and the files it is about.
 #[derive(Debug, Default)]
 pub(crate) struct TrustState {
@@ -98,6 +110,8 @@ pub(crate) struct TrustState {
     /// The project layer; `None` when `ALTER_ZERO_PROJECT_CONFIG` is off or
     /// the cwd resolves to the home directory.
     pub(crate) project: Option<ProjectLayer>,
+    /// The enabled plugins' hooks and servers ([`TrustState::set_plugins`]).
+    plugins: PluginLayer,
 }
 
 impl TrustState {
@@ -116,6 +130,7 @@ impl TrustState {
             store_path,
             user_hooks,
             project,
+            plugins: PluginLayer::default(),
         };
         let migrated = state.migrate_legacy().err();
         (state, error.or(migrated))
@@ -153,19 +168,115 @@ impl TrustState {
         })
     }
 
+    /// Adopt the plugins the session has on (`docs/plugins.md` *Trust*):
+    /// their hooks files join the layers the review, `/hooks` and the runner
+    /// read, and their MCP files the ones server decisions are made over —
+    /// each under its own absolute path, so trusting one plugin's hook says
+    /// nothing about another's. Replaces what the last call adopted.
+    pub(crate) fn set_plugins(&mut self, loaded: &alter_zero::plugins::LoadedPlugins) {
+        self.plugins.owners.clear();
+        self.plugins.hooks.clear();
+        for package in &loaded.packages {
+            for hooks in &package.components.hooks {
+                self.plugins
+                    .owners
+                    .insert(hooks.source.clone(), package.id.key());
+                self.plugins
+                    .hooks
+                    .push((hooks.source.clone(), hooks.file.clone()));
+            }
+        }
+        let mut files: Vec<(PathBuf, mcp::McpFile)> = Vec::new();
+        for server in loaded.servers() {
+            self.plugins
+                .owners
+                .insert(server.source.clone(), server.plugin.clone());
+            let entry = (server.server.name, server.server.config);
+            match files.iter_mut().find(|(path, _)| *path == server.source) {
+                Some((_, file)) => file.servers.push(entry),
+                None => files.push((
+                    server.source,
+                    mcp::McpFile {
+                        servers: vec![entry],
+                        errors: Vec::new(),
+                    },
+                )),
+            }
+        }
+        self.plugins.mcp = files;
+    }
+
     /// Every hooks file that parsed, with its absolute path and scope word —
-    /// the user's first, the project's after it (the merge's order).
-    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, &'static str)> {
+    /// the user's first, the project's after it, then each plugin's (the
+    /// merge's order).
+    fn hook_layers(&self) -> Vec<(String, &hooks::HooksFile, String)> {
         let mut out = Vec::new();
         if let Some((path, file)) = &self.user_hooks {
-            out.push((path.display().to_string(), file, "User"));
+            out.push((path.display().to_string(), file, "User".to_string()));
         }
         if let Some(file) = self.project.as_ref().and_then(|p| p.hooks.as_ref())
             && let Ok(parsed) = &file.parsed
         {
-            out.push((file.path.display().to_string(), parsed, "Project"));
+            out.push((
+                file.path.display().to_string(),
+                parsed,
+                "Project".to_string(),
+            ));
+        }
+        for (path, file) in &self.plugins.hooks {
+            out.push((path.display().to_string(), file, self.plugin_scope(path)));
         }
         out
+    }
+
+    /// The scope a plugin's file is shown under on the review: `Plugin`
+    /// and the plugin it belongs to.
+    fn plugin_scope(&self, path: &Path) -> String {
+        match self.plugins.owners.get(path) {
+            Some(owner) => format!("{} {owner}", alter_zero::ui::REVIEW_PLUGIN_SCOPE),
+            None => alter_zero::ui::REVIEW_PLUGIN_SCOPE.to_string(),
+        }
+    }
+
+    /// The enabled plugins' hooks the user has not trusted, each under its
+    /// file — what a reload compares to know whether it brought anything
+    /// new to ask about.
+    pub(crate) fn untrusted_plugin_hooks(&self) -> BTreeSet<(String, HookIdentity)> {
+        self.plugins
+            .hooks
+            .iter()
+            .flat_map(|(path, file)| {
+                let source = path.display().to_string();
+                self.store
+                    .review_hooks(&source, file)
+                    .into_iter()
+                    .filter(|review| review.trust != HookTrust::Trusted)
+                    .map(move |review| (source.clone(), review.identity))
+            })
+            .collect()
+    }
+
+    /// The MCP files server decisions are made over: the project's, then
+    /// each enabled plugin's.
+    fn server_files(&self) -> Vec<(String, &mcp::McpFile)> {
+        let mut files: Vec<(String, &mcp::McpFile)> = self
+            .project
+            .as_ref()
+            .map(|project| {
+                project
+                    .mcp_files()
+                    .into_iter()
+                    .map(|(path, file)| (path.display().to_string(), file))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.extend(
+            self.plugins
+                .mcp
+                .iter()
+                .map(|(path, file)| (path.display().to_string(), file)),
+        );
+        files
     }
 
     /// Every configured hook, trusted or not: the user's file with the
@@ -226,7 +337,7 @@ impl TrustState {
                 .collect();
             if !items.is_empty() {
                 sections.push(ReviewSection {
-                    scope: Some(scope.to_string()),
+                    scope: Some(scope),
                     path: alter_zero::ui::display_cwd(Path::new(&source), home),
                     items,
                 });
@@ -235,16 +346,10 @@ impl TrustState {
         (!sections.is_empty()).then(|| ReviewPage::new(ReviewKind::Hooks, sections))
     }
 
-    /// Every project server and where it stands (`trust::review_servers`).
+    /// Every project and plugin server and where it stands
+    /// (`trust::review_servers`).
     pub(crate) fn server_reviews(&self) -> Vec<ServerReview> {
-        let Some(project) = &self.project else {
-            return Vec::new();
-        };
-        let files: Vec<(String, &mcp::McpFile)> = project
-            .mcp_files()
-            .into_iter()
-            .map(|(path, file)| (path.display().to_string(), file))
-            .collect();
+        let files = self.server_files();
         let borrowed: Vec<(&str, &mcp::McpFile)> = files
             .iter()
             .map(|(path, file)| (path.as_str(), *file))
@@ -277,10 +382,18 @@ impl TrustState {
                 },
             };
             let path = alter_zero::ui::display_cwd(Path::new(&review.source), home);
+            // A plugin's server is shown as its plugin's; a project's as the
+            // project's (`docs/plugins.md` *Trust*).
+            let source = Path::new(&review.source);
+            let scope = if self.plugins.owners.contains_key(source) {
+                self.plugin_scope(source)
+            } else {
+                "Project".to_string()
+            };
             match sections.iter_mut().find(|section| section.path == path) {
                 Some(section) => section.items.push(item),
                 None => sections.push(ReviewSection {
-                    scope: None,
+                    scope: Some(scope),
                     path,
                     items: vec![item],
                 }),
@@ -313,13 +426,12 @@ impl TrustState {
         let sources: BTreeSet<&String> = decisions.iter().map(|(source, _, _)| source).collect();
         let mut files: Vec<FileDecisions> = Vec::new();
         for source in sources {
-            let Some(file) = self.project.as_ref().and_then(|project| {
-                project
-                    .mcp_files()
-                    .into_iter()
-                    .find(|(path, _)| path.display().to_string() == *source)
-                    .map(|(_, file)| file.clone())
-            }) else {
+            let Some(file) = self
+                .server_files()
+                .into_iter()
+                .find(|(path, _)| path == source)
+                .map(|(_, file)| file.clone())
+            else {
                 continue;
             };
             let named: Vec<(String, bool)> = decisions
@@ -627,16 +739,16 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
-    /// `/mcp` Enable or Disable on a **project** server: the decision is the
-    /// review's, recorded in `trust.json`, never in the user's MCP file.
-    /// `false` when `name` is not a project server the session knows, so
-    /// the caller applies the user file's toggle instead.
+    /// `/mcp` Enable or Disable on a **project** or **plugin** server: the
+    /// decision is the review's, recorded in `trust.json`, never in the
+    /// user's MCP file. `false` when `name` is not such a server the session
+    /// knows, so the caller applies the user file's toggle instead.
     pub(crate) fn set_project_server(&mut self, name: &str, enabled: bool) -> bool {
         let manager = self.mcp.clone();
-        let project = manager
-            .snapshot()
-            .iter()
-            .any(|server| server.name == name && server.scope == mcp::McpScope::Project);
+        let project = manager.snapshot().iter().any(|server| {
+            server.name == name
+                && matches!(server.scope, mcp::McpScope::Project | mcp::McpScope::Plugin)
+        });
         let Some(review) = self.server_reviews_named(name).filter(|_| project) else {
             return false;
         };

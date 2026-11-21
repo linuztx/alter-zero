@@ -63,6 +63,7 @@ widened for the split.
 | `export.rs` | The `/export` page's state, its two targets, and the `conversation-YYYY-MM-DD-HHMMSS.txt` file name (`docs/export.md`). |
 | `context_usage.rs` | The `/context` page's state — the counted breakdown, its signature, the highlight that follows the largest category until moved — the injected tool sets, the provider's last frame and the since-launch ledger (`docs/context-usage.md`). The counting itself is the top-level `crate::context_usage`. |
 | `secrets.rs` | The `/secrets` page's state — the list, the three-field form with its masked value — and its key grammar, plus the redaction of what the user types (`set_secret_redactor`, `redact_typed`) (`docs/secrets.md`). |
+| `plugins_menu.rs` | The `/plugins` page's state — the boundary-injected catalog, the tabs (every plugin, the installed ones, one per marketplace, and the add tab), the list's search, a page per plugin, the add page's field, the confirmation — every operation a typed `PluginOp` the boundary runs under a round, and its keys (`docs/plugins.md`). The store and the catalog themselves are the top-level `crate::plugins`. |
 | `usage.rs` | The `/usage` page's state — a section per signed-in subscription, the rounds of reads every result is matched to, the reports kept across opens, the minute refresh's due check, the injected clock and local offset, its keys (`docs/usage.md`). The reports themselves are `crate::llm::usage`. |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
@@ -106,6 +107,7 @@ widened for the split.
 | `export_view.rs` | The read-only `/export` page — two target rows over the highlighted one's description — and `export_text`, the transcript as plain text (`docs/export.md`). |
 | `context_usage_view.rs` | The read-only `/context` page — the window bar, the legend with the highlighted category's parts beside or under it, the provider's usage rows and cache meter, and its shedding ladder (`docs/context-usage.md`). |
 | `secrets_view.rs` | The `/secrets` page — the list by placeholder with a fixed mask, the form with the value masked in the builder — and the form's caret seat (`docs/secrets.md`). |
+| `plugins_view.rs` | The `/plugins` page — the list a search-line picker under the ask modal's chip strip of tabs, with its shedding ladder; a plugin's page the `/mcp` server page's twin (its field rows, borrowed); the add page's field with its caret; the confirmation; the job line (`docs/plugins.md`). |
 | `usage_view.rs` | The read-only `/usage` page — a section per subscription, one bar length for the page's meters, `limit reached`, the reset countdowns and local times and what a narrow row gives up, the highlighted subscription's link, the freshness, and its shedding ladder (`docs/usage.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`: the transcript's entries, the header pinned over a window inside a cell, and the chrome both overlays share (`overlay_header`, `view_title`; `docs/transcript-navigation.md`). |
@@ -147,7 +149,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `login.rs` | The `/login` flow's boundary half: opening it, running a subscription's sign-in — a device code or a browser PKCE flow, per provider — and persisting what it mints (`docs/copilot.md`, `docs/chatgpt.md`). |
 | `config.rs` | Reading the environment: providers, keys, the per-directory `/model` selections and `/settings` knobs (`docs/per-directory-state.md`), permission rules, the per-user `telemetry.json` (`docs/telemetry.md`), `update.json` (`docs/update.md`) and `tips.json` (`docs/tips.md`), the `/model` picker's kept listings and which providers a saved variable configures (`docs/model-cache.md`), paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
-| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `update` subcommand dispatch (`docs/cli.md`). |
+| `startup.rs` | The `--continue`/`--resume`/`[PROMPT]` argument resolution, `-C`'s `chdir`, the styled `--help` / usage-error printing, and the `mcp` / `plugin` / `update` subcommand dispatch (`docs/cli.md`). |
 | `headless.rs` | `alter-zero -p`: the prompt read from the argument and stdin before the runtime, the loop that runs the same `Session` with no screen, the signals, the streams, the exit status (`docs/headless.md`). |
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
@@ -160,6 +162,8 @@ opening the viewport, running the loop — and everything else lives here:
 | `export.rs` | Applying an `/export` pick: the clipboard write, or the `conversation-….txt` file write off the local clock, + the toast (`docs/export.md`). |
 | `context_usage.rs` | Keeping an open `/context` page live: the backend's tool set (or the viewed agent type's) handed over on the open and at every loop bottom, then the re-count (`docs/context-usage.md`). |
 | `secrets.rs` | The `/secrets` page's saves, deletes and copies: the `secrets.json` read-modify-write, the shared store, the reminder sync (`docs/secrets.md`). |
+| `plugins.rs` | The plugins on in this directory, read at bootstrap; the `/plugins` page's one worker, its cancel and its clock; the reload after a change — hooks and servers through the trust layer, skills and agents re-listed, the review asked (`docs/plugins.md`). |
+| `plugin_cli.rs` | The `alter-zero plugin` subcommands: resolving a plugin's name against what is listed or installed, the store operation, the printout and the exit code (`docs/plugins.md` *From a shell*). |
 | `usage.rs` | The `/usage` page's reads: one worker per signed-in subscription, the round they answer, the wall clock its countdowns run on, the minute refresh, the empty toast, `c`'s clipboard write (`docs/usage.md`). |
 | `telemetry.rs` | The once-a-day anonymous usage ping (once more on the day of an update): the install id's mint, the one-time notice under the banner, the detached send, the record of the delivered day and version (`docs/telemetry.md`). |
 | `update.rs` | The once-a-day update check: the detached `HEAD` of the repository's latest release, the `Update available` card under the banner (held back while a turn streams), the attempt's and the notice's day in `update.json` (`docs/update.md`). |
@@ -311,6 +315,29 @@ cores carry no process and are unit-tested alone; `spawn` is the I/O.
 | `report.rs` | What the model reads: the `Running`/`Stopped` frames over the output or the screen, and the model-only notes. |
 | `session.rs` | `SessionIo` — the two views, the wait, the look, and the exit handshake the monitor and the calls share. |
 | `spawn.rs` | The boundary: the pseudo-terminal, the controlling-terminal tiers, the session environment, the line mode. |
+
+### `src/plugins/` — the plugin system's pure half and its store
+
+Born as a directory (`docs/plugins.md`): three manifest formats, two
+catalog locations and two MCP file formats over one store. Everything but
+`git` and `store` is pure, and those two are tested against local git
+repositories in temp directories.
+
+| Module | Holds |
+|--------|-------|
+| `mod.rs` | The module list and the by-name re-exports. |
+| `id.rs` | Plugin names, `plugin@marketplace` ids, and the `{plugin}:{name}` a component is known by. |
+| `manifest.rs` | The three formats: the Agent Plugins `plugin.json` read strictly, the Claude Code and Codex manifests leniently, and which one a directory is read by. |
+| `marketplace.rs` | A catalog's entries and where each plugin comes from (`PluginSource`), a plugin read as a marketplace of one, the git URL forms. |
+| `source.rs` | What the user types for a marketplace — `owner/repo`, a git URL, a path — onto a `MarketplaceSource`. |
+| `registry.rs` | `plugins.json`: the marketplaces added, the plugins installed, each directory's turned-off set — never written over when it will not parse. |
+| `layout.rs` | Every path the store keeps things at. |
+| `components.rs` | What a plugin directory adds — skills, commands as skills, agents, hooks, MCP servers — named as the session knows them, and what it carries that this app does not use. |
+| `mcp.rs` | The two MCP file formats onto `mcp::McpServerConfig`: the Agent Plugins `mcp.json` (closed, `${PLUGIN_ROOT}` expanded once) and Claude Code's `.mcp.json`. |
+| `agents.rs` | A plugin agent's `tools:` translated into this app's tool names. |
+| `git.rs` | Running git detached, with no prompt and a cancel: a shallow fetch of one commit, a sparse subdirectory. |
+| `store.rs` | The operations: add, update and remove a marketplace; install, update, uninstall and toggle a plugin; the bounded copy and its fingerprint. |
+| `catalog.rs` | The snapshot `/plugins` shows (`build_catalog`) and what a session takes from the plugins it has on (`load_enabled`). |
 
 ### `src/read_only/` — recognising the commands that only read
 

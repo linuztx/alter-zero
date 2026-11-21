@@ -187,6 +187,17 @@ withholds `Skill` is briefed with nothing.
 It is assembled where a launch is built, so a **chat continuation** — which
 resumes a message list that already carries it — never pushes a second copy.
 
+## Plugin agents
+
+An installed plugin's agent files (`docs/plugins.md`) are types too, named
+`{plugin}:{name}` so they never shadow a root's, appended after the walk at
+bootstrap and at every rescan. Their `tools:` is translated into this app's
+names (`plugins::translate_tools` — `Read`, `Write`, `Edit`, `Bash`, `Skill`
+and `mcp__…` names kept, `Glob`/`Grep`/`LS` as `Bash`, a permission rule's
+argument dropped, anything without a counterpart left out), and their
+`model:` is ignored — a plugin cannot know which models this session can
+reach — so they run on the session's model.
+
 ## Rescanning
 
 The roots are re-walked at **every turn start**, beside the `SKILL.md`

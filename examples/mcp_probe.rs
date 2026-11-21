@@ -44,6 +44,7 @@ fn main() {
             command: first.clone(),
             args: args[1..].to_vec(),
             env: Default::default(),
+            cwd: None,
         }
     };
     let started = std::time::Instant::now();

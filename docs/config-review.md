@@ -22,6 +22,7 @@ asks the user to trust each new or changed hook).
 | ---- | --------------------- | ------------ | ----------- |
 | every hook that can run | the user's `hooks.json` (`~/.alter-zero/hooks.json`, or `ALTER_ZERO_HOOKS_FILE`) **and** the project's `{root}/.alter-zero/hooks.json` | trust it, or not | the hook itself, per file |
 | every project MCP server | `{root}/.alter-zero/mcp.json`, `{root}/.mcp.json` | enable it, or not | a decision per server, per file, pinned to its entry |
+| every hook and MCP server of an enabled plugin | the installed copy's hooks files and its `mcp.json`/`.mcp.json` (`docs/plugins.md` *Trust*) | as for a project's | as for a project's, under the installed copy's path |
 
 A hook "can run" when the runner would run it: a `command` handler with a
 command, under an event this app models, with no `if` condition and no

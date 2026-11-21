@@ -220,6 +220,7 @@ Save its key with `/login` (this one is read from `GROQ_API_KEY`), then choose a
 - **Skills.** Add reusable `SKILL.md` folders, mention one with `$`, or browse them with `/skills`. Built-in `skill-creator` helps you write your own; `web-search` searches the web through Exa, Parallel, Tavily and Jina Reader with no key; `jina-reader` reads public webpages and PDFs through Jina Reader; `yt-dlp` guides media downloads with the separately installed CLI.
 - **Public tunnels.** The built-in `flaredantic` skill guides you through exposing a local service via Cloudflare, Microsoft Dev Tunnels, or Serveo using the separately installed `flare` CLI. A tunnel makes the service publicly reachable; review what you expose.
 - **MCP servers.** Connect tools over stdio, HTTP, or SSE, including remote servers with OAuth. Manage connections with `/mcp` or `alter-zero mcp`.
+- **Plugins.** Install Agent Plugins, Claude Code plugins and Codex plugins from any marketplace — a GitHub repository, a git URL or a directory — with `/plugins` or `alter-zero plugin`. A plugin's skills, agents, hooks and MCP servers join yours, and nothing of it runs until you have trusted it. See [plugins](docs/plugins.md).
 - **Hooks and project instructions.** Use `hooks.json` to approve, reject, or adjust tool calls and supply context. `AGENTS.md` files carry your project's conventions; `/init` helps create one.
 
 ### Pick up where you left off
@@ -264,6 +265,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/hooks` | Browse hooks and trust or stop trusting each one |
 | `/skills` | Browse skills and enable or disable each one |
 | `/mcp` | Manage MCP servers |
+| `/plugins` | Browse, install and manage plugins and their marketplaces |
 | `/donate` | Support the project with a crypto donation |
 | `/sponsor` | Sponsor the developer or get in touch |
 | `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
@@ -307,6 +309,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 Usage: alter-zero [OPTIONS] [PROMPT]
        alter-zero -p [OPTIONS] [PROMPT]
        alter-zero mcp <COMMAND>
+       alter-zero plugin <COMMAND>
        alter-zero update
 
 Arguments:

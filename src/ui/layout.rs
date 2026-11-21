@@ -916,6 +916,15 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(menu) = &app.mcp_menu {
         return menu.page == crate::app::McpPage::Auth;
     }
+    // The `/plugins` list's search line — the add tab's field too — and its
+    // add page's field are typed into; its other pages are menus
+    // (`docs/plugins.md`).
+    if let Some(menu) = &app.plugins_menu {
+        return matches!(
+            menu.page,
+            crate::app::PluginsPage::List | crate::app::PluginsPage::Add
+        );
+    }
     // The `/secrets` list is a menu; its form is typed into
     // (`docs/secrets.md`).
     if let Some(page) = &app.secrets_page {
@@ -1246,6 +1255,20 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             return (x, view_cursor_y(area, body, row));
         }
         return menu_marker_seat(&lines, area);
+    }
+    // The `/plugins` page: the caret at the end of its search line or in its
+    // add page's field, at the seat the builder reports; on a detail page,
+    // the hidden cursor on the highlighted `❯` (docs/plugins.md).
+    if app.plugins_menu.is_some() {
+        let build = super::plugins_view::plugins_build(app, area.width, area.height);
+        let Some((col, row)) = build.cursor else {
+            return menu_marker_seat(&build.lines, area);
+        };
+        let rows = u16::try_from(build.lines.len()).unwrap_or(u16::MAX);
+        let [_, body] = view_split(area, rows);
+        let x = area.x + col.min(area.width.saturating_sub(1));
+        let row = anchored_view_row(rows, body, u16::try_from(row).unwrap_or(u16::MAX));
+        return (x, view_cursor_y(area, body, row));
     }
     // The ↓ background manager band has no text entry at all — park the
     // (shown-once-per-frame) cursor in the band's far corner where it reads

@@ -282,9 +282,16 @@ impl<'t> Session<'t> {
             Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
             None => Vec::new(),
         };
-        let (found_skills, walk_errors) =
+        let (mut found_skills, walk_errors) =
             alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
         skill_errors.extend(walk_errors);
+        // The plugins this directory has on (docs/plugins.md): read once
+        // here, before every registry they add to — their skills (each
+        // `{plugin}:{name}`, so never one a root already has) join the walk's,
+        // and their agents, hooks and MCP servers follow below.
+        let plugin_store = config::plugin_store();
+        let plugins = super::plugins::load_plugins(plugin_store.as_ref(), &cwd);
+        found_skills.extend(plugins.skills());
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
         // …and this project's saved on/off choices from `skills.json`, applied
         // BEFORE the backend is built so a session that starts with its last
@@ -306,9 +313,10 @@ impl<'t> Session<'t> {
                 Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
                 None => Vec::new(),
             };
-        let (found_agents, walk_errors) =
+        let (mut found_agents, walk_errors) =
             alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref());
         agent_errors.extend(walk_errors);
+        found_agents.extend(plugins.agents());
         let subagents = alter_zero::subagents::SubagentRegistry::new(found_agents);
 
         // What the startup review decides over (docs/config-review.md): the
@@ -321,10 +329,13 @@ impl<'t> Session<'t> {
         // how a user comes to trust a guard that isn't there.
         let hooks_path = config::user_hooks_path();
         let (user_hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
-        let (trust, trust_error) = super::trust::TrustState::load(
+        let (mut trust, trust_error) = super::trust::TrustState::load(
             hooks_path.map(|path| (path, user_hooks_file)),
             super::trust::load_project_layer(&cwd),
         );
+        // The plugins' hooks and servers are reviewed like the project's: a
+        // third layer, each file under its own path (docs/plugins.md *Trust*).
+        trust.set_plugins(&plugins);
 
         // The telemetry ping's report channel (docs/telemetry.md) — its own
         // `select!` source, because the worker outlives nothing but must
@@ -385,7 +396,7 @@ impl<'t> Session<'t> {
         let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
         let mcp_manager = alter_zero::llm::mcp::McpManager::new(
             mcp_tx,
-            super::mcp::load_mcp_sources(&cwd, &trust),
+            super::mcp::load_mcp_sources(&cwd, &trust, &plugins),
         );
         if settings.mcp {
             mcp_manager.start_connections();
@@ -495,6 +506,7 @@ impl<'t> Session<'t> {
         // The `/usage` page's reads, one worker per subscription
         // (docs/usage.md).
         let (usage_tx, usage_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
         // The capability probe's own channel, so a concurrently-open `/model`
         // picker can't confuse the results (docs/reasoning.md).
         // Spawned once the startup directive is applied (`spawn_pending_probe`
@@ -605,6 +617,12 @@ impl<'t> Session<'t> {
             usage_tx,
             usage_rx,
             usage_cancel: None,
+            plugin_tx,
+            plugin_rx,
+            plugin_cancel: None,
+            plugin_job_started: None,
+            plugin_store,
+            plugins,
             probe_tx,
             probe_rx,
             bg_rx,
@@ -661,6 +679,7 @@ impl<'t> Session<'t> {
         session.report_hooks_error(hooks_error);
         session.report_skill_errors(&skill_errors);
         session.report_agent_errors(&agent_errors);
+        session.report_plugin_errors();
         session.report_mcp_errors();
         session.report_trust_state(trust_error);
         session.report_secrets_error(secrets_error);
@@ -1086,6 +1105,9 @@ impl<'t> Session<'t> {
         // reads likewise.
         self.models.cancel_model_fetches();
         self.cancel_usage_fetch();
+        // …and a `/plugins` clone or fetch, whose git child is killed
+        // (docs/plugins.md).
+        self.cancel_plugin_job();
         // Kill every background shell on the way out — the sweep is synchronous
         // (direct process-group kills), so quitting can't orphan a `ping`
         // (docs/background.md) — and cancel every subagent (their threads observe

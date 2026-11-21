@@ -14,7 +14,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
-    McpServerConfig, McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo,
+    McpScope, McpServerConfig, McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo,
     ServerIdentity, call_params_retrying, parse_call_result,
 };
 use crate::stream::CancelToken;
@@ -329,6 +329,70 @@ struct Inner {
     auth_flow: Option<AuthFlow>,
     /// The id the next sign-in gets.
     next_auth_flow: u64,
+    /// The session's own credentials' variable names — what a project's or
+    /// a plugin's remote server may not have expanded into its URL or
+    /// headers, kept for the plugin servers added later.
+    protected_env: std::collections::BTreeSet<String>,
+}
+
+/// One server's state as declared: its config resolved — `${VAR}`s from the
+/// session's environment, unless the entry is to be used as written — and
+/// its starting status: held by the review, switched off by the user,
+/// unable to start, or waiting to connect.
+fn server_state(
+    entry: McpServerEntry,
+    name_problem: Option<String>,
+    disabled: bool,
+    held: Option<McpHold>,
+    auth_path: Option<&std::path::Path>,
+    protected_env: &std::collections::BTreeSet<String>,
+) -> ServerState {
+    // The environment is the session's own, fixed at launch, so one
+    // expansion holds for every connect.
+    let resolved = if entry.literal {
+        Ok(entry.config.clone())
+    } else {
+        crate::mcp::resolve_config(
+            &entry.config,
+            entry.scope,
+            &|name| std::env::var(name).ok(),
+            &|name| protected_env.contains(name),
+        )
+    };
+    let has_tokens = resolved
+        .as_ref()
+        .ok()
+        .and_then(McpServerConfig::url)
+        .is_some_and(|url| oauth::load_tokens(auth_path, url).is_some());
+    let blocked = name_problem
+        .clone()
+        .or_else(|| resolved.as_ref().err().cloned());
+    ServerState {
+        // The review outranks the user's own toggle: a held server may not
+        // run either way, and only an answer in the review (or Enable in
+        // `/mcp`) releases it. A server that can't be connected at all is
+        // refused next.
+        status: match (held, blocked) {
+            (Some(McpHold::Review), _) => McpServerStatus::AwaitingReview,
+            (Some(McpHold::Declined), _) => McpServerStatus::Disabled,
+            (None, _) if disabled => McpServerStatus::Disabled,
+            (None, Some(problem)) => McpServerStatus::Failed(problem),
+            (None, None) => McpServerStatus::Pending,
+        },
+        resolved,
+        identity: None,
+        tools: Vec::new(),
+        excluded: Vec::new(),
+        transport: None,
+        last_restart: None,
+        name_problem,
+        has_tokens,
+        challenge: None,
+        generation: 0,
+        relisting: false,
+        relist_again: false,
+        entry,
+    }
 }
 
 /// The sign-in a manager is running: its id (so a superseded flow ending
@@ -365,50 +429,16 @@ impl McpManager {
             .map(|(entry, name_problem)| {
                 let disabled = sources.disabled.contains(&entry.name);
                 let held = sources.held.get(&entry.name).copied();
-                // The environment is the session's own, fixed at launch, so
-                // one expansion holds for every connect.
-                let resolved = crate::mcp::resolve_config(
-                    &entry.config,
-                    entry.scope,
-                    &|name| std::env::var(name).ok(),
-                    &|name| sources.protected_env.contains(name),
-                );
-                let has_tokens = resolved
-                    .as_ref()
-                    .ok()
-                    .and_then(McpServerConfig::url)
-                    .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
-                let blocked = name_problem
-                    .clone()
-                    .or_else(|| resolved.as_ref().err().cloned());
-                ServerState {
-                    // The review outranks the user's own toggle: a held
-                    // server may not run either way, and only an answer in
-                    // the review (or Enable in `/mcp`) releases it. A server
-                    // that can't be connected at all is refused next.
-                    status: match (held, blocked) {
-                        (Some(McpHold::Review), _) => McpServerStatus::AwaitingReview,
-                        (Some(McpHold::Declined), _) => McpServerStatus::Disabled,
-                        (None, _) if disabled => McpServerStatus::Disabled,
-                        (None, Some(problem)) => McpServerStatus::Failed(problem),
-                        (None, None) => McpServerStatus::Pending,
-                    },
-                    resolved,
-                    identity: None,
-                    tools: Vec::new(),
-                    excluded: Vec::new(),
-                    transport: None,
-                    last_restart: None,
-                    name_problem,
-                    has_tokens,
-                    challenge: None,
-                    generation: 0,
-                    relisting: false,
-                    relist_again: false,
+                server_state(
                     entry,
-                }
+                    name_problem,
+                    disabled,
+                    held,
+                    auth_path.as_deref(),
+                    &sources.protected_env,
+                )
             })
-            .collect();
+            .collect::<Vec<_>>();
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 servers,
@@ -433,6 +463,7 @@ impl McpManager {
                 },
                 auth_flow: None,
                 next_auth_flow: 0,
+                protected_env: sources.protected_env,
             })),
             events,
         }
@@ -473,6 +504,108 @@ impl McpManager {
         for name in names {
             self.spawn_connect(&name);
         }
+    }
+
+    /// Replace the servers the session's plugins add (`docs/plugins.md`),
+    /// each entry in the [`McpScope::Plugin`] scope: a plugin server no
+    /// longer declared — its plugin uninstalled, turned off, or changed — is
+    /// stopped and dropped; a new one is added and connected, unless `held`
+    /// holds it for the review (or MCP is off); one that is unchanged keeps
+    /// its connection and its state. A name another scope already uses stays
+    /// that scope's: the names refused that way are returned.
+    pub fn set_plugin_servers(
+        &self,
+        entries: Vec<McpServerEntry>,
+        held: BTreeMap<String, McpHold>,
+    ) -> Vec<String> {
+        let (connect, refused) = {
+            let mut inner = self.lock();
+            let wanted: Vec<&McpServerEntry> = entries.iter().collect();
+            let stale: Vec<String> = inner
+                .servers
+                .iter()
+                .filter(|server| server.entry.scope == McpScope::Plugin)
+                .filter(|server| {
+                    !wanted.iter().any(|entry| {
+                        entry.name == server.entry.name
+                            && entry.config == server.entry.config
+                            && entry.literal == server.entry.literal
+                    })
+                })
+                .map(|server| server.entry.name.clone())
+                .collect();
+            inner.servers.retain_mut(|server| {
+                let gone =
+                    server.entry.scope == McpScope::Plugin && stale.contains(&server.entry.name);
+                if gone {
+                    server.drop_connection();
+                }
+                !gone
+            });
+            for name in &stale {
+                inner.held.remove(name);
+            }
+            let mut refused = Vec::new();
+            let mut fresh = Vec::new();
+            for entry in entries {
+                match inner
+                    .servers
+                    .iter()
+                    .find(|server| server.entry.name == entry.name)
+                {
+                    Some(server) if server.entry.scope == McpScope::Plugin => {}
+                    Some(_) => refused.push(entry.name),
+                    None if fresh.iter().any(|e: &McpServerEntry| e.name == entry.name) => {
+                        refused.push(entry.name);
+                    }
+                    None => fresh.push(entry),
+                }
+            }
+            let names: Vec<String> = inner
+                .servers
+                .iter()
+                .map(|server| server.entry.name.clone())
+                .chain(fresh.iter().map(|entry| entry.name.clone()))
+                .collect();
+            let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+            let problems = crate::mcp::server_name_problems(&borrowed);
+            let start = inner.servers.len();
+            let mut connect = Vec::new();
+            for (entry, name_problem) in fresh.into_iter().zip(problems.into_iter().skip(start)) {
+                let hold = held.get(&entry.name).copied();
+                match hold {
+                    Some(hold) => {
+                        inner.held.insert(entry.name.clone(), hold);
+                    }
+                    None => {
+                        inner.held.remove(&entry.name);
+                    }
+                }
+                let disabled = inner.disabled.contains(&entry.name);
+                let mut state = server_state(
+                    entry,
+                    name_problem,
+                    disabled,
+                    hold,
+                    inner.auth_path.as_deref(),
+                    &inner.protected_env,
+                );
+                if state.status == McpServerStatus::Pending {
+                    if inner.active {
+                        connect.push(state.entry.name.clone());
+                    } else {
+                        state.status = McpServerStatus::Off;
+                    }
+                }
+                inner.servers.push(state);
+            }
+            (connect, refused)
+        };
+        self.notify(McpEvent::Changed);
+        for name in connect {
+            self.spawn_connect(&name);
+        }
+        refused
     }
 
     /// Turn MCP on or off for the whole session — the `/settings` **MCP**
@@ -1570,7 +1703,7 @@ fn persist_disabled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpScope, McpServerConfig};
+    use crate::mcp::McpServerConfig;
 
     fn stdio_entry(name: &str) -> McpServerEntry {
         // The deterministic-ids `sh` fixture, a LEGACY server: the modern
@@ -1592,9 +1725,11 @@ mod tests {
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -1709,9 +1844,11 @@ done"#
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -1864,6 +2001,7 @@ done"#
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }]);
         manager.start_connections();
         wait_connected(&manager, "remote");
@@ -1886,6 +2024,7 @@ done"#
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -2174,9 +2313,11 @@ done"#,
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -2320,6 +2461,7 @@ done"#,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         };
         let (manager, _rx) = manager_with(vec![entry]);
         manager.start_connections();
@@ -2418,6 +2560,7 @@ done"#,
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
+                    literal: false,
                 }],
                 project: "/proj".to_string(),
                 auth_path: Some(store),
@@ -2490,9 +2633,11 @@ echo {name} >> '{marks}'"#,
                     command: "sh".to_string(),
                     args: vec!["-c".to_string(), script],
                     env: Default::default(),
+                    cwd: None,
                 },
                 scope: McpScope::User,
                 config_path: "~/.alter-zero/mcp.json".to_string(),
+                literal: false,
             }
         };
         let (manager, _rx) = manager_with(vec![entry("one"), entry("two")]);
@@ -2605,6 +2750,7 @@ echo {name} >> '{marks}'"#,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         };
         let (manager, _rx) = manager_with(vec![entry]);
         manager.start_connections();
@@ -2649,9 +2795,11 @@ done
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script.to_string()],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         };
         let (manager, _rx) = manager_with(vec![entry]);
         manager.start_connections();
@@ -2912,6 +3060,7 @@ done
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         };
         let (manager, _rx) = manager_with(vec![entry]);
         manager.start_connections();
@@ -2952,9 +3101,11 @@ done
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -3154,9 +3305,11 @@ done
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), script],
                 env: Default::default(),
+                cwd: None,
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         }
     }
 
@@ -3308,6 +3461,7 @@ done
             command: "${ALTER_ZERO_TEST_MCP_OFF_NEVER_SET}".to_string(),
             args: Vec::new(),
             env: Default::default(),
+            cwd: None,
         };
         let (manager, _rx) = manager_with(vec![entry]);
         assert!(matches!(
@@ -3590,6 +3744,7 @@ done
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
+                    literal: false,
                 }],
                 project: "/proj".to_string(),
                 auth_path: Some(auth_path.to_path_buf()),
@@ -3827,6 +3982,7 @@ done
             },
             scope: McpScope::User,
             config_path: "~/.alter-zero/mcp.json".to_string(),
+            literal: false,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let manager = McpManager::new(
@@ -3959,6 +4115,7 @@ done
                     },
                     scope: McpScope::User,
                     config_path: "~/.alter-zero/mcp.json".to_string(),
+                    literal: false,
                 }],
                 project: "/proj".to_string(),
                 auth_path: Some(auth_path.to_path_buf()),
@@ -4099,5 +4256,94 @@ done
         );
         assert_eq!(manager.config_errors().len(), 1);
         assert!(!manager.has_servers());
+    }
+
+    fn plugin_entry(name: &str) -> McpServerEntry {
+        McpServerEntry {
+            scope: McpScope::Plugin,
+            config_path: "~/.alter-zero/plugins/installed/m/p/.mcp.json".to_string(),
+            ..stdio_entry(name)
+        }
+    }
+
+    fn names(manager: &McpManager) -> Vec<(String, McpScope)> {
+        manager
+            .snapshot()
+            .into_iter()
+            .map(|server| (server.name, server.scope))
+            .collect()
+    }
+
+    #[test]
+    fn plugin_servers_come_and_go_while_the_session_runs() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("mine")]);
+        // A plugin's server is added and connected…
+        let refused = manager.set_plugin_servers(vec![plugin_entry("theirs")], BTreeMap::new());
+        assert!(refused.is_empty());
+        assert_eq!(
+            names(&manager),
+            [
+                ("mine".to_string(), McpScope::User),
+                ("theirs".to_string(), McpScope::Plugin)
+            ]
+        );
+        wait_connected(&manager, "theirs");
+        // …an unchanged one keeps its connection…
+        manager.set_plugin_servers(vec![plugin_entry("theirs")], BTreeMap::new());
+        let snapshot = manager.snapshot();
+        let theirs = snapshot.iter().find(|s| s.name == "theirs").unwrap();
+        assert_eq!(theirs.status, McpServerStatus::Connected);
+        // …and one no plugin declares any more is gone.
+        manager.set_plugin_servers(Vec::new(), BTreeMap::new());
+        assert_eq!(names(&manager), [("mine".to_string(), McpScope::User)]);
+    }
+
+    #[test]
+    fn a_plugin_server_never_takes_a_name_already_in_use() {
+        let (manager, _rx) = manager_with(vec![stdio_entry("shared")]);
+        let refused = manager.set_plugin_servers(
+            vec![
+                plugin_entry("shared"),
+                plugin_entry("own"),
+                plugin_entry("own"),
+            ],
+            BTreeMap::new(),
+        );
+        assert_eq!(refused, ["shared", "own"]);
+        assert_eq!(
+            names(&manager),
+            [
+                ("shared".to_string(), McpScope::User),
+                ("own".to_string(), McpScope::Plugin)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plugin_server_waits_for_the_review() {
+        let (manager, _rx) = manager_with(Vec::new());
+        manager.set_plugin_servers(
+            vec![plugin_entry("held")],
+            [("held".to_string(), McpHold::Review)].into(),
+        );
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::AwaitingReview);
+        assert_eq!(manager.awaiting_review(), ["held"]);
+        manager.set_approved("held", true);
+        wait_connected(&manager, "held");
+    }
+
+    #[test]
+    fn a_literal_entry_is_used_as_written() {
+        // An Agent Plugin's server: `${VAR}` is its own text, not the
+        // session's environment — so not a variable left unset either.
+        let mut entry = plugin_entry("literal");
+        entry.literal = true;
+        if let McpServerConfig::Stdio { args, .. } = &mut entry.config {
+            args.push("${ALTER_ZERO_TEST_NEVER_SET_LITERAL}".to_string());
+        }
+        let (manager, _rx) = manager_with(Vec::new());
+        manager.set_plugin_servers(vec![entry], BTreeMap::new());
+        wait_connected(&manager, "literal");
     }
 }

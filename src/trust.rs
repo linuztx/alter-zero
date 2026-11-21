@@ -278,9 +278,20 @@ impl ServerParts {
     #[must_use]
     pub fn of(config: &McpServerConfig) -> Self {
         let (target, values) = match config {
-            McpServerConfig::Stdio { command, args, env } => {
-                // Structured, so `["a b"]` and `["a", "b"]` stay apart.
-                let line = serde_json::to_string(&(command, args)).unwrap_or_default();
+            McpServerConfig::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => {
+                // Structured, so `["a b"]` and `["a", "b"]` stay apart. Where
+                // it starts is part of what runs — and left out when unset,
+                // so an entry decided before the key existed reads unchanged.
+                let line = match cwd {
+                    Some(cwd) => serde_json::to_string(&(command, args, cwd)),
+                    None => serde_json::to_string(&(command, args)),
+                }
+                .unwrap_or_default();
                 (fingerprint(line.as_bytes()), env)
             }
             McpServerConfig::Http { url, headers, .. }

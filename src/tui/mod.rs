@@ -53,6 +53,8 @@
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`usage`] | The `/usage` page's reads, one worker per subscription, its clock and its minute refresh (`docs/usage.md`). |
+//! | [`plugin_cli`] | The `alter-zero plugin` subcommands: resolving a plugin's name, the store operation, the printout (`docs/plugins.md`). |
+//! | [`plugins`] | The plugins on in this directory, the `/plugins` page's worker, and the reload after a change (`docs/plugins.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list / usage / transcript-render jobs. |
 //! | [`host`] | Clocks, dates, the OS string, ids — the raw impurities. |
 
@@ -103,6 +105,8 @@ pub(crate) mod mcp;
 pub(crate) mod mcp_cli;
 pub(crate) mod models;
 pub(crate) mod permission;
+pub(crate) mod plugin_cli;
+pub(crate) mod plugins;
 pub(crate) mod recorder;
 pub(crate) mod resume;
 pub(crate) mod secrets;
@@ -271,6 +275,13 @@ pub(crate) struct Session<'t> {
     usage_tx: tokio::sync::mpsc::UnboundedSender<usage::UsageResult>,
     usage_rx: tokio::sync::mpsc::UnboundedReceiver<usage::UsageResult>,
     usage_cancel: Option<CancelToken>,
+    /// The `/plugins` page's operations (`docs/plugins.md`): the one job
+    /// running reports here; the token Esc, a closed page or the quit stops
+    /// it with; and when it began — the page's job clock.
+    plugin_tx: tokio::sync::mpsc::UnboundedSender<plugins::PluginResult>,
+    plugin_rx: tokio::sync::mpsc::UnboundedReceiver<plugins::PluginResult>,
+    plugin_cancel: Option<CancelToken>,
+    plugin_job_started: Option<Instant>,
     /// The probe's sender is kept because a probe is spawned more than
     /// once: at bootstrap, and by a resume whose recorded model has facts
     /// this session never learned (`docs/session-model.md`).
@@ -356,6 +367,14 @@ pub(crate) struct Session<'t> {
     /// type added mid-session — or written by the agent itself — is
     /// launchable on the next turn.
     subagents: alter_zero::subagents::SubagentRegistry,
+    /// Where plugins are kept (`docs/plugins.md` *On disk*) — `None` without
+    /// a config home, when there is nowhere to install one.
+    plugin_store: Option<alter_zero::plugins::PluginStore>,
+    /// What the plugins on in this directory add — read at bootstrap and
+    /// again after every change the `/plugins` page makes
+    /// ([`Session::reload_plugins`]); the skills and agent rescans append
+    /// theirs to what the roots hold.
+    plugins: alter_zero::plugins::LoadedPlugins,
     /// The user's secrets (`docs/secrets.md`) — the one store the `/secrets`
     /// page edits, the reminder lists and every tool call expands and
     /// redacts with. The same handle the shell registry carries to the

@@ -21,7 +21,11 @@ use super::config;
 /// and the timeout knobs. Pure parse/merge over boundary reads. Without a
 /// project layer (`ALTER_ZERO_PROJECT_CONFIG` off) no project file
 /// contributes at all.
-pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> McpSources {
+pub(crate) fn load_mcp_sources(
+    cwd: &Path,
+    trust: &super::trust::TrustState,
+    plugins: &alter_zero::plugins::LoadedPlugins,
+) -> McpSources {
     let project = cwd.display().to_string();
     let user_path = config::mcp_user_file_path();
     let user_contents = user_path
@@ -81,7 +85,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
                 .map(|error| format!("{user_display}: {error}")),
         );
     }
-    let (entries, held_names) = mcp::merge_project_scopes(
+    let (mut entries, held_names) = mcp::merge_project_scopes(
         alter
             .as_ref()
             .map(|(file, display, enabled)| (file, display.as_str(), enabled)),
@@ -92,7 +96,7 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
     );
     // A held server waits for the review when it is new or changed, and is
     // disabled when the user said so.
-    let held = held_names
+    let mut held: std::collections::BTreeMap<String, McpHold> = held_names
         .into_iter()
         .map(|name| {
             let review = reviews
@@ -106,6 +110,23 @@ pub(crate) fn load_mcp_sources(cwd: &Path, trust: &super::trust::TrustState) -> 
             (name, hold)
         })
         .collect();
+    // The enabled plugins' servers (`docs/plugins.md`), after every
+    // configured one — a name the user or the project already uses stays
+    // theirs — each held until the review has passed it.
+    let (plugin_entries, plugin_held) = super::plugins::plugin_mcp_entries(trust, plugins, cwd);
+    for entry in plugin_entries {
+        if entries.iter().any(|taken| taken.name == entry.name) {
+            errors.push(format!(
+                "{}: the MCP server `{}` is not started — the name is already in use",
+                entry.config_path, entry.name
+            ));
+            continue;
+        }
+        if let Some(hold) = plugin_held.get(&entry.name) {
+            held.insert(entry.name.clone(), *hold);
+        }
+        entries.push(entry);
+    }
     // The era cache is retired — a connect re-derives the verdict every
     // time now, so the file only ever misleads (`docs/mcp.md`).
     config::remove_retired_mcp_era_cache();

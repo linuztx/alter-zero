@@ -142,7 +142,16 @@ pub fn connect_with_helper(
 ) -> Result<Connection, ConnectError> {
     let until = Instant::now() + deadline;
     match config {
-        McpServerConfig::Stdio { command, args, env } => {
+        McpServerConfig::Stdio {
+            command,
+            args,
+            env,
+            cwd: own,
+        } => {
+            // The server's own working directory, when its entry names one
+            // (a plugin's server starts in its plugin's root); the session's
+            // otherwise.
+            let cwd = own.as_deref().map(std::path::Path::new).or(cwd);
             let transport = StdioTransport::spawn(command, args, env, cwd, detach_helper)
                 .map_err(ConnectError::from_transport)?;
             // Fold the child's stderr into a handshake failure so a crashing
@@ -1579,6 +1588,7 @@ mod tests {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             env: Default::default(),
+            cwd: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -1602,6 +1612,7 @@ mod tests {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             env: Default::default(),
+            cwd: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -1628,6 +1639,7 @@ mod tests {
                 "echo 'npm warn: still downloading' >&2; cat > /dev/null".to_string(),
             ],
             env: Default::default(),
+            cwd: None,
         };
         match connect(
             &config,
@@ -1660,6 +1672,7 @@ mod tests {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             env: Default::default(),
+            cwd: None,
         };
         let connection = connect(
             &config,
@@ -1694,6 +1707,7 @@ done
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: Default::default(),
+            cwd: None,
         };
         let started = std::time::Instant::now();
         let result = connect(
@@ -1784,6 +1798,7 @@ done
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: Default::default(),
+            cwd: None,
         };
         let connection = connect(
             &config,
@@ -1950,6 +1965,7 @@ done
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             env: Default::default(),
+            cwd: None,
         };
         let connection = connect(
             &config,
@@ -1990,6 +2006,7 @@ done
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: Default::default(),
+            cwd: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -2016,6 +2033,7 @@ done
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             env: Default::default(),
+            cwd: None,
         };
         let cancel = CancelToken::new();
         let connection =
@@ -2036,6 +2054,7 @@ done
                 "echo install failed >&2; exit 3".to_string(),
             ],
             env: Default::default(),
+            cwd: None,
         };
         let cancel = CancelToken::new();
         match connect(&config, None, None, Duration::from_secs(5), &cancel) {

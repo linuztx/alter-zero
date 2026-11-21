@@ -54,6 +54,14 @@ pub struct MatcherGroup {
     /// which file each handler came from.
     #[serde(skip)]
     pub source: Option<PathBuf>,
+    /// Variables every handler of this group runs with, beside the project
+    /// directory's — never in the file itself: [`HooksFile::with_env`]
+    /// stamps them. A plugin's hooks get their plugin's root and data
+    /// directory this way (`docs/plugins.md`) — exported to the process as
+    /// Claude Code exports them, beside being substituted into the command
+    /// itself ([`HooksFile::with_substitutions`]).
+    #[serde(skip)]
+    pub env: Vec<(String, String)>,
 }
 
 /// One handler inside a group.
@@ -65,6 +73,13 @@ pub struct HookHandler {
     pub kind: HandlerKind,
     #[serde(default)]
     pub command: Option<String>,
+    /// Claude Code's **exec form**: with `args`, `command` is the program
+    /// and each argument is one word exactly as written — no shell reads
+    /// them — while a path placeholder (`${CLAUDE_PROJECT_DIR}`,
+    /// `${CLAUDE_PLUGIN_ROOT}`, …) is still the directory it names.
+    /// Without it, `command` is a shell command line.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
     /// Seconds. `None` takes [`CommandHook::DEFAULT_TIMEOUT_SECS`].
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -126,6 +141,8 @@ pub struct CommandHook {
     pub status_message: Option<String>,
     /// The `hooks.json` it is configured in, when it came from a file.
     pub source: Option<PathBuf>,
+    /// Variables it runs with ([`MatcherGroup::env`]).
+    pub env: Vec<(String, String)>,
 }
 
 impl CommandHook {
@@ -167,6 +184,44 @@ impl HooksFile {
     pub fn with_source(mut self, path: &Path) -> Self {
         for group in self.hooks.values_mut().flatten() {
             group.source = Some(path.to_path_buf());
+        }
+        self
+    }
+
+    /// This file with every handler given `env` to run with — a plugin's
+    /// hooks and their plugin's directories ([`MatcherGroup::env`]).
+    #[must_use]
+    pub fn with_env(mut self, env: &[(String, String)]) -> Self {
+        for group in self.hooks.values_mut().flatten() {
+            group.env = env.to_vec();
+        }
+        self
+    }
+
+    /// This file with each `${NAME}` of `vars` written into every handler's
+    /// command and arguments as the text it stands for — Claude Code's rule
+    /// for a plugin's hooks, whose directories are substituted inline (and
+    /// exported too, [`Self::with_env`]): the review then shows the command
+    /// that runs, and two plugins' hooks written alike stay two hooks.
+    #[must_use]
+    pub fn with_substitutions(mut self, vars: &[(String, String)]) -> Self {
+        let substitute = |text: &mut String| {
+            for (name, value) in vars {
+                let placeholder = format!("${{{name}}}");
+                if text.contains(&placeholder) {
+                    *text = text.replace(&placeholder, value);
+                }
+            }
+        };
+        for group in self.hooks.values_mut().flatten() {
+            for handler in &mut group.hooks {
+                if let Some(command) = handler.command.as_mut() {
+                    substitute(command);
+                }
+                for arg in handler.args.iter_mut().flatten() {
+                    substitute(arg);
+                }
+            }
         }
         self
     }
@@ -244,6 +299,7 @@ impl HooksFile {
                 match handler.resolve() {
                     Ok(mut hook) => {
                         hook.source.clone_from(&group.source);
+                        hook.env.clone_from(&group.env);
                         // `"async": true` parses so a config shared with
                         // another tool loads, but every v1 hook is
                         // synchronous. Running it inline is the safe reading
@@ -295,7 +351,8 @@ impl HookHandler {
                  skipped rather than run unscoped"
             ));
         }
-        if self.shell.as_deref() == Some("powershell") {
+        // `shell` is ignored in the exec form, which runs no shell of its own.
+        if self.args.is_none() && self.shell.as_deref() == Some("powershell") {
             return Err("handler asks for powershell — skipped (hooks run under sh)".to_string());
         }
         let command = self
@@ -304,16 +361,76 @@ impl HookHandler {
             .map(str::trim)
             .filter(|c| !c.is_empty())
             .ok_or_else(|| "command handler has no command — skipped".to_string())?;
+        let command = match &self.args {
+            Some(args) => std::iter::once(command)
+                .chain(args.iter().map(String::as_str))
+                .map(exec_word)
+                .collect::<Vec<_>>()
+                .join(" "),
+            None => command.to_string(),
+        };
         Ok(CommandHook {
-            command: command.to_string(),
+            command,
             timeout_secs: self
                 .timeout
                 .filter(|t| *t > 0)
                 .unwrap_or(CommandHook::DEFAULT_TIMEOUT_SECS),
             status_message: self.status_message.clone(),
             source: None,
+            env: Vec::new(),
         })
     }
+}
+
+/// The path placeholders an exec-form argument may hold — each still the
+/// directory it names, read from the variable the runner exports under the
+/// same name.
+const PATH_PLACEHOLDERS: &[&str] = &[
+    "CLAUDE_PROJECT_DIR",
+    "ALTER_ZERO_PROJECT_DIR",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PLUGIN_DATA",
+    "PLUGIN_ROOT",
+    "PLUGIN_DATA",
+];
+
+/// One exec-form word as `sh -c` must be handed it to read it back exactly:
+/// the text single-quoted, a path placeholder spliced in as the variable
+/// it names, double-quoted — `${CLAUDE_PROJECT_DIR}/x` is
+/// `"$CLAUDE_PROJECT_DIR"'/x'` — and an empty word `''`.
+fn exec_word(text: &str) -> String {
+    fn literal(out: &mut String, text: &str) {
+        if !text.is_empty() {
+            out.push('\'');
+            out.push_str(&text.replace('\'', "'\\''"));
+            out.push('\'');
+        }
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let name = after
+            .find('}')
+            .map(|end| &after[..end])
+            .filter(|name| PATH_PLACEHOLDERS.contains(name));
+        match name {
+            Some(name) => {
+                literal(&mut out, &rest[..start]);
+                out.push_str(&format!("\"${name}\""));
+                rest = &after[name.len() + 1..];
+            }
+            None => {
+                literal(&mut out, &rest[..start + 2]);
+                rest = after;
+            }
+        }
+    }
+    literal(&mut out, rest);
+    if out.is_empty() {
+        out.push_str("''");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -354,6 +471,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                env: Vec::new(),
             }]
         );
     }
@@ -641,6 +759,30 @@ mod tests {
     }
 
     #[test]
+    fn an_exec_form_handler_runs_each_argument_exactly_as_written() {
+        // Claude Code's exec form (`command` + `args`): no shell reads the
+        // arguments, so each is one word whatever it holds — quoted for the
+        // `sh -c` every hook runs under — while a path placeholder is still
+        // the directory it names.
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"node",
+                "args":["${CLAUDE_PROJECT_DIR}/hooks/check.js","it's $HOME","","--x"]}]}]}}"#,
+        );
+        assert_eq!(
+            file.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some(r#"'node' "$CLAUDE_PROJECT_DIR"'/hooks/check.js' 'it'\''s $HOME' '' '--x'"#)
+        );
+        // An empty argument list is still the exec form: the program alone.
+        let bare = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./fmt","args":[]}]}]}}"#,
+        );
+        assert_eq!(
+            bare.hooks["Stop"][0].hooks[0].runnable_command().as_deref(),
+            Some("'./fmt'")
+        );
+    }
+
+    #[test]
     fn runnable_command_is_the_command_a_handler_would_run() {
         // What the trust review asks about (`docs/config-review.md`): exactly
         // the handlers the runner would run, their command as it would run.
@@ -747,6 +889,7 @@ mod tests {
                 timeout_secs: 10,
                 status_message: Some("checking…".to_string()),
                 source: None,
+                env: Vec::new(),
             }]
         );
     }
@@ -770,5 +913,36 @@ mod tests {
                 .merged(&HooksFile::default())
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_stamped_file_hands_its_handlers_their_variables() {
+        // A plugin's hooks: every handler runs with its plugin's directories,
+        // and the command itself is left exactly as written.
+        let env = vec![
+            ("CLAUDE_PLUGIN_ROOT".to_string(), "/plugins/p".to_string()),
+            ("PLUGIN_DATA".to_string(), "/data/p".to_string()),
+        ];
+        let file = parse(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command",
+                "command":"sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run.sh\""}]}]}}"#,
+        )
+        .with_env(&env);
+        let selection = file.select(HookEvent::Stop, None);
+        assert_eq!(selection.handlers.len(), 1);
+        assert_eq!(selection.handlers[0].env, env);
+        assert_eq!(
+            selection.handlers[0].command,
+            r#"sh "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh""#
+        );
+        // The stamp survives a merge beside a file that has none, each
+        // handler keeping its own.
+        let merged = parse(SAMPLE).merged(&file);
+        assert!(
+            merged.select(HookEvent::PreToolUse, Some("bash")).handlers[0]
+                .env
+                .is_empty()
+        );
+        assert_eq!(merged.select(HookEvent::Stop, None).handlers[0].env, env);
     }
 }

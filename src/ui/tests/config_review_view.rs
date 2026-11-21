@@ -499,3 +499,38 @@ fn a_long_file_heading_wraps_whole() {
     assert!(joined.contains(&format!("Project ·{long}")), "{joined}");
     assert!(!joined.contains('…'), "{joined}");
 }
+
+#[test]
+fn a_plugins_servers_are_said_to_come_from_the_plugins() {
+    // A plugin's server is no project's: the headline says where the
+    // servers come from — by the scope each file is shown under.
+    let plugin_section = |name: &str| ReviewSection {
+        scope: Some(format!("Plugin {name}@demo")),
+        path: format!("~/.alter-zero/plugins/installed/demo/{name}/.mcp.json"),
+        items: vec![server(&format!("plugin:{name}:db"), "stdio", &["db"])],
+    };
+    let plugins = ReviewPage::new(
+        ReviewKind::McpServers,
+        vec![plugin_section("hello"), plugin_section("guard")],
+    );
+    let page = texts(&review_app(vec![plugins]), 80, TALL);
+    assert!(
+        page[1].contains("2 new MCP servers found in your plugins"),
+        "{page:#?}"
+    );
+    assert!(
+        page.iter().any(|t| t.starts_with("  Plugin hello@demo ·")),
+        "{page:#?}"
+    );
+    let mut project = plugin_section("hello");
+    project.scope = Some("Project".to_string());
+    let both = ReviewPage::new(
+        ReviewKind::McpServers,
+        vec![project, plugin_section("guard")],
+    );
+    let page = texts(&review_app(vec![both]), 80, TALL);
+    assert!(
+        page[1].contains("found in this project and your plugins"),
+        "{page:#?}"
+    );
+}

@@ -13,6 +13,7 @@ fn skill(name: &str, description: &str) -> SkillMetadata {
         path: std::path::PathBuf::from("/skills")
             .join(name)
             .join(crate::skills::SKILL_FILE_NAME),
+        plugin: None,
     }
 }
 

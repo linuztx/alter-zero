@@ -801,6 +801,7 @@ impl CommandHooks {
         };
         let cwd = self.cwd.clone();
         let project_dir = self.project_dir.clone();
+        let own_env = handler.env.clone();
         let spawned = subprocess::spawn_shell_with(
             self.detach_helper.as_deref(),
             &handler.command,
@@ -808,6 +809,12 @@ impl CommandHooks {
                 cmd.stdin(std::process::Stdio::piped()).current_dir(&cwd);
                 for var in PROJECT_DIR_VARS {
                     cmd.env(var, &project_dir);
+                }
+                // A plugin's hook is told where its plugin lives
+                // (`docs/plugins.md`): the shell expands the names its
+                // command was written with.
+                for (name, value) in &own_env {
+                    cmd.env(name, value);
                 }
             },
         );
@@ -4000,6 +4007,38 @@ mod tests {
         let (ours, theirs) = written.split_once('|').expect("both vars");
         assert!(!ours.is_empty(), "ALTER_ZERO_PROJECT_DIR is set");
         assert_eq!(ours, theirs, "the Claude Code alias matches");
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_plugins_hook_is_told_where_its_plugin_lives() {
+        // The command is the author's, unexpanded: the shell it runs under
+        // resolves the names from the variables the handler was stamped with
+        // (`docs/plugins.md`).
+        let probe = std::env::temp_dir().join("alter-zero-hook-plugin-env-probe.txt");
+        let _ = std::fs::remove_file(&probe);
+        let json = pre_hook(&format!(
+            "printf '%s|%s' \"${{CLAUDE_PLUGIN_ROOT}}/hooks\" \"$PLUGIN_DATA\" > {}",
+            probe.display()
+        ));
+        let file = HooksFile::parse(&json).expect("fixture parses").with_env(&[
+            (
+                "CLAUDE_PLUGIN_ROOT".to_string(),
+                "/plugins/demo".to_string(),
+            ),
+            ("PLUGIN_DATA".to_string(), "/data/demo".to_string()),
+        ]);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("the fixture has a runnable handler");
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the hook ran");
+        assert_eq!(written, "/plugins/demo/hooks|/data/demo");
         let _ = std::fs::remove_file(&probe);
     }
 }

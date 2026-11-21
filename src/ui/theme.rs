@@ -2382,6 +2382,132 @@ pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
 pub(super) const HOOKS_MODIFY_NOTE: &str =
     "To modify or remove this hook, edit hooks.json directly or ask alter-zero to help.";
 
+// --- The inline `/plugins` page (docs/plugins.md): the `/skills` menu's list
+// under a tab strip, and the `/mcp` manager's detail pages — so it borrows
+// both frames (the picker family's rows, the `MCP_FIELD_COL` fact rows, the
+// `HOOKS_MARKER` actions, the ask modal's chips) and adds only its own
+// vocabulary. ---
+
+/// The scope word a plugin's files are shown under on the startup review —
+/// `Plugin hello@demo · …/hooks/hooks.json` — and what tells its servers
+/// from a project's there.
+pub const REVIEW_PLUGIN_SCOPE: &str = "Plugin";
+
+/// The list page's title.
+pub(super) const PLUGINS_TITLE: &str = "Plugins";
+
+/// The tab strip's fixed tabs (`app::PluginsTab`): every plugin, the
+/// installed ones and — last, after a tab per marketplace — the add tab.
+pub(super) const PLUGINS_TAB_ALL: &str = "All";
+pub(super) const PLUGINS_TAB_INSTALLED: &str = "Installed";
+pub(super) const PLUGINS_TAB_ADD: &str = "+ Add";
+
+/// The marks a strip too wide for the terminal shows where tabs are hidden
+/// (codex's): `‹` at its left, `›` at its right.
+pub(super) const PLUGINS_STRIP_MORE_LEFT: &str = "‹";
+pub(super) const PLUGINS_STRIP_MORE_RIGHT: &str = "›";
+
+/// Each tab's dim subtitle under the title. A marketplace's tab says its
+/// own description instead, when it has one.
+pub(super) const PLUGINS_ALL_SUBTITLE: &str = "Every plugin your marketplaces list";
+pub(super) const PLUGINS_INSTALLED_SUBTITLE: &str = "The plugins installed on this machine";
+pub(super) const PLUGINS_ADD_SUBTITLE: &str =
+    "Add a marketplace: owner/repo, a git URL, or a directory";
+pub(super) const PLUGINS_ADD_COUNT: &str = "Pick one below or type a source";
+
+/// The add tab's last row while nothing is typed — it opens the add page —
+/// and what it says the page's field takes.
+pub(super) const PLUGINS_ADD_ROW: &str = "Add a marketplace…";
+pub(super) const PLUGINS_ADD_ROW_DESCRIPTION: &str = "owner/repo, git URL or path";
+
+/// The add page: its title, what a marketplace is, and the field's dim
+/// placeholder.
+pub(super) const PLUGINS_ADD_TITLE: &str = "Add a marketplace";
+pub(super) const PLUGINS_ADD_BLURB: &str = "A git repository or a directory holding a plugin marketplace — or a single plugin, read as a marketplace of one.";
+pub(super) const PLUGINS_ADD_PLACEHOLDER: &str = "owner/repo";
+
+/// The status column's marks: the `/skills` rows' `✔`/`◯` for an installed
+/// plugin on or off here, `+` for one that can be installed, `–` for one
+/// whose source this app cannot fetch, and `/mcp`'s `✘` for an installed copy
+/// a session does not load. Only the `✔` is green and only the `✘` red: the
+/// eye hunts down the column for what is on and what is broken.
+pub(super) const PLUGINS_ENABLED_MARK: &str = LOGIN_CONFIGURED_MARK;
+pub(super) const PLUGINS_DISABLED_MARK: &str = LOGIN_UNCONFIGURED_MARK;
+pub(super) const PLUGINS_AVAILABLE_MARK: &str = "+";
+pub(super) const PLUGINS_UNAVAILABLE_MARK: &str = "–";
+pub(super) const PLUGINS_BROKEN_MARK: &str = "✘";
+
+/// The status column's words, beside those marks — and the add tab's for an
+/// official catalog already added.
+pub(super) const PLUGINS_ENABLED: &str = "enabled";
+pub(super) const PLUGINS_DISABLED: &str = "disabled";
+pub(super) const PLUGINS_AVAILABLE: &str = "available";
+pub(super) const PLUGINS_UNAVAILABLE: &str = "unavailable";
+pub(super) const PLUGINS_BROKEN: &str = "not loaded";
+pub(super) const PLUGINS_ADDED: &str = "added";
+
+/// The amber mark an installed plugin's description opens on when its
+/// marketplace has a newer copy: `▲ update · Easily create hooks…`.
+pub(super) const PLUGINS_UPDATE_MARK: &str = "▲";
+pub(super) const PLUGINS_UPDATE_WORD: &str = "update";
+
+/// The key hints' clauses, each with the order it gives way in on a narrow
+/// terminal — highest first, `0` never — so a hint drops whole clauses
+/// rather than ending on a cut word: the plugin tabs (a marketplace's tab
+/// leading on its own two keys, Ctrl+U only for a git one), the add tab.
+pub(super) const PLUGINS_HINT_UPDATE: (&str, u8) = ("Ctrl+U update", 2);
+pub(super) const PLUGINS_HINT_REMOVE: (&str, u8) = ("Ctrl+R remove", 1);
+pub(super) const PLUGINS_HINT_TABS: (&str, u8) = ("←/→ tabs", 4);
+pub(super) const PLUGINS_HINT_OPEN: (&str, u8) = ("Enter to open", 3);
+pub(super) const PLUGINS_HINT_TOGGLE: (&str, u8) = ("Space to toggle", 5);
+pub(super) const PLUGINS_HINT_CLOSE: (&str, u8) = ("Esc to close", 0);
+pub(super) const PLUGINS_HINT_TYPE: (&str, u8) = ("type a source", 5);
+pub(super) const PLUGINS_HINT_ADD: (&str, u8) = ("Enter to add", 0);
+
+/// A detail page's hint and the confirmation's, clause by clause in the
+/// order they give way (the list's rule): the way back is never left out.
+pub(super) const PLUGINS_PAGE_HINT: [(&str, u8); 3] = [
+    ("↑/↓ to navigate", 2),
+    ("Enter to select", 1),
+    ("Esc to go back", 0),
+];
+pub(super) const PLUGINS_CONFIRM_HINT: [(&str, u8); 2] =
+    [("Enter to confirm", 1), ("Esc to go back", 0)];
+pub(super) const PLUGINS_ADD_HINT: [(&str, u8); 2] = [("Enter to add", 1), ("Esc to go back", 0)];
+
+/// The list's placeholders: a search matching nothing, and the two empty
+/// tabs — each naming where to go next.
+pub(super) const PLUGINS_NO_MATCH: &str = "No matching plugins";
+pub(super) const PLUGINS_NONE_INSTALLED: &str =
+    "No plugins installed yet — find one under All, or add a marketplace under + Add.";
+pub(super) const PLUGINS_NONE_LISTED: &str =
+    "No plugins listed yet — add a marketplace under + Add.";
+
+/// The note under the count when the session loads no plugin
+/// (`ALTER_ZERO_PLUGINS=0`): the page still installs and toggles, red like
+/// the `/skills` and `/mcp` session-off notes.
+pub(super) const PLUGINS_SESSION_OFF: &str =
+    "Plugins are off for this session (ALTER_ZERO_PLUGINS) — nothing installed is loaded";
+
+/// What the add tab's typed row says.
+pub(super) const PLUGINS_ADD_TYPED: &str = "Press Enter to add it";
+/// How to pin a source — `@ref` on the shorthand, `#ref` on any git source
+/// (`plugins::source`) — said under the add tab's typed source and its row
+/// for any other, and on the add page.
+pub(super) const PLUGINS_ADD_PIN: &str =
+    "Pin a branch, tag or commit: owner/repo@ref, or #ref on a git URL";
+/// The line under the list for a plugin whose manifest describes nothing.
+pub(super) const PLUGINS_NO_DESCRIPTION: &str = "No description";
+
+/// A plugin page's warning for one not yet installed that brings something
+/// that runs — or whose contents are read only once it is installed — the
+/// risk in Claude Code's opening words, then this app's own guard
+/// (`docs/plugins.md` *Trust*).
+pub(super) const PLUGINS_TRUST_NOTE: &str = "Plugins can run code on your computer — install only plugins you trust. Any hooks or MCP servers it brings wait for your review before they run.";
+
+/// The job line's closing clause: `Installing deploy… (4s · esc to cancel)`.
+pub(super) const PLUGINS_JOB_CANCEL: &str = "esc to cancel";
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but

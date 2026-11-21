@@ -891,6 +891,17 @@ pub fn render_live_with_preview(
         render_mcp_menu(body, buf, app);
         return;
     }
+    // …and the `/plugins` page: a search-line picker on its list, the `/mcp`
+    // pages' twin on its detail pages. See `docs/plugins.md`.
+    if app.plugins_menu.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::plugins_view::plugins_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        render_plugins_menu(body, buf, app);
+        return;
+    }
     // The ↓ background manager band replaces the composer (and the band/footer
     // slots below it) — but **not** the streaming strip: a running tool's live
     // cell, the status line, the queued messages and the toast keep their rows

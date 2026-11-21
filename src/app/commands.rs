@@ -153,6 +153,11 @@ pub enum CommandEffect {
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
     /// connection work runs on worker threads either way. See `docs/mcp.md`.
     Mcp,
+    /// Open the `/plugins` page: the plugins of the added marketplaces, to
+    /// install, update, toggle and remove, and the marketplaces themselves.
+    /// Works **mid-turn** like `/mcp` — it only replaces the composer, and
+    /// every operation runs on a worker. See `docs/plugins.md`.
+    Plugins,
     /// Open the read-only `/donate` page: the project's crypto donation
     /// addresses, each one copyable. Works **mid-turn** like `/hooks` — it
     /// only replaces the composer. See `docs/donate.md`.
@@ -307,6 +312,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         CommandEffect::Skills,
     ),
     SlashCommand::builtin("mcp", "Manage MCP servers", CommandEffect::Mcp),
+    SlashCommand::builtin(
+        "plugins",
+        "Browse, install and manage plugins",
+        CommandEffect::Plugins,
+    ),
     SlashCommand::builtin(
         "donate",
         "Support the project with a crypto donation",
@@ -614,6 +624,14 @@ impl App {
                 // snapshots the live manager and opens the menu over it
                 // (docs/mcp.md).
                 Action::OpenMcpMenu
+            }
+            CommandEffect::Plugins => {
+                // /plugins works mid-turn like /mcp: the page only replaces
+                // the composer and its operations run on a worker. Whether
+                // the session loads plugins is the boundary's to know, so the
+                // *loop* opens the page and reads the catalog
+                // (docs/plugins.md).
+                Action::OpenPluginsMenu
             }
             CommandEffect::Donate => {
                 // /donate works mid-turn like /hooks: a read-only page that

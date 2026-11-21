@@ -53,6 +53,7 @@ fn tall_mcp_server_app(first_arg: &str) -> App {
             command: "npx".to_string(),
             args,
             env: Default::default(),
+            cwd: None,
         },
         status: McpServerStatus::Connected,
         auth: None,

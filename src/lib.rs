@@ -177,6 +177,7 @@ pub mod markdown;
 pub mod mcp;
 pub mod paste;
 pub mod permission;
+pub mod plugins;
 pub mod project_doc;
 pub mod pty;
 pub mod read_only;

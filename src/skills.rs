@@ -89,8 +89,30 @@ pub struct SkillMetadata {
     /// The skill's own directory: the body's `Base directory` header and the
     /// `${…SKILL_DIR}` expansion.
     pub dir: PathBuf,
-    /// The `SKILL.md` itself.
+    /// The `SKILL.md` itself — or, for a plugin's command, the command's own
+    /// markdown file.
     pub path: PathBuf,
+    /// The plugin this skill came from, when it did (`docs/plugins.md`).
+    /// `None` for a skill found in a skills directory.
+    pub plugin: Option<SkillPlugin>,
+}
+
+/// The plugin a skill was installed with — what its body's
+/// `${CLAUDE_PLUGIN_ROOT}` expands to, and what tells a command file from a
+/// `SKILL.md` folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillPlugin {
+    /// The plugin's id, `plugin@marketplace`.
+    pub id: String,
+    /// The plugin's installed copy — `${CLAUDE_PLUGIN_ROOT}`, `${PLUGIN_ROOT}`.
+    pub root: PathBuf,
+    /// The plugin's data directory — `${CLAUDE_PLUGIN_DATA}`,
+    /// `${PLUGIN_DATA}`.
+    pub data: PathBuf,
+    /// A command — one markdown file of the plugin's `commands/` — rather
+    /// than a `SKILL.md` folder: its base directory is the plugin's, and the
+    /// file is what tells it from its siblings.
+    pub command: bool,
 }
 
 /// A `SKILL.md` that could not be read, parsed, or validated. Collected
@@ -331,6 +353,38 @@ pub fn render_skill_body(dir: &Path, body: &str) -> String {
     format!("{}{SKILL_TRUNCATION_MARKER}", &rendered[..cut])
 }
 
+/// The text a `skill` call returns for `skill`: [`render_skill_body`] for a
+/// skill of a skills directory, and for a **plugin's** the same with the
+/// plugin's own paths expanded first — `${CLAUDE_PLUGIN_ROOT}` and
+/// `${CLAUDE_PLUGIN_DATA}`, and codex's `${PLUGIN_ROOT}` / `${PLUGIN_DATA}`
+/// — which is how a plugin's skill names a script it ships beside itself
+/// (`docs/plugins.md`).
+///
+/// A plugin's **command** is one markdown file, so its base directory is
+/// the plugin's and a second header line names the file — which is also
+/// what keeps two commands of one plugin apart for the loader's
+/// already-loaded check.
+#[must_use]
+pub fn render_skill(skill: &SkillMetadata, body: &str) -> String {
+    let Some(plugin) = &skill.plugin else {
+        return render_skill_body(&skill.dir, body);
+    };
+    let root = plugin.root.display().to_string();
+    let data = plugin.data.display().to_string();
+    let body = body
+        .replace("${CLAUDE_PLUGIN_ROOT}", &root)
+        .replace("${PLUGIN_ROOT}", &root)
+        .replace("${CLAUDE_PLUGIN_DATA}", &data)
+        .replace("${PLUGIN_DATA}", &data);
+    if !plugin.command {
+        return render_skill_body(&skill.dir, &body);
+    }
+    render_skill_body(
+        &plugin.root,
+        &format!("Command file: {}\n\n{body}", skill.path.display()),
+    )
+}
+
 // ===== `$` skill mentions (docs/skill-mentions.md) =====
 
 /// The sigil that opens the composer's skill picker and marks a mention in a
@@ -377,50 +431,67 @@ fn is_mention_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
 }
 
+/// The byte length of the mention name `text` opens with: a run of
+/// `is_mention_name_char`s, in which a `:` or a `.` also continues the name
+/// **when a name character stands on each side of it** — a plugin's skill
+/// is `plugin:skill` and a plugin may be `acme.tools` (`docs/plugins.md`),
+/// while the full stop that ends a sentence and the colon that opens what
+/// follows still end the mention.
+fn mention_name_len(text: &str) -> usize {
+    let mut len = 0;
+    let mut after_name_char = false;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let before_name_char = chars
+            .peek()
+            .is_some_and(|&(_, next)| is_mention_name_char(next));
+        let joins = matches!(c, ':' | '.') && after_name_char && before_name_char;
+        if !is_mention_name_char(c) && !joins {
+            break;
+        }
+        after_name_char = is_mention_name_char(c);
+        len = at + c.len_utf8();
+    }
+    len
+}
+
 /// The `$`-skill mention at `cursor` in `text`, if the cursor sits in one.
 ///
 /// The grammar is codex's: the `$` must open its whitespace-delimited word
 /// (so `US$5` and `foo$bar` never trigger), the name is a run of
-/// `is_mention_name_char`s, and the mention ends at the first other
-/// character — the cursor must still be inside that run (typing the `,` in
+/// `is_mention_name_char`s — joined by the `:` and `.` of a plugin's
+/// namespace, `mention_name_len` — and the mention ends at the first other
+/// character; the cursor must still be inside that run (typing the `,` in
 /// `$dataviz,` closes the picker). Unlike [`crate::file_search::at_token`]'s
 /// whitespace scan, the range never swallows trailing punctuation, so an
 /// accept can't eat a comma the user already typed.
 #[must_use]
 pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
     let cursor = cursor.min(text.len());
-    // Scan back over name characters to where the run begins…
-    let run_start = text[..cursor]
+    // The word the cursor is in starts after the last whitespace before it —
+    // found by char boundary, never byte arithmetic: with a multi-byte char
+    // there (typing `—` puts the cursor right after one), stepping back a
+    // byte lands inside it and the slice panics.
+    let word_start = text[..cursor]
         .char_indices()
         .rev()
-        .take_while(|&(_, c)| is_mention_name_char(c))
+        .take_while(|&(_, c)| !c.is_whitespace())
         .last()
-        .map_or(cursor, |(i, _)| i);
-    // …the character just before the run must be the `$` — found by char
-    // boundary, never byte arithmetic: with a multi-byte char there (typing
-    // `—` puts the cursor right after one), `run_start - 1` lands inside it
-    // and the slice panics.
-    let (prefix_start, prefix) = text[..run_start].char_indices().next_back()?;
-    if prefix != SKILL_MENTION_PREFIX {
+        .map_or(cursor, |(at, _)| at);
+    // …and the `$` must open that word, codex's boundary rule.
+    if !text[word_start..].starts_with(SKILL_MENTION_PREFIX) {
         return None;
     }
-    // …and the `$` itself must open the word (start of text or after
-    // whitespace), codex's boundary rule.
-    if text[..prefix_start]
-        .chars()
-        .next_back()
-        .is_some_and(|c| !c.is_whitespace())
-    {
+    let name_start = word_start + SKILL_MENTION_PREFIX.len_utf8();
+    // The mention runs forward from the `$` to the first character that is
+    // not part of a name.
+    let end = name_start + mention_name_len(&text[name_start..]);
+    if cursor < name_start || cursor > end {
         return None;
     }
-    // The mention extends forward to the first non-name character.
-    let end = text[cursor..]
-        .char_indices()
-        .find(|&(_, c)| !is_mention_name_char(c))
-        .map_or(text.len(), |(i, _)| cursor + i);
     Some(MentionToken {
-        range: prefix_start..end,
-        query: text[run_start..end].to_string(),
+        range: word_start..end,
+        query: text[name_start..end].to_string(),
     })
 }
 
@@ -842,6 +913,7 @@ mod tests {
             description: description.to_string(),
             dir: PathBuf::from("/skills").join(name),
             path: PathBuf::from("/skills").join(name).join(SKILL_FILE_NAME),
+            plugin: None,
         }
     }
 
@@ -1309,5 +1381,137 @@ mod tests {
         let fresh = unreported_errors(&reported, &[err("/a/SKILL.md"), err("/b/SKILL.md")]);
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].path, PathBuf::from("/b/SKILL.md"));
+    }
+
+    // ===== plugin skills (docs/plugins.md) =====
+
+    #[test]
+    fn a_mention_holds_a_plugins_namespace() {
+        // `plugin:skill` — and a plugin's name may be dotted.
+        let t = mention_token("use $hookify:writing-rules now", 26).expect("token");
+        assert_eq!(t.query, "hookify:writing-rules");
+        assert_eq!(t.range, 4..26);
+        let t = mention_token("$acme.tools:deploy", 18).expect("token");
+        assert_eq!(t.query, "acme.tools:deploy");
+        // With the cursor mid-name, the token is still the whole name.
+        let t = mention_token("$tools:db:migrate", 7).expect("token");
+        assert_eq!(t.query, "tools:db:migrate");
+        assert_eq!(t.range, 0..17);
+    }
+
+    #[test]
+    fn a_colon_or_a_full_stop_joins_a_name_only_between_name_characters() {
+        // The full stop that ends a sentence still ends the mention…
+        let t = mention_token("use $dataviz.", 12).expect("token");
+        assert_eq!(t.query, "dataviz");
+        assert_eq!(t.range, 4..12);
+        assert!(mention_token("use $dataviz.", 13).is_none());
+        // …as does a colon that opens what follows.
+        let t = mention_token("$dataviz: plot it", 8).expect("token");
+        assert_eq!(t.query, "dataviz");
+        assert!(mention_token("$dataviz: plot it", 9).is_none());
+        // Two in a row are punctuation, not a name.
+        assert_eq!(mention_token("$a..b", 2).expect("token").query, "a");
+        assert!(mention_token("$a::b", 5).is_none());
+        // And neither can open a name.
+        assert_eq!(mention_token("$:x", 1).expect("token").query, "");
+        assert!(mention_token("$:x", 3).is_none());
+    }
+
+    #[test]
+    fn a_plugin_skill_ranks_under_its_whole_name() {
+        let mut skill = meta("hookify:writing-rules", "Write hookify rules");
+        skill.plugin = Some(plugin(false));
+        let ranked = rank_skills("hookify:wr", &[meta("dataviz", "Charts"), skill]);
+        assert_eq!(ranked.len(), 1, "{ranked:?}");
+        assert_eq!(ranked[0].name, "hookify:writing-rules");
+    }
+
+    fn plugin(command: bool) -> SkillPlugin {
+        SkillPlugin {
+            id: "hookify@official".to_string(),
+            root: PathBuf::from("/plugins/installed/official/hookify"),
+            data: PathBuf::from("/plugins/data/official/hookify"),
+            command,
+        }
+    }
+
+    #[test]
+    fn a_plugin_skills_body_names_its_plugins_own_paths() {
+        let skill = SkillMetadata {
+            name: "hookify:writing-rules".to_string(),
+            description: "d".to_string(),
+            dir: PathBuf::from("/plugins/installed/official/hookify/skills/writing-rules"),
+            path: PathBuf::from(
+                "/plugins/installed/official/hookify/skills/writing-rules/SKILL.md",
+            ),
+            plugin: Some(plugin(false)),
+        };
+        let rendered = render_skill(
+            &skill,
+            "Run ${CLAUDE_PLUGIN_ROOT}/scripts/lint.sh, cache in ${CLAUDE_PLUGIN_DATA}, \
+             see ${CLAUDE_SKILL_DIR}/notes.md and ${PLUGIN_ROOT} / ${PLUGIN_DATA}; ${HOME} stays.",
+        );
+        assert!(
+            rendered.starts_with(
+                "Base directory for this skill: \
+                 /plugins/installed/official/hookify/skills/writing-rules\n\n"
+            ),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Run /plugins/installed/official/hookify/scripts/lint.sh,"));
+        assert!(rendered.contains("cache in /plugins/data/official/hookify,"));
+        assert!(
+            rendered
+                .contains("see /plugins/installed/official/hookify/skills/writing-rules/notes.md")
+        );
+        assert!(
+            rendered.contains(
+                "and /plugins/installed/official/hookify / /plugins/data/official/hookify;"
+            )
+        );
+        assert!(rendered.contains("${HOME} stays."));
+    }
+
+    #[test]
+    fn a_command_is_based_at_its_plugin_and_names_its_own_file() {
+        let command = |file: &str| SkillMetadata {
+            name: format!("hookify:{file}"),
+            description: "d".to_string(),
+            dir: PathBuf::from("/plugins/installed/official/hookify"),
+            path: PathBuf::from(format!(
+                "/plugins/installed/official/hookify/commands/{file}.md"
+            )),
+            plugin: Some(plugin(true)),
+        };
+        let list = render_skill(&command("list"), "List the rules.");
+        assert_eq!(
+            list,
+            "Base directory for this skill: /plugins/installed/official/hookify\n\n\
+             Command file: /plugins/installed/official/hookify/commands/list.md\n\n\
+             List the rules."
+        );
+        // Two commands of one plugin share a base directory and still open
+        // differently — what the loader tells them apart by.
+        assert_ne!(
+            render_skill(&command("list"), ""),
+            render_skill(&command("help"), "")
+        );
+    }
+
+    #[test]
+    fn a_skill_of_a_skills_directory_renders_as_it_always_did() {
+        let skill = meta("dataviz", "Charts");
+        assert_eq!(
+            render_skill(
+                &skill,
+                "Read ${CLAUDE_PLUGIN_ROOT}/x and ${CLAUDE_SKILL_DIR}/y."
+            ),
+            render_skill_body(
+                &skill.dir,
+                "Read ${CLAUDE_PLUGIN_ROOT}/x and ${CLAUDE_SKILL_DIR}/y."
+            ),
+            "no plugin, nothing of a plugin's expands"
+        );
     }
 }

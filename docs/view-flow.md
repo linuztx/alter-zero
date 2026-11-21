@@ -287,7 +287,7 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
 ## Scope — which views flow
 
 - **Flow + bottom anchor**: every content-driven framed view — the browsing
-  menus (`/mcp`, `/hooks`, the startup review, `/donate`, `/export`, `/context`, `/usage`, `/secrets`) *and* the windowed pickers (`/model`,
+  menus (`/mcp`, `/hooks`, the startup review, `/donate`, `/export`, `/context`, `/usage`, `/secrets`, `/plugins`) *and* the windowed pickers (`/model`,
   `/login`, `/settings`, `/skills`), all of them line builders now
   (`*_view_lines` / `key_onboarding_lines`, their heights the built line
   count). Their content is **static per state**: it changes only on a user
@@ -301,7 +301,12 @@ codex's tabs-stay-longest order. `smoke.sh` Phase 139 opens them on a
   the search-line pickers it never actually flows (`docs/context-usage.md`).
   `/usage` is the same: its rows move with its reads and its countdowns, on
   an event or a slow clock frame, and its ladder ends on its title row alone
-  (`docs/usage.md`).
+  (`docs/usage.md`). `/plugins` is both kinds at once: its list is a
+  search-line picker whose ladder ends on the search line (its tab strip
+  outlasting its title), so the list never flows, while a plugin's or a
+  marketplace's page bottom-anchors and flows like `/mcp`'s; its job line
+  ticks once a second, but on the page's last rows, which the anchor keeps
+  on screen, so the flowed top still signs on its rows (`docs/plugins.md`).
 
   The search-line pickers stay eligible but never actually flow: their `❯`
   search line sits in the page **top**, where a flow would take it into
