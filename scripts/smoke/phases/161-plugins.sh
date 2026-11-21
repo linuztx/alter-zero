@@ -177,7 +177,7 @@ done
 [ ! -e "$PL_CFG/plugins/installed/demo/hello" ] || fail "a directory's plugin was copied, not loaded in place"
 
 # A second process opens on what is installed — at once, on the catalog
-# read behind its first frame.
+# read as the page opens (nothing about plugins is read at startup).
 launch "$S161" 100 40 "$APP_PL"
 type_text "$S161" "/plugins"
 sleep 0.3
@@ -185,7 +185,7 @@ keys "$S161" Enter
 pl_again="$(wait_pane 5 "$S161" -F "2 installed · 2 on in this directory")"
 dump "a fresh process" "$pl_again"
 expect_has "$pl_again" -E "^  → guard +✔ enabled" "a fresh process does not open on the installed plugins"
-expect_lacks "$pl_again" -F "Reading the marketplaces" "the page did not open on the catalog it read at startup"
+expect_lacks "$pl_again" -F "Reading the marketplaces" "the page opened on a placeholder instead of its rows"
 
 # Moving through the list never resizes the page: guard's long description
 # is one row under the list, like hello's short one.

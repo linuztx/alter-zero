@@ -28,6 +28,9 @@ bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live 
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
 cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/binary-size.md)
+scripts/text_layout.sh measure target/release/alter-zero   # an idle session's resident memory, just written and read from disk (docs/text-layout.md)
+scripts/text_layout.sh profile              # rewrite layout/idle-functions.txt from what an idle session runs (builds release + dist, needs valgrind)
+ALTER_ZERO_TEXT_LAYOUT=1 cargo test --test text_layout   # the idle text layout on a dev binary: the section the linker script asks for is there
 scripts/release.sh verify dist              # the archives: checksums, layout, CPU, `alter-zero --version`
 scripts/release.sh notes X.Y.Z              # the release notes the workflow publishes: CHANGELOG.md's section, nothing else
 scripts/release.sh selftest                 # the release tooling's own fixture-driven tests
@@ -264,6 +267,60 @@ whole program on every link, which would undo the incremental rebuild. The
 symbol table stays for `RUST_BACKTRACE` names; `panic = "abort"` (the app catches worker panics on purpose) and
 `opt-level = "s"` (a slower render path) were measured and refused —
 `docs/binary-size.md`.
+
+**Where the binary's functions sit is chosen too** — the idle text layout,
+`docs/text-layout.md`. An idle session runs about a megabyte and a half of
+its code, and under the linker's default order eight to ten megabytes of it
+were resident anyway: memory is resident by the page, the kernel maps the
+block around every page touched, and what runs was scattered across all
+twelve — so the idle figure also moved by a megabyte whenever an unrelated
+change shifted the order (the plugin system's code, none of which runs
+without a plugin, moved it by 0.95 MB). **`build.rs`** (the
+crate's one build script, and it does nothing else) writes a linker script
+from **`layout/idle-functions.txt`** — every function an idle session of
+the `release` and the `dist` build executes, each a legacy-mangled name
+with its hash left to a `*` — that gathers them in a section of their own,
+`.text.idle`, ahead of `.text` (`INSERT BEFORE .text`, so the default
+script lays out everything else as before), and asks for it on the
+`alter-zero` binary's link alone (`cargo::rustc-link-arg-bins`,
+`-T {script}`). **The list is in `[groups]`, and a group is one run of
+code**: one linker input statement each, in order — `[a configured
+session]` (a provider signed in to, state files saved, a git checkout with
+an `AGENTS.md`: the state nearly every session is in), then `[a first
+run]` (what only the offline demo adds), then `[with plugins]` — so a
+session keeps resident the groups it runs and not the others; a statement
+holds every pattern of its group and each pattern's `.text.unlikely.`
+twin, since a cold-marked function runs at idle too. A configured session
+of the shipped binary went from 13.96 to 8.02 MB
+at rest just installed and from 15.86 to 8.90 MB
+read back from disk — the two page-cache states a binary is in, which
+differ by a megabyte or two and which `scripts/text_layout.sh measure`
+takes both of. It applies to **`release` and `dist` builds on a Linux
+target** (GNU ld and lld read the script) and stands aside for a `dev`
+build (a second or two per link, for a binary nobody leaves idling),
+another OS, and a `-fuse-ld=` naming gold or mold (noticed in
+`CARGO_ENCODED_RUSTFLAGS`, skipped with a warning);
+`ALTER_ZERO_TEXT_LAYOUT=0` turns it off and `=1` on for a `dev` build,
+which is how CI's smoke job runs so the suite drives a binary linked the
+way a shipped one is. The generator is pure (`layout/script.rs`, included
+by path from `build.rs` and from `tests/text_layout.rs`, which also reads
+the built binary's section headers to check the section is there,
+executable, ahead of `.text` and plausibly sized — a list or a toolchain
+gone stale shows up as a near-empty section). The list is **never edited
+by hand**: `scripts/text_layout.sh profile` makes each scenario's config
+home by driving the binary through a short session against a stub provider
+on the loopback (which also stands in for the telemetry collector and the
+release page, so nothing leaves the machine and no file is in a format the
+script knows), runs an idle session of each build in each under valgrind's
+callgrind, and rewrites it — at each release and after a toolchain bump,
+since a function that newly runs at startup and is not listed costs a
+64 kB window until it is. **The scenario matters more than anything**: a
+list profiled on an empty config home saves five megabytes there and two
+on a configured one, whose startup (a real backend, the key store, the
+state files' readers) it never saw. What the hash wildcards cost (a
+generic function's instances are named alike, so the one that runs brings
+the rest: about half of `.text.idle`) and why the `v0` mangling that would
+fix it was left are in the doc.
 
 ## Architecture
 
@@ -3356,11 +3413,17 @@ answer is the action, so Enter confirms; **acting on it never moves it**
 (`docs/plugins.md` *No flicker*: a job is said in the hint's own row once it
 has run `PLUGINS_JOB_DELAY`, what went right is never said — the rows and
 pages show it — a failure is red until the next key, no toast goes over the
-open page, the list's details are two rows at every selection, and a
-reopened page shows the catalog the session kept, read behind the first
-frame); every operation is a typed `PluginOp` run on
-one worker under a round (`/usage`'s rule, `tui::plugins`), the answer
-carrying a fresh catalog,
+open page, the list's details are two rows at every selection, and the
+page opens on its rows); **nothing about plugins is read at startup or kept
+once the page closes** (`docs/plugins.md` *Memory*): the catalog is read on
+the loop as the page opens and as a job's answer lands — a few milliseconds
+over the official catalogs' 382 plugins, since a plugin not installed is
+read only as far as its row needs, its manifest, and what it adds is read
+for the one plugin the page shows (`plugins::read_contents` from
+`Session::tick_plugins_page`, before the frame) — and dropped with the
+page; every operation is a typed `PluginOp` run on one worker under a round
+(`/usage`'s rule, `tui::plugins`), the worker answering with what it did and
+nothing it read, since a thread's heap keeps what it once held,
 and anything that changed what is installed or on is taken into the running
 session by `Session::reload_plugins` (hooks rebound, servers set, skills and
 agents re-listed — the per-turn rescans append the plugins' to the roots').

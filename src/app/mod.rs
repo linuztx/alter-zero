@@ -579,16 +579,13 @@ pub struct App {
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
     /// The open `/plugins` page; `None` when closed. Composer-replacing like
-    /// `/mcp`, over the boundary-read catalog, its operations run on a
-    /// worker. See `docs/plugins.md`.
+    /// `/mcp`, over the catalog the boundary read as it opened, its
+    /// operations run on a worker. Nothing about plugins is kept once it
+    /// closes. See `docs/plugins.md`.
     pub plugins_menu: Option<PluginsMenu>,
     /// The round the newest `/plugins` job was asked under — what an answer
     /// must carry to be taken (`App::finish_plugin_job`).
     plugin_rounds: u64,
-    /// The newest catalog read — and the round it was read under — so a
-    /// reopened `/plugins` page shows it at once, at its own height, while
-    /// the read runs again behind it (`App::keep_plugin_catalog`).
-    plugins_kept: Option<(u64, crate::plugins::PluginCatalog)>,
     /// The open startup review; `None` when closed. The composer-replacing
     /// page that asks about hooks and project MCP servers before they run,
     /// the [`hooks_menu`](Self::hooks_menu)'s sibling (no text entry) over

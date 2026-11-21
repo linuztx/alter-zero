@@ -125,6 +125,24 @@ release heading when a version is cut.
 
 ### Changed
 
+- **A session at rest takes about 40% less memory on Linux.** Most of
+  what an idle session kept in memory was the app's own code, and it ran
+  only a small part of it: the rest was resident because the linker had
+  scattered the functions a session runs across the whole binary, and
+  memory is held by the page. Release builds now place the functions an
+  idle session runs side by side. The installed binary, signed in to a
+  provider and sitting at its prompt, takes about 8.02 MB where
+  the same binary laid out the old way takes 13.96 MB
+  (8.90 MB against 15.86 MB once it has been read
+  back from disk, as after a reboot), and the figure no longer moves by a
+  megabyte when unrelated code is added. Nothing else about the binary
+  changes: the same code, in a different order. macOS builds are laid out
+  as before. Building from source, `ALTER_ZERO_TEXT_LAYOUT=0` turns it off
+  (`docs/text-layout.md`). The plugin system adds nothing to a session that
+  has no plugin on: nothing about plugins is read at startup, and the
+  `/plugins` page reads its catalog only while it is open
+  (`docs/plugins.md`).
+
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
   macOS) on the authorize URL, which over SSH, in a container or on a

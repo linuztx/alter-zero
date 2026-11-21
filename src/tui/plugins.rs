@@ -1,15 +1,19 @@
 //! Plugins at the boundary (`docs/plugins.md`): reading what the enabled
-//! plugins add to the session, running the `/plugins` page's operations on a
-//! worker, and taking a change into the running session.
+//! plugins add to the session, reading what the `/plugins` page shows,
+//! running its operations on a worker, and taking a change into the running
+//! session.
 //!
 //! The pure side owns the page and its rounds ([`App::open_plugins_menu`],
 //! [`App::finish_plugin_job`]); the store's operations
 //! ([`PluginStore`]) are pure of the session too. What this module adds is
-//! what neither can do: the thread an install clones on, the token Esc stops
-//! it with, the clock the page counts it on — and, after anything that
-//! changes what is installed or on, the reload that hands the session's
-//! skills, agents, hooks and MCP servers the new set, asking the review
-//! about whatever runs and has not been looked at yet.
+//! what neither can do: the reads the page shows — the catalog as it opens
+//! and as a job lands, a plugin's contents as the page shows it, all on the
+//! loop and only while it is open, so nothing about plugins is read at
+//! startup or kept once it closes — the thread an install clones on, the
+//! token Esc stops it with, the clock the page counts it on — and, after
+//! anything that changes what is installed or on, the reload that hands the
+//! session's skills, agents, hooks and MCP servers the new set, asking the
+//! review about whatever runs and has not been looked at yet.
 //!
 //! [`App::open_plugins_menu`]: alter_zero::app::App::open_plugins_menu
 //! [`App::finish_plugin_job`]: alter_zero::app::App::finish_plugin_job
@@ -23,7 +27,7 @@ use alter_zero::llm::mcp::McpHold;
 use alter_zero::mcp::{McpScope, McpServerEntry};
 use alter_zero::plugins::{
     LoadedPlugins, PluginCatalog, PluginStore, build_catalog, load_enabled,
-    parse_marketplace_source, with_project_dir,
+    parse_marketplace_source, read_contents, with_project_dir,
 };
 use alter_zero::stream::CancelToken;
 
@@ -32,25 +36,24 @@ use super::config;
 use super::host;
 use super::trust::TrustState;
 
-/// A finished operation: the round it was asked under, the catalog read
-/// after it, what it did — and whether it may have changed what the session
-/// loads, so the reload runs even when the page that asked has closed.
+/// A finished operation: the round it was asked under, what it did — and
+/// whether it may have changed what the session loads, so the reload runs
+/// even when the page that asked has closed. No catalog: what the page
+/// shows next is read on the loop as this lands, never on the worker, whose
+/// thread's heap would keep what the read once held (`docs/memory.md`).
 #[derive(Debug)]
 pub(crate) struct PluginResult {
     round: u64,
-    catalog: Option<PluginCatalog>,
     outcome: Result<PluginDone, String>,
     reload: bool,
 }
 
+/// What the page says with no config home to keep plugins in.
+const NO_STORE: &str = "No config home — set HOME or ALTER_ZERO_CONFIG_DIR to keep plugins";
+
 /// How often the page is redrawn while a job runs, so its clock moves with
 /// no other event.
 const PLUGIN_JOB_TICK: Duration = Duration::from_secs(1);
-
-/// The round a catalog read with no page open is asked under — below every
-/// page's, so the page never takes it as its own answer and a page's newer
-/// read is never replaced by it.
-const PREFETCH_ROUND: u64 = 0;
 
 /// The plugins on in `project`, read from `store` — none when there is no
 /// store or `ALTER_ZERO_PLUGINS` turned them off for the run.
@@ -133,7 +136,6 @@ fn run_op(
         marketplace: None,
     };
     match op {
-        PluginOp::Refresh => (Ok(PluginDone::default()), false),
         PluginOp::Install(id) => {
             let result = store.install(id, cancel, now).map(|installed| {
                 let verb = if installed.replaced {
@@ -214,17 +216,49 @@ fn run_op(
 }
 
 impl Session<'_> {
-    /// `/plugins`: open the page and read the catalog on a worker.
+    /// `/plugins`: read the catalog on the loop and open the page on it, so
+    /// its first frame has its rows. A few milliseconds even over the two
+    /// official catalogs: the read takes what the rows need and leaves what
+    /// a plugin adds until the page shows it (`read_shown_plugin`).
     pub(crate) fn open_plugins_menu(&mut self) {
         self.cancel_plugin_job();
-        let round = self.app.open_plugins_menu(config::plugins_enabled());
-        self.run_plugin_op(PluginOp::Refresh, round);
+        self.plugin_job_started = None;
+        let catalog = self.read_plugin_catalog();
+        self.app
+            .open_plugins_menu(config::plugins_enabled(), catalog);
+    }
+
+    /// The catalog as it is on disk now — or, with no config home, one that
+    /// says why there is none.
+    fn read_plugin_catalog(&self) -> PluginCatalog {
+        match &self.plugin_store {
+            Some(store) => build_catalog(store, &self.cwd.display().to_string()),
+            None => PluginCatalog {
+                error: Some(NO_STORE.to_string()),
+                ..PluginCatalog::default()
+            },
+        }
+    }
+
+    /// What the plugin the page shows adds, read before the frame that
+    /// shows it — the highlighted row's facts, a plugin's own page — when
+    /// the catalog left it to be read: one plugin's files, a fraction of a
+    /// millisecond.
+    fn read_shown_plugin(&mut self) {
+        let Some(mut plugin) = self.app.plugin_to_read().cloned() else {
+            return;
+        };
+        match &self.plugin_store {
+            Some(store) => read_contents(store, &mut plugin),
+            None => plugin.unread = None,
+        }
+        self.app.supply_plugin_contents(plugin);
     }
 
     /// Run the page's operation `op` under `round` on a worker — one at a
-    /// time: the page refuses a second while one runs. The worker reads the
-    /// catalog again when the operation is done, so the answer carries
-    /// what the page shows next.
+    /// time: the page refuses a second while one runs. The worker answers
+    /// with what the operation did and nothing it read: the catalog the page
+    /// shows next is read on the loop as the answer lands.
     pub(crate) fn run_plugin_op(&mut self, op: PluginOp, round: u64) {
         self.cancel_plugin_job();
         self.plugin_job_started = Some(Instant::now());
@@ -232,14 +266,7 @@ impl Session<'_> {
         let Some(store) = self.plugin_store.clone() else {
             let _ = tx.send(PluginResult {
                 round,
-                catalog: Some(PluginCatalog {
-                    error: Some(
-                        "No config home — set HOME or ALTER_ZERO_CONFIG_DIR to keep plugins"
-                            .to_string(),
-                    ),
-                    ..PluginCatalog::default()
-                }),
-                outcome: Ok(PluginDone::default()),
+                outcome: Err(NO_STORE.to_string()),
                 reload: false,
             });
             return;
@@ -249,37 +276,13 @@ impl Session<'_> {
         let project = self.cwd.clone();
         std::thread::spawn(move || {
             let (outcome, reload) = run_op(&store, &op, &project, &cancel);
-            // Read whatever the operation left, cancelled or not: the page
-            // shows what is on disk now.
-            let catalog = build_catalog(&store, &project.display().to_string());
             let _ = tx.send(PluginResult {
                 round,
-                catalog: Some(catalog),
                 outcome,
                 reload,
             });
         });
         self.frame.schedule_frame();
-    }
-
-    /// Read the catalog with no page open, so the first `/plugins` opens on
-    /// it at once (`App::keep_plugin_catalog`). Nothing is cancelled: a
-    /// page's own job is never this one.
-    pub(crate) fn prefetch_plugin_catalog(&mut self) {
-        let Some(store) = self.plugin_store.clone() else {
-            return;
-        };
-        let tx = self.plugin_tx.clone();
-        let project = self.cwd.clone();
-        std::thread::spawn(move || {
-            let catalog = build_catalog(&store, &project.display().to_string());
-            let _ = tx.send(PluginResult {
-                round: PREFETCH_ROUND,
-                catalog: Some(catalog),
-                outcome: Ok(PluginDone::default()),
-                reload: false,
-            });
-        });
     }
 
     /// Stop the job running — Esc on the page, the page closing, the app
@@ -292,29 +295,30 @@ impl Session<'_> {
     }
 
     /// A job answered: hand it to the page — which takes it only while it is
-    /// still the job the page waits on, shows what changed in its rows and
-    /// says a failure in red — and take any change into the session. What a
-    /// page that has closed did not take is a toast instead, the one place
-    /// left to say what it did: never one over the page, which would move it
-    /// (docs/plugins.md *No flicker*).
+    /// still the job the page waits on, with the catalog read again here,
+    /// whatever the job left on disk, cancelled or not; shows what changed in
+    /// its rows and says a failure in red — and take any change into the
+    /// session. What a page that has closed did not take is a toast instead,
+    /// the one place left to say what it did: never one over the page, which
+    /// would move it (docs/plugins.md *No flicker*).
     pub(crate) fn on_plugin_result(&mut self, result: PluginResult) {
         let PluginResult {
             round,
-            catalog,
             outcome,
             reload,
         } = result;
-        if round != PREFETCH_ROUND
-            && self
-                .app
-                .plugins_job_round()
-                .is_none_or(|current| current == round)
+        let waited = self.app.plugins_job_round() == Some(round);
+        if self
+            .app
+            .plugins_job_round()
+            .is_none_or(|current| current == round)
         {
             self.plugin_cancel = None;
             self.plugin_job_started = None;
         }
+        let catalog = waited.then(|| self.read_plugin_catalog());
         let taken = self.app.finish_plugin_job(round, catalog, &outcome);
-        if !taken && round != PREFETCH_ROUND {
+        if !taken {
             match &outcome {
                 Ok(done) if !done.message.is_empty() => {
                     self.toast(done.message.clone(), ToastKind::Info);
@@ -332,11 +336,13 @@ impl Session<'_> {
     /// The page's clocks, every draw: how long its job has run, and the wall
     /// clock its ages count from — and, while a job runs, a frame the moment
     /// it has run long enough to be said (`PLUGINS_JOB_DELAY`), then one a
-    /// second so the count moves on a page nothing else redraws.
+    /// second so the count moves on a page nothing else redraws. First, what
+    /// the plugin it shows adds, when that is still to be read.
     pub(crate) fn tick_plugins_page(&mut self) {
         if self.app.plugins_menu.is_none() {
             return;
         }
+        self.read_shown_plugin();
         let elapsed = self
             .plugin_job_started
             .map_or(Duration::ZERO, |start| start.elapsed());

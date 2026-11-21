@@ -2475,10 +2475,8 @@ pub(super) const PLUGINS_CONFIRM_HINT: [(&str, u8); 2] =
     [("Enter to confirm", 1), ("Esc to go back", 0)];
 pub(super) const PLUGINS_ADD_HINT: [(&str, u8); 2] = [("Enter to add", 1), ("Esc to go back", 0)];
 
-/// The list's placeholders: a first read that did not answer, a search
-/// matching nothing, and the two empty tabs — each naming where to go next.
-/// (The first read still out shows its own job line there.)
-pub(super) const PLUGINS_NOT_READ: &str = "Not read — close the page and open it again";
+/// The list's placeholders: a search matching nothing, and the two empty
+/// tabs — each naming where to go next.
 pub(super) const PLUGINS_NO_MATCH: &str = "No matching plugins";
 pub(super) const PLUGINS_NONE_INSTALLED: &str =
     "No plugins installed yet — find one under All, or add a marketplace under + Add.";

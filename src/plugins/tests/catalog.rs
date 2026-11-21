@@ -146,32 +146,74 @@ fn an_installed_plugin_says_its_state_and_what_it_holds() {
 }
 
 #[test]
-fn a_plugin_kept_in_its_marketplace_is_read_before_it_is_installed() {
+fn a_plugin_kept_in_its_marketplace_is_listed_from_its_manifest_alone() {
+    // The catalog is read on the loop as the page opens, so a plugin not
+    // installed is read only as far as its row needs: the manifest's fields
+    // and its format. What it adds waits until the page shows it.
     let fixture = fixture();
     let catalog = build_catalog(&fixture.store, "/project");
-    let alpha = catalog
-        .plugins
-        .iter()
-        .find(|p| p.id.name == "alpha")
-        .unwrap();
+    let find = |name: &str| catalog.plugins.iter().find(|p| p.id.name == name).unwrap();
+    let alpha = find("alpha");
     assert!(alpha.installed.is_none());
+    assert_eq!(alpha.format, Some(PluginFormat::ClaudeCode));
+    assert!(alpha.components.is_none());
+    assert!(alpha.unread());
+    // No manifest: the entry stands in for one, as a session reads it.
+    let beta = find("beta");
+    assert_eq!(beta.title(), "Beta Tools");
+    assert!(beta.components.is_none() && beta.unread());
+    // A source this app does not fetch has nothing to read later either.
+    let gone = find("gone");
+    assert!(gone.unavailable.as_deref().unwrap().contains("npm"));
+    assert!(gone.components.is_none() && !gone.unread());
+}
+
+#[test]
+fn reading_a_plugin_s_contents_says_what_it_adds_before_it_is_installed() {
+    let fixture = fixture();
+    let catalog = build_catalog(&fixture.store, "/project");
+    let find = |name: &str| {
+        catalog
+            .plugins
+            .iter()
+            .find(|p| p.id.name == name)
+            .unwrap()
+            .clone()
+    };
+    let mut alpha = find("alpha");
+    read_contents(&fixture.store, &mut alpha);
+    assert!(!alpha.unread());
     let components = alpha.components.as_ref().unwrap();
     assert_eq!(components.agents, ["alpha:helper"]);
     assert_eq!(components.servers, ["plugin:alpha:alpha-db"]);
-    let beta = catalog
-        .plugins
-        .iter()
-        .find(|p| p.id.name == "beta")
-        .unwrap();
-    assert_eq!(beta.title(), "Beta Tools");
+    let mut beta = find("beta");
+    read_contents(&fixture.store, &mut beta);
     assert_eq!(beta.components.as_ref().unwrap().commands, ["beta:run"]);
-    let gone = catalog
+    // Reading one already read, or one with nothing to read, changes nothing.
+    let read = alpha.clone();
+    read_contents(&fixture.store, &mut alpha);
+    assert_eq!(alpha, read);
+    let mut gone = find("gone");
+    let before = gone.clone();
+    read_contents(&fixture.store, &mut gone);
+    assert_eq!(gone, before);
+}
+
+#[test]
+fn a_plugin_whose_folder_went_away_is_unavailable_once_read() {
+    let fixture = fixture();
+    let catalog = build_catalog(&fixture.store, "/project");
+    let mut alpha = catalog
         .plugins
         .iter()
-        .find(|p| p.id.name == "gone")
-        .unwrap();
-    assert!(gone.unavailable.as_deref().unwrap().contains("npm"));
-    assert!(gone.components.is_none());
+        .find(|p| p.id.name == "alpha")
+        .unwrap()
+        .clone();
+    std::fs::remove_dir_all(fixture.market.join("plugins/alpha")).unwrap();
+    read_contents(&fixture.store, &mut alpha);
+    assert!(!alpha.unread());
+    assert!(alpha.components.is_none());
+    assert!(alpha.unavailable.is_some());
 }
 
 #[test]

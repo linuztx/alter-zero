@@ -37,7 +37,7 @@ Measured on an 8-core Apple-silicon Mac, warm `target/` (not a cold checkout):
 | `cargo test` (everything, every integration binary) | **~2 m 20 s** | once, before you call the work done (it is the gate's test step) |
 | `scripts/smoke.sh <id>` (one phase) | ~2–20 s | you touched the terminal boundary |
 | `scripts/smoke.sh` (every phase) | minutes, parallel | **only** for `src/tui/`, `term.rs`, rendering/geometry |
-| `cargo build --release` / `--example …` | 40–60 s+, plus a second profile in `target/`, which grows to ~10 GB | only when the task explicitly needs a release artifact |
+| `cargo build --release` / `--example …` | 40–60 s+, plus a second profile in `target/`, which grows to ~10 GB; the binary's link carries the idle text layout there, under a second more (`docs/text-layout.md`) | only when the task explicitly needs a release artifact |
 | `scripts/release.sh build` / `cargo build --profile dist` | ~4½ min cold on 4 cores, ~2 GB peak, a third profile in `target/`; never incremental (fat LTO relinks the whole program every time) | only when the task is the shipped binary itself — its size, its speed, or the release tooling (`docs/binary-size.md`) |
 
 `target/` grows to ~10 GB and is incremental. Deleting it to "clean up" costs a
@@ -58,7 +58,9 @@ multi-minute full rebuild — don't, unless the user asks.
 | `src/headless.rs`, `src/tui/headless.rs`, anything `-p` reaches | `cargo test --lib headless::` + `cargo test --test headless` (the real binary over pipes, a stand-in provider on the loopback) + `scripts/smoke.sh 153` for the tty case |
 | `src/pty/`, `src/subprocess.rs` | `cargo test --lib pty::` or `subprocess::` — plus `cargo test --test detached_exec` when the detach or the helper re-exec changed (on a Mac, `cargo build` first: the terminal tests run through the built binary) |
 | `src/mcp/`, `src/llm/mcp/`, the `mcp` CLI | `cargo test --lib mcp::` (the filter matches both modules) + `cargo test --test mcp_cli` for the CLI |
+| `build.rs`, `layout/`, `scripts/text_layout.sh` | `cargo test --test text_layout` — the list's form and the linker-script generator; `ALTER_ZERO_TEXT_LAYOUT=1 cargo test --test text_layout` relinks the dev binary with the layout and checks the section is really there (a `dev` build is not laid out otherwise). Never edit `layout/idle-functions.txt` by hand: `scripts/text_layout.sh profile` writes it (`docs/text-layout.md`) |
 | a memory-sensitive path (per-turn/per-request/per-picture allocation) | the matching `tests/*_memory.rs` gate (`ls tests/*_memory.rs`) |
+| what an idle session costs at rest (anything that runs at startup, or a new always-on thread or channel) | `cargo build --release && scripts/text_layout.sh measure target/release/alter-zero` against the numbers in [`docs/text-layout.md`](docs/text-layout.md) — a measurement, not a gate; code that newly runs at startup belongs in `layout/idle-functions.txt` (take it again with `scripts/text_layout.sh profile`) |
 | something a keystroke waits behind — `src/frame.rs`, the loop's order in `src/tui/event_loop.rs`, anything a draw or the loop bottom does per frame or per event | its unit tests count work (builds, scans, renders), not time; for the time itself, `cargo build --release && cargo run --release --example latency_probe -- --scenario <shape>` against the numbers in [`docs/input-latency.md`](docs/input-latency.md) — a measurement, not a gate |
 | `providers.toml`, `src/llm/config.rs` | `cargo test --lib llm::config` — it pins the shipped provider set and the `snake_case` spellings |
 | `scripts/smoke/lib.sh`, `scripts/smoke.sh` (the phase readers or the selector) | `bash scripts/smoke/selftest.sh` — under a second, no app, no tmux |

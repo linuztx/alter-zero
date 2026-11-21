@@ -40,7 +40,7 @@ mod tests;
 pub use self::agents::translate_tools;
 pub use self::catalog::{
     CatalogMarketplace, CatalogPlugin, InstalledState, LoadedPlugins, LoadedServer, PluginCatalog,
-    build_catalog, load_enabled,
+    UnreadPlugin, build_catalog, load_enabled, read_contents,
 };
 pub use self::components::{
     ComponentSummary, PluginComponents, PluginHooks, PluginPackage, find_manifest, read_manifest,

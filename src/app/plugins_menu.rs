@@ -122,8 +122,6 @@ pub enum PluginsPage {
 /// ([`Action::PluginOp`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginOp {
-    /// Read the catalog again.
-    Refresh,
     /// Install a plugin — or update it, when it is installed.
     Install(PluginId),
     Uninstall(PluginId),
@@ -143,7 +141,6 @@ impl PluginOp {
     #[must_use]
     pub fn label(&self, installed: bool) -> String {
         match self {
-            Self::Refresh => "Reading the marketplaces…".to_string(),
             Self::Install(id) if installed => format!("Updating {}…", id.name),
             Self::Install(id) => format!("Installing {}…", id.name),
             Self::Uninstall(id) => format!("Uninstalling {}…", id.name),
@@ -191,12 +188,9 @@ pub enum AddRow {
 /// The open `/plugins` page.
 #[derive(Debug, Clone)]
 pub struct PluginsMenu {
-    /// The catalog, once read — or the one the session kept since.
-    pub catalog: Option<PluginCatalog>,
+    /// The catalog, read as the page opened and again after each job.
+    pub catalog: PluginCatalog,
     pub tab: PluginsTab,
-    /// Whether the user chose a tab — until then, the first catalog picks
-    /// the one with something on it.
-    pub tab_chosen: bool,
     pub page: PluginsPage,
     /// The highlighted row of the current page: a list row, or an action.
     pub selected: usize,
@@ -227,8 +221,8 @@ impl PluginsMenu {
         let mut tabs = vec![PluginsTab::All, PluginsTab::Installed];
         tabs.extend(
             self.catalog
+                .marketplaces
                 .iter()
-                .flat_map(|catalog| catalog.marketplaces.iter())
                 .map(|market| PluginsTab::Marketplace(market.name.clone())),
         );
         tabs.push(PluginsTab::Add);
@@ -246,11 +240,8 @@ impl PluginsMenu {
     /// add tab.
     #[must_use]
     pub fn plugin_rows(&self) -> Vec<&CatalogPlugin> {
-        let Some(catalog) = &self.catalog else {
-            return Vec::new();
-        };
         let query = self.query.to_lowercase();
-        catalog
+        self.catalog
             .plugins
             .iter()
             .filter(|plugin| match &self.tab {
@@ -303,18 +294,13 @@ impl PluginsMenu {
     /// The plugin of `id` in the catalog.
     #[must_use]
     pub fn plugin(&self, id: &PluginId) -> Option<&CatalogPlugin> {
-        self.catalog
-            .as_ref()?
-            .plugins
-            .iter()
-            .find(|plugin| plugin.id == *id)
+        self.catalog.plugins.iter().find(|plugin| plugin.id == *id)
     }
 
     /// The marketplace `name` in the catalog.
     #[must_use]
     pub fn marketplace(&self, name: &str) -> Option<&CatalogMarketplace> {
         self.catalog
-            .as_ref()?
             .marketplaces
             .iter()
             .find(|market| market.name == name)
@@ -371,7 +357,6 @@ impl PluginsMenu {
     /// Show `tab`, its search cleared and its first row highlighted.
     fn show_tab(&mut self, tab: PluginsTab) {
         self.tab = tab;
-        self.tab_chosen = true;
         self.query.clear();
         self.selected = 0;
     }
@@ -389,60 +374,70 @@ fn matches_query(plugin: &CatalogPlugin, query: &str) -> bool {
 }
 
 impl App {
-    /// Open the `/plugins` page and read the catalog: the page opens at once
-    /// on the catalog the session kept (or reading, before there is one),
-    /// and the boundary runs the read under the returned round.
-    /// `session_enabled` is whether the session loads plugins.
-    pub fn open_plugins_menu(&mut self, session_enabled: bool) -> u64 {
+    /// Open the `/plugins` page on `catalog`, which the boundary has just
+    /// read on the loop — so the first frame has its rows, at its own
+    /// height, with nothing to push them in later. `session_enabled` is
+    /// whether the session loads plugins.
+    pub fn open_plugins_menu(&mut self, session_enabled: bool, catalog: PluginCatalog) {
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
         self.skill_picker = None;
         self.backtrack = Backtrack::default();
-        self.plugin_rounds += 1;
-        let round = self.plugin_rounds;
-        let catalog = self
-            .plugins_kept
-            .as_ref()
-            .map(|(_, catalog)| catalog.clone());
-        let mut menu = PluginsMenu {
+        let tab = first_tab(&catalog);
+        self.plugins_menu = Some(PluginsMenu {
             catalog,
-            tab: PluginsTab::Installed,
-            tab_chosen: false,
+            tab,
             page: PluginsPage::List,
             selected: 0,
             list_selected: 0,
             query: String::new(),
             input: TextArea::new(),
             error: None,
-            job: Some(PluginJob {
-                label: PluginOp::Refresh.label(false),
-                op: PluginOp::Refresh,
-                round,
-            }),
+            job: None,
             job_elapsed: Duration::ZERO,
             now: 0,
             session_enabled,
-        };
-        menu.tab = first_tab(menu.catalog.as_ref());
-        self.plugins_menu = Some(menu);
-        round
+        });
     }
 
-    /// Close the page (the boundary cancels a job still running).
+    /// Close the page, its catalog with it (the boundary cancels a job
+    /// still running).
     pub fn close_plugins_menu(&mut self) {
         self.plugins_menu = None;
     }
 
-    /// Keep `catalog`, read under `round`, for the next time the page opens
-    /// — never over one a newer round read.
-    pub fn keep_plugin_catalog(&mut self, round: u64, catalog: PluginCatalog) {
-        if self
-            .plugins_kept
-            .as_ref()
-            .is_none_or(|(kept, _)| *kept <= round)
+    /// The plugin whose contents the page shows and the catalog left to be
+    /// read ([`read_contents`](crate::plugins::read_contents)): the
+    /// highlighted row of a plugin tab, or the plugin whose page is open.
+    /// The boundary reads it before the frame that shows it.
+    #[must_use]
+    pub fn plugin_to_read(&self) -> Option<&CatalogPlugin> {
+        let menu = self.plugins_menu.as_ref()?;
+        let plugin = match &menu.page {
+            PluginsPage::List if menu.tab != PluginsTab::Add => {
+                menu.plugin_rows().get(menu.selected).copied()
+            }
+            PluginsPage::Plugin(id) => menu.plugin(id),
+            _ => None,
+        }?;
+        plugin.unread().then_some(plugin)
+    }
+
+    /// `plugin` with what it adds read — the answer to
+    /// [`plugin_to_read`](App::plugin_to_read) — in place of its row, while
+    /// the catalog still lists it.
+    pub fn supply_plugin_contents(&mut self, plugin: CatalogPlugin) {
+        let Some(menu) = self.plugins_menu.as_mut() else {
+            return;
+        };
+        if let Some(row) = menu
+            .catalog
+            .plugins
+            .iter_mut()
+            .find(|row| row.id == plugin.id)
         {
-            self.plugins_kept = Some((round, catalog));
+            *row = plugin;
         }
     }
 
@@ -490,8 +485,9 @@ impl App {
         if let PluginOp::SetEnabled { id, enabled } = &op
             && let Some(plugin) = menu
                 .catalog
-                .as_mut()
-                .and_then(|catalog| catalog.plugins.iter_mut().find(|plugin| plugin.id == *id))
+                .plugins
+                .iter_mut()
+                .find(|plugin| plugin.id == *id)
             && let Some(state) = plugin.installed.as_mut()
         {
             state.enabled = *enabled;
@@ -505,27 +501,24 @@ impl App {
         Action::PluginOp { op, round }
     }
 
-    /// The answer to the job of `round`: a fresh catalog (when the boundary
-    /// could read one) and what happened. Taken only while that job is still
-    /// the page's; `false` for an answer that came too late.
+    /// The answer to the job of `round`: the catalog the boundary read
+    /// again as it landed (when it could) and what happened. Taken only
+    /// while that job is still the page's; `false` for an answer that came
+    /// too late.
     pub fn finish_plugin_job(
         &mut self,
         round: u64,
         catalog: Option<PluginCatalog>,
         outcome: &Result<PluginDone, String>,
     ) -> bool {
-        if let Some(catalog) = &catalog {
-            self.keep_plugin_catalog(round, catalog.clone());
-        }
         let Some(menu) = self.plugins_menu.as_mut() else {
             return false;
         };
         let Some(job) = menu.job.take_if(|job| job.round == round) else {
             return false;
         };
-        let first = menu.catalog.is_none();
         if let Some(catalog) = catalog {
-            menu.catalog = Some(catalog);
+            menu.catalog = catalog;
         }
         match outcome {
             Err(error) => menu.error = Some(error.clone()),
@@ -540,11 +533,6 @@ impl App {
                     menu.show_tab(PluginsTab::Marketplace(name.clone()));
                 }
             }
-        }
-        // The first read picks the tab with something on it, unless the user
-        // already chose.
-        if first && !menu.tab_chosen {
-            menu.tab = first_tab(menu.catalog.as_ref());
         }
         // A tab or a page whose subject is gone comes back to the list.
         if !menu.tabs().contains(&menu.tab) {
@@ -690,8 +678,8 @@ impl App {
         };
         let plugins = menu
             .catalog
+            .plugins
             .iter()
-            .flat_map(|catalog| catalog.plugins.iter())
             .filter(|plugin| plugin.installed.is_some() && plugin.id.marketplace == name)
             .map(|plugin| plugin.id.name.clone())
             .collect();
@@ -908,13 +896,14 @@ impl App {
     }
 }
 
-/// The tab a page opens on, before the user chooses: what is installed;
-/// else everything there is; else where a marketplace is added.
-fn first_tab(catalog: Option<&PluginCatalog>) -> PluginsTab {
-    match catalog {
-        Some(catalog) if catalog.installed_count() > 0 => PluginsTab::Installed,
-        Some(catalog) if catalog.plugins.is_empty() => PluginsTab::Add,
-        Some(_) => PluginsTab::All,
-        None => PluginsTab::Installed,
+/// The tab a page opens on: what is installed; else everything there is;
+/// else where a marketplace is added.
+fn first_tab(catalog: &PluginCatalog) -> PluginsTab {
+    if catalog.installed_count() > 0 {
+        PluginsTab::Installed
+    } else if catalog.plugins.is_empty() {
+        PluginsTab::Add
+    } else {
+        PluginsTab::All
     }
 }

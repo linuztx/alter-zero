@@ -322,6 +322,16 @@ git push origin HEAD v0.2.0
 `main` — ideally after one rehearsal run. The section's date is the day it
 was written; edit it to the tag's day if that differs.
 
+**Before `prepare`, take the idle function list again when startup
+changed.** The binary's functions are laid out by a checked-in list of what
+an idle session runs ([`docs/text-layout.md`](text-layout.md)). A function
+that newly runs at startup and is not on it costs a 64 kB window of
+resident memory until it is, so a release whose startup path changed — or
+the first one on a new toolchain — wants `scripts/text_layout.sh profile`
+(it builds the release and the dist binary and needs valgrind) and the
+rewritten `layout/idle-functions.txt` committed. Skipping it breaks
+nothing: the list degrades a window at a time.
+
 **npm follows the GitHub release in the same run.** Once the repository
 sets `NPM_PUBLISH`, the tag push publishes the npm packages right after the
 GitHub release, from the same archives; [`docs/npm.md`](npm.md) covers the

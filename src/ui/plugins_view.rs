@@ -217,27 +217,24 @@ fn compact_status_row(menu: &PluginsMenu, hint: Line<'static>, width: u16) -> Li
 
 // ===== the list =====
 
-/// A tab's chip label: its name, and how many rows it would list once the
-/// catalog is read.
+/// A tab's chip label: its name, and how many rows it lists.
 fn tab_label(menu: &PluginsMenu, tab: &PluginsTab) -> String {
-    let catalog = menu.catalog.as_ref();
+    let catalog = &menu.catalog;
     let (name, count) = match tab {
-        PluginsTab::All => (
-            PLUGINS_TAB_ALL.to_string(),
-            catalog.map(|c| c.plugins.len()),
-        ),
+        PluginsTab::All => (PLUGINS_TAB_ALL.to_string(), Some(catalog.plugins.len())),
         PluginsTab::Installed => (
             PLUGINS_TAB_INSTALLED.to_string(),
-            catalog.map(crate::plugins::PluginCatalog::installed_count),
+            Some(catalog.installed_count()),
         ),
         PluginsTab::Marketplace(name) => (
             name.clone(),
-            catalog.map(|c| {
-                c.plugins
+            Some(
+                catalog
+                    .plugins
                     .iter()
                     .filter(|p| p.id.marketplace == *name)
-                    .count()
-            }),
+                    .count(),
+            ),
         ),
         PluginsTab::Add => (PLUGINS_TAB_ADD.to_string(), None),
     };
@@ -341,10 +338,10 @@ const MARKET_NOTE_MAX_ROWS: usize = 3;
 fn tab_header(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
     let dim = model_meta_color();
     let row = |text: &str, color: Color| model_placeholder_row(&flat(text), color, width);
-    let catalog = menu.catalog.as_ref();
+    let catalog = &menu.catalog;
     match &menu.tab {
         PluginsTab::All => {
-            let count = catalog.map(|catalog| match catalog.marketplaces.len() {
+            let count = match catalog.marketplaces.len() {
                 0 => "no marketplace added — add one under + Add".to_string(),
                 n => format!(
                     "{} installed{FOOTER_SEPARATOR}{} in {}",
@@ -352,22 +349,16 @@ fn tab_header(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
                     counted(catalog.plugins.len(), "plugin"),
                     counted(n, "marketplace")
                 ),
-            });
-            let mut lines = vec![row(PLUGINS_ALL_SUBTITLE, dim)];
-            lines.extend(count.map(|count| row(&count, dim)));
-            lines
+            };
+            vec![row(PLUGINS_ALL_SUBTITLE, dim), row(&count, dim)]
         }
         PluginsTab::Installed => {
-            let count = catalog.map(|catalog| {
-                let on = catalog.plugins.iter().filter(|p| p.is_enabled()).count();
-                format!(
-                    "{} installed{FOOTER_SEPARATOR}{on} on in this directory",
-                    catalog.installed_count()
-                )
-            });
-            let mut lines = vec![row(PLUGINS_INSTALLED_SUBTITLE, dim)];
-            lines.extend(count.map(|count| row(&count, dim)));
-            lines
+            let on = catalog.plugins.iter().filter(|p| p.is_enabled()).count();
+            let count = format!(
+                "{} installed{FOOTER_SEPARATOR}{on} on in this directory",
+                catalog.installed_count()
+            );
+            vec![row(PLUGINS_INSTALLED_SUBTITLE, dim), row(&count, dim)]
         }
         PluginsTab::Marketplace(_) => {
             let Some(market) = menu.current_marketplace() else {
@@ -433,7 +424,7 @@ fn header_lines(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
             width,
         ));
     }
-    if let Some(error) = menu.catalog.as_ref().and_then(|c| c.error.as_deref()) {
+    if let Some(error) = menu.catalog.error.as_deref() {
         lines.extend(model_wrapped_rows(error, toast_error_color(), width));
     }
     lines.push(Line::default());
@@ -781,25 +772,16 @@ fn detail_lines(
     lines
 }
 
-/// What the list shows where it has no row: the first read once it has run
-/// long enough to be said (the job line itself, so its clock is where the
-/// rows will be) — nothing before — a read that did not answer, a search
-/// that matched nothing, an empty tab naming where to go.
+/// What the list shows where it has no row: a search that matched nothing,
+/// an empty tab naming where to go.
 fn placeholder_lines(menu: &PluginsMenu, width: u16) -> Vec<Line<'static>> {
     let dim = model_meta_color();
-    match (&menu.catalog, &menu.job) {
-        (None, Some(job)) if menu.job_shown() => {
-            vec![job_line(&job.label, menu.job_elapsed.as_secs(), width)]
-        }
-        (None, Some(_)) => Vec::new(),
-        (None, None) => vec![model_placeholder_row(PLUGINS_NOT_READ, dim, width)],
-        (Some(_), _) if !menu.query.is_empty() => {
-            vec![model_placeholder_row(PLUGINS_NO_MATCH, dim, width)]
-        }
-        (Some(_), _) if menu.tab == PluginsTab::Installed => {
-            model_wrapped_rows(PLUGINS_NONE_INSTALLED, dim, width)
-        }
-        (Some(_), _) => model_wrapped_rows(PLUGINS_NONE_LISTED, dim, width),
+    if !menu.query.is_empty() {
+        vec![model_placeholder_row(PLUGINS_NO_MATCH, dim, width)]
+    } else if menu.tab == PluginsTab::Installed {
+        model_wrapped_rows(PLUGINS_NONE_INSTALLED, dim, width)
+    } else {
+        model_wrapped_rows(PLUGINS_NONE_LISTED, dim, width)
     }
 }
 
@@ -826,23 +808,12 @@ fn list_page(menu: &PluginsMenu, width: u16, height: u16) -> Vec<Line<'static>> 
     let tabs = [tab_strip(menu, width)];
     let search = search_line(&menu.query);
     let hint = list_hint(menu, width);
-    // Before the first read, its job line is where the rows will be: the
-    // status row keeps the hint rather than saying it twice.
-    let reading = menu.catalog.is_none();
     let mut tail = error_lines(menu, width);
     if !tail.is_empty() {
         tail.push(Line::default());
     }
-    tail.push(if reading {
-        hint.clone()
-    } else {
-        status_row(menu, hint.clone(), width)
-    });
-    let compact_tail = [if reading {
-        hint
-    } else {
-        compact_status_row(menu, hint, width)
-    }];
+    tail.push(status_row(menu, hint.clone(), width));
+    let compact_tail = [compact_status_row(menu, hint, width)];
     let page = |mut body: Vec<Line<'static>>| {
         body.extend(tail.iter().cloned());
         picker_page(&header, &search, body, width)

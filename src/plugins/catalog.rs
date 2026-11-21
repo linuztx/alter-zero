@@ -1,7 +1,8 @@
 //! What `/plugins` shows, and what a session takes from the plugins it has
 //! on (`docs/plugins.md`): two reads of the store, both made at the boundary
-//! — the catalog on a worker, since it reads every added marketplace; the
-//! loaded plugins at startup and after every change.
+//! on the loop — the catalog while the page is open, kept to what its rows
+//! need so it takes milliseconds, a plugin's contents when the page shows
+//! them; the loaded plugins at startup and after every change.
 
 use std::path::PathBuf;
 
@@ -9,9 +10,9 @@ use crate::hooks::HooksFile;
 use crate::skills::SkillMetadata;
 use crate::subagents::AgentDefinition;
 
-use super::components::{ComponentSummary, PluginHooks, PluginPackage, read_plugin};
+use super::components::{ComponentSummary, PluginHooks, PluginPackage, read_manifest, read_plugin};
 use super::id::PluginId;
-use super::manifest::PluginFormat;
+use super::manifest::{PluginFormat, PluginManifest};
 use super::marketplace::{MarketplaceEntry, PluginSource};
 use super::mcp::{AGENT_PLUGIN_MCP_FILE, LEGACY_MCP_FILE, PluginServer};
 use super::registry::Registry;
@@ -58,6 +59,18 @@ pub struct CatalogPlugin {
     pub installed: Option<InstalledState>,
     /// What reading it said that did not cost it.
     pub notes: Vec<String>,
+    /// Where what it adds is read from, until it is: a plugin kept in its
+    /// marketplace and not installed, whose row needed only its manifest
+    /// ([`read_contents`]).
+    pub unread: Option<Box<UnreadPlugin>>,
+}
+
+/// A plugin the catalog listed from its manifest alone: its folder, and the
+/// marketplace entry that stands in for a manifest it does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadPlugin {
+    pub root: PathBuf,
+    pub entry: MarketplaceEntry,
 }
 
 impl CatalogPlugin {
@@ -71,6 +84,12 @@ impl CatalogPlugin {
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.installed.as_ref().is_some_and(|state| state.enabled)
+    }
+
+    /// Are what it adds still to be read ([`read_contents`])?
+    #[must_use]
+    pub fn unread(&self) -> bool {
+        self.unread.is_some()
     }
 }
 
@@ -177,6 +196,7 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
                         components: None,
                         installed: None,
                         notes: Vec::new(),
+                        unread: None,
                         id,
                     };
                     match registry.plugins.get(&plugin.id.key()) {
@@ -195,18 +215,25 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
                         }
                         None => {
                             // A plugin kept in its marketplace can be read
-                            // before it is installed: the page says what it
-                            // adds — and what it runs — before it is chosen.
+                            // before it is installed, so the page says what
+                            // it adds — and what it runs — before it is
+                            // chosen. Here only its manifest, for the row:
+                            // what it adds is most of the reading, and the
+                            // page shows it for one plugin at a time.
                             if let PluginSource::Local { path } = &entry.source {
-                                let data = store.layout.data_dir(&plugin.id);
-                                match read_plugin(&plugin.id, &root.join(path), &data, Some(entry))
-                                {
-                                    Ok(package) => {
-                                        describe(&mut plugin, &package);
+                                let folder = root.join(path);
+                                match read_manifest(&folder, Some(entry)) {
+                                    Ok((manifest, _)) => {
+                                        plugin.format = Some(manifest.format);
+                                        plugin.notes.clone_from(&manifest.notes);
                                         // The copy read here is the one an
                                         // install takes, so its version is
                                         // the one on offer.
-                                        fill_from_manifest(&mut plugin, &package, true);
+                                        fill_from(&mut plugin, &manifest, true);
+                                        plugin.unread = Some(Box::new(UnreadPlugin {
+                                            root: folder,
+                                            entry: entry.clone(),
+                                        }));
                                     }
                                     Err(reason) => plugin.unavailable = Some(reason),
                                 }
@@ -239,6 +266,7 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
             components: None,
             installed: None,
             notes: Vec::new(),
+            unread: None,
             id,
         };
         if let Some(namespace) = fill_installed(store, &registry, project, &mut plugin, None, false)
@@ -338,7 +366,11 @@ fn shadowed_message(earlier: &PluginId, namespace: &str) -> String {
 /// What a read copy says about itself fills what the marketplace entry did
 /// not — and, for the copy an install would take (`offered`), its version.
 fn fill_from_manifest(plugin: &mut CatalogPlugin, package: &PluginPackage, offered: bool) {
-    let manifest = &package.manifest;
+    fill_from(plugin, &package.manifest, offered);
+}
+
+/// [`fill_from_manifest`] from the manifest alone.
+fn fill_from(plugin: &mut CatalogPlugin, manifest: &PluginManifest, offered: bool) {
     let fill = |field: &mut Option<String>, value: &Option<String>| {
         if field.is_none() {
             field.clone_from(value);
@@ -361,6 +393,24 @@ fn describe(plugin: &mut CatalogPlugin, package: &PluginPackage) {
     plugin
         .notes
         .extend(package.components.notes.iter().cloned());
+}
+
+/// Read what `plugin` adds, when the catalog left it to be read — the page
+/// asks as it shows the plugin: its contents, its format and what reading it
+/// said, or why it cannot be installed after all. A plugin already read, or
+/// with nothing to read, is left as it is.
+pub fn read_contents(store: &PluginStore, plugin: &mut CatalogPlugin) {
+    let Some(unread) = plugin.unread.take() else {
+        return;
+    };
+    let data = store.layout.data_dir(&plugin.id);
+    match read_plugin(&plugin.id, &unread.root, &data, Some(&unread.entry)) {
+        Ok(package) => {
+            describe(plugin, &package);
+            fill_from_manifest(plugin, &package, true);
+        }
+        Err(reason) => plugin.unavailable = Some(reason),
+    }
 }
 
 /// One MCP server a plugin adds, with where it is declared.

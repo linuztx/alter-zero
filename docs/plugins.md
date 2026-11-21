@@ -602,18 +602,22 @@ each height change scrolling or blanking the bottom of a full screen. Now:
 - **no toast is raised over an open page** — one goes up only for an answer
   the page closed before taking, where nothing else can say what it did,
   and a reload's plugin errors are said on their rows;
-- **a reopened page opens on the catalog the session kept**, read again
-  behind its rows — and the session reads it behind its first frame — so
-  the page opens at its own height rather than on a placeholder the rows
-  then push away.
+- **the page opens on its rows**: the catalog is read on the loop as the
+  page opens, so its first frame is the page at its own height, with no
+  placeholder for the rows to push away. The read takes a few milliseconds
+  even over the two official catalogs' 382 plugins, because a plugin that is
+  not installed is read only as far as its row needs — its manifest — and
+  what it adds is read for one plugin at a time, as the page shows it
+  (*Memory*, below).
 
 A toggle rewrites the rows it changes and nothing else: `smoke.sh` Phase 161
 records the bytes and holds the page's bottom rule on one row throughout.
 
 **While a job runs** every other operation waits (a second one is refused
 with a toast naming the first), and Esc cancels the job: the git child is
-killed, and the worker still answers with what is on disk, so the page never
-waits on a job that is gone. One job at a time: they all write one
+killed, and the worker still answers, so the page never waits on a job that
+is gone; the catalog is read again on the loop as the answer lands, from
+whatever the job left on disk. One job at a time: they all write one
 registry. Each answer carries its round (`/usage`'s rule), so one that
 comes back after the page closed — or after a newer job began — is not
 taken; a change it made is still loaded into the session, and a failure
@@ -628,6 +632,63 @@ header kept; then the header too, the **tab strip** kept — ←/→ still move
 between tabs, so it outlasts the title; then the compact rungs down to the
 search line alone. A detail page bottom-anchors instead, its actions and
 status row staying on screen while its top flows into scrollback.
+
+## Memory
+
+Resident memory is a feature here (`docs/memory.md`), and the figure this
+design is held to is a session's at rest: **a session with no plugin on
+costs what it would without the plugin system**, and one with plugins what
+loading them takes.
+
+- **Startup reads `plugins.json`** — one failed `open` when there is none —
+  and a plugin's files only for the plugins on in the directory
+  (`load_enabled`). No catalog, no thread, no `git`. The first version of
+  the page read every added marketplace's catalog on a worker behind the
+  first frame and kept it, so the page could open on it: with the two
+  official marketplaces added and nothing installed, that held 1.4 MB of a
+  session's resident memory at rest — the catalog, and the heap of the
+  thread that read it, which glibc keeps (`docs/memory.md`'s sixth rule).
+- **The catalog lives only while the page is open**: read on the loop as it
+  opens and again when a job's answer lands for a page still waiting on
+  it, and dropped with the page. The worker that runs a job answers with
+  what it did and nothing it read.
+- **A catalog read takes what the rows need.** For a plugin that is not
+  installed, that is its marketplace entry and its manifest — the
+  description and version a row shows, which Codex's official catalog
+  leaves to the manifest. What it adds is read for the one plugin the page
+  shows, the highlighted row or the plugin's own page, before the frame
+  that shows it (`plugins::read_contents`, from
+  `Session::tick_plugins_page`). That walk — every skill's `SKILL.md`
+  parsed, every command and agent file read — was 84% of the read: over the
+  two official catalogs' 382 plugins it went from 42 ms to 7 ms, the
+  process's own start included, which is what lets it run on the loop. An
+  installed plugin is read whole, since its row's state comes from its
+  files.
+- Opening the page on those 382 plugins and closing it leaves 0.7 to 1 MB
+  of freed heap behind, and a second and a third visit do not add to it.
+  The first version, whose session already held a catalog at rest, held
+  1.2 to 1.5 MB more after the same visits.
+
+**Where the code sits decided more than any of that.** The plugin system's
+code, none of which runs without a plugin, moved a configured session's
+idle figure by 0.95 MB under the linker's default order. The
+idle text layout (`docs/text-layout.md`) puts the functions a session runs
+at rest side by side, with the ones a session with a plugin on adds — the
+registry read, the manifests, the skill and agent walks, the hook layers —
+as a group of their own after them, so a session with no plugin keeps none
+of the plugin system resident and one with a plugin keeps that group:
+
+| At rest, MB — just written / read from disk | `release` | `dist`, the shipped binary |
+|---|---|---|
+| a configured session, `main` before the plugin system | 14.75 / 16.11 | — |
+| a configured session, the linker's default order | 15.30 / 17.06 | 13.96 / 15.86 |
+| a configured session, laid out | **9.38 / 10.22** | **8.02 / 8.90** |
+| a plugin on (a skill, a command, an agent, a trusted hook), laid out | **9.65 / 10.44** | **8.29 / 9.08** |
+| the two official marketplaces added, nothing installed — the first version, which read and kept their catalog at startup, default order | 16.52 / 18.43 | — |
+| the same, now, laid out | **9.02 / 10.12** | **8.00 / 8.68** |
+
+`scripts/text_layout.sh measure --plugins` is the measurement for a session
+with a plugin on, and `--config-home` takes one of your own.
 
 ## From a shell
 
@@ -683,8 +744,8 @@ parse), `2` a grammar error, over the plugin page's usage block.
   plugins it has on).
 - `src/app/plugins_menu.rs` — `PluginsMenu`, its pages and keys, `PluginOp`.
 - `src/ui/plugins_view.rs` — the page.
-- `src/tui/plugins.rs` — the boundary: loading at bootstrap, the worker, the
-  reload after every change. `src/tui/plugin_cli.rs` — the subcommands.
+- `src/tui/plugins.rs` — the boundary: loading at bootstrap, the page's
+  reads on the loop, the worker, the reload after every change. `src/tui/plugin_cli.rs` — the subcommands.
 - `smoke.sh` Phase 161 drives the page in tmux against a marketplace kept
   in a directory: the official catalogs offered on an empty config home, the
   marketplace added by typing its folder, a plugin installed in place from

@@ -45,6 +45,7 @@ fn plugin(key: &str, installed: Option<bool>) -> CatalogPlugin {
             in_place: false,
         }),
         notes: Vec::new(),
+        unread: None,
     }
 }
 
@@ -86,11 +87,10 @@ fn catalog() -> PluginCatalog {
     }
 }
 
-/// The page open over `catalog`, its first read answered.
+/// The page open over `catalog`.
 fn open_with(catalog: PluginCatalog) -> App {
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
-    assert!(app.finish_plugin_job(round, Some(catalog), &Ok(PluginDone::default())));
+    app.open_plugins_menu(true, catalog);
     app
 }
 
@@ -620,23 +620,15 @@ fn two_plugins_of_one_name_name_their_marketplaces() {
 }
 
 #[test]
-fn the_first_read_waits_a_moment_then_shows_its_clock_where_the_rows_will_be() {
-    let mut app = App::new();
-    app.open_plugins_menu(true);
+fn the_first_frame_already_has_the_rows_and_the_counts() {
+    // The catalog is read as the page opens, so its first frame is the page
+    // at its own height: no placeholder for the rows to push away.
+    let mut app = plugins_app();
     app.set_plugins_clock(std::time::Duration::ZERO, 0);
-    assert!(!has(&page(&app), "Reading"), "{:#?}", page(&app));
-    app.set_plugins_clock(std::time::Duration::from_secs(3), 0);
     let texts = page(&app);
-    let reading: Vec<&String> = texts
-        .iter()
-        .filter(|t| t.contains("Reading the marketplaces…"))
-        .collect();
-    assert_eq!(reading.len(), 1, "once: {texts:#?}");
-    assert!(reading[0].contains("(3s · esc to cancel)"), "{texts:#?}");
-    assert!(
-        has(&texts, " All    Installed    + Add"),
-        "no counts yet: {texts:#?}"
-    );
+    assert!(!has(&texts, "Reading"), "{texts:#?}");
+    assert!(has(&texts, "→ hookify"), "{texts:#?}");
+    assert!(has(&texts, "Installed (2)"), "{texts:#?}");
 }
 
 #[test]
@@ -658,12 +650,11 @@ fn an_empty_tab_names_where_to_go() {
 #[test]
 fn the_header_says_when_plugins_are_off_or_the_registry_is_broken() {
     let mut app = App::new();
-    let round = app.open_plugins_menu(false);
     let broken = PluginCatalog {
         error: Some("plugins.json will not parse (EOF) — fix or remove it".to_string()),
         ..PluginCatalog::default()
     };
-    app.finish_plugin_job(round, Some(broken), &Ok(PluginDone::default()));
+    app.open_plugins_menu(false, broken);
     let texts = page(&app);
     assert!(
         has(&texts, "Plugins are off for this session"),

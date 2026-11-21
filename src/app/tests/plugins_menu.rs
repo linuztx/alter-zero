@@ -31,6 +31,7 @@ fn plugin(key: &str, installed: Option<bool>) -> CatalogPlugin {
             in_place: false,
         }),
         notes: Vec::new(),
+        unread: None,
     }
 }
 
@@ -68,11 +69,10 @@ fn tab(name: &str) -> PluginsTab {
     PluginsTab::Marketplace(name.to_string())
 }
 
-/// An app with the page open and its first read answered.
+/// An app with the page open on `catalog()`.
 fn plugins_app() -> App {
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
-    assert!(app.finish_plugin_job(round, Some(catalog()), &Ok(PluginDone::default())));
+    app.open_plugins_menu(true, catalog());
     app
 }
 
@@ -121,9 +121,9 @@ fn the_tabs_are_all_installed_each_marketplace_and_add() {
             PluginsTab::Add
         ]
     );
-    // Before the first read: the fixed tabs alone.
+    // Nothing added: the fixed tabs alone.
     let mut app = App::new();
-    app.open_plugins_menu(true);
+    app.open_plugins_menu(true, PluginCatalog::default());
     assert_eq!(
         menu(&app).tabs(),
         [PluginsTab::All, PluginsTab::Installed, PluginsTab::Add]
@@ -131,75 +131,127 @@ fn the_tabs_are_all_installed_each_marketplace_and_add() {
 }
 
 #[test]
-fn the_page_opens_on_the_tab_with_something_on_it() {
+fn the_page_opens_on_its_catalog_on_the_tab_with_something_on_it() {
+    // The boundary reads the catalog as the page opens, so the first frame
+    // has its rows: no job runs, and nothing waits to push them in.
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
-    assert!(menu(&app).catalog.is_none());
-    assert_eq!(app.plugins_job_round(), Some(round));
-    assert!(app.finish_plugin_job(round, Some(catalog()), &Ok(PluginDone::default())));
+    app.open_plugins_menu(true, catalog());
+    assert_eq!(menu(&app).catalog, catalog());
+    assert!(menu(&app).job.is_none());
+    assert_eq!(app.plugins_job_round(), None);
     assert_eq!(menu(&app).tab, PluginsTab::Installed);
     assert_eq!(rows(&app), ["hookify@team", "lint@local"]);
-    assert!(menu(&app).job.is_none());
 
     // Nothing installed: everything there is.
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
     let mut fresh = catalog();
     fresh.plugins.iter_mut().for_each(|p| p.installed = None);
-    app.finish_plugin_job(round, Some(fresh), &Ok(PluginDone::default()));
+    app.open_plugins_menu(true, fresh);
     assert_eq!(menu(&app).tab, PluginsTab::All);
 
     // Nothing at all: where a marketplace is added.
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
-    app.finish_plugin_job(
-        round,
-        Some(PluginCatalog::default()),
-        &Ok(PluginDone::default()),
-    );
+    app.open_plugins_menu(true, PluginCatalog::default());
     assert_eq!(menu(&app).tab, PluginsTab::Add);
 }
 
 #[test]
-fn a_reopened_page_shows_the_catalog_it_kept_at_once() {
-    // The read runs again behind the rows, so the page opens at its own
-    // height instead of on a placeholder that the rows then push away.
+fn a_closed_page_keeps_nothing_of_its_catalog() {
+    // Nothing about plugins stays in memory while the page is closed: the
+    // next open shows what the boundary reads then, and only that.
     let mut app = plugins_app();
     app.close_plugins_menu();
-    let round = app.open_plugins_menu(true);
-    assert_eq!(menu(&app).catalog, Some(catalog()));
-    assert_eq!(menu(&app).tab, PluginsTab::Installed);
-    assert_eq!(app.plugins_job_round(), Some(round));
-    // A catalog the boundary read with no page open is kept too — an older
-    // round never over a newer one.
-    let mut app = App::new();
-    app.keep_plugin_catalog(0, catalog());
-    let mut older = catalog();
-    older.plugins.clear();
-    app.keep_plugin_catalog(0, older.clone());
-    app.open_plugins_menu(true);
-    assert_eq!(menu(&app).catalog, Some(older), "the same round replaces");
-    let mut app = App::new();
-    app.keep_plugin_catalog(5, catalog());
-    app.keep_plugin_catalog(3, PluginCatalog::default());
-    app.open_plugins_menu(true);
-    assert_eq!(
-        menu(&app).catalog,
-        Some(catalog()),
-        "an older round does not"
-    );
+    assert!(app.plugins_menu.is_none());
+    app.open_plugins_menu(true, PluginCatalog::default());
+    assert_eq!(menu(&app).catalog, PluginCatalog::default());
+    assert_eq!(menu(&app).tab, PluginsTab::Add);
 }
 
 #[test]
 fn a_late_answer_is_dropped() {
-    let mut app = App::new();
-    let first = app.open_plugins_menu(true);
+    let mut app = plugins_app();
+    let Action::PluginOp { round: first, .. } = app.on_key(key(KeyCode::Char(' '))) else {
+        panic!("Space asks to turn the plugin off");
+    };
     app.close_plugins_menu();
-    let second = app.open_plugins_menu(true);
+    app.open_plugins_menu(true, catalog());
     assert!(!app.finish_plugin_job(first, Some(catalog()), &Ok(PluginDone::default())));
+    let Action::PluginOp { round: second, .. } = app.on_key(key(KeyCode::Char(' '))) else {
+        panic!("Space asks to turn the plugin off");
+    };
+    assert_ne!(first, second);
     assert!(app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
+    assert!(!app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
     app.close_plugins_menu();
     assert!(!app.finish_plugin_job(second, Some(catalog()), &Ok(PluginDone::default())));
+}
+
+#[test]
+fn the_page_asks_for_a_plugin_s_contents_as_it_shows_it() {
+    // A plugin the catalog listed from its manifest alone is read when the
+    // page shows what it adds: highlighted in the list, or its own page.
+    let unread = |key: &str| {
+        let mut p = plugin(key, None);
+        p.components = None;
+        p.unread = Some(Box::new(crate::plugins::UnreadPlugin {
+            root: std::path::PathBuf::from("/m/team/plugins").join(key),
+            entry: crate::plugins::MarketplaceEntry {
+                name: key.split('@').next().unwrap().to_string(),
+                source: crate::plugins::PluginSource::Local {
+                    path: "./x".to_string(),
+                },
+                display_name: None,
+                description: None,
+                version: None,
+                author: None,
+                category: None,
+                homepage: None,
+                keywords: Vec::new(),
+                manifest_fields: None,
+            },
+        }));
+        p
+    };
+    let mut fresh = catalog();
+    fresh.plugins[2] = unread("deploy@team");
+    fresh.plugins[3] = unread("zeta@team");
+    let mut app = App::new();
+    app.open_plugins_menu(true, fresh);
+    // The Installed tab's rows are read already.
+    assert_eq!(app.plugin_to_read(), None);
+    app.on_key(key(KeyCode::Left));
+    assert_eq!(menu(&app).tab, PluginsTab::All);
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(rows(&app)[menu(&app).selected], "deploy@team");
+    let asked = app.plugin_to_read().cloned().expect("the highlighted row");
+    assert_eq!(asked.id.key(), "deploy@team");
+    // The boundary reads it and hands it back; the row keeps what was read.
+    let mut read = asked;
+    read.unread = None;
+    read.components = Some(ComponentSummary {
+        skills: vec!["deploy:ship".to_string()],
+        ..ComponentSummary::default()
+    });
+    app.supply_plugin_contents(read.clone());
+    assert_eq!(app.plugin_to_read(), None);
+    assert_eq!(menu(&app).plugin(&read.id), Some(&read));
+    // The next row down, on its own page.
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(&menu(&app).page, PluginsPage::Plugin(id) if id.key() == "zeta@team"));
+    assert_eq!(
+        app.plugin_to_read().map(|p| p.id.key()).as_deref(),
+        Some("zeta@team")
+    );
+    // A plugin no longer in the catalog is not put back.
+    let mut stray = plugin("stray@team", None);
+    stray.unread = None;
+    app.supply_plugin_contents(stray.clone());
+    assert_eq!(menu(&app).plugin(&stray.id), None);
+    // Nothing is asked on the add tab, or with the page closed.
+    app.close_plugins_menu();
+    assert_eq!(app.plugin_to_read(), None);
 }
 
 #[test]
@@ -230,11 +282,10 @@ fn tabs_move_with_the_arrows_and_tab_and_clear_the_search() {
 #[test]
 fn the_search_matches_names_marketplaces_descriptions_and_keywords() {
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
     let mut fresh = catalog();
     fresh.plugins[2].description = Some("Ships builds to staging".to_string());
     fresh.plugins[3].keywords = vec!["kubernetes".to_string()];
-    app.finish_plugin_job(round, Some(fresh), &Ok(PluginDone::default()));
+    app.open_plugins_menu(true, fresh);
     app.on_key(key(KeyCode::Left));
     assert_eq!(menu(&app).tab, PluginsTab::All);
     type_str(&mut app, "LOCAL");
@@ -585,8 +636,7 @@ fn a_suggestion_already_added_opens_its_tab() {
     official.source = "https://github.com/anthropics/claude-plugins-official.git".to_string();
     catalog.marketplaces.push(official);
     let mut app = App::new();
-    let round = app.open_plugins_menu(true);
-    app.finish_plugin_job(round, Some(catalog), &Ok(PluginDone::default()));
+    app.open_plugins_menu(true, catalog);
     app.on_key(key(KeyCode::Left));
     app.on_key(key(KeyCode::Left));
     assert_eq!(menu(&app).tab, PluginsTab::Add);
