@@ -86,8 +86,8 @@ the order they were written, when it writes the manifest back.
 Every install made before this feature has the files and no manifest, and
 those are the installs the feature exists for. For them the binary carries a
 **legacy table**, `prompts/builtin-legacy.sha256`: the digest of every
-version of every built-in file any commit ever carried, as `sha256sum` lines
-over the installed path.
+version of every built-in file the history it was generated from ever
+carried, as `sha256sum` lines over the installed path.
 
 ```
 58e05587c9277efe…  skills/web-search/scripts/exa_search.py
@@ -108,6 +108,18 @@ so nothing shipped after this feature ever needs a line there. It only has to
 cover what manifest-less releases wrote, which is why it is regenerated only
 if a built-in file changes before the first release that carries this
 feature.
+
+That "only if" is not left to memory. `scripts/builtin-legacy.sh --check`
+reads every release tag whose tree has no table — a release made before this
+feature — and fails, naming each line, unless every built-in file that
+release installed is listed; CI runs it in the release-tooling job, over a
+checkout with every tag (`fetch-depth: 0`). A table missing a release's
+version fails nowhere else: those installs would take their untouched copies
+for the user's edits, say so once, and never update them — the exact failure
+the table exists to prevent. Once releases carry the table, every older tag
+has already been checked, so the check keeps passing with no upkeep; it
+refuses (exit 2) on a shallow clone or a clone with no tags rather than pass
+having checked nothing.
 
 A table of digests that had to grow with every edit to a skill was the
 alternative (no manifest at all), and was refused: it turns every change
@@ -334,7 +346,7 @@ update would use up the one notice nobody was there to read.
 | `src/llm/builtin.rs` | the boundary: read the manifest, look at what is on disk without following a link, apply each verdict (write through a temp file, remove), write the manifest back; `Mode` |
 | `src/llm/skill.rs`, `src/llm/subagent.rs` | `seed_builtin_skills` / `seed_default_agents` hand their embedded files to it |
 | `prompts/builtin-legacy.sha256` | the legacy table, embedded |
-| `scripts/builtin-legacy.sh` | generates it from git history |
+| `scripts/builtin-legacy.sh` | generates it from git history; `--check` holds it to every release made before the manifest (CI) |
 | `src/tui/bootstrap.rs` | runs both seeds before the walks, commits the notices after the first frame |
 
 The pure half takes digests and returns verdicts, so every row of every table

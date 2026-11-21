@@ -49,6 +49,7 @@ python3 -m unittest discover -s docker/tests -p 'test_*.py'   # both scripts und
 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # the web-search skill's scripts, offline (docs/skills.md)
 JINA_WEB_SEARCH_LIVE=1 python3 -m unittest discover -s prompts/skills/web-search/scripts -p 'test_*.py'   # plus one real search per Jina engine
 scripts/builtin-legacy.sh > prompts/builtin-legacy.sha256   # regenerate the frozen legacy table of built-in file digests from git history (needs a full clone; docs/builtin-updates.md)
+scripts/builtin-legacy.sh --check           # every release before the manifest has its built-in files in that table (full clone + tags; CI's release-tooling job)
 docker/tests/smoke.sh [--engine podman]     # the built image + run.sh against a real engine
 (cd aur/alter-zero && makepkg -Cf && namcap PKGBUILD alter-zero-*.pkg.tar.zst)   # the AUR source package: the release tag's source, built and tested on Arch (docs/aur.md)
 (cd aur/alter-zero-bin && makepkg -Cf && namcap PKGBUILD alter-zero-bin-*.pkg.tar.zst)   # the AUR binary package: the release's own Linux archive, repackaged
