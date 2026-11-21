@@ -156,6 +156,7 @@ takes are two questions. A third optional key, `api_base_env`, names an
 environment variable that replaces the base (Ollama's `OLLAMA_HOST`). The
 table is the shipped providers (`a0_venice` — the Agent Zero/Venice proxy —
 and `venice`, Venice's own API behind it, `docs/venice.md`; `openrouter`;
+`uberllm`;
 `github_copilot`; `chatgpt_codex`; `anthropic` and `anthropic_console`;
 `cline` and `cline_pass` (`docs/cline.md`); `antigravity`
 (`docs/antigravity.md`); `ollama` and `ollama_cloud`; and `lmstudio`,

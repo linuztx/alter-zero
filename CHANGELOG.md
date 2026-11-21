@@ -107,6 +107,15 @@ release heading when a version is cut.
   while the mascot moves. Turn it off with the new **Animate mascot** row in
   `/settings` (saved per directory) or `ALTER_ZERO_MASCOT_ANIMATION=0`.
 
+- **UberLLM is a provider.** `/login` lists **UberLLM** under API keys, and
+  with a key saved its models appear in `/model` beside every other
+  provider's. UberLLM is a marketplace rather than a model host: one prepaid
+  key reaches open-weight models (DeepSeek, GLM, Kimi, Qwen and others) and
+  uncensored ones, and each request is sent to a third-party seller's
+  provider that serves the model you picked. Context window, vision and
+  reasoning support come from its model list, which has OpenRouter's shape,
+  so Ctrl+T and the token tally work as they do there (`docs/llm.md`).
+
 ### Changed
 
 - **Signing in to an MCP server no longer opens a browser by itself.**
