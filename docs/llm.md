@@ -194,7 +194,7 @@ directory's entry being only what a *new* session starts on
 | `LMSTUDIO_HOST` / `LM_API_TOKEN` | the `lmstudio` provider's address (a bare `localhost:1234` is completed to its `/v1`; pointing at it is what configures it, and `/login` → Sign in with a local model writes it once the connection test passes) and the token LM Studio's server wants when set to require one (`docs/local-models.md`) | unset |
 | `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
 | `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
-| `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
+| `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/user/cwd, `docs/environment.md`) folded on. `--system-prompt` is its flag form and outranks it, and `--append-system-prompt` adds to whichever persona the run has (`docs/system-prompt.md`) | persona in `prompts/alter_zero.md` |
 | `SSL_CERT_FILE` / `ALTER_ZERO_CA_FILE` | extra CA bundle for the proxy | unset |
 
 **The dummy is the fallback, never a surprise.** The real backend activates only

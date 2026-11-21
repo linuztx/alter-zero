@@ -7,19 +7,21 @@
 //! `--help` prints to normal stdout/stderr and exits, with no terminal to
 //! restore and no TUI flash. The `[PROMPT]` positional rides the directive
 //! untouched; the session it goes into is decided here, the turn it starts
-//! belongs to `bootstrap` (`Session::submit_startup_prompt`).
+//! belongs to `bootstrap` (`Session::submit_startup_prompt`). The system
+//! prompt flags' files are read here too, after `-C`, so a bad path is one
+//! line and exit 1 before anything starts (`docs/system-prompt.md`).
 //!
 //! The argument grammar, the help pages and the colour rule are the pure
 //! `cli` module's; this is the resolution (which file, does it parse), the
 //! one impure half of the colour decision (is the stream a terminal), and
 //! the printing.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use alter_zero::app::HistoryItem;
-use alter_zero::cli::{self, Cli, HelpPage, HelpStyle, SessionArgs, SessionStart};
+use alter_zero::cli::{self, Cli, HelpPage, HelpStyle, SessionArgs, SessionStart, SystemText};
 use alter_zero::headless;
 use alter_zero::session::{self, SessionMeta};
 
@@ -36,6 +38,18 @@ pub(crate) struct Startup {
     /// `-p`: run headless, reporting this way (`docs/headless.md`) — the
     /// prompt above then already holds what stdin added. `None` is the TUI.
     pub(crate) print: Option<alter_zero::cli::PrintOptions>,
+    /// The system prompt flags' texts, files already read
+    /// (`docs/system-prompt.md`).
+    pub(crate) system_prompt: SystemPromptFlags,
+}
+
+/// What the run says about its system prompt (`docs/system-prompt.md`):
+/// the persona to use in place of the built-in one, and the text to add
+/// after it — each the flag's text, or its file's, read by [`prepare`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SystemPromptFlags {
+    pub(crate) replace: Option<String>,
+    pub(crate) append: Option<String>,
 }
 
 /// The `--continue`/`--resume` directive — the session to install before the
@@ -102,10 +116,13 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
             cwd,
             permission_mode,
             print,
+            system_prompt,
+            append_system_prompt,
         }) => {
             let began = Instant::now();
-            let (session, prompt) =
-                prepare(start, prompt, cwd, print.is_some()).map_err(|halt| match halt {
+            let flags = (system_prompt, append_system_prompt);
+            let prepared =
+                prepare(start, prompt, cwd, flags, print.is_some()).map_err(|halt| match halt {
                     Halt::Usage(message) => {
                         let style = help_style(std::io::stderr().is_terminal());
                         eprintln!("{}", cli::usage_error(HelpPage::Main, message, style));
@@ -126,10 +143,11 @@ pub(crate) fn resolve_cli() -> Result<Startup, i32> {
                     }
                 })?;
             Ok(Startup {
-                session,
-                prompt,
+                session: prepared.session,
+                prompt: prepared.prompt,
                 permission_mode,
                 print,
+                system_prompt: prepared.system_prompt,
             })
         }
     }
@@ -144,14 +162,23 @@ pub(crate) enum Halt {
     Failed(String),
 }
 
-/// The working directory, the conversation and — for a headless run — the
-/// prompt, resolved in that order, in cooked mode, before anything starts.
+/// What [`prepare`] resolved.
+struct Prepared {
+    session: Option<StartupSession>,
+    prompt: Option<String>,
+    system_prompt: SystemPromptFlags,
+}
+
+/// The working directory, the system prompt flags' texts, the conversation
+/// and — for a headless run — the prompt, resolved in that order, in cooked
+/// mode, before anything starts.
 fn prepare(
     start: SessionStart,
     prompt: Option<String>,
     cwd: Option<PathBuf>,
+    (replace, append): (Option<SystemText>, Option<SystemText>),
     headless: bool,
-) -> Result<(Option<StartupSession>, Option<String>), Halt> {
+) -> Result<Prepared, Halt> {
     // `-C` first: everything after reads the working directory —
     // `--continue` looks for the newest conversation *there*.
     if let Some(dir) = cwd
@@ -162,6 +189,11 @@ fn prepare(
             dir.display()
         )));
     }
+    // After `-C`, so a relative path is read where the run happens.
+    let system_prompt = SystemPromptFlags {
+        replace: system_text(replace, "--system-prompt-file").map_err(Halt::Failed)?,
+        append: system_text(append, "--append-system-prompt-file").map_err(Halt::Failed)?,
+    };
     let session = resolve_session(start).map_err(Halt::Failed)?;
     // A headless run reads its prompt now, before anything else starts: an
     // argument, stdin, or both (docs/headless.md).
@@ -170,7 +202,32 @@ fn prepare(
     } else {
         prompt
     };
-    Ok((session, prompt))
+    Ok(Prepared {
+        session,
+        prompt,
+        system_prompt,
+    })
+}
+
+/// One system prompt flag's text: given inline, or its file read — at most
+/// one byte past the cap, which is enough to know it is over and is what
+/// keeps `/dev/zero` from filling memory (`docs/system-prompt.md`). `flag`
+/// names the file flag of this slot in the failure.
+fn system_text(text: Option<SystemText>, flag: &str) -> Result<Option<String>, String> {
+    let path = match text {
+        None => return Ok(None),
+        Some(SystemText::Inline(text)) => return Ok(Some(text)),
+        Some(SystemText::File(path)) => path,
+    };
+    let unreadable =
+        |err: std::io::Error| cli::system_prompt_file_unreadable(flag, &path, &err.to_string());
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .map_err(unreadable)?
+        .take(cli::SYSTEM_PROMPT_FILE_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    cli::system_prompt_file_text(flag, &path, bytes).map(Some)
 }
 
 /// The style for a page written to a stream: the app's colour when the

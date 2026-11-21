@@ -172,3 +172,66 @@ fn an_mcp_grammar_error_carries_the_mcp_usage_block() {
         )
     );
 }
+
+// ===== the system prompt flags (docs/system-prompt.md) =====
+
+/// A grammar error of the system prompt flags: exit 2, the usage trailer
+/// with `message`, nothing on stdout.
+fn assert_usage_error(args: &[&str], message: &str) {
+    let out = run(args);
+    assert_eq!(out.status.code(), Some(2), "{args:?}: {}", stderr(&out));
+    assert!(stdout(&out).is_empty(), "{args:?}: {}", stdout(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "{}\n",
+            cli::usage_error(HelpPage::Main, message, HelpStyle::Plain)
+        ),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn a_system_prompt_flag_with_no_value_is_a_usage_error() {
+    assert_usage_error(&["--system-prompt"], "--system-prompt needs a value");
+    assert_usage_error(
+        &["--append-system-prompt", "-p"],
+        "--append-system-prompt needs a value (attach text that starts with a dash: \
+         --append-system-prompt=\"-…\")",
+    );
+}
+
+#[test]
+fn both_flags_of_a_system_prompt_pair_are_a_usage_error() {
+    assert_usage_error(
+        &["--system-prompt", "a", "--system-prompt-file", "b"],
+        "pass at most one of --system-prompt / --system-prompt-file",
+    );
+    assert_usage_error(
+        &["--append-system-prompt=a", "--append-system-prompt-file=b"],
+        "pass at most one of --append-system-prompt / --append-system-prompt-file",
+    );
+}
+
+#[test]
+fn a_blank_system_prompt_is_a_usage_error() {
+    assert_usage_error(&["--system-prompt", "   "], "--system-prompt needs a value");
+    assert_usage_error(
+        &["--append-system-prompt="],
+        "--append-system-prompt needs a value",
+    );
+}
+
+#[test]
+fn an_unreadable_system_prompt_file_fails_before_any_interface_starts() {
+    // No `-p`: were the interface to start first, a piped stdout would end
+    // in its terminal error instead of this line.
+    let out = run(&["--system-prompt-file", "/definitely/not/here.md"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stdout(&out).is_empty(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("Cannot read --system-prompt-file /definitely/not/here.md: "),
+        "{}",
+        stderr(&out)
+    );
+}

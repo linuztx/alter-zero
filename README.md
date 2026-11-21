@@ -320,6 +320,13 @@ Options:
   -r, --resume [ID]             Resume a conversation by id, or pick one from a list
   -C, --cwd <DIR>               Run in DIR instead of the current directory
       --permission-mode <MODE>  manual, edit, auto or master, for this run only
+      --system-prompt <TEXT>    Replace the built-in system prompt for this run
+      --system-prompt-file <PATH>
+                                The same, read from a file
+      --append-system-prompt <TEXT>
+                                Add to the system prompt for this run
+      --append-system-prompt-file <PATH>
+                                The same, read from a file
   -h, --help                    Print help
   -V, --version                 Print version
 

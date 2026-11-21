@@ -757,6 +757,198 @@ fn the_system_prompt_tells_the_model_it_runs_headless() {
     assert!(chats[0].contains("## Headless"), "{}", chats[0]);
 }
 
+// ===== the system prompt flags (docs/system-prompt.md) =====
+
+/// The system message's text of a logged chat request — its `content` a
+/// string, or an array of text parts.
+fn system_text(body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    let system = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|m| m["role"] == "system"))
+        .unwrap_or_else(|| panic!("no system message: {body}"));
+    match &system["content"] {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        other => panic!("a system content of {other}"),
+    }
+}
+
+/// Where `needle` sits in `text`, which must contain it.
+fn at(text: &str, needle: &str) -> usize {
+    text.find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} is missing from:\n{text}"))
+}
+
+/// The first chat request's system text, after a run that succeeded.
+fn first_system_text(out: &Output, stand_in: &StandIn) -> String {
+    assert!(out.status.success(), "{}", stderr(out));
+    let chats = stand_in.chat_requests();
+    system_text(chats.first().expect("a chat request"))
+}
+
+#[test]
+fn appended_text_sits_between_the_persona_and_the_environment() {
+    let world = World::new("sysappend");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            "--append-system-prompt",
+            "APPENDED_MARKER rules",
+            "make it",
+        ],
+    );
+    let text = first_system_text(&out, &stand_in);
+    let persona = at(&text, "You are Alter Zero");
+    let appended = at(&text, "APPENDED_MARKER rules");
+    let environment = at(&text, "## Environment");
+    let headless = at(&text, "## Headless");
+    assert!(
+        persona < appended && appended < environment && environment < headless,
+        "{text}"
+    );
+}
+
+#[test]
+fn a_replaced_persona_keeps_the_blocks_after_it() {
+    let world = World::new("sysreplace");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            "--system-prompt",
+            "REPLACED_MARKER persona",
+            "make it",
+        ],
+    );
+    let text = first_system_text(&out, &stand_in);
+    assert!(text.starts_with("REPLACED_MARKER persona"), "{text}");
+    assert!(!text.contains("You are Alter Zero"), "{text}");
+    at(&text, "## Environment");
+    at(&text, "## Headless");
+}
+
+#[test]
+fn the_flag_outranks_the_variable_and_an_append_adds_to_the_variables_persona() {
+    let world = World::new("sysenv");
+    let stand_in = StandIn::start();
+    let run = |args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_SYSTEM_PROMPT", "ENV_MARKER persona")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let out = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        "--system-prompt",
+        "FLAG_MARKER persona",
+        "make it",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = system_text(&stand_in.chat_requests()[0]);
+    assert!(text.starts_with("FLAG_MARKER persona"), "{text}");
+    assert!(!text.contains("ENV_MARKER"), "{text}");
+
+    let seen = stand_in.chat_requests().len();
+    let out = run(&[
+        "-p",
+        "--permission-mode",
+        "master",
+        "--append-system-prompt",
+        "APPENDED_MARKER",
+        "make it",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = system_text(&stand_in.chat_requests()[seen]);
+    assert!(text.starts_with("ENV_MARKER persona"), "{text}");
+    assert!(
+        at(&text, "ENV_MARKER") < at(&text, "APPENDED_MARKER")
+            && at(&text, "APPENDED_MARKER") < at(&text, "## Environment"),
+        "{text}"
+    );
+    assert!(!text.contains("You are Alter Zero"), "{text}");
+}
+
+#[test]
+fn the_file_flags_read_relative_to_cwd() {
+    let world = World::new("sysfiles");
+    let stand_in = StandIn::start();
+    let prompts = world.dir("prompts");
+    std::fs::create_dir_all(&prompts).expect("the prompts dir");
+    std::fs::write(prompts.join("persona.md"), "FILE_PERSONA_MARKER\n").expect("a file");
+    std::fs::write(prompts.join("extra.md"), "FILE_APPEND_MARKER\n").expect("a file");
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            "-C",
+            prompts.to_str().unwrap(),
+            "--system-prompt-file",
+            "persona.md",
+            "--append-system-prompt-file=extra.md",
+            "make it",
+        ],
+    );
+    let text = first_system_text(&out, &stand_in);
+    assert!(text.starts_with("FILE_PERSONA_MARKER"), "{text}");
+    assert!(
+        at(&text, "FILE_APPEND_MARKER") < at(&text, "## Environment"),
+        "{text}"
+    );
+    assert!(!text.contains("You are Alter Zero"), "{text}");
+}
+
+#[test]
+fn an_unreadable_system_prompt_file_sends_nothing_and_is_one_error_result() {
+    let world = World::new("sysunreadable");
+    let stand_in = StandIn::start();
+    let out = real_run(
+        &world,
+        &stand_in,
+        &[
+            "-p",
+            "--output-format",
+            "json",
+            "--append-system-prompt-file",
+            "missing.md",
+            "make it",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(stand_in.chat_requests().is_empty(), "no request was sent");
+    let lines = events(&out);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["type"], "result");
+    assert_eq!(lines[0]["is_error"], true);
+    assert!(
+        lines[0]["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("Cannot read --append-system-prompt-file missing.md")),
+        "{}",
+        lines[0]
+    );
+}
+
 #[test]
 fn the_wait_on_a_background_agent_that_never_finishes_is_bounded() {
     let world = World::new("stuckagent");

@@ -102,6 +102,8 @@ alter-zero -p [OPTIONS] [PROMPT]
 | `--max-turns <N>` | Stop after **N model replies** of the lead agent, counted over the whole run. Needs `-p`. |
 | `--verbose` | Log each step of the run to stderr. Needs `-p`. |
 | `--permission-mode <MODE>` | `manual`, `edit`, `auto` or `master` for this run. Both modes. |
+| `--system-prompt <TEXT>` / `--system-prompt-file <PATH>` | Replace the built-in persona for this run (`docs/system-prompt.md`). Both modes. |
+| `--append-system-prompt <TEXT>` / `--append-system-prompt-file <PATH>` | Add text after the persona for this run (`docs/system-prompt.md`). Both modes. |
 | `-C`, `--cwd <DIR>` | Run as if started in `DIR`. Both modes. |
 | `-c`, `--continue` / `-r`, `--resume <ID>` | Send the prompt into that conversation (as without `-p`). |
 
@@ -232,6 +234,10 @@ A call that needs approval is refused work around it or report what you needed
 The run ends when your turn ends background commands still running are stopped
 Your final message is the run's output
 ```
+
+The block closes the prompt whatever the persona above it is: a run that
+replaces the persona with `--system-prompt` or appends to it with
+`--append-system-prompt` still ends on `## Headless` (`docs/system-prompt.md`).
 
 `AskUserQuestion` is not offered at all (the ask gate is never attached), so
 the model cannot wait on an answer that will not come.
@@ -492,7 +498,10 @@ installed before bootstrap starts any server, and the shutdown is bounded
   second reply; the system prompt carries the headless block and the
   request no `askuserquestion`; a background subagent is waited for and its
   completion answers the run, and one that never finishes is stopped once
-  the wait runs out; a command left running is stopped and named.
+  the wait runs out; a command left running is stopped and named; the
+  system prompt flags place their text, outrank `ALTER_ZERO_SYSTEM_PROMPT`,
+  read a file relative to `-C`, and refuse an unreadable file before any
+  request (`docs/system-prompt.md`).
 - `scripts/smoke.sh` Phase 153: `alter-zero -p --verbose` from a tmux pane —
   the log and the answer on the terminal, its modes unchanged (`stty -g`), and none
   of the TUI's escapes in the raw byte stream (no DSR, no alternate screen,

@@ -31,7 +31,7 @@ use alter_zero::llm::config::Provider;
 use alter_zero::llm::model_cache::{self, CachedListing};
 use alter_zero::llm::{
     self, AuthScheme, EnvFile, ModelConfig, ModelSelection, ProvidersFile, ReasoningSupport,
-    Selection, Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
+    Selection, Settings, ThinkingMode, ThinkingSettings,
 };
 use alter_zero::permission::{PermissionMode, PermissionRules, PermissionsFile};
 use alter_zero::scratchpad;
@@ -1546,9 +1546,12 @@ pub(crate) fn context_window_override() -> Option<u64> {
 }
 
 /// The real backend's system prompt: the "Alter Zero" persona
-/// (`prompts/alter_zero.md`) unless `ALTER_ZERO_SYSTEM_PROMPT` overrides it
-/// (an empty value sends no system prompt at all — `with_system_prompt` drops
-/// blanks). Either way we fold in the runtime environment — date, os, user,
+/// (`prompts/alter_zero.md`) unless `--system-prompt[-file]` or, below it,
+/// `ALTER_ZERO_SYSTEM_PROMPT` replaces it (an empty variable sends no system
+/// prompt at all — `with_system_prompt` drops blanks), with
+/// `--append-system-prompt[-file]`'s text after it — the pure
+/// `backend::compose_persona`, `docs/system-prompt.md`. Either way we fold
+/// in the runtime environment — date, os, user,
 /// cwd — so the agent has context awareness (`docs/environment.md`), and —
 /// when the session has one — the `## Scratchpad` block pointing every
 /// temporary file at the session's own directory (`docs/scratchpad.md`), for
@@ -1558,25 +1561,28 @@ pub(crate) fn context_window_override() -> Option<u64> {
 /// Resolved once at startup, so
 /// every backend the loop rebuilds (a `/model` switch, a Ctrl+T thinking
 /// change, the capability probe) inherits it by clone.
-pub(crate) fn system_prompt(cwd: &Path, scratchpad: Option<&Path>) -> Option<String> {
-    std::env::var("ALTER_ZERO_SYSTEM_PROMPT")
-        .ok()
-        .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()))
-        .map(|base| {
-            let base = llm::backend::augment_with_environment(
-                &base,
-                &local_date(),
-                &os_context(),
-                &user_context(),
-                &cwd.display().to_string(),
-            );
-            match scratchpad {
-                Some(dir) => {
-                    llm::backend::augment_with_scratchpad(&base, &dir.display().to_string())
-                }
-                None => base,
-            }
-        })
+pub(crate) fn system_prompt(
+    cwd: &Path,
+    scratchpad: Option<&Path>,
+    flags: &super::startup::SystemPromptFlags,
+) -> Option<String> {
+    // The flag outranks the variable.
+    let replacement = flags
+        .replace
+        .clone()
+        .or_else(|| std::env::var("ALTER_ZERO_SYSTEM_PROMPT").ok());
+    let base = llm::backend::compose_persona(replacement.as_deref(), flags.append.as_deref());
+    let base = llm::backend::augment_with_environment(
+        &base,
+        &local_date(),
+        &os_context(),
+        &user_context(),
+        &cwd.display().to_string(),
+    );
+    Some(match scratchpad {
+        Some(dir) => llm::backend::augment_with_scratchpad(&base, &dir.display().to_string()),
+        None => base,
+    })
 }
 
 /// The **runtime half** of [`system_prompt`] alone: the environment block and

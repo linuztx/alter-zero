@@ -41,6 +41,17 @@ release heading when a version is cut.
   `~/.alter-zero/plugins/` and `plugins.json`; `ALTER_ZERO_PLUGINS=0` loads no
   plugin for a run (`docs/plugins.md`).
 
+- **`--system-prompt` and `--append-system-prompt` set the system prompt
+  for a run.** `alter-zero --append-system-prompt "Answer in French."`
+  keeps the built-in prompt and adds to it, and `--system-prompt "…"`
+  replaces it. Each has a `-file` form that reads the text from a file
+  (`--system-prompt-file`, `--append-system-prompt-file`), and all four
+  work in the interface and with `-p`. A replaced prompt still gets the
+  environment block, so the agent knows the date, the system, the user and
+  the directory it runs in. Until now the only way in was the
+  `ALTER_ZERO_SYSTEM_PROMPT` variable, which replaces the prompt and cannot
+  add to it; the new flag outranks it (`docs/system-prompt.md`).
+
 - **`/model` opens on the lists it already has, and Ctrl+R refreshes
   them.** The picker used to ask every configured provider for its model
   list on every open, so each one began on `Loading models…`, for a second

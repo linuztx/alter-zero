@@ -110,7 +110,9 @@ property the tool depends on, not a convenience.
   the cwd, where temporary files go — and a subagent that doesn't know them
   writes into `/tmp` and guesses the year. With no body the prompt is exactly
   what it was before this feature: the session's own assembled prompt plus
-  the note.
+  the note — as the run made it, a `--system-prompt` persona and
+  `--append-system-prompt` text included, while a body replaces those too
+  (`docs/system-prompt.md`).
 
 An unknown `subagent_type` no longer silently becomes `general-purpose`: the
 call resolves as a recoverable error naming the available types, so the model
