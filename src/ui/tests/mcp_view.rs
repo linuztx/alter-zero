@@ -1748,6 +1748,17 @@ fn the_secret_field_says_what_leaving_it_empty_means() {
     let lines = mcp_view_lines(&over_kept, 100);
     let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
     assert!(secret.contains("optional"), "{secret:?}");
+    // A form back because the client was turned away offers no secret as
+    // kept: the field is optional.
+    let refused = McpClientRequest {
+        client_id: Some("typed-cid".to_string()),
+        has_secret: false,
+        reason: Some("login.example.com turned this client away (HTTP 401).".to_string()),
+        ..client_request()
+    };
+    let lines = mcp_view_lines(&client_form_app(&refused), 100);
+    let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);
+    assert!(secret.contains("optional"), "{secret:?}");
     let mut app = client_form_app(&client_request());
     let lines = mcp_view_lines(&app, 100);
     let (_, secret) = field_row(&lines, MCP_CLIENT_SECRET_PROMPT);

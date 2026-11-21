@@ -4855,11 +4855,13 @@ done
     }
 
     /// An entered client the authorization server turns away asks again,
-    /// with what was entered and the server's reason. Entered again with no
-    /// secret typed, the client keeps the one it had; another client with
+    /// with what was entered and the server's reason — the refused secret
+    /// not offered as kept, so the form's empty secret field saves the
+    /// client with none. A form opened deliberately over the client keeps
+    /// its secret when that field is left as it is; another client with
     /// none typed is a public one, the old secret never carried over.
     #[test]
-    fn a_refused_entered_client_asks_again_and_an_untyped_secret_keeps_the_kept_one() {
+    fn a_refused_entered_client_asks_again_without_its_secret() {
         let base = spawn_signin_server_with(false);
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("mcp-auth.json");
@@ -4872,25 +4874,41 @@ done
         let request =
             next_event(&mut rx, Duration::from_secs(5), needs_client).expect("asks again");
         assert_eq!(request.client_id.as_deref(), Some("typed-cid"));
-        assert!(request.has_secret && !request.fixed_id);
+        assert!(!request.has_secret && !request.fixed_id);
         assert_eq!(request.callback_port, Some(port));
         let reason = request.reason.expect("the server's reason");
         assert!(
             reason.contains("invalid_client") && reason.contains("bad secret"),
             "{reason}"
         );
-        // The same client, no secret typed: the kept one stays.
+        // The same client, its secret left as it is on a form that offered
+        // it as kept: it stays.
         manager.save_client("srv", &entered(&base, "typed-cid", None, port));
         next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL again");
         assert_eq!(
             oauth::load_client(Some(&store), &server).and_then(|kept| kept.client_secret),
             Some("wrong".to_string())
         );
-        // Another client, no secret typed: a public client.
-        manager.save_client("srv", &entered(&base, "other-cid", None, port));
-        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the other client's URL");
+        // What the reopened form submits with its secret field left empty:
+        // the client, with no secret.
+        manager.save_client(
+            "srv",
+            &EnteredClient {
+                keep_secret: request.has_secret,
+                ..entered(&base, "typed-cid", None, port)
+            },
+        );
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the URL again");
         let kept = oauth::load_client(Some(&store), &server).unwrap();
-        assert_eq!(kept.client_id.as_deref(), Some("other-cid"));
+        assert_eq!(kept.client_id.as_deref(), Some("typed-cid"));
+        assert_eq!(kept.client_secret, None);
+        // Another client, no secret typed: a public client.
+        manager.save_client("srv", &entered(&base, "other-cid", Some("s"), port));
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the other client's URL");
+        manager.save_client("srv", &entered(&base, "third-cid", None, port));
+        next_event(&mut rx, Duration::from_secs(5), auth_url).expect("the third client's URL");
+        let kept = oauth::load_client(Some(&store), &server).unwrap();
+        assert_eq!(kept.client_id.as_deref(), Some("third-cid"));
         assert_eq!(kept.client_secret, None);
         manager.shutdown();
     }

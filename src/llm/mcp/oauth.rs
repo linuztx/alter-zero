@@ -2794,13 +2794,15 @@ pub fn run_auth_flow(
         // A verdict on the user's own client is theirs to answer: the form
         // again, with what the server said. A registration's is this app's.
         if client_refused(&body) {
-            let has_secret = client.client_secret.is_some();
             match source {
+                // The client entered here, its id and port kept — and the
+                // secret it presented not offered as kept: the field left
+                // empty is then a client with none.
                 ClientSource::Entered => {
                     return Err(ask(
                         Some(client.client_id),
                         false,
-                        has_secret,
+                        false,
                         Some(port),
                         Some(format!(
                             "{host} turned this client away — check its ID and its secret. \
@@ -5700,7 +5702,8 @@ mod tests {
     /// An entered client the authorization server turns away — a mistyped
     /// id or secret — reopens the form with what was entered and the
     /// server's own reason, instead of ending on an error the user can only
-    /// read.
+    /// read; the secret it presented is not offered as kept, so an empty
+    /// field can make it a public client.
     #[test]
     fn an_entered_client_the_server_turns_away_is_asked_for_again() {
         let fixture = spawn_auth_server_with(false, None);
@@ -5719,7 +5722,7 @@ mod tests {
         };
         assert_eq!(request.client_id.as_deref(), Some("typed-cid"));
         assert!(!request.fixed_id);
-        assert!(request.has_secret);
+        assert!(!request.has_secret, "the refused secret is offered as kept");
         assert_eq!(request.callback_port, Some(port));
         let reason = request.reason.expect("the server's reason");
         assert!(

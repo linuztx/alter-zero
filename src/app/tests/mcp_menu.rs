@@ -742,13 +742,14 @@ fn a_fixed_id_with_no_id_asks_for_the_whole_client() {
 }
 
 /// A form that is back because the client was turned away opens with what
-/// was entered and the reason, the caret on the secret — one Enter tries
-/// the same client again, its kept secret untouched.
+/// was entered and the reason, the caret on the secret — and no secret
+/// offered as kept, the refused one included: Enter with the field empty
+/// saves the client with none, a public client.
 #[test]
 fn a_form_reopened_with_a_reason_keeps_what_was_entered() {
     let request = McpClientRequest {
         client_id: Some("typed-cid".to_string()),
-        has_secret: true,
+        has_secret: false,
         callback_port: Some(9001),
         reason: Some("as.test turned this client away (HTTP 401: invalid_client).".to_string()),
         ..client_request()
@@ -757,7 +758,8 @@ fn a_form_reopened_with_a_reason_keeps_what_was_entered() {
     let reopened = form(&app);
     assert_eq!(reopened.client_id, "typed-cid");
     assert_eq!(reopened.port, "9001");
-    assert_eq!(reopened.kept_secret_for.as_deref(), Some("typed-cid"));
+    assert_eq!(reopened.kept_secret_for, None);
+    assert!(!reopened.keeps_secret());
     assert_eq!(reopened.reason, request.reason);
     assert_eq!(reopened.field, McpClientField::Secret);
     assert_eq!(
@@ -767,7 +769,7 @@ fn a_form_reopened_with_a_reason_keeps_what_was_entered() {
             issuer: "https://accounts.google.com".to_string(),
             client_id: "typed-cid".to_string(),
             client_secret: None,
-            keep_secret: true,
+            keep_secret: false,
             callback_port: Some(9001),
         })
     );
