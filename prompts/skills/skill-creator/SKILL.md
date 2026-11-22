@@ -154,7 +154,11 @@ is loadable on the very next message — no restart:
    which root it came from, and never create a second copy in a different root:
    the first root wins and the other becomes dead weight nobody edits.
 2. **Read the whole file** before changing anything. It may be the user's own
-   work, or a seeded default they have edited.
+   work, or one of the built-in skills this runtime ships — seeded into its own
+   skills folder, whose `.builtins.json` lists their files. A built-in takes
+   each release's version only while nobody has edited it: once you change
+   it, later releases leave it alone and save their version beside each
+   edited file as `<file>.new`. Tell the user that when you edit one.
 3. **Edit, do not rewrite.** Change the lines the request is about and leave
    the rest — including the `name`, which is how the model, the listing and
    `skills.json` all refer to it. Renaming means a new folder and a stale
