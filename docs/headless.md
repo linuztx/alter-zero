@@ -185,7 +185,11 @@ byte is still worth reading.
    No `EventStream`; the startup review is never opened (see *Trust*); no
    telemetry ping, update check or herdr report; nothing joins the ↑ input
    history; a `--continue`/`--resume` load **does not restore the working
-   tree** to the conversation's last checkpoint (see *Resume*). An error
+   tree** to the conversation's last checkpoint (see *Resume*). The
+   built-in skills and agent types are brought up to date like any
+   launch's, but an edited one is offered nothing: the offer beside it is
+   made once, so it waits for an interactive launch that can show its card
+   (`docs/builtin-updates.md`). An error
    toast — a `SKILL.md` that would not parse, a provider file's problem —
    is written to stderr as an `alter-zero: …` line; an info toast only with
    `--verbose`.

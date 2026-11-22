@@ -84,7 +84,13 @@ repo, `include_str!`'d beside every other markdown this crate carries). At start
 **written into the user root when that file is absent** — so a fresh install
 finds them on disk and can edit them, and a release that adds a default gets
 it too. Deleting one brings it back next launch; to change a default, edit
-it (that is what the seeding is *for*).
+it (that is what the seeding is *for*). A copy nobody edited is also kept
+current: a release that changes a default replaces it, and leaves its new
+version beside an edited one as `<name>.md.new`, which the walk never reads
+(`docs/builtin-updates.md`). An `ALTER_ZERO_AGENTS_DIR` override is only
+seeded — a missing default written, nothing replaced, removed or offered —
+since it is somebody else's directory, perhaps one a team keeps in a
+repository, which whoever runs the newest build must not rewrite.
 
 If the walk still ends without one of them — no writable home, an
 `ALTER_ZERO_AGENTS_DIR` pointed at a read-only directory — the embedded
@@ -221,7 +227,7 @@ re-broken reports again).
 | --- | --- |
 | `src/frontmatter.rs` | the shared `---` frontmatter parse (skills + agents) |
 | `src/subagents.rs` | pure: `AgentDefinition`, the parse, `AgentTools::allows`, the listing, the reminder wrapper, `SubagentRegistry` |
-| `src/llm/subagent.rs` | boundary: the root walk, the discovery, the seeding of the embedded defaults |
+| `src/llm/subagent.rs` | boundary: the root walk, the discovery, the sync of the embedded defaults (`sync_builtin_agents`, `docs/builtin-updates.md`) |
 | `prompts/agents/*.md` | the embedded defaults themselves |
 
 `ALTER_ZERO_AGENTS_DIR` relocates the roots. There is no separate on/off

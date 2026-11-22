@@ -271,17 +271,22 @@ impl<'t> Session<'t> {
         // A `SKILL.md` that will not parse is collected, not thrown — one bad
         // skill must not cost a session the rest — and becomes the startup
         // toast below.
-        // The built-in `skill-creator` is seeded into the personal root first,
-        // so this very walk finds it — a skill that appeared only on the
-        // *second* launch would be missing from exactly the session that just
-        // installed the app. Never clobbers an edited copy, and skipped
-        // entirely when ALTER_ZERO_SKILLS_DIR replaced the roots.
-        let mut skill_errors = match alter_zero::llm::skill::resolved_builtin_skills_dir(
-            config::config_home().as_deref(),
-        ) {
-            Some(root) => alter_zero::llm::skill::seed_builtin_skills(&root),
-            None => Vec::new(),
-        };
+        // The built-in skills are synced into the personal root first, so this
+        // very walk finds them — a skill that appeared only on the *second*
+        // launch would be missing from exactly the session that just
+        // installed the app — and an unedited copy an older release wrote is
+        // brought up to date before it is read (docs/builtin-updates.md).
+        // Never clobbers an edited copy, and skipped entirely when
+        // ALTER_ZERO_SKILLS_DIR replaced the roots. A headless run makes no
+        // offer beside an edit: the offer is made once, and it has no screen
+        // to make it on, so the next interactive launch makes it.
+        let skill_sync =
+            alter_zero::llm::skill::resolved_builtin_skills_dir(config::config_home().as_deref())
+                .map(|root| alter_zero::llm::skill::sync_builtin_skills(&root, !headless));
+        let mut skill_errors = skill_sync
+            .as_ref()
+            .map(|report| report.errors.clone())
+            .unwrap_or_default();
         let (mut found_skills, walk_errors) =
             alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
         skill_errors.extend(walk_errors);
@@ -302,17 +307,30 @@ impl<'t> Session<'t> {
         );
 
         // The subagent definitions on disk (docs/subagents.md): the built-in
-        // `general-purpose`/`explore` seeded into the user root the first
-        // time — so the defaults are editable files rather than a `match` in
-        // the binary — then the walk over the project's and the user's roots.
-        // Done here, before the backend, so a launch and the `<system-
-        // reminder>` listing agree from the first turn. A file that will not
-        // parse is collected, not thrown, and becomes the startup toast.
-        let mut agent_errors =
-            match alter_zero::llm::subagent::user_agents_dir(config::config_home().as_deref()) {
-                Some(dir) => alter_zero::llm::subagent::seed_default_agents(&dir),
-                None => Vec::new(),
-            };
+        // `general-purpose`/`explore` synced into the user root — written the
+        // first time, so the defaults are editable files rather than a
+        // `match` in the binary, and kept current while unedited
+        // (docs/builtin-updates.md) — then the walk over the project's and
+        // the user's roots. Done here, before the backend, so a launch and
+        // the `<system-reminder>` listing agree from the first turn. A file
+        // that will not parse is collected, not thrown, and becomes the
+        // startup toast.
+        let agent_sync = alter_zero::llm::subagent::user_agents_dir(
+            config::config_home().as_deref(),
+        )
+        .map(|dir| {
+            alter_zero::llm::subagent::sync_builtin_agents(
+                &dir,
+                alter_zero::llm::subagent::agents_reach(!headless),
+            )
+        });
+        let mut agent_errors = agent_sync
+            .as_ref()
+            .map(|report| report.errors.clone())
+            .unwrap_or_default();
+        // What the two syncs changed, for the toast and the card below.
+        let builtin_syncs: Vec<alter_zero::builtins::SyncReport> =
+            skill_sync.into_iter().chain(agent_sync).collect();
         let (mut found_agents, walk_errors) =
             alter_zero::llm::subagent::load_agents(&cwd, config::config_home().as_deref());
         agent_errors.extend(walk_errors);
@@ -635,6 +653,10 @@ impl<'t> Session<'t> {
             update_rx,
             update_attempted: None,
             update_notice_pending: None,
+            builtin_offers: builtin_syncs
+                .iter()
+                .flat_map(|sync| sync.offered.iter().cloned())
+                .collect(),
             herdr: None,
             _file_worker: file_worker,
             registry,
@@ -673,6 +695,9 @@ impl<'t> Session<'t> {
             cwd_display,
         };
         session.seed_app(settings);
+        // First of the startup's toasts: an update is news, not a problem, so
+        // any of the reports below covers it.
+        session.report_builtin_updates(&builtin_syncs);
         session.seed_checkpoints(refusal, checkpoints_wanted)?;
         // After the checkpoint toast, so a session with both problems ends up
         // showing the hooks one — the actionable typo beats the size refusal.
@@ -709,6 +734,11 @@ impl<'t> Session<'t> {
         // fire below stays queued until then.
         let reviewing = session.open_startup_review();
         session.paint_first_frame(picker)?;
+        // An edited built-in whose release changed it (docs/builtin-updates.md):
+        // the card goes under the banner — or, behind a bare --resume's
+        // picker, at the loop bottom that finds the conversation back on
+        // screen. Made once: the sync has already moved its record on.
+        session.flush_builtin_offers();
         // SessionStart (docs/hooks.md), in the background as the session
         // opens — Claude Code's timing: the user can type at once, and the
         // first turn (a [PROMPT]'s below included) waits for the hooks so
@@ -912,6 +942,57 @@ impl<'t> Session<'t> {
             format!("Skill {}: {}{tail}", first.path.display(), first.message),
             ToastKind::Error,
         );
+    }
+
+    /// Say which built-in skills and agent types this launch brought up to
+    /// date or removed (`docs/builtin-updates.md`) — one dim toast, raised
+    /// before the startup's other reports so any of them covers it. Silent on
+    /// a first launch, a restored file, and a release that changed nothing.
+    fn report_builtin_updates(&mut self, syncs: &[alter_zero::builtins::SyncReport]) {
+        let syncs: Vec<&alter_zero::builtins::SyncReport> = syncs.iter().collect();
+        if let Some(notice) = alter_zero::builtins::updated_notice(&syncs) {
+            self.toast(notice, ToastKind::Info);
+        }
+    }
+
+    /// Commit the `Edited built-ins` card under the banner when the sync
+    /// wrote a release's version beside a file the user edited
+    /// (`docs/builtin-updates.md`): framed and wrapped like the telemetry and
+    /// update cards, each `.new` named `~`-relative, over a blank spacer.
+    /// Chrome, never `history`.
+    ///
+    /// The offer is made once, so the card must not be lost: it waits while
+    /// an overlay is up — a bare `--resume` boots into its picker, and a
+    /// session picked there purge-rebuilds whatever was queued beneath it —
+    /// and while anything streams, and the loop bottom commits it the first
+    /// time the conversation is back on screen. Free when nothing was
+    /// offered; a headless run never offers.
+    pub(crate) fn flush_builtin_offers(&mut self) {
+        if self.builtin_offers.is_empty()
+            || self.headless
+            || self.inflight.is_some()
+            || self.app.is_streaming()
+            || self.app.view.is_overlay()
+            || !self.commits_allowed()
+        {
+            return;
+        }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let offered: Vec<String> = std::mem::take(&mut self.builtin_offers)
+            .iter()
+            .map(|path| ui::display_cwd(path, home.as_deref()))
+            .collect();
+        let Some(body) = alter_zero::builtins::offered_notice(&offered) else {
+            return;
+        };
+        let width = self.term.screen().width;
+        self.term.insert_before(ui::notice_card_lines(
+            alter_zero::builtins::OFFERED_NOTICE_TITLE,
+            &body,
+            width,
+        ));
+        self.term.insert_before(vec![Line::default()]);
+        self.frame.schedule_frame();
     }
 
     /// Raise the first agent-definition failure as a red toast — the
@@ -1181,6 +1262,9 @@ impl<'t> Session<'t> {
         // A newer release the check found mid-turn is announced here, at the
         // first idle loop bottom, never inside a streaming reply (docs/update.md).
         self.flush_pending_update_notice();
+        // …and the built-in card a bare `--resume` held behind its picker
+        // (docs/builtin-updates.md).
+        self.flush_builtin_offers();
         // Release any permission request dropped without an answer (Esc,
         // `/clear`): the tool thread parked on it would otherwise wait for a
         // decision that is never coming — a cancelled turn's reaps itself, but a

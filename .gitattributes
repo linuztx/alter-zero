@@ -1,0 +1,5 @@
+# The built-in skills and agent types are embedded and seeded byte for byte,
+# and prompts/shipped.sha256 records the hash of every version shipped: a
+# checkout that rewrote their line endings would embed bytes no release ever
+# wrote (docs/builtin-updates.md).
+prompts/** text eol=lf

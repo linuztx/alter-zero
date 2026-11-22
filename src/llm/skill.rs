@@ -26,10 +26,12 @@ use crate::skills::{
 /// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
-/// [`seed_builtin_skills`] writes exactly these, so what a session discovers
+/// [`sync_builtin_skills`] writes exactly these, so what a session discovers
 /// on a fresh install is what is authored in `prompts/skills/` — beside every
 /// other `include_str!`'d markdown this crate embeds, and editable on disk
-/// once it is there.
+/// once it is there. Every version of each is listed in
+/// `prompts/shipped.sha256`, which is how a later release knows an unedited
+/// copy from an edit (`docs/builtin-updates.md`).
 const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
     (
         "flaredantic/SKILL.md",
@@ -154,7 +156,7 @@ fn project_dirs(dir: &Path) -> [PathBuf; 3] {
     ]
 }
 
-/// The root [`seed_builtin_skills`] writes into: `{config_home}/skills`, the
+/// The root [`sync_builtin_skills`] writes into: `{config_home}/skills`, the
 /// personal root the walk reads at row 5 — and **`None`** whenever
 /// `ALTER_ZERO_SKILLS_DIR` replaced the root list.
 ///
@@ -185,42 +187,30 @@ pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf
     builtin_skills_dir(config_home, override_dir().as_deref())
 }
 
-/// Write the built-in skills into `root`, **skipping any whose `SKILL.md` is
-/// already there** — so a fresh install finds them on disk and can edit them,
-/// a later launch never discards those edits, and a deleted one comes back.
+/// Bring the built-in skills in `root` to this release's — writing what is
+/// missing, replacing an unedited copy an older release wrote, and keeping a
+/// copy the user edited, with this release's version beside it as
+/// `<file>.new` when the release changed that file (`docs/builtin-updates.md`).
 ///
-/// The agent definitions' rule, for the same reason (`docs/subagents.md` —
-/// a seed that overwrote would silently replace the user's own copy on every
-/// restart). Turning a built-in skill *off* is `/skills`, which persists;
-/// deleting the folder only lasts until the next launch.
+/// So a fresh install finds them on disk and can edit them, an edit is never
+/// discarded, a deleted file comes back, and a release that improves one
+/// reaches every install that left it alone. Turning a built-in skill *off*
+/// is `/skills`, which persists; deleting the folder only lasts until the
+/// next launch.
 ///
-/// Failures are collected, never thrown: a read-only config home costs the
-/// built-in skill, not the session.
-pub fn seed_builtin_skills(root: &Path) -> Vec<SkillError> {
-    let mut errors = Vec::new();
-    for (relative, contents) in BUILTIN_SKILL_FILES {
-        let path = root.join(relative);
-        if path.exists() {
-            continue;
-        }
-        let Some(dir) = path.parent() else {
-            continue;
-        };
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            errors.push(SkillError {
-                path: dir.to_path_buf(),
-                message: err.to_string(),
-            });
-            continue;
-        }
-        if let Err(err) = std::fs::write(&path, contents) {
-            errors.push(SkillError {
-                path,
-                message: err.to_string(),
-            });
-        }
-    }
-    errors
+/// `offer` is off in a headless run: the offer beside an edit is made once,
+/// so it waits for a launch with a screen to show it on.
+///
+/// Failures are in the report, never thrown: a read-only config home costs
+/// the built-in skill, not the session.
+#[must_use]
+pub fn sync_builtin_skills(root: &Path, offer: bool) -> crate::builtins::SyncReport {
+    crate::builtins::sync(
+        root,
+        crate::builtins::BuiltinKind::Skills,
+        &BUILTIN_SKILL_FILES,
+        crate::builtins::Reach::Follow { offer },
+    )
 }
 
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
@@ -1220,7 +1210,7 @@ mod tests {
     fn seeded_flaredantic_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1258,7 +1248,7 @@ mod tests {
     fn flaredantic_seed_preserves_edits_and_restores_each_deleted_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let dir = root.join("flaredantic");
         let skill = dir.join(SKILL_FILE_NAME);
         let reference = dir.join("reference.md");
@@ -1271,7 +1261,7 @@ mod tests {
             &skill_md("Mine.", "custom tunnel workflow"),
         );
         std::fs::write(&reference, "custom reference").expect("edit reference");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert!(
             std::fs::read_to_string(&skill)
                 .expect("read")
@@ -1282,7 +1272,7 @@ mod tests {
             "custom reference"
         );
         std::fs::remove_file(&reference).expect("delete reference");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert_eq!(
             std::fs::read_to_string(&reference).expect("restored"),
             original_reference
@@ -1293,7 +1283,7 @@ mod tests {
                 .contains("custom tunnel workflow")
         );
         std::fs::remove_file(&skill).expect("delete skill");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert_eq!(
             std::fs::read_to_string(&skill).expect("restored"),
             original_skill
@@ -1304,7 +1294,7 @@ mod tests {
     fn seeded_jina_reader_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1334,7 +1324,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
         write_skill(&root, "jina-reader", &skill_md("Mine.", "custom reader"));
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("jina-reader").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1342,7 +1332,7 @@ mod tests {
                 .contains("custom reader")
         );
         std::fs::remove_file(&path).expect("delete");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "jina-reader"));
@@ -1352,7 +1342,7 @@ mod tests {
     fn seeded_yt_dlp_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1380,7 +1370,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
         write_skill(&root, "yt-dlp", &skill_md("Mine.", "custom media workflow"));
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("yt-dlp").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1388,7 +1378,7 @@ mod tests {
                 .contains("custom media workflow")
         );
         std::fs::remove_file(&path).expect("delete");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "yt-dlp"));
@@ -1423,7 +1413,7 @@ mod tests {
     fn seeded_web_search_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1468,7 +1458,7 @@ mod tests {
         // one would ship a skill whose commands fail.
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let dir = root.join("web-search");
         for (script, embedded) in WEB_SEARCH_SCRIPTS {
             let seeded = std::fs::read_to_string(dir.join(script))
@@ -1498,7 +1488,7 @@ mod tests {
         std::fs::create_dir_all(script.parent().expect("parent")).expect("mkdir");
         std::fs::write(&script, "print('my own search')\n").expect("write");
 
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("web-search").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1512,7 +1502,7 @@ mod tests {
         );
 
         std::fs::remove_file(&script).expect("delete");
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert!(script.is_file(), "a deleted script comes back");
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
@@ -1674,7 +1664,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
 
-        assert!(seed_builtin_skills(&root).is_empty(), "seeding succeeds");
+        assert!(
+            sync_builtin_skills(&root, true).errors.is_empty(),
+            "seeding succeeds"
+        );
 
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
@@ -1694,6 +1687,54 @@ mod tests {
     }
 
     #[test]
+    fn every_built_in_file_is_in_the_shipped_history() {
+        // An install an older release made is recognised — and so updated —
+        // only while the version it holds is listed, so a change to a
+        // built-in records its new version before it can ship
+        // (docs/builtin-updates.md).
+        // Every unrecorded file in one failure, so a change to several (a
+        // skill's prompt and its scripts) is one command to record.
+        let history = crate::builtins::ShippedHistory::embedded();
+        let unrecorded: Vec<String> = BUILTIN_SKILL_FILES
+            .iter()
+            .map(|(relative, contents)| {
+                let key = crate::builtins::BuiltinKind::Skills.history_key(relative);
+                (key, crate::builtins::sha256_hex(contents.as_bytes()))
+            })
+            .filter(|(key, hash)| !history.knows(key, hash))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            unrecorded.is_empty(),
+            "built-in files changed; record their new versions with\n\n    sha256sum {} >> prompts/shipped.sha256\n",
+            unrecorded.join(" ")
+        );
+    }
+
+    #[test]
+    fn syncing_records_the_version_each_built_in_file_is_based_on() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        let report = sync_builtin_skills(&root, true);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let record = crate::builtins::Manifest::parse(
+            &std::fs::read_to_string(root.join(crate::builtins::MANIFEST_FILE_NAME))
+                .expect("the record"),
+        );
+        for (relative, contents) in BUILTIN_SKILL_FILES {
+            assert_eq!(
+                record.base(relative),
+                Some(crate::builtins::sha256_hex(contents.as_bytes()).as_str()),
+                "{relative}"
+            );
+        }
+        // The walk never mistakes the record for a skill.
+        let (skills, errors) = discover_skills(std::slice::from_ref(&root));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(skills.len(), 5, "{skills:?}");
+    }
+
+    #[test]
     fn seeding_never_clobbers_a_skill_the_user_edited() {
         // A seed that overwrote would silently discard the user's own edits on
         // every restart — the agent definitions' rule (docs/subagents.md).
@@ -1701,7 +1742,7 @@ mod tests {
         let root = tmp.path().to_path_buf();
         write_skill(&root, "skill-creator", &skill_md("Mine.", "my own body"));
 
-        assert!(seed_builtin_skills(&root).is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
 
         let kept = std::fs::read_to_string(root.join("skill-creator").join(SKILL_FILE_NAME))
             .expect("read");

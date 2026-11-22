@@ -319,6 +319,11 @@ pub(crate) struct Session<'t> {
     /// not land in the middle of a reply, so it waits here for the loop
     /// bottom to find the session idle (`Session::flush_pending_update_notice`).
     update_notice_pending: Option<String>,
+    /// The release copies written beside edited built-ins this launch
+    /// (`docs/builtin-updates.md`), until their card is committed — after
+    /// the first frame, at a loop bottom with no overlay up and nothing
+    /// streaming (`Session::flush_builtin_offers`).
+    builtin_offers: Vec<std::path::PathBuf>,
     /// The line to the herdr pane this session runs in (`docs/herdr.md`):
     /// what it is telling herdr and the worker that writes to herdr's
     /// socket. `None` outside herdr — and until bootstrap starts it after
