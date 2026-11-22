@@ -250,7 +250,7 @@ smoke_begin() {
 	# And HOME itself moves into the tree, so there is NO path by which the
 	# binary under test — or tmux, or git, whatever a phase's own env string
 	# says — can read or write the developer's home: `~/.alter-zero`,
-	# `~/.claude/skills`, `~/.tmux.conf`, `~/.gitconfig` all resolve to an
+	# `~/.agents`, `~/.claude/skills`, `~/.tmux.conf`, `~/.gitconfig` all resolve to an
 	# empty directory that dies with the phase. (The checkpoint store supplies
 	# its own git identity, so it needs nothing from there.) A phase that
 	# tests HOME-relative behaviour sets its own.

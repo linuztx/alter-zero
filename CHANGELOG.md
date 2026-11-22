@@ -26,7 +26,9 @@ release heading when a version is cut.
   directory `.alter-zero/skills` comes first, then `.agents/skills`, then
   `.claude/skills`, and a project's skill still shadows a personal one of the
   same name. Started in your home folder, `/skills` no longer lists each
-  directory twice (`docs/agents-dir.md`, `docs/skills.md`,
+  directory twice. The built-in `skill-creator` skill names the new folders
+  on a fresh install; a copy already on disk is kept as it is, so delete its
+  `SKILL.md` to get the new one (`docs/agents-dir.md`, `docs/skills.md`,
   `docs/subagents.md`).
 
 - **Plugin marketplaces found in `.agents/plugins`, as Codex finds them.**

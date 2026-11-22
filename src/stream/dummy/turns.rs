@@ -1202,10 +1202,10 @@ pub(in crate::stream) fn download_turn(cue: &Cue) -> Vec<StreamEvent> {
 /// what the one-line cell hides.
 const SKILLS_REPLY: &str = concat!(
     "Skills are folders of authored markdown I can pull in on demand — a \
-     `SKILL.md` per skill under `.agents/skills/`, `.claude/skills/` or \
-     `~/.alter-zero/skills/`. \
-     Only each one's description sits in my context until I need it, so a \
-     library of them costs almost nothing. Let me load one.\n\n",
+     `SKILL.md` per skill under a project's `.alter-zero/skills/`, \
+     `.agents/skills/` or `.claude/skills/`, or the same folders in your home \
+     directory. Only each one's description sits in my context until I need \
+     it, so a library of them costs almost nothing. Let me load one.\n\n",
     "That's the whole visible surface: one green line. What I got back is the \
      skill's entire body — its instructions are in front of me now, so the \
      rest of this turn follows them. The transcript keeps just this line; \

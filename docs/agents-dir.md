@@ -155,12 +155,16 @@ installed either.
 
 ## `.agents` as protected metadata: not ported
 
-Under its workspace-write sandbox Codex keeps an existing `.agents/`
-read-only, like `.git/` and `.codex/` (`codex-rs/protocol/src/permissions.rs`,
-`PROTECTED_METADATA_PATH_NAMES`). The likely reason is to stop the agent
-rewriting the skills it will read next. Alter Zero has no such sandbox. Its
-`write`, `edit` and `bash` calls meet the permission gate instead
-(`docs/permissions.md`), and `skill-creator` writes skills into a skill
-directory on purpose. A protected-path rule would belong to the gate, and it
-would cover `.alter-zero/` as much as `.agents/`. It is left for a design of
-its own.
+Under its workspace-write sandbox Codex refuses an agent's write under
+`.agents/`, as under `.git/` and `.codex/` (`codex-rs/protocol/src/permissions.rs`,
+`PROTECTED_METADATA_PATH_NAMES`). The check runs before the write and goes by
+the path, so it holds whether or not the folder exists yet
+(`forbidden_agent_metadata_write`). The sandbox's own read-only mount adds the
+folder once it exists (`default_read_only_subpaths_for_writable_root`). The
+likely reason is to stop the agent rewriting the skills it will read next.
+
+Alter Zero has no such sandbox. Its `write`, `edit` and `bash` calls meet the
+permission gate instead (`docs/permissions.md`), and `skill-creator` writes
+skills into a skill directory on purpose. A protected-path rule would belong
+to the gate, and it would cover `.alter-zero/` as much as `.agents/`. It is
+left for a design of its own.

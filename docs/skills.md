@@ -425,8 +425,10 @@ that load are observed; after loading, it reuses the instructions already in
 context until that body is removed. Discovery does not reload bodies into
 the conversation.
 
-The cost is four to six `read_dir`s and one small read per skill, against a
-turn that is about to make a network request. Two things follow from the new
+The cost is three `read_dir`s per directory from the cwd up to the project
+root, plus three personal ones (six at a repo root, nearly all `NotFound`),
+and one small read per skill, against a turn that is about to make a network
+request. Two things follow from the new
 set beyond the registry itself, and both matter:
 
 - **The listing is re-rendered**, so this turn's context carries it. A

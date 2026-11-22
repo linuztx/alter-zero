@@ -2958,7 +2958,9 @@ re-runs at **every turn start**
 (`Session::rescan_skills`, beside the `AGENTS.md` refresh): a startup-only
 discovery froze the session at what it booted with — a skill you added, or one
 the agent had just written *for* you, was invisible until a restart — and the
-cost is four to six `read_dir`s against a turn about to hit the network. The
+cost is three `read_dir`s per directory of the walk plus three personal ones
+(six at a repo root, nearly all `NotFound`) against a turn about to hit the
+network. The
 `/settings` **Skills** availability is re-derived **before** the listing (it
 gates it, so the other order shipped the listing a turn late), the backend is
 rebuilt **only** when the tool set actually flips
