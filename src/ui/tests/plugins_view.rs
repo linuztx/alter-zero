@@ -67,6 +67,7 @@ fn market(name: &str, git: bool) -> CatalogMarketplace {
         installed: 1,
         error: None,
         notes: Vec::new(),
+        found: None,
     }
 }
 
@@ -443,6 +444,27 @@ fn a_marketplace_tab_lists_its_plugins_under_what_it_is() {
     let texts = page(&app);
     assert!(!has(&texts, "Ctrl+U update"), "{texts:#?}");
     assert!(has(&texts, "Ctrl+R remove"), "{texts:#?}");
+}
+
+#[test]
+fn a_found_marketplaces_tab_says_where_it_was_found_and_offers_no_remove() {
+    // Found, not added (docs/agents-dir.md): its header says where it was
+    // found, and the hint offers no Ctrl+R — there is nothing to remove.
+    let mut catalog = catalog();
+    let local = &mut catalog.marketplaces[1];
+    local.found = Some(crate::plugins::FoundIn::Project);
+    local.revision = None;
+    local.updated_at = None;
+    let mut app = open_with(catalog);
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    let texts = page(&app);
+    assert!(
+        has(&texts, "found in this project, not added · /srv/local"),
+        "{texts:#?}"
+    );
+    assert!(!has(&texts, "Ctrl+R remove"), "{texts:#?}");
+    assert!(!has(&texts, "Ctrl+U update"), "{texts:#?}");
 }
 
 #[test]

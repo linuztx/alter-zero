@@ -968,3 +968,123 @@ fn a_repository_sourced_plugin_is_an_update_when_its_entry_moves_on() {
     );
     assert!(update_available(record, &offered(&market), &market));
 }
+
+// ===== a found marketplace (docs/agents-dir.md) =====
+
+fn found_at(dir: &Path) -> Vec<super::super::found::FoundMarketplace> {
+    super::super::found::find_marketplaces(dir, None)
+}
+
+fn install_found(
+    fixture: &Fixture,
+    key: &str,
+    found: &[super::super::found::FoundMarketplace],
+) -> Result<(InstalledPlugin, Option<AddedMarketplace>), String> {
+    fixture
+        .store
+        .install_found(&PluginId::parse(key).unwrap(), found, &fixture.cancel, 200)
+}
+
+#[test]
+fn installing_from_a_found_marketplace_adds_it_first() {
+    // A plugin of a marketplace kept in a directory loads in place, so the
+    // marketplace has to stay known: the install adds the found directory as
+    // `plugin marketplace add <dir>` would, and from then on it is an added
+    // marketplace like any other.
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    let found = found_at(&market);
+    assert_eq!(found.len(), 1, "the catalog is found where it sits");
+
+    let (installed, added) = install_found(&fixture, "formatter@team", &found).unwrap();
+    assert_eq!(added.map(|added| added.name), Some("team".to_string()));
+    assert_eq!(
+        installed.package.root,
+        market.join("plugins/formatter").canonicalize().unwrap(),
+        "loaded in place, as from any added directory"
+    );
+    let registry = fixture.store.registry().unwrap();
+    assert_eq!(
+        registry.marketplaces["team"].source,
+        MarketplaceSource::Local {
+            path: market.display().to_string()
+        }
+    );
+    assert!(registry.is_installed("formatter@team"));
+}
+
+#[test]
+fn an_added_marketplace_is_installed_from_as_it_is() {
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    fixture.add_local(&market);
+    let (_, added) = install_found(&fixture, "formatter@team", &found_at(&market)).unwrap();
+    assert_eq!(added, None, "nothing was left to add");
+}
+
+#[test]
+fn a_found_marketplace_never_takes_the_name_of_an_added_one() {
+    // The added marketplace wins its name: a checkout's catalog of the same
+    // name is never added over it, so it can never offer its own copy of a
+    // plugin installed from the one the user added.
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    fixture.add_local(&market);
+    let other = fixture.dir("checkout");
+    write(
+        &other,
+        ".agents/plugins/marketplace.json",
+        r#"{"name":"team","plugins":[{"name":"stowaway","source":"./stowaway"}]}"#,
+    );
+    write(
+        &other,
+        "stowaway/.claude-plugin/plugin.json",
+        r#"{"name":"stowaway"}"#,
+    );
+
+    let error = install_found(&fixture, "stowaway@team", &found_at(&other)).unwrap_err();
+    assert!(error.contains("lists no plugin"), "{error}");
+    assert_eq!(
+        fixture.store.registry().unwrap().marketplaces["team"].source,
+        MarketplaceSource::Local {
+            path: market.display().to_string()
+        }
+    );
+}
+
+#[test]
+fn a_failed_install_leaves_a_found_marketplace_found() {
+    // The marketplace is added for the plugin's sake: an install that fails
+    // takes it back off, so the page shows it as it was.
+    let fixture = Fixture::new();
+    let market = team_marketplace(&fixture);
+    let error = install_found(&fixture, "remote-only@team", &found_at(&market)).unwrap_err();
+    assert!(error.contains("cannot be installed"), "{error}");
+    assert!(fixture.store.registry().unwrap().marketplaces.is_empty());
+}
+
+#[test]
+fn a_found_catalog_cannot_pass_for_the_official_marketplace() {
+    // Found or added, a directory is never the official catalog.
+    let fixture = Fixture::new();
+    let checkout = fixture.dir("claude-plugins-official");
+    write(
+        &checkout,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"claude-plugins-official","plugins":[{"name":"tool","source":"./tool"}]}"#,
+    );
+    write(
+        &checkout,
+        "tool/.claude-plugin/plugin.json",
+        r#"{"name":"tool"}"#,
+    );
+
+    let error = install_found(
+        &fixture,
+        "tool@claude-plugins-official",
+        &found_at(&checkout),
+    )
+    .unwrap_err();
+    assert!(error.contains("reserved"), "{error}");
+    assert!(fixture.store.registry().unwrap().marketplaces.is_empty());
+}

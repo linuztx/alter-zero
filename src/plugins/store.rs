@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::stream::CancelToken;
 
 use super::components::{PluginPackage, find_manifest, read_manifest, read_plugin};
+use super::found::FoundMarketplace;
 use super::git::{GIT_TIMEOUT, Git};
 use super::id::{PluginId, validate_name};
 use super::layout::PluginLayout;
@@ -199,22 +200,8 @@ pub fn tree_digest(dir: &Path) -> Result<String, String> {
 /// A catalog that will not parse, or a directory that is neither a
 /// marketplace nor a plugin.
 pub fn read_catalog(root: &Path) -> Result<Marketplace, String> {
-    for relative in MARKETPLACE_MANIFESTS {
-        let path = root.join(relative);
-        if !path.is_file() {
-            continue;
-        }
-        let size = std::fs::metadata(&path)
-            .map_err(|err| err.to_string())?
-            .len();
-        if size > MARKETPLACE_MAX_BYTES {
-            return Err(format!(
-                "`{relative}` is larger than {} MiB",
-                MARKETPLACE_MAX_BYTES >> 20
-            ));
-        }
-        let text = std::fs::read_to_string(&path).map_err(|err| format!("`{relative}`: {err}"))?;
-        return parse_marketplace(&text).map_err(|err| format!("`{relative}`: {err}"));
+    if let Some((_, catalog)) = read_marketplace_manifest(root) {
+        return catalog;
     }
     match find_manifest(root)? {
         Some(_) => {
@@ -227,6 +214,38 @@ pub fn read_catalog(root: &Path) -> Result<Marketplace, String> {
                 .to_string(),
         ),
     }
+}
+
+/// The catalog file of the marketplace whose root is `root` — codex's
+/// location, then Claude Code's — and what it reads as; `None` when `root`
+/// has neither. Unlike [`read_catalog`] a directory that is itself a plugin is
+/// no marketplace here: this is what a marketplace nobody added is found by
+/// (`docs/agents-dir.md`).
+pub(crate) fn read_marketplace_manifest(
+    root: &Path,
+) -> Option<(PathBuf, Result<Marketplace, String>)> {
+    let relative = MARKETPLACE_MANIFESTS
+        .iter()
+        .find(|relative| root.join(relative).is_file())?;
+    let path = root.join(relative);
+    let catalog = read_manifest_file(&path, relative);
+    Some((path, catalog))
+}
+
+/// The catalog file at `path` — `relative`, as its errors name it — read
+/// under [`MARKETPLACE_MAX_BYTES`] and parsed.
+fn read_manifest_file(path: &Path, relative: &str) -> Result<Marketplace, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|err| err.to_string())?
+        .len();
+    if size > MARKETPLACE_MAX_BYTES {
+        return Err(format!(
+            "`{relative}` is larger than {} MiB",
+            MARKETPLACE_MAX_BYTES >> 20
+        ));
+    }
+    let text = std::fs::read_to_string(path).map_err(|err| format!("`{relative}`: {err}"))?;
+    parse_marketplace(&text).map_err(|err| format!("`{relative}`: {err}"))
 }
 
 /// What adding a marketplace did.
@@ -658,6 +677,60 @@ impl PluginStore {
     }
 
     // ===== plugins =====
+
+    /// Install the plugin `id` as [`Self::install`] does — first adding its
+    /// marketplace when no marketplace of that name is added yet and one of
+    /// `found` is called that (`docs/agents-dir.md`). A plugin of a
+    /// marketplace kept in a directory loads in place, so the marketplace has
+    /// to stay known for it to keep loading: from here on it is an added
+    /// marketplace like any other. Returns the install, and the marketplace
+    /// added for it when one was.
+    ///
+    /// An added marketplace keeps its name, so a found catalog of the same
+    /// name is never installed from; and `found` lists home's before the
+    /// project's, so the home directory's wins over a checkout's.
+    ///
+    /// # Errors
+    /// What adding the marketplace or installing refuses. An install that
+    /// fails takes back the marketplace added for it.
+    pub fn install_found(
+        &self,
+        id: &PluginId,
+        found: &[FoundMarketplace],
+        cancel: &CancelToken,
+        now: i64,
+    ) -> Result<(InstalledPlugin, Option<AddedMarketplace>), String> {
+        let added = if self.registry()?.marketplaces.contains_key(&id.marketplace) {
+            None
+        } else {
+            found
+                .iter()
+                .find(|found| {
+                    found
+                        .catalog
+                        .as_ref()
+                        .is_ok_and(|catalog| catalog.name == id.marketplace)
+                })
+                .map(|found| {
+                    let source = MarketplaceSource::Local {
+                        path: found.root.display().to_string(),
+                    };
+                    self.add_marketplace(&source, cancel, now)
+                })
+                .transpose()?
+        };
+        match self.install(id, cancel, now) {
+            Ok(installed) => Ok((installed, added)),
+            Err(error) => {
+                if added.is_some() {
+                    // Best effort: the install's own reason is the one to
+                    // say, and a marketplace left added is still listed.
+                    let _ = self.remove_marketplace(&id.marketplace);
+                }
+                Err(error)
+            }
+        }
+    }
 
     /// Install the plugin `id` from its marketplace — or update it, when it
     /// is installed: fetch its source, read it, copy it into place, record

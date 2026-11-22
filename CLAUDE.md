@@ -3385,7 +3385,18 @@ and the fixture unsets every `HERDR_*` variable.
 in place — and installs the plugins they list, from the composer-replacing
 **`/plugins` page** or the **`alter-zero plugin …`** subcommands (Claude
 Code's verbs with codex's `rm` and an `upgrade`; `cli::PluginCli`,
-`tui::plugin_cli`, `tests/plugin_cli.rs`). Three formats install the same
+`tui::plugin_cli`, `tests/plugin_cli.rs`). Two more are **found** rather
+than added, where Codex finds them (`docs/agents-dir.md`,
+`plugins::find_marketplaces`): `~/.agents/plugins/marketplace.json`, and the
+working directory's catalog or else its project root's. Each is listed after
+the added ones on a tab of its own (`found in this project, not added`, no
+Ctrl+R), in the CLI's listings too, and never installed. Installing a plugin
+it offers adds it first (`PluginStore::install_found`, taken back if the
+install fails), since a directory's plugins load in place. An added
+marketplace keeps its name over the home folder's, and the home folder's over
+the project's; one that cannot be offered under its own name is listed under
+where it was found (`this project`, a label no marketplace name can be) with
+the reason (`smoke.sh` Phase 165). Three formats install the same
 way, read by the first manifest a directory has (`plugins::manifest`): a root
 `plugin.json` naming the **Agent Plugins 1.0.0** schema (agent-plugins.org)
 — a **closed** document read strictly, its skills only at
@@ -3435,7 +3446,7 @@ runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,
 `marketplace`, `source`, `registry` — `plugins.json`, never written over when
 it will not parse — `layout`, `components`, `mcp`, `agents`, `git`, `store`,
-`catalog` with `build_catalog` and `load_enabled`), everything kept under
+`found`, `catalog` with `build_catalog` and `load_enabled`), everything kept under
 `{config_home}/plugins/` (`ALTER_ZERO_PLUGINS_DIR` moves it; plugins are **on
 per directory** until one turns them off, `skills.json`'s shape). The page
 (`app::PluginsMenu`, `ui::plugins_view`) is codex's `/plugins`: a search-line

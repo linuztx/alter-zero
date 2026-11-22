@@ -49,6 +49,7 @@ fn market(name: &str, git: bool) -> CatalogMarketplace {
         installed: 1,
         error: None,
         notes: Vec::new(),
+        found: None,
     }
 }
 
@@ -558,6 +559,26 @@ fn a_marketplace_tab_updates_with_ctrl_u_and_removes_with_ctrl_r() {
     // Its tab is gone: the page lands on All.
     assert_eq!(menu(&app).page, PluginsPage::List);
     assert_eq!(menu(&app).tab, PluginsTab::All);
+}
+
+#[test]
+fn a_found_marketplace_has_nothing_to_remove() {
+    // A marketplace found in the project, never added (docs/agents-dir.md):
+    // Ctrl+R says so, rather than asking to remove what was never added.
+    let mut found = catalog();
+    found.marketplaces[1].found = Some(crate::plugins::FoundIn::Project);
+    let mut app = App::new();
+    app.open_plugins_menu(true, found);
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right));
+    assert_eq!(menu(&app).tab, tab("local"));
+    let action = app.on_key(ctrl('r'));
+    assert!(
+        matches!(&action, Action::Toast(text)
+            if text.contains("nothing to remove") && text.contains("this project")),
+        "{action:?}"
+    );
+    assert_eq!(menu(&app).page, PluginsPage::List);
 }
 
 #[test]

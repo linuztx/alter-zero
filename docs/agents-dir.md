@@ -3,17 +3,17 @@
 `.agents/` is the agent-neutral twin of `.alter-zero/` and `.claude/`: a
 directory any coding agent may read, which Codex reads for two things. Codex
 reads **skills** from `.agents/skills` and **plugin marketplaces** from
-`.agents/plugins/marketplace.json`. Alter Zero reads skills from the same
-places, so a repository or a home directory that keeps its skills for Codex
-works here unchanged. An added marketplace's catalog has always been read from
-`.agents/plugins/marketplace.json` first (`docs/plugins.md`).
+`.agents/plugins/marketplace.json`. Alter Zero reads both, from the same places, so a
+repository or a home directory arranged for Codex works here unchanged.
 
 This page states what is read and why each choice was made. The mechanisms are
-in `docs/skills.md` (the skill roots) and `docs/subagents.md` (the agent
-roots); this is the cross-reference for "does Alter Zero read `.agents/X`?".
+in `docs/skills.md` (the skill roots), `docs/subagents.md` (the agent roots)
+and `docs/plugins.md` (found marketplaces); this is the cross-reference for
+"does Alter Zero read `.agents/X`?".
 
 The Codex behaviour cited below is from `github.com/openai/codex` at commit
-`8653ca9` (`codex-rs/ext/skills/src/host_roots.rs`).
+`8653ca9` (`codex-rs/ext/skills/src/host_roots.rs`,
+`codex-rs/core-plugins/src/marketplace.rs`).
 
 ## Skills: `.agents/skills`
 
@@ -88,6 +88,70 @@ shadows a personal skill.
 - **The `.claude/skills` import.** Codex copies `.claude/skills` into
   `.agents/skills` once, on the user's say-so, rewriting the bodies. Alter
   Zero reads `.claude/skills` where it is, so there is nothing to import.
+
+## Plugin marketplaces: `.agents/plugins/marketplace.json`
+
+A marketplace's catalog has always been read from
+`.agents/plugins/marketplace.json` first, then `.claude-plugin/marketplace.json`
+(`MARKETPLACE_MANIFESTS`). What is new is that **a marketplace no one added is
+found**. Codex finds two (`marketplace.rs`, `discover_marketplace_paths_from_roots`):
+
+- **Home**: `~/.agents/plugins/marketplace.json`. This is where Codex keeps the
+  personal marketplace its plugin sharing writes into.
+- **The project**: the working directory's catalog, or, when it has none, the
+  catalog at its project root. Directories in between are not read.
+
+Alter Zero finds the same two, with the same catalog locations it reads in an
+added marketplace (`plugins::find_marketplaces`). A found marketplace is
+**listed, never installed**. It appears in `/plugins` as a tab of its own after
+the added ones, its header saying `found in this project, not added` over its
+directory, and in `alter-zero plugin list --available` and
+`plugin marketplace list`. Its hint offers no Ctrl+R, since there is nothing
+to remove, and Ctrl+R says so. Codex does the same; nothing it finds is
+installed either.
+
+- **Installing from one adds it.** A plugin of a marketplace kept in a
+  directory loads in place (`docs/plugins.md`), so the marketplace must stay
+  known for the plugin to keep loading. The install adds the found
+  directory first, exactly as `alter-zero plugin marketplace add <dir>` would
+  (`PluginStore::install_found`), and from then on it is an added marketplace
+  in every directory, removable with Ctrl+R. An install that fails takes the
+  marketplace back off. Codex copies the plugin into its cache instead and
+  records nothing about the marketplace, but Codex has no in-place install to
+  keep working.
+- **Added marketplaces win their names, then home, then the project.** Plugin
+  IDs are `plugin@marketplace`, so two marketplaces of one name cannot both be
+  listed. The user's explicit choices come first, then their home, then the
+  checkout. A checkout's catalog can therefore never take over the name of a
+  marketplace the user added or keeps at home, and so never offers its own
+  copy as an update to a plugin installed from there. Codex lists home before
+  the project too.
+- **A found marketplace that cannot be used is still shown.** A catalog that
+  will not parse, a name that is invalid or reserved, or a name already taken
+  is listed under where it was found (`this project`, `home folder`) with the
+  reason in its header. Its plugins are not offered. Those labels hold a
+  space, which no marketplace name can, so they never collide with a real
+  tab. A marketplace that silently fails to appear is the one question the
+  page could not otherwise answer.
+- **A plugin directory is not a found marketplace.** An added directory with
+  no catalog is read as a marketplace of the one plugin it is. A found one is
+  not: a repository that is itself a plugin is not offered to itself.
+- **Read only while the page is open.** The catalogs are read when `/plugins`
+  opens and as a job lands, and by the `plugin` subcommands that list or
+  install, never at startup (`docs/plugins.md` *Memory*). Finding them costs a
+  few `stat`s and one catalog read each.
+- **No trust gate.** A found marketplace only lists what it offers. Installing
+  is the user's own act, and whatever an installed plugin runs (hooks, MCP
+  servers) waits for the startup review like any other plugin's. Codex
+  doesn't gate this on trust either.
+
+### What is not ported
+
+- **`api_marketplace.json`** is Codex's curated catalog for API-key accounts,
+  kept under its own home. **`.cursor-plugin/marketplace.json`** is Cursor's.
+  Alter Zero reads neither, found or added.
+- **Writing the personal marketplace.** Codex's shared-plugin checkout writes
+  into `~/.agents/plugins/marketplace.json`. Alter Zero only reads it.
 
 ## `.agents` as protected metadata: not ported
 

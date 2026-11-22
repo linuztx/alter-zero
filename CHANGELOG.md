@@ -29,6 +29,24 @@ release heading when a version is cut.
   directory twice (`docs/agents-dir.md`, `docs/skills.md`,
   `docs/subagents.md`).
 
+- **Plugin marketplaces found in `.agents/plugins`, as Codex finds them.**
+  `/plugins` now lists a marketplace you never added when its catalog is in
+  `~/.agents/plugins/marketplace.json` (where Codex keeps your personal
+  marketplace) or in your project: the working directory's
+  `.agents/plugins/marketplace.json`, or the project root's when the working
+  directory has none. Claude Code's `.claude-plugin/marketplace.json` is found
+  in the same places. Each gets a tab of its own after the marketplaces you
+  added, saying where it was found, and `alter-zero plugin list --available`
+  and `plugin marketplace list` show it too. Nothing it offers is installed
+  until you install it. Installing a plugin adds the marketplace, as
+  `plugin marketplace add` would, so the plugin keeps loading from the
+  project's directory. A marketplace you added keeps its name over one found
+  in your home folder, and that one over the project's, so a checkout can
+  never take over a marketplace you installed from. A found catalog that
+  can't be used (it will not parse, or its name is taken or reserved) still
+  shows under "this project" with the reason (`docs/agents-dir.md`,
+  `docs/plugins.md`).
+
 - **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
   sign-in providers register no apps by themselves — Google's, for its MCP
   servers — so signing in takes an OAuth client you create with the
