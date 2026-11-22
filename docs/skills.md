@@ -141,14 +141,16 @@ other markdown this crate carries, then **written into `{config_home}/skills`
 at startup when the file is absent** — the agent definitions' rule
 (`docs/subagents.md`), for the agent definitions' reasons: a default that is a
 real file on disk can be read, edited and diffed, and a release that improves
-it ships the improvement. `every_authored_built_in_file_is_embedded` keeps the
+it ships the improvement — to every install that left it unedited, whose copy
+the next launch replaces (`docs/builtin-updates.md`). `every_authored_built_in_file_is_embedded` keeps the
 directory and the embedded list in step: a file authored under
 `prompts/skills/` but left out of `BUILTIN_SKILL_FILES` fails the test suite
 instead of quietly missing from every install (a script's `test_*` unit tests
 stay out on purpose). The seed runs *before* the walk, so the session that
-installed the app can already use it. An edited copy is never overwritten; a
-deleted file comes back next launch, so the off-switch is `/skills` (which
-persists) rather than `rm -rf`.
+installed the app can already use it. An edited copy is never overwritten
+(when a release changes a file you edited, its new version is written beside
+yours as `<file>.new`); a deleted file comes back next launch, so the
+off-switch is `/skills` (which persists) rather than `rm -rf`.
 
 One difference from the agent definitions: `ALTER_ZERO_SKILLS_DIR` is **never
 seeded into**. That variable replaces the root list — it says "these are the
@@ -202,7 +204,7 @@ non-automatic retries rather than an assumption that HTTP success means
 complete extraction.
 
 Like `skill-creator`, it is editable at `{config_home}/skills/jina-reader/`,
-never overwrites an existing file, respects project-root precedence and can
+never overwrites an edited file, respects project-root precedence and can
 be disabled per project through `/skills`. An `ALTER_ZERO_SKILLS_DIR` override
 receives no built-ins. Offline regression tests exercise the actual
 seed → discovery → listing → tool-load path and verify that local edits
@@ -924,11 +926,11 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
 | `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
-| `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in seed (`seed_builtin_skills`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
+| `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in sync (`sync_builtin_skills`, over `crate::builtins` — `docs/builtin-updates.md`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
 | `src/context.rs` | the leading listing fragment |
-| `src/tui/bootstrap.rs` | the built-in seed, then discovery at startup, and the failure toast |
+| `src/tui/bootstrap.rs` | the built-in sync, then discovery at startup, and the failure toast |
 | `src/tui/models.rs` | `with_skills` on every backend rebuild, `sync_skill_listing` |
 | `src/app/skills_menu.rs` | the `/skills` picker's state, rows and key map |
 | `src/ui/skills_view.rs` | the `/skills` picker's rendering and geometry |

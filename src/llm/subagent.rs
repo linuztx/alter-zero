@@ -12,9 +12,9 @@ use crate::subagents::{
 };
 
 /// The built-in types, embedded so they exist before anything is written to
-/// disk: the seeded files' own bytes ([`seed_default_agents`] writes exactly
-/// these), and the last-resort definitions when the walk finds no file of
-/// that name at all.
+/// disk: the seeded files' own bytes ([`sync_builtin_agents`] writes exactly
+/// these, and keeps an unedited copy current), and the last-resort
+/// definitions when the walk finds no file of that name at all.
 ///
 /// Authored in `prompts/agents/`, beside every other `include_str!`'d markdown
 /// this crate embeds (`prompts/alter_zero.md`, `prompts/subagent.md`, …) — the
@@ -104,37 +104,22 @@ fn override_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// Write the built-in definitions into `dir`, skipping any that are already
-/// there — so a fresh install finds them on disk and can edit them, an
-/// **edited** default is never clobbered, and a release that adds a default
-/// gets it on the next launch (`docs/subagents.md`).
+/// Bring the built-in definitions in `dir` to this release's — writing what
+/// is missing, replacing an unedited copy an older release wrote, and keeping
+/// one the user edited, with this release's version beside it as
+/// `<name>.md.new` when the release changed it (`docs/builtin-updates.md`).
+///
+/// So a fresh install finds them on disk and can edit them, an **edited**
+/// default is never clobbered, a release that adds or improves a default
+/// reaches every install on its next launch (`docs/subagents.md`), and a
+/// `.new` is never read as a type (its extension is not `md`).
 ///
 /// Best-effort: a directory that cannot be created or a file that cannot be
-/// written is returned as an error for the startup toast, never a failed
-/// launch — the embedded copies still back the types up ([`with_builtins`]).
+/// written is in the report for the startup toast, never a failed launch —
+/// the embedded copies still back the types up ([`with_builtins`]).
 #[must_use]
-pub fn seed_default_agents(dir: &Path) -> Vec<AgentFileError> {
-    let mut errors = Vec::new();
-    if let Err(err) = std::fs::create_dir_all(dir) {
-        errors.push(AgentFileError {
-            path: dir.to_path_buf(),
-            message: err.to_string(),
-        });
-        return errors;
-    }
-    for (name, contents) in BUILTIN_FILES {
-        let path = dir.join(name);
-        if path.exists() {
-            continue;
-        }
-        if let Err(err) = std::fs::write(&path, contents) {
-            errors.push(AgentFileError {
-                path,
-                message: err.to_string(),
-            });
-        }
-    }
-    errors
+pub fn sync_builtin_agents(dir: &Path) -> crate::builtins::SyncReport {
+    crate::builtins::sync(dir, crate::builtins::BuiltinKind::Agents, &BUILTIN_FILES)
 }
 
 /// The embedded definitions, parsed. They carry **no** path — nothing read
@@ -374,7 +359,7 @@ mod tests {
     fn seeding_writes_the_builtins_once_and_never_overwrites_an_edit() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let errors = seed_default_agents(&dir);
+        let errors = sync_builtin_agents(&dir).errors;
         assert!(errors.is_empty(), "{errors:?}");
         assert!(dir.join("general-purpose.md").is_file());
         assert!(dir.join("explore.md").is_file());
@@ -382,7 +367,7 @@ mod tests {
         // An edited default is the user's now: a second launch must not
         // clobber it.
         std::fs::write(dir.join("explore.md"), "---\ndescription: Mine.\n---\n").unwrap();
-        let second = seed_default_agents(&dir);
+        let second = sync_builtin_agents(&dir).errors;
         assert!(second.is_empty(), "{second:?}");
         let (agents, _) = discover_agents(&[dir]);
         let explore = agents
@@ -390,6 +375,42 @@ mod tests {
             .find(|a| a.name == "explore")
             .expect("explore");
         assert_eq!(explore.description, "Mine.");
+    }
+
+    #[test]
+    fn every_built_in_file_is_in_the_shipped_history() {
+        // The skills' rule (docs/builtin-updates.md): a seeded definition
+        // an older release wrote is recognised only by its version being
+        // listed, so a change records its new version before it can ship.
+        let history = crate::builtins::ShippedHistory::embedded();
+        for (relative, contents) in BUILTIN_FILES {
+            let key = crate::builtins::BuiltinKind::Agents.history_key(relative);
+            assert!(
+                history.knows(&key, &crate::builtins::sha256_hex(contents.as_bytes())),
+                "{key} changed: record its new version with\n\n    sha256sum {key} >> prompts/shipped.sha256\n"
+            );
+        }
+    }
+
+    #[test]
+    fn syncing_records_both_definitions_and_the_walk_skips_the_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("agents");
+        let report = sync_builtin_agents(&dir);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let record = crate::builtins::Manifest::parse(
+            &std::fs::read_to_string(dir.join(crate::builtins::MANIFEST_FILE_NAME)).unwrap(),
+        );
+        for (relative, contents) in BUILTIN_FILES {
+            assert_eq!(
+                record.base(relative),
+                Some(crate::builtins::sha256_hex(contents.as_bytes()).as_str()),
+                "{relative}"
+            );
+        }
+        let (agents, errors) = discover_agents(&[dir]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(agents.len(), 2, "{agents:?}");
     }
 
     #[test]

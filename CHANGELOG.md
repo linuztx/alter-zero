@@ -14,6 +14,22 @@ release heading when a version is cut.
 
 ### Added
 
+- **Built-in skills and agent types update with each release.** The
+  built-in skills (`skill-creator`, `jina-reader`, `web-search`, `yt-dlp`,
+  `flaredantic`) and agent types (`general-purpose`, `explore`) are written
+  into `~/.alter-zero` as files you can edit, and until now a file already
+  there was never touched again: a release that improved one reached new
+  installs only, unless you deleted the folder. Each launch now brings a
+  built-in you have not edited up to this release's version — the binary
+  carries the hash of every version it has ever shipped, so a copy one of
+  them wrote is told apart from yours — and says so in one line. A file you
+  edited is never written over: when a release changes it, its new version
+  is saved beside yours as `<file>.new`, once, and a card under the banner
+  names it, so you can merge what you want or delete your copy to take the
+  new one. A file a release stops shipping is removed, unless you edited a
+  file of that skill. Installs from earlier releases are recognised on their
+  first launch of this one (`docs/builtin-updates.md`).
+
 - **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
   sign-in providers register no apps by themselves — Google's, for its MCP
   servers — so signing in takes an OAuth client you create with the

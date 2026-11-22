@@ -325,7 +325,7 @@ fix it was left are in the doc.
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, `plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `builtins`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, `plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -1918,7 +1918,8 @@ an optional body that **replaces the persona** for that type while the
 environment/scratchpad blocks and the subagent note stay; the built-in
 `general-purpose`/`explore` are seeded into `~/.alter-zero/agents/` on first
 run from the copies embedded out of `prompts/agents/` — editable files, never
-clobbered, and the last-resort fallback (`AgentDefinition::is_builtin`, a
+clobbered once edited and kept current until then (`docs/builtin-updates.md`),
+and the last-resort fallback (`AgentDefinition::is_builtin`, a
 `path` of `None`) since the schema's default type must always resolve —
 discovered from `{cwd}/.alter-zero/agents`, the project root's, then
 `{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
@@ -2938,7 +2939,16 @@ script's `test_*` files excepted) and seeded into `{config_home}/skills`
 **before** the startup walk (so the session that installed the app can already
 use it) the way the agent definitions are — editable, never clobbered, a
 deleted file back next launch, the off-switch being `/skills`, which persists,
-rather than `rm -rf` — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
+rather than `rm -rf`, and **kept current while unedited**: every launch syncs
+the built-ins (`builtins::sync`, `docs/builtin-updates.md`) — a copy whose
+bytes `prompts/shipped.sha256` lists is one nobody edited and is replaced
+with this release's, any other is the user's and is kept, a release that
+changed an edited file writing its new version beside it as `<file>.new`
+once (each file's base in the seeded directory's `.builtins.json`) under an
+`Edited built-ins` card — so **a change to any file under `prompts/skills/`
+or `prompts/agents/` appends its new hash to `prompts/shipped.sha256`**
+(`every_built_in_file_is_in_the_shipped_history` names the command, and a
+line is never removed) — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
 agent *type* must resolve (`general-purpose` is the `agent` schema's default).
