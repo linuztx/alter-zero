@@ -28,6 +28,10 @@ struct Scratch {
     config: PathBuf,
     work: PathBuf,
     market: PathBuf,
+    /// `HOME` for the run: a marketplace in `~/.agents/plugins` is found
+    /// unasked (`docs/agents-dir.md`), so the developer's own home must
+    /// never be the one read.
+    home: PathBuf,
 }
 
 fn scratch(test: &str) -> Scratch {
@@ -63,10 +67,13 @@ fn scratch(test: &str) -> Scratch {
     );
     let work = dir.join("work");
     std::fs::create_dir_all(&work).expect("work dir");
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).expect("home dir");
     Scratch {
         config: dir.join("config"),
         work,
         market,
+        home,
     }
 }
 
@@ -77,6 +84,7 @@ fn plugin(scratch: &Scratch, args: &[&str]) -> Output {
         .arg("plugin")
         .args(args)
         .current_dir(&scratch.work)
+        .env("HOME", &scratch.home)
         .env("ALTER_ZERO_CONFIG_DIR", &scratch.config)
         .env_remove("ALTER_ZERO_PLUGINS_DIR")
         .env_remove("NO_COLOR")
@@ -245,4 +253,59 @@ fn update_reinstalls_a_plugin_its_marketplace_changed() {
     assert!(copied.contains("warmly"), "{copied}");
     let text = ok(&scratch, &["update", "hello"]);
     assert!(text.contains("hello@demo is up to date"), "{text}");
+}
+
+/// Write the `local` catalog into `dir`: `tool`, kept beside it.
+fn local_catalog(dir: &Path, name: &str) {
+    write(
+        dir,
+        ".agents/plugins/marketplace.json",
+        &format!(
+            r#"{{"name":"{name}","plugins":[
+            {{"name":"tool","source":"./plugins/tool","description":"A tool"}}]}}"#
+        ),
+    );
+    write(
+        dir,
+        "plugins/tool/.claude-plugin/plugin.json",
+        r#"{"name":"tool","version":"0.3.0"}"#,
+    );
+}
+
+#[test]
+fn a_marketplace_found_in_the_working_directory_is_listed_and_installing_adds_it() {
+    // Codex's repo marketplace (docs/agents-dir.md): listed unasked, never
+    // installed — until a plugin it offers is, which adds it.
+    let scratch = scratch("found-project");
+    local_catalog(&scratch.work, "local");
+
+    let listed = ok(&scratch, &["marketplace", "list"]);
+    assert!(listed.contains("local"), "{listed}");
+    assert!(
+        listed.contains("found in this project, not added"),
+        "{listed}"
+    );
+    let available = ok(&scratch, &["list", "--available"]);
+    assert!(available.contains("tool@local"), "{available}");
+
+    let installed = ok(&scratch, &["install", "tool"]);
+    assert!(installed.contains("Added marketplace local"), "{installed}");
+    assert!(installed.contains("Installed tool@local"), "{installed}");
+    let listed = ok(&scratch, &["marketplace", "list"]);
+    assert!(listed.contains("local"), "{listed}");
+    assert!(!listed.contains("not added"), "added now: {listed}");
+    assert!(listed.contains("1 installed"), "{listed}");
+}
+
+#[test]
+fn a_marketplace_in_the_home_folder_is_listed() {
+    let scratch = scratch("found-home");
+    local_catalog(&scratch.home, "personal");
+
+    let listed = ok(&scratch, &["marketplace", "list"]);
+    assert!(listed.contains("personal"), "{listed}");
+    assert!(
+        listed.contains("found in your home folder, not added"),
+        "{listed}"
+    );
 }

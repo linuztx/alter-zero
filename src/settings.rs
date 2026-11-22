@@ -203,7 +203,7 @@ impl SettingKey {
                 "Run the lifecycle hooks in ~/.alter-zero/hooks.json around tool calls and turns"
             }
             Self::Skills => {
-                "Offer the model the SKILL.md skills found in .claude/skills and ~/.alter-zero/skills"
+                "Offer the model the SKILL.md skills found in .alter-zero/skills, .agents/skills and .claude/skills"
             }
             Self::Mcp => {
                 "Connect the MCP servers and let the model call them — each server keeps its /mcp on/off"

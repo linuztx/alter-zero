@@ -24,8 +24,8 @@ What the project layer reads:
 
 | file                            | what                                        | merge rule                                   |
 | ------------------------------- | ------------------------------------------- | -------------------------------------------- |
-| `{root}/.alter-zero/skills/`    | project skills (already shipped, unchanged) | first-root-wins walk (`docs/skills.md`)      |
-| `{root}/.alter-zero/agents/`    | project subagent types (outside the gate, like skills) | first-root-wins walk (`docs/subagents.md`) |
+| `{dir}/.alter-zero/skills/`, `{dir}/.agents/skills/` | project skills, from every directory up to the root | first-root-wins walk (`docs/skills.md`)      |
+| `{dir}/.alter-zero/agents/`     | project subagent types, from every directory up to the root (outside the gate, like skills) | first-root-wins walk (`docs/subagents.md`) |
 | `{root}/.alter-zero/hooks.json` | project lifecycle hooks — **new**           | **union** after the user file (see below)    |
 | `{root}/.alter-zero/mcp.json`   | project MCP servers — **new**               | first-name-wins, ahead of `.mcp.json`        |
 | `{root}/.mcp.json`              | Claude-Code-compat MCP servers (existing)   | first-name-wins, after `.alter-zero/mcp.json` |

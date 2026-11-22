@@ -109,7 +109,7 @@ fn ids(catalog: &PluginCatalog) -> Vec<String> {
 fn the_catalog_lists_every_plugin_installed_first_then_by_name() {
     let fixture = fixture();
     install(&fixture, "zeta@team");
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     assert_eq!(catalog.error, None);
     assert_eq!(
         ids(&catalog),
@@ -132,7 +132,7 @@ fn the_catalog_lists_every_plugin_installed_first_then_by_name() {
 fn an_installed_plugin_says_its_state_and_what_it_holds() {
     let fixture = fixture();
     install(&fixture, "zeta@team");
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let zeta = &catalog.plugins[0];
     let state = zeta.installed.as_ref().unwrap();
     assert_eq!(state.version.as_deref(), Some("1.0.0"));
@@ -151,7 +151,7 @@ fn a_plugin_kept_in_its_marketplace_is_listed_from_its_manifest_alone() {
     // installed is read only as far as its row needs: the manifest's fields
     // and its format. What it adds waits until the page shows it.
     let fixture = fixture();
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let find = |name: &str| catalog.plugins.iter().find(|p| p.id.name == name).unwrap();
     let alpha = find("alpha");
     assert!(alpha.installed.is_none());
@@ -171,7 +171,7 @@ fn a_plugin_kept_in_its_marketplace_is_listed_from_its_manifest_alone() {
 #[test]
 fn reading_a_plugin_s_contents_says_what_it_adds_before_it_is_installed() {
     let fixture = fixture();
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let find = |name: &str| {
         catalog
             .plugins
@@ -202,7 +202,7 @@ fn reading_a_plugin_s_contents_says_what_it_adds_before_it_is_installed() {
 #[test]
 fn a_plugin_whose_folder_went_away_is_unavailable_once_read() {
     let fixture = fixture();
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let mut alpha = catalog
         .plugins
         .iter()
@@ -225,7 +225,7 @@ fn a_plugin_read_before_it_is_installed_says_what_its_manifest_says() {
         r#"{"name":"alpha","version":"2.1.0","description":"From the manifest.",
             "author":{"name":"Ada"},"homepage":"https://example.com/alpha"}"#,
     );
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let alpha = catalog
         .plugins
         .iter()
@@ -263,14 +263,14 @@ fn a_directory_plugin_is_always_current_and_a_directory_turns_one_off() {
         ".claude-plugin/marketplace.json",
         r#"{"name":"team","plugins":[{"name":"zeta","source":"./plugins/zeta","version":"1.1.0"}]}"#,
     );
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let state = catalog.plugins[0].installed.as_ref().unwrap();
     assert!(!state.update);
     assert!(state.in_place);
     assert!(!state.enabled);
     assert_eq!(catalog.plugins[0].version.as_deref(), Some("1.1.0"));
     assert_eq!(state.version.as_deref(), Some("1.1.0"));
-    assert!(build_catalog(&fixture.store, "/elsewhere").plugins[0].is_enabled());
+    assert!(build_catalog(&fixture.store, "/elsewhere", &[]).plugins[0].is_enabled());
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn an_installed_plugin_its_marketplace_dropped_is_still_listed() {
         ".claude-plugin/marketplace.json",
         r#"{"name":"team","plugins":[]}"#,
     );
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     assert_eq!(ids(&catalog), ["zeta@team"]);
     let zeta = &catalog.plugins[0];
     assert!(zeta.installed.is_some());
@@ -294,7 +294,7 @@ fn an_installed_plugin_its_marketplace_dropped_is_still_listed() {
 fn a_registry_that_will_not_parse_is_the_catalogs_error() {
     let fixture = fixture();
     std::fs::write(fixture.store.layout.registry_file(), "{").unwrap();
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     assert!(catalog.error.unwrap().contains("plugins.json"));
     assert!(catalog.plugins.is_empty());
 }
@@ -401,7 +401,7 @@ fn a_second_enabled_plugin_of_one_name_is_not_loaded() {
     let ids: Vec<String> = loaded.packages.iter().map(|p| p.id.key()).collect();
     assert_eq!(ids, ["zeta@other"], "the first of the name, in id order");
     // The page says the same: the one not loaded is no `✔ enabled`.
-    let catalog = build_catalog(&fixture.store, "/project");
+    let catalog = build_catalog(&fixture.store, "/project", &[]);
     let state = |key: &str| {
         catalog
             .plugins
@@ -419,4 +419,190 @@ fn a_second_enabled_plugin_of_one_name_is_not_loaded() {
         "{:?}",
         loaded.errors
     );
+}
+
+// ===== found marketplaces (docs/agents-dir.md) =====
+
+use super::super::found::{FoundIn, find_marketplaces};
+
+/// A project directory whose `.agents` catalog, `local`, lists `tool` — kept
+/// beside it, with a manifest and a skill.
+fn found_project(base: &Path) -> PathBuf {
+    let project = base.join("project");
+    write(
+        &project,
+        ".agents/plugins/marketplace.json",
+        r#"{"name":"local","description":"Project tools","plugins":[
+            {"name":"tool","source":"./plugins/tool","description":"A tool."}]}"#,
+    );
+    write(
+        &project,
+        "plugins/tool/.claude-plugin/plugin.json",
+        r#"{"name":"tool","version":"0.1.0"}"#,
+    );
+    write(
+        &project,
+        "plugins/tool/skills/use/SKILL.md",
+        "---\nname: use\ndescription: Use it.\n---\nUse.",
+    );
+    project
+}
+
+fn market_names(catalog: &PluginCatalog) -> Vec<&str> {
+    catalog
+        .marketplaces
+        .iter()
+        .map(|market| market.name.as_str())
+        .collect()
+}
+
+#[test]
+fn a_marketplace_found_in_the_project_is_listed_without_being_added() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap();
+    let project = found_project(&base);
+    let store = PluginStore::new(PluginLayout::under(&base.join("config")), None);
+
+    let catalog = build_catalog(&store, "/project", &find_marketplaces(&project, None));
+    assert_eq!(catalog.error, None);
+    assert_eq!(market_names(&catalog), ["local"]);
+    let market = &catalog.marketplaces[0];
+    assert_eq!(market.found, Some(FoundIn::Project));
+    assert_eq!(market.description.as_deref(), Some("Project tools"));
+    assert_eq!(market.root, project);
+    assert_eq!(market.source, project.display().to_string());
+    assert_eq!((market.plugins, market.installed), (1, 0));
+    assert_eq!(market.error, None);
+    assert!(!market.git);
+    assert_eq!(market.updated_at, None, "never added, never read again");
+
+    assert_eq!(ids(&catalog), ["tool@local"]);
+    let tool = &catalog.plugins[0];
+    assert!(tool.installed.is_none());
+    assert_eq!(tool.unavailable, None, "it can be installed");
+    assert_eq!(
+        tool.version.as_deref(),
+        Some("0.1.0"),
+        "read from its manifest, as from an added directory"
+    );
+    assert!(
+        store.registry().unwrap().marketplaces.is_empty(),
+        "listing it adds nothing"
+    );
+}
+
+#[test]
+fn found_marketplaces_come_after_the_added_ones() {
+    let fixture = fixture();
+    let project = found_project(fixture.market.parent().unwrap());
+    let catalog = build_catalog(
+        &fixture.store,
+        "/project",
+        &find_marketplaces(&project, None),
+    );
+    assert_eq!(market_names(&catalog), ["team", "local"]);
+    assert_eq!(catalog.marketplaces[0].found, None);
+    assert_eq!(catalog.marketplaces[1].found, Some(FoundIn::Project));
+}
+
+#[test]
+fn a_found_marketplace_that_is_an_added_one_is_listed_once() {
+    // Installing from a found marketplace adds it, so from then on the
+    // directory is found and added at once: it is the added one.
+    let fixture = fixture();
+    let found = find_marketplaces(&fixture.market, None);
+    assert_eq!(found.len(), 1);
+    let catalog = build_catalog(&fixture.store, "/project", &found);
+    assert_eq!(market_names(&catalog), ["team"]);
+    assert_eq!(catalog.marketplaces[0].found, None);
+}
+
+#[test]
+fn a_found_marketplace_named_like_an_added_one_is_listed_under_where_it_was_found() {
+    // Plugin ids are `plugin@marketplace`, so two marketplaces of one name
+    // cannot both be offered: the added one keeps it, and the page says why
+    // the checkout's is not.
+    let fixture = fixture();
+    let checkout = fixture.market.parent().unwrap().join("checkout");
+    write(
+        &checkout,
+        ".agents/plugins/marketplace.json",
+        r#"{"name":"team","plugins":[{"name":"stowaway","source":"./stowaway"}]}"#,
+    );
+    let catalog = build_catalog(
+        &fixture.store,
+        "/project",
+        &find_marketplaces(&checkout, None),
+    );
+    assert_eq!(market_names(&catalog), ["team", "this project"]);
+    let shadowed = &catalog.marketplaces[1];
+    assert_eq!(shadowed.found, Some(FoundIn::Project));
+    let error = shadowed.error.as_deref().unwrap();
+    assert!(error.contains("`team`"), "{error}");
+    assert!(
+        !ids(&catalog).iter().any(|id| id.starts_with("stowaway")),
+        "its plugins are not offered: {:?}",
+        ids(&catalog)
+    );
+}
+
+#[test]
+fn the_home_folders_marketplace_wins_a_name_over_the_projects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap();
+    let project = found_project(&base);
+    let home = base.join("home");
+    write(
+        &home,
+        ".agents/plugins/marketplace.json",
+        r#"{"name":"local","plugins":[]}"#,
+    );
+    let store = PluginStore::new(PluginLayout::under(&base.join("config")), None);
+
+    let catalog = build_catalog(
+        &store,
+        "/project",
+        &find_marketplaces(&project, Some(&home)),
+    );
+    assert_eq!(market_names(&catalog), ["local", "this project"]);
+    assert_eq!(catalog.marketplaces[0].found, Some(FoundIn::Home));
+    let error = catalog.marketplaces[1].error.as_deref().unwrap();
+    assert!(error.contains("home folder"), "{error}");
+}
+
+#[test]
+fn a_found_catalog_that_cannot_be_read_says_why_under_where_it_was_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap();
+    let project = base.join("project");
+    write(&project, ".agents/plugins/marketplace.json", "{");
+    let store = PluginStore::new(PluginLayout::under(&base.join("config")), None);
+
+    let catalog = build_catalog(&store, "/project", &find_marketplaces(&project, None));
+    assert_eq!(market_names(&catalog), ["this project"]);
+    let error = catalog.marketplaces[0].error.as_deref().unwrap();
+    assert!(
+        error.contains(".agents/plugins/marketplace.json"),
+        "{error}"
+    );
+    assert!(catalog.plugins.is_empty());
+}
+
+#[test]
+fn a_found_catalog_with_a_reserved_name_says_it_cannot_be_used() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap();
+    let checkout = base.join("claude-plugins-official");
+    write(
+        &checkout,
+        ".claude-plugin/marketplace.json",
+        r#"{"name":"claude-plugins-official","plugins":[{"name":"tool","source":"./tool"}]}"#,
+    );
+    let store = PluginStore::new(PluginLayout::under(&base.join("config")), None);
+
+    let catalog = build_catalog(&store, "/project", &find_marketplaces(&checkout, None));
+    assert_eq!(market_names(&catalog), ["this project"]);
+    let error = catalog.marketplaces[0].error.as_deref().unwrap();
+    assert!(error.contains("reserved"), "{error}");
+    assert!(catalog.plugins.is_empty());
 }

@@ -2,6 +2,7 @@
 
 mod catalog;
 mod components;
+mod found;
 mod manifest;
 mod marketplace;
 mod mcp;

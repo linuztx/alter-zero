@@ -614,7 +614,7 @@ impl App {
                 menu.selected = 0;
             }
             KeyCode::Char('u') if ctrl => return self.update_current_marketplace(),
-            KeyCode::Char('r') if ctrl => self.ask_to_remove_current_marketplace(),
+            KeyCode::Char('r') if ctrl => return self.ask_to_remove_current_marketplace(),
             KeyCode::Enter if adding => return self.add_highlighted_marketplace(),
             KeyCode::Enter => {
                 menu.list_selected = menu.selected;
@@ -668,14 +668,22 @@ impl App {
     }
 
     /// Ctrl+R on a marketplace's tab: ask before removing it, naming what
-    /// it uninstalls.
-    fn ask_to_remove_current_marketplace(&mut self) {
+    /// it uninstalls — or, for one found and never added
+    /// (`docs/agents-dir.md`), say there is nothing to remove.
+    fn ask_to_remove_current_marketplace(&mut self) -> Action {
         let Some(menu) = self.plugins_menu.as_mut() else {
-            return;
+            return Action::None;
         };
-        let Some(name) = menu.current_marketplace().map(|market| market.name.clone()) else {
-            return;
+        let Some(market) = menu.current_marketplace() else {
+            return Action::None;
         };
+        if let Some(found_in) = market.found {
+            return Action::Toast(format!(
+                "Found {}, not added — there is nothing to remove",
+                found_in.phrase()
+            ));
+        }
+        let name = market.name.clone();
         let plugins = menu
             .catalog
             .plugins
@@ -688,6 +696,7 @@ impl App {
         // The question highlights the answer the user just chose: Enter
         // confirms it.
         menu.selected = 0;
+        Action::None
     }
 
     /// Enter on the add tab: add the highlighted source — or, for an

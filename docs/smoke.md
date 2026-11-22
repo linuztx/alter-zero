@@ -107,8 +107,9 @@ and `SMOKE_BIN` are the environment spellings of the knobs.
   them away); `--yes` deletes them;
 - **`$HOME` moved into the tree** as well, so there is no path by which the
   binary under test — or tmux, or git, whatever a phase's own env string
-  says — reaches the developer's home: `~/.alter-zero`, `~/.claude/skills`,
-  `~/.tmux.conf` and `~/.gitconfig` all resolve to an empty directory that
+  says — reaches the developer's home: `~/.alter-zero`, `~/.agents`,
+  `~/.claude/skills`, `~/.tmux.conf` and `~/.gitconfig` all resolve to an
+  empty directory that
   dies with the phase (the checkpoint store supplies its own git identity).
   A phase that tests HOME-relative behaviour sets its own;
 - **a tmux server that reads no configuration file** (`-f /dev/null`): a

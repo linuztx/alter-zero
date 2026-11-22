@@ -63,21 +63,36 @@ its own project:
 
 | # | Root | Scope |
 |---|------|-------|
-| 1 | `<cwd>/.alter-zero/skills` | directory |
-| 2 | `<cwd>/.claude/skills` | directory (compat) |
-| 3 | `<project root>/.alter-zero/skills` | project |
-| 4 | `<project root>/.claude/skills` | project (compat) |
-| 5 | `{config_home}/skills` | personal (`~/.alter-zero/skills`) |
+| 1 | `<dir>/.alter-zero/skills` | each directory from the cwd up to the project root, nearest first |
+| 2 | `<dir>/.agents/skills` | the same directories, shared with Codex (`docs/agents-dir.md`) |
+| 3 | `<dir>/.claude/skills` | the same directories (compat) |
+| 4 | `{config_home}/skills` | personal (`~/.alter-zero/skills`) |
+| 5 | `~/.agents/skills` | personal, shared with Codex |
 | 6 | `~/.claude/skills` | personal (compat) |
 
-Rows 3–4 are the **`.git` walk-up** — `project_doc::find_project_root`, the
-same discovery `AGENTS.md` uses — and they are skipped entirely when the
-project root *is* the cwd, which is the common case: launched at the repo
-root, the walk reads the same two directories it always did. They exist
-because launching in `repo/src` must still find `repo/.claude/skills`; a
-skill is a property of the project, not of whichever directory you happened
-to start in. The cwd keeps precedence over the project root for the same
-reason project keeps it over personal: the more specific root wins.
+Rows 1–3 repeat for **every directory from the cwd up to the project root**:
+the cwd's three, then its parent's, up to and including the project root's.
+The project root is the nearest `.git` ancestor
+(`project_doc::find_project_root`), and the directories are the ones
+`AGENTS.md` discovery reads (`project_doc::doc_chain`), nearest first.
+Without a project root the cwd alone is read. Launched at the repo root, the
+walk reads that one directory's three roots. Launched in
+`repo/packages/web/src`, it still finds `packages/web/.agents/skills` and
+`repo/.claude/skills`; a skill is a property of the project, not of whichever
+directory you happened to start in. The nearer directory keeps precedence
+over the farther one for the same reason project keeps it over personal: the
+more specific root wins. This walk is Codex's rule for `.agents/skills`. It
+replaced reading only the cwd and the project root, so a directory nested two
+deep used to miss the ones between.
+
+Within one directory `.agents/skills` comes after our own `.alter-zero/skills`
+and ahead of Claude Code's `.claude/skills`. `.agents/` is the directory
+every agent is meant to share, so it outranks another product's own
+(`docs/agents-dir.md`).
+
+A path is listed once, where it first appears. Launched in `~`, the cwd's three
+rows *are* the personal three, and `/skills` used to name each directory
+twice.
 
 The personal root hangs off the **config home**, so it follows
 `ALTER_ZERO_CONFIG_DIR` exactly like `hooks.json`, `permissions.json`,
@@ -98,6 +113,15 @@ markdown with no tool-specific behaviour in them, the ecosystem writes them to
 `.claude/skills`, and reading that directory costs one `read_dir` that usually
 returns `NotFound`. A user who has already written skills for Claude Code gets
 them here for free.
+
+The `.agents/` rows are the same bargain made with Codex, which reads skills
+from `~/.agents/skills` and from `.agents/skills` in each directory of the
+project (`docs/agents-dir.md`). A repository that ships skills for Codex
+offers them here unchanged. The one difference is depth. Codex looks for a
+`SKILL.md` up to six directories below a root, while the walk here reads
+`<root>/<name>/SKILL.md` only. That is the layout this page and
+`skill-creator` teach, and it keeps the per-turn rescan to one `read_dir` per
+root.
 
 The project rows sit deliberately **outside** the startup review that guards
 the project's hooks and MCP servers (`docs/config-review.md`): a `SKILL.md`
@@ -401,8 +425,10 @@ that load are observed; after loading, it reuses the instructions already in
 context until that body is removed. Discovery does not reload bodies into
 the conversation.
 
-The cost is four to six `read_dir`s and one small read per skill, against a
-turn that is about to make a network request. Two things follow from the new
+The cost is three `read_dir`s per directory from the cwd up to the project
+root, plus three personal ones (six at a repo root, nearly all `NotFound`),
+and one small read per skill, against a turn that is about to make a network
+request. Two things follow from the new
 set beyond the registry itself, and both matter:
 
 - **The listing is re-rendered**, so this turn's context carries it. A
