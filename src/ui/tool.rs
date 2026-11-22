@@ -431,13 +431,6 @@ pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
     ])
 }
 
-/// The live preview row for a running `!` shell command: `⎿ Running…
-/// ({elapsed})`. A shell turn hides the spinner status line entirely (see
-/// [`strip_has_status`]), so its running elapsed lives here instead — the
-/// boundary-supplied `elapsed`, [`format_elapsed`]-humanized like the status
-/// line's timer (`1m 5s`, never a bare `65s`). Only shown live in
-/// [`render_live`]; the committed cell renders its output, not `Running…`.
-/// See `docs/shell-command.md`.
 /// A finished `imagegen` cell's body (`docs/imagegen.md`): the fact line's
 /// facts, then where the file is — the path by the session's path display
 /// rule, linked to the file, and on rows of its own when it does not fit
@@ -512,6 +505,13 @@ pub(super) fn imagegen_running_lines(
     lines
 }
 
+/// The live preview row for a running `!` shell command: `⎿ Running…
+/// ({elapsed})`. A shell turn hides the spinner status line entirely (see
+/// [`strip_has_status`]), so its running elapsed lives here instead — the
+/// boundary-supplied `elapsed`, [`format_elapsed`]-humanized like the status
+/// line's timer (`1m 5s`, never a bare `65s`). Only shown live in
+/// [`render_live`]; the committed cell renders its output, not `Running…`.
+/// See `docs/shell-command.md`.
 pub(super) fn shell_running_line(elapsed: Duration) -> Line<'static> {
     result_row(
         0,

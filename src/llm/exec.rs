@@ -523,6 +523,7 @@ fn run_piped(
         truncated: false,
         background: None,
         image: None,
+        image_withheld: false,
         tasks: None,
         context,
         // The status the frame above names, as data (docs/rollout-records.md).

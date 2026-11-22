@@ -765,6 +765,18 @@ pub fn build_messages_for<U: Into<AttachmentUrl>>(
     messages
 }
 
+/// The line a known non-vision model reads in a picture's place — the one
+/// degrade the replay applies (`chat_message`) and the live round's own for a
+/// picture the executor kept back (`llm::agent`, `docs/imagegen.md`), so the
+/// two turns' requests match.
+#[must_use]
+pub(crate) fn omitted_image_line(path: &Path) -> String {
+    format!(
+        "\n[image omitted: {} — the current model does not support image input]",
+        path.display()
+    )
+}
+
 /// One context message as a wire [`ChatMessage`]: an assistant tool-call turn
 /// or a `tool`-role result in the provider-native shape, plain text when
 /// imageless, or the multimodal parts array when attachments encode — unless
@@ -799,10 +811,7 @@ fn chat_message<U: Into<AttachmentUrl>>(
         // it knows an image existed and why it can't see it.
         let mut text = message.text.clone();
         for path in &message.images {
-            text.push_str(&format!(
-                "\n[image omitted: {} — the current model does not support image input]",
-                path.display()
-            ));
+            text.push_str(&omitted_image_line(path));
         }
         return ChatMessage::new(role, text);
     }

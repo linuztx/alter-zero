@@ -46,8 +46,10 @@ Alter Zero does the same, with these differences:
 | When offered | ChatGPT auth **and** a provider that requires OpenAI auth, an image-capable model, not the Free plan | the ChatGPT Codex sign-in is stored, **whatever provider the session runs on**; a Free-plan account is refused when the call runs |
 | Edit inputs | `referenced_image_paths` or `num_last_images_to_include` | `referenced_image_paths` only: every picture in a conversation here has a file (a paste is saved, a `read` names its file, a generated image is saved) |
 | Saved to | `$CODEX_HOME/generated_images/<thread>/<call>.png` | `~/.alter-zero/generated_images/<session>/<N>.png` |
+| What the model sees | the picture | the picture, or a copy held to the attachment cap when the picture is past it |
 | GIF output | behind an under-development flag | not offered |
 | Skill visibility | always | only while the tool is offered |
+| Switch | none | the `/settings` **Image generation** row, per directory |
 
 The tool exists for one reason: a session on another provider has no other
 way to reach a ChatGPT plan's image quota. The conversation's provider and
@@ -67,12 +69,15 @@ the gate is the stored sign-in, not the active model.
    "required": ["prompt"], "additionalProperties": false}}
 ```
 
-The description is Codex's, with three changes:
-- It is cut to what this tool does. There is no code mode, no
-  `num_last_images_to_include` and no GIF.
-- It names `read`, this app's way of looking at a local image, where Codex
-  names `view_image`.
-- It says that each call makes one image.
+The description is short on purpose: every word rides every request that
+offers the tool (CLAUDE.md's tool-prose rule), and the craft Codex's 315-word
+`imagegen_description.md` spells out — when to make a bitmap, how to word a
+prompt, where a picture belongs — is the skill's, which is listed whenever the
+tool is offered. What stays is the capability and its sharp edges: one image
+per call, a minute or two, saved and shown with its path returned, no asking
+for confirmation, edits by `referenced_image_paths` after looking with `read`
+(where Codex names `view_image`), and `transparent_background` for a cutout.
+There is no code mode, no `num_last_images_to_include` and no GIF.
 
 The tool takes no size, quality or count parameter, because Codex's sends
 `size: "auto"` and `quality: "auto"` and lets the backend choose. A model
@@ -101,8 +106,9 @@ it does nothing, instead of believing it got a landscape image.
    - the bearer;
    - the provider's `extra_headers` (`originator`);
    - the credential's headers (the Codex user agent, `chatgpt-account-id`);
-   - `version`;
-   - a fresh `x-codex-image-turn-id`, Codex's per-call header.
+   - a fresh `x-codex-image-turn-id`. Codex sends its turn's id there; this
+     app has no turn id, so each call gets a UUID of its own. Codex sends no
+     `version` header, and neither does this.
 
    Each reference image goes up as a `data:` URL taken from the session's one
    shared encoding (`images::attachment_data_url`, `docs/memory.md`). A
@@ -115,14 +121,21 @@ it does nothing, instead of believing it got a landscape image.
    rule), so Esc ends the call at once. The worker's own deadline is ten
    minutes. A refused connection, or a 5xx where nothing was answered, is
    tried twice more with backoff. A 429 is never retried: it is a usage
-   limit.
+   limit. Neither is a connection lost **after** the request went out — a
+   body cut short, a timeout: the backend may already have made, and
+   billed, the picture, and a second request would make it twice (Codex
+   retries those; this is deliberately narrower). A worker that dies without
+   an answer reads as a failure, never as the user's Esc.
 5. **The answer** is read as it arrives, never held whole
    (`llm::imagegen::scan::split_response`):
    - A scanner over the body streams the first `data[].b64_json` string
      through a base64 decoder straight into a staging file in the output
      folder.
-   - Every other byte goes into a small bounded skeleton, which is parsed
-     afterwards for `revised_prompt` and the rest.
+   - Every other byte is passed over: the scanner keeps only the few bytes of
+     the string it is in that could still be the `b64_json` key. Whatever else
+     the answer carries — Codex's per-image `image_metadata`, a revised prompt
+     — never fails the call, since the picture was made, and paid for, before
+     the answer arrived.
    - A 4K PNG is twenty-odd MB of base64. Read whole, it would be a
      picture-sized block on a thread arena that glibc never returns
      (`docs/memory.md`). Streamed, the call costs kilobytes whatever the
@@ -148,10 +161,24 @@ it does nothing, instead of believing it got a landscape image.
    reply. That is the `ToolOutcome::context` split (`docs/tools.md`). The
    picture itself:
    - is attached to the model's context after the round's results, like an
-     image `read`, unless the model is known not to take images. Such a
-     model gets the file and the note, and its later turns carry the
-     replayed picture as an `[image omitted: …]` note: the same degradation
-     every picture gets on that model;
+     image `read`, **held to the limit an image `read` is held to**
+     (`tools::READ_IMAGE_MAX_BYTES`, the 5 MB of base64 the strictest
+     provider takes). A picture past it — a detailed 1536×1024 PNG can be —
+     is sent as a copy shrunk until it fits
+     (`images::fitted_attachment_data_url`), and the model is told so. The
+     copy is kept beside the picture in `.attachments/`, and the encoder
+     sends it in the picture's place on every later turn, a `/resume` after
+     a restart included: the conversation re-sends every picture it holds,
+     so a picture past a provider's limit would otherwise fail every request
+     from then on. The picture itself is never touched. The copy is decoded
+     straight from the file into its fitted size, and the picture's own
+     encoding is never made just to be thrown away
+     (`tests/image_fit_memory.rs`);
+   - is withheld from a model known not to take images. Such a model gets
+     the file and the note, and the round carries the attachment's note
+     degraded to `[image omitted: …]` exactly as every later turn's replay
+     degrades it (`ToolOutcome::image_withheld`, `backend::omitted_image_line`),
+     so the next request starts as this one did;
    - is drawn inline under the cell (`docs/images.md`);
    - is re-attached on every later turn from the path on the fact line, so
      a follow-up edit can look at what it is editing.
@@ -162,16 +189,18 @@ it does nothing, instead of believing it got a landscape image.
 | --- | --- |
 | Not signed in (the tool was offered by a stale build) | `not signed in — run /login and choose Sign in with an account` |
 | Free plan | image generation needs a paid ChatGPT plan; this account is on the Free plan |
-| 401 | `chatgpt::auth_advice`'s sign-in wording |
-| 403 | the plan wording `auth_advice` gives |
+| 401 | `chatgpt::auth_advice`'s sign-in wording, then `ChatGPT said: …` when the endpoint said something |
+| 403 | the plan wording `auth_advice` gives, then the endpoint's own words, which say whether it was the plan |
 | 429 `usage_limit_reached` | the image limit is reached, with when it resets when the body says |
 | other status | `image generation failed: HTTP {status}: {message}` |
 | no image in the answer | `image generation returned no image data` |
 | Esc | `Interrupted by user` |
+| the worker died without an answer | `image generation failed: the request stopped unexpectedly` |
 
 ## Where the pieces live
 
-- **`src/llm/imagegen.rs`**, the tool, its pure core first:
+- **`src/llm/imagegen/`** (`mod.rs`, and `scan.rs` for the answer), the
+  tool, its pure core first:
   - the spec and argument parsing;
   - the typed request bodies (a `BodySource` borrowing the shared encodings);
   - the base64 push decoder and the response scanner;
@@ -199,11 +228,17 @@ it does nothing, instead of believing it got a landscape image.
   The live note and the replayed note are built by one rule from what the
   call recorded, so they are byte-identical, which the prompt cache depends
   on (`docs/prompt-caching.md`). A `read`'s note is unchanged.
+- **`images::fitted_attachment_data_url`**: the attachment held to a cap,
+  and the `.attachments/` copy the encoder prefers (`images::attachment`).
+- **`settings::SettingKey::ImageGen`**: the **Image generation** row,
+  `SessionSettings::imagegen_offered` its gate with **Tools**, and
+  `SettingKey::unavailable_reason` the toast's way to make it available.
 - **The boundary** (`src/tui/`):
   - **`ModelSession`** keeps:
     - the `ImagegenSetup`: the shared sign-in handle, refreshed at startup,
       after a `/login` save and after a provider reload;
     - the output folder;
+    - `imagegen_enabled`, the row's value;
     - `imagegen_attached`, the last build's verdict.
 
     `refresh_imagegen` rebuilds only when the verdict flips, which is the
@@ -216,7 +251,8 @@ it does nothing, instead of believing it got a landscape image.
 It is offered while **all** of these hold:
 - **Tools** is on;
 - the backend is a real one (the offline dummy is never given it);
-- `ALTER_ZERO_IMAGEGEN` is not falsy;
+- the `/settings` **Image generation** row is on — the default, kept per
+  directory like **MCP**, and seeded for a run by `ALTER_ZERO_IMAGEGEN`;
 - the **ChatGPT Codex sign-in is stored**: the `chatgpt_codex` provider's own
   token variable, `CHATGPT_CODEX_REFRESH_TOKEN` (or its legacy name),
   resolves from the environment or the `.env` key store
@@ -226,10 +262,14 @@ Only the provider's own variable counts, never the generic
 `ALTER_ZERO_API_KEY` fallback. A key meant for another provider must not
 read as a ChatGPT sign-in.
 
-Signing in mid-session (`/login` → ChatGPT Codex) turns it on at the next
-turn. That turn's skills rescan and tool-set check see the new token, with no
-restart and no `/model` switch. There is no sign-out command, so the gate
-only ever flips from off to on mid-session.
+Without a sign-in the row reads `false (unavailable)`, and Enter on it says
+what would make it available: a ChatGPT sign-in, through `/login`.
+
+Signing in mid-session (`/login` → ChatGPT Codex) turns it on at once: the
+save rescans the skills, which checks the tool set against the new token, so
+`/settings` and `/skills` show both before the next turn — no restart and no
+`/model` switch. Every turn start checks again. There is no sign-out command,
+so the gate only ever flips from off to on through a sign-in.
 
 ## The skill
 
@@ -267,7 +307,10 @@ while the tool is not offered (`llm::skill::load_skills`):
 
 ## Off switches
 
-- `ALTER_ZERO_IMAGEGEN=0` withdraws the tool and the skill for a run.
+- `/settings` **Image generation** off withdraws the tool and the skill, for
+  this directory from then on.
+- `ALTER_ZERO_IMAGEGEN=0` starts a run with that row off, never saved — the
+  `ALTER_ZERO_MCP` posture, so `/settings` can turn it back on.
 - `/skills` turns the skill off per project.
 - `/settings` **Tools** off withdraws every tool.
 
@@ -279,12 +322,29 @@ while the tool is not offered (`llm::skill::load_skills`):
   - the HTTP half against a loopback stub (the `llm::usage` pattern): the
     URL, the headers, the body, the saved file, a 429 and a cancel.
 - **The replay and the picture:** `cargo test --lib context:: ui::`.
-- **The gate and the skill:** `cargo test --lib llm::skill llm::config`.
+- **The gate and the skill:** `cargo test --lib llm::skill llm::config`, and
+  the row: `cargo test --lib settings`.
+- **The attachment:** `cargo test --lib images:: llm::agent` — the fitted copy
+  sent on a restart too, a stale copy never sent, and a vision-less model's
+  live note equal to the replay's.
+- **Another provider's model draws:** `cargo test --test headless draw
+  imagegen` runs a headless session on a stand-in Chat Completions provider
+  with a ChatGPT sign-in beside it: the tool offered, the mint, Codex's body
+  and headers, the saved file and the attachment on the next request; and
+  signed out, or with the row off, nothing offered and nothing asked of
+  ChatGPT.
 - **Memory:** `cargo test --test image_generation_memory` streams a
-  multi-megabyte answer and holds the growth under 2 MB.
+  multi-megabyte answer and holds the growth under 2 MB;
+  `cargo test --test image_fit_memory` fits three pictures past the cap and
+  holds the growth to the copies' encodings plus 4 MB.
 - **On screen:** `smoke.sh` Phase 167 drives a turn end to end against a
   stand-in for the ChatGPT backend, with no network:
   - a ChatGPT Codex session asks for an image;
   - the stub's Responses stream calls `imagegen`;
   - the stub's Images endpoint answers with a PNG;
-  - the cell, the file and the next request's attachment are checked.
+  - the cell, the file and the next request's attachment are checked;
+  - the **Image generation** row reads `true` signed in, and signed out
+    `false (unavailable)`, whose Enter says how to sign in.
+
+  Phase 165 counts the built-ins `/skills` lists, `imagegen` excepted, since
+  the suite stores no sign-in.

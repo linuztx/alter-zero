@@ -3182,7 +3182,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-twenty-one rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty-two rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Animate
@@ -3196,7 +3196,10 @@ until a directory turns it off: off stops every server
 while each keeps its own `/mcp` on/off, so on brings back exactly the ones
 that were enabled; `/mcp` still opens under a red off-note, the review's
 servers page waits until MCP is on, and `ALTER_ZERO_MCP` seeds the row
-instead of removing the manager, `docs/mcp.md` —, **Temperature**,
+instead of removing the manager, `docs/mcp.md` —, **Image generation** —
+the `imagegen` tool and its skill, on until a directory turns it off,
+unavailable without a ChatGPT Codex sign-in and saying so, seeded by
+`ALTER_ZERO_IMAGEGEN`, `docs/imagegen.md` —, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
@@ -3360,17 +3363,28 @@ typed body (a `BodySource`, references as the session's shared
 `AttachmentUrl` encodings, an edit's body streamed), the fact line
 `Generated image (PNG, WxH, size) saved to {path}` (`format_generated` /
 `generated_image`), Codex's note to the model, the failure wording (a 429
-`usage_limit_reached` with its reset, `chatgpt::auth_advice` for 401/403) and
-`scan.rs`, which streams the answer's first `b64_json` through a push base64
-decoder straight into a staging file and keeps the rest as a bounded skeleton
-— kilobytes whatever the image weighs (`tests/image_generation_memory.rs`).
+`usage_limit_reached` with its reset, `chatgpt::auth_advice` for 401/403 beside
+the endpoint's own words) and `scan.rs`, which streams the answer's first
+`b64_json` through a push base64 decoder straight into a staging file and
+passes over the rest, so no metadata fails a call already billed — kilobytes
+whatever the image weighs (`tests/image_generation_memory.rs`). The tool's
+description is short (the craft is the skill's, listed whenever the tool is).
 `run_imagegen` mints through `chatgpt::authorize` (a Free plan refused
-before any request), sends the bearer, `extra_headers`, the account,
-`version` and a fresh `x-codex-image-turn-id` to `{api_base}/images/
-generations|edits` on a worker the tool thread abandons on Esc
-(`llm::off_thread`, moved out of the MCP manager), retries an unreached host
-or a 5xx twice, and saves to `{config_home}/generated_images/{session}/N.png`
-by the paste folder's numbering. The executor arm is
+before any request), sends the bearer, `extra_headers`, the account and a
+fresh `x-codex-image-turn-id` (no `version`: Codex sends none) to
+`{api_base}/images/generations|edits` on a worker the tool thread abandons
+on Esc (`llm::off_thread`, moved out of the MCP manager; a worker that dies
+is a failure, never an interrupt), retries an unreached host or a 5xx twice
+— never a connection lost after the request went out, which may already be
+billed — and saves to `{config_home}/generated_images/{session}/N.png` by the
+paste folder's numbering. The picture rides the next request held to the
+`read` tool's attachment cap: one past it is sent as a copy shrunk until it
+fits (`images::fitted_attachment_data_url`), kept in `.attachments/` beside
+it so the encoder sends the same copy on every later turn, a restart
+included, decoded from the file with no throwaway encoding
+(`tests/image_fit_memory.rs`); a vision-less model gets no picture, and the
+round sends the `[image omitted: …]` note the replay sends
+(`ToolOutcome::image_withheld`), so the cached prefix holds. The executor arm is
 `RealToolExecutor::with_imagegen`, the backend's `with_imagegen` (subagents
 through their `tools:` — `ImageGen`), the boundary's
 `ModelSession::refresh_imagegen` at each turn start (the `skills_attached`
@@ -3379,8 +3393,12 @@ provider reloads); a `read`'s three hardcoded places now take the generated
 image too (`tools::attachment_note`/`recorded_attachment`,
 `ui::image::tool_image`), the cell shows the facts over `Saved to ~/…`
 linked, and a running call counts `Generating image… (Ns)`.
-`ALTER_ZERO_IMAGEGEN=0` withdraws tool and skill; `smoke.sh` Phase 167 drives
-it against a stub ChatGPT backend.
+The `/settings` **Image generation** row (per directory, on by default,
+unavailable without the sign-in, its toast saying how to sign in) gates tool
+and skill, `ALTER_ZERO_IMAGEGEN` seeding it for a run, and a `/login` save
+turns both on at once; `tests/headless.rs` draws from a stand-in Chat
+Completions provider with the sign-in beside it, and `smoke.sh` Phase 167
+drives it against a stub ChatGPT backend.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by

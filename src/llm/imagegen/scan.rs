@@ -7,21 +7,13 @@
 //! the worker's arena, which glibc keeps (`docs/memory.md`). So the body is
 //! *scanned*: [`split_response`] walks it byte by byte, streams the first
 //! image's base64 through a [`Base64Decoder`] straight into the caller's sink
-//! (a staging file), and copies every other byte into a small bounded
-//! **skeleton** — the same JSON with each `b64_json` emptied — which
-//! [`ResponseMeta::parse`] reads afterwards for the few fields worth keeping.
-//! Kilobytes in memory, whatever the image weighs. Pure over `Read`/`Write`,
+//! (a staging file), and passes over every other byte, keeping only the few
+//! bytes of the string it is in that could still be the `b64_json` key.
+//! Kilobytes in memory, whatever the image weighs — and whatever else the
+//! answer carries. Pure over `Read`/`Write`,
 //! so every split and escape is unit-tested here (`docs/imagegen.md`).
 
 use std::io::{self, Read, Write};
-
-use serde::Deserialize;
-use serde_json::value::RawValue;
-
-/// How much of the answer that is *not* image data is kept to be parsed —
-/// the metadata of a few images, with room to spare. Past it the body is not
-/// the answer this scanner reads.
-pub(crate) const SKELETON_MAX_BYTES: usize = 256 * 1024;
 
 /// How much of the body is read per pass, and how often the cancel check
 /// runs: once per chunk.
@@ -39,8 +31,7 @@ pub(crate) enum ScanError {
     Write(io::Error),
     /// A `b64_json` string that is not base64.
     Base64(String),
-    /// The body is not JSON this scanner can read: unterminated, or a
-    /// skeleton past [`SKELETON_MAX_BYTES`].
+    /// The body is not JSON this scanner can read: it ends inside a string.
     Malformed(String),
     /// The turn was cancelled while the body streamed.
     Cancelled,
@@ -192,18 +183,15 @@ pub(crate) struct Split {
     pub images: usize,
     /// How many decoded bytes the sink received.
     pub decoded: u64,
-    /// The answer with every `b64_json` string emptied, for
-    /// [`ResponseMeta::parse`].
-    pub skeleton: Vec<u8>,
 }
 
 /// Scan an Images API answer: the first `b64_json` string is decoded into
-/// `sink` as it streams, everything else is kept in a bounded skeleton.
-/// `cancelled` is asked once per chunk read.
+/// `sink` as it streams, and everything else is passed over. `cancelled` is
+/// asked once per chunk read.
 ///
 /// # Errors
 /// A failed read or write, image data that is not base64, a body that ends
-/// inside a string, a skeleton past [`SKELETON_MAX_BYTES`], or a cancel.
+/// inside a string, or a cancel.
 pub(crate) fn split_response(
     reader: &mut dyn Read,
     sink: &mut dyn Write,
@@ -249,7 +237,6 @@ const IMAGE_KEY: &[u8] = b"b64_json";
 
 struct Scanner {
     state: State,
-    skeleton: Vec<u8>,
     /// The string being read, while it could still be [`IMAGE_KEY`].
     key: Vec<u8>,
     key_possible: bool,
@@ -263,23 +250,12 @@ impl Scanner {
     fn new() -> Self {
         Self {
             state: State::Outside,
-            skeleton: Vec::with_capacity(1024),
             key: Vec::with_capacity(IMAGE_KEY.len()),
             key_possible: false,
             images: 0,
             decoder: None,
             decoded: 0,
         }
-    }
-
-    fn keep(&mut self, byte: u8) -> Result<(), ScanError> {
-        if self.skeleton.len() >= SKELETON_MAX_BYTES {
-            return Err(ScanError::Malformed(format!(
-                "more than {SKELETON_MAX_BYTES} bytes besides the image"
-            )));
-        }
-        self.skeleton.push(byte);
-        Ok(())
     }
 
     fn take(&mut self, byte: u8, sink: &mut dyn Write) -> Result<(), ScanError> {
@@ -290,10 +266,9 @@ impl Scanner {
                     self.key.clear();
                     self.key_possible = true;
                 }
-                self.keep(byte)
+                Ok(())
             }
             State::Text { escaped } => {
-                self.keep(byte)?;
                 if escaped {
                     // No escape is spelled in the key, so a string with one
                     // is not it.
@@ -316,10 +291,10 @@ impl Scanner {
                 }
                 Ok(())
             }
-            State::AfterKey | State::AfterColon if byte.is_ascii_whitespace() => self.keep(byte),
+            State::AfterKey | State::AfterColon if byte.is_ascii_whitespace() => Ok(()),
             State::AfterKey if byte == b':' => {
                 self.state = State::AfterColon;
-                self.keep(byte)
+                Ok(())
             }
             State::AfterColon if byte == b'"' => {
                 self.images += 1;
@@ -327,7 +302,7 @@ impl Scanner {
                     self.decoder = Some(Base64Decoder::new());
                 }
                 self.state = State::Image { escaped: false };
-                self.keep(byte)
+                Ok(())
             }
             // `"b64_json"` was a value, or its value is not a string: read
             // on as ordinary JSON.
@@ -358,7 +333,7 @@ impl Scanner {
                         self.decoded = decoder.finish(sink)?;
                     }
                     self.state = State::Outside;
-                    self.keep(byte)
+                    Ok(())
                 }
                 other => self.image_byte(other, sink),
             },
@@ -381,69 +356,8 @@ impl Scanner {
         Ok(Split {
             images: self.images,
             decoded: self.decoded,
-            skeleton: self.skeleton,
         })
     }
-}
-
-/// The parts of an answer worth keeping once its image is on disk.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ResponseMeta {
-    /// The prompt the backend actually drew from, when it says.
-    pub revised_prompt: Option<String>,
-    /// The size it chose (`1536x1024`), when it says.
-    pub size: Option<String>,
-    /// The format it encoded (`png`), when it says.
-    pub output_format: Option<String>,
-    /// The background it settled on (`transparent`, `opaque`).
-    pub background: Option<String>,
-}
-
-impl ResponseMeta {
-    /// Read the skeleton [`split_response`] left. Lenient: a field of an
-    /// unexpected shape is simply absent.
-    pub(crate) fn parse(skeleton: &[u8]) -> Self {
-        #[derive(Deserialize)]
-        struct Skeleton<'a> {
-            #[serde(default, borrow)]
-            data: Option<&'a RawValue>,
-            #[serde(default, borrow)]
-            size: Option<&'a RawValue>,
-            #[serde(default, borrow)]
-            output_format: Option<&'a RawValue>,
-            #[serde(default, borrow)]
-            background: Option<&'a RawValue>,
-        }
-        #[derive(Deserialize)]
-        struct Datum<'a> {
-            #[serde(default, borrow)]
-            revised_prompt: Option<&'a RawValue>,
-        }
-        let Ok(top) = serde_json::from_slice::<Skeleton<'_>>(skeleton) else {
-            return Self::default();
-        };
-        let revised_prompt = top
-            .data
-            .and_then(|data| serde_json::from_str::<Vec<&RawValue>>(data.get()).ok())
-            .and_then(|data| {
-                let first = data.first()?;
-                serde_json::from_str::<Datum<'_>>(first.get())
-                    .ok()?
-                    .revised_prompt
-            });
-        Self {
-            revised_prompt: text(revised_prompt),
-            size: text(top.size),
-            output_format: text(top.output_format),
-            background: text(top.background),
-        }
-    }
-}
-
-/// A field that should be a string, as one — `None` for anything else.
-fn text(raw: Option<&RawValue>) -> Option<String> {
-    raw.and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
-        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -616,19 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn the_skeleton_is_the_answer_with_its_image_emptied() {
-        let body = answer(&[b"pixels"]);
-        let (split, _) = split(body.as_bytes(), 5).unwrap();
-        let skeleton = String::from_utf8(split.skeleton).unwrap();
-        assert!(skeleton.contains(r#""b64_json": """#), "{skeleton}");
-        assert!(!skeleton.contains(&base64_encode(b"pixels")), "{skeleton}");
-        // Still JSON, and still everything else the answer said.
-        let value: serde_json::Value = serde_json::from_str(&skeleton).unwrap();
-        assert_eq!(value["size"], "1024x1536");
-        assert_eq!(value["data"][0]["revised_prompt"], "a red fox");
-    }
-
-    #[test]
     fn only_the_first_image_is_kept_and_the_rest_are_counted() {
         // Codex uses `data[0]` alone; a second image costs nothing but the
         // reading.
@@ -636,8 +537,6 @@ mod tests {
         let (split, sink) = split(body.as_bytes(), 3).unwrap();
         assert_eq!(sink, b"first");
         assert_eq!(split.images, 2);
-        let skeleton = String::from_utf8(split.skeleton).unwrap();
-        assert!(!skeleton.contains(&base64_encode(b"second")), "{skeleton}");
     }
 
     #[test]
@@ -678,8 +577,6 @@ mod tests {
         let (split, sink) = split(body.as_bytes(), 2).unwrap();
         assert_eq!(sink, b"bar");
         assert_eq!(split.images, 1);
-        let skeleton = String::from_utf8(split.skeleton).unwrap();
-        assert!(skeleton.contains(r#""b64_jsonx": "Zm9v""#), "{skeleton}");
     }
 
     #[test]
@@ -687,8 +584,7 @@ mod tests {
         let body = r#"{"revised": "a \"quoted\" fox \\", "data": [{"b64_json": "Zm9v"}]}"#;
         let (split, sink) = split(body.as_bytes(), 1).unwrap();
         assert_eq!(sink, b"foo");
-        let value: serde_json::Value = serde_json::from_slice(&split.skeleton).unwrap();
-        assert_eq!(value["revised"], "a \"quoted\" fox \\");
+        assert_eq!(split.images, 1);
     }
 
     #[test]
@@ -700,12 +596,11 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_with_no_image_scans_to_its_skeleton() {
+    fn an_answer_with_no_image_scans_to_nothing() {
         let body = r#"{"created": 1, "data": []}"#;
         let (split, sink) = split(body.as_bytes(), 3).unwrap();
         assert_eq!(split.images, 0);
         assert!(sink.is_empty());
-        assert_eq!(split.skeleton, body.as_bytes());
     }
 
     #[test]
@@ -718,12 +613,20 @@ mod tests {
     }
 
     #[test]
-    fn a_skeleton_past_its_cap_is_refused() {
-        let body = format!(r#"{{"junk": "{}"}}"#, "x".repeat(SKELETON_MAX_BYTES));
-        assert!(matches!(
-            split(body.as_bytes(), 4096),
-            Err(ScanError::Malformed(_))
-        ));
+    fn however_much_else_the_answer_carries_the_image_is_saved() {
+        // The image was made — and paid for — before the answer arrived, so
+        // nothing else in it is a reason to fail the call (Codex drops
+        // metadata past its own cap rather than the image).
+        let pixels = [7u8; 300];
+        let body = format!(
+            r#"{{"junk": "{}", "data": [{{"b64_json": "{}", "image_metadata": {{"x": "{}"}}}}]}}"#,
+            "x".repeat(2 * 1024 * 1024),
+            base64_encode(&pixels),
+            "y".repeat(1024 * 1024)
+        );
+        let (split, sink) = split(body.as_bytes(), 4096).expect("the image is kept");
+        assert_eq!(split.images, 1);
+        assert_eq!(sink, pixels);
     }
 
     #[test]
@@ -756,27 +659,5 @@ mod tests {
         };
         let result = split_response(&mut reader, &mut Full, &|| false);
         assert!(matches!(result, Err(ScanError::Write(_))), "{result:?}");
-    }
-
-    #[test]
-    fn the_metadata_is_read_from_the_skeleton() {
-        let body = answer(&[b"pixels"]);
-        let (split, _) = split(body.as_bytes(), 4096).unwrap();
-        assert_eq!(
-            ResponseMeta::parse(&split.skeleton),
-            ResponseMeta {
-                revised_prompt: Some("a red fox".to_string()),
-                size: Some("1024x1536".to_string()),
-                output_format: Some("png".to_string()),
-                background: Some("opaque".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn metadata_of_an_unexpected_shape_is_absent_rather_than_an_error() {
-        let meta = ResponseMeta::parse(br#"{"size": 1024, "data": "nope", "background": null}"#);
-        assert_eq!(meta, ResponseMeta::default());
-        assert_eq!(ResponseMeta::parse(b"not json"), ResponseMeta::default());
     }
 }

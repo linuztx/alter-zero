@@ -159,7 +159,11 @@ only three:
 * A **generated image** — the `imagegen` tool's fact line carries the size
   and the file both (`Generated image (PNG, 1536x1024, 2.1 MB) saved to
   {path}`, `llm::imagegen::generated_image`, `docs/imagegen.md`); the tool
-  records the size on the registry as it saves the file.
+  records the size on the registry as it saves the file. What the *model*
+  is sent of one is held to the attachment cap: a picture past it goes up
+  as a copy kept in `.attachments/` beside it, which the encoder prefers
+  over the picture on every later turn (`images::fitted_attachment_data_url`)
+  — the screen still draws the picture itself.
 * A **Ctrl+V paste** — no such line, so the boundary reads the header once
   when the paste lands (`images::remember_size`, from `tui::workers`) — and
   again for every pasted picture a loaded conversation carries

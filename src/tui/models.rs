@@ -211,10 +211,13 @@ pub(crate) struct ModelSession {
     /// make them equal by construction and rebuild either never or always.
     skills_attached: bool,
     /// The `imagegen` tool's setup (`docs/imagegen.md`) — the shared ChatGPT
-    /// Codex sign-in, kept current here, and where images are saved — `None`
-    /// when `ALTER_ZERO_IMAGEGEN` is off. Offered whatever provider the
-    /// session runs on, while the sign-in is stored.
+    /// Codex sign-in, kept current here, and where images are saved. Offered
+    /// whatever provider the session runs on, while the sign-in is stored and
+    /// [`Self::imagegen_enabled`] is on.
     imagegen: Option<alter_zero::llm::imagegen::ImagegenSetup>,
+    /// The `/settings` **Image generation** row (`docs/imagegen.md`), read by
+    /// every build so a mid-session switch sticks.
+    imagegen_enabled: bool,
     /// Whether the **live** backend was built with the `imagegen` tool — the
     /// last build's verdict, tracked for [`Self::refresh_imagegen`] exactly as
     /// `skills_attached` is for the skills.
@@ -480,8 +483,10 @@ impl ModelSession {
                 .signin
                 .set(chatgpt_signin_config(&providers, &env_file, temperature));
         }
+        let imagegen_enabled = settings.imagegen;
         let imagegen_offered = real_backend
             && tools
+            && imagegen_enabled
             && imagegen
                 .as_ref()
                 .is_some_and(|setup| setup.signin.get().is_some());
@@ -613,6 +618,7 @@ impl ModelSession {
             skills,
             skills_enabled,
             imagegen,
+            imagegen_enabled,
             imagegen_attached: imagegen_offered,
             mcp_fingerprint: mcp
                 .map(alter_zero::llm::mcp::McpManager::fingerprint)
@@ -1180,17 +1186,30 @@ impl ModelSession {
     }
 
     /// Whether a build right now would put the `imagegen` spec on the wire
-    /// (`docs/imagegen.md`): tools at all, a real backend, the tool not
-    /// switched off for the run, and the ChatGPT Codex sign-in stored —
-    /// whatever provider the session itself runs on. Also what the skills
-    /// walk withholds the seeded `imagegen` skill by.
+    /// (`docs/imagegen.md`): tools at all, a real backend, the **Image
+    /// generation** row on, and the ChatGPT Codex sign-in stored — whatever
+    /// provider the session itself runs on. Also what the skills walk
+    /// withholds the seeded `imagegen` skill by.
     pub(crate) fn imagegen_offered(&self) -> bool {
-        self.real_backend
-            && self.tools
-            && self
-                .imagegen
-                .as_ref()
-                .is_some_and(|setup| setup.signin.get().is_some())
+        self.real_backend && self.tools && self.imagegen_enabled && self.chatgpt_signed_in()
+    }
+
+    /// Whether a ChatGPT Codex sign-in is stored for the tool to make images
+    /// with — the **Image generation** row's availability.
+    pub(crate) fn chatgpt_signed_in(&self) -> bool {
+        self.imagegen
+            .as_ref()
+            .is_some_and(|setup| setup.signin.get().is_some())
+    }
+
+    /// The `/settings` **Image generation** row (`docs/imagegen.md`): rebuilds
+    /// only when the tool set changes, since a rebuild costs the retained
+    /// prompt prefix.
+    pub(crate) fn set_imagegen(&mut self, enabled: bool) {
+        self.imagegen_enabled = enabled;
+        if self.imagegen_offered() != self.imagegen_attached {
+            self.rebuild_current();
+        }
     }
 
     /// Bring the tool's shared sign-in up to date with the key store — a

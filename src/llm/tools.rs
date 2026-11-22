@@ -73,6 +73,11 @@ pub struct ToolOutcome {
     /// small human/model-readable text (byte-capped, cell-displayed,
     /// token-counted, session-recorded). See `docs/tools.md`.
     pub image: Option<crate::images::AttachmentUrl>,
+    /// The call made a picture the model cannot see — an `imagegen` call on a
+    /// known non-vision model (`docs/imagegen.md`): no [`Self::image`], and
+    /// the agent loop sends the note the context replay degrades the
+    /// attachment to, so every later turn's request starts as this one did.
+    pub image_withheld: bool,
     /// `Some(snapshot)` when the call was a **task tool** op
     /// (`docs/task-tools.md`): the post-call state of the shared task list,
     /// which `run_agent` surfaces as `StreamEvent::TaskCall` — the single
@@ -117,6 +122,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            image_withheld: false,
             tasks: None,
             context: None,
             exit_code: None,
@@ -134,6 +140,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            image_withheld: false,
             tasks: None,
             context: None,
             exit_code: None,
@@ -152,6 +159,7 @@ impl ToolOutcome {
             truncated: false,
             background: Some(id.into()),
             image: None,
+            image_withheld: false,
             tasks: None,
             context: None,
             exit_code: None,
@@ -170,6 +178,14 @@ impl ToolOutcome {
     #[must_use]
     pub fn with_image(mut self, url: impl Into<crate::images::AttachmentUrl>) -> Self {
         self.image = Some(url.into());
+        self
+    }
+
+    /// Mark a picture kept back from a model that cannot see one (the
+    /// `image_withheld` field doc).
+    #[must_use]
+    pub const fn with_image_withheld(mut self) -> Self {
+        self.image_withheld = true;
         self
     }
 

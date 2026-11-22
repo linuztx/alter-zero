@@ -169,6 +169,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
         hooks: true,
         skills: true,
         mcp: true,
+        imagegen: true,
         images: true,
         telemetry: true,
         update_check: true,
@@ -323,4 +324,28 @@ fn auto_compaction_obeys_the_setting() {
     assert!(app.should_auto_compact(), "the gauge is past the threshold");
     app.settings_mut().auto_compact = false;
     assert!(!app.should_auto_compact());
+}
+
+#[test]
+fn an_unavailable_image_generation_row_says_how_to_make_it_available() {
+    // The one unavailable row whose reason the user can act on: sign in
+    // with ChatGPT (docs/imagegen.md). The others keep the plain toast.
+    let mut app = settings_app();
+    app.set_setting_availability(SettingAvailability {
+        imagegen: false,
+        ..SettingAvailability::default()
+    });
+    type_query(&mut app, "generation");
+    let row = app.highlighted_setting().unwrap();
+    assert_eq!(row.key, SettingKey::ImageGen);
+    match app.on_key(key(KeyCode::Enter)) {
+        Action::Toast(text) => {
+            assert!(text.starts_with("Can't change Image generation"), "{text}");
+            assert!(
+                text.contains("ChatGPT") && text.contains("/login"),
+                "{text}"
+            );
+        }
+        other => panic!("expected an explanatory toast, got {other:?}"),
+    }
 }

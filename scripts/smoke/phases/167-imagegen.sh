@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 167 — imagegen: a ChatGPT sign-in turns on the tool and its built-in skill, and a turn makes an image
+# Phase 167 — imagegen: a ChatGPT sign-in turns on the tool, its built-in skill and its /settings row, and a turn makes an image
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -34,6 +34,21 @@ expect_has "$out_menu" -F "flaredantic" "/skills lists no built-ins at all"
 expect_lacks "$out_menu" -F "imagegen" "/skills lists the imagegen skill with nobody signed in"
 keys "$S167" Escape
 sleep 0.3
+# The /settings row: unavailable with nobody signed in, and Enter says why.
+type_text "$S167" "/settings"
+keys "$S167" Enter
+wait_pane 5 "$S167" -F "Type to search" >/dev/null || fail "/settings did not open signed out"
+type_text "$S167" "generation"
+out_row="$(wait_pane 5 "$S167" -E "Image generation +false \(unavailable\)")" \
+	|| fail "the Image generation row is not unavailable with nobody signed in"
+dump "/settings signed out" "$out_row"
+keys "$S167" Enter
+wait_pane 5 "$S167" -F "it needs a ChatGPT sign-in" >/dev/null \
+	|| fail "the unavailable Image generation row does not say how to make it available"
+# Esc clears the search, then closes the page.
+keys "$S167" Escape
+keys "$S167" Escape
+wait_pane 5 "$S167" -E '^❯' >/dev/null || fail "Esc did not close /settings signed out"
 tmux kill-session -t "$S167" 2>/dev/null
 if ! grep -q "^name: imagegen" "$I_CFG/skills/imagegen/SKILL.md" 2>/dev/null; then
 	fail "the imagegen built-in was not seeded while signed out"
@@ -189,6 +204,17 @@ in_menu="$(wait_pane 8 "$S167B" -F "imagegen")" || fail "/skills does not list t
 dump "/skills signed in" "$in_menu"
 keys "$S167B" Escape
 sleep 0.4
+# …and so is the /settings row, on until a directory turns it off.
+type_text "$S167B" "/settings"
+keys "$S167B" Enter
+wait_pane 5 "$S167B" -F "Type to search" >/dev/null || fail "/settings did not open signed in"
+type_text "$S167B" "generation"
+in_row="$(wait_pane 5 "$S167B" -E "Image generation +true")" \
+	|| fail "the Image generation row is not on with a sign-in"
+dump "/settings signed in" "$in_row"
+keys "$S167B" Escape
+keys "$S167B" Escape
+wait_pane 5 "$S167B" -E '^❯' >/dev/null || fail "Esc did not close /settings signed in"
 
 # The turn: the stub's model calls `imagegen`, the image is made and saved,
 # and the model's reply follows.
@@ -227,7 +253,7 @@ headers = request["headers"]
 assert headers["authorization"].startswith("Bearer "), headers
 assert headers["chatgpt-account-id"] == "acct-167", headers
 assert headers["originator"] == "codex_cli_rs", headers
-assert headers["version"] == "99.99.99", headers
+assert "version" not in headers, "Codex sends no version header: %s" % headers
 assert headers.get("x-codex-image-turn-id"), headers
 body = json.loads(request["body"])
 assert body == {"prompt": "a red square", "background": "opaque", "model": "gpt-image-2",

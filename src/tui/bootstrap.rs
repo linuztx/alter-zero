@@ -290,21 +290,21 @@ impl<'t> Session<'t> {
         // The `imagegen` tool's setup (docs/imagegen.md): the ChatGPT Codex
         // sign-in it makes images with — filled in by `ModelSession::resolve`
         // — where those images are saved, and the seeded skill that drives
-        // it. `None` when `ALTER_ZERO_IMAGEGEN` is off.
-        let imagegen_setup =
-            config::imagegen_enabled().then(|| alter_zero::llm::imagegen::ImagegenSetup {
-                signin: alter_zero::llm::imagegen::ChatGptSignin::default(),
-                dir: config::generated_images_dir(&session_id),
-                skill: alter_zero::llm::skill::resolved_builtin_skills_dir(
-                    config::config_home().as_deref(),
-                )
-                .map(|root| root.join(alter_zero::llm::skill::IMAGEGEN_SKILL)),
-            });
+        // it. Whether the tool is offered is the **Image generation** row's
+        // to say, so the setup is there either way.
+        let imagegen_setup = Some(alter_zero::llm::imagegen::ImagegenSetup {
+            signin: alter_zero::llm::imagegen::ChatGptSignin::default(),
+            dir: config::generated_images_dir(&session_id),
+            skill: alter_zero::llm::skill::resolved_builtin_skills_dir(
+                config::config_home().as_deref(),
+            )
+            .map(|root| root.join(alter_zero::llm::skill::IMAGEGEN_SKILL)),
+        });
         // The walk runs before the settings and the backend are known, so it
         // judges the seeded `imagegen` skill by the sign-in alone — read the
         // way `ModelSession::resolve` reads it — and is walked again below
-        // where the session's own verdict differs (the Tools row off, the
-        // offline dummy).
+        // where the session's own verdict differs (the Image generation or
+        // Tools row off, the offline dummy).
         let imagegen_provisional = imagegen_setup.is_some() && {
             let (providers, _) = config::startup_providers(home.as_deref());
             let env_file = config::load_env_file(&config::env_file_path());

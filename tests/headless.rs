@@ -540,11 +540,15 @@ fn chat_reply(body: &str) -> String {
             serde_json::json!({"choices": [{"delta": {"content": "The user ran a command."}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
-    } else if last["role"] == "tool" {
+    } else if last["role"] == "tool" || said.contains(GENERATED_NOTE) {
+        // A round that ends on a generated picture's attachment ends on a
+        // user message, the picture itself (docs/imagegen.md).
         vec![
             serde_json::json!({"choices": [{"delta": {"content": "Done."}}]}),
             serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         ]
+    } else if said.contains(DRAW) {
+        call("imagegen", serde_json::json!({"prompt": "a fox mascot"}))
     } else if said.contains(DELEGATE) {
         let task = if said.contains(STALL) {
             format!("{STALL} make the marker")
@@ -1309,4 +1313,262 @@ fn the_rollout_says_why_a_call_never_ran() {
     assert_eq!(call["error_kind"], "approval_required", "{call}");
     assert!(call.get("exit_code").is_none(), "{call}");
     assert!(call.get("duration_ms").is_none(), "{call}");
+}
+
+// ===== image generation through a ChatGPT sign-in (docs/imagegen.md) =====
+
+/// What a prompt says to make the stand-in model draw.
+const DRAW: &str = "HEADLESS_DRAW";
+
+/// What the note a generated picture rides under says, which tells the
+/// stand-in model its round is over.
+const GENERATED_NOTE: &str = "from the imagegen tool call above";
+
+/// What the stand-in's OpenAI mints for a refresh: an unsigned token whose
+/// claims name the account. The app reads them for the `chatgpt-account-id`
+/// header and never checks the signature — the server does.
+const CHATGPT_ACCESS: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC1oZWFkbGVzcyIsImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyJ9fQ.c2ln";
+
+/// A 2x2 PNG, as the Images API's `b64_json` carries it — 74 bytes decoded.
+const PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4X6HxH4QZYAwAXuoKeUwHsUUAAAAASUVORK5CYII=";
+
+/// A stand-in for OpenAI's auth server and ChatGPT's backend on one port:
+/// `POST /oauth/token` mints [`CHATGPT_ACCESS`], anything else is answered
+/// as the Images API with [`PIXEL_PNG`]. Every request's head and body is
+/// kept.
+struct ChatGpt {
+    base: String,
+    requests: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl ChatGpt {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let base = format!("http://{}", listener.local_addr().expect("an address"));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&requests);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let Some((head, body)) = read_request(&mut stream) else {
+                    continue;
+                };
+                let reply = if head.starts_with("POST /oauth/token ") {
+                    format!(r#"{{"access_token":"{CHATGPT_ACCESS}","expires_in":3600}}"#)
+                } else {
+                    format!(r#"{{"created":1,"data":[{{"b64_json":"{PIXEL_PNG}"}}]}}"#)
+                };
+                log.lock().expect("the log").push((head, body));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Self { base, requests }
+    }
+
+    fn requests(&self) -> Vec<(String, String)> {
+        self.requests.lock().expect("the log").clone()
+    }
+}
+
+/// A headless run asking the stand-in chat provider's model to draw, with
+/// the ChatGPT provider pointed at `chatgpt` — and, when `signed_in`, a
+/// ChatGPT sign-in stored for it.
+fn draw_run(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -> Output {
+    draw_command(world, chat, chatgpt, signed_in)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs")
+}
+
+/// [`draw_run`]'s command, for a run that adds to its environment.
+fn draw_command(world: &World, chat: &StandIn, chatgpt: &ChatGpt, signed_in: bool) -> Command {
+    let file = world.dir("providers.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "[providers.stub]\nname = \"Stub\"\n\n[providers.stub.kwargs]\napi_base = \"{}\"\n\n\
+             [providers.chatgpt_codex]\nname = \"ChatGPT Codex\"\nauth = \"chatgpt_codex\"\n\
+             wire_api = \"responses\"\napi_key_env = \"CHATGPT_CODEX_REFRESH_TOKEN\"\n\n\
+             [providers.chatgpt_codex.extra_headers]\noriginator = \"codex_cli_rs\"\n\n\
+             [providers.chatgpt_codex.kwargs]\napi_base = \"{}/backend-api/codex\"\n",
+            chat.base, chatgpt.base
+        ),
+    )
+    .expect("the providers file");
+    let prompt = format!("{DRAW} draw a fox");
+    let mut command = world.command(&["-p", &prompt]);
+    command
+        .env("ALTER_ZERO_PROVIDERS_FILE", file)
+        .env("ALTER_ZERO_PROVIDER", "stub")
+        .env("ALTER_ZERO_MODEL", "stub-model")
+        .env("STUB_API_KEY", "stand-in")
+        .env("ALTER_ZERO_OPENAI_ISSUER", &chatgpt.base);
+    if signed_in {
+        command.env("CHATGPT_CODEX_REFRESH_TOKEN", "rt-headless");
+    }
+    command
+}
+
+/// Every generated picture saved under the world's config home.
+fn generated_pictures(world: &World) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(sessions) = std::fs::read_dir(world.dir("cfg").join("generated_images")) else {
+        return found;
+    };
+    for session in sessions.flatten() {
+        for file in std::fs::read_dir(session.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if file.path().is_file() {
+                found.push(file.path());
+            }
+        }
+    }
+    found
+}
+
+/// The tools a chat request offered, by name.
+fn offered_tools(request: &str) -> Vec<String> {
+    let request: serde_json::Value = serde_json::from_str(request).expect("a JSON request");
+    request["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_chatgpt_sign_in_lets_another_providers_model_draw() {
+    let world = World::new("draw");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_run(&world, &chat, &chatgpt, true);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "Done.", "{}", stderr(&out));
+    let chats = chat.chat_requests();
+    assert_eq!(chats.len(), 2, "{chats:?}");
+    // The tool rode the stand-in provider's own request: the model that
+    // drew is not ChatGPT's.
+    assert!(
+        offered_tools(&chats[0]).contains(&"imagegen".to_string()),
+        "{:?}",
+        offered_tools(&chats[0])
+    );
+    // The sign-in was minted, and the picture asked for as Codex asks.
+    let requests = chatgpt.requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let (head, body) = &requests[0];
+    assert!(head.starts_with("POST /oauth/token "), "{head}");
+    assert!(body.contains("rt-headless"), "{body}");
+    let (head, body) = &requests[1];
+    assert!(
+        head.starts_with("POST /backend-api/codex/images/generations "),
+        "{head}"
+    );
+    let head = head.to_ascii_lowercase();
+    assert!(
+        head.contains(&format!(
+            "authorization: bearer {}",
+            CHATGPT_ACCESS.to_ascii_lowercase()
+        )),
+        "{head}"
+    );
+    assert!(head.contains("chatgpt-account-id: acct-headless"), "{head}");
+    assert!(head.contains("originator: codex_cli_rs"), "{head}");
+    assert!(head.contains("x-codex-image-turn-id: "), "{head}");
+    let sent: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+    assert_eq!(
+        sent,
+        serde_json::json!({"prompt": "a fox mascot", "background": "opaque",
+            "model": "gpt-image-2", "quality": "auto", "size": "auto"})
+    );
+    // The picture landed in the session's generated-images folder…
+    let pictures = generated_pictures(&world);
+    assert_eq!(pictures.len(), 1, "{pictures:?}");
+    assert!(pictures[0].ends_with("1.png"), "{pictures:?}");
+    assert_eq!(std::fs::metadata(&pictures[0]).expect("saved").len(), 74);
+    // …and the model read where, then saw it.
+    let second: serde_json::Value = serde_json::from_str(&chats[1]).expect("a JSON request");
+    let messages = second["messages"].as_array().expect("messages");
+    let result = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .and_then(|message| message["content"].as_str())
+        .expect("the tool result");
+    assert!(result.starts_with("Generated image (PNG, 2x2"), "{result}");
+    assert!(
+        result.contains(&pictures[0].display().to_string()),
+        "{result}"
+    );
+    let attachment = messages.last().expect("the attachment");
+    assert_eq!(attachment["role"], "user");
+    assert!(
+        attachment["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(GENERATED_NOTE)),
+        "{attachment}"
+    );
+    assert!(
+        attachment["content"][1]["image_url"]["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,")),
+        "{attachment}"
+    );
+}
+
+#[test]
+fn without_a_chatgpt_sign_in_no_model_is_offered_imagegen() {
+    let world = World::new("nodraw");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_run(&world, &chat, &chatgpt, false);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let chats = chat.chat_requests();
+    assert!(
+        !offered_tools(&chats[0]).contains(&"imagegen".to_string()),
+        "{:?}",
+        offered_tools(&chats[0])
+    );
+    // A model that names it anyway is told it isn't here, and nothing is
+    // asked of ChatGPT.
+    assert!(
+        chats[1].contains("image generation is not available here"),
+        "{}",
+        chats[1]
+    );
+    assert!(chatgpt.requests().is_empty(), "{:?}", chatgpt.requests());
+    assert!(generated_pictures(&world).is_empty());
+}
+
+#[test]
+fn the_image_generation_row_off_withdraws_the_tool_for_the_run() {
+    // `ALTER_ZERO_IMAGEGEN=0` seeds the /settings row off: signed in, yet
+    // nothing offered and nothing asked of ChatGPT (docs/imagegen.md).
+    let world = World::new("rowoff");
+    let chat = StandIn::start();
+    let chatgpt = ChatGpt::start();
+    let out = draw_command(&world, &chat, &chatgpt, true)
+        .env("ALTER_ZERO_IMAGEGEN", "0")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let chats = chat.chat_requests();
+    assert!(
+        !offered_tools(&chats[0]).contains(&"imagegen".to_string()),
+        "{:?}",
+        offered_tools(&chats[0])
+    );
+    assert!(chatgpt.requests().is_empty(), "{:?}", chatgpt.requests());
 }

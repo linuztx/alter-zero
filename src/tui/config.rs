@@ -752,12 +752,6 @@ pub(crate) fn generated_images_dir(session: &str) -> PathBuf {
     }
 }
 
-/// Whether the `imagegen` tool may be offered at all this run —
-/// `ALTER_ZERO_IMAGEGEN`, on unless falsy (`docs/imagegen.md`).
-pub(crate) fn imagegen_enabled() -> bool {
-    env_flag(alter_zero::llm::imagegen::IMAGEGEN_ENV)
-}
-
 /// The provider id of the stored **ChatGPT Codex sign-in**, when there is
 /// one: its own token variable resolving from the environment or the `.env`
 /// store — never the generic `ALTER_ZERO_API_KEY` (`docs/imagegen.md`).
@@ -1461,6 +1455,12 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     // starts with MCP off, which `/settings` can turn back on.
     if let Some(on) = env_flag_set("ALTER_ZERO_MCP") {
         settings.mcp = on;
+    }
+    // `ALTER_ZERO_IMAGEGEN` seeds the **Image generation** row for the run,
+    // never saved — its falsy value used to withdraw the tool outright; now
+    // `/settings` can turn it back on (docs/imagegen.md).
+    if let Some(on) = env_flag_set(alter_zero::llm::imagegen::IMAGEGEN_ENV) {
+        settings.imagegen = on;
     }
     if let Some(t) = temperature() {
         settings.temperature = Some(t);

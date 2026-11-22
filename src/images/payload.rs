@@ -137,6 +137,33 @@ pub fn downscale_to(bytes: &[u8], format: ImageFormat, max: u32) -> Option<Downs
     })
 }
 
+/// [`downscale_to`] for the picture **at `path`**, read from the file rather
+/// than from bytes in hand: a PNG streams through the fitted decoder, so
+/// nothing the size of the file is held — the target and one row are; any
+/// other format is read whole, as [`downscale_to`] would have it. `None` when
+/// it already fits, can't be read, or comes out no smaller.
+#[must_use]
+pub fn downscale_file_to(path: &Path, format: ImageFormat, max: u32) -> Option<Downscaled> {
+    if format != ImageFormat::Png {
+        let bytes = std::fs::read(path).ok()?;
+        return downscale_to(&bytes, format, max);
+    }
+    let len = std::fs::metadata(path).ok()?.len();
+    let open = || std::fs::File::open(path).ok().map(std::io::BufReader::new);
+    let px = image::ImageReader::with_format(open()?, format)
+        .into_dimensions()
+        .ok()?;
+    let target = resize_target(px, max)?;
+    let resized = decode_png_fitted(open()?, |_| target).ok()?;
+    let size = (resized.width(), resized.height());
+    let (encoded, format) = encode(&resized, format)?;
+    ((encoded.len() as u64) < len).then_some(Downscaled {
+        bytes: encoded,
+        format,
+        size,
+    })
+}
+
 /// `bytes` decoded and shrunk to `target`. A PNG streams through the fitted
 /// decoder, which holds the target and one row rather than the whole
 /// picture; anything else — or a PNG the streaming decoder declines — is

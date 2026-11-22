@@ -44,7 +44,8 @@ pub const MAX_REFERENCED_IMAGES: usize = 5;
 /// The Images API's limit on one input image.
 pub const MAX_REFERENCE_BYTES: u64 = 50 * 1024 * 1024;
 
-/// The run switch: falsy withdraws the tool and its skill.
+/// Seeds the `/settings` **Image generation** row for the run, never saved:
+/// falsy starts the session with the tool and its skill withdrawn.
 pub const IMAGEGEN_ENV: &str = "ALTER_ZERO_IMAGEGEN";
 
 /// Is `name` this tool's wire name?
@@ -82,31 +83,18 @@ pub fn imagegen_spec() -> Value {
     )
 }
 
-/// The tool's description: Codex's `imagegen_description.md`, cut to what
-/// this tool does — no code mode, no `num_last_images_to_include`, no GIF —
-/// and naming `read`, this app's way of looking at a local image.
+/// The tool's description: what it does and its sharp edges, short — every
+/// word rides every request that offers it, and the craft Codex's
+/// `imagegen_description.md` spells out (when to draw, how to word a prompt,
+/// where a picture belongs) is the `imagegen` skill's, listed whenever the
+/// tool is offered (`docs/imagegen.md`).
 const IMAGEGEN_DESCRIPTION: &str = "\
-Generate an image from a description, or edit existing images, with OpenAI's \
-gpt-image-2 through the user's ChatGPT sign-in. Use it when:
-
-- The user asks for an image from a description: a photo, illustration, diagram, \
-icon, texture, sprite, mockup, comic, meme or any other visual.
-- The user wants an existing image changed: elements added or removed, colors \
-altered, quality improved, or the style transformed.
-
-Guidelines:
-- Each call makes one image and can take a few minutes; for several different \
-images, make one call per image.
-- Set `transparent_background` to true when the request calls for a transparent \
-background, including background removal or a cutout. For edits, keep existing \
-transparency unless the user asks to change it.
-- Omit `referenced_image_paths` for a brand-new image. For an edit, or to guide \
-style, composition or subject with other images, list each image's absolute path \
-there: a pasted image, one you read, or one generated earlier.
-- If you have not seen a local image yet, look at it with `read` before editing it.
-- Generate directly, without asking the user to confirm.
-- Use this tool for image generation and editing unless the user explicitly asks \
-otherwise.";
+Generate an image from a prompt, or edit images, with ChatGPT's image model \
+through the user's ChatGPT sign-in. Each call makes one image (it can take a \
+minute or two), saves it, shows it to the user and returns its path. Generate \
+directly, without asking for confirmation. For an edit or a style reference, \
+list the images in `referenced_image_paths`, looking at a local one with `read` \
+first; set `transparent_background` for a cutout.";
 
 /// A call's arguments, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,11 +255,23 @@ pub fn generated_facts(output: &str) -> Option<&str> {
     Some(&line[..=at])
 }
 
+/// How a generated picture reaches the model, as [`model_result`] words it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// Attached — as it is, or as a copy shrunk to this size because the
+    /// picture itself is past the attachment cap.
+    Attached(Option<(u32, u32)>),
+    /// Kept back from a model that cannot see images.
+    Withheld,
+    /// Not attachable: the saved file could not be read back, or no copy fit.
+    Unavailable,
+}
+
 /// What the model reads for a generated image: the fact line, then Codex's
-/// note on where generated images live and what to do with them. `attached`
-/// is whether the picture rides along — not on a model that cannot see.
+/// note on where generated images live and what to do with them, then what
+/// it can see of the picture.
 #[must_use]
-pub fn model_result(fact: &str, dir: &str, attached: bool) -> String {
+pub fn model_result(fact: &str, dir: &str, shown: Shown) -> String {
     let mut text = format!(
         "{fact}\n\
          Generated images are saved to {dir} by default. If you need the image at another \
@@ -280,11 +280,20 @@ pub fn model_result(fact: &str, dir: &str, attached: bool) -> String {
          The user already sees the image in the conversation, so there is no need to show it \
          again in your reply as a Markdown image or a file link."
     );
-    if !attached {
-        text.push_str(
+    match shown {
+        Shown::Attached(None) => {}
+        Shown::Attached(Some((width, height))) => text.push_str(&format!(
+            "\nThe picture attached for you is a copy shrunk to {width}x{height} to fit the \
+             attachment limit; the file itself is full size."
+        )),
+        Shown::Withheld => text.push_str(
             "\nThis model cannot see images, so the picture is not attached: describe it \
              from the prompt rather than from looking at it.",
-        );
+        ),
+        Shown::Unavailable => text.push_str(
+            "\nThe picture could not be attached for you to look at; the file itself is \
+             complete.",
+        ),
     }
     text
 }
@@ -298,12 +307,18 @@ pub(crate) fn failure_text(status: u16, body: &str, now: i64) -> String {
     {
         return limit.describe(now);
     }
+    let message = error_message(body);
     if matches!(status, 401 | 403)
         && let Some(advice) = crate::llm::chatgpt::auth_advice(status, body)
     {
-        return advice;
+        // The advice says what to do; the endpoint's own words say why,
+        // which for a 403 is more than the plan.
+        return if message.is_empty() {
+            advice
+        } else {
+            format!("{advice} ChatGPT said: {message}")
+        };
     }
-    let message = error_message(body);
     if message.is_empty() {
         format!("image generation failed: HTTP {status}")
     } else {
@@ -461,8 +476,6 @@ pub(crate) struct Saved {
     pub size: (u32, u32),
     /// The file's size in bytes.
     pub bytes: u64,
-    /// What else the answer said.
-    pub meta: scan::ResponseMeta,
 }
 
 /// Why a request made no image.
@@ -623,7 +636,6 @@ fn save_answer(
         path,
         label,
         size,
-        meta: scan::ResponseMeta::parse(&split.skeleton),
     })
 }
 
@@ -722,10 +734,6 @@ fn resolve_target(cfg: &crate::llm::ModelConfig) -> Result<Target, String> {
     headers.extend(cfg.extra_headers.iter().cloned());
     headers.extend(auth.headers);
     headers.push((
-        "version".to_string(),
-        crate::llm::chatgpt::CLIENT_VERSION.to_string(),
-    ));
-    headers.push((
         "x-codex-image-turn-id".to_string(),
         crate::llm::cloud_code::uuid_v4(),
     ));
@@ -785,21 +793,53 @@ pub(crate) fn resolve_references(paths: &[String]) -> Result<Vec<PathBuf>, Strin
         .collect()
 }
 
+/// What a saved image hands the model to look at.
+enum Attachment {
+    /// The picture, or the copy held to the attachment cap sent in its place.
+    Attached(crate::images::FittedAttachment),
+    /// Nothing: the model cannot see images.
+    Withheld,
+    /// Nothing: the file could not be read back, or no copy fit.
+    Unavailable,
+}
+
+impl Attachment {
+    /// The attachment for the image saved at `path` — held to the limit an
+    /// image `read` is held to, since a provider refuses a picture past it and
+    /// the conversation re-sends every picture it holds on every turn
+    /// (`images::fitted_attachment_data_url`). `vision` is the model's image
+    /// support: a model known not to see gets none.
+    fn for_saved(path: &Path, vision: Option<bool>) -> Self {
+        if vision == Some(false) {
+            return Self::Withheld;
+        }
+        crate::images::fitted_attachment_data_url(path, crate::llm::tools::READ_IMAGE_MAX_BYTES)
+            .map_or(Self::Unavailable, Self::Attached)
+    }
+}
+
 /// The outcome for a saved image: the fact line on the cell, the fact and
-/// Codex's note for the model, and the picture attached when there is one
-/// to attach (`attachment` is `None` on a model that cannot see).
-fn finished(saved: &Saved, dir: &Path, attachment: Option<AttachmentUrl>) -> ToolOutcome {
+/// Codex's note for the model, and the picture attached when there is one to
+/// attach — or, for a model that cannot see, the mark that has the agent
+/// loop send the note the replay sends in its place.
+fn finished(saved: &Saved, dir: &Path, attachment: Attachment) -> ToolOutcome {
     let fact = format_generated(
         saved.label,
         saved.size,
         saved.bytes,
         &saved.path.to_string_lossy(),
     );
-    let model = model_result(&fact, &dir.to_string_lossy(), attachment.is_some());
+    let shown = match &attachment {
+        Attachment::Attached(fitted) => Shown::Attached(fitted.sent),
+        Attachment::Withheld => Shown::Withheld,
+        Attachment::Unavailable => Shown::Unavailable,
+    };
+    let model = model_result(&fact, &dir.to_string_lossy(), shown);
     let outcome = ToolOutcome::ok(fact).with_context(model);
     match attachment {
-        Some(url) => outcome.with_image(url),
-        None => outcome,
+        Attachment::Attached(fitted) => outcome.with_image(fitted.url),
+        Attachment::Withheld => outcome.with_image_withheld(),
+        Attachment::Unavailable => outcome,
     }
 }
 
@@ -829,7 +869,7 @@ pub(crate) fn run_imagegen(
     let worker_dir = dir.clone();
     let worker_cancel = cancel.clone();
     let result = crate::llm::off_thread(
-        move || -> Result<Saved, String> {
+        move || -> Result<(Saved, Attachment), String> {
             let target = resolve_target(&cfg)?;
             let images = references
                 .iter()
@@ -844,29 +884,44 @@ pub(crate) fn run_imagegen(
                 transparent_background: args.transparent_background,
                 images,
             };
-            with_retries(RETRY_PAUSE, &worker_cancel, || {
+            let saved = with_retries(RETRY_PAUSE, &worker_cancel, || {
                 request_image(&target, &request, &worker_dir, &worker_cancel)
             })
-            .map_err(|error| error.text(unix_now()))
+            .map_err(|error| error.text(unix_now()))?;
+            // Encoded here, on the worker the turn abandons on Esc: a picture
+            // past the cap is decoded and shrunk.
+            let attachment = Attachment::for_saved(&saved.path, vision);
+            Ok((saved, attachment))
         },
         cancel,
     );
     match result {
-        None => ToolOutcome::error(crate::app::INTERRUPT_TOOL_OUTPUT)
-            .with_error_kind(crate::stream::ToolErrorKind::Interrupted),
+        None => unanswered(cancel),
         Some(Err(error)) => ToolOutcome::error(error),
-        Some(Ok(saved)) => {
+        Some(Ok((saved, attachment))) => {
             let shown = saved.path.to_string_lossy().into_owned();
             // The cell this call resolves draws the picture from the file
             // (`docs/images.md`).
             crate::images::remember_size(&shown, saved.size);
-            let attachment = (vision != Some(false))
-                .then(|| crate::images::attachment_data_url(&saved.path))
-                .flatten();
             finished(&saved, &dir, attachment)
         }
     }
 }
+
+/// The answer to a call whose worker ended without one: an interrupt when
+/// Esc ended it, else a failure — a worker that died is not anything the
+/// user did.
+fn unanswered(cancel: &CancelToken) -> ToolOutcome {
+    if cancel.is_cancelled() {
+        ToolOutcome::error(crate::app::INTERRUPT_TOOL_OUTPUT)
+            .with_error_kind(crate::stream::ToolErrorKind::Interrupted)
+    } else {
+        ToolOutcome::error(STOPPED_UNEXPECTEDLY)
+    }
+}
+
+/// What a call whose worker died answers.
+const STOPPED_UNEXPECTEDLY: &str = "image generation failed: the request stopped unexpectedly";
 
 /// Seconds since the Unix epoch, for a usage limit's reset.
 fn unix_now() -> i64 {
@@ -926,6 +981,12 @@ mod tests {
         let spec = imagegen_spec();
         let description = spec["function"]["description"].as_str().unwrap();
         assert!(description.contains("ChatGPT"), "{description}");
+        // Every word rides every request that offers the tool; the craft —
+        // when to draw, how to word a prompt — is the skill's (CLAUDE.md's
+        // tool prose rule, docs/imagegen.md).
+        let words = description.split_whitespace().count();
+        assert!(words <= 80, "{words} words: {description}");
+        assert!(description.contains("path"), "names what it returns");
         assert!(
             description.contains("`referenced_image_paths`"),
             "{description}"
@@ -1107,7 +1168,7 @@ mod tests {
     #[test]
     fn the_model_reads_the_fact_and_codexs_note() {
         let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", true);
+        let text = model_result(&fact, "/g", Shown::Attached(None));
         assert!(text.starts_with(&fact), "{text}");
         assert!(text.contains("Generated images are saved to /g"), "{text}");
         assert!(text.contains("copy it"), "{text}");
@@ -1119,8 +1180,35 @@ mod tests {
     #[test]
     fn a_model_that_cannot_see_is_told_the_picture_was_not_attached() {
         let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
-        let text = model_result(&fact, "/g", false);
+        let text = model_result(&fact, "/g", Shown::Withheld);
         assert!(text.contains("cannot see images"), "{text}");
+    }
+
+    #[test]
+    fn a_picture_sent_smaller_tells_the_model_what_it_is_looking_at() {
+        let fact = format_generated("PNG", (3840, 2160), 20_000_000, "/g/1.png");
+        let text = model_result(&fact, "/g", Shown::Attached(Some((1536, 864))));
+        assert!(text.contains("1536x864"), "{text}");
+        assert!(text.contains("full size"), "the file is untouched: {text}");
+        assert!(!text.contains("cannot see"), "{text}");
+    }
+
+    #[test]
+    fn a_picture_that_could_not_be_attached_never_blames_the_model() {
+        let fact = format_generated("PNG", (1024, 1024), 1_500_000, "/g/1.png");
+        let text = model_result(&fact, "/g", Shown::Unavailable);
+        assert!(!text.contains("cannot see images"), "{text}");
+        assert!(text.contains("could not be attached"), "{text}");
+    }
+
+    #[test]
+    fn a_refusal_keeps_what_the_endpoint_said_beside_the_advice() {
+        // A 403 has more causes than the plan: the endpoint's own words are
+        // what says which (docs/imagegen.md).
+        let body = r#"{"error": {"message": "Image generation is disabled for this workspace."}}"#;
+        let text = failure_text(403, body, 0);
+        assert!(text.contains("disabled for this workspace"), "{text}");
+        assert!(text.contains("OpenAI refused"), "the advice stays: {text}");
     }
 
     #[test]
@@ -1257,7 +1345,6 @@ mod tests {
         assert_eq!(std::fs::read(&saved.path).unwrap(), png);
         assert_eq!((saved.label, saved.size), ("PNG", (3, 2)));
         assert_eq!(saved.bytes, png.len() as u64);
-        assert_eq!(saved.meta.revised_prompt.as_deref(), Some("a blue whale"));
         let request = &server.join().unwrap()[0];
         assert!(
             request
@@ -1511,7 +1598,6 @@ mod tests {
             label: "PNG",
             size: (1024, 1536),
             bytes: 1_500_000,
-            meta: scan::ResponseMeta::default(),
         }
     }
 
@@ -1519,7 +1605,11 @@ mod tests {
     fn a_saved_image_finishes_with_its_fact_line_the_note_and_the_picture() {
         let dir = Path::new("/g");
         let url = AttachmentUrl::from("data:image/png;base64,Zm9v".to_string());
-        let outcome = finished(&saved(dir), dir, Some(url.clone()));
+        let fitted = crate::images::FittedAttachment {
+            url: url.clone(),
+            sent: None,
+        };
+        let outcome = finished(&saved(dir), dir, Attachment::Attached(fitted));
         assert!(outcome.ok);
         assert_eq!(
             outcome.output,
@@ -1534,15 +1624,31 @@ mod tests {
     #[test]
     fn a_model_that_cannot_see_gets_the_file_and_no_picture() {
         let dir = Path::new("/g");
-        let outcome = finished(&saved(dir), dir, None);
+        let outcome = finished(&saved(dir), dir, Attachment::Withheld);
         assert!(outcome.ok);
         assert_eq!(outcome.image, None);
+        assert!(outcome.image_withheld, "the loop sends the replay's note");
         assert!(
             outcome
                 .context
                 .as_deref()
                 .unwrap()
                 .contains("cannot see images")
+        );
+    }
+
+    #[test]
+    fn only_a_cancel_reads_as_an_interrupt() {
+        let cancel = CancelToken::new();
+        let died = unanswered(&cancel);
+        assert!(!died.ok);
+        assert_eq!(died.output, STOPPED_UNEXPECTEDLY);
+        assert_eq!(died.error_kind, None, "the tool's own failure");
+        cancel.cancel();
+        let stopped = unanswered(&cancel);
+        assert_eq!(
+            stopped.error_kind,
+            Some(crate::stream::ToolErrorKind::Interrupted)
         );
     }
 

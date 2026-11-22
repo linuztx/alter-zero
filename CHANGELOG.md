@@ -22,12 +22,17 @@ release heading when a version is cut.
   - Each image is saved to `~/.alter-zero/generated_images/<session>/` and
     drawn under its cell.
   - It is shown to the model, so a follow-up edit can see what it is
-    changing. An edit names the images to change by their paths.
+    changing. An edit names the images to change by their paths. A picture
+    too large for the model's provider to take is sent as a smaller copy,
+    kept beside it, so a resumed conversation still works.
   - A new built-in `imagegen` skill, Codex's own, teaches the model when a
     bitmap is the right answer, how to prompt for one, and where the file
     belongs in your project. It is listed only while the tool is offered.
-  - Signing in mid-session turns both on at the next turn.
-    `ALTER_ZERO_IMAGEGEN=0` turns them off for a run (`docs/imagegen.md`).
+  - A `/settings` **Image generation** row turns both off for a directory.
+    Without a ChatGPT sign-in it is unavailable and says how to sign in.
+    Signing in mid-session turns both on at once, and
+    `ALTER_ZERO_IMAGEGEN=0` starts a run with the row off
+    (`docs/imagegen.md`).
 
 - **Built-in skills and agent types update with each release.** The
   built-in skills (`skill-creator`, `jina-reader`, `web-search`, `yt-dlp`,

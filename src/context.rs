@@ -377,6 +377,10 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
         // optional `args` are lossy the same way `bash`'s `timeout` is;
         // the result below carries the body they already rendered into.
         crate::skills::SKILL_TOOL_DISPLAY => "skill",
+        // An `imagegen` call's summary is its prompt, the one required
+        // parameter (`docs/imagegen.md`) — lossy past the header's one line,
+        // but a request a validating provider accepts.
+        crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY => "prompt",
         _ => return "{}".to_string(),
     };
     serde_json::json!({ key: tool.args }).to_string()
@@ -2662,6 +2666,22 @@ mod tests {
         )];
         let ctx = context_messages(&history);
         assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"path":"hello.py"}"#);
+    }
+
+    #[test]
+    fn a_generated_image_without_its_arguments_replays_its_prompt() {
+        // `prompt` is required, and a validating provider rejects the call
+        // without it; the header summary is the prompt (docs/imagegen.md).
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 90, "/g/s1/1.png");
+        let history = vec![tool(
+            crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+            "a red fox",
+            &fact,
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"prompt":"a red fox"}"#);
     }
 
     #[test]

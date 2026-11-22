@@ -959,6 +959,17 @@ pub fn run_agent(
                             "user",
                             vec![ContentPart::text(note), ContentPart::image(url)],
                         ));
+                    } else if outcome.image_withheld
+                        && let Some((path, _)) =
+                            crate::llm::imagegen::generated_image(&outcome.output)
+                    {
+                        // A picture kept back from a model that cannot see
+                        // one: the note degraded exactly as the replay
+                        // degrades it, so the next turn's request starts as
+                        // this one did (docs/imagegen.md).
+                        let note = attachment_note(&call.name, &call.arguments, &outcome.output);
+                        let line = super::backend::omitted_image_line(std::path::Path::new(&path));
+                        attachments.push(ChatMessage::user(format!("{note}{line}")));
                     }
                 }
                 // The calls the ceiling refused: each shows as its own red
@@ -3249,6 +3260,7 @@ mod tests {
                         truncated: false,
                         background: None,
                         image: None,
+                        image_withheld: false,
                         tasks: None,
                         context: None,
                         exit_code: None,
@@ -4361,6 +4373,84 @@ mod tests {
             matches!(&seen[2].content, MessageContent::Text(t) if t.starts_with("Read image ")),
             "the result content is the text facts: {:?}",
             seen[2]
+        );
+    }
+
+    #[test]
+    fn a_picture_withheld_from_a_blind_model_sends_the_note_the_replay_sends() {
+        // docs/imagegen.md: the executor keeps the pixels from a model that
+        // can't see them, and the round carries the note degraded exactly as
+        // every later turn's replay degrades it — so the next request starts
+        // as this one did and the prompt cache holds.
+        use crate::llm::MessageContent;
+        let path = "/c/generated_images/s1/1.png";
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 90, path);
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "imagegen", r#"{"prompt":"a fox"}"#)];
+        let seen_round2: RefCell<Vec<ChatMessage>> = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("draw a fox")],
+            |msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    *seen_round2.borrow_mut() = msgs.to_vec();
+                    answered()
+                }
+            },
+            |_c, _sink| {
+                ToolOutcome::ok(fact.clone())
+                    .with_context(format!("{fact}\nThis model cannot see images."))
+                    .with_image_withheld()
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+        );
+        drain(&mut rx);
+        let seen = seen_round2.into_inner();
+        let roles: Vec<&str> = seen.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool", "user"]);
+        // The replay: the recorded cell's attachment, built for the same
+        // vision-less model.
+        let (note, attached) = crate::llm::tools::recorded_attachment(
+            crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+            "a fox",
+            &fact,
+        )
+        .expect("a generated image replays an attachment");
+        let replayed = super::super::backend::build_messages_for(
+            Some(false),
+            None,
+            "",
+            &[crate::context::ContextMessage {
+                role: crate::context::ContextRole::User,
+                text: note,
+                images: vec![std::path::PathBuf::from(attached)],
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            }],
+            |_| None::<crate::images::AttachmentUrl>,
+        );
+        let live = seen.last().unwrap();
+        assert!(
+            matches!((&live.content, &replayed[0].content),
+                (MessageContent::Text(live), MessageContent::Text(replay)) if live == replay),
+            "live {:?} vs replay {:?}",
+            live.content,
+            replayed[0].content
         );
     }
 

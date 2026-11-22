@@ -43,8 +43,11 @@ plant_skill "$AD_HOME/.agents/skills" zz-notes "Keep notes, from the personal ag
 plant_skill "$AD_ROOT/pkg/.agents/skills" zz-shared "The package's own copy"
 plant_skill "$AD_HOME/.agents/skills" zz-shared "The personal copy"
 # The built-ins are seeded into the config home on the first launch, so the
-# header counts them beside the four planted skills the walk must find.
-AD_BUILTINS="$(find "$SMOKE_ROOT/prompts/skills" -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l | tr -d ' ')"
+# header counts them beside the four planted skills the walk must find — all
+# but `imagegen`, which the walk reads only while a ChatGPT sign-in offers its
+# tool, and the suite stores none (docs/imagegen.md).
+AD_BUILTINS="$(find "$SMOKE_ROOT/prompts/skills" -mindepth 2 -maxdepth 2 -name SKILL.md \
+	-not -path '*/imagegen/*' | wc -l | tr -d ' ')"
 AD_TOTAL=$((AD_BUILTINS + 4))
 cat >"$AD_ROOT/.agents/plugins/marketplace.json" <<'JSON'
 { "name": "projkit", "plugins": [
