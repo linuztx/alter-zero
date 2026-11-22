@@ -503,6 +503,16 @@ pub fn plan_sync(
         }
     }
     for relative in retired {
+        // A spelling of a shipped file but for case is that very file on a
+        // filesystem that ignores case (macOS by default): removing it, or
+        // the `.new` beside it, would remove what this release just wrote.
+        if files
+            .iter()
+            .any(|(file, _)| file.eq_ignore_ascii_case(relative))
+        {
+            record.restore(relative, None);
+            continue;
+        }
         // A link is the user's arrangement: only a file is removed.
         if let OnDisk::File(hash) = &disk[relative]
             && ours(relative, hash)
@@ -606,11 +616,32 @@ pub fn sync_with(
         return report;
     }
     let record_path = dir.join(MANIFEST_FILE_NAME);
-    let recorded = read_record(&record_path);
+    let (recorded, keep_record) = match read_record(&record_path) {
+        Record::Text(text) => (Some(text), true),
+        Record::Missing => (None, true),
+        // Whatever put it there, it is not ours to write over. The copies
+        // nobody edited still follow the release, but nothing is offered:
+        // only a record can say an offer was made, and every launch would
+        // make it again.
+        Record::NotAFile => {
+            report.errors.push(SyncError {
+                path: record_path.clone(),
+                message: "not a regular file; remove it so an edited built-in can be offered \
+                          a release's new version"
+                    .to_string(),
+            });
+            (None, false)
+        }
+    };
     let manifest = recorded.as_deref().map(Manifest::parse).unwrap_or_default();
-    let plan = plan_sync(kind, files, history, &manifest, offer, |relative| {
-        read_on_disk(&dir.join(relative))
-    });
+    let plan = plan_sync(
+        kind,
+        files,
+        history,
+        &manifest,
+        offer && keep_record,
+        |relative| read_on_disk(&dir.join(relative)),
+    );
     let mut record = plan.manifest;
     let mut updated = BTreeSet::new();
     let mut removed = BTreeSet::new();
@@ -656,7 +687,10 @@ pub fn sync_with(
         Some(text) => text == json,
         None => record.is_empty(),
     };
-    if !unchanged && let Err(err) = write_file(&record_path, &json) {
+    if keep_record
+        && !unchanged
+        && let Err(err) = write_file(&record_path, &json)
+    {
         report.errors.push(SyncError {
             path: record_path,
             message: err.to_string(),
@@ -665,13 +699,31 @@ pub fn sync_with(
     report
 }
 
+/// `path` opened for reading when it is a regular file, a link followed, and
+/// `None` when it is anything else — a directory, a FIFO, a device. Opened
+/// without blocking, so a FIFO with no writer cannot hold the launch up, and
+/// judged by the file opened, so nothing can be swapped in between.
+fn open_regular(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK;
+        std::fs::File::from(open(path, flags, Mode::empty()).map_err(std::io::Error::from)?)
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(path)?;
+    Ok(file.metadata()?.is_file().then_some(file))
+}
+
 /// What the file at `path` holds: its hash, read through a bounded buffer —
 /// through a symlink too, which is told apart so it is never removed.
+/// Anything that is not a regular file is never read.
 fn read_on_disk(path: &Path) -> OnDisk {
     use sha2::{Digest, Sha256};
     let link = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
+    let file = match open_regular(path) {
+        Ok(Some(file)) => file,
+        Ok(None) => return OnDisk::Unreadable,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return OnDisk::Missing,
         Err(_) => return OnDisk::Unreadable,
     };
@@ -697,15 +749,29 @@ fn read_on_disk(path: &Path) -> OnDisk {
     }
 }
 
-/// The record's text, or `None` when there is none to read.
-fn read_record(path: &Path) -> Option<String> {
-    let mut text = String::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(RECORD_MAX_BYTES)
-        .read_to_string(&mut text)
-        .ok()?;
-    Some(text)
+/// What is at the record's path, as [`sync_with`] reads it.
+enum Record {
+    /// Its text — which may still not parse, and is then no record at all.
+    Text(String),
+    /// Nothing there, or nothing that could be read.
+    Missing,
+    /// Something that is not a regular file — a directory, a FIFO.
+    NotAFile,
+}
+
+/// The record at `path`, never read past [`RECORD_MAX_BYTES`].
+fn read_record(path: &Path) -> Record {
+    match open_regular(path) {
+        Ok(Some(file)) => {
+            let mut text = String::new();
+            match file.take(RECORD_MAX_BYTES).read_to_string(&mut text) {
+                Ok(_) => Record::Text(text),
+                Err(_) => Record::Missing,
+            }
+        }
+        Ok(None) => Record::NotAFile,
+        Err(_) => Record::Missing,
+    }
 }
 
 /// Write `contents` to `path` through a temp file beside it, synced and
@@ -714,6 +780,15 @@ fn read_record(path: &Path) -> Option<String> {
 /// replaced keeps its mode, and a symlink is written through to the file it
 /// names, so a dotfiles checkout keeps its link.
 fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_file_flushing(path, contents, std::fs::File::sync_all)
+}
+
+/// [`write_file`] with the flush before the rename injected.
+fn write_file_flushing(
+    path: &Path,
+    contents: &str,
+    flush: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let parent = target
@@ -735,7 +810,11 @@ fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
             file.set_permissions(meta.permissions())?;
         }
         file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
+        // Best-effort: the rename is what keeps a killed write from tearing
+        // the file, and the flush only adds power-loss durability — which a
+        // filesystem may refuse (macOS's F_FULLFSYNC over SMB) without the
+        // write being any less written.
+        let _ = flush(&file);
         std::fs::rename(&temp, &target)
     })();
     if written.is_err() {
@@ -1563,6 +1642,31 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_path_that_is_a_shipped_one_but_for_case_is_never_removed() {
+        // On a filesystem that ignores case (macOS by default) `Old.py` and
+        // `old.py` are one file: removing the retired spelling, or the `.new`
+        // beside it, would remove the file this release just wrote.
+        const SCRIPT: &str = "print('renamed by case alone')\n";
+        let retired = "web-search/scripts/Old.py";
+        let shipped = "web-search/scripts/old.py";
+        let retired_offer = format!("{retired}{OFFER_SUFFIX}");
+        let history = history_text(&[(SKILL, NEW), (retired, SCRIPT), (shipped, SCRIPT)]);
+        let plan = plan(
+            &[(SKILL, NEW), (shipped, SCRIPT)],
+            &history,
+            &offered_manifest(retired, &hash(SCRIPT), &hash(SCRIPT)),
+            &[
+                (SKILL, file(NEW)),
+                (shipped, file(SCRIPT)),
+                (retired, file(SCRIPT)),
+                (&retired_offer, file(SCRIPT)),
+            ],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+        assert_eq!(plan.manifest.base(retired), None, "its record is dropped");
+    }
+
+    #[test]
     fn writes_come_before_removals() {
         const OLD_SCRIPT: &str = "print('retired')\n";
         let script = "web-search/scripts/old.py";
@@ -1941,6 +2045,137 @@ mod tests {
         assert!(
             report.updated.is_empty() && report.removed.is_empty(),
             "{report:?}"
+        );
+    }
+
+    /// Make a FIFO at `path` (the `mkfifo` command: rustix has no `mkfifoat`
+    /// on macOS, which CI tests too).
+    #[cfg(unix)]
+    fn mkfifo(path: &Path) {
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success(), "mkfifo {}", path.display());
+    }
+
+    /// `work`'s answer, failing the test — rather than hanging the suite —
+    /// when it is still blocked after a few seconds, as an open of one of
+    /// `fifos` waiting for a writer would be. The stuck open is let go first,
+    /// so its thread can end.
+    #[cfg(unix)]
+    fn within_seconds<T: Send + 'static>(
+        fifos: &[PathBuf],
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(answer) => answer,
+            Err(_) => {
+                use rustix::fs::{Mode, OFlags, open};
+                for fifo in fifos {
+                    let _ = open(fifo, OFlags::WRONLY | OFlags::NONBLOCK, Mode::empty());
+                }
+                panic!("the sync waited on a FIFO");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_a_built_in_path_is_left_alone_without_waiting_on_it() {
+        use std::os::unix::fs::FileTypeExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills");
+        std::fs::create_dir_all(dir.join("web-search")).expect("mkdir");
+        let fifo = dir.join(SKILL);
+        mkfifo(&fifo);
+        let report = within_seconds(std::slice::from_ref(&fifo), {
+            let dir = dir.clone();
+            move || sync_over(&dir, &[(SKILL, NEW)], &[(SKILL, NEW)])
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let kind = std::fs::symlink_metadata(&fifo)
+            .expect("still there")
+            .file_type();
+        assert!(kind.is_fifo(), "the FIFO was written over");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_record_that_is_no_file_is_neither_waited_on_nor_written_over() {
+        // Whatever put it there, the copies nobody edited still follow the
+        // release — but nothing is offered, since only a record can say an
+        // offer was made, and every launch would make it again.
+        use std::os::unix::fs::FileTypeExt;
+        const OTHER: &str = "other/SKILL.md";
+        const OTHER_OLD: &str = "---\nname: other\ndescription: Old.\n---\n";
+        const OTHER_NEW: &str = "---\nname: other\ndescription: New.\n---\n";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let record = dir.join(MANIFEST_FILE_NAME);
+        mkfifo(&record);
+        put(&dir, SKILL, OLD);
+        put(&dir, OTHER, MINE);
+        let report = within_seconds(std::slice::from_ref(&record), {
+            let dir = dir.clone();
+            move || {
+                sync_over(
+                    &dir,
+                    &[(SKILL, NEW), (OTHER, OTHER_NEW)],
+                    &[
+                        (SKILL, OLD),
+                        (SKILL, NEW),
+                        (OTHER, OTHER_OLD),
+                        (OTHER, OTHER_NEW),
+                    ],
+                )
+            }
+        });
+        assert_eq!(
+            read(&dir, SKILL),
+            NEW,
+            "the unedited copy follows the release"
+        );
+        assert_eq!(read(&dir, OTHER), MINE, "the edit is kept");
+        assert!(
+            !dir.join(format!("{OTHER}{OFFER_SUFFIX}")).exists(),
+            "an offer no record can remember"
+        );
+        let kind = std::fs::symlink_metadata(&record)
+            .expect("still there")
+            .file_type();
+        assert!(kind.is_fifo(), "the record's path was written over");
+        assert_eq!(
+            report.errors.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            vec![&record],
+            "one error, naming the record: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn a_write_survives_a_filesystem_that_refuses_to_flush() {
+        // Some network filesystems refuse the flush (macOS's F_FULLFSYNC over
+        // SMB). The rename is what keeps a killed write from tearing a file;
+        // the flush only adds power-loss durability where it is offered.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("SKILL.md");
+        write_file_flushing(&path, NEW, |_| Err(std::io::Error::other("refused")))
+            .expect("written all the same");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), NEW);
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("SKILL.md")],
+            "no temp file left"
         );
     }
 

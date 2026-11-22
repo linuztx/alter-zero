@@ -162,7 +162,10 @@ longer ships. A folder left empty by removals is removed with them.
 A built-in path that is a symbolic link is read and written **through** — a
 dotfiles checkout keeps its link and still gets the update — but never
 removed: the seed writes files, never links, so a link is the user's
-arrangement, and a retired file reached through one stays.
+arrangement, and a retired file reached through one stays. A file a release
+renamed by **case** alone (`Old.py` → `old.py`) is never removed either: on a
+filesystem that ignores case, macOS's by default, the two names are the file
+this release just wrote. Its record is dropped and nothing else happens.
 
 A file the user added to a built-in's folder is never looked at: the history
 names the files the seed owns, and nothing else is touched.
@@ -191,16 +194,27 @@ brought up to date is a step-log line on stderr under `--verbose`
 
 ## Writes
 
-Every write goes to a temp file beside its target, synced, then renamed over
-it, so a crash mid-write leaves the old file or the new one — never a torn
-file, which would read as an edit for good. A file being replaced keeps its
-mode (a script the user made executable stays so), and a symlinked file is
-written through, so a dotfiles checkout keeps its link. Two launches at once
-compute the same plan and write the same bytes.
+Every write goes to a temp file beside its target, then is renamed over it,
+so a killed write leaves the old file or the new one — never a torn file,
+which would read as an edit for good. The temp file is flushed to disk before
+the rename where the filesystem allows it; one that refuses (macOS's
+`F_FULLFSYNC` over SMB) costs only power-loss durability, never the write. A
+file being replaced keeps its mode (a script the user made executable stays
+so), and a symlinked file is written through, so a dotfiles checkout keeps its
+link. Two launches at once compute the same plan and write the same bytes.
+
+Only a **regular file** is ever read. A FIFO, a device or a directory at a
+built-in's path is left alone, and it is opened without blocking and judged
+by what was opened, so nothing at a built-in path can hold the launch up —
+reading a FIFO the plain way waits for a writer forever.
 
 `.alter-zero-builtins.json` is written last, and only when it changed. A step
 that failed keeps its file's old record, so the next launch tries it again,
-and every failure is a red startup toast — never a failed launch.
+and every failure is a red startup toast — never a failed launch. Something
+at the record's path that is not a file is never written over: the copies
+nobody edited still follow the release, but no offer is made — only the
+record could say one was, so every launch would make it again — and the
+toast names the path.
 `ALTER_ZERO_SKILLS_DIR` is still never written into; an
 `ALTER_ZERO_AGENTS_DIR` override is seeded and kept current like the config
 home's directory, its record included.
