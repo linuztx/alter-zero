@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use alter_zero::app::{McpOp, ToastKind};
-use alter_zero::llm::mcp::{McpEvent, McpHold, McpSources};
+use alter_zero::llm::mcp::{AuthError, EnteredClient, McpEvent, McpHold, McpSources};
 use alter_zero::mcp;
 
 use super::Session;
@@ -216,20 +216,56 @@ impl Session<'_> {
                 ),
             },
             McpOp::CancelAuth => manager.cancel_auth(),
-            McpOp::CopyAuthUrl { url } => {
-                // The `/copy` seam: arboard with the OSC 52 fallback
-                // (`docs/copy.md`), so the copy works over SSH too.
-                match alter_zero::clipboard::copy_to_clipboard(&url) {
-                    Ok(lease) => {
-                        if let Some(lease) = lease {
-                            self.clipboard_lease = Some(lease);
-                        }
-                        self.toast("Copied authorization URL", ToastKind::Info);
-                    }
-                    Err(_) => self.toast("Copy failed", ToastKind::Error),
-                }
-            }
+            McpOp::CopyAuthUrl { url } => self.copy_for_mcp(&url, "Copied authorization URL"),
             McpOp::SubmitAuthUrl { text } => manager.submit_auth_paste(&text),
+            // The client form, submitted: kept with the tokens, then the
+            // sign-in again — a client that can't be kept comes back as a
+            // failed sign-in on the page (`docs/mcp.md`).
+            McpOp::SaveAuthClient {
+                server,
+                issuer,
+                client_id,
+                client_secret,
+                keep_secret,
+                callback_port,
+            } => manager.save_client(
+                &server,
+                &EnteredClient {
+                    issuer,
+                    client_id,
+                    client_secret: client_secret.map(|secret| secret.expose().to_string()),
+                    keep_secret,
+                    callback_port,
+                },
+            ),
+            // The form over the client on hand, once a worker has found the
+            // server's authorization server (`docs/mcp.md`).
+            McpOp::LookUpAuthClient { server } => manager.look_up_client(&server),
+            McpOp::ForgetAuthClient { server } => match manager.forget_client(&server) {
+                Ok(()) => self.toast(
+                    format!("Forgot the OAuth client for {server}"),
+                    ToastKind::Info,
+                ),
+                Err(error) => self.toast(
+                    format!("Couldn't forget the OAuth client for {server}: {error}"),
+                    ToastKind::Error,
+                ),
+            },
+        }
+    }
+
+    /// Copy `text` for an `/mcp` page, saying `done` — the `/copy` seam:
+    /// arboard with the OSC 52 fallback (`docs/copy.md`), so the copy works
+    /// over SSH too.
+    fn copy_for_mcp(&mut self, text: &str, done: &str) {
+        match alter_zero::clipboard::copy_to_clipboard(text) {
+            Ok(lease) => {
+                if let Some(lease) = lease {
+                    self.clipboard_lease = Some(lease);
+                }
+                self.toast(done, ToastKind::Info);
+            }
+            Err(_) => self.toast("Copy failed", ToastKind::Error),
         }
     }
 
@@ -245,19 +281,34 @@ impl Session<'_> {
             McpEvent::AuthPasteRejected { server, reason } => {
                 self.app.reject_mcp_auth_paste(&server, &reason);
             }
+            McpEvent::AuthNeedsClient { server, request } => {
+                // The open auth page becomes the client form; a page the
+                // user already left is told in a toast, in the flow's words
+                // for where no page can ask.
+                if !self.app.ask_mcp_client(&server, &request) {
+                    self.toast(
+                        format!("{server}: {}", AuthError::NeedsClient(Box::new(request))),
+                        ToastKind::Error,
+                    );
+                }
+            }
+            // The lookup's answer: the form, on the page that asked. A page
+            // the user has left called the lookup off — nothing to say.
+            McpEvent::ClientForm { server, request } => {
+                self.app.ask_mcp_client(&server, &request);
+            }
             McpEvent::AuthDone { server, ok, detail } => {
-                self.app.finish_mcp_auth(&server);
-                let kind = if ok {
-                    ToastKind::Info
-                } else {
-                    ToastKind::Error
-                };
-                let text = if ok {
-                    detail
-                } else {
-                    format!("{server}: {detail}")
-                };
-                self.toast(text, kind);
+                // A failure the open auth page took stays there, whole; only
+                // what it did not take — a success, or a page the user
+                // already left — is a toast.
+                if !self.app.finish_mcp_auth(&server, ok, &detail) {
+                    let (text, kind) = if ok {
+                        (detail, ToastKind::Info)
+                    } else {
+                        (format!("{server}: {detail}"), ToastKind::Error)
+                    };
+                    self.toast(text, kind);
+                }
             }
         }
         self.app.update_mcp_snapshot(self.mcp.snapshot());

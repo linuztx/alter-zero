@@ -19,11 +19,15 @@ pub use self::manager::{
     DEFAULT_STARTUP_TIMEOUT, DEFAULT_TOOL_TIMEOUT, McpEvent, McpHold, McpManager, McpSources,
 };
 pub use self::oauth::{
-    AUTH_FLOW_TIMEOUT, AuthProgress, AuthServerMeta, ClientIdentity, RefreshFailure, SignIn,
-    StoredTokens, b64url, build_authorize_url, challenge_resource_metadata, connect_bearer,
-    discover, form_encode, load_client_secret, load_tokens, parse_redirect, parse_token_store,
-    pkce_and_state, provider_authorize_params, record_tokens, redirect_param, refresh_failure_kind,
-    refresh_grant, refresh_if_stale, refresh_params, register_client, run_auth_flow,
+    AUTH_FLOW_TIMEOUT, AuthError, AuthProgress, AuthServerMeta, ClientChange, ClientIdentity,
+    ClientRequest, DEFAULT_CALLBACK_PORT, EnteredClient, RefreshFailure, SignIn, StoredClient,
+    StoredTokens, b64url, build_authorize_url, challenge_resource_metadata, client_lookup,
+    client_request_for, client_summary, client_to_keep, connect_bearer, discover,
+    forget_entered_client, forget_entered_record, form_encode, keep_entered_client, load_client,
+    load_client_secret, load_tokens, parse_client_store, parse_redirect, parse_token_store,
+    pkce_and_state, provider_authorize_params, record_client, record_entered_client,
+    record_entry_secret, record_tokens, redirect_param, refresh_failure_kind, refresh_grant,
+    refresh_if_stale, refresh_params, register_client, run_auth_flow, save_client,
     save_client_secret, save_tokens, tokens_fresh, url_decode, url_encode, validate_issuer,
     with_offline_access,
 };

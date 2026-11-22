@@ -182,9 +182,42 @@ pub struct McpServerSnapshot {
     pub tools: Vec<McpToolInfo>,
     /// The tools it listed that the model is not offered, and why.
     pub excluded: Vec<ExcludedTool>,
+    /// The id of the OAuth client entered for this server on the `/mcp`
+    /// auth page and kept with its tokens (`docs/mcp.md` *Pre-registered
+    /// clients*) — it outranks the entry's own `oauth.clientId`, which is in
+    /// `config`. `None` when none was entered.
+    pub kept_client: Option<String>,
+}
+
+/// Where the OAuth client a server signs in as comes from
+/// ([`McpServerSnapshot::oauth_client`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpClientSource {
+    /// Entered on the `/mcp` auth page and kept with the tokens.
+    Entered,
+    /// The server entry's own `oauth.clientId`.
+    Entry,
 }
 
 impl McpServerSnapshot {
+    /// The OAuth client a sign-in presents, and where it is from: one
+    /// entered in `/mcp`, which outranks the entry's own, else the entry's
+    /// `oauth.clientId` — what the `OAuth client:` row names and the
+    /// Change/Forget rows work on. Which authorization server the
+    /// sign-in will find is not known here, so an entered client reads as
+    /// the one in effect whatever it was entered for.
+    #[must_use]
+    pub fn oauth_client(&self) -> Option<(&str, McpClientSource)> {
+        if let Some(id) = &self.kept_client {
+            return Some((id, McpClientSource::Entered));
+        }
+        self.config
+            .oauth()?
+            .client_id
+            .as_deref()
+            .map(|id| (id, McpClientSource::Entry))
+    }
+
     /// The list row's full status text: `✔ connected · 3 tools`,
     /// `△ needs authentication`, …
     #[must_use]
@@ -197,6 +230,104 @@ impl McpServerSnapshot {
         } else {
             base
         }
+    }
+}
+
+/// What a sign-in asks the user for when it has no OAuth client to present,
+/// or the one it presented was turned away — the spec's last registration
+/// step, "prompt the user to enter the client information" (`docs/mcp.md`
+/// *Pre-registered clients*). The `/mcp` auth page turns into the client
+/// form over it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpClientRequest {
+    /// The authorization server the client is created with — its `issuer`,
+    /// else the origin of its token endpoint: who the page names, and what
+    /// an entered client is bound to. Empty when no sign-in has seen the
+    /// server yet (the form opened from the server's page).
+    pub issuer: String,
+    /// The client id already known — the server entry's own (`fixed_id`),
+    /// or the one entered before: the form opens with it.
+    pub client_id: Option<String>,
+    /// `client_id` is the server entry's `oauth.clientId`: the entry names
+    /// the client, so only its secret is asked for.
+    pub fixed_id: bool,
+    /// A secret is already kept for `client_id` — an empty secret field
+    /// keeps it.
+    pub has_secret: bool,
+    /// The port the sign-in listens on, so the redirect URI to register is
+    /// [`oauth_redirect_uri`] of it. `None` when the sign-in takes any free
+    /// port (a configured client whose entry names no `callbackPort`).
+    pub callback_port: Option<u16>,
+    /// The redirect URI the entry's own client registered, where its entry
+    /// names one (`oauth.callbackUrl`) — what the form shows in place of
+    /// [`oauth_redirect_uri`] of the port. `None` otherwise.
+    pub redirect_uri: Option<String>,
+    /// The documentation link the server's metadata gives — the one thing
+    /// it says about itself: the authorization server's
+    /// `service_documentation`, else the resource's `resource_documentation`.
+    /// `None` where no discovery ran, or it gave none worth linking.
+    pub documentation: Option<String>,
+    /// Why the client on hand was not enough — turned away by the
+    /// authorization server, its port taken — in words for the page.
+    pub reason: Option<String>,
+    /// The server entry's own client, when it names one: what a form whose
+    /// id can change needs to tell, from what is typed, whether it still
+    /// describes that client.
+    pub entry: Option<McpEntryClient>,
+}
+
+/// A server entry's own OAuth client as the client form needs it
+/// (`docs/mcp.md` *The client form*): typed back as its id on its exact
+/// port — both empty counting as one — the form describes that client, and
+/// the sign-in after it sends that client's own redirect URI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpEntryClient {
+    /// `oauth.clientId`.
+    pub client_id: String,
+    /// The port its sign-in listens on exactly; `None` takes any free port.
+    pub port: Option<u16>,
+    /// The redirect URI its sign-in sends — its `callbackUrl`, else the
+    /// standard one on its port; `None` where it takes any free port.
+    pub redirect_uri: Option<String>,
+    /// A secret is in effect for it — one kept for it with the tokens, else
+    /// its file's — so an empty secret field leaves that one in effect.
+    pub has_secret: bool,
+}
+
+/// The redirect URI a sign-in listening on `port` sends — and so the one a
+/// provider that matches redirect URIs exactly must have registered. One
+/// spelling, read by the flow and by the client form alike, so what the page
+/// shows is what the authorization server is sent.
+#[must_use]
+pub fn oauth_redirect_uri(port: u16) -> String {
+    format!("http://localhost:{port}/callback")
+}
+
+/// An issuer's host — `accounts.google.com` for
+/// `https://accounts.google.com` — the name a person knows a provider by.
+/// An issuer that is no URL reads as written.
+#[must_use]
+pub fn issuer_host(issuer: &str) -> String {
+    url::Url::parse(issuer)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| issuer.to_string())
+}
+
+/// An issuer as the client form shows it: exactly as given, except that a
+/// URL carrying a user name or password is shown without them — so
+/// `https://accounts.google.com@evil.example` reads `https://evil.example/`,
+/// the host its token endpoint is really on. Text that is no URL is shown as
+/// written, and an ordinary issuer is never normalised.
+#[must_use]
+pub fn issuer_display(issuer: &str) -> String {
+    match url::Url::parse(issuer) {
+        Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        _ => issuer.to_string(),
     }
 }
 
@@ -291,6 +422,7 @@ mod tests {
             auth: Some(McpAuthState::NotAuthenticated),
             identity: None,
             excluded: Vec::new(),
+            kept_client: None,
             tools: (0..tools)
                 .map(|i| McpToolInfo {
                     name: format!("t{i}"),
@@ -299,6 +431,32 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// The OAuth client a server's page names: one entered in `/mcp`, which
+    /// outranks the entry's own, else the entry's — and where it is from.
+    #[test]
+    fn the_client_in_effect_is_the_entered_one_else_the_entrys() {
+        let mut server = snapshot(McpServerStatus::NeedsAuth, 0);
+        assert_eq!(server.oauth_client(), None);
+        server.config = McpServerConfig::Http {
+            url: "https://mcp.deepwiki.com/mcp".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: false,
+            oauth: Some(crate::mcp::OAuthClientConfig {
+                client_id: Some("file-cid".to_string()),
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            server.oauth_client(),
+            Some(("file-cid", McpClientSource::Entry))
+        );
+        server.kept_client = Some("typed-cid".to_string());
+        assert_eq!(
+            server.oauth_client(),
+            Some(("typed-cid", McpClientSource::Entered))
+        );
     }
 
     #[test]
@@ -446,5 +604,65 @@ mod tests {
         // Non-JSON falls back verbatim (an old record, a truncated string).
         assert_eq!(pretty_args("not json"), "not json");
         assert_eq!(pretty_args("{}"), "");
+    }
+
+    /// The redirect URI is spelled one way — `localhost`, the port, the
+    /// `/callback` path — so the one the client form shows is the one the
+    /// sign-in sends.
+    #[test]
+    fn the_redirect_uri_names_localhost_the_port_and_the_callback_path() {
+        assert_eq!(oauth_redirect_uri(8976), "http://localhost:8976/callback");
+        assert_eq!(oauth_redirect_uri(1), "http://localhost:1/callback");
+    }
+
+    /// A provider is named by its host, the name a person knows it by; an
+    /// issuer that is no URL reads as written.
+    #[test]
+    fn an_issuer_is_shown_whole_without_user_info() {
+        for ordinary in [
+            "https://accounts.google.com",
+            "https://accounts.google.com/",
+            "https://login.example.com:8443/tenant/v2.0",
+            "HTTPS://Login.Example.com/Tenant",
+        ] {
+            assert_eq!(issuer_display(ordinary), ordinary);
+        }
+        assert_eq!(
+            issuer_display("https://accounts.google.com@evil.example"),
+            "https://evil.example/"
+        );
+        assert_eq!(
+            issuer_display("https://accounts.google.com:pw@evil.example/tenant"),
+            "https://evil.example/tenant"
+        );
+        assert_eq!(
+            issuer_display("https://:secret@evil.example"),
+            "https://evil.example/"
+        );
+        assert_eq!(issuer_display("not a url"), "not a url");
+    }
+
+    #[test]
+    fn an_issuer_is_named_by_its_host() {
+        assert_eq!(
+            issuer_host("https://accounts.google.com"),
+            "accounts.google.com"
+        );
+        assert_eq!(
+            issuer_host("https://login.example.com:8443/tenant/v2.0"),
+            "login.example.com"
+        );
+        // A name before an `@` is credentials, not the host: the page names
+        // who the client is really created with.
+        assert_eq!(
+            issuer_host("https://accounts.google.com@evil.example/"),
+            "evil.example"
+        );
+        assert_eq!(
+            issuer_host("https://accounts.google.com.evil.example"),
+            "accounts.google.com.evil.example"
+        );
+        assert_eq!(issuer_host("not a url"), "not a url");
+        assert_eq!(issuer_host(""), "");
     }
 }

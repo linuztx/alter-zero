@@ -53,6 +53,17 @@ pub struct TextArea {
     preferred_col: Option<usize>,
 }
 
+/// Two editors are the same edit when their text and cursor are: the wrap
+/// cache and the remembered vertical column are derived from those, and say
+/// nothing of what was typed.
+impl PartialEq for TextArea {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.cursor == other.cursor
+    }
+}
+
+impl Eq for TextArea {}
+
 #[derive(Debug, Clone)]
 struct WrapCache {
     width: u16,
@@ -741,6 +752,20 @@ mod tests {
         let mut ta = TextArea::from_text(text);
         ta.cursor = cursor;
         ta
+    }
+
+    /// Two editors are equal when their text and their cursor are: the wrap
+    /// cache and the remembered column are derived, and say nothing of
+    /// what was typed.
+    #[test]
+    fn editors_compare_by_their_text_and_cursor() {
+        assert_eq!(TextArea::from_text("abc"), at("abc", 3));
+        assert_ne!(TextArea::from_text("abc"), at("abc", 1));
+        assert_ne!(TextArea::from_text("abc"), TextArea::from_text("abd"));
+        let warmed = TextArea::from_text("a long line that wraps");
+        let _ = warmed.wrapped_rows(4);
+        assert_eq!(warmed, TextArea::from_text("a long line that wraps"));
+        assert_eq!(TextArea::new(), TextArea::default());
     }
 
     // ===== editing at the cursor =====

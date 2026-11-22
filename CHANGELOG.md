@@ -14,6 +14,52 @@ release heading when a version is cut.
 
 ### Added
 
+- **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
+  sign-in providers register no apps by themselves — Google's, for its MCP
+  servers — so signing in takes an OAuth client you create with the
+  provider. That client could only be written into `mcp.json` or passed to
+  `alter-zero mcp add --client-id … --client-secret`, and pressing
+  **Authenticate** without one ended on a one-line error naming config keys.
+  The page now turns into a form of facts and fields: the issuer, as the
+  server's metadata names it, the server's own documentation link when its
+  metadata gives one, and the redirect URI to register with the client (it
+  follows the callback port as you change it), over
+  the client ID and its secret, which is only ever drawn as dots. The same
+  form appears when a provider refuses to register the app. What you enter
+  is kept with the server's tokens — owner-only, never written to a config
+  file, and only ever presented to the provider it was entered for — so it
+  works alike for a server from your own file, a project's or a plugin's,
+  and it outranks a client the server's entry names (`oauth.clientId`): a
+  client shipped in a project's or a plugin's file can be replaced without
+  editing that file. If the provider turns the client away, the form comes
+  back with what you entered and the provider's own reason, rather than an
+  error to start over from, and no longer offers the refused secret as
+  kept. A server's page names the client it signs in with and offers
+  **Change OAuth client** and, for a client entered there, **Forget OAuth
+  client**. Change looks up the server's sign-in provider before its form
+  opens, works over an entry's own client too, and always shows the
+  redirect URI the next sign-in sends: left as it was, the entry's client
+  and its registered callback URL stay in effect. Saving a different
+  client removes the login made as the old one, and the ID and port
+  fields edit anywhere along the line.
+  `alter-zero mcp get` names the client in effect and where it comes from,
+  and `alter-zero mcp add --client-id` forgets a client entered in `/mcp`
+  for the same address and says so (`docs/mcp.md`, `docs/mcp-cli.md`).
+
+- **MCP entries written the way codex writes them.** An entry's `oauth`
+  block is read under codex's snake_case keys too (`client_id`,
+  `client_secret`, `callback_port`, `callback_url`), `scopes` may sit at the
+  top of the entry, and `"type": "streamable_http"` is `http` — in your own
+  `mcp.json`, a project's and a plugin's alike. A client ID or secret left
+  as a template slot such as `<GMAIL_PUBLIC_CLIENT_ID>` counts as not given,
+  so a codex plugin's Gmail, Calendar or Drive server asks for an OAuth
+  client in `/mcp` on the entry's callback port and signs in with the
+  entry's scopes. `callbackUrl` names the exact redirect URI an entry's own
+  client registered; it is sent as written and the callback is answered on
+  its path. A server you already approved in the startup review whose entry
+  carries any of these keys is asked about once more, since the keys now
+  change what it signs in with (`docs/mcp.md`).
+
 - **Plugins: `/plugins` and `alter-zero plugin`.** Add a marketplace — a
   GitHub `owner/repo`, any git URL, or a directory — and install the plugins
   it lists: Agent Plugins (agent-plugins.org), Claude Code plugins and Codex
@@ -154,6 +200,13 @@ release heading when a version is cut.
   `/plugins` page reads its catalog only while it is open
   (`docs/plugins.md`).
 
+- **A failed MCP sign-in stays on its page.** When **Authenticate** in
+  `/mcp` failed, the page closed and the reason rode a one-row notice above
+  the composer, cut off at the terminal's width — and these reasons are
+  long: the provider's own sentence, an error code, sometimes a link. The
+  page now stays, with the whole reason wrapped on it and any link in it
+  clickable. Enter tries again; Esc goes back.
+
 - **Signing in to an MCP server no longer opens a browser by itself.**
   The `/mcp` Authenticate page used to launch `xdg-open` (`open` on
   macOS) on the authorize URL, which over SSH, in a container or on a
@@ -214,6 +267,13 @@ release heading when a version is cut.
   slightly less than before (`docs/links.md`).
 
 ### Fixed
+
+- **A signed-in MCP server whose address uses a `${VAR}` keeps its sign-in
+  actions.** Once such a server connected, `/mcp` looked for its login under
+  the address as written in the config, found none, and stopped offering
+  **Re-authenticate** and **Clear authentication** for a server that was
+  signed in. The login is now looked up under the address the entry expands
+  to, where it is kept.
 
 - **MCP servers behind a gateway that refuses unnamed clients now connect.**
   Requests to a remote MCP server carried no `User-Agent`, and a gateway's

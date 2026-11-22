@@ -297,15 +297,20 @@ pub(crate) struct CallbackServer {
     /// The port both addresses listen on.
     pub(crate) port: u16,
     /// The request path a response arrives on — `/callback`,
-    /// `/auth/callback`.
-    path: &'static str,
+    /// `/auth/callback`, or the path of a redirect URI an MCP server's
+    /// entry names.
+    path: std::borrow::Cow<'static, str>,
 }
 
 impl CallbackServer {
     /// Bind the first of `ports` free on loopback (`0` asks for an ephemeral
     /// one), answering responses on `path`. A port free on IPv4 but taken on
     /// IPv6 alone is kept as the fallback while the rest are tried.
-    pub(crate) fn bind(ports: &[u16], path: &'static str) -> Result<Self, String> {
+    pub(crate) fn bind(
+        ports: &[u16],
+        path: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Result<Self, String> {
+        let path = path.into();
         let mut v4_only = None;
         let mut last_error = None;
         for &port in ports {
@@ -335,7 +340,7 @@ impl CallbackServer {
                     v4_only.get_or_insert(Self {
                         listeners: vec![v4],
                         port,
-                        path,
+                        path: path.clone(),
                     });
                 }
                 // No IPv6 loopback here, so `localhost` can only mean
@@ -466,9 +471,9 @@ pub(crate) fn wait_for_code(
                         serving.fetch_add(1, Ordering::SeqCst);
                         let hits = hits_tx.clone();
                         let serving = std::sync::Arc::clone(&serving);
-                        let (path, pages) = (server.path, *pages);
+                        let (path, pages) = (server.path.clone(), *pages);
                         std::thread::spawn(move || {
-                            serve_connection(stream, path, &pages, &hits);
+                            serve_connection(stream, &path, &pages, &hits);
                             serving.fetch_sub(1, Ordering::SeqCst);
                         });
                     }
@@ -856,6 +861,27 @@ mod tests {
             "the flow ended early"
         );
         let real = hit(port, "GET /callback?code=c1&state=s1 HTTP/1.1\r\n\r\n");
+        assert!(real.starts_with("HTTP/1.1 200"), "{real}");
+        assert_eq!(
+            done.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Ok("c1".to_string())
+        );
+    }
+
+    /// A path made at run time — an MCP entry's own redirect URI — is
+    /// the one the callback answers on, and `/callback` is then a stray.
+    #[test]
+    fn an_owned_path_is_the_one_answered() {
+        let path = format!("/callback/{}", "made-up-id");
+        let server = CallbackServer::bind(&[0], path).expect("bind");
+        let port = server.port;
+        let done = waiting(server, None, Default::default());
+        let elsewhere = hit(port, "GET /callback?code=c1&state=s1 HTTP/1.1\r\n\r\n");
+        assert!(elsewhere.starts_with("HTTP/1.1 404"), "{elsewhere}");
+        let real = hit(
+            port,
+            "GET /callback/made-up-id?code=c1&state=s1 HTTP/1.1\r\n\r\n",
+        );
         assert!(real.starts_with("HTTP/1.1 200"), "{real}");
         assert_eq!(
             done.recv_timeout(Duration::from_secs(3)).unwrap(),

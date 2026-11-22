@@ -100,9 +100,10 @@ alter-zero mcp list
   that broke Claude Code's own help example). Repeated keys: last wins.
 - **A pre-registered OAuth client** — for a server whose login provider
   registers no clients itself, Google's (`docs/mcp.md` *Pre-registered
-  clients*; Google's servers are not supported yet, and signing in to them
-  this way is experimental, *Servers that list their tools to anyone*) —
-  is the flags other MCP clients' CLIs document:
+  clients*; signing in to Google's own servers this way is still
+  experimental, *Servers that list their tools to anyone*) — is the flags
+  other MCP clients' CLIs document, beside the form `/mcp` shows when a
+  sign-in needs a client (`docs/mcp.md` *The client form*):
   `--client-id <ID>` and `--callback-port <N>` write the entry's `oauth`
   object (remote only; with a command they are a usage error), and
   `--client-secret` is a **switch**, never a value — `--client-secret=…`
@@ -115,9 +116,30 @@ alter-zero mcp list
   stdin is a terminal (rustix's `termios`, restored after), else one line
   of stdin — and keeps it in the owner-only token store's `clients`
   section under the server's URL (`llm::mcp::save_client_secret`), never
-  in `mcp.json`. `get` then shows `OAuth client:`, `Callback port:`,
-  `Scopes:` and **where** the secret is (`kept with the tokens`, or masked
-  `***** (in the file)` for a `clientSecret` written there), never what.
+  in `mcp.json`, where it outranks a `clientSecret` the file spells.
+  A client entered on the `/mcp` auth page lives in that same `clients`
+  section rather than in the file, and outranks the entry's own client
+  (`docs/mcp.md` *The client form*), so an `add` keeps the two in step: an
+  entry added with `--client-id` is the statement about its address, and a
+  client entered in `/mcp` for it is forgotten — with the login made as
+  it, when there is one, in the same locked write
+  (`llm::mcp::forget_entered_client`) — and a line says so (`Forgot the
+  OAuth client entered in /mcp for this server`, `…, and its login`).
+  `--client-secret` replaces whatever is kept with the entry's secret and
+  says the same when what it replaced was an entered client. An `add`
+  naming its client without `--client-secret` leaves a secret kept earlier
+  for that client where it is; one naming no client touches nothing kept.
+  `get` names the client in effect and where it is from: `OAuth client:
+  {id} (entered in /mcp)` over the port it signs in on, then `Entry's own
+  client: {id} (not used while the one entered in /mcp is kept)` where the
+  file names one too; else `OAuth client: {id} (in the file)` with
+  `Callback port:` and `Redirect URI:` (for an entry naming its
+  `callbackUrl`); then `Scopes:` and **where** the secret in effect is —
+  `kept with the tokens`, `kept with the tokens (the file's is not used)`,
+  or masked `***** (in the file)` — never what. So the file is never the
+  only place to look for the client a server signs in with
+  (`llm::mcp::client_summary`, pure over the entry's `oauth` and the kept
+  record; the boundary only reads the store and prints).
 - The **name** must be non-empty `[A-Za-z0-9_-]+` (both references'
   rule, `mcp::validate_server_name`). That is exactly the class
   `mcp::normalize_name` keeps, so the `/mcp` list, the permission rules
@@ -180,7 +202,8 @@ TUI.
 
 - `add`/`add-json`: RMW through `record_server`, then two stdout lines —
   `Added {stdio|http|sse} MCP server "{name}" ({target})` over
-  `File: {path}`.
+  `File: {path}` — and, after what the token store took, the `Client
+  secret:` and `Forgot the OAuth client …` lines above.
 - `remove`: RMW through `remove_server` — `Removed MCP server "{name}"` +
   the `File:` line.
 - `list`: `parse_mcp_file` over the user file, one `  {name}: {target}
@@ -238,8 +261,13 @@ a failed write — one plain stderr line), **0** for success and help.
 - `tests/mcp_cli.rs` (the `detached_exec.rs` pattern — the real binary
   via `CARGO_BIN_EXE_alter-zero`, `ALTER_ZERO_MCP_FILE` into a temp dir):
   add stdio + http + sse + add-json, the file's exact JSON, list order,
-  get's masking, remove keeping order, duplicate/missing/invalid-file
-  exit codes, help, and the invalid file left byte-identical.
+  get's masking, get naming a client entered in `/mcp` and never its
+  secret, and the entry's own client as not used beside it, an add with
+  its own client forgetting an entered one and the login made as it but
+  never another login, an add keeping the secret kept for its client,
+  `--client-secret` saying what it replaced, remove keeping order,
+  duplicate/missing/invalid-file exit codes, help, and the invalid file
+  left byte-identical.
 - `scripts/smoke.sh` Phase 84: the CLI installs the Phase 80 scripted
   stdio fixture into a temp user file, then the TUI boots against that
   same file and `/mcp` shows the server `✔ connected · 1 tool` — proving

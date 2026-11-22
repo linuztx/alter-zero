@@ -1303,6 +1303,7 @@ where
             client_id,
             client_secret: None,
             callback_port,
+            callback_url: None,
             scopes: None,
         });
         match &mut config {

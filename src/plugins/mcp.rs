@@ -534,15 +534,10 @@ pub fn parse_legacy_mcp(contents: &str, vars: &PluginVars<'_>) -> PluginMcp {
 /// One entry of a legacy server map, with the plugin's own variables
 /// expanded and its process told where it lives.
 fn legacy_server(entry: &Value, vars: &PluginVars<'_>) -> Result<McpServerConfig, String> {
-    let Value::Object(object) = entry else {
+    if !entry.is_object() {
         return Err("it is not an object".to_string());
-    };
-    let mut object = object.clone();
-    // codex writes the streamable transport with an underscore.
-    if object.get("type").and_then(Value::as_str) == Some("streamable_http") {
-        object.insert("type".to_string(), "http".into());
     }
-    let config = crate::mcp::parse_server_entry(&Value::Object(object).to_string())?;
+    let config = crate::mcp::parse_server_entry(&entry.to_string())?;
     let names = vars.legacy();
     let expand = |text: &str| substitute(text, &names);
     let expand_map = |map: &BTreeMap<String, String>| -> BTreeMap<String, String> {

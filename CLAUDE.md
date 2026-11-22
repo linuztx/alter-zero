@@ -1625,7 +1625,23 @@ duplicate-error ergonomics on top, a bare `--url` writing the type-less
 http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
 the RMW writers `mcp::record_server`/`remove_server` (order-preserving
 `shift_remove`, unparseable files refused never clobbered), the file I/O in
-`tui::mcp_cli`) in
+`tui::mcp_cli` — and the `/mcp` sign-in's **client form**, `docs/mcp.md`
+*The client form*: a sign-in with no OAuth client to present (the
+authorization server registers none — Google's — or refused the
+registration, or turned the user's own client away) ends **asking**
+(`oauth::AuthError::NeedsClient` → `McpEvent::AuthNeedsClient`), and the
+auth page becomes a form (`app::McpClientForm`): the redirect URI to
+register, the callback port it follows, the client ID and a masked secret
+(`SecretValue`); what is entered is kept in the token store's `clients`
+section, bound to its issuer and never written to a config file
+(`oauth::StoredClient`), signs in on exactly its own port
+(`DEFAULT_CALLBACK_PORT`), and is changed or forgotten from the server's
+page; an entered client outranks the entry's own `oauth.clientId`, the
+form the server's page opens waits on a lookup of the authorization server
+(`McpManager::look_up_client`), and a login goes with the client it was
+made as (`oauth::keep_entered_client`); a sign-in that fails stays on its
+page with the whole reason (`McpAuthView::failed`); `smoke.sh` Phases 163
+and 164) in
 `docs/resume.md`; the **rollout records** an analysis reads (codex's
 `token_usage_record` and command record, sized down: every `tool` line keeps
 the call's `exit_code`, `duration_ms` and, on a failure, its `error_kind` —
@@ -3405,7 +3421,11 @@ Claude Code's scoped name**, `plugin:{plugin}:{server}`, whose tools are
 `mcp__plugin_{plugin}_{server}__{tool}` (`plugins::plugin_server_name` — a
 plugin's hook matcher or agent `tools:` written for Claude Code finds them,
 and no plugin's server takes another's name), held for the review like a
-project's and switched live (`McpManager::set_plugin_servers`); of two
+project's and switched live (`McpManager::set_plugin_servers`), a legacy
+plugin's `.mcp.json` read by the one `mcp::parse_server_entry`, so codex's
+snake_case `oauth` keys, top-level `scopes` and `callbackUrl` hold there too
+and a `<…>` template client counts as none, which `/mcp` then asks for
+(`smoke.sh` Phase 164); of two
 enabled plugins of one name only the first in id order loads — **nothing that
 runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,

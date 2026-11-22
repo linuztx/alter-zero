@@ -13,7 +13,7 @@ use super::theme::*;
 use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
-use crate::app::{McpMenu, McpPage, server_actions};
+use crate::app::{McpClientField, McpClientForm, McpMenu, McpPage, server_actions};
 use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name, wire_names};
 
 /// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
@@ -539,6 +539,13 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     } else {
         field_lines("Command:", &target, value, width)
     });
+    // The OAuth client the sign-in presents, when one is in effect: one
+    // entered on the auth page, which outranks the entry's own, else the
+    // entry's — seeing it is how the user knows which client the server
+    // signs in as. Never a secret.
+    if let Some((client_id, _)) = server.oauth_client() {
+        lines.extend(field_lines("OAuth client:", client_id, value, width));
+    }
     lines.extend(field_lines(
         "Config location:",
         &server.config_path,
@@ -764,9 +771,350 @@ fn tool_lines_page(
     lines
 }
 
+/// A failed sign-in's page: the reason whole — wrapped, any URL in it a
+/// link — over how to try again. A toast row cut it at the width and took
+/// it away with itself.
+fn auth_failed_lines(reason: &str, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_AUTH_FAILED_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(model_linked_rows(reason, error_color(), width));
+    lines.push(Line::default());
+    lines.extend(dim_wrapped(MCP_AUTH_FAILED_HINT, width));
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The room a client-form field's value has: the row past the inset and
+/// the prompt, less the cell the caret sits in after the last character.
+fn client_field_room(width: u16) -> usize {
+    usize::from(width)
+        .saturating_sub(cols(MODEL_INDENT) + cols(MCP_CLIENT_ID_PROMPT) + 1)
+        .max(1)
+}
+
+/// The part of a field's `text` a row of `room` columns shows — a byte
+/// range on grapheme boundaries — and the caret's column in it, `cursor`
+/// being a byte offset on a grapheme boundary. All of it where it fits;
+/// else the end while the caret is within the last `room` columns, so a
+/// value being typed keeps its end in view, the start while the caret is
+/// within the first, and otherwise a window ending at the caret. One pass
+/// over the graphemes, never more.
+pub(super) fn field_window(
+    text: &str,
+    cursor: usize,
+    room: usize,
+) -> (std::ops::Range<usize>, usize) {
+    let before = cols(&text[..cursor]);
+    if cols(text) <= room {
+        return (0..text.len(), before);
+    }
+    let graphemes: Vec<(usize, usize, usize)> = text
+        .grapheme_indices(true)
+        .map(|(at, g)| (at, at + g.len(), cols(g)))
+        .collect();
+    // Where the widest run of whole graphemes ending at `end` that fits
+    // `room` starts.
+    let fit_back = |end: usize| {
+        let mut start = end;
+        let mut width = 0;
+        for &(at, _, w) in graphemes.iter().rev().filter(|&&(at, _, _)| at < end) {
+            if width + w > room {
+                break;
+            }
+            width += w;
+            start = at;
+        }
+        start
+    };
+    let tail = fit_back(text.len());
+    if cursor >= tail {
+        return (tail..text.len(), cols(&text[tail..cursor]));
+    }
+    if before <= room {
+        let mut end = 0;
+        let mut width = 0;
+        for &(_, stop, w) in &graphemes {
+            if width + w > room {
+                break;
+            }
+            width += w;
+            end = stop;
+        }
+        return (0..end, before);
+    }
+    let start = fit_back(cursor);
+    (start..cursor, cols(&text[start..cursor]))
+}
+
+/// What a client-form field's row shows of its value at `room` columns, and
+/// the caret's column in it ([`field_window`]): the id and the port around
+/// their caret, the entry's own id from its end, and the secret as a mask —
+/// one mark a character, the last `room` of them, its value never drawn,
+/// since a flowed row is committed to scrollback as text.
+fn client_field_shown(form: &McpClientForm, field: McpClientField, room: usize) -> (String, usize) {
+    let window = |text: &str, cursor: usize| {
+        let (range, caret) = field_window(text, cursor, room);
+        (text[range].to_string(), caret)
+    };
+    match field {
+        McpClientField::Port => window(form.port.text(), form.port.cursor()),
+        McpClientField::ClientId => match &form.fixed_client_id {
+            Some(id) => window(id, id.len()),
+            None => window(form.client_id.text(), form.client_id.cursor()),
+        },
+        McpClientField::Secret => {
+            let shown = form.secret.char_count().min(room);
+            (std::iter::repeat_n(LOGIN_MASK_CHAR, shown).collect(), shown)
+        }
+    }
+}
+
+/// A client-form field's prompt.
+const fn client_prompt(field: McpClientField) -> &'static str {
+    match field {
+        McpClientField::Port => MCP_CLIENT_PORT_PROMPT,
+        McpClientField::ClientId => MCP_CLIENT_ID_PROMPT,
+        McpClientField::Secret => MCP_CLIENT_SECRET_PROMPT,
+    }
+}
+
+/// Where the client form's caret sits: the focused field's prompt — the row
+/// is found by it in the built page — and the column of that field's caret
+/// in what it shows. What [`client_field_row`] draws, so the two agree.
+pub(super) fn client_caret(form: &McpClientForm, width: u16) -> (&'static str, usize) {
+    let prompt = client_prompt(form.field);
+    let (_, caret) = client_field_shown(form, form.field, client_field_room(width));
+    (prompt, cols(MODEL_INDENT) + cols(prompt) + caret)
+}
+
+/// One form field row: the prompt — lit on the field taking keys — then the
+/// value, or `note` in its place while the field is empty.
+fn client_field_row(
+    form: &McpClientForm,
+    field: McpClientField,
+    note: &str,
+    width: u16,
+) -> Line<'static> {
+    let fixed = field == McpClientField::ClientId && form.fixed_client_id.is_some();
+    let focused = form.field == field && !fixed;
+    let prompt_ink = if focused {
+        model_selected_color()
+    } else {
+        model_meta_color()
+    };
+    let room = client_field_room(width);
+    let (shown, _) = client_field_shown(form, field, room);
+    let (text, ink) = if shown.is_empty() {
+        (ellipsize(note, room), model_meta_color())
+    } else {
+        let ink = if focused {
+            ai_color()
+        } else if fixed {
+            model_meta_color()
+        } else {
+            model_id_color()
+        };
+        (shown, ink)
+    };
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(client_prompt(field), Style::new().fg(prompt_ink)),
+        Span::styled(text, Style::new().fg(ink)),
+    ])
+}
+
+/// One labelled fact row: `value` beside its label where the row holds
+/// both, under it where it doesn't — so a narrow terminal never breaks an
+/// address mid-way beside the label.
+fn client_fact_rows(
+    label: &'static str,
+    value: &str,
+    ink: Style,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let label_ink = Style::new().fg(mcp_detail_label_color());
+    if cols(MODEL_INDENT) + cols(label) + cols(value) <= usize::from(width) {
+        return vec![Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(label, label_ink),
+            Span::styled(value.to_string(), ink),
+        ])];
+    }
+    let mut lines = vec![mcp_line(label.trim_end(), label_ink, width)];
+    let room = usize::from(width).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    lines.extend(
+        wrap_output(value, room)
+            .into_iter()
+            .map(|row| Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, ink)])),
+    );
+    lines
+}
+
+/// A fact row whose value is a URL: [`client_fact_rows`]' layout, the URL
+/// linked verbatim (`model_url_rows`, `whole_url_run`) so a click opens
+/// exactly what is shown, on every row it wraps onto.
+fn client_link_rows(label: &'static str, url: &str, width: u16) -> Vec<Line<'static>> {
+    let label_ink = Style::new().fg(mcp_detail_label_color());
+    let ink = model_id_color();
+    if cols(MODEL_INDENT) + cols(label) + cols(url) <= usize::from(width)
+        && let Some((text, style)) = whole_url_run(url, Style::new().fg(ink))
+    {
+        return vec![Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(label, label_ink),
+            Span::styled(text, style),
+        ])];
+    }
+    let mut lines = vec![mcp_line(label.trim_end(), label_ink, width)];
+    lines.extend(model_url_rows(url, ink, width));
+    lines
+}
+
+/// The redirect URI rows: the address the sign-in will send for the port
+/// typed, or what to do while the port is no port. A fact like the issuer,
+/// in the issuer's colour — the accent is the lit field's alone.
+fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
+    match form.redirect_uri() {
+        Some(uri) => client_fact_rows(
+            MCP_CLIENT_REDIRECT_LABEL,
+            &uri,
+            Style::new().fg(model_id_color()),
+            width,
+        ),
+        None => vec![Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::styled(
+                MCP_CLIENT_REDIRECT_LABEL,
+                Style::new().fg(mcp_detail_label_color()),
+            ),
+            Span::styled(
+                ellipsize(
+                    MCP_CLIENT_REDIRECT_UNSET,
+                    usize::from(width)
+                        .saturating_sub(cols(MODEL_INDENT) + cols(MCP_CLIENT_REDIRECT_LABEL))
+                        .max(1),
+                ),
+                Style::new().fg(model_meta_color()),
+            ),
+        ])],
+    }
+}
+
+/// The client form (`docs/mcp.md` *Pre-registered clients*): facts and
+/// fields only — the sign-in's own reason, when the form is back; the
+/// issuer, the server's documentation link and the redirect URI to
+/// register, one block; the fields; what stopped the last submit; the keys.
+/// An entry's own client is shown, not asked for: its secret is the one
+/// field, and its port its entry's.
+fn client_form_lines(
+    form: &McpClientForm,
+    server: &McpServerSnapshot,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let fixed = form.fixed_client_id.is_some();
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_CLIENT_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    if let Some(reason) = &form.reason {
+        lines.extend(model_linked_rows(reason, error_color(), width));
+    }
+    // The address the sign-in will send: always for a client entered here,
+    // and for an entry's own only where the entry pins the port — one that
+    // takes any free port has no address to show.
+    let redirect = form.shows_redirect();
+    let mut facts = Vec::new();
+    if !form.issuer.is_empty() {
+        facts.extend(client_fact_rows(
+            MCP_CLIENT_ISSUER_LABEL,
+            &crate::mcp::issuer_display(&form.issuer),
+            Style::new().fg(model_id_color()),
+            width,
+        ));
+    }
+    // What the server says about itself: its documentation link, the URL
+    // alone, linked.
+    if let Some(url) = &form.documentation {
+        facts.extend(client_link_rows(MCP_CLIENT_DOCS_LABEL, url, width));
+    }
+    if redirect {
+        facts.extend(client_redirect_rows(form, width));
+    }
+    if form.reason.is_some() && !facts.is_empty() {
+        lines.push(Line::default());
+    }
+    if form.reason.is_some() || !facts.is_empty() {
+        lines.extend(facts);
+        lines.push(Line::default());
+    }
+    if !fixed {
+        lines.push(client_field_row(form, McpClientField::Port, "", width));
+    }
+    lines.push(client_field_row(form, McpClientField::ClientId, "", width));
+    let secret_note = if form.keeps_secret() {
+        MCP_CLIENT_SECRET_KEPT
+    } else if fixed {
+        ""
+    } else {
+        MCP_CLIENT_SECRET_OPTIONAL
+    };
+    lines.push(client_field_row(
+        form,
+        McpClientField::Secret,
+        secret_note,
+        width,
+    ));
+    if let Some(error) = &form.error {
+        lines.extend(wrapped(error, Style::new().fg(error_color()), width));
+    }
+    lines.push(Line::default());
+    let hint = if fixed {
+        MCP_CLIENT_SECRET_HINT
+    } else {
+        MCP_CLIENT_HINT
+    };
+    lines.extend(dim_wrapped(hint, width));
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The page `Change OAuth client` shows while the server's authorization
+/// server is looked up for the form: the form's title over one status line
+/// and the one key — nothing to type, and nothing said about the provider.
+fn lookup_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        model_rule(width),
+        title_line(&format!("{MCP_CLIENT_TITLE}{}", server.name), width),
+        Line::default(),
+    ];
+    lines.extend(dim_wrapped(MCP_CLIENT_LOOKUP, width));
+    lines.extend([
+        Line::default(),
+        dim_line(HOOKS_DETAIL_HINT, width),
+        model_rule(width),
+    ]);
+    lines
+}
+
 /// The OAuth page: the flow's narration, the authorize URL (`c` to copy),
-/// and the `URL >` paste-the-redirect fallback.
+/// and the `URL >` paste-the-redirect fallback — or, while the sign-in
+/// waits on the user for an OAuth client, the client form; or, while the
+/// authorization server is looked up for that form, a status line; or,
+/// once it has failed, the reason.
 fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
+    if let Some(reason) = &menu.auth.failed {
+        return auth_failed_lines(reason, server, width);
+    }
+    if let Some(form) = &menu.auth.client {
+        return client_form_lines(form, server, width);
+    }
+    if menu.auth.lookup {
+        return lookup_lines(server, width);
+    }
     let mut lines = vec![
         model_rule(width),
         title_line(&format!("Authenticating with {}…", server.name), width),

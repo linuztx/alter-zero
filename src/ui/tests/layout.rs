@@ -991,6 +991,7 @@ fn tall_mcp_server_app() -> App {
         auth: None,
         identity: None,
         excluded: Vec::new(),
+        kept_client: None,
         tools: Vec::new(),
     }]);
     app.mcp_menu.as_mut().unwrap().page = crate::app::McpPage::Server;

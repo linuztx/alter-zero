@@ -2377,6 +2377,42 @@ pub(super) const MCP_AUTH_RETURN_NOTE: &str =
     "Return here after authenticating in your browser. Press Esc to go back.";
 pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
 pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
+/// A failed sign-in's page: its title leads the server's name, and the
+/// reason stays on screen, whole, over this hint (`docs/mcp.md`).
+pub(super) const MCP_AUTH_FAILED_TITLE: &str = "Couldn't authenticate with ";
+pub(super) const MCP_AUTH_FAILED_HINT: &str = "Enter to try again · Esc to go back";
+/// The auth page's client form, shown when the authorization server
+/// registers no client for this app or turned the user's own away
+/// (`docs/mcp.md` *Pre-registered clients*). The title leads the server's
+/// name. The page states facts and asks for fields — MCP describes no
+/// provider, so it describes none.
+pub(super) const MCP_CLIENT_TITLE: &str = "OAuth client for ";
+/// What the auth page says while `Change OAuth client` looks the server's
+/// authorization server up for the form — one status line, nothing to type.
+pub(super) const MCP_CLIENT_LOOKUP: &str = "Looking up the authorization server…";
+/// The issuer row's label — the authorization server as discovery named it
+/// — padded to the redirect URI label's width so the two values line up.
+pub(super) const MCP_CLIENT_ISSUER_LABEL: &str = "Issuer:        ";
+/// The documentation row's label: the link the server's metadata gives,
+/// the same width as the other two.
+pub(super) const MCP_CLIENT_DOCS_LABEL: &str = "Docs:          ";
+/// The redirect URI row: its label, and what stands in for the address
+/// while the port typed is no port.
+pub(super) const MCP_CLIENT_REDIRECT_LABEL: &str = "Redirect URI:  ";
+pub(super) const MCP_CLIENT_REDIRECT_UNSET: &str = "set the callback port";
+/// The form's three prompts, padded to one width so the values line up —
+/// each a span of its own, which is how the caret finds its field's row.
+pub(super) const MCP_CLIENT_PORT_PROMPT: &str = "Callback port > ";
+pub(super) const MCP_CLIENT_ID_PROMPT: &str = "Client ID     > ";
+pub(super) const MCP_CLIENT_SECRET_PROMPT: &str = "Client secret > ";
+/// What an empty secret field means: the kept secret stays, or the client
+/// is a public one.
+pub(super) const MCP_CLIENT_SECRET_KEPT: &str = "unchanged — type to replace it";
+pub(super) const MCP_CLIENT_SECRET_OPTIONAL: &str = "optional — leave empty if the client has none";
+/// The form's keys: all three fields, or the secret alone.
+pub(super) const MCP_CLIENT_HINT: &str =
+    "Tab to switch fields · Enter to continue · Esc to go back";
+pub(super) const MCP_CLIENT_SECRET_HINT: &str = "Enter to continue · Esc to go back";
 
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =
