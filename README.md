@@ -268,6 +268,7 @@ The essentials are always one keystroke away: `/` opens commands, and `?` in an 
 | `/plugins` | Browse, install and manage plugins and their marketplaces |
 | `/donate` | Support the project with a crypto donation |
 | `/sponsor` | Sponsor the developer or get in touch |
+| `/discord` | Join the community on Discord |
 | `/secrets` | Store credentials the agent uses by placeholder, `<secret:NAME>`, without ever seeing the value |
 | `/quit` | Exit the app |
 

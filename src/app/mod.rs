@@ -35,6 +35,7 @@ mod composer;
 mod config_review;
 mod context_usage;
 mod diff;
+mod discord;
 mod donate;
 mod drafts;
 mod export;
@@ -88,6 +89,7 @@ pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
 pub use self::diff::{DiffFilter, DiffFocus, DiffReview};
+pub use self::discord::{DISCORD_COPIED_NOTICE, DISCORD_INVITE, DiscordPage};
 pub use self::donate::{DONATION_ADDRESSES, DonatePicker, DonationAddress};
 pub use self::drafts::{ArgField, ArgsScanner, ToolDraft, ToolDrafts, previewed_display};
 pub use self::export::{EXPORT_EMPTY_NOTICE, ExportPicker, ExportTarget, export_file_name};
@@ -667,6 +669,10 @@ pub struct App {
     /// twin (no text entry) over the const sponsor catalog — the
     /// developer's sponsor page and contact address. See `docs/sponsor.md`.
     pub sponsor_page: Option<SponsorPage>,
+    /// The open `/discord` page; `None` when closed. The `/sponsor` page's
+    /// twin (no text entry) over one const row — the invite to the Alter
+    /// Zero Discord server. See `docs/discord.md`.
+    pub discord_page: Option<DiscordPage>,
     /// The open `/export` page; `None` when closed. The `/donate` page's
     /// sibling (no text entry) over the two export targets — the clipboard
     /// or a `conversation-….txt` file in the cwd. See `docs/export.md`.

@@ -245,6 +245,13 @@ fn flow_page(app: &App, width: u16, term_height: u16) -> Option<FlowPage> {
             term_height,
         ));
     }
+    if app.discord_page.is_some() {
+        // …and the `/discord` page, its twin (`docs/discord.md`).
+        return Some(FlowPage::framed(
+            super::discord_view::discord_view_lines(app, width, term_height),
+            term_height,
+        ));
+    }
     if app.secrets_page.is_some() {
         // The `/secrets` page changes only on a keystroke, so it signs its
         // rows like `/donate` — and its values are masked in those rows

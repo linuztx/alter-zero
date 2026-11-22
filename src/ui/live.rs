@@ -842,6 +842,17 @@ pub fn render_live_with_preview(
         render_sponsor_page(body, buf, app);
         return;
     }
+    // …and the read-only `/discord` page, the `/sponsor` page's twin. See
+    // `docs/discord.md`.
+    if app.discord_page.is_some() {
+        let [strip, body] = view_split(
+            area,
+            super::discord_view::discord_menu_rows(app, area.width, area.height),
+        );
+        render_strip_above(strip, buf, app, stream_preview);
+        render_discord_page(body, buf, app);
+        return;
+    }
     // …and the `/secrets` page, the same built-line body — its values
     // masked in the builder. See `docs/secrets.md`.
     if app.secrets_page.is_some() {

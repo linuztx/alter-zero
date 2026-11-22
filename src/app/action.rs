@@ -296,6 +296,18 @@ pub enum Action {
     /// the system clipboard. The loop does the I/O and raises the toast;
     /// the page stays open. See `docs/sponsor.md`.
     CopySponsorLink(SponsorLink),
+    /// `/discord`: open the read-only Discord page. Like `/sponsor` it
+    /// works mid-turn and the loop has nothing to fetch. See
+    /// `docs/discord.md`.
+    OpenDiscordPage,
+    /// The Discord page was dismissed (Esc, or Ctrl+C):
+    /// [`App::discord_page`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseDiscordPage,
+    /// Enter, `c`, or `1` on the Discord page: copy [`DISCORD_INVITE`] to
+    /// the system clipboard. The loop does the I/O and raises the toast;
+    /// the page stays open. See `docs/discord.md`.
+    CopyDiscordInvite,
     /// `/secrets`: the page is already open ([`App::secrets_page`]). Like
     /// `/skills` it works mid-turn — it only replaces the composer. The loop
     /// reloads `secrets.json`, so a secret another session added is listed,

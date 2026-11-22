@@ -21,6 +21,7 @@ mod classifier_view;
 mod config_review_view;
 mod context_usage_view;
 mod context_view;
+mod discord_view;
 mod donate_view;
 mod export_view;
 mod file_cell;

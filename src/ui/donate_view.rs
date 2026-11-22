@@ -24,14 +24,17 @@ use super::*;
 use crate::app::{DONATION_ADDRESSES, DonationAddress};
 
 /// The title row: `♥ Support Alter Zero` — the heart in its own red, the
-/// verb and the name bold and washed left-to-right in the banner's accent →
+/// words and the name bold and washed left-to-right in the banner's accent →
 /// link gradient (the mascot's own wash, `docs/header.md`). Clamped with a
 /// trailing `…` at a width that can't seat it, like every banner row.
 ///
-/// `prefix` is the title's verb: `Support ` here, `Sponsor ` on the
-/// `/sponsor` page, which opens on the same row (`docs/sponsor.md`).
-pub(super) fn title_line(prefix: &str, width: u16) -> Line<'static> {
-    let title = format!("{prefix}{HEADER_NAME}");
+/// `before` and `after` are the words on either side of the name, so the
+/// name itself still comes from [`HEADER_NAME`] alone: `Support ` and
+/// nothing here, `Sponsor ` on the `/sponsor` page (`docs/sponsor.md`), and
+/// `Join the ` … ` Discord` on the `/discord` page (`docs/discord.md`) —
+/// both of which open on this row.
+pub(super) fn title_line(before: &str, after: &str, width: u16) -> Line<'static> {
+    let title = format!("{before}{HEADER_NAME}{after}");
     let mut spans = vec![
         Span::raw(MODEL_INDENT),
         Span::styled(DONATE_HEART, Style::new().fg(donate_heart_color())),
@@ -50,7 +53,8 @@ pub(super) fn title_line(prefix: &str, width: u16) -> Line<'static> {
 /// row one glance wide however many chains an address answers on.
 ///
 /// The `/sponsor` page's rows are the same row over its own catalog
-/// (`docs/sponsor.md`), so the two words arrive as `lead` and `tail`.
+/// (`docs/sponsor.md`), and the `/discord` page's one row too
+/// (`docs/discord.md`), so the two words arrive as `lead` and `tail`.
 pub(super) fn label_line(
     index: usize,
     lead: &str,
@@ -105,7 +109,7 @@ pub(super) fn label_line(
 /// `link`, when given, is the target the value opens — stamped on every row
 /// of a wrapped value, so any fragment opens the whole target, and
 /// underlined to say so (`docs/links.md`). The donation addresses name none;
-/// the `/sponsor` page's rows do.
+/// the `/sponsor` page's rows and the `/discord` page's invite do.
 pub(super) fn value_box(
     value: &str,
     link: Option<&str>,
@@ -281,7 +285,7 @@ pub fn donate_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static
         DONATION_ADDRESSES.len(),
         &|| {
             vec![
-                vec![title_line(DONATE_TITLE_PREFIX, width)],
+                vec![title_line(DONATE_TITLE_PREFIX, "", width)],
                 model_wrapped_rows(DONATE_BLURB, model_meta_color(), width),
             ]
         },
@@ -306,7 +310,8 @@ pub(super) type Blocks = Vec<Vec<Line<'static>>>;
 /// boxes: `header` and `tail` build the blocks above and below the list, and
 /// `block(index, selected, open)` builds entry `index` — its label row, plus
 /// its box and whatever sits under it when `open`. The `/sponsor` page is the
-/// same ladder over its own catalog (`docs/sponsor.md`).
+/// same ladder over its own catalog (`docs/sponsor.md`), and the `/discord`
+/// page over its one invite (`docs/discord.md`).
 pub(super) fn boxed_list_page(
     height: u16,
     width: u16,
