@@ -210,6 +210,15 @@ pub(crate) struct ModelSession {
     /// [`Self::skills_offered`] need a rebuild. Re-deriving both sides would
     /// make them equal by construction and rebuild either never or always.
     skills_attached: bool,
+    /// The `imagegen` tool's setup (`docs/imagegen.md`) — the shared ChatGPT
+    /// Codex sign-in, kept current here, and where images are saved — `None`
+    /// when `ALTER_ZERO_IMAGEGEN` is off. Offered whatever provider the
+    /// session runs on, while the sign-in is stored.
+    imagegen: Option<alter_zero::llm::imagegen::ImagegenSetup>,
+    /// Whether the **live** backend was built with the `imagegen` tool — the
+    /// last build's verdict, tracked for [`Self::refresh_imagegen`] exactly as
+    /// `skills_attached` is for the skills.
+    imagegen_attached: bool,
     /// The session's MCP manager (`docs/mcp.md`) — `None` when the feature is
     /// off. Re-attached on every rebuild like the registries above; the
     /// tracked `mcp_fingerprint` is the *last build's* offered wire-name set,
@@ -268,6 +277,7 @@ impl ModelSession {
         hooks: Option<HookSetup>,
         round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
         system_prompt_flags: &super::startup::SystemPromptFlags,
+        imagegen: Option<alter_zero::llm::imagegen::ImagegenSetup>,
     ) -> Self {
         let (providers, provider_issues) = config::startup_providers(home);
         // The persistent API-key store: `.env` in the config home (or
@@ -463,6 +473,18 @@ impl ModelSession {
                     // tier the conversation was running (docs/fast-mode.md).
                     .with_speed(saved_speed.clone())
             });
+        // The ChatGPT Codex sign-in the `imagegen` tool makes images with,
+        // whatever provider this session runs on (docs/imagegen.md).
+        if let Some(setup) = &imagegen {
+            setup
+                .signin
+                .set(chatgpt_signin_config(&providers, &env_file, temperature));
+        }
+        let imagegen_offered = real_backend
+            && tools
+            && imagegen
+                .as_ref()
+                .is_some_and(|setup| setup.signin.get().is_some());
         let backend: Box<dyn ReplySource> = match (stall_ms, real_config) {
             (Some(ms), _) => Box::new(stream::StallAi::new(Duration::from_millis(ms))),
             (None, Some(cfg)) => Box::new(session_backend(
@@ -483,6 +505,7 @@ impl ModelSession {
                 mcp,
                 hooks.as_ref(),
                 round_budget,
+                imagegen.as_ref().filter(|_| imagegen_offered),
             )),
             (None, None) => {
                 // The subagent registry rides the dummy too: the "subagent"
@@ -589,6 +612,8 @@ impl ModelSession {
             skills_attached: real_backend && tools && skills_enabled && skills.has_enabled(),
             skills,
             skills_enabled,
+            imagegen,
+            imagegen_attached: imagegen_offered,
             mcp_fingerprint: mcp
                 .map(alter_zero::llm::mcp::McpManager::fingerprint)
                 .unwrap_or_default(),
@@ -703,6 +728,7 @@ impl ModelSession {
         match config::load_providers(self.home.as_deref(), in_use) {
             Ok((providers, issues)) => {
                 self.providers = providers;
+                self.sync_imagegen_signin();
                 issues
             }
             Err(reason) => vec![format!("{reason} — keeping the providers already loaded")],
@@ -896,6 +922,7 @@ impl ModelSession {
         // built — `set_tools`, a `/model` switch and a skill toggle all land
         // on it, and any of them can change the verdict.
         self.skills_attached = self.skills_offered();
+        self.imagegen_attached = self.imagegen_offered();
         self.mcp_fingerprint = self
             .mcp
             .as_ref()
@@ -919,6 +946,7 @@ impl ModelSession {
             self.mcp.as_ref(),
             self.hooks.as_ref(),
             self.round_budget.as_ref(),
+            self.imagegen.as_ref().filter(|_| self.imagegen_attached),
         ));
     }
 
@@ -1147,6 +1175,44 @@ impl ModelSession {
     /// each one for nothing.
     pub(crate) fn refresh_skills(&mut self) {
         if self.skills_offered() != self.skills_attached {
+            self.rebuild_current();
+        }
+    }
+
+    /// Whether a build right now would put the `imagegen` spec on the wire
+    /// (`docs/imagegen.md`): tools at all, a real backend, the tool not
+    /// switched off for the run, and the ChatGPT Codex sign-in stored —
+    /// whatever provider the session itself runs on. Also what the skills
+    /// walk withholds the seeded `imagegen` skill by.
+    pub(crate) fn imagegen_offered(&self) -> bool {
+        self.real_backend
+            && self.tools
+            && self
+                .imagegen
+                .as_ref()
+                .is_some_and(|setup| setup.signin.get().is_some())
+    }
+
+    /// Bring the tool's shared sign-in up to date with the key store — a
+    /// `/login` save, a provider reload — so the next call makes its image
+    /// with the account just signed in to, without a rebuild.
+    pub(crate) fn sync_imagegen_signin(&self) {
+        if let Some(setup) = &self.imagegen {
+            setup.signin.set(chatgpt_signin_config(
+                &self.providers,
+                &self.env_file,
+                self.temperature,
+            ));
+        }
+    }
+
+    /// Re-check the `imagegen` tool at a turn start: the sign-in brought up
+    /// to date, and the backend rebuilt only when that flips whether the tool
+    /// is offered — a sign-in mid-session turns it on for the next turn
+    /// (`docs/imagegen.md`, `refresh_skills`'s posture).
+    pub(crate) fn refresh_imagegen(&mut self) {
+        self.sync_imagegen_signin();
+        if self.imagegen_offered() != self.imagegen_attached {
             self.rebuild_current();
         }
     }
@@ -1690,6 +1756,9 @@ impl ModelSession {
                 if let Some(dir) = config::model_cache_dir() {
                     config::forget_model_listings(&dir, &stale);
                 }
+                // A ChatGPT sign-in reaches the image tool's next call at
+                // once (docs/imagegen.md).
+                self.sync_imagegen_signin();
                 Ok(())
             }
             Err(e) => Err(format!(
@@ -1823,6 +1892,29 @@ impl HookSetup {
     }
 }
 
+/// The ChatGPT Codex sign-in as a config the `imagegen` tool can mint with
+/// (`docs/imagegen.md`) — `None` while no token is stored under the
+/// provider's own variable.
+fn chatgpt_signin_config(
+    providers: &llm::ProvidersFile,
+    env_file: &llm::EnvFile,
+    temperature: Option<f32>,
+) -> Option<ModelConfig> {
+    let provider = config::chatgpt_signin_id(providers, env_file)?;
+    config::model_config_for(
+        providers,
+        env_file,
+        &provider,
+        alter_zero::llm::imagegen::IMAGE_MODEL,
+        temperature,
+        None,
+        None,
+        None,
+        None,
+    )
+    .filter(ModelConfig::is_usable)
+}
+
 /// the background-shell registry, the subagent registry (enabling the `agent`
 /// tool), and the permission gate. Every backend (re)build in the session goes
 /// through this: the initial pick and each rebind (a `/model` switch, a
@@ -1848,6 +1940,7 @@ fn session_backend(
     mcp: Option<&alter_zero::llm::mcp::McpManager>,
     hooks: Option<&HookSetup>,
     round_budget: Option<&alter_zero::llm::agent::RoundBudget>,
+    imagegen: Option<&alter_zero::llm::imagegen::ImagegenSetup>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
     // names the model that is about to answer (docs/hooks.md).
@@ -1892,6 +1985,12 @@ fn session_backend(
     // `/settings` **Skills** row off; an empty registry attaches nothing.
     if let Some(skills) = skills {
         backend = backend.with_skills(skills.clone());
+    }
+    // The `imagegen` tool (docs/imagegen.md): images made with the ChatGPT
+    // Codex sign-in, whatever provider answers — attached while it is stored,
+    // and `refresh_imagegen` re-runs this build when that changes.
+    if let Some(setup) = imagegen {
+        backend = backend.with_imagegen(setup.clone());
     }
     // The MCP servers' tools (docs/mcp.md): one `mcp__server__tool` spec per
     // connected server's tool — a manager with nothing connected attaches

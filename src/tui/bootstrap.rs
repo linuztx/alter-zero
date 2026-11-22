@@ -287,8 +287,34 @@ impl<'t> Session<'t> {
             .as_ref()
             .map(|report| report.errors.clone())
             .unwrap_or_default();
-        let (mut found_skills, walk_errors) =
-            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
+        // The `imagegen` tool's setup (docs/imagegen.md): the ChatGPT Codex
+        // sign-in it makes images with — filled in by `ModelSession::resolve`
+        // — where those images are saved, and the seeded skill that drives
+        // it. `None` when `ALTER_ZERO_IMAGEGEN` is off.
+        let imagegen_setup =
+            config::imagegen_enabled().then(|| alter_zero::llm::imagegen::ImagegenSetup {
+                signin: alter_zero::llm::imagegen::ChatGptSignin::default(),
+                dir: config::generated_images_dir(&session_id),
+                skill: alter_zero::llm::skill::resolved_builtin_skills_dir(
+                    config::config_home().as_deref(),
+                )
+                .map(|root| root.join(alter_zero::llm::skill::IMAGEGEN_SKILL)),
+            });
+        // The walk runs before the settings and the backend are known, so it
+        // judges the seeded `imagegen` skill by the sign-in alone — read the
+        // way `ModelSession::resolve` reads it — and is walked again below
+        // where the session's own verdict differs (the Tools row off, the
+        // offline dummy).
+        let imagegen_provisional = imagegen_setup.is_some() && {
+            let (providers, _) = config::startup_providers(home.as_deref());
+            let env_file = config::load_env_file(&config::env_file_path());
+            config::chatgpt_signin_id(&providers, &env_file).is_some()
+        };
+        let (mut found_skills, walk_errors) = alter_zero::llm::skill::load_skills(
+            &cwd,
+            config::config_home().as_deref(),
+            imagegen_provisional,
+        );
         skill_errors.extend(walk_errors);
         // The plugins this directory has on (docs/plugins.md): read once
         // here, before every registry they add to — their skills (each
@@ -479,7 +505,7 @@ impl<'t> Session<'t> {
         let steer = alter_zero::steer::SteerQueue::new();
 
         // The reply backend and everything that selects it (docs/llm.md).
-        let models = ModelSession::resolve(
+        let mut models = ModelSession::resolve(
             &cwd,
             home.as_deref(),
             scratchpad_dir.as_deref(),
@@ -498,7 +524,21 @@ impl<'t> Session<'t> {
             hook_setup,
             round_budget.as_ref(),
             &system_prompt,
+            imagegen_setup,
         );
+        // The walk above judged the `imagegen` built-in by the sign-in alone;
+        // where the session does not offer the tool after all, the skill goes
+        // too (docs/imagegen.md).
+        if models.imagegen_offered() != imagegen_provisional {
+            let (mut again, _) = alter_zero::llm::skill::load_skills(
+                &cwd,
+                config::config_home().as_deref(),
+                models.imagegen_offered(),
+            );
+            again.extend(plugins.skills());
+            skill_registry.replace(again);
+            models.refresh_skills();
+        }
 
         // The `@` file-search pipeline (docs/file-search.md): a background worker
         // walks the cwd and ranks it per query off the UI thread. The loop sends

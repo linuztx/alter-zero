@@ -669,6 +669,8 @@ mod tests {
             ("AgentOutput", "agentoutput"),
             ("AgentKill", "agentkill"),
             ("AgentList", "agentlist"),
+            // The image tool the same way: its header's name (docs/imagegen.md).
+            ("ImageGen", "imagegen"),
         ];
         for (matcher, query) in cases {
             let file = parse(&format!(

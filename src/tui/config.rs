@@ -737,6 +737,38 @@ pub(crate) fn paste_store_dir(session: &str) -> PathBuf {
     }
 }
 
+/// Where this session's **generated images** are saved:
+/// `{config_home}/generated_images/{session}` (`docs/imagegen.md`) — durable
+/// like the paste folder, so a resumed conversation still shows its
+/// pictures, and kept: an image is something the user asked for. With no
+/// config home the same layout under the system temp dir. Created by the
+/// first image, not here.
+pub(crate) fn generated_images_dir(session: &str) -> PathBuf {
+    match config_home() {
+        Some(home) => home.join("generated_images").join(session),
+        None => std::env::temp_dir()
+            .join("alter-zero-generated-images")
+            .join(session),
+    }
+}
+
+/// Whether the `imagegen` tool may be offered at all this run —
+/// `ALTER_ZERO_IMAGEGEN`, on unless falsy (`docs/imagegen.md`).
+pub(crate) fn imagegen_enabled() -> bool {
+    env_flag(alter_zero::llm::imagegen::IMAGEGEN_ENV)
+}
+
+/// The provider id of the stored **ChatGPT Codex sign-in**, when there is
+/// one: its own token variable resolving from the environment or the `.env`
+/// store — never the generic `ALTER_ZERO_API_KEY` (`docs/imagegen.md`).
+pub(crate) fn chatgpt_signin_id(providers: &ProvidersFile, env_file: &EnvFile) -> Option<String> {
+    providers
+        .signed_in_with(alter_zero::llm::AuthScheme::ChatGptCodex, |name| {
+            resolve_env(env_file, name)
+        })
+        .map(str::to_string)
+}
+
 /// Read `ALTER_ZERO_IMAGE_CACHE_MAX_BYTES`, else
 /// [`clipboard::IMAGE_CACHE_MAX_BYTES`]; `0` means no limit.
 fn image_cache_cap() -> u64 {

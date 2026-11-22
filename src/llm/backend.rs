@@ -126,6 +126,12 @@ pub struct LlmBackend {
     /// spec set that can only answer "unknown tool" spends the model's
     /// attention on a dead end). Subagents carry it too.
     mcp: Option<super::mcp::McpManager>,
+    /// The `imagegen` tool's setup — the ChatGPT Codex sign-in and where
+    /// images are saved — when the boundary attached it, **enabling the
+    /// tool** (`docs/imagegen.md`): offered whatever provider this backend
+    /// runs on, since the image is made with the ChatGPT sign-in. Subagents
+    /// carry it too, through their type's allowlist.
+    imagegen: Option<super::imagegen::ImagegenSetup>,
     /// The auto mode classifier bound to this backend's provider
     /// (`docs/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
@@ -250,6 +256,7 @@ impl LlmBackend {
             tasks: None,
             skills: None,
             mcp: None,
+            imagegen: None,
             classifier,
             turn_context: Arc::new(Mutex::new(ClassifierContext::new())),
             max_retries: MAX_RETRIES,
@@ -410,6 +417,20 @@ impl LlmBackend {
         self
     }
 
+    /// Attach the `imagegen` tool's setup, **enabling the tool**
+    /// (`docs/imagegen.md`): the client's tool set gains its spec (tools must
+    /// already be enabled). The boundary attaches it while the ChatGPT Codex
+    /// sign-in is stored, and rebuilds when that changes
+    /// (`ModelSession::refresh_imagegen`, the `skills_attached` pattern).
+    #[must_use]
+    pub fn with_imagegen(mut self, setup: super::imagegen::ImagegenSetup) -> Self {
+        if self.tools_enabled {
+            self.imagegen = Some(setup);
+            self.sync_tool_specs();
+        }
+        self
+    }
+
     /// Rebuild the client's tool set from what is attached — the `agent` spec
     /// when a subagent registry is, the ask spec when an ask gate is, the
     /// task specs when a task registry is, the MCP specs when a manager is —
@@ -430,6 +451,9 @@ impl LlmBackend {
         }
         if self.skills.is_some() {
             specs.push(tools::skill_spec());
+        }
+        if self.imagegen.is_some() {
+            specs.push(super::imagegen::imagegen_spec());
         }
         if let Some(manager) = &self.mcp {
             specs.extend(manager.tool_specs());
@@ -827,6 +851,7 @@ impl ReplySource for LlmBackend {
         let task_list = self.tasks.clone();
         let skills = self.skills.clone();
         let mcp = self.mcp.clone();
+        let imagegen = self.imagegen.clone();
         let classifier = self.classifier.clone();
         let turn_context = Arc::clone(&self.turn_context);
         let max_retries = self.max_retries;
@@ -903,7 +928,9 @@ impl ReplySource for LlmBackend {
                     super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
                 })
                 .unwrap_or_default();
-            let mut executor = RealToolExecutor::new().with_vision(vision);
+            let mut executor = RealToolExecutor::new()
+                .with_vision(vision)
+                .with_imagegen(imagegen);
             let notices = background.clone();
             if let Some(registry) = background.clone() {
                 // The registry carries the terminal-detach helper from
@@ -1216,6 +1243,7 @@ impl ReplySource for LlmBackend {
         let Ok(mut memo) = self.agent_tools.lock() else {
             return ToolDefinition::from_specs(&subagent_tool_specs(
                 self.skills.is_some(),
+                self.imagegen.is_some(),
                 self.mcp.as_ref(),
                 &allowed,
             ));
@@ -1228,6 +1256,7 @@ impl ReplySource for LlmBackend {
         }
         let tools = ToolDefinition::from_specs(&subagent_tool_specs(
             self.skills.is_some(),
+            self.imagegen.is_some(),
             self.mcp.as_ref(),
             &allowed,
         ));
@@ -1328,6 +1357,9 @@ struct SubagentConfig {
     /// tools (`docs/mcp.md`) — a side agent queries a wiki exactly as the
     /// lead does, over the same live connections.
     mcp: Option<super::mcp::McpManager>,
+    /// The session's `imagegen` setup, so a subagent whose type allows it
+    /// can make images too (`docs/imagegen.md`).
+    imagegen: Option<super::imagegen::ImagegenSetup>,
     /// The session's retry budget, so a subagent's rounds retry exactly as
     /// the main turn's do (`docs/settings.md`).
     max_retries: u32,
@@ -1363,6 +1395,7 @@ impl LlmBackend {
             classifier: self.classifier.clone(),
             skills: self.skills.clone(),
             mcp: self.mcp.clone(),
+            imagegen: self.imagegen.clone(),
             max_retries: self.max_retries,
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
@@ -1413,10 +1446,20 @@ impl SubagentConfig {
                 )
             })
             .unwrap_or_default();
+        // The `imagegen` skill tells its reader to call the tool: a type
+        // that may not is not briefed on it (`docs/imagegen.md`).
+        let hidden: Vec<&std::path::Path> = self
+            .imagegen
+            .as_ref()
+            .filter(|_| !allowed.allows(super::imagegen::IMAGEGEN_TOOL_NAME))
+            .and_then(|setup| setup.skill.as_deref())
+            .into_iter()
+            .collect();
         subagent_briefing(
             self.skills
                 .as_ref()
                 .filter(|_| allowed.allows(crate::skills::SKILL_TOOL_NAME)),
+            &hidden,
             self.secrets.as_ref().filter(|_| allowed.reaches_secrets()),
             &mcp_instructions,
         )
@@ -1463,6 +1506,7 @@ struct AgentToolsMemo {
 /// **counts** it (`ReplySource::agent_tool_definitions`).
 fn subagent_tool_specs(
     skills: bool,
+    imagegen: bool,
     mcp: Option<&super::mcp::McpManager>,
     allowed: &crate::subagents::AgentTools,
 ) -> Vec<serde_json::Value> {
@@ -1470,6 +1514,9 @@ fn subagent_tool_specs(
     let mut extras = Vec::new();
     if skills {
         extras.push(tools::skill_spec());
+    }
+    if imagegen {
+        extras.push(super::imagegen::imagegen_spec());
     }
     if let Some(manager) = mcp {
         extras.extend(manager.tool_specs());
@@ -1491,11 +1538,12 @@ fn subagent_tool_specs(
 /// window: `SubagentConfig` does not carry one, and a roster is small.
 fn subagent_briefing(
     skills: Option<&crate::skills::SkillRegistry>,
+    hidden: &[&std::path::Path],
     secrets: Option<&crate::secrets::SecretRegistry>,
     mcp_instructions: &str,
 ) -> Option<String> {
     let skills = skills
-        .map(|skills| skills.listing(crate::skills::listing_budget(None)))
+        .map(|skills| skills.listing_except(crate::skills::listing_budget(None), hidden))
         .unwrap_or_default();
     let secrets = secrets
         .map(crate::secrets::SecretRegistry::listing)
@@ -1786,6 +1834,7 @@ fn spawn_subagent_run(
 ) {
     let skills = config.skills.clone();
     let mcp = config.mcp.clone();
+    let imagegen = config.imagegen.clone();
     let secrets = config.secrets.clone();
     // Kept whole for the settle-window continuation at the very bottom.
     let respawn_config = config.clone();
@@ -1796,7 +1845,7 @@ fn spawn_subagent_run(
     let allowed = definition
         .as_ref()
         .map_or(crate::subagents::AgentTools::All, |def| def.tools.clone());
-    let specs = subagent_tool_specs(skills.is_some(), mcp.as_ref(), &allowed);
+    let specs = subagent_tool_specs(skills.is_some(), imagegen.is_some(), mcp.as_ref(), &allowed);
     // A definition may pin its own model (`model: kimi-k3`): same provider,
     // base and key, and the session's thinking mode / vision verdict dropped
     // — both describe the model being replaced, not this one.
@@ -1901,7 +1950,8 @@ fn spawn_subagent_run(
         }
         let mut executor = RealToolExecutor::new()
             .with_vision(vision)
-            .with_detach_helper(detach);
+            .with_detach_helper(detach)
+            .with_imagegen(imagegen);
         // The shared background registry rides in so the subagent's `bash`
         // can `run_in_background` — every launch attributed to this agent,
         // and the Ctrl+B latch untouched (docs/agent-tool.md).
@@ -2877,6 +2927,112 @@ mod tests {
         );
     }
 
+    fn imagegen_setup() -> super::super::imagegen::ImagegenSetup {
+        super::super::imagegen::ImagegenSetup {
+            signin: super::super::imagegen::ChatGptSignin::default(),
+            dir: std::path::PathBuf::from("/g"),
+            skill: Some(std::path::PathBuf::from(
+                "/home/me/.alter-zero/skills/imagegen",
+            )),
+        }
+    }
+
+    fn tool_names(backend: &LlmBackend) -> Vec<String> {
+        ReplySource::tool_definitions(backend)
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn imagegen_attaches_only_when_tools_are_enabled() {
+        // The `with_skills` rule (docs/imagegen.md): a tools-off backend
+        // offers nothing, so attaching to one is a no-op.
+        let on = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_imagegen(imagegen_setup());
+        assert!(tool_names(&on).contains(&"imagegen".to_string()));
+        let off = LlmBackend::configure(ModelConfig::fallback(), None, false)
+            .with_imagegen(imagegen_setup());
+        assert!(tool_names(&off).is_empty());
+        // It composes with the other attachments in any order.
+        let both = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_imagegen(imagegen_setup())
+            .with_ask(AskGate::new());
+        let names = tool_names(&both);
+        assert!(names.contains(&"imagegen".to_string()), "{names:?}");
+        assert!(names.contains(&"askuserquestion".to_string()), "{names:?}");
+        let plain = LlmBackend::configure(ModelConfig::fallback(), None, true);
+        assert!(!tool_names(&plain).contains(&"imagegen".to_string()));
+    }
+
+    fn agent_types(specs: &[(&str, &str)]) -> crate::subagents::SubagentRegistry {
+        crate::subagents::SubagentRegistry::new(
+            specs
+                .iter()
+                .map(|(name, tools)| {
+                    crate::subagents::parse_agent(
+                        &format!("---\nname: {name}\ndescription: d\ntools: {tools}\n---\n"),
+                        name,
+                    )
+                    .expect("parses")
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_subagent_gets_imagegen_only_when_its_type_allows_it() {
+        let defs = agent_types(&[("reader", "Read"), ("artist", "Read, ImageGen")]);
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_subagents(defs.clone())
+            .with_imagegen(imagegen_setup());
+        let names = |backend: &LlmBackend, agent_type: &str| -> Vec<String> {
+            ReplySource::agent_tool_definitions(backend, agent_type)
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect()
+        };
+        assert_eq!(names(&backend, "reader"), ["read"]);
+        assert_eq!(names(&backend, "artist"), ["read", "imagegen"]);
+        let general = names(&backend, crate::agents::GENERAL_PURPOSE);
+        assert!(general.contains(&"imagegen".to_string()), "{general:?}");
+        // Without the session's setup, no subagent is offered it.
+        let without =
+            LlmBackend::configure(ModelConfig::fallback(), None, true).with_subagents(defs);
+        assert_eq!(names(&without, "artist"), ["read"]);
+    }
+
+    #[test]
+    fn a_subagent_without_the_imagegen_tool_is_not_briefed_on_its_skill() {
+        // The tool and the listing travel together (docs/subagents.md): a
+        // type whose `tools:` leaves `ImageGen` out would read a skill that
+        // tells it to call a tool it does not have.
+        let skill = |name: &str, dir: &str| crate::skills::SkillMetadata {
+            name: name.to_string(),
+            description: format!("the {name} skill"),
+            dir: std::path::PathBuf::from(dir),
+            path: std::path::PathBuf::from(format!("{dir}/SKILL.md")),
+            plugin: None,
+        };
+        let registry = crate::skills::SkillRegistry::new(vec![
+            skill("commit", "/s/commit"),
+            skill("imagegen", "/home/me/.alter-zero/skills/imagegen"),
+        ]);
+        let defs = agent_types(&[
+            ("reader", "Read, Skill"),
+            ("artist", "Read, Skill, ImageGen"),
+        ]);
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_skills(registry)
+            .with_subagents(defs)
+            .with_imagegen(imagegen_setup());
+        let reader = ReplySource::agent_system_reminder(&backend, "reader").expect("briefed");
+        assert!(reader.contains("commit: the commit skill"), "{reader}");
+        assert!(!reader.contains("imagegen"), "{reader}");
+        let artist = ReplySource::agent_system_reminder(&backend, "artist").expect("briefed");
+        assert!(artist.contains("imagegen: the imagegen skill"), "{artist}");
+    }
+
     #[test]
     fn a_subagent_carrying_the_skill_tool_is_told_which_skills_exist() {
         // The tool spec's own text says the available skills are named in a
@@ -2891,16 +3047,16 @@ mod tests {
             path: std::path::PathBuf::from("/s/commit/SKILL.md"),
             plugin: None,
         }]);
-        let reminder = subagent_briefing(Some(&registry), None, "").expect("a reminder");
+        let reminder = subagent_briefing(Some(&registry), &[], None, "").expect("a reminder");
         assert!(reminder.contains("<system-reminder>"), "{reminder}");
         assert!(
             reminder.contains("commit: Write a commit message"),
             "{reminder}"
         );
         // No registry (or nothing enabled) means no tool, so no reminder.
-        assert!(subagent_briefing(None, None, "").is_none());
+        assert!(subagent_briefing(None, &[], None, "").is_none());
         registry.set_disabled(["commit".to_string()].into_iter().collect());
-        assert!(subagent_briefing(Some(&registry), None, "").is_none());
+        assert!(subagent_briefing(Some(&registry), &[], None, "").is_none());
     }
 
     /// A subagent allowed an MCP server's tools is told how that server
@@ -2912,7 +3068,7 @@ mod tests {
             "deepwiki".to_string(),
             "Ask about one repo at a time.".to_string(),
         )]);
-        let reminder = subagent_briefing(None, None, &section).expect("a reminder");
+        let reminder = subagent_briefing(None, &[], None, &section).expect("a reminder");
         assert!(
             reminder.contains("## deepwiki\nAsk about one repo at a time."),
             "{reminder}"
@@ -2922,7 +3078,7 @@ mod tests {
                 .trim_end()
                 .ends_with(&format!("{section}\n</system-reminder>"))
         );
-        assert!(subagent_briefing(None, None, "").is_none());
+        assert!(subagent_briefing(None, &[], None, "").is_none());
     }
 
     #[test]

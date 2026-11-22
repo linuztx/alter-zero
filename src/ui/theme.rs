@@ -508,6 +508,13 @@ pub(super) fn agent_notice_resumed_color() -> Color {
 /// under a backend tool's `● name(args)` header (req 2: a running cell shows the
 /// header *and* this row, previewed live) and as the whole `!` shell cell.
 pub(super) const TOOL_RUNNING: &str = "Running…";
+/// A running `imagegen` call's corner row, before its `(Ns)` clock — a
+/// generation takes minutes, and a bare `Running…` that long reads as stuck
+/// (`docs/imagegen.md`).
+pub(super) const IMAGEGEN_RUNNING: &str = "Generating image…";
+/// What a finished `imagegen` cell's second row opens with, before the file
+/// it names (`docs/imagegen.md`).
+pub(super) const IMAGEGEN_SAVED_TO: &str = "Saved to";
 
 /// Placeholder body for a tool queued in a **parallel batch** but not yet
 /// started — the dim `⎿ Waiting…` row shown under a not-yet-running sibling's

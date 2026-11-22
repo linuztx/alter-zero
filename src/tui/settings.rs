@@ -116,8 +116,15 @@ impl Session<'_> {
     /// skill appeared still carried no `<system-reminder>` — the listing
     /// arrived a turn late, which reads exactly like the rescan not working.
     pub(crate) fn rescan_skills(&mut self) {
-        let (mut skills, errors) =
-            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
+        // The `imagegen` tool first (docs/imagegen.md): a ChatGPT sign-in
+        // since the last turn turns it on, and with it the seeded skill that
+        // drives it, which the walk withholds while the tool is not offered.
+        self.models.refresh_imagegen();
+        let (mut skills, errors) = alter_zero::llm::skill::load_skills(
+            &self.cwd,
+            config::config_home().as_deref(),
+            self.models.imagegen_offered(),
+        );
         // …and the enabled plugins' skills and commands after them, each
         // `{plugin}:{name}` (docs/plugins.md).
         skills.extend(self.plugins.skills());

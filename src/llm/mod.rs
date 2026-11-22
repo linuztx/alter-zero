@@ -33,6 +33,7 @@ pub mod config;
 pub mod copilot;
 pub mod exec;
 pub mod hooks;
+pub mod imagegen;
 pub mod keystore;
 pub mod local;
 mod loopback;
@@ -378,6 +379,42 @@ fn error_chain_message(error: &dyn std::error::Error) -> String {
     text
 }
 
+/// How often a blocked turn thread looks at its [`CancelToken`] — the
+/// transport's 20 ms cadence (`docs/mcp.md`, `docs/interrupt.md`).
+///
+/// [`CancelToken`]: crate::stream::CancelToken
+const CANCEL_POLL: Duration = Duration::from_millis(20);
+
+/// Run blocking work on a worker thread while polling `cancel` on the 20 ms
+/// cadence — the transport's own contract (`docs/mcp.md`), which anything
+/// that blocks a turn's thread must obey. `None` means the turn was
+/// cancelled (or the worker died); the thread is abandoned rather than
+/// joined, exactly as a cancelled transport wait abandons its POST.
+///
+/// A token refresh is a blocking HTTP call, so running it inline on the tool
+/// thread made Esc dead for the token endpoint's whole timeout; an image
+/// generation takes minutes, and runs here for the same reason
+/// (`docs/imagegen.md`).
+pub(crate) fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    cancel: &crate::stream::CancelToken,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    loop {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        match rx.recv_timeout(CANCEL_POLL) {
+            Ok(value) => return Some(value),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
 /// The module's result alias.
 pub type Result<T> = std::result::Result<T, LlmError>;
 
@@ -535,6 +572,38 @@ fn extra_root_certificates() -> Vec<reqwest::Certificate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_thread_hands_back_what_the_work_returned() {
+        let cancel = crate::stream::CancelToken::new();
+        assert_eq!(off_thread(|| 6 * 7, &cancel), Some(42));
+    }
+
+    #[test]
+    fn off_thread_returns_at_once_when_the_turn_is_cancelled() {
+        // The work would block for a minute; Esc must not wait for it.
+        let cancel = crate::stream::CancelToken::new();
+        let (_hold, release) = std::sync::mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let canceller = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            canceller.cancel();
+        });
+        let result = off_thread(
+            move || {
+                let _ = release.recv_timeout(Duration::from_secs(60));
+                1
+            },
+            &cancel,
+        );
+        assert_eq!(result, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn message_constructors_set_role() {

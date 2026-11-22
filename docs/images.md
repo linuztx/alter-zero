@@ -149,13 +149,17 @@ resizes.
 
 ### Where the pixel size comes from
 
-The row reservation is pure, so it can't open the file. Two sources, and only
-two:
+The row reservation is pure, so it can't open the file. Three sources, and
+only three:
 
 * An **image read** — the `read` tool's own fact line already carries it
   (`Read image (JPEG, 700x689, 63 KB)`), so `images::read_image_size` parses
   it back out. That is also the only record that survives a `/resume`: the
   rollout keeps the cell's text, not the file's header.
+* A **generated image** — the `imagegen` tool's fact line carries the size
+  and the file both (`Generated image (PNG, 1536x1024, 2.1 MB) saved to
+  {path}`, `llm::imagegen::generated_image`, `docs/imagegen.md`); the tool
+  records the size on the registry as it saves the file.
 * A **Ctrl+V paste** — no such line, so the boundary reads the header once
   when the paste lands (`images::remember_size`, from `tui::workers`) — and
   again for every pasted picture a loaded conversation carries

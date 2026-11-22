@@ -8,4 +8,5 @@ Alongside the projects acknowledged in the [README](../README.md#acknowledgement
 - [Kali Linux](https://www.kali.org/docs/containers/official-kalilinux-docker-images/) for the official `kali-rolling` image the headless container is built on.
 - [syntect](https://github.com/trishume/syntect) and [two-face](https://github.com/CosmicHorrorDev/two-face) for syntax highlighting.
 - OpenAI's [tiktoken](https://github.com/openai/tiktoken), whose `o200k_base` and `cl100k_base` vocabularies Alter Zero's token estimate was fitted against.
+- OpenAI's [Codex](https://github.com/openai/codex), whose `imagegen` system skill (Apache-2.0) is the built-in `imagegen` skill, and whose client-side image tool the `imagegen` tool follows.
 - [Catppuccin](https://catppuccin.com), [Dracula](https://draculatheme.com), [Nord](https://www.nordtheme.com), [Gruvbox](https://github.com/morhetz/gruvbox), [Solarized](https://ethanschoonover.com/solarized), [Monokai](https://monokai.nl), and One Dark for the palettes behind the themes.

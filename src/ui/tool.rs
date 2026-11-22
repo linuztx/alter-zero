@@ -3,7 +3,9 @@
 //! See `docs/tools.md` and `docs/tool-streaming.md`.
 
 use super::assistant::expand_code_tabs;
-use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
+use super::file_cell::{
+    diff_line_color, file_cell_lines, gutter_row, gutter_row_spans, gutter_row_styled, is_diff_tool,
+};
 use super::theme::*;
 use super::wrap::{WrapMode, cols, truncate_cols, wrap_output, wrap_output_hanging, wrap_verbatim};
 use super::*;
@@ -436,6 +438,80 @@ pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
 /// line's timer (`1m 5s`, never a bare `65s`). Only shown live in
 /// [`render_live`]; the committed cell renders its output, not `Running…`.
 /// See `docs/shell-command.md`.
+/// A finished `imagegen` cell's body (`docs/imagegen.md`): the fact line's
+/// facts, then where the file is — the path by the session's path display
+/// rule, linked to the file, and on rows of its own when it does not fit
+/// beside `Saved to`, so an absolute path never wraps across the screen.
+/// `None` for any other cell, a failed generation included: it keeps the
+/// loud generic cell.
+fn generated_image_body(
+    tool: &ToolCall,
+    width: u16,
+    paths: &PathDisplay,
+) -> Option<Vec<Line<'static>>> {
+    if tool.shell
+        || tool.status != ToolStatus::Ok
+        || !tool
+            .name
+            .eq_ignore_ascii_case(crate::llm::imagegen::IMAGEGEN_TOOL_NAME)
+    {
+        return None;
+    }
+    let (path, _) = crate::llm::imagegen::generated_image(&tool.output)?;
+    let facts = crate::llm::imagegen::generated_facts(&tool.output)?;
+    let room = width
+        .saturating_sub(u16::try_from(cols(TOOL_RESULT_PREFIX)).unwrap_or(u16::MAX))
+        .max(1);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for text in wrap_output(facts, room) {
+        rows.push(output_row(rows.len(), text));
+    }
+    let dim = Style::new().fg(tool_dim_color());
+    let shown = paths.display(&path);
+    let link = paths
+        .file_url(&path)
+        .map_or(dim, |url| crate::links::linked(dim, &url));
+    if cols(IMAGEGEN_SAVED_TO) + 1 + cols(&shown) <= usize::from(room) {
+        rows.push(gutter_row_spans(
+            rows.len(),
+            vec![
+                Span::styled(format!("{IMAGEGEN_SAVED_TO} "), dim),
+                Span::styled(shown, link),
+            ],
+        ));
+    } else {
+        rows.push(gutter_row_styled(
+            rows.len(),
+            IMAGEGEN_SAVED_TO.to_string(),
+            dim,
+        ));
+        for fragment in wrap_output(&shown, room) {
+            rows.push(gutter_row_spans(
+                rows.len(),
+                vec![Span::styled(fragment, link)],
+            ));
+        }
+    }
+    Some(rows)
+}
+
+/// A running `imagegen` call: its header over `⎿ Generating image… (42s)`,
+/// the call's own clock (`docs/imagegen.md`).
+pub(super) fn imagegen_running_lines(
+    tool: &ToolCall,
+    elapsed: Duration,
+    pulse: Duration,
+    width: u16,
+    paths: &PathDisplay,
+) -> Vec<Line<'static>> {
+    let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, Some(pulse), paths);
+    lines.push(result_row(
+        0,
+        format!("{IMAGEGEN_RUNNING} ({})", format_elapsed(elapsed.as_secs())),
+    ));
+    lines
+}
+
 pub(super) fn shell_running_line(elapsed: Duration) -> Line<'static> {
     result_row(
         0,
@@ -1318,6 +1394,12 @@ fn tool_cell_body(
     if let Some(lines) = mcp_cell_lines(tool, width, pulse) {
         return lines;
     }
+    // A generated image's facts over where its file is (docs/imagegen.md).
+    if let Some(body) = generated_image_body(tool, width, paths) {
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ true, pulse, paths);
+        lines.extend(body);
+        return lines;
+    }
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -1647,6 +1729,13 @@ fn tool_full_body(tool: &ToolCall, width: u16, paths: &PathDisplay) -> (Vec<Line
         let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
         let header = lines.len();
         lines.push(row);
+        return (lines, header);
+    }
+    // A generated image reads the same in the transcript (docs/imagegen.md).
+    if let Some(body) = generated_image_body(tool, width, paths) {
+        let mut lines = tool_header_lines(tool, width, /*collapsed=*/ false, pulse, paths);
+        let header = lines.len();
+        lines.extend(body);
         return (lines, header);
     }
     // A numbered `write`/`edit` cell renders wholesale (numbers, tints,

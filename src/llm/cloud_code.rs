@@ -972,7 +972,7 @@ fn object_root(schema: Value) -> Value {
 }
 
 /// A random (version 4) UUID — the shape of a request id.
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     let mut bytes = random_bytes::<16>();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;

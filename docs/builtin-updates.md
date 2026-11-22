@@ -1,6 +1,6 @@
 # Built-in updates — a release reaches the skills and agent types it changed
 
-The five built-in skills and the two built-in agent types are files on disk:
+The six built-in skills and the two built-in agent types are files on disk:
 a launch writes each one into `{config_home}/skills` or the agents directory
 when it is absent, so a default is something the user can read, edit and diff
 (`docs/skills.md`, `docs/subagents.md`). Until now that write was the *only*

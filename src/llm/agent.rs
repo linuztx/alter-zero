@@ -17,7 +17,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::exec::ToolProgress;
 use super::hooks::{HookSink, allowed_note, block_texts as hook_block_texts};
 use super::tools::{
-    ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
+    ToolCallRequest, ToolOutcome, attachment_note, display_name, summarize_call,
     summarize_call_naming,
 };
 use super::{ChatMessage, ContentPart, LlmError};
@@ -950,13 +950,14 @@ pub fn run_agent(
                     // the two (it equals the display for every ordinary call).
                     results.push((call.id.clone(), outcome.context_text().to_string()));
                     if let Some(url) = outcome.image {
-                        let path = summarize_call(&call.name, &call.arguments);
+                        // The note names the picture's file: a `read`'s
+                        // path, a generated image's saved file
+                        // (`docs/imagegen.md`) — the bytes the replay
+                        // rebuilds on every later turn.
+                        let note = attachment_note(&call.name, &call.arguments, &outcome.output);
                         attachments.push(ChatMessage::with_parts(
                             "user",
-                            vec![
-                                ContentPart::text(image_attachment_note(&path)),
-                                ContentPart::image(url),
-                            ],
+                            vec![ContentPart::text(note), ContentPart::image(url)],
                         ));
                     }
                 }

@@ -19,7 +19,6 @@
 use std::path::PathBuf;
 
 use crate::app::{HistoryItem, Role, ToolCall};
-use crate::llm::tools::{image_attachment_note, is_image_read_output};
 
 /// Codex's `/compact` summarization prompt (`prompts/compact_prompt.md`,
 /// verbatim): the user message the compact turn sends over the whole current
@@ -836,8 +835,11 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
             // so later turns keep seeing them. The stored args are the path
             // — the backend re-encodes it each request (a gone file becomes
             // an `[image unavailable]` note there).
-            let attachment = (tool.name == "Read" && is_image_read_output(&tool.output))
-                .then(|| (image_attachment_note(&tool.args), PathBuf::from(&tool.args)));
+            // A generated image rides the same way, from the file its fact
+            // line names (docs/imagegen.md).
+            let attachment =
+                crate::llm::tools::recorded_attachment(&tool.name, &tool.args, &tool.output)
+                    .map(|(note, path)| (note, PathBuf::from(path)));
             entries.push(RoundEntry {
                 position: tool.position,
                 call,
@@ -1732,6 +1734,48 @@ mod tests {
         );
         assert_eq!(note.images, vec![PathBuf::from("assets/shot.png")]);
         assert!(note.tool_calls.is_empty() && note.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn a_generated_image_replays_its_attachment_from_its_fact_line() {
+        // The picture rides every later turn, so a follow-up edit can look at
+        // what it is editing (docs/imagegen.md); the file is the one the fact
+        // line names — the header is the prompt, not a path.
+        let fact = crate::llm::imagegen::format_generated(
+            "PNG",
+            (1024, 1024),
+            1_500_000,
+            "/home/me/.alter-zero/generated_images/s1/1.png",
+        );
+        let history = vec![tool("ImageGen", "a red fox", &fact, ToolStatus::Ok, false)];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "call + result + attachment note: {ctx:?}");
+        assert_eq!(ctx[0].tool_calls[0].name, "imagegen");
+        let note = &ctx[2];
+        assert_eq!(note.role, ContextRole::User);
+        assert_eq!(
+            note.text,
+            crate::llm::tools::attachment_note("imagegen", r#"{"prompt": "a red fox"}"#, &fact),
+            "the note text matches the live turn's exactly"
+        );
+        assert_eq!(
+            note.images,
+            vec![PathBuf::from(
+                "/home/me/.alter-zero/generated_images/s1/1.png"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_generation_replays_without_an_attachment() {
+        let history = vec![tool(
+            "ImageGen",
+            "a red fox",
+            "image generation failed: HTTP 500: image backend failed",
+            ToolStatus::Failed,
+            false,
+        )];
+        assert_eq!(context_messages(&history).len(), 2);
     }
 
     #[test]

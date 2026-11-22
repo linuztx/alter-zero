@@ -22,7 +22,9 @@ use crate::skills::{
 /// `skill-creator` teaches this runtime's own skill format; `jina-reader`
 /// teaches public webpage and PDF retrieval; `web-search` searches the web
 /// with its own scripts; `yt-dlp` teaches media downloads and `flaredantic`
-/// teaches public localhost sharing through external CLIs (`docs/skills.md`).
+/// teaches public localhost sharing through external CLIs (`docs/skills.md`);
+/// `imagegen`, OpenAI Codex's system skill, makes images with the `imagegen`
+/// tool and is listed only while that tool is offered (`docs/imagegen.md`).
 /// A skill is a *directory*, so extra files
 /// are seeded too.
 ///
@@ -32,7 +34,7 @@ use crate::skills::{
 /// once it is there. Every version of each is listed in
 /// `prompts/shipped.sha256`, which is how a later release knows an unedited
 /// copy from an edit (`docs/builtin-updates.md`).
-const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
+const BUILTIN_SKILL_FILES: [(&str, &str); 20] = [
     (
         "flaredantic/SKILL.md",
         include_str!("../../prompts/skills/flaredantic/SKILL.md"),
@@ -40,6 +42,42 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
     (
         "flaredantic/reference.md",
         include_str!("../../prompts/skills/flaredantic/reference.md"),
+    ),
+    (
+        "imagegen/SKILL.md",
+        include_str!("../../prompts/skills/imagegen/SKILL.md"),
+    ),
+    // Codex's licence for the skill (Apache-2.0, like this repository): its
+    // scripts are Codex's own, and its prose adapted from Codex's.
+    (
+        "imagegen/LICENSE.txt",
+        include_str!("../../prompts/skills/imagegen/LICENSE.txt"),
+    ),
+    // The references its body points at, read on demand.
+    (
+        "imagegen/references/cli.md",
+        include_str!("../../prompts/skills/imagegen/references/cli.md"),
+    ),
+    (
+        "imagegen/references/image-api.md",
+        include_str!("../../prompts/skills/imagegen/references/image-api.md"),
+    ),
+    (
+        "imagegen/references/prompting.md",
+        include_str!("../../prompts/skills/imagegen/references/prompting.md"),
+    ),
+    (
+        "imagegen/references/sample-prompts.md",
+        include_str!("../../prompts/skills/imagegen/references/sample-prompts.md"),
+    ),
+    // The fallback CLI, run through `python3` like web-search's scripts.
+    (
+        "imagegen/scripts/image_gen.py",
+        include_str!("../../prompts/skills/imagegen/scripts/image_gen.py"),
+    ),
+    (
+        "imagegen/scripts/remove_chroma_key.py",
+        include_str!("../../prompts/skills/imagegen/scripts/remove_chroma_key.py"),
     ),
     (
         "jina-reader/SKILL.md",
@@ -213,6 +251,31 @@ pub fn sync_builtin_skills(root: &Path, offer: bool) -> crate::builtins::SyncRep
     )
 }
 
+/// The built-in skill that is only for a session offering the `imagegen`
+/// tool (`docs/imagegen.md`): its whole default path is that tool.
+pub const IMAGEGEN_SKILL: &str = "imagegen";
+
+/// The seeded skill folders discovery passes over: the `imagegen` built-in
+/// under `builtin_root` while the tool is not offered. Recognised by
+/// **where** it is — the folder the built-in sync writes — so a project's,
+/// a `~/.claude/skills` or a plugin's skill of the same name is never
+/// withheld, and an `ALTER_ZERO_SKILLS_DIR` override, which seeds no
+/// built-ins (`builtin_root` is `None`), has nothing to withhold.
+///
+/// It is always seeded, signed in or not: a sync that left it out would
+/// retire it as no longer shipped, and seed it again on the next sign-in
+/// (`docs/builtin-updates.md`).
+#[must_use]
+pub fn withheld_builtin_skills(
+    builtin_root: Option<&Path>,
+    imagegen_offered: bool,
+) -> Vec<PathBuf> {
+    match builtin_root {
+        Some(root) if !imagegen_offered => vec![root.join(IMAGEGEN_SKILL)],
+        _ => Vec::new(),
+    }
+}
+
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
 ///
 /// Never fails a session: an unreadable root is skipped, and a `SKILL.md`
@@ -220,6 +283,17 @@ pub fn sync_builtin_skills(root: &Path, offer: bool) -> crate::builtins::SyncRep
 /// — going quiet is what makes "my skill isn't being used" unanswerable.
 #[must_use]
 pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    discover_skills_except(roots, &[])
+}
+
+/// [`discover_skills`], passing over the skill folders in `withheld`
+/// ([`withheld_builtin_skills`]) as though they were not there — so a
+/// lower root's skill of the same name can still be found.
+#[must_use]
+pub fn discover_skills_except(
+    roots: &[PathBuf],
+    withheld: &[PathBuf],
+) -> (Vec<SkillMetadata>, Vec<SkillError>) {
     let mut skills: Vec<SkillMetadata> = Vec::new();
     let mut errors = Vec::new();
     for root in roots {
@@ -235,6 +309,9 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
             .collect();
         dirs.sort();
         for dir in dirs {
+            if withheld.contains(&dir) {
+                continue;
+            }
             let path = dir.join(SKILL_FILE_NAME);
             if !path.is_file() {
                 continue;
@@ -284,12 +361,21 @@ pub fn discover_skills(roots: &[PathBuf]) -> (Vec<SkillMetadata>, Vec<SkillError
 /// config home's, and `$HOME`'s. `config_home` is passed in rather than read
 /// here so the override that moves it (`ALTER_ZERO_CONFIG_DIR`) resolves once,
 /// at the boundary, the way `llm::hooks::hooks_file_path` takes it.
+///
+/// `imagegen_offered` is whether the session offers the `imagegen` tool: the
+/// seeded `imagegen` skill is withheld while it does not
+/// ([`withheld_builtin_skills`], `docs/imagegen.md`).
 #[must_use]
 pub fn load_skills(
     cwd: &Path,
     config_home: Option<&Path>,
+    imagegen_offered: bool,
 ) -> (Vec<SkillMetadata>, Vec<SkillError>) {
-    discover_skills(&resolved_skill_roots(cwd, config_home))
+    let withheld = withheld_builtin_skills(
+        resolved_builtin_skills_dir(config_home).as_deref(),
+        imagegen_offered,
+    );
+    discover_skills_except(&resolved_skill_roots(cwd, config_home), &withheld)
 }
 
 /// The roots this environment resolves to — [`skill_roots`] with the two
@@ -1476,6 +1562,123 @@ mod tests {
         assert!(names.iter().all(|name| !name.starts_with("test_")));
     }
 
+    /// The files the `imagegen` skill seeds beside its `SKILL.md`
+    /// (`docs/imagegen.md`): Codex's references, adapted, and its two
+    /// scripts and licence, as they are.
+    const IMAGEGEN_FILES: [(&str, &str); 7] = [
+        (
+            "LICENSE.txt",
+            include_str!("../../prompts/skills/imagegen/LICENSE.txt"),
+        ),
+        (
+            "references/cli.md",
+            include_str!("../../prompts/skills/imagegen/references/cli.md"),
+        ),
+        (
+            "references/image-api.md",
+            include_str!("../../prompts/skills/imagegen/references/image-api.md"),
+        ),
+        (
+            "references/prompting.md",
+            include_str!("../../prompts/skills/imagegen/references/prompting.md"),
+        ),
+        (
+            "references/sample-prompts.md",
+            include_str!("../../prompts/skills/imagegen/references/sample-prompts.md"),
+        ),
+        (
+            "scripts/image_gen.py",
+            include_str!("../../prompts/skills/imagegen/scripts/image_gen.py"),
+        ),
+        (
+            "scripts/remove_chroma_key.py",
+            include_str!("../../prompts/skills/imagegen/scripts/remove_chroma_key.py"),
+        ),
+    ];
+
+    #[test]
+    fn imagegen_seeds_its_references_scripts_and_licence_beside_the_skill() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
+        let dir = root.join("imagegen");
+        for (file, embedded) in IMAGEGEN_FILES {
+            let seeded = std::fs::read_to_string(dir.join(file))
+                .unwrap_or_else(|err| panic!("{file} is seeded: {err}"));
+            assert_eq!(seeded, embedded, "{file} is seeded byte for byte");
+        }
+        // Codex's UI metadata and icons are not ported (docs/imagegen.md).
+        assert!(!dir.join("agents").exists());
+        assert!(!dir.join("assets").exists());
+    }
+
+    #[test]
+    fn imagegen_names_this_apps_tool_and_never_codexs_paths() {
+        let body = include_str!("../../prompts/skills/imagegen/SKILL.md");
+        assert!(body.contains("`imagegen`"), "the tool it drives");
+        assert!(
+            body.contains("`referenced_image_paths`"),
+            "how an edit names its images"
+        );
+        for (file, text) in std::iter::once(("SKILL.md", body)).chain(IMAGEGEN_FILES) {
+            if !file.ends_with(".md") {
+                continue;
+            }
+            for codex in ["CODEX_HOME", "view_image", "skills/.system", "`image_gen`"] {
+                assert!(!text.contains(codex), "{file} still says {codex}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_seeded_imagegen_is_withheld_while_its_tool_is_not_offered() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("skills");
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
+        let names = |offered: bool| -> Vec<String> {
+            let withheld = withheld_builtin_skills(Some(&root), offered);
+            discover_skills_except(std::slice::from_ref(&root), &withheld)
+                .0
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect()
+        };
+        let signed_out = names(false);
+        assert!(
+            !signed_out.contains(&"imagegen".to_string()),
+            "{signed_out:?}"
+        );
+        assert!(
+            signed_out.contains(&"web-search".to_string()),
+            "{signed_out:?}"
+        );
+        assert!(names(true).contains(&"imagegen".to_string()));
+    }
+
+    #[test]
+    fn a_skill_named_imagegen_anywhere_else_is_never_withheld() {
+        // The gate is *our* seeded folder, found by where it is: a project's
+        // skill of the same name is the user's own (docs/imagegen.md).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project = tmp.path().join("project-skills");
+        let builtin = tmp.path().join("home-skills");
+        write_skill(&project, "imagegen", &skill_md("the user's own", "body"));
+        write_skill(&builtin, "commit", &skill_md("commit", "body"));
+        let withheld = withheld_builtin_skills(Some(&builtin), false);
+        let (skills, _) = discover_skills_except(&[project.clone(), builtin], &withheld);
+        let found: Vec<(String, PathBuf)> = skills
+            .into_iter()
+            .map(|skill| (skill.name, skill.dir))
+            .collect();
+        assert!(
+            found.contains(&("imagegen".to_string(), project.join("imagegen"))),
+            "{found:?}"
+        );
+        // No built-in root (an `ALTER_ZERO_SKILLS_DIR` override seeds none):
+        // nothing to withhold.
+        assert!(withheld_builtin_skills(None, false).is_empty());
+    }
+
     #[test]
     fn web_search_seed_preserves_edits_and_restores_deleted_files() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1731,7 +1934,7 @@ mod tests {
         // The walk never mistakes the record for a skill.
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(skills.len(), 5, "{skills:?}");
+        assert_eq!(skills.len(), 6, "{skills:?}");
     }
 
     #[test]

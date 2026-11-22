@@ -142,9 +142,10 @@ skills that share a name in different places are told apart.
 
 ### Built-in skills
 
-Five skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
-**`web-search`**, **`yt-dlp`** and **`flaredantic`**. All use the same seed and discovery path
-described below.
+Six skills ship with the binary: **`skill-creator`**, **`jina-reader`**,
+**`web-search`**, **`yt-dlp`**, **`flaredantic`** and **`imagegen`**. All use the same seed and discovery path
+described below; `imagegen` alone is withheld from discovery while the
+session does not offer its tool.
 
 #### `skill-creator`
 
@@ -414,6 +415,34 @@ loading it executes nothing and starts no tunnel. Later CLI calls use the
 ordinary shell permission gate. Its seeded files preserve edits, deleted files
 return next launch, project skills take precedence, `/skills` disables it, and
 an `ALTER_ZERO_SKILLS_DIR` override receives no built-ins.
+
+#### `imagegen`
+
+**`imagegen`** is OpenAI Codex's image-generation system skill, ported with its
+references and scripts (Apache-2.0, its `LICENSE.txt` seeded beside it). It
+drives the native **`imagegen`** tool, which makes images with
+`gpt-image-2` through the ChatGPT Codex sign-in, whatever provider the session
+runs on (`docs/imagegen.md`). It covers:
+- when a bitmap is right and when SVG/CSS is;
+- how to shape a prompt, and Codex's use-case taxonomy;
+- where a generated image belongs: copied into the project when the project
+  uses it.
+
+Its fallback CLI (`scripts/image_gen.py`, needing `OPENAI_API_KEY` and the
+`openai` package) is run through `python3` from the `Base directory` header,
+as `web-search`'s scripts are. Its scripts are Codex's own, unmodified; its
+prose is adapted to this app's tool names and paths.
+
+It is the one built-in that is **gated**:
+- It is always seeded, so a signed-out launch never retires it.
+- Discovery passes over the seeded folder, `{config_home}/skills/imagegen`,
+  while the session does not offer the `imagegen` tool
+  (`llm::skill::withheld_builtin_skills`). So `/skills`, the `$` picker, the
+  listing and the Skill tool all agree that it is not there.
+- A `/login` that signs in to ChatGPT turns it on at the next turn's rescan.
+- A project's own skill named `imagegen` is never withheld: the gate is the
+  folder, not the name.
+- A subagent whose type may not call `ImageGen` is not briefed on it.
 
 ### The walk re-runs every turn
 
@@ -951,7 +980,7 @@ here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
 | Where | What |
 |---|---|
 | `src/skills.rs` | **pure**: `SkillMetadata`, frontmatter parse, name validation, listing + budget, body render, the `SkillRegistry` handle |
-| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
+| `prompts/skills/` | embedded and seeded built-ins: `skill-creator` and `flaredantic` (`SKILL.md` + `reference.md` each), `web-search` (`SKILL.md` + five `scripts/*.py`, their unit tests beside them unseeded), `imagegen` (`SKILL.md`, `LICENSE.txt`, four `references/*.md`, two `scripts/*.py`), `jina-reader` and `yt-dlp` (one `SKILL.md` each) |
 | `src/llm/skill.rs` | root resolution, the `read_dir` walk, the built-in sync (`sync_builtin_skills`, over `crate::builtins` — `docs/builtin-updates.md`), context-derived `LoadedSkills`, and the tool executor (`run_skill_tool`) |
 | `src/llm/tools.rs` | `skill_spec()`, `display_name`, `summarize_call` |
 | `src/llm/backend.rs` | `with_skills` — the `with_tasks` pattern |
