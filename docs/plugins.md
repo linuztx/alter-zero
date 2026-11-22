@@ -267,6 +267,52 @@ that has none — Claude Code's rule, and codex's fallback.
 The name is the catalog's own `name`, never the user's — which is also what
 keeps two sources from being added under one name.
 
+### Found without being added
+
+Two marketplaces are **found** rather than added, where Codex finds them
+(`docs/agents-dir.md`):
+
+- **the home folder's**: `~/.agents/plugins/marketplace.json`, where Codex's
+  plugin sharing keeps the user's personal marketplace;
+- **the project's**: the catalog in the working directory, or, when it has
+  none, the one at its project root (the nearest `.git`). Directories in
+  between are not read.
+
+Each is looked for in the two catalog locations above, in that order. A
+directory with no catalog is not found as a marketplace of one: a repository
+that is itself a plugin is not offered to itself.
+
+`plugins::find_marketplaces` finds them and `build_catalog` lists them after
+the added ones, each on a tab of its own. Its header says where it was found
+(`found in this project, not added · {dir}`). Its hint offers no Ctrl+R,
+since there is nothing to remove, and Ctrl+R says so. The CLI lists them
+too: `plugin list --available`, and `plugin marketplace list` with
+`found in …, not added` after the count. A found marketplace is **listed,
+never installed**.
+
+**Installing from one adds it.** `PluginStore::install_found` adds the found
+directory first, as `plugin marketplace add <dir>` would, and then installs.
+Its plugins load in place, as any directory marketplace's do, so the
+marketplace has to stay known for them to keep loading. From then on it is an
+added marketplace in every directory, read as the same one when found again,
+and Ctrl+R removes it. An install that fails takes back the marketplace it
+added, so the tab is left as it was.
+
+**Names.** Plugin ids are `plugin@marketplace`, so one name means one
+marketplace: an added marketplace keeps its name, then the home folder's,
+then the project's. A found catalog that cannot be offered under its own
+name is still listed, under where it was found (`this project`,
+`home folder`), with the reason in its header and none of its plugins
+offered. That covers a name already taken, an invalid or reserved name, and
+a file that will not parse. Those labels hold a space, which no marketplace
+name may, so they never collide with a real tab. The precedence is what keeps
+a checkout from ever offering its own copy of a plugin installed from a
+marketplace the user added.
+
+Nothing about found marketplaces is read at startup. They are found when the
+page opens and as a job lands (`tui::plugins::found_marketplaces`), like the
+catalog itself (*Memory* below).
+
 ## On disk
 
 Everything is under the config home (`ALTER_ZERO_CONFIG_DIR`, else
@@ -661,6 +707,10 @@ loading them takes.
   official marketplaces added and nothing installed, that held 1.4 MB of a
   session's resident memory at rest — the catalog, and the heap of the
   thread that read it, which glibc keeps (`docs/memory.md`'s sixth rule).
+- **Found marketplaces are the catalog's too** (`docs/agents-dir.md`): found
+  and read with it as the page opens and as a job lands, and dropped with
+  it. An install looks for them on its worker only when no marketplace of
+  the plugin's is added, so an ordinary install reads nothing more there.
 - **The catalog lives only while the page is open**: read on the loop as it
   opens and again when a job's answer lands for a page still waiting on
   it, and dropped with the page. The worker that runs a job answers with
@@ -777,6 +827,8 @@ parse), `2` a grammar error, over the plugin page's usage block.
   auto-update. An update is something the user asks for.
 - **No project-scoped installs.** A repository can still ship its own
   skills, agents, hooks and servers the way it always could
-  (`docs/project-config.md`).
+  (`docs/project-config.md`), and a marketplace of its own that `/plugins`
+  finds (*Found without being added*); a plugin installed from that is
+  installed for the user, as from any marketplace.
 - **No custom slash commands.** A plugin command is a skill; the palette
   stays the app's own.

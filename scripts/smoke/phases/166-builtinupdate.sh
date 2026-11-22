@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 165 — a release reaches the built-ins an older build seeded
+# Phase 166 — a release reaches the built-ins an older build seeded
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -24,7 +24,7 @@ smoke_begin
 #
 # And an ALTER_ZERO_AGENTS_DIR override, somebody else's directory, is only
 # seeded: nothing in it is rewritten, and no record is left there.
-S165="${S}_builtinupdate"
+S166="${S}_builtinupdate"
 BU_SESSIONS="$(mktemp -d)"
 # What the older build recorded for the edited file: the version it started
 # from, a development version of skill-creator/SKILL.md the history lists.
@@ -73,18 +73,18 @@ bu_env() {
 }
 
 bu_quit() {
-	submit "$S165" "/quit"
+	submit "$S166" "/quit"
 	sleep 0.6
-	tmux kill-session -t "$S165" 2>/dev/null
+	tmux kill-session -t "$S166" 2>/dev/null
 }
 
 # ---- interactive first ----
 BU_A="$(mktemp -d)"
 BU_CFG="$BU_A/.alter-zero"
 plant_older_install "$BU_A"
-tmux kill-session -t "$S165" 2>/dev/null
-launch "$S165" 100 30 "$(bu_env "$BU_A") $BIN_ABS"
-bu_first="$(wait_pane 5 "$S165" -F "Updated the built-in explore agent")"
+tmux kill-session -t "$S166" 2>/dev/null
+launch "$S166" 100 30 "$(bu_env "$BU_A") $BIN_ABS"
+bu_first="$(wait_pane 5 "$S166" -F "Updated the built-in explore agent")"
 dump "the first launch of the newer release" "$bu_first"
 expect_has "$bu_first" -F "Updated the built-in explore agent" \
 	"no toast for the agent brought up to date"
@@ -118,8 +118,8 @@ expect_file_has "$BU_CFG/skills/.alter-zero-builtins.json" -F '"offered"' \
 # The user merges and deletes the .new: the next launch has nothing to say,
 # and does not write it again.
 rm -f "$BU_CFG/skills/skill-creator/SKILL.md.new"
-launch "$S165" 100 30 "$(bu_env "$BU_A") $BIN_ABS"
-bu_second="$(pane "$S165")"
+launch "$S166" 100 30 "$(bu_env "$BU_A") $BIN_ABS"
+bu_second="$(pane "$S166")"
 dump "the second launch" "$bu_second"
 expect_lacks "$bu_second" -F "Edited built-ins" "the card came back on the second launch"
 expect_lacks "$bu_second" -F "Updated the built-in" "the second launch announced an update again"
@@ -142,8 +142,8 @@ expect_has "$bu_headless" -F "Updated the built-in explore agent" \
 if [ -e "$BU_B/.alter-zero/skills/skill-creator/SKILL.md.new" ]; then
 	fail "a headless run wrote the offer it has no card to show"
 fi
-launch "$S165" 100 30 "$(bu_env "$BU_B") $BIN_ABS"
-bu_after_headless="$(wait_pane 5 "$S165" -F "Edited built-ins")"
+launch "$S166" 100 30 "$(bu_env "$BU_B") $BIN_ABS"
+bu_after_headless="$(wait_pane 5 "$S166" -F "Edited built-ins")"
 dump "the interactive launch after it" "$bu_after_headless"
 expect_has "$bu_after_headless" -F "Edited built-ins" \
 	"the launch after a headless run did not make the offer it left"
@@ -155,17 +155,17 @@ fi
 # ---- a bare --resume first ----
 # A conversation to pick, recorded by a launch with nothing to update.
 BU_REC="$(mktemp -d)"
-launch "$S165" 100 30 "$(bu_env "$BU_REC") $BIN_ABS"
-submit "$S165" "$USER_MSG"
-wait_summaries 20.1 "$S165" 1 -S -40 >/dev/null
-tmux send-keys -t "$S165" C-c
+launch "$S166" 100 30 "$(bu_env "$BU_REC") $BIN_ABS"
+submit "$S166" "$USER_MSG"
+wait_summaries 20.1 "$S166" 1 -S -40 >/dev/null
+tmux send-keys -t "$S166" C-c
 sleep 0.4
-tmux kill-session -t "$S165" 2>/dev/null
+tmux kill-session -t "$S166" 2>/dev/null
 BU_C="$(mktemp -d)"
 plant_older_install "$BU_C"
-launch -w "R E S U M E" "$S165" 100 30 "$(bu_env "$BU_C") $BIN_ABS --resume"
-tmux send-keys -t "$S165" Enter # pick it: its load rebuilds the screen
-bu_resumed="$(wait_pane 8 "$S165" -S -80 -- -F "Edited built-ins")"
+launch -w "R E S U M E" "$S166" 100 30 "$(bu_env "$BU_C") $BIN_ABS --resume"
+tmux send-keys -t "$S166" Enter # pick it: its load rebuilds the screen
+bu_resumed="$(wait_pane 8 "$S166" -S -80 -- -F "Edited built-ins")"
 dump "a bare --resume, the conversation picked" "$bu_resumed"
 expect_has "$bu_resumed" -F "Edited built-ins" "the card was lost behind the --resume picker"
 expect_has "$bu_resumed" -F "❯ $USER_MSG" "the picked conversation did not load"

@@ -232,7 +232,7 @@ whoever runs the newest build must not rewrite it.
 | `src/llm/subagent.rs` | the agents' `BUILTIN_FILES` and `sync_builtin_agents` |
 | `src/tui/bootstrap.rs` | both syncs before the walks (offering only off `-p`), the toast, and the card once the screen can take it (`Session::flush_builtin_offers`) |
 
-`smoke.sh` Phase 165 plays an install an older build made against the real
+`smoke.sh` Phase 166 plays an install an older build made against the real
 binary, once for each way a release can first be launched. Interactive: the
 unedited `explore.md` it seeded replaced and the toast saying so, an edited
 `skill-creator/SKILL.md` kept with its `.new` and the card, and a second

@@ -42,15 +42,19 @@ const BUILTIN_FILES: [(&str, &str); 2] = [
 /// convention every other `*_DIR` override here follows — and the only shape
 /// that gives a test run a hermetic set.
 ///
-/// `project_root` (the nearest `.git`) is searched **after** the cwd and
-/// skipped when it *is* the cwd: launching in `repo/src` must still find the
-/// repo's agents (the `AGENTS.md` walk-up) while the more specific directory
-/// keeps precedence.
+/// The project rows are **every directory from the cwd up to `project_root`**
+/// (the nearest `.git`), nearest first — the skill roots' walk and the
+/// `AGENTS.md` one ([`crate::project_doc::doc_chain`]): launching in
+/// `repo/packages/web/src` still finds the package's agents and the repo's,
+/// while the more specific directory keeps precedence. Without a project root
+/// the cwd alone is read. A path is listed once, where it first appears.
 ///
 /// Deliberately **no `.claude/agents`**, unlike [`super::skill::skill_roots`]:
 /// a `SKILL.md` is inert markdown, while an agent file names a model and a
 /// tool allowlist — silently inheriting another tool's agents would change
 /// which model a task runs on and what it may touch (`docs/subagents.md`).
+/// No `.agents/agents` either: no agent reads definitions from there, Codex
+/// included (`docs/agents-dir.md`).
 #[must_use]
 pub fn agent_roots(
     cwd: &Path,
@@ -61,12 +65,16 @@ pub fn agent_roots(
     if let Some(dir) = override_dir {
         return vec![dir.to_path_buf()];
     }
-    let mut roots = vec![project_dir(cwd)];
-    if let Some(root) = project_root.filter(|root| *root != cwd) {
-        roots.push(project_dir(root));
-    }
+    let mut roots: Vec<PathBuf> = crate::project_doc::doc_chain(project_root, cwd)
+        .iter()
+        .rev()
+        .map(|dir| project_dir(dir))
+        .collect();
     if let Some(config_home) = config_home {
-        roots.push(config_home.join(AGENTS_DIR_NAME));
+        let user = config_home.join(AGENTS_DIR_NAME);
+        if !roots.contains(&user) {
+            roots.push(user);
+        }
     }
     roots
 }
@@ -295,6 +303,44 @@ mod tests {
                 std::path::PathBuf::from("/repo/.alter-zero/agents"),
                 std::path::PathBuf::from("/home/u/.alter-zero/agents"),
             ]
+        );
+    }
+
+    #[test]
+    fn every_directory_up_to_the_project_root_is_searched_nearest_first() {
+        // The skill roots' walk (docs/agents-dir.md), and the one Codex gives
+        // its own `.codex/agents`: a monorepo package's agents are found from
+        // anywhere inside the package, the nearer directory first.
+        let roots = agent_roots(
+            std::path::Path::new("/repo/packages/web/src"),
+            Some(std::path::Path::new("/repo")),
+            Some(std::path::Path::new("/home/u/.alter-zero")),
+            None,
+        );
+        assert_eq!(
+            roots,
+            vec![
+                std::path::PathBuf::from("/repo/packages/web/src/.alter-zero/agents"),
+                std::path::PathBuf::from("/repo/packages/web/.alter-zero/agents"),
+                std::path::PathBuf::from("/repo/packages/.alter-zero/agents"),
+                std::path::PathBuf::from("/repo/.alter-zero/agents"),
+                std::path::PathBuf::from("/home/u/.alter-zero/agents"),
+            ]
+        );
+    }
+
+    #[test]
+    fn launched_in_the_home_directory_the_user_root_is_named_once() {
+        // In `~` the cwd's `.alter-zero/agents` *is* the config home's.
+        let roots = agent_roots(
+            std::path::Path::new("/home/u"),
+            None,
+            Some(std::path::Path::new("/home/u/.alter-zero")),
+            None,
+        );
+        assert_eq!(
+            roots,
+            vec![std::path::PathBuf::from("/home/u/.alter-zero/agents")]
         );
     }
 

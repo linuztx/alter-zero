@@ -55,17 +55,24 @@ whoever opens it (the model included) without costing the listing anything.
 In precedence order — the **first** root to claim a name wins, so a project
 can shadow a personal agent of the same name:
 
-1. `{cwd}/.alter-zero/agents`
-2. `{project_root}/.alter-zero/agents` — the nearest `.git` ancestor, skipped
-   when it *is* the cwd (launching in `repo/src` still finds the repo's
-   agents, the `AGENTS.md` walk-up)
-3. `{config_home}/agents` — `~/.alter-zero/agents`, following
-   `ALTER_ZERO_CONFIG_DIR` like every other user-level config
+1. `{dir}/.alter-zero/agents` for **every directory from the cwd up to the
+   project root** (the nearest `.git` ancestor), nearest first. These are the
+   directories `AGENTS.md` discovery and the skill roots read
+   (`project_doc::doc_chain`). Launching in `repo/packages/web/src` still finds
+   the package's agents and the repo's; without a project root the cwd alone
+   is read. Codex reads its own `.codex/agents` from the same directories.
+   This walk replaced reading only the cwd and the project root
+   (`docs/agents-dir.md`).
+2. `{config_home}/agents` — `~/.alter-zero/agents`, following
+   `ALTER_ZERO_CONFIG_DIR` like every other user-level config. Launched in
+   `~`, it is the cwd's own row and is listed once.
 
 Deliberately **no `.claude/agents`**, unlike skills. A `SKILL.md` is inert
 markdown; an agent file names a *model* and a *tool allowlist*, and silently
 inheriting another tool's agents would change which model a task runs on and
-what it may touch.
+what it may touch. No `.agents/agents` either: skills are what Codex reads
+from `.agents/`, and no agent reads definitions from there
+(`docs/agents-dir.md`).
 
 `ALTER_ZERO_AGENTS_DIR` **replaces** the whole list (the `*_DIR` convention),
 which is also what makes a test run hermetic.

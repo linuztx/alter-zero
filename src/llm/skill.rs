@@ -98,18 +98,26 @@ const BUILTIN_SKILL_FILES: [(&str, &str); 12] = [
 /// shape that gives a test run a hermetic set, since a merely-prepended root
 /// would still leave the developer's own `~/.claude/skills` in every session.
 ///
-/// `project_root` (the nearest `.git`, from
-/// [`crate::project_doc::find_project_root`]) is searched **after** the cwd
-/// and skipped when it *is* the cwd: launching in `repo/src` must still find
-/// the repo's own skills — the same walk-up `AGENTS.md` discovery does — while
-/// the more specific directory keeps precedence over the more general one.
+/// The project rows are **every directory from the cwd up to `project_root`**
+/// (the nearest `.git`, from [`crate::project_doc::find_project_root`]),
+/// nearest first — the directories `AGENTS.md` discovery reads
+/// ([`crate::project_doc::doc_chain`]), and the ones Codex reads
+/// `.agents/skills` from. Launching in `repo/packages/web/src` must still find
+/// the package's skills and the repo's, while the more specific directory
+/// keeps precedence over the more general one. Without a project root the cwd
+/// alone is read.
 ///
 /// The personal `.alter-zero/skills` hangs off `config_home` rather than
 /// `$HOME` directly, so it follows `ALTER_ZERO_CONFIG_DIR` like `hooks.json`,
-/// `permissions.json` and `settings.json` do. The `.claude/skills` rows are
+/// `permissions.json` and `settings.json` do. The `.agents/skills` rows are
+/// the directory every agent shares, so they sit after our own and ahead of
+/// Claude Code's (`docs/agents-dir.md`). The `.claude/skills` rows are
 /// deliberate: a skill is portable markdown with no tool-specific behaviour in
 /// it, the ecosystem writes them there, and reading the directory costs one
 /// `read_dir` that usually returns `NotFound`. See `docs/skills.md`.
+///
+/// A path is listed once, where it first appears: launched in `~`, the cwd's
+/// rows *are* the personal ones.
 #[must_use]
 pub fn skill_roots(
     cwd: &Path,
@@ -121,23 +129,29 @@ pub fn skill_roots(
     if let Some(dir) = override_dir {
         return vec![dir.to_path_buf()];
     }
-    let mut roots = project_dirs(cwd);
-    if let Some(root) = project_root.filter(|root| *root != cwd) {
-        roots.extend(project_dirs(root));
-    }
+    let mut roots: Vec<PathBuf> = crate::project_doc::doc_chain(project_root, cwd)
+        .iter()
+        .rev()
+        .flat_map(|dir| project_dirs(dir))
+        .collect();
     if let Some(config_home) = config_home {
         roots.push(config_home.join("skills"));
     }
     if let Some(home) = home {
+        roots.push(home.join(".agents").join("skills"));
         roots.push(home.join(".claude").join("skills"));
     }
+    let mut seen = BTreeSet::new();
+    roots.retain(|root| seen.insert(root.clone()));
     roots
 }
 
-/// The two per-directory skill roots, in precedence order.
-fn project_dirs(dir: &Path) -> Vec<PathBuf> {
-    vec![
+/// The three per-directory skill roots, in precedence order: our own, the
+/// one every agent shares, Claude Code's.
+fn project_dirs(dir: &Path) -> [PathBuf; 3] {
+    [
         dir.join(".alter-zero").join("skills"),
+        dir.join(".agents").join("skills"),
         dir.join(".claude").join("skills"),
     ]
 }
@@ -486,6 +500,9 @@ mod tests {
         // The personal `.alter-zero/skills` hangs off the **config home**, not
         // raw $HOME, so it follows ALTER_ZERO_CONFIG_DIR like every other
         // per-user file here (hooks.json, permissions.json, settings.json).
+        // Each place reads `.agents/skills` between our own directory and
+        // Claude Code's: the directory every agent shares outranks another
+        // product's own (docs/agents-dir.md).
         let roots = skill_roots(
             Path::new("/work"),
             None,
@@ -497,8 +514,10 @@ mod tests {
             roots,
             vec![
                 PathBuf::from("/work/.alter-zero/skills"),
+                PathBuf::from("/work/.agents/skills"),
                 PathBuf::from("/work/.claude/skills"),
                 PathBuf::from("/cfg/.alter-zero/skills"),
+                PathBuf::from("/home/u/.agents/skills"),
                 PathBuf::from("/home/u/.claude/skills"),
             ]
         );
@@ -523,7 +542,7 @@ mod tests {
     #[test]
     fn a_homeless_environment_still_has_project_roots() {
         let roots = skill_roots(Path::new("/work"), None, None, None, None);
-        assert_eq!(roots.len(), 2, "{roots:?}");
+        assert_eq!(roots.len(), 3, "{roots:?}");
     }
 
     #[test]
@@ -544,17 +563,48 @@ mod tests {
             roots,
             vec![
                 PathBuf::from("/work/repo/src/.alter-zero/skills"),
+                PathBuf::from("/work/repo/src/.agents/skills"),
                 PathBuf::from("/work/repo/src/.claude/skills"),
                 PathBuf::from("/work/repo/.alter-zero/skills"),
+                PathBuf::from("/work/repo/.agents/skills"),
                 PathBuf::from("/work/repo/.claude/skills"),
             ]
         );
     }
 
     #[test]
+    fn every_directory_up_to_the_project_root_is_searched_nearest_first() {
+        // Codex reads `<dir>/.agents/skills` for every directory from the
+        // project root down to the cwd — the `AGENTS.md` walk — so a monorepo
+        // package's skills are found from anywhere inside the package, and
+        // the nearer directory still shadows the farther one.
+        let roots = skill_roots(
+            Path::new("/work/repo/packages/web/src"),
+            Some(Path::new("/work/repo")),
+            None,
+            None,
+            None,
+        );
+        let dirs = [
+            "/work/repo/packages/web/src",
+            "/work/repo/packages/web",
+            "/work/repo/packages",
+            "/work/repo",
+        ];
+        let expected: Vec<PathBuf> = dirs
+            .iter()
+            .flat_map(|dir| {
+                [".alter-zero", ".agents", ".claude"]
+                    .map(|name| Path::new(dir).join(name).join("skills"))
+            })
+            .collect();
+        assert_eq!(roots, expected);
+    }
+
+    #[test]
     fn a_project_root_that_is_the_cwd_adds_no_second_pass() {
-        // The common case — launched at the repo root — must read the same
-        // two directories it always did, not each of them twice.
+        // The common case — launched at the repo root — must read each of
+        // the directory's roots once, not twice.
         let roots = skill_roots(
             Path::new("/work"),
             Some(Path::new("/work")),
@@ -566,7 +616,88 @@ mod tests {
             roots,
             vec![
                 PathBuf::from("/work/.alter-zero/skills"),
+                PathBuf::from("/work/.agents/skills"),
                 PathBuf::from("/work/.claude/skills"),
+            ]
+        );
+    }
+
+    #[test]
+    fn launched_in_the_home_directory_each_directory_is_named_once() {
+        // In `~` the cwd's three roots *are* the personal three. Discovery
+        // was never affected (a name is only claimed once), but the `/skills`
+        // menu named every directory twice. The first occurrence is kept,
+        // Codex's `dedupe_skill_roots_by_path`.
+        let roots = skill_roots(
+            Path::new("/home/u"),
+            None,
+            Some(Path::new("/home/u/.alter-zero")),
+            Some(Path::new("/home/u")),
+            None,
+        );
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/home/u/.alter-zero/skills"),
+                PathBuf::from("/home/u/.agents/skills"),
+                PathBuf::from("/home/u/.claude/skills"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nearer_directory_wins_a_name_whatever_its_directory_is_called() {
+        // Launched in `repo/pkg/src`: the package's `.agents/skills` shadows
+        // the repo's `.alter-zero/skills` (nearer wins first), the repo's
+        // `.agents/skills` shadows its `.claude/skills` (then the directory
+        // order), and a `.agents/skills` *above* the repository is no part of
+        // the project at all — Codex's
+        // `repo_ancestry_stops_at_project_root_and_preserves_root_to_cwd_order`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let cwd = repo.join("pkg").join("src");
+        std::fs::create_dir_all(&cwd).expect("mkdir");
+        std::fs::create_dir_all(repo.join(".git")).expect("mkdir .git");
+        let skills = |dir: &Path, name: &str| dir.join(name).join("skills");
+        write_skill(
+            &skills(&repo.join("pkg"), ".agents"),
+            "lint",
+            &skill_md("The package's lint.", "P"),
+        );
+        write_skill(
+            &skills(&repo, ".alter-zero"),
+            "lint",
+            &skill_md("The repo's lint.", "R"),
+        );
+        write_skill(
+            &skills(&repo, ".agents"),
+            "review",
+            &skill_md("The shared review.", "S"),
+        );
+        write_skill(
+            &skills(&repo, ".claude"),
+            "review",
+            &skill_md("Claude Code's review.", "C"),
+        );
+        write_skill(
+            &skills(tmp.path(), ".agents"),
+            "outer",
+            &skill_md("Outside the repository.", "O"),
+        );
+
+        let project_root = crate::project_doc::find_project_root(&cwd);
+        let roots = skill_roots(&cwd, project_root.as_deref(), None, None, None);
+        let (found, errors) = discover_skills(&roots);
+        assert!(errors.is_empty(), "{errors:?}");
+        let described: Vec<(&str, &str)> = found
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+            .collect();
+        assert_eq!(
+            described,
+            [
+                ("lint", "The package's lint."),
+                ("review", "The shared review.")
             ]
         );
     }

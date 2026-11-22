@@ -169,10 +169,15 @@ fn list_hint(menu: &PluginsMenu, width: u16) -> Line<'static> {
             return fitted_hint(&clauses, width);
         }
         PluginsTab::Marketplace(_) => {
-            if menu.current_marketplace().is_some_and(|market| market.git) {
+            let market = menu.current_marketplace();
+            if market.is_some_and(|market| market.git) {
                 clauses.push(PLUGINS_HINT_UPDATE);
             }
-            clauses.push(PLUGINS_HINT_REMOVE);
+            // One found and never added has nothing to remove
+            // (`docs/agents-dir.md`).
+            if market.is_none_or(|market| market.found.is_none()) {
+                clauses.push(PLUGINS_HINT_REMOVE);
+            }
         }
         PluginsTab::All | PluginsTab::Installed => {}
     }
@@ -318,8 +323,16 @@ fn market_counts(market: &CatalogMarketplace, now: i64) -> String {
 }
 
 /// Where a marketplace comes from in one line: its source, and the commit
-/// its checkout is at.
+/// its checkout is at — or, for one found and never added, where it was
+/// found before its directory (`docs/agents-dir.md`).
 fn market_source(market: &CatalogMarketplace) -> String {
+    if let Some(found_in) = market.found {
+        return format!(
+            "found {}, not added{FOOTER_SEPARATOR}{}",
+            found_in.phrase(),
+            market.source
+        );
+    }
     match &market.revision {
         Some(revision) => format!(
             "{}{FOOTER_SEPARATOR}{}",

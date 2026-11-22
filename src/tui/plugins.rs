@@ -26,8 +26,8 @@ use alter_zero::app::{PLUGINS_JOB_DELAY, PluginDone, PluginOp, ToastKind};
 use alter_zero::llm::mcp::McpHold;
 use alter_zero::mcp::{McpScope, McpServerEntry};
 use alter_zero::plugins::{
-    LoadedPlugins, PluginCatalog, PluginStore, build_catalog, load_enabled,
-    parse_marketplace_source, read_contents, with_project_dir,
+    FoundMarketplace, LoadedPlugins, PluginCatalog, PluginStore, build_catalog, find_marketplaces,
+    load_enabled, parse_marketplace_source, read_contents, with_project_dir,
 };
 use alter_zero::stream::CancelToken;
 
@@ -64,6 +64,15 @@ pub(crate) fn load_plugins(store: Option<&PluginStore>, project: &Path) -> Loade
         }
         _ => LoadedPlugins::default(),
     }
+}
+
+/// The marketplaces found for `project` without being added — the home
+/// folder's and the project's `.agents/plugins/marketplace.json`
+/// (`docs/agents-dir.md`). Read only while the page is open or a job runs,
+/// never at startup: the catalogs are the page's to read.
+pub(crate) fn found_marketplaces(project: &Path) -> Vec<FoundMarketplace> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    find_marketplaces(project, home.as_deref())
 }
 
 /// The enabled plugins' MCP servers as the manager takes them — each in the
@@ -137,14 +146,31 @@ fn run_op(
     };
     match op {
         PluginOp::Install(id) => {
-            let result = store.install(id, cancel, now).map(|installed| {
-                let verb = if installed.replaced {
-                    "Updated"
-                } else {
-                    "Installed"
-                };
-                done(format!("{verb} {}", id.name))
-            });
+            // A plugin of a marketplace found and never added adds it first
+            // (`docs/agents-dir.md`) — looked for only when no marketplace
+            // of its name is added, so an ordinary install reads no other
+            // catalog on this thread (`docs/memory.md`).
+            let known = store
+                .registry()
+                .is_ok_and(|registry| registry.marketplaces.contains_key(&id.marketplace));
+            let found = if known {
+                Vec::new()
+            } else {
+                found_marketplaces(project)
+            };
+            let result = store
+                .install_found(id, &found, cancel, now)
+                .map(|(installed, added)| {
+                    let verb = if installed.replaced {
+                        "Updated"
+                    } else {
+                        "Installed"
+                    };
+                    match added {
+                        Some(added) => done(format!("{verb} {} — added {}", id.name, added.name)),
+                        None => done(format!("{verb} {}", id.name)),
+                    }
+                });
             let ok = result.is_ok();
             (result, ok)
         }
@@ -232,7 +258,11 @@ impl Session<'_> {
     /// says why there is none.
     fn read_plugin_catalog(&self) -> PluginCatalog {
         match &self.plugin_store {
-            Some(store) => build_catalog(store, &self.cwd.display().to_string()),
+            Some(store) => build_catalog(
+                store,
+                &self.cwd.display().to_string(),
+                &found_marketplaces(&self.cwd),
+            ),
             None => PluginCatalog {
                 error: Some(NO_STORE.to_string()),
                 ..PluginCatalog::default()

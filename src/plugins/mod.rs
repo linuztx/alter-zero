@@ -18,12 +18,16 @@
 //!   cancellable.
 //! - `store`    — adding marketplaces, installing plugins, the registry's
 //!   read-modify-write.
+//! - `found`    — the marketplaces found without being added: the home
+//!   folder's and the project's `.agents/plugins/marketplace.json`
+//!   (`docs/agents-dir.md`).
 //! - `catalog`  — what `/plugins` shows, and what a session loads from the
 //!   plugins it has on.
 
 mod agents;
 mod catalog;
 mod components;
+mod found;
 mod git;
 mod id;
 mod layout;
@@ -46,6 +50,7 @@ pub use self::components::{
     ComponentSummary, PluginComponents, PluginHooks, PluginPackage, find_manifest, read_manifest,
     read_plugin, skill_body,
 };
+pub use self::found::{FoundIn, FoundMarketplace, find_marketplaces};
 pub use self::git::{GIT_TIMEOUT, Git};
 pub use self::id::{
     ID_SEPARATOR, MAX_NAME_LEN, NAMESPACE_SEPARATOR, PluginId, is_component_segment, namespaced,

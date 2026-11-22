@@ -21,6 +21,7 @@ use alter_zero::stream::CancelToken;
 
 use super::config;
 use super::host;
+use super::plugins::found_marketplaces;
 use super::startup::stdout_style;
 
 /// Run one `plugin` subcommand and return the process exit code.
@@ -58,9 +59,10 @@ fn counted(n: usize, noun: &str) -> String {
     }
 }
 
-/// The catalog, or why it cannot be read.
+/// The catalog — the added marketplaces', then those found without being
+/// added (`docs/agents-dir.md`) — or why it cannot be read.
 fn catalog(store: &PluginStore, cwd: &Path) -> Result<PluginCatalog, String> {
-    let catalog = build_catalog(store, &cwd.display().to_string());
+    let catalog = build_catalog(store, &cwd.display().to_string(), &found_marketplaces(cwd));
     match catalog.error {
         Some(error) => Err(error),
         None => Ok(catalog),
@@ -122,9 +124,31 @@ fn version_label(version: Option<&str>) -> String {
 }
 
 /// Install (or update) `id` and say so — with what it adds, and, when it
-/// brings something that runs, that the app asks before it does.
-fn install(store: &PluginStore, id: &PluginId) -> Result<(), String> {
-    let installed = store.install(id, &CancelToken::new(), host::unix_secs_signed())?;
+/// brings something that runs, that the app asks before it does. A plugin
+/// of a marketplace found in `cwd` or the home folder, and never added, adds
+/// that marketplace first (`docs/agents-dir.md`).
+fn install(store: &PluginStore, id: &PluginId, cwd: &Path) -> Result<(), String> {
+    let found = found_marketplaces(cwd);
+    let (installed, added) =
+        store.install_found(id, &found, &CancelToken::new(), host::unix_secs_signed())?;
+    if let Some(added) = added {
+        let from = found
+            .iter()
+            .find(|found| {
+                found
+                    .catalog
+                    .as_ref()
+                    .is_ok_and(|catalog| catalog.name == added.name)
+            })
+            .map_or_else(String::new, |found| {
+                format!(" from {}", found.root.display())
+            });
+        println!(
+            "Added marketplace {} ({}){from}",
+            added.name,
+            counted(added.plugins, "plugin"),
+        );
+    }
     let verb = if installed.replaced {
         "Updated"
     } else {
@@ -196,7 +220,7 @@ fn execute(store: &PluginStore, cmd: &PluginCli, cwd: &Path) -> Result<(), Strin
                     err
                 }
             })?;
-            install(store, &id)
+            install(store, &id, cwd)
         }
         PluginCli::Uninstall { plugin } => {
             let id = resolve(plugin, &installed(&catalog(store, cwd)?), "installed")?;
@@ -244,7 +268,7 @@ fn execute(store: &PluginStore, cmd: &PluginCli, cwd: &Path) -> Result<(), Strin
                     .and_then(|plugin| plugin.installed.as_ref())
                     .is_some_and(|state| state.update);
                 if due {
-                    install(store, id)?;
+                    install(store, id, cwd)?;
                     updated += 1;
                 } else if plugin.is_some() {
                     println!("{id} is up to date");
@@ -314,7 +338,7 @@ fn execute(store: &PluginStore, cmd: &PluginCli, cwd: &Path) -> Result<(), Strin
                 .max()
                 .unwrap_or(0);
             for market in &catalog.marketplaces {
-                let state = match &market.error {
+                let mut state = match &market.error {
                     Some(error) => format!("error: {error}"),
                     None if market.installed > 0 => format!(
                         "{}, {} installed",
@@ -323,6 +347,9 @@ fn execute(store: &PluginStore, cmd: &PluginCli, cwd: &Path) -> Result<(), Strin
                     ),
                     None => counted(market.plugins, "plugin"),
                 };
+                if let Some(found_in) = market.found {
+                    state.push_str(&format!(", found {}, not added", found_in.phrase()));
+                }
                 println!("{:<width$}  {}  ({state})", market.name, market.source);
             }
             Ok(())

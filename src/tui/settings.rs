@@ -97,9 +97,10 @@ impl Session<'_> {
     ///
     /// The startup walk alone left a session frozen at the skills it booted
     /// with: adding one meant restarting, and a skill the *agent* had just
-    /// written for you was invisible to the very next turn. The walk is four
-    /// to six `read_dir`s and one small read per skill, against a turn that is
-    /// about to make a network request.
+    /// written for you was invisible to the very next turn. The walk is three
+    /// `read_dir`s per directory from the cwd up to the project root plus three
+    /// personal ones (six at a repo root, nearly all `NotFound`) and one small
+    /// read per skill, against a turn that is about to make a network request.
     ///
     /// Four things follow from the new set, and they are spelled out here for
     /// the reason `apply_skill_toggle` spells out its four: the shared
@@ -136,8 +137,9 @@ impl Session<'_> {
     /// `SKILL.md` rescan and for the same reason: a startup-only discovery
     /// froze the session at what it booted with, so a type you added — or one
     /// the agent had just written *for* you — was unlaunchable until a
-    /// restart. The cost is three `read_dir`s against a turn about to hit the
-    /// network.
+    /// restart. The cost is one `read_dir` per directory from the cwd up to
+    /// the project root plus the user root (two at a repo root) against a turn
+    /// about to hit the network.
     ///
     /// The registry is the shared handle every backend holds, so replacing
     /// its contents is all a launch needs; only the listing has to be

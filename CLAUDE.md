@@ -1923,9 +1923,11 @@ run from the copies embedded out of `prompts/agents/` — editable files, never
 clobbered once edited and kept current until then (`docs/builtin-updates.md`),
 and the last-resort fallback (`AgentDefinition::is_builtin`, a
 `path` of `None`) since the schema's default type must always resolve —
-discovered from `{cwd}/.alter-zero/agents`, the project root's, then
-`{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
-markdown, an agent file names a model and a tool reach), **re-walked at every
+discovered from the `.alter-zero/agents` of every directory from the cwd up
+to the project root, nearest first (the skill roots' walk,
+`project_doc::doc_chain`), then `{config_home}/agents` (**no
+`.claude/agents`** and no `.agents/agents`: a `SKILL.md` is inert markdown,
+an agent file names a model and a tool reach), **re-walked at every
 turn start** beside the skills so a type the agent just wrote is launchable
 now, an unknown `subagent_type` resolving as a recoverable error listing the
 real ones, and the whole roster riding the context as the **second section of
@@ -2898,12 +2900,14 @@ tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
 rejected** so an ecosystem skill carrying `allowed-tools:`/`model:` loads
-unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
-`.claude/skills`, **the nearest-`.git` project root's** pair (skipped when it
-*is* the cwd, so launching in `repo/src` still finds the repo's skills — the
-`AGENTS.md` walk-up, `project_doc::find_project_root`), the config home's
-`skills`, and `~/.claude/skills`, first root winning a name
-(`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
+unchanged) over a body, discovered from `.alter-zero/skills`,
+`.agents/skills` and `.claude/skills` in **every directory from the cwd up to
+the nearest-`.git` project root**, nearest first (Codex's rule for
+`.agents/skills` and the `AGENTS.md` walk — `project_doc::doc_chain`, so
+launching in `repo/packages/web/src` still finds the package's skills and the
+repo's), then the config home's `skills`, `~/.agents/skills` and
+`~/.claude/skills`, first root winning a name and a path listed once
+(`docs/agents-dir.md`; `ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
 naming it, never silence). **Five skills ship in the binary** — `jina-reader` (public webpages and PDFs
 through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),
@@ -2970,7 +2974,9 @@ re-runs at **every turn start**
 (`Session::rescan_skills`, beside the `AGENTS.md` refresh): a startup-only
 discovery froze the session at what it booted with — a skill you added, or one
 the agent had just written *for* you, was invisible until a restart — and the
-cost is four to six `read_dir`s against a turn about to hit the network. The
+cost is three `read_dir`s per directory of the walk plus three personal ones
+(six at a repo root, nearly all `NotFound`) against a turn about to hit the
+network. The
 `/settings` **Skills** availability is re-derived **before** the listing (it
 gates it, so the other order shipped the listing a turn late), the backend is
 rebuilt **only** when the tool set actually flips
@@ -3397,7 +3403,18 @@ and the fixture unsets every `HERDR_*` variable.
 in place — and installs the plugins they list, from the composer-replacing
 **`/plugins` page** or the **`alter-zero plugin …`** subcommands (Claude
 Code's verbs with codex's `rm` and an `upgrade`; `cli::PluginCli`,
-`tui::plugin_cli`, `tests/plugin_cli.rs`). Three formats install the same
+`tui::plugin_cli`, `tests/plugin_cli.rs`). Two more are **found** rather
+than added, where Codex finds them (`docs/agents-dir.md`,
+`plugins::find_marketplaces`): `~/.agents/plugins/marketplace.json`, and the
+working directory's catalog or else its project root's. Each is listed after
+the added ones on a tab of its own (`found in this project, not added`, no
+Ctrl+R), in the CLI's listings too, and never installed. Installing a plugin
+it offers adds it first (`PluginStore::install_found`, taken back if the
+install fails), since a directory's plugins load in place. An added
+marketplace keeps its name over the home folder's, and the home folder's over
+the project's; one that cannot be offered under its own name is listed under
+where it was found (`this project`, a label no marketplace name can be) with
+the reason (`smoke.sh` Phase 165). Three formats install the same
 way, read by the first manifest a directory has (`plugins::manifest`): a root
 `plugin.json` naming the **Agent Plugins 1.0.0** schema (agent-plugins.org)
 — a **closed** document read strictly, its skills only at
@@ -3447,7 +3464,7 @@ runs runs before the user has trusted it**, and installing from the page opens
 the review at once. The pure half is **`src/plugins/`** (`id`, `manifest`,
 `marketplace`, `source`, `registry` — `plugins.json`, never written over when
 it will not parse — `layout`, `components`, `mcp`, `agents`, `git`, `store`,
-`catalog` with `build_catalog` and `load_enabled`), everything kept under
+`found`, `catalog` with `build_catalog` and `load_enabled`), everything kept under
 `{config_home}/plugins/` (`ALTER_ZERO_PLUGINS_DIR` moves it; plugins are **on
 per directory** until one turns them off, `skills.json`'s shape). The page
 (`app::PluginsMenu`, `ui::plugins_view`) is codex's `/plugins`: a search-line

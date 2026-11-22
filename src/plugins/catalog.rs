@@ -4,18 +4,19 @@
 //! need so it takes milliseconds, a plugin's contents when the page shows
 //! them; the loaded plugins at startup and after every change.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::hooks::HooksFile;
 use crate::skills::SkillMetadata;
 use crate::subagents::AgentDefinition;
 
 use super::components::{ComponentSummary, PluginHooks, PluginPackage, read_manifest, read_plugin};
-use super::id::PluginId;
+use super::found::{FoundIn, FoundMarketplace, same_dir};
+use super::id::{PluginId, validate_name};
 use super::manifest::{PluginFormat, PluginManifest};
-use super::marketplace::{MarketplaceEntry, PluginSource};
+use super::marketplace::{Marketplace, MarketplaceEntry, PluginSource, check_reserved};
 use super::mcp::{AGENT_PLUGIN_MCP_FILE, LEGACY_MCP_FILE, PluginServer};
-use super::registry::Registry;
+use super::registry::{MarketplaceSource, Registry};
 use super::store::{CatalogCache, PluginStore, update_available};
 
 /// An installed plugin's state, as the page shows it.
@@ -117,6 +118,10 @@ pub struct CatalogMarketplace {
     pub error: Option<String>,
     /// The entries it lists that were skipped, and why.
     pub notes: Vec<String>,
+    /// Where it was found, for one nobody added (`docs/agents-dir.md`):
+    /// listed, never installed, until a plugin it offers is installed —
+    /// which adds it.
+    pub found: Option<FoundIn>,
 }
 
 /// Everything `/plugins` shows.
@@ -141,9 +146,15 @@ impl PluginCatalog {
 }
 
 /// Read the catalog `/plugins` shows: every added marketplace's plugins,
-/// what is installed, and what is on in the directory `project`.
+/// then those of the marketplaces `found` without being added
+/// (`docs/agents-dir.md`), what is installed, and what is on in the
+/// directory `project`.
 #[must_use]
-pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
+pub fn build_catalog(
+    store: &PluginStore,
+    project: &str,
+    found: &[FoundMarketplace],
+) -> PluginCatalog {
     let registry = match store.registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -152,6 +163,11 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
                 ..PluginCatalog::default()
             };
         }
+    };
+    let lister = Lister {
+        store,
+        registry: &registry,
+        project,
     };
     let mut catalog = PluginCatalog::default();
     let mut names: Vec<(PluginId, String)> = Vec::new();
@@ -170,78 +186,46 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
             installed: registry.plugins_of(&name).len(),
             error: None,
             notes: Vec::new(),
+            found: None,
         };
         match read {
             Err(error) => market.error = Some(error),
             Ok((root, listing)) => {
-                market.description = listing.description;
-                market.owner = listing.owner;
-                market.plugins = listing.plugins.len();
-                market.notes = listing.notes;
-                for entry in &listing.plugins {
-                    let Ok(id) = PluginId::new(&entry.name, &name) else {
-                        continue;
-                    };
-                    let mut plugin = CatalogPlugin {
-                        display_name: entry.display_name.clone(),
-                        description: entry.description.clone(),
-                        version: entry.version.clone(),
-                        author: entry.author.clone(),
-                        category: entry.category.clone(),
-                        homepage: entry.homepage.clone(),
-                        keywords: entry.keywords.clone(),
-                        source: entry.source.label(),
-                        unavailable: entry.source.installable().err(),
-                        format: None,
-                        components: None,
-                        installed: None,
-                        notes: Vec::new(),
-                        unread: None,
-                        id,
-                    };
-                    match registry.plugins.get(&plugin.id.key()) {
-                        Some(record) => {
-                            let update = update_available(record, entry, &root);
-                            if let Some(namespace) = fill_installed(
-                                store,
-                                &registry,
-                                project,
-                                &mut plugin,
-                                Some(entry),
-                                update,
-                            ) {
-                                names.push((plugin.id.clone(), namespace));
-                            }
-                        }
-                        None => {
-                            // A plugin kept in its marketplace can be read
-                            // before it is installed, so the page says what
-                            // it adds — and what it runs — before it is
-                            // chosen. Here only its manifest, for the row:
-                            // what it adds is most of the reading, and the
-                            // page shows it for one plugin at a time.
-                            if let PluginSource::Local { path } = &entry.source {
-                                let folder = root.join(path);
-                                match read_manifest(&folder, Some(entry)) {
-                                    Ok((manifest, _)) => {
-                                        plugin.format = Some(manifest.format);
-                                        plugin.notes.clone_from(&manifest.notes);
-                                        // The copy read here is the one an
-                                        // install takes, so its version is
-                                        // the one on offer.
-                                        fill_from(&mut plugin, &manifest, true);
-                                        plugin.unread = Some(Box::new(UnreadPlugin {
-                                            root: folder,
-                                            entry: entry.clone(),
-                                        }));
-                                    }
-                                    Err(reason) => plugin.unavailable = Some(reason),
-                                }
-                            }
-                        }
-                    }
-                    catalog.plugins.push(plugin);
-                }
+                lister.list(&mut market, &root, &listing, &mut catalog, &mut names);
+            }
+        }
+        catalog.marketplaces.push(market);
+    }
+    for found in found {
+        // A found directory that is an added marketplace is that one.
+        if catalog
+            .marketplaces
+            .iter()
+            .any(|market| !market.git && same_dir(&market.root, &found.root))
+        {
+            continue;
+        }
+        let mut market = CatalogMarketplace {
+            name: found.found_in.label().to_string(),
+            source: found.root.display().to_string(),
+            git: false,
+            description: None,
+            owner: None,
+            revision: None,
+            updated_at: None,
+            root: found.root.clone(),
+            plugins: 0,
+            installed: 0,
+            error: None,
+            notes: Vec::new(),
+            found: Some(found.found_in),
+        };
+        match usable(found, &catalog.marketplaces) {
+            Err(error) => market.error = Some(error),
+            Ok(listing) => {
+                market.name.clone_from(&listing.name);
+                market.installed = registry.plugins_of(&listing.name).len();
+                lister.list(&mut market, &found.root, listing, &mut catalog, &mut names);
             }
         }
         catalog.marketplaces.push(market);
@@ -284,6 +268,128 @@ pub fn build_catalog(store: &PluginStore, project: &str) -> PluginCatalog {
             .then_with(|| a.id.cmp(&b.id))
     });
     catalog
+}
+
+/// What listing a marketplace's plugins reads against: the store, its
+/// registry, and the directory whose on/off state the rows show.
+struct Lister<'a> {
+    store: &'a PluginStore,
+    registry: &'a Registry,
+    project: &'a str,
+}
+
+impl Lister<'_> {
+    /// List the plugins of `listing` — the catalog of `market`, whose
+    /// entries' paths resolve from `root` — into `catalog`, filling in
+    /// `market`'s own facts, and note each installed one's namespace in
+    /// `names`.
+    fn list(
+        &self,
+        market: &mut CatalogMarketplace,
+        root: &Path,
+        listing: &Marketplace,
+        catalog: &mut PluginCatalog,
+        names: &mut Vec<(PluginId, String)>,
+    ) {
+        market.description.clone_from(&listing.description);
+        market.owner.clone_from(&listing.owner);
+        market.plugins = listing.plugins.len();
+        market.notes.clone_from(&listing.notes);
+        for entry in &listing.plugins {
+            let Ok(id) = PluginId::new(&entry.name, &market.name) else {
+                continue;
+            };
+            let mut plugin = CatalogPlugin {
+                display_name: entry.display_name.clone(),
+                description: entry.description.clone(),
+                version: entry.version.clone(),
+                author: entry.author.clone(),
+                category: entry.category.clone(),
+                homepage: entry.homepage.clone(),
+                keywords: entry.keywords.clone(),
+                source: entry.source.label(),
+                unavailable: entry.source.installable().err(),
+                format: None,
+                components: None,
+                installed: None,
+                notes: Vec::new(),
+                unread: None,
+                id,
+            };
+            match self.registry.plugins.get(&plugin.id.key()) {
+                Some(record) => {
+                    let update = update_available(record, entry, root);
+                    if let Some(namespace) = fill_installed(
+                        self.store,
+                        self.registry,
+                        self.project,
+                        &mut plugin,
+                        Some(entry),
+                        update,
+                    ) {
+                        names.push((plugin.id.clone(), namespace));
+                    }
+                }
+                None => {
+                    // A plugin kept in its marketplace can be read before it
+                    // is installed, so the page says what it adds — and what
+                    // it runs — before it is chosen. Here only its manifest,
+                    // for the row: what it adds is most of the reading, and
+                    // the page shows it for one plugin at a time.
+                    if let PluginSource::Local { path } = &entry.source {
+                        let folder = root.join(path);
+                        match read_manifest(&folder, Some(entry)) {
+                            Ok((manifest, _)) => {
+                                plugin.format = Some(manifest.format);
+                                plugin.notes.clone_from(&manifest.notes);
+                                // The copy read here is the one an install
+                                // takes, so its version is the one on offer.
+                                fill_from(&mut plugin, &manifest, true);
+                                plugin.unread = Some(Box::new(UnreadPlugin {
+                                    root: folder,
+                                    entry: entry.clone(),
+                                }));
+                            }
+                            Err(reason) => plugin.unavailable = Some(reason),
+                        }
+                    }
+                }
+            }
+            catalog.plugins.push(plugin);
+        }
+    }
+}
+
+/// The catalog of `found` when it can be offered under its own name — or
+/// why it cannot: it will not read, its name is not one a marketplace may
+/// have or is reserved, or a marketplace `listed` already has it (one the
+/// user added, or the home folder's). Plugin ids are `plugin@marketplace`,
+/// so a second marketplace of one name would offer its own copy of a plugin
+/// installed from the first (`docs/agents-dir.md`).
+fn usable<'a>(
+    found: &'a FoundMarketplace,
+    listed: &[CatalogMarketplace],
+) -> Result<&'a Marketplace, String> {
+    let listing = found.catalog.as_ref().map_err(Clone::clone)?;
+    let name = &listing.name;
+    validate_name(name).map_err(|reason| format!("invalid marketplace name `{name}`: {reason}"))?;
+    check_reserved(
+        name,
+        &MarketplaceSource::Local {
+            path: found.root.display().to_string(),
+        },
+    )?;
+    if let Some(taken) = listed.iter().find(|market| market.name == *name) {
+        return Err(match taken.found {
+            Some(found_in) => format!("named `{name}`, like the marketplace {}", found_in.phrase()),
+            None => format!(
+                "named `{name}`, like the marketplace added from {} — remove that one to offer \
+                 this one",
+                taken.source
+            ),
+        });
+    }
+    Ok(listing)
 }
 
 /// An installed plugin's state and what its installed copy holds.
