@@ -15,10 +15,10 @@
 //!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
 //!   `docs/background.md`).
 //! - [`builtins`]    — the built-in skills and agent types on disk, kept
-//!   current: the shipped history, the `.builtins.json` record, and the
-//!   per-launch plan that replaces an unedited copy, keeps an edited one and
-//!   offers it this release's version beside it (pure plan + boundary
-//!   executor; see `docs/builtin-updates.md`).
+//!   current: the shipped history, the `.alter-zero-builtins.json` record,
+//!   and the per-launch plan that replaces an unedited copy, keeps an edited
+//!   one and offers it this release's version beside it (pure plan +
+//!   boundary executor; see `docs/builtin-updates.md`).
 //! - [`checkpoint`]  — per-turn working-directory snapshots in an isolated git
 //!   store so `/resume` and the Esc-Esc backtrack can reset the code, not just
 //!   the transcript (pure mapping + boundary store; see `docs/checkpoint.md`).

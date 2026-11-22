@@ -8,8 +8,8 @@
 //! file a release stopped shipping removed — and carries the decision out.
 //!
 //! Pure at the core: the shipped history (`prompts/shipped.sha256`), the
-//! `.builtins.json` record, [`plan_sync`] over an injected read of the
-//! directory, and the wording of the two notices. [`sync`] is the one
+//! `.alter-zero-builtins.json` record, [`plan_sync`] over an injected read of
+//! the directory, and the wording of the two notices. [`sync`] is the one
 //! boundary function: it reads, plans and writes.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,8 +21,9 @@ use std::path::{Path, PathBuf};
 const SHIPPED: &str = include_str!("../prompts/shipped.sha256");
 
 /// The record in a seeded directory: the version each built-in file there is
-/// based on.
-pub const MANIFEST_FILE_NAME: &str = ".builtins.json";
+/// based on, and the version last offered beside it. Named for its owner,
+/// since an `ALTER_ZERO_AGENTS_DIR` override can be anyone's directory.
+pub const MANIFEST_FILE_NAME: &str = ".alter-zero-builtins.json";
 
 /// What this release's version of an edited file is written beside it under.
 pub const OFFER_SUFFIX: &str = ".new";
@@ -35,8 +36,8 @@ pub const OFFERED_NOTICE_TITLE: &str = "Edited built-ins";
 /// at a built-in's path costs a bounded read rather than its whole size.
 const READ_MAX_BYTES: u64 = 4 << 20;
 
-/// The most of `.builtins.json` read: a record that long is not one this
-/// program wrote, and is read as no record at all.
+/// The most of the record read: a record that long is not one this program
+/// wrote, and is read as no record at all.
 const RECORD_MAX_BYTES: u64 = 1 << 20;
 
 /// How many `.new` files the card names before it counts the rest.
@@ -172,24 +173,37 @@ impl ShippedHistory<'static> {
     }
 }
 
-/// `.builtins.json`: each built-in file's base — the version last written
-/// there or last found there unedited.
+/// The record, `.alter-zero-builtins.json`: what each built-in file there is
+/// based on, and what was last offered beside it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Manifest {
-    files: BTreeMap<String, String>,
+    files: BTreeMap<String, Entry>,
 }
 
-/// `.builtins.json` as it is read.
+/// One file's record.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Entry {
+    /// The version the copy is based on: the one last written there or
+    /// found there unedited, or the one last offered beside an edit.
+    base: String,
+    /// The version written beside an edited copy as `{file}.new`, while that
+    /// offer stands — what makes the `.new` this program's to replace or
+    /// remove, and nobody else's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offered: Option<String>,
+}
+
+/// The record as it is read.
 #[derive(serde::Deserialize)]
 struct ManifestIn {
     #[serde(default)]
-    files: BTreeMap<String, String>,
+    files: BTreeMap<String, Entry>,
 }
 
-/// `.builtins.json` as it is written.
+/// The record as it is written.
 #[derive(serde::Serialize)]
 struct ManifestOut<'a> {
-    files: &'a BTreeMap<String, String>,
+    files: &'a BTreeMap<String, Entry>,
 }
 
 impl Manifest {
@@ -216,22 +230,69 @@ impl Manifest {
     /// The base recorded for the file at `relative`.
     #[must_use]
     pub fn base(&self, relative: &str) -> Option<&str> {
-        self.files.get(relative).map(String::as_str)
+        self.files.get(relative).map(|entry| entry.base.as_str())
     }
 
-    fn set(&mut self, relative: &str, hash: &str) {
-        self.files.insert(relative.to_string(), hash.to_string());
+    /// The version offered beside the file at `relative`, while that offer
+    /// stands.
+    #[must_use]
+    pub fn offered(&self, relative: &str) -> Option<&str> {
+        self.files
+            .get(relative)
+            .and_then(|entry| entry.offered.as_deref())
     }
 
-    /// Put `relative`'s record back to `base` — what it was before a step
+    /// The file holds `hash` as a release wrote it: that is its base, and any
+    /// offer beside it is over.
+    fn settle(&mut self, relative: &str, hash: &str) {
+        self.files.insert(
+            relative.to_string(),
+            Entry {
+                base: hash.to_string(),
+                offered: None,
+            },
+        );
+    }
+
+    /// An edit is based on `hash`; an offer beside it still stands.
+    fn set_base(&mut self, relative: &str, hash: &str) {
+        let offered = self.offered(relative).map(str::to_string);
+        self.files.insert(
+            relative.to_string(),
+            Entry {
+                base: hash.to_string(),
+                offered,
+            },
+        );
+    }
+
+    /// `hash` was written beside an edit: the edit is based on it now, so it
+    /// is offered once.
+    fn offer(&mut self, relative: &str, hash: &str) {
+        self.files.insert(
+            relative.to_string(),
+            Entry {
+                base: hash.to_string(),
+                offered: Some(hash.to_string()),
+            },
+        );
+    }
+
+    /// Put `relative`'s record back to `entry` — what it was before a step
     /// that failed.
-    fn restore(&mut self, relative: &str, base: Option<&str>) {
-        match base {
-            Some(base) => self.set(relative, base),
+    fn restore(&mut self, relative: &str, entry: Option<Entry>) {
+        match entry {
+            Some(entry) => {
+                self.files.insert(relative.to_string(), entry);
+            }
             None => {
                 self.files.remove(relative);
             }
         }
+    }
+
+    fn entry(&self, relative: &str) -> Option<Entry> {
+        self.files.get(relative).cloned()
     }
 
     fn is_empty(&self) -> bool {
@@ -246,6 +307,9 @@ pub enum OnDisk {
     Missing,
     /// A file whose bytes hash to this.
     File(String),
+    /// A symbolic link to a file whose bytes hash to this: read and written
+    /// through like a file, and never removed — the link is the user's.
+    Link(String),
     /// Something that is not a readable file — a directory, a permission
     /// error. Left alone.
     Unreadable,
@@ -320,7 +384,7 @@ impl Step {
 pub struct SyncPlan {
     /// Writes first, in the order the files are listed, then removals.
     pub steps: Vec<Step>,
-    /// `.builtins.json` once every step has run.
+    /// The record once every step has run.
     pub manifest: Manifest,
 }
 
@@ -329,13 +393,21 @@ pub struct SyncPlan {
 /// `files` is this release's built-ins for the directory — `(path, bytes)`,
 /// the path relative to it — and `read` says what a path in the directory
 /// holds. Each file is decided on its own; a file this release no longer
-/// ships is removed only when no file of its built-in was edited.
+/// ships is removed only when no file of its built-in was edited, and never
+/// when it is a symlink.
+///
+/// `offer` is whether an edited copy may be offered this release's version
+/// beside it (off in a headless run). A `.new` is this program's only while
+/// it holds the copy the record says was offered there, or this release's
+/// own: one the user has changed — a merge in progress — is never replaced
+/// or removed, and the offer waits for it.
 #[must_use]
 pub fn plan_sync(
     kind: BuiltinKind,
     files: &[(&str, &'static str)],
     history: &ShippedHistory<'_>,
     manifest: &Manifest,
+    offer: bool,
     mut read: impl FnMut(&str) -> OnDisk,
 ) -> SyncPlan {
     let prefix = format!("prompts/{}/", kind.dir_name());
@@ -360,16 +432,15 @@ pub fn plan_sync(
     let edited: BTreeSet<&str> = disk
         .iter()
         .filter_map(|(relative, state)| match state {
-            OnDisk::File(hash) if !ours(relative, hash) => Some(kind.unit(relative)),
+            OnDisk::File(hash) | OnDisk::Link(hash) if !ours(relative, hash) => {
+                Some(kind.unit(relative))
+            }
             _ => None,
         })
         .collect();
-    let mut offer_is_ours = |relative: &str| {
-        matches!(
-            read(&format!("{relative}{OFFER_SUFFIX}")),
-            OnDisk::File(hash) if ours(relative, &hash)
-        )
-    };
+    // What the `.new` beside a file holds — read only where an offer is
+    // being made or one stands, so an ordinary launch reads none.
+    let mut slot = |relative: &str| read(&format!("{relative}{OFFER_SUFFIX}"));
 
     let mut writes = Vec::new();
     let mut removals = Vec::new();
@@ -377,48 +448,62 @@ pub fn plan_sync(
     for (file, contents) in files {
         let current = sha256_hex(contents.as_bytes());
         let key = kind.history_key(file);
+        let offered = manifest.offered(file);
         let step = |make: fn(String, &'static str) -> Step| make((*file).to_string(), contents);
         // Whether the file ends up as this release wrote it, so a `.new`
         // beside it has nothing left to offer.
         let settled = match &disk[file] {
             OnDisk::Missing => {
                 writes.push(step(|file, contents| Step::Seed { file, contents }));
-                record.set(file, &current);
+                record.settle(file, &current);
                 true
             }
             OnDisk::Unreadable => false,
-            OnDisk::File(hash) if *hash == current => {
-                record.set(file, &current);
+            OnDisk::File(hash) | OnDisk::Link(hash) if *hash == current => {
+                record.settle(file, &current);
                 true
             }
-            OnDisk::File(hash) if history.knows(&key, hash) => {
+            OnDisk::File(hash) | OnDisk::Link(hash) if history.knows(&key, hash) => {
                 writes.push(step(|file, contents| Step::Update { file, contents }));
-                record.set(file, &current);
+                record.settle(file, &current);
                 true
             }
-            OnDisk::File(_) => {
+            OnDisk::File(_) | OnDisk::Link(_) => {
                 // Edited: offer this release's version only when the
                 // release changed the file since the version the edit
                 // started from — and never against a base a newer release
                 // wrote, which this binary cannot know.
                 match manifest.base(file).or_else(|| history.baseline(&key)) {
-                    Some(base) if base == current => record.set(file, &current),
+                    Some(base) if base == current => record.set_base(file, &current),
                     Some(base) if !history.knows(&key, base) => {}
+                    // The offer is made once: a run that cannot show it
+                    // leaves it, record and all, for one that can.
+                    _ if !offer => {}
                     _ => {
-                        writes.push(step(|file, contents| Step::Offer { file, contents }));
-                        record.set(file, &current);
+                        let beside = slot(file);
+                        // Anything else there is the user's — a merge in
+                        // progress — and the offer waits for it.
+                        if beside == OnDisk::Missing
+                            || offer_is_ours(&beside, Some(&current), offered)
+                        {
+                            writes.push(step(|file, contents| Step::Offer { file, contents }));
+                            record.offer(file, &current);
+                        }
                     }
                 }
                 false
             }
         };
-        if settled && offer_is_ours(file) {
+        // A file as a release wrote it needs no offer: one standing beside
+        // it is over, and its `.new` goes if it is still the offer.
+        if settled && offered.is_some() && offer_is_ours(&slot(file), Some(&current), offered) {
             removals.push(Step::Tidy {
                 file: (*file).to_string(),
             });
         }
     }
     for relative in retired {
+        // A link is the user's arrangement: only a file is removed.
         if let OnDisk::File(hash) = &disk[relative]
             && ours(relative, hash)
             && !edited.contains(kind.unit(relative))
@@ -426,11 +511,14 @@ pub fn plan_sync(
             removals.push(Step::Retire {
                 file: relative.to_string(),
             });
-            if offer_is_ours(relative) {
-                removals.push(Step::Tidy {
-                    file: relative.to_string(),
-                });
-            }
+        }
+        // An offer for a file this release no longer ships is over, whatever
+        // became of the file.
+        let offered = manifest.offered(relative);
+        if offered.is_some() && offer_is_ours(&slot(relative), None, offered) {
+            removals.push(Step::Tidy {
+                file: relative.to_string(),
+            });
         }
         // A file this release does not ship keeps no record.
         record.restore(relative, None);
@@ -439,6 +527,17 @@ pub fn plan_sync(
     SyncPlan {
         steps: writes,
         manifest: record,
+    }
+}
+
+/// Whether a `.new` holding `beside` is this program's to replace or remove:
+/// a file holding the copy last offered there, or this release's own (none
+/// for a file it no longer ships). Anything else — the user's merge, a link,
+/// something that will not read — is theirs.
+fn offer_is_ours(beside: &OnDisk, current: Option<&str>, offered: Option<&str>) -> bool {
+    match beside {
+        OnDisk::File(hash) => current == Some(hash.as_str()) || offered == Some(hash.as_str()),
+        _ => false,
     }
 }
 
@@ -465,12 +564,21 @@ pub struct SyncReport {
 }
 
 /// Bring `dir` to this release's built-ins: read it, [`plan_sync`], carry the
-/// plan out, and write `.builtins.json` when it changed. Never fails — every
+/// plan out, and write the record when it changed. Never fails — every
 /// failure is in the report, and a step that failed keeps its file's old
 /// record so the next launch tries it again.
+///
+/// `offer` is whether an edited copy may be offered this release's version
+/// beside it: off in a headless run, which has no card to say so on — the
+/// offer is made once, so it waits for a launch that can show it.
 #[must_use]
-pub fn sync(dir: &Path, kind: BuiltinKind, files: &[(&str, &'static str)]) -> SyncReport {
-    sync_with(dir, kind, files, &ShippedHistory::embedded())
+pub fn sync(
+    dir: &Path,
+    kind: BuiltinKind,
+    files: &[(&str, &'static str)],
+    offer: bool,
+) -> SyncReport {
+    sync_with(dir, kind, files, &ShippedHistory::embedded(), offer)
 }
 
 /// [`sync`] over a given history.
@@ -480,6 +588,7 @@ pub fn sync_with(
     kind: BuiltinKind,
     files: &[(&str, &'static str)],
     history: &ShippedHistory<'_>,
+    offer: bool,
 ) -> SyncReport {
     let mut report = SyncReport {
         kind,
@@ -499,7 +608,7 @@ pub fn sync_with(
     let record_path = dir.join(MANIFEST_FILE_NAME);
     let recorded = read_record(&record_path);
     let manifest = recorded.as_deref().map(Manifest::parse).unwrap_or_default();
-    let plan = plan_sync(kind, files, history, &manifest, |relative| {
+    let plan = plan_sync(kind, files, history, &manifest, offer, |relative| {
         read_on_disk(&dir.join(relative))
     });
     let mut record = plan.manifest;
@@ -521,7 +630,7 @@ pub fn sync_with(
                 path: target,
                 message: err.to_string(),
             });
-            record.restore(step.file(), manifest.base(step.file()));
+            record.restore(step.file(), manifest.entry(step.file()));
             continue;
         }
         match step {
@@ -556,9 +665,11 @@ pub fn sync_with(
     report
 }
 
-/// What the file at `path` holds: its hash, read through a bounded buffer.
+/// What the file at `path` holds: its hash, read through a bounded buffer —
+/// through a symlink too, which is told apart so it is never removed.
 fn read_on_disk(path: &Path) -> OnDisk {
     use sha2::{Digest, Sha256};
+    let link = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return OnDisk::Missing,
@@ -571,7 +682,14 @@ fn read_on_disk(path: &Path) -> OnDisk {
     let mut buffer = [0_u8; 8192];
     loop {
         match bounded.read(&mut buffer) {
-            Ok(0) => return OnDisk::File(hex(&hasher.finalize())),
+            Ok(0) => {
+                let hash = hex(&hasher.finalize());
+                return if link {
+                    OnDisk::Link(hash)
+                } else {
+                    OnDisk::File(hash)
+                };
+            }
             Ok(n) => hasher.update(&buffer[..n]),
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return OnDisk::Unreadable,
@@ -579,7 +697,7 @@ fn read_on_disk(path: &Path) -> OnDisk {
     }
 }
 
-/// `.builtins.json`'s text, or `None` when there is none to read.
+/// The record's text, or `None` when there is none to read.
 fn read_record(path: &Path) -> Option<String> {
     let mut text = String::new();
     std::fs::File::open(path)
@@ -724,21 +842,6 @@ pub fn offered_notice(offered: &[String]) -> Option<String> {
     Some(body)
 }
 
-/// The card as one line, for a run with no card to show it on (`-p`).
-#[must_use]
-pub fn offered_line(offered: &[String]) -> Option<String> {
-    match offered {
-        [] => None,
-        [only] => Some(format!(
-            "Kept your edited built-in file; this release's version is beside it: {only}"
-        )),
-        many => Some(format!(
-            "Kept your edited built-in files; this release's versions are beside them: {}",
-            many.join(", ")
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,8 +873,19 @@ mod tests {
     }
 
     /// `plan_sync` for the skills directory over a disk of `(path, state)`,
-    /// anything unlisted missing.
+    /// anything unlisted missing, offers on.
     fn plan(
+        files: &[(&str, &'static str)],
+        history: &str,
+        manifest: &Manifest,
+        disk: &[(&str, OnDisk)],
+    ) -> SyncPlan {
+        plan_offering(true, files, history, manifest, disk)
+    }
+
+    /// [`plan`] with offers on or off.
+    fn plan_offering(
+        offer: bool,
         files: &[(&str, &'static str)],
         history: &str,
         manifest: &Manifest,
@@ -786,18 +900,43 @@ mod tests {
             files,
             &ShippedHistory::parse(history),
             manifest,
+            offer,
             |path| disk.get(path).cloned().unwrap_or(OnDisk::Missing),
         )
     }
 
+    /// A record of `(path, base)`, no offer standing.
     fn manifest(records: &[(&str, &str)]) -> Manifest {
         Manifest {
             files: records
                 .iter()
-                .map(|(path, hash)| ((*path).to_string(), (*hash).to_string()))
+                .map(|(path, base)| {
+                    (
+                        (*path).to_string(),
+                        Entry {
+                            base: (*base).to_string(),
+                            offered: None,
+                        },
+                    )
+                })
                 .collect(),
         }
     }
+
+    /// A record of `path` based on `base` with `offered` written beside it.
+    fn offered_manifest(path: &str, base: &str, offered: &str) -> Manifest {
+        let mut record = Manifest::default();
+        record.files.insert(
+            path.to_string(),
+            Entry {
+                base: base.to_string(),
+                offered: Some(offered.to_string()),
+            },
+        );
+        record
+    }
+
+    const MERGING: &str = "---\nname: web-search\ndescription: Half-merged.\n---\n";
 
     // ===== the shipped history =====
 
@@ -906,15 +1045,25 @@ mod tests {
 
     #[test]
     fn the_record_round_trips_sorted_with_a_closing_newline() {
-        let record = manifest(&[("b/SKILL.md", "22"), ("a/SKILL.md", "11")]);
+        let mut record = manifest(&[("b/SKILL.md", "22"), ("a/SKILL.md", "11")]);
+        record.offer("c/SKILL.md", "33");
         let json = record.to_json();
         assert!(json.ends_with('\n'), "{json}");
         assert!(
             json.find("a/SKILL.md") < json.find("b/SKILL.md"),
             "sorted, so the file is diffable: {json}"
         );
-        assert_eq!(Manifest::parse(&json), record);
-        assert_eq!(Manifest::parse(&json).base("a/SKILL.md"), Some("11"));
+        assert_eq!(
+            json.matches("offered").count(),
+            1,
+            "only a standing offer is written: {json}"
+        );
+        let read = Manifest::parse(&json);
+        assert_eq!(read, record);
+        assert_eq!(read.base("a/SKILL.md"), Some("11"));
+        assert_eq!(read.offered("a/SKILL.md"), None);
+        assert_eq!(read.base("c/SKILL.md"), Some("33"));
+        assert_eq!(read.offered("c/SKILL.md"), Some("33"));
     }
 
     #[test]
@@ -922,7 +1071,8 @@ mod tests {
         assert_eq!(Manifest::parse("{not json"), Manifest::default());
         assert_eq!(Manifest::parse("[]"), Manifest::default());
         assert_eq!(
-            Manifest::parse(r#"{"files": {"a": "1"}, "later": true}"#).base("a"),
+            Manifest::parse(r#"{"files": {"a": {"base": "1", "later": 2}}, "later": true}"#)
+                .base("a"),
             Some("1"),
             "a key a later version adds is ignored, not refused"
         );
@@ -1012,6 +1162,11 @@ mod tests {
             Some(hash(NEW).as_str()),
             "the base moves forward, so the offer is made once"
         );
+        assert_eq!(
+            plan.manifest.offered(SKILL),
+            Some(hash(NEW).as_str()),
+            "and the record says the .new is ours"
+        );
     }
 
     #[test]
@@ -1083,22 +1238,27 @@ mod tests {
     }
 
     #[test]
-    fn a_new_file_left_beside_a_settled_copy_is_tidied_when_it_is_ours() {
+    fn a_new_file_left_beside_a_settled_copy_is_tidied_when_it_is_the_offer() {
         let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
         let offer = format!("{SKILL}{OFFER_SUFFIX}");
-        // The user copied the .new over their file: both are ours now.
+        // The user copied the .new over their file: both are this release's.
         let plan_copied = plan(
             &[(SKILL, NEW)],
             &history,
-            &manifest(&[(SKILL, &hash(NEW))]),
+            &offered_manifest(SKILL, &hash(NEW), &hash(NEW)),
             &[(SKILL, file(NEW)), (&offer, file(NEW))],
         );
         assert_eq!(plan_copied.steps, vec![Step::Tidy { file: SKILL.into() }]);
-        // An older offer beside a copy just updated goes too.
+        assert_eq!(
+            plan_copied.manifest.offered(SKILL),
+            None,
+            "the offer is over"
+        );
+        // An older offer beside a copy now brought up to date goes too.
         let plan_updated = plan(
             &[(SKILL, NEW)],
             &history,
-            &Manifest::default(),
+            &offered_manifest(SKILL, &hash(OLD), &hash(OLD)),
             &[(SKILL, file(OLD)), (&offer, file(OLD))],
         );
         assert_eq!(
@@ -1111,14 +1271,206 @@ mod tests {
                 Step::Tidy { file: SKILL.into() },
             ]
         );
-        // A .new holding anything else is the user's business.
+    }
+
+    #[test]
+    fn a_new_file_the_user_changed_is_never_tidied() {
+        // They edited the offer itself: it is theirs now. The offer is over
+        // all the same, so it is never looked at again.
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &offered_manifest(SKILL, &hash(NEW), &hash(NEW)),
+            &[(SKILL, file(NEW)), (&offer, file(MINE))],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+        assert_eq!(plan.manifest.offered(SKILL), None);
+    }
+
+    #[test]
+    fn a_new_file_no_offer_wrote_is_never_tidied() {
+        // A copy the user keeps for themselves, though it holds a version a
+        // release shipped: the record names no offer, so it is not ours —
+        // and an older version cannot be put back from the binary.
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &manifest(&[(SKILL, &hash(NEW))]),
+            &[(SKILL, file(NEW)), (&offer, file(OLD))],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+    }
+
+    #[test]
+    fn an_offer_waits_while_the_user_is_merging_in_the_new_file() {
+        // They are halfway through merging the last offer by hand when this
+        // release changes the file again: the .new is theirs now, so the
+        // offer waits, and the record stays as it was for the next launch.
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let record = offered_manifest(SKILL, &hash(OLD), &hash(OLD));
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &record,
+            &[(SKILL, file(MINE)), (&offer, file(MERGING))],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+        assert_eq!(plan.manifest, record);
+    }
+
+    #[test]
+    fn an_offer_replaces_only_a_new_file_this_program_wrote() {
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let offered = vec![Step::Offer {
+            file: SKILL.into(),
+            contents: NEW,
+        }];
+        // The last offer, untouched.
+        let plan_ours = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &offered_manifest(SKILL, &hash(OLD), &hash(OLD)),
+            &[(SKILL, file(MINE)), (&offer, file(OLD))],
+        );
+        assert_eq!(plan_ours.steps, offered);
+        // This release's own bytes are already there: rewriting them loses
+        // nothing.
+        let plan_same = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &manifest(&[(SKILL, &hash(OLD))]),
+            &[(SKILL, file(MINE)), (&offer, file(NEW))],
+        );
+        assert_eq!(plan_same.steps, offered);
+        // A version a release shipped, but no offer of ours: the user's.
         let plan_theirs = plan(
             &[(SKILL, NEW)],
             &history,
-            &Manifest::default(),
-            &[(SKILL, file(NEW)), (&offer, file(MINE))],
+            &manifest(&[(SKILL, &hash(OLD))]),
+            &[(SKILL, file(MINE)), (&offer, file(OLD))],
         );
         assert!(plan_theirs.steps.is_empty(), "{:?}", plan_theirs.steps);
+        // A link, or something that will not read, is not ours either.
+        for slot in [OnDisk::Link(hash(OLD)), OnDisk::Unreadable] {
+            let plan_slot = plan(
+                &[(SKILL, NEW)],
+                &history,
+                &offered_manifest(SKILL, &hash(OLD), &hash(OLD)),
+                &[(SKILL, file(MINE)), (&offer, slot.clone())],
+            );
+            assert!(
+                plan_slot.steps.is_empty(),
+                "{slot:?}: {:?}",
+                plan_slot.steps
+            );
+        }
+    }
+
+    #[test]
+    fn with_offers_off_an_edit_keeps_its_base_for_a_launch_that_can_show_it() {
+        // A headless run: untouched copies follow the release, but the offer
+        // waits, so the next interactive launch still makes it.
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        for record in [Manifest::default(), manifest(&[(SKILL, &hash(OLD))])] {
+            let headless = plan_offering(
+                false,
+                &[(SKILL, NEW)],
+                &history,
+                &record,
+                &[(SKILL, file(MINE))],
+            );
+            assert!(headless.steps.is_empty(), "{:?}", headless.steps);
+            assert_eq!(headless.manifest, record, "nothing recorded as offered");
+            let interactive = plan(
+                &[(SKILL, NEW)],
+                &history,
+                &headless.manifest,
+                &[(SKILL, file(MINE))],
+            );
+            assert_eq!(
+                interactive.steps,
+                vec![Step::Offer {
+                    file: SKILL.into(),
+                    contents: NEW
+                }]
+            );
+        }
+        // …while an untouched copy is brought up to date all the same.
+        let update = plan_offering(
+            false,
+            &[(SKILL, NEW)],
+            &history,
+            &Manifest::default(),
+            &[(SKILL, file(OLD))],
+        );
+        assert_eq!(
+            update.steps,
+            vec![Step::Update {
+                file: SKILL.into(),
+                contents: NEW
+            }]
+        );
+    }
+
+    #[test]
+    fn an_older_release_stays_quiet_after_a_newer_one_offered() {
+        // A newer release offered its version beside the edit; this older
+        // binary knows neither the base nor the offer, so it neither offers
+        // its own older copy nor touches the .new — no card going back and
+        // forth between two installed releases.
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let future = hash("a version this binary has never heard of");
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let record = offered_manifest(SKILL, &future, &future);
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &record,
+            &[(SKILL, file(MINE)), (&offer, OnDisk::File(future.clone()))],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+        assert_eq!(plan.manifest, record);
+    }
+
+    #[test]
+    fn a_linked_file_is_brought_up_to_date_through_its_link() {
+        let history = history_text(&[(SKILL, OLD), (SKILL, NEW)]);
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &Manifest::default(),
+            &[(SKILL, OnDisk::Link(hash(OLD)))],
+        );
+        assert_eq!(
+            plan.steps,
+            vec![Step::Update {
+                file: SKILL.into(),
+                contents: NEW
+            }]
+        );
+    }
+
+    #[test]
+    fn a_linked_retired_file_is_never_removed() {
+        // The link is the user's arrangement: a file this release dropped is
+        // removed only when it is a file.
+        const OLD_SCRIPT: &str = "print('retired')\n";
+        let script = "web-search/scripts/old.py";
+        let history = history_text(&[(SKILL, NEW), (script, OLD_SCRIPT)]);
+        let plan = plan(
+            &[(SKILL, NEW)],
+            &history,
+            &manifest(&[(script, &hash(OLD_SCRIPT))]),
+            &[(SKILL, file(NEW)), (script, OnDisk::Link(hash(OLD_SCRIPT)))],
+        );
+        assert!(plan.steps.is_empty(), "{:?}", plan.steps);
+        assert_eq!(plan.manifest.base(script), None, "and keeps no record");
     }
 
     #[test]
@@ -1190,7 +1542,7 @@ mod tests {
         let plan = plan(
             &[(SKILL, NEW)],
             &history,
-            &Manifest::default(),
+            &offered_manifest(script, &hash(OLD_SCRIPT), &hash(OLD_SCRIPT)),
             &[
                 (SKILL, file(NEW)),
                 (script, file(OLD_SCRIPT)),
@@ -1284,6 +1636,7 @@ mod tests {
             &[("explore.md", EXPLORE)],
             &history,
             &Manifest::default(),
+            true,
             |path| disk.get(path).cloned().unwrap_or(OnDisk::Missing),
         );
         assert_eq!(
@@ -1296,8 +1649,18 @@ mod tests {
 
     // ===== the executor =====
 
-    /// Sync a skills directory over a history of `versions`.
+    /// Sync a skills directory over a history of `versions`, offers on.
     fn sync_over(
+        dir: &Path,
+        files: &[(&str, &'static str)],
+        versions: &[(&str, &str)],
+    ) -> SyncReport {
+        sync_offering(true, dir, files, versions)
+    }
+
+    /// [`sync_over`] with offers on or off.
+    fn sync_offering(
+        offer: bool,
         dir: &Path,
         files: &[(&str, &'static str)],
         versions: &[(&str, &str)],
@@ -1308,6 +1671,7 @@ mod tests {
             BuiltinKind::Skills,
             files,
             &ShippedHistory::parse(&text),
+            offer,
         )
     }
 
@@ -1484,22 +1848,100 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_offer_is_tried_again_at_the_next_launch() {
+    fn an_offer_waits_until_the_users_new_file_is_out_of_the_way() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().to_path_buf();
         put(&dir, SKILL, MINE);
         let offer = format!("{SKILL}{OFFER_SUFFIX}");
-        // A directory where the .new would go: nothing can be renamed over it.
-        std::fs::create_dir_all(dir.join(&offer).join("in-the-way")).expect("mkdir");
+        put(&dir, &offer, MERGING);
         let versions = [(SKILL, OLD), (SKILL, NEW)];
         let report = sync_over(&dir, &[(SKILL, NEW)], &versions);
-        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(report.offered.is_empty(), "{report:?}");
-        std::fs::remove_dir_all(dir.join(&offer)).expect("clear the way");
+        assert_eq!(read(&dir, &offer), MERGING, "the merge in progress is kept");
+        // The user finishes and deletes it: the offer is made then.
+        std::fs::remove_file(dir.join(&offer)).expect("delete");
         let again = sync_over(&dir, &[(SKILL, NEW)], &versions);
-        assert!(again.errors.is_empty(), "{:?}", again.errors);
-        assert_eq!(again.offered, vec![dir.join(&offer)]);
+        assert_eq!(again.offered, vec![dir.join(&offer)], "{again:?}");
         assert_eq!(read(&dir, &offer), NEW);
+    }
+
+    #[test]
+    fn a_failed_write_keeps_its_files_old_record() {
+        // A name the file system takes but whose temp file it does not: 250
+        // bytes is a legal name, and `.{name}.{pid}.{n}.tmp` is at least eight
+        // more, past the 255 every file system here allows whatever the pid
+        // — so the write fails as surely for root as for anyone, the file
+        // reads as missing, and its record must not claim what never reached
+        // the disk.
+        let long: &'static str =
+            Box::leak(format!("web-search/{}", "a".repeat(250)).into_boxed_str());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_path_buf();
+        let report = sync_over(
+            &dir,
+            &[(SKILL, NEW), (long, OLD)],
+            &[(SKILL, NEW), (long, OLD)],
+        );
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(report.errors[0].path, dir.join(long));
+        let record = Manifest::parse(&read(&dir, MANIFEST_FILE_NAME));
+        assert_eq!(
+            record.base(SKILL),
+            Some(hash(NEW).as_str()),
+            "the rest syncs"
+        );
+        assert_eq!(
+            record.base(long),
+            None,
+            "nothing recorded for the failed write"
+        );
+    }
+
+    #[test]
+    fn a_headless_launch_leaves_the_offer_for_the_next_interactive_one() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_path_buf();
+        put(&dir, SKILL, MINE);
+        let offer = format!("{SKILL}{OFFER_SUFFIX}");
+        let versions = [(SKILL, OLD), (SKILL, NEW)];
+        let headless = sync_offering(false, &dir, &[(SKILL, NEW)], &versions);
+        assert!(headless.errors.is_empty(), "{:?}", headless.errors);
+        assert!(headless.offered.is_empty(), "{headless:?}");
+        assert!(
+            !dir.join(&offer).exists(),
+            "no .new a headless run cannot show"
+        );
+        let interactive = sync_over(&dir, &[(SKILL, NEW)], &versions);
+        assert_eq!(
+            interactive.offered,
+            vec![dir.join(&offer)],
+            "{interactive:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_retired_file_is_left_in_place() {
+        const OLD_SCRIPT: &str = "print('retired')\n";
+        let script = "web-search/scripts/old.py";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills");
+        let dotfiles = tmp.path().join("dotfiles");
+        put(&dotfiles, "old.py", OLD_SCRIPT);
+        put(&dir, SKILL, NEW);
+        std::fs::create_dir_all(dir.join("web-search/scripts")).expect("mkdir");
+        std::os::unix::fs::symlink(dotfiles.join("old.py"), dir.join(script)).expect("link");
+        let report = sync_over(&dir, &[(SKILL, NEW)], &[(SKILL, NEW), (script, OLD_SCRIPT)]);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(
+            std::fs::symlink_metadata(dir.join(script)).is_ok(),
+            "the user's link is left where it is"
+        );
+        assert!(
+            report.updated.is_empty() && report.removed.is_empty(),
+            "{report:?}"
+        );
     }
 
     #[test]
@@ -1597,16 +2039,5 @@ mod tests {
         assert!(card.contains("`~/s/f5.md.new`"), "{card}");
         assert!(!card.contains("`~/s/f6.md.new`"), "{card}");
         assert!(card.contains("3 more"), "{card}");
-    }
-
-    #[test]
-    fn the_cards_line_names_every_new_version() {
-        assert_eq!(
-            offered_line(&["~/a.md.new".into(), "~/b.md.new".into()]).as_deref(),
-            Some(
-                "Kept your edited built-in files; this release's versions are beside them: ~/a.md.new, ~/b.md.new"
-            )
-        );
-        assert_eq!(offered_line(&[]), None);
     }
 }

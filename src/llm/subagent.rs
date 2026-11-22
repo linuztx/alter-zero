@@ -114,12 +114,20 @@ fn override_dir() -> Option<PathBuf> {
 /// reaches every install on its next launch (`docs/subagents.md`), and a
 /// `.new` is never read as a type (its extension is not `md`).
 ///
+/// `offer` is off in a headless run: the offer beside an edit is made once,
+/// so it waits for a launch with a screen to show it on.
+///
 /// Best-effort: a directory that cannot be created or a file that cannot be
 /// written is in the report for the startup toast, never a failed launch —
 /// the embedded copies still back the types up ([`with_builtins`]).
 #[must_use]
-pub fn sync_builtin_agents(dir: &Path) -> crate::builtins::SyncReport {
-    crate::builtins::sync(dir, crate::builtins::BuiltinKind::Agents, &BUILTIN_FILES)
+pub fn sync_builtin_agents(dir: &Path, offer: bool) -> crate::builtins::SyncReport {
+    crate::builtins::sync(
+        dir,
+        crate::builtins::BuiltinKind::Agents,
+        &BUILTIN_FILES,
+        offer,
+    )
 }
 
 /// The embedded definitions, parsed. They carry **no** path — nothing read
@@ -359,7 +367,7 @@ mod tests {
     fn seeding_writes_the_builtins_once_and_never_overwrites_an_edit() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let errors = sync_builtin_agents(&dir).errors;
+        let errors = sync_builtin_agents(&dir, true).errors;
         assert!(errors.is_empty(), "{errors:?}");
         assert!(dir.join("general-purpose.md").is_file());
         assert!(dir.join("explore.md").is_file());
@@ -367,7 +375,7 @@ mod tests {
         // An edited default is the user's now: a second launch must not
         // clobber it.
         std::fs::write(dir.join("explore.md"), "---\ndescription: Mine.\n---\n").unwrap();
-        let second = sync_builtin_agents(&dir).errors;
+        let second = sync_builtin_agents(&dir, true).errors;
         assert!(second.is_empty(), "{second:?}");
         let (agents, _) = discover_agents(&[dir]);
         let explore = agents
@@ -403,7 +411,7 @@ mod tests {
     fn syncing_records_both_definitions_and_the_walk_skips_the_record() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let report = sync_builtin_agents(&dir);
+        let report = sync_builtin_agents(&dir, true);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let record = crate::builtins::Manifest::parse(
             &std::fs::read_to_string(dir.join(crate::builtins::MANIFEST_FILE_NAME)).unwrap(),

@@ -18,7 +18,7 @@ The seed now keeps them current. At every launch, before the walks read them:
 | this release's version | nothing |
 | an older version some release wrote, unedited | **replaced** with this release's version |
 | anything else — the user's edit | **kept**, never written over; when this release changed the file, its new version is written **beside it** as `<file>.new`, once, and a card says so |
-| a file this release no longer ships, unedited | **removed** — unless a file of the same built-in was edited |
+| a file this release no longer ships, unedited | **removed** — unless a file of the same built-in was edited, or it is a link |
 
 ## Telling ours from theirs: the shipped history
 
@@ -70,13 +70,17 @@ The file has three sections, in order:
 An edited file is never written over and never deleted. What is worth telling
 the user is narrower: that the release changed the file they edited, so the
 two have diverged. For that the seed has to know which version the edit
-started from — and that is a record, `.builtins.json` in the seeded
-directory:
+started from — and that is a record, `.alter-zero-builtins.json` in the
+seeded directory, named for its owner since an `ALTER_ZERO_AGENTS_DIR`
+override can be anyone's directory:
 
 ```json
 {
   "files": {
-    "web-search/SKILL.md": "<sha256 of the version this copy is based on>"
+    "web-search/SKILL.md": {
+      "base": "<sha256 of the version this copy is based on>",
+      "offered": "<sha256 of the version written beside it as SKILL.md.new>"
+    }
   }
 }
 ```
@@ -84,21 +88,48 @@ directory:
 Each file's **base** is the version last written there, or last found there
 unedited. When a launch finds a file edited and its base is not this
 release's version, the release changed it since: the seed writes this
-release's version beside it as `SKILL.md.new`, says so in a card under the
-banner, and moves the base forward — so the card is shown once per change,
-and a `.new` the user deleted after merging is not written again. A base this
-binary does not know was written by a newer release (the user went back to an
-older one), and offers nothing: nothing is ever replaced by an older version.
+release's version beside it as `SKILL.md.new`, says so in a card, and moves
+the base forward — so the card is shown once per change, and a `.new` the
+user deleted after merging is not written again. A base this binary does not
+know was written by a newer release (the user went back to an older one), and
+offers nothing: nothing is ever replaced by an older version, and the `.new`
+the newer release wrote stays as it is.
 
-An edited file with no record — an install from before `.builtins.json`, or a
+An edited file with no record — an install from before the record, or a
 record the user deleted — takes its path's **first** history line as its
 base: the version every release before the record shipped.
 
-A `.new` is ours. Neither walk reads one (a skill folder's `SKILL.md` alone,
-the agents directory's `*.md` alone — `explore.md.new` is not one), a newer
-offer replaces it, and once its file holds a version the history lists again
-(the user copied the `.new` over it, or deleted it and let the seed write the
-new one) a `.new` holding a listed version is removed with nothing lost.
+The record says only what the user was offered; whether a file may be
+replaced is the history's to say. That is why losing the record loses no
+update — every unedited file is still recognised by its bytes, and its record
+written again. A record trusted alone makes the opposite mistake: once it is
+gone (deleted in a cleanup, never copied to a second machine), every untouched
+file reads as an edit, kept for good and never updated again.
+
+### Whose `.new` it is
+
+The **offered** hash is what makes a `.new` this program's. One holding the
+version the record says was offered there, or this release's own, is ours: a
+newer offer replaces it, and once its file holds a version a release wrote
+again (the user copied the `.new` over it, or deleted the file and let the
+seed write the new one), it is removed with nothing lost.
+
+Anything else at that path is the user's — a `.new` they opened and started
+merging into, one they made themselves, a link — and is never written over or
+removed. A new offer waits until it is out of the way, the record left as it
+was so the launch after that makes it; and a `.new` no offer wrote is never
+tidied away, whatever it holds. Neither walk reads a `.new` (a skill folder's
+`SKILL.md` alone, the agents directory's `*.md` alone — `explore.md.new` is
+not one).
+
+### Only a launch that can show it offers
+
+The offer is made once, so it is made only by a launch that can show its
+card. A headless run (`-p`) makes none: it seeds, replaces, retires and tidies
+like any launch, but leaves an edited copy and its record exactly as it found
+them, so the next interactive launch makes the offer and says so. Writing the
+`.new` from a script's `-p` and recording it as offered would leave the user a
+file nobody told them about.
 
 ## Per file — and retirements per built-in
 
@@ -111,6 +142,11 @@ edited may run the script that was retired, and a removed file cannot be put
 back from the binary, which carries only the hashes of the versions it no
 longer ships. A folder left empty by removals is removed with them.
 
+A built-in path that is a symbolic link is read and written **through** — a
+dotfiles checkout keeps its link and still gets the update — but never
+removed: the seed writes files, never links, so a link is the user's
+arrangement, and a retired file reached through one stays.
+
 A file the user added to a built-in's folder is never looked at: the history
 names the files the seed owns, and nothing else is touched.
 
@@ -119,15 +155,22 @@ names the files the seed owns, and nothing else is touched.
 - **A copy brought up to date** — one dim toast, `Updated the built-in
   web-search skill`, raised before the startup's other reports so any error
   among them covers it.
-- **An edited copy kept** — an `Edited built-ins` card under the banner,
-  committed after the first frame like the telemetry and update cards, naming
-  each `.new` written and the two ways on: merge from it, or delete the copy
-  and the next launch writes the new version.
+- **An edited copy kept** — an `Edited built-ins` card naming each `.new`
+  written and the two ways on: merge from it, or delete the copy and the next
+  launch writes the new version. It is committed under the banner after the
+  first frame, like the telemetry and update cards, once the screen can take
+  it: while anything else holds the screen — the `/resume` picker a bare
+  `--resume` opens on, another overlay, a turn in flight, an agent's session
+  view — it waits, and lands at the first loop bottom that can, once. (A
+  `[PROMPT]`'s turn starts after it, so its bubble lands under the card.) The
+  `.new` is written at launch; only the card waits, since a card committed
+  under the picker would be gone with the rebuild the pick makes.
 - A first launch, a restored file and a release that changed nothing say
   nothing.
 
-A headless run (`-p`) has neither: both are step-log lines on stderr under
-`--verbose` (`docs/headless.md`).
+A headless run (`-p`) shows no card and makes no offer (above); a copy it
+brought up to date is a step-log line on stderr under `--verbose`
+(`docs/headless.md`).
 
 ## Writes
 
@@ -138,27 +181,31 @@ mode (a script the user made executable stays so), and a symlinked file is
 written through, so a dotfiles checkout keeps its link. Two launches at once
 compute the same plan and write the same bytes.
 
-`.builtins.json` is written last, and only when it changed. A step that
-failed keeps its file's old record, so the next launch tries it again, and
-every failure is a red startup toast — never a failed launch.
+`.alter-zero-builtins.json` is written last, and only when it changed. A step
+that failed keeps its file's old record, so the next launch tries it again,
+and every failure is a red startup toast — never a failed launch.
 `ALTER_ZERO_SKILLS_DIR` is still never written into; an
 `ALTER_ZERO_AGENTS_DIR` override is seeded and kept current like the config
-home's directory, its `.builtins.json` included.
+home's directory, its record included.
 
 ## Where it lives
 
 | file | role |
 | --- | --- |
 | `prompts/shipped.sha256` | the shipped history |
-| `src/builtins.rs` | the history and `.builtins.json` formats, the per-launch plan (pure, over an injected read), the executor that carries it out, and the toast's and card's wording |
+| `src/builtins.rs` | the history and `.alter-zero-builtins.json` formats, the per-launch plan (pure, over an injected read), the executor that carries it out, and the toast's and card's wording |
 | `src/llm/skill.rs` | `BUILTIN_SKILL_FILES` and `sync_builtin_skills` |
 | `src/llm/subagent.rs` | the agents' `BUILTIN_FILES` and `sync_builtin_agents` |
-| `src/tui/bootstrap.rs` | both syncs before the walks, the toast, and the card after the first frame |
+| `src/tui/bootstrap.rs` | both syncs before the walks (offering only off `-p`), the toast, and the card once the screen can take it (`Session::flush_builtin_offers`) |
 
 `smoke.sh` Phase 165 plays an install an older build made against the real
-binary: the unedited `explore.md` it seeded replaced and the toast saying so,
-an edited `skill-creator/SKILL.md` kept with its `.new` and the card, and a
-second launch — the `.new` deleted — quiet and writing nothing back. The
-older `explore.md` it plants is a development version the history lists,
-byte for byte. Retirement is `builtins::tests`' alone: no built-in file has
-been retired yet, so the real history names none to plant.
+binary, once for each way a release can first be launched. Interactive: the
+unedited `explore.md` it seeded replaced and the toast saying so, an edited
+`skill-creator/SKILL.md` kept with its `.new` and the card, and a second
+launch — the `.new` deleted — quiet and writing nothing back. Headless first:
+the agent brought up to date, no `.new` written, and the interactive launch
+after it making the offer. A bare `--resume` first: the card landing once the
+picked conversation is back on screen. The older `explore.md` it plants is a
+development version the history lists, byte for byte. Retirement and a `.new`
+mid-merge are `builtins::tests`' alone: no built-in file has been retired yet,
+so the real history names none to plant.

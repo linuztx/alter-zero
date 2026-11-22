@@ -2944,8 +2944,10 @@ the built-ins (`builtins::sync`, `docs/builtin-updates.md`) — a copy whose
 bytes `prompts/shipped.sha256` lists is one nobody edited and is replaced
 with this release's, any other is the user's and is kept, a release that
 changed an edited file writing its new version beside it as `<file>.new`
-once (each file's base in the seeded directory's `.builtins.json`) under an
-`Edited built-ins` card — so **a change to any file under `prompts/skills/`
+once (each file's base and offer in the seeded directory's
+`.alter-zero-builtins.json`; a `.new` the user changed is never touched, and
+a `-p` run offers nothing) under an `Edited built-ins` card, committed once
+the screen can take it — so **a change to any file under `prompts/skills/`
 or `prompts/agents/` appends its new hash to `prompts/shipped.sha256`**
 (`every_built_in_file_is_in_the_shipped_history` names the command, and a
 line is never removed) — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,

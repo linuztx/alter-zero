@@ -184,14 +184,18 @@ pub fn resolved_builtin_skills_dir(config_home: Option<&Path>) -> Option<PathBuf
 /// is `/skills`, which persists; deleting the folder only lasts until the
 /// next launch.
 ///
+/// `offer` is off in a headless run: the offer beside an edit is made once,
+/// so it waits for a launch with a screen to show it on.
+///
 /// Failures are in the report, never thrown: a read-only config home costs
 /// the built-in skill, not the session.
 #[must_use]
-pub fn sync_builtin_skills(root: &Path) -> crate::builtins::SyncReport {
+pub fn sync_builtin_skills(root: &Path, offer: bool) -> crate::builtins::SyncReport {
     crate::builtins::sync(
         root,
         crate::builtins::BuiltinKind::Skills,
         &BUILTIN_SKILL_FILES,
+        offer,
     )
 }
 
@@ -1075,7 +1079,7 @@ mod tests {
     fn seeded_flaredantic_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1113,7 +1117,7 @@ mod tests {
     fn flaredantic_seed_preserves_edits_and_restores_each_deleted_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let dir = root.join("flaredantic");
         let skill = dir.join(SKILL_FILE_NAME);
         let reference = dir.join("reference.md");
@@ -1126,7 +1130,7 @@ mod tests {
             &skill_md("Mine.", "custom tunnel workflow"),
         );
         std::fs::write(&reference, "custom reference").expect("edit reference");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert!(
             std::fs::read_to_string(&skill)
                 .expect("read")
@@ -1137,7 +1141,7 @@ mod tests {
             "custom reference"
         );
         std::fs::remove_file(&reference).expect("delete reference");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert_eq!(
             std::fs::read_to_string(&reference).expect("restored"),
             original_reference
@@ -1148,7 +1152,7 @@ mod tests {
                 .contains("custom tunnel workflow")
         );
         std::fs::remove_file(&skill).expect("delete skill");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert_eq!(
             std::fs::read_to_string(&skill).expect("restored"),
             original_skill
@@ -1159,7 +1163,7 @@ mod tests {
     fn seeded_jina_reader_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1189,7 +1193,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
         write_skill(&root, "jina-reader", &skill_md("Mine.", "custom reader"));
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("jina-reader").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1197,7 +1201,7 @@ mod tests {
                 .contains("custom reader")
         );
         std::fs::remove_file(&path).expect("delete");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "jina-reader"));
@@ -1207,7 +1211,7 @@ mod tests {
     fn seeded_yt_dlp_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1235,7 +1239,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
         write_skill(&root, "yt-dlp", &skill_md("Mine.", "custom media workflow"));
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("yt-dlp").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1243,7 +1247,7 @@ mod tests {
                 .contains("custom media workflow")
         );
         std::fs::remove_file(&path).expect("delete");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(skills.iter().any(|skill| skill.name == "yt-dlp"));
@@ -1278,7 +1282,7 @@ mod tests {
     fn seeded_web_search_is_listed_and_loads_on_demand() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let (skills, errors) = discover_skills(std::slice::from_ref(&root));
         assert!(errors.is_empty(), "{errors:?}");
         let registry = SkillRegistry::new(skills);
@@ -1323,7 +1327,7 @@ mod tests {
         // one would ship a skill whose commands fail.
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let dir = root.join("web-search");
         for (script, embedded) in WEB_SEARCH_SCRIPTS {
             let seeded = std::fs::read_to_string(dir.join(script))
@@ -1353,7 +1357,7 @@ mod tests {
         std::fs::create_dir_all(script.parent().expect("parent")).expect("mkdir");
         std::fs::write(&script, "print('my own search')\n").expect("write");
 
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         let path = root.join("web-search").join(SKILL_FILE_NAME);
         assert!(
             std::fs::read_to_string(&path)
@@ -1367,7 +1371,7 @@ mod tests {
         );
 
         std::fs::remove_file(&script).expect("delete");
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
         assert!(script.is_file(), "a deleted script comes back");
         let (skills, errors) = discover_skills(&[root]);
         assert!(errors.is_empty(), "{errors:?}");
@@ -1530,7 +1534,7 @@ mod tests {
         let root = tmp.path().join("skills");
 
         assert!(
-            sync_builtin_skills(&root).errors.is_empty(),
+            sync_builtin_skills(&root, true).errors.is_empty(),
             "seeding succeeds"
         );
 
@@ -1580,7 +1584,7 @@ mod tests {
     fn syncing_records_the_version_each_built_in_file_is_based_on() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("skills");
-        let report = sync_builtin_skills(&root);
+        let report = sync_builtin_skills(&root, true);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let record = crate::builtins::Manifest::parse(
             &std::fs::read_to_string(root.join(crate::builtins::MANIFEST_FILE_NAME))
@@ -1607,7 +1611,7 @@ mod tests {
         let root = tmp.path().to_path_buf();
         write_skill(&root, "skill-creator", &skill_md("Mine.", "my own body"));
 
-        assert!(sync_builtin_skills(&root).errors.is_empty());
+        assert!(sync_builtin_skills(&root, true).errors.is_empty());
 
         let kept = std::fs::read_to_string(root.join("skill-creator").join(SKILL_FILE_NAME))
             .expect("read");

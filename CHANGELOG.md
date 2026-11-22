@@ -26,9 +26,12 @@ release heading when a version is cut.
   edited is never written over: when a release changes it, its new version
   is saved beside yours as `<file>.new`, once, and a card under the banner
   names it, so you can merge what you want or delete your copy to take the
-  new one. A file a release stops shipping is removed, unless you edited a
-  file of that skill. Installs from earlier releases are recognised on their
-  first launch of this one (`docs/builtin-updates.md`).
+  new one. A `.new` you have started merging into is never written over, and
+  the offer waits for a launch that can show you the card: a `-p` run makes
+  none, and a launch that opens on the `/resume` picker shows it once the
+  conversation is loaded. A file a release stops shipping is removed, unless
+  you edited a file of that skill. Installs from earlier releases are
+  recognised on their first launch of this one (`docs/builtin-updates.md`).
 
 - **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
   sign-in providers register no apps by themselves — Google's, for its MCP

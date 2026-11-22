@@ -277,10 +277,12 @@ impl<'t> Session<'t> {
         // installed the app — and an unedited copy an older release wrote is
         // brought up to date before it is read (docs/builtin-updates.md).
         // Never clobbers an edited copy, and skipped entirely when
-        // ALTER_ZERO_SKILLS_DIR replaced the roots.
+        // ALTER_ZERO_SKILLS_DIR replaced the roots. A headless run makes no
+        // offer beside an edit: the offer is made once, and it has no screen
+        // to make it on, so the next interactive launch makes it.
         let skill_sync =
             alter_zero::llm::skill::resolved_builtin_skills_dir(config::config_home().as_deref())
-                .map(|root| alter_zero::llm::skill::sync_builtin_skills(&root));
+                .map(|root| alter_zero::llm::skill::sync_builtin_skills(&root, !headless));
         let mut skill_errors = skill_sync
             .as_ref()
             .map(|report| report.errors.clone())
@@ -315,7 +317,7 @@ impl<'t> Session<'t> {
         // startup toast.
         let agent_sync =
             alter_zero::llm::subagent::user_agents_dir(config::config_home().as_deref())
-                .map(|dir| alter_zero::llm::subagent::sync_builtin_agents(&dir));
+                .map(|dir| alter_zero::llm::subagent::sync_builtin_agents(&dir, !headless));
         let mut agent_errors = agent_sync
             .as_ref()
             .map(|report| report.errors.clone())
@@ -645,6 +647,10 @@ impl<'t> Session<'t> {
             update_rx,
             update_attempted: None,
             update_notice_pending: None,
+            builtin_offers: builtin_syncs
+                .iter()
+                .flat_map(|sync| sync.offered.iter().cloned())
+                .collect(),
             herdr: None,
             _file_worker: file_worker,
             registry,
@@ -713,7 +719,6 @@ impl<'t> Session<'t> {
         // no herdr pane. SessionStart fires as the session opens, as in the
         // TUI, and the headless loop submits the prompt.
         if headless {
-            session.commit_builtin_offers(&builtin_syncs);
             session.models.fire_session_start();
             return Ok(session);
         }
@@ -724,9 +729,10 @@ impl<'t> Session<'t> {
         let reviewing = session.open_startup_review();
         session.paint_first_frame(picker)?;
         // An edited built-in whose release changed it (docs/builtin-updates.md):
-        // the card goes under the banner, once — the sync has already moved
-        // its record on.
-        session.commit_builtin_offers(&builtin_syncs);
+        // the card goes under the banner — or, behind a bare --resume's
+        // picker, at the loop bottom that finds the conversation back on
+        // screen. Made once: the sync has already moved its record on.
+        session.flush_builtin_offers();
         // SessionStart (docs/hooks.md), in the background as the session
         // opens — Claude Code's timing: the user can type at once, and the
         // first turn (a [PROMPT]'s below included) waits for the hooks so
@@ -947,21 +953,29 @@ impl<'t> Session<'t> {
     /// wrote a release's version beside a file the user edited
     /// (`docs/builtin-updates.md`): framed and wrapped like the telemetry and
     /// update cards, each `.new` named `~`-relative, over a blank spacer.
-    /// Chrome, never `history`. A headless run has no card to show it on:
-    /// it is a step-log line there.
-    fn commit_builtin_offers(&mut self, syncs: &[alter_zero::builtins::SyncReport]) {
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let offered: Vec<String> = syncs
-            .iter()
-            .flat_map(|sync| &sync.offered)
-            .map(|path| ui::display_cwd(path, home.as_deref()))
-            .collect();
-        if self.headless {
-            if let Some(line) = alter_zero::builtins::offered_line(&offered) {
-                self.toast(line, ToastKind::Info);
-            }
+    /// Chrome, never `history`.
+    ///
+    /// The offer is made once, so the card must not be lost: it waits while
+    /// an overlay is up — a bare `--resume` boots into its picker, and a
+    /// session picked there purge-rebuilds whatever was queued beneath it —
+    /// and while anything streams, and the loop bottom commits it the first
+    /// time the conversation is back on screen. Free when nothing was
+    /// offered; a headless run never offers.
+    pub(crate) fn flush_builtin_offers(&mut self) {
+        if self.builtin_offers.is_empty()
+            || self.headless
+            || self.inflight.is_some()
+            || self.app.is_streaming()
+            || self.app.view.is_overlay()
+            || !self.commits_allowed()
+        {
             return;
         }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let offered: Vec<String> = std::mem::take(&mut self.builtin_offers)
+            .iter()
+            .map(|path| ui::display_cwd(path, home.as_deref()))
+            .collect();
         let Some(body) = alter_zero::builtins::offered_notice(&offered) else {
             return;
         };
@@ -972,6 +986,7 @@ impl<'t> Session<'t> {
             width,
         ));
         self.term.insert_before(vec![Line::default()]);
+        self.frame.schedule_frame();
     }
 
     /// Raise the first agent-definition failure as a red toast — the
@@ -1241,6 +1256,9 @@ impl<'t> Session<'t> {
         // A newer release the check found mid-turn is announced here, at the
         // first idle loop bottom, never inside a streaming reply (docs/update.md).
         self.flush_pending_update_notice();
+        // …and the built-in card a bare `--resume` held behind its picker
+        // (docs/builtin-updates.md).
+        self.flush_builtin_offers();
         // Release any permission request dropped without an answer (Esc,
         // `/clear`): the tool thread parked on it would otherwise wait for a
         // decision that is never coming — a cancelled turn's reaps itself, but a
