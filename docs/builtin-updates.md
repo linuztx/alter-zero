@@ -29,6 +29,11 @@ themselves. A file on disk whose SHA-256 is listed for its path was written by
 this program and edited by nobody, so it may be replaced; anything else is the
 user's, and is left alone.
 
+The rule cannot tell an untouched copy from one put back to an older release's
+version on purpose: both are bytes a release wrote, so the next launch brings
+either up to date. To keep an older version, change any byte of it — a blank
+line will do — and it is the user's from then on.
+
 That rule needs no record of what an install did, which is what makes it work
 for every install that exists today: a v0.14 install's `web-search` scripts
 carry v0.14's bytes, those bytes are listed, and the first launch of a newer
