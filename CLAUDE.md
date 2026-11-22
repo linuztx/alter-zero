@@ -1920,9 +1920,11 @@ environment/scratchpad blocks and the subagent note stay; the built-in
 run from the copies embedded out of `prompts/agents/` — editable files, never
 clobbered, and the last-resort fallback (`AgentDefinition::is_builtin`, a
 `path` of `None`) since the schema's default type must always resolve —
-discovered from `{cwd}/.alter-zero/agents`, the project root's, then
-`{config_home}/agents` (**no `.claude/agents`**: a `SKILL.md` is inert
-markdown, an agent file names a model and a tool reach), **re-walked at every
+discovered from the `.alter-zero/agents` of every directory from the cwd up
+to the project root, nearest first (the skill roots' walk,
+`project_doc::doc_chain`), then `{config_home}/agents` (**no
+`.claude/agents`** and no `.agents/agents`: a `SKILL.md` is inert markdown,
+an agent file names a model and a tool reach), **re-walked at every
 turn start** beside the skills so a type the agent just wrote is launchable
 now, an unknown `subagent_type` resolving as a recoverable error listing the
 real ones, and the whole roster riding the context as the **second section of
@@ -2895,12 +2897,14 @@ tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
 rejected** so an ecosystem skill carrying `allowed-tools:`/`model:` loads
-unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
-`.claude/skills`, **the nearest-`.git` project root's** pair (skipped when it
-*is* the cwd, so launching in `repo/src` still finds the repo's skills — the
-`AGENTS.md` walk-up, `project_doc::find_project_root`), the config home's
-`skills`, and `~/.claude/skills`, first root winning a name
-(`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
+unchanged) over a body, discovered from `.alter-zero/skills`,
+`.agents/skills` and `.claude/skills` in **every directory from the cwd up to
+the nearest-`.git` project root**, nearest first (Codex's rule for
+`.agents/skills` and the `AGENTS.md` walk — `project_doc::doc_chain`, so
+launching in `repo/packages/web/src` still finds the package's skills and the
+repo's), then the config home's `skills`, `~/.agents/skills` and
+`~/.claude/skills`, first root winning a name and a path listed once
+(`docs/agents-dir.md`; `ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
 naming it, never silence). **Five skills ship in the binary** — `jina-reader` (public webpages and PDFs
 through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),

@@ -14,6 +14,21 @@ release heading when a version is cut.
 
 ### Added
 
+- **Skills in `.agents/skills`, where Codex keeps them.** Skills are now
+  found in `~/.agents/skills` and in a project's `.agents/skills`, beside
+  `.alter-zero/skills` and `.claude/skills`, so a repository or a home folder
+  set up for Codex offers its skills here unchanged. Every directory from the
+  working directory up to the project root is now searched, nearest first,
+  for all three skill directories and for agent definitions in
+  `.alter-zero/agents`. A session started deep inside a monorepo package
+  therefore still finds the package's skills and agents, where before only
+  the starting directory and the repository root were read. Within one
+  directory `.alter-zero/skills` comes first, then `.agents/skills`, then
+  `.claude/skills`, and a project's skill still shadows a personal one of the
+  same name. Started in your home folder, `/skills` no longer lists each
+  directory twice (`docs/agents-dir.md`, `docs/skills.md`,
+  `docs/subagents.md`).
+
 - **`/mcp` asks for an OAuth client when a sign-in needs one.** Some
   sign-in providers register no apps by themselves — Google's, for its MCP
   servers — so signing in takes an OAuth client you create with the

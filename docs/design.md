@@ -771,8 +771,9 @@ which Ctrl+V reads the clipboard from.
 - **Subagent definitions** (`docs/subagents.md`): which `subagent_type`s exist
   is authored, not compiled in — `agents/*.md` files of YAML frontmatter
   (`name`, `description`, `model`, `tools`) over a body that replaces the
-  persona half of that type's system prompt. The cwd's, the project root's and
-  `~/.alter-zero/agents` are walked at **every turn start**, so a file the
+  persona half of that type's system prompt. The `.alter-zero/agents` of every
+  directory from the cwd up to the project root, then `~/.alter-zero/agents`,
+  are walked at **every turn start**, so a file the
   agent just wrote for itself is launchable on the next turn; the two built-ins
   are seeded into the user's directory as editable files and stay compiled in
   as the fallback; the `tools:` allowlist is enforced where a call **runs**,
