@@ -26,6 +26,7 @@ scripts/smoke.sh 55 permission              # only some phases (an id, a range, 
 scripts/smoke.sh --list                     # the phases, their tags and last durations
 bash scripts/smoke/phases/055-permission.sh # one phase on its own, output live (docs/smoke.md)
 scripts/release.sh check [vX.Y.Z]           # Cargo.toml, Cargo.lock, the README badge and CHANGELOG.md agree (docs/release.md)
+scripts/shipped_history.sh --check          # prompts/shipped.sha256 lists every version of every built-in file git history carried (docs/builtin-updates.md)
 scripts/release.sh build [TARGET]           # one platform's release archive + .sha256 into dist/
 cargo build --profile dist                  # the shipped binary alone: fat LTO, one codegen unit, ~4½ min cold (docs/binary-size.md)
 scripts/text_layout.sh measure target/release/alter-zero   # an idle session's resident memory, just written and read from disk (docs/text-layout.md)
@@ -72,8 +73,9 @@ the fix is to qualify the path if the target is still public
 CI runs that gate on every push to `main` and every pull request
 (`.github/workflows/ci.yml`: the gate, its `cargo test` and `cargo doc` again
 on macOS, the smoke suite under tmux, the release
-tooling's `selftest` + `check` + the npm launcher's `node --test`, the
-telemetry collector's `node --test`, and the `web-search` skill scripts'
+tooling's `selftest` + `check` + the shipped history's `--check` + the npm
+launcher's `node --test`, the telemetry collector's `node --test`, and the
+`web-search` skill scripts'
 offline `unittest`s),
 and a `vX.Y.Z` tag push runs `.github/workflows/release.yml` — the same gate,
 then one release build per platform (Linux x86_64 and arm64, macOS Intel and

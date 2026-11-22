@@ -5,13 +5,15 @@
 # program and edited by nobody, so a newer release may replace it; any other
 # copy is the user's and is never written over.
 #
-# APPEND ONLY. When a file under prompts/skills or prompts/agents changes,
-# record its new version (a failing test names the exact command):
+# NEVER REMOVE A LINE. When a file under prompts/skills or prompts/agents
+# changes, append its new version (a failing test names the exact command):
 #
 #   sha256sum prompts/skills/<name>/<file> >> prompts/shipped.sha256
 #
 # Removing a line turns every install that still has that version into "an
-# edit": kept for good and never updated again.
+# edit": kept for good and never updated again. `scripts/shipped_history.sh
+# --check` (CI) holds the list to every version this repository's history
+# ever carried.
 #
 # A path's FIRST line is the version every release up to v0.19.0 shipped —
 # the base assumed for an edited copy that has no record. Keep it first.
@@ -35,6 +37,7 @@ ccd94c033123c6673504f74a2db3a5e5ae301c893169230205936d9e5a944ae6  prompts/skills
 
 60d7a8555258633bce1566b5d27eb4d9de5ccdc3907c3ce8ecff388b68dcde89  prompts/agents/explore.md
 9147f347f5065ed2f451303bbe05b97713600f55da5f8348115eb88923940959  prompts/agents/explore.md
+fae0ab67ba79c8d3a679daf2dfd69bb59fa9744c3fda8d3c76da176da733c9f5  prompts/agents/general-purpose.md
 d6b0ec10ef9db48a98e16e572bfa017437bc4470d535fd08cc4498439ee7695a  prompts/skills/skill-creator/SKILL.md
 70a5eaf1cbcf17fcefc3cc357c0a2732e9ac0ae91d7cc5bafaf40c28e38ef03c  prompts/skills/skill-creator/reference.md
 2e236c135fa7fd1d03c16989d612e55211bffb4601ad480f96ac6418efb7f37c  prompts/skills/web-search/SKILL.md

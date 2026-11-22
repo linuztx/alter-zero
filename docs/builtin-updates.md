@@ -51,11 +51,21 @@ recorded at once:
 sha256sum prompts/skills/web-search/SKILL.md >> prompts/shipped.sha256
 ```
 
-Lines are only ever **appended**. An install written by an old release is
+Lines are **never removed**. An install written by an old release is
 recognised only while that release's version is listed; removing a line turns
 every such copy into "an edit" — kept for good and never updated again. A line
 for a version no release shipped (a change revised again before it was
 released) costs nothing and need not be taken out.
+
+The test holds the current bytes to the list; **`scripts/shipped_history.sh
+--check`** holds every earlier version to it — each version of each built-in
+file any commit reachable from `HEAD` carried, the agent definitions' one
+commit in a top-level `agents/` included, since a build of that commit could
+have seeded it. CI runs it in the release-tooling job over a full clone (it
+refuses a shallow one, which would pass having checked nothing). Run without
+`--check` it prints the missing lines, ready to append. It is what found the
+one version the hand-made list below had missed: the `general-purpose.md` that
+commit seeded.
 
 The file has three sections, in order:
 
@@ -66,7 +76,9 @@ The file has three sections, in order:
   record (below). Keep it first.
 - **The development versions**: every other version a commit in `main`'s
   history carried before the history existed, which only a development build
-  could have written. Listed so a copy a `cargo run` seeded is recognised too.
+  could have written. Listed so a copy a `cargo run` seeded is recognised too
+  (the one line added there later, the `agents/` commit's `general-purpose.md`,
+  sits with them).
 - **Every version since**, under the last heading, where the `sha256sum …
   >>` above lands it: one line per change, newest last.
 
@@ -198,6 +210,7 @@ home's directory, its record included.
 | file | role |
 | --- | --- |
 | `prompts/shipped.sha256` | the shipped history |
+| `scripts/shipped_history.sh` | `--check` (CI): every version git history carried is listed |
 | `src/builtins.rs` | the history and `.alter-zero-builtins.json` formats, the per-launch plan (pure, over an injected read), the executor that carries it out, and the toast's and card's wording |
 | `src/llm/skill.rs` | `BUILTIN_SKILL_FILES` and `sync_builtin_skills` |
 | `src/llm/subagent.rs` | the agents' `BUILTIN_FILES` and `sync_builtin_agents` |

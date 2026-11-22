@@ -3,9 +3,10 @@
 # already runs before a commit, unchanged: the pre-commit gate (`cargo fmt
 # --check` + `clippy -D warnings` + `test` + `doc`, all but `fmt` on macOS
 # too), the smoke suite over the real binary in tmux, the release tooling's
-# own fixture tests plus the version/changelog agreement and the npm
-# launcher's tests, the telemetry collector's pure-half tests, and the
-# scripts the built-in web-search skill seeds.
+# own fixture tests plus the version/changelog agreement, the shipped history
+# of built-in files against every version git has, and the npm launcher's
+# tests, the telemetry collector's pure-half tests, and the scripts the
+# built-in web-search skill seeds.
 # The release workflow re-runs the gate and the tooling tests before it builds
 # anything, and the headless Kali container has its own workflow
 # (container.yml).
@@ -210,10 +211,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: shellcheck -x install.sh scripts/release.sh scripts/release/*.sh
+        with:
+          # The whole history: the shipped history's check reads every
+          # version of every built-in file, and refuses a shallow clone.
+          fetch-depth: 0
+      - run: shellcheck -x install.sh scripts/release.sh scripts/release/*.sh scripts/shipped_history.sh
       - run: scripts/release.sh selftest
       - name: Cargo.toml, Cargo.lock, the README badge, npm/package.json and CHANGELOG.md agree
         run: scripts/release.sh check
+      - name: prompts/shipped.sha256 lists every version of every built-in file this history carried
+        run: scripts/shipped_history.sh --check
       - name: The npm launcher's tests
         run: node --test
         working-directory: npm
