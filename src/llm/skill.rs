@@ -1557,14 +1557,23 @@ mod tests {
         // only while the version it holds is listed, so a change to a
         // built-in records its new version before it can ship
         // (docs/builtin-updates.md).
+        // Every unrecorded file in one failure, so a change to several (a
+        // skill's prompt and its scripts) is one command to record.
         let history = crate::builtins::ShippedHistory::embedded();
-        for (relative, contents) in BUILTIN_SKILL_FILES {
-            let key = crate::builtins::BuiltinKind::Skills.history_key(relative);
-            assert!(
-                history.knows(&key, &crate::builtins::sha256_hex(contents.as_bytes())),
-                "{key} changed: record its new version with\n\n    sha256sum {key} >> prompts/shipped.sha256\n"
-            );
-        }
+        let unrecorded: Vec<String> = BUILTIN_SKILL_FILES
+            .iter()
+            .map(|(relative, contents)| {
+                let key = crate::builtins::BuiltinKind::Skills.history_key(relative);
+                (key, crate::builtins::sha256_hex(contents.as_bytes()))
+            })
+            .filter(|(key, hash)| !history.knows(key, hash))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            unrecorded.is_empty(),
+            "built-in files changed; record their new versions with\n\n    sha256sum {} >> prompts/shipped.sha256\n",
+            unrecorded.join(" ")
+        );
     }
 
     #[test]

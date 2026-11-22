@@ -383,13 +383,20 @@ mod tests {
         // an older release wrote is recognised only by its version being
         // listed, so a change records its new version before it can ship.
         let history = crate::builtins::ShippedHistory::embedded();
-        for (relative, contents) in BUILTIN_FILES {
-            let key = crate::builtins::BuiltinKind::Agents.history_key(relative);
-            assert!(
-                history.knows(&key, &crate::builtins::sha256_hex(contents.as_bytes())),
-                "{key} changed: record its new version with\n\n    sha256sum {key} >> prompts/shipped.sha256\n"
-            );
-        }
+        let unrecorded: Vec<String> = BUILTIN_FILES
+            .iter()
+            .map(|(relative, contents)| {
+                let key = crate::builtins::BuiltinKind::Agents.history_key(relative);
+                (key, crate::builtins::sha256_hex(contents.as_bytes()))
+            })
+            .filter(|(key, hash)| !history.knows(key, hash))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            unrecorded.is_empty(),
+            "built-in files changed; record their new versions with\n\n    sha256sum {} >> prompts/shipped.sha256\n",
+            unrecorded.join(" ")
+        );
     }
 
     #[test]

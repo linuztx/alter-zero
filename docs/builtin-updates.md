@@ -38,7 +38,9 @@ before it existed, which are exactly the files the first update has to reach.
 
 **Keeping it complete is a test's job.** `every_built_in_file_is_in_the_shipped_history`
 (in `llm::skill` and in `llm::subagent`) fails when a built-in file's current
-bytes are not listed, and names the command that fixes it:
+bytes are not listed, and names the command that fixes it — every changed
+file in one line, so a skill's prompt and scripts changed together are
+recorded at once:
 
 ```bash
 sha256sum prompts/skills/web-search/SKILL.md >> prompts/shipped.sha256
