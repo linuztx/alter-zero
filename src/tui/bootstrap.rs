@@ -315,9 +315,15 @@ impl<'t> Session<'t> {
         // the `<system-reminder>` listing agree from the first turn. A file
         // that will not parse is collected, not thrown, and becomes the
         // startup toast.
-        let agent_sync =
-            alter_zero::llm::subagent::user_agents_dir(config::config_home().as_deref())
-                .map(|dir| alter_zero::llm::subagent::sync_builtin_agents(&dir, !headless));
+        let agent_sync = alter_zero::llm::subagent::user_agents_dir(
+            config::config_home().as_deref(),
+        )
+        .map(|dir| {
+            alter_zero::llm::subagent::sync_builtin_agents(
+                &dir,
+                alter_zero::llm::subagent::agents_reach(!headless),
+            )
+        });
         let mut agent_errors = agent_sync
             .as_ref()
             .map(|report| report.errors.clone())

@@ -2955,7 +2955,9 @@ or `prompts/agents/` appends its new hash to `prompts/shipped.sha256`**
 line is never removed) — but **never into an `ALTER_ZERO_SKILLS_DIR` override**,
 the one place the two seeds differ: that variable says *only these*, and a
 built-in skill is a convenience the session works without where a built-in
-agent *type* must resolve (`general-purpose` is the `agent` schema's default).
+agent *type* must resolve (`general-purpose` is the `agent` schema's default),
+so an `ALTER_ZERO_AGENTS_DIR` override is seeded but nothing more
+(`builtins::Reach::SeedOnly` — somebody else's directory, never rewritten).
 `skill-creator` is **two files** because the loader's own expansion runs over the body:
 a body that documents `${…SKILL_DIR}` has it rewritten out from under it —
 the first live run got the same path twice for the sentence naming both

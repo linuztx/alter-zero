@@ -21,6 +21,9 @@ smoke_begin
 #
 # A bare `--resume` first: the card waits behind the picker, whose pick
 # rebuilds the screen, and lands once the conversation is back on it.
+#
+# And an ALTER_ZERO_AGENTS_DIR override, somebody else's directory, is only
+# seeded: nothing in it is rewritten, and no record is left there.
 S165="${S}_builtinupdate"
 BU_SESSIONS="$(mktemp -d)"
 # What the older build recorded for the edited file: the version it started
@@ -168,5 +171,26 @@ expect_has "$bu_resumed" -F "Edited built-ins" "the card was lost behind the --r
 expect_has "$bu_resumed" -F "❯ $USER_MSG" "the picked conversation did not load"
 bu_quit
 
-rm -rf "$BU_A" "$BU_B" "$BU_C" "$BU_REC" "$BU_SESSIONS"
-note "an unedited built-in is replaced, an edited one kept with this release's version beside it, once — and the offer waits for a screen"
+# ---- an ALTER_ZERO_AGENTS_DIR override ----
+# Somebody else's directory, a team's committed agents say: what is missing
+# is written, as the seed always did, and nothing there is rewritten.
+BU_D="$(mktemp -d)"
+plant_older_install "$BU_D"
+BU_TEAM="$BU_D/team-agents"
+mv "$BU_D/.alter-zero/agents" "$BU_TEAM"
+rm -f "$BU_TEAM/general-purpose.md"
+cp "$BU_TEAM/explore.md" "$BU_D/explore.before"
+$(bu_env "$BU_D") ALTER_ZERO_AGENTS_DIR="$BU_TEAM" ALTER_ZERO_DUMMY=1 ALTER_ZERO_STARTUP_DELAY_MS=0 \
+	ALTER_ZERO_CHUNK_DELAY_MS=0 "$BIN_ABS" -p "$USER_MSG" >/dev/null 2>&1 </dev/null
+if ! cmp -s "$BU_D/explore.before" "$BU_TEAM/explore.md"; then
+	fail "an untouched built-in in an ALTER_ZERO_AGENTS_DIR override was rewritten"
+fi
+if ! cmp -s "$SMOKE_ROOT/prompts/agents/general-purpose.md" "$BU_TEAM/general-purpose.md"; then
+	fail "a built-in missing from an ALTER_ZERO_AGENTS_DIR override was not seeded"
+fi
+if [ -e "$BU_TEAM/.alter-zero-builtins.json" ]; then
+	fail "the sync left a record in an ALTER_ZERO_AGENTS_DIR override"
+fi
+
+rm -rf "$BU_A" "$BU_B" "$BU_C" "$BU_D" "$BU_REC" "$BU_SESSIONS"
+note "an unedited built-in is replaced, an edited one kept with this release's version beside it, once — and the offer waits for a screen; an override is only seeded"

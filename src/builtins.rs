@@ -573,22 +573,37 @@ pub struct SyncReport {
     pub errors: Vec<SyncError>,
 }
 
-/// Bring `dir` to this release's built-ins: read it, [`plan_sync`], carry the
-/// plan out, and write the record when it changed. Never fails — every
-/// failure is in the report, and a step that failed keeps its file's old
-/// record so the next launch tries it again.
-///
-/// `offer` is whether an edited copy may be offered this release's version
-/// beside it: off in a headless run, which has no card to say so on — the
-/// offer is made once, so it waits for a launch that can show it.
+/// How far a sync may go in a directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// The app's own directory: everything `docs/builtin-updates.md`
+    /// describes. `offer` is whether an edited copy may be offered this
+    /// release's version beside it — off in a headless run, which has no
+    /// card to say so on: the offer is made once, so it waits for a launch
+    /// that can show it.
+    Follow {
+        /// Whether to offer an edited copy this release's version.
+        offer: bool,
+    },
+    /// Somebody else's directory — an `ALTER_ZERO_AGENTS_DIR` override,
+    /// which a team may keep in a repository: a missing built-in is written
+    /// and nothing more. Nothing is replaced, removed or offered, and no
+    /// record is left there.
+    SeedOnly,
+}
+
+/// Bring `dir` to this release's built-ins, as far as `reach` allows: read
+/// it, [`plan_sync`], carry the plan out, and write the record when it
+/// changed. Never fails — every failure is in the report, and a step that
+/// failed keeps its file's old record so the next launch tries it again.
 #[must_use]
 pub fn sync(
     dir: &Path,
     kind: BuiltinKind,
     files: &[(&str, &'static str)],
-    offer: bool,
+    reach: Reach,
 ) -> SyncReport {
-    sync_with(dir, kind, files, &ShippedHistory::embedded(), offer)
+    sync_with(dir, kind, files, &ShippedHistory::embedded(), reach)
 }
 
 /// [`sync`] over a given history.
@@ -598,7 +613,7 @@ pub fn sync_with(
     kind: BuiltinKind,
     files: &[(&str, &'static str)],
     history: &ShippedHistory<'_>,
-    offer: bool,
+    reach: Reach,
 ) -> SyncReport {
     let mut report = SyncReport {
         kind,
@@ -615,6 +630,25 @@ pub fn sync_with(
         });
         return report;
     }
+    let offer = match reach {
+        Reach::Follow { offer } => offer,
+        Reach::SeedOnly => {
+            // Somebody else's directory: what is missing, written — the seed
+            // as it always was — and nothing more.
+            for (file, contents) in files {
+                let target = dir.join(file);
+                if read_on_disk(&target) == OnDisk::Missing
+                    && let Err(err) = write_file(&target, contents)
+                {
+                    report.errors.push(SyncError {
+                        path: target,
+                        message: err.to_string(),
+                    });
+                }
+            }
+            return report;
+        }
+    };
     let record_path = dir.join(MANIFEST_FILE_NAME);
     let (recorded, keep_record) = match read_record(&record_path) {
         Record::Text(text) => (Some(text), true),
@@ -1775,7 +1809,7 @@ mod tests {
             BuiltinKind::Skills,
             files,
             &ShippedHistory::parse(&text),
-            offer,
+            Reach::Follow { offer },
         )
     }
 
@@ -2176,6 +2210,50 @@ mod tests {
             names,
             vec![std::ffi::OsString::from("SKILL.md")],
             "no temp file left"
+        );
+    }
+
+    #[test]
+    fn a_directory_that_is_only_seeded_gets_what_is_missing_and_nothing_more() {
+        // An `ALTER_ZERO_AGENTS_DIR` override is somebody else's directory:
+        // a missing built-in is written, as the seed always did, and nothing
+        // there is replaced, removed or offered, nor a record left behind.
+        const OLD_AGENT: &str = "---\ndescription: Older.\n---\n";
+        const NEW_AGENT: &str = "---\ndescription: Newer.\n---\n";
+        const RETIRED: &str = "---\ndescription: Retired.\n---\n";
+        const ADDED: &str = "---\ndescription: Added.\n---\n";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("team-agents");
+        put(&dir, "explore.md", OLD_AGENT);
+        put(&dir, "old.md", RETIRED);
+        put(&dir, "edited.md", MINE);
+        let history = format!(
+            "{}  prompts/agents/explore.md\n{}  prompts/agents/explore.md\n{}  prompts/agents/old.md\n{}  prompts/agents/edited.md\n",
+            hash(OLD_AGENT),
+            hash(NEW_AGENT),
+            hash(RETIRED),
+            hash(OLD_AGENT),
+        );
+        let report = sync_with(
+            &dir,
+            BuiltinKind::Agents,
+            &[
+                ("explore.md", NEW_AGENT),
+                ("added.md", ADDED),
+                ("edited.md", NEW_AGENT),
+            ],
+            &ShippedHistory::parse(&history),
+            Reach::SeedOnly,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(read(&dir, "added.md"), ADDED, "the missing one is seeded");
+        assert_eq!(read(&dir, "explore.md"), OLD_AGENT, "nothing is replaced");
+        assert_eq!(read(&dir, "old.md"), RETIRED, "nothing is removed");
+        assert!(!dir.join("edited.md.new").exists(), "nothing is offered");
+        assert!(!dir.join(MANIFEST_FILE_NAME).exists(), "no record is left");
+        assert!(
+            report.updated.is_empty() && report.removed.is_empty() && report.offered.is_empty(),
+            "{report:?}"
         );
     }
 

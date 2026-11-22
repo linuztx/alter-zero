@@ -80,7 +80,10 @@ it too. Deleting one brings it back next launch; to change a default, edit
 it (that is what the seeding is *for*). A copy nobody edited is also kept
 current: a release that changes a default replaces it, and leaves its new
 version beside an edited one as `<name>.md.new`, which the walk never reads
-(`docs/builtin-updates.md`).
+(`docs/builtin-updates.md`). An `ALTER_ZERO_AGENTS_DIR` override is only
+seeded — a missing default written, nothing replaced, removed or offered —
+since it is somebody else's directory, perhaps one a team keeps in a
+repository, which whoever runs the newest build must not rewrite.
 
 If the walk still ends without one of them — no writable home, an
 `ALTER_ZERO_AGENTS_DIR` pointed at a read-only directory — the embedded

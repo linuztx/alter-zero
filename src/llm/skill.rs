@@ -195,7 +195,7 @@ pub fn sync_builtin_skills(root: &Path, offer: bool) -> crate::builtins::SyncRep
         root,
         crate::builtins::BuiltinKind::Skills,
         &BUILTIN_SKILL_FILES,
-        offer,
+        crate::builtins::Reach::Follow { offer },
     )
 }
 

@@ -88,8 +88,7 @@ An edited file is never written over and never deleted. What is worth telling
 the user is narrower: that the release changed the file they edited, so the
 two have diverged. For that the seed has to know which version the edit
 started from — and that is a record, `.alter-zero-builtins.json` in the
-seeded directory, named for its owner since an `ALTER_ZERO_AGENTS_DIR`
-override can be anyone's directory:
+seeded directory, named so whoever lists the folder can tell whose it is:
 
 ```json
 {
@@ -215,9 +214,12 @@ at the record's path that is not a file is never written over: the copies
 nobody edited still follow the release, but no offer is made — only the
 record could say one was, so every launch would make it again — and the
 toast names the path.
-`ALTER_ZERO_SKILLS_DIR` is still never written into; an
-`ALTER_ZERO_AGENTS_DIR` override is seeded and kept current like the config
-home's directory, its record included.
+`ALTER_ZERO_SKILLS_DIR` is still never written into, and an
+`ALTER_ZERO_AGENTS_DIR` override is only **seeded** (`Reach::SeedOnly`,
+`subagent::agents_reach`): a missing built-in is written there, as it always
+was, and nothing else — no update, removal, offer or record. An override is
+somebody else's directory, perhaps one a team keeps in a repository, and
+whoever runs the newest build must not rewrite it.
 
 ## Where it lives
 

@@ -104,29 +104,48 @@ fn override_dir() -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
 }
 
-/// Bring the built-in definitions in `dir` to this release's — writing what
-/// is missing, replacing an unedited copy an older release wrote, and keeping
-/// one the user edited, with this release's version beside it as
-/// `<name>.md.new` when the release changed it (`docs/builtin-updates.md`).
+/// How far the sync may go in [`user_agents_dir`] (`docs/builtin-updates.md`):
+/// the config home's directory is the app's own, but an
+/// `ALTER_ZERO_AGENTS_DIR` override is somebody else's — a directory a team
+/// may keep in a repository, which whoever runs the newest build must not
+/// rewrite — so it is only ever seeded. `offer` is off in a headless run.
+#[must_use]
+pub fn agents_reach(offer: bool) -> crate::builtins::Reach {
+    reach_for(override_dir().as_deref(), offer)
+}
+
+/// [`agents_reach`] over the override as read.
+fn reach_for(override_dir: Option<&Path>, offer: bool) -> crate::builtins::Reach {
+    match override_dir {
+        Some(_) => crate::builtins::Reach::SeedOnly,
+        None => crate::builtins::Reach::Follow { offer },
+    }
+}
+
+/// Bring the built-in definitions in `dir` to this release's, as far as
+/// `reach` allows ([`agents_reach`]) — writing what is missing, replacing an
+/// unedited copy an older release wrote, and keeping one the user edited,
+/// with this release's version beside it as `<name>.md.new` when the release
+/// changed it (`docs/builtin-updates.md`).
 ///
 /// So a fresh install finds them on disk and can edit them, an **edited**
 /// default is never clobbered, a release that adds or improves a default
 /// reaches every install on its next launch (`docs/subagents.md`), and a
 /// `.new` is never read as a type (its extension is not `md`).
 ///
-/// `offer` is off in a headless run: the offer beside an edit is made once,
-/// so it waits for a launch with a screen to show it on.
-///
 /// Best-effort: a directory that cannot be created or a file that cannot be
 /// written is in the report for the startup toast, never a failed launch —
 /// the embedded copies still back the types up ([`with_builtins`]).
 #[must_use]
-pub fn sync_builtin_agents(dir: &Path, offer: bool) -> crate::builtins::SyncReport {
+pub fn sync_builtin_agents(
+    dir: &Path,
+    reach: crate::builtins::Reach,
+) -> crate::builtins::SyncReport {
     crate::builtins::sync(
         dir,
         crate::builtins::BuiltinKind::Agents,
         &BUILTIN_FILES,
-        offer,
+        reach,
     )
 }
 
@@ -241,6 +260,24 @@ pub fn load_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The config home's own agents directory, offers on.
+    const FOLLOW: crate::builtins::Reach = crate::builtins::Reach::Follow { offer: true };
+
+    #[test]
+    fn an_overridden_agents_directory_is_only_seeded() {
+        // `ALTER_ZERO_AGENTS_DIR` names somebody else's directory — a team's
+        // committed agents, say — which the newest build must not rewrite.
+        assert_eq!(
+            reach_for(Some(Path::new("/team/agents")), true),
+            crate::builtins::Reach::SeedOnly
+        );
+        assert_eq!(reach_for(None, true), FOLLOW);
+        assert_eq!(
+            reach_for(None, false),
+            crate::builtins::Reach::Follow { offer: false }
+        );
+    }
     use crate::subagents::{AgentModel, AgentTools};
 
     #[test]
@@ -367,7 +404,7 @@ mod tests {
     fn seeding_writes_the_builtins_once_and_never_overwrites_an_edit() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let errors = sync_builtin_agents(&dir, true).errors;
+        let errors = sync_builtin_agents(&dir, FOLLOW).errors;
         assert!(errors.is_empty(), "{errors:?}");
         assert!(dir.join("general-purpose.md").is_file());
         assert!(dir.join("explore.md").is_file());
@@ -375,7 +412,7 @@ mod tests {
         // An edited default is the user's now: a second launch must not
         // clobber it.
         std::fs::write(dir.join("explore.md"), "---\ndescription: Mine.\n---\n").unwrap();
-        let second = sync_builtin_agents(&dir, true).errors;
+        let second = sync_builtin_agents(&dir, FOLLOW).errors;
         assert!(second.is_empty(), "{second:?}");
         let (agents, _) = discover_agents(&[dir]);
         let explore = agents
@@ -411,7 +448,7 @@ mod tests {
     fn syncing_records_both_definitions_and_the_walk_skips_the_record() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("agents");
-        let report = sync_builtin_agents(&dir, true);
+        let report = sync_builtin_agents(&dir, FOLLOW);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         let record = crate::builtins::Manifest::parse(
             &std::fs::read_to_string(dir.join(crate::builtins::MANIFEST_FILE_NAME)).unwrap(),
