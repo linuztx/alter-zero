@@ -185,9 +185,10 @@ if pane_has "$S163" -F "OAuth client:"; then
 	dump "$S163"
 	fail "a server with no client of the user's names one"
 fi
-if ! pane_has "$S163" -F "2. Set OAuth client"; then
+# No client row either: Authenticate asks for a client itself.
+if pane_has "$S163" -F "Set OAuth client" || ! pane_has "$S163" -F "2. Disable"; then
 	dump "$S163"
-	fail "a server with no client of the user's does not offer to set one"
+	fail "a server with no client of the user's offers a client row"
 fi
 keys "$S163" Enter # Authenticate
 
@@ -213,7 +214,8 @@ expect_has "$form" -F "Redirect URI:  http://localhost:8976/callback" "the form 
 expect_has "$form" -F "Callback port > 8976" "the port field is not prefilled"
 expect_has "$form" -F "Client ID     >" "the client ID field is missing"
 expect_has "$form" -F "Client secret > optional" "the empty secret field does not say it is optional"
-expect_has "$form" -F "Tab to switch fields" "the form's keys are missing"
+expect_has "$form" -F "Tab to switch fields · Enter to continue · Esc to go back" "the form's keys are missing"
+expect_lacks "$form" -F "ctrl+y" "the form still offers a copy key"
 expect_lacks "$form" -F "URL > " "the paste field is still on the page"
 
 # The port field: the redirect URI follows it as it is typed.
@@ -224,12 +226,6 @@ type_text "$S163" "$CB_PORT"
 if ! wait_for 5 "$S163" -F "Redirect URI:  http://localhost:$CB_PORT/callback"; then
 	dump "$S163"
 	fail "the redirect URI did not follow the port typed"
-fi
-# Ctrl+Y copies it (OSC 52 here: the suite runs headless).
-keys "$S163" C-y
-if ! wait_for 5 "$S163" -F "Copied redirect URI"; then
-	dump "$S163"
-	fail "Ctrl+Y did not copy the redirect URI"
 fi
 
 # A submit with no client ID says so, and sends nothing.

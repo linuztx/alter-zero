@@ -23,7 +23,7 @@ release heading when a version is cut.
   The page now turns into a form of facts and fields: the issuer, as the
   server's metadata names it, the server's own documentation link when its
   metadata gives one, and the redirect URI to register with the client (it
-  follows the callback port as you change it, and Ctrl+Y copies it), over
+  follows the callback port as you change it), over
   the client ID and its secret, which is only ever drawn as dots. The same
   form appears when a provider refuses to register the app. What you enter
   is kept with the server's tokens — owner-only, never written to a config
@@ -34,15 +34,14 @@ release heading when a version is cut.
   editing that file. If the provider turns the client away, the form comes
   back with what you entered and the provider's own reason, rather than an
   error to start over from, and no longer offers the refused secret as
-  kept. A server's page names the client it signs in with and offers **Set
-  OAuth client**, **Change OAuth client** and, for a client entered there,
-  **Forget OAuth client**; Set and Change look up the server's sign-in
-  provider before their form opens. Change opens the whole form over an
-  entry's own client too, and its redirect URI is always the one the next
-  sign-in sends: left as it was, the entry's client and its registered
-  callback URL stay in effect. Saving a different client removes the login
-  made as the old one, and the ID and port fields edit anywhere along the
-  line.
+  kept. A server's page names the client it signs in with and offers
+  **Change OAuth client** and, for a client entered there, **Forget OAuth
+  client**. Change looks up the server's sign-in provider before its form
+  opens, works over an entry's own client too, and always shows the
+  redirect URI the next sign-in sends: left as it was, the entry's client
+  and its registered callback URL stay in effect. Saving a different
+  client removes the login made as the old one, and the ID and port
+  fields edit anywhere along the line.
   `alter-zero mcp get` names the client in effect and where it comes from,
   and `alter-zero mcp add --client-id` forgets a client entered in `/mcp`
   for the same address and says so (`docs/mcp.md`, `docs/mcp-cli.md`).

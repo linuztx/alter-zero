@@ -203,7 +203,7 @@ impl McpServerSnapshot {
     /// The OAuth client a sign-in presents, and where it is from: one
     /// entered in `/mcp`, which outranks the entry's own, else the entry's
     /// `oauth.clientId` — what the `OAuth client:` row names and the
-    /// Set/Change/Forget rows work on. Which authorization server the
+    /// Change/Forget rows work on. Which authorization server the
     /// sign-in will find is not known here, so an entered client reads as
     /// the one in effect whatever it was entered for.
     #[must_use]

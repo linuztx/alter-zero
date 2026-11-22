@@ -974,13 +974,14 @@ fn client_link_rows(label: &'static str, url: &str, width: u16) -> Vec<Line<'sta
 }
 
 /// The redirect URI rows: the address the sign-in will send for the port
-/// typed, or what to do while the port is no port.
+/// typed, or what to do while the port is no port. A fact like the issuer,
+/// in the issuer's colour — the accent is the lit field's alone.
 fn client_redirect_rows(form: &McpClientForm, width: u16) -> Vec<Line<'static>> {
     match form.redirect_uri() {
         Some(uri) => client_fact_rows(
             MCP_CLIENT_REDIRECT_LABEL,
             &uri,
-            Style::new().fg(model_selected_color()),
+            Style::new().fg(model_id_color()),
             width,
         ),
         None => vec![Line::from(vec![
@@ -1071,18 +1072,17 @@ fn client_form_lines(
         lines.extend(wrapped(error, Style::new().fg(error_color()), width));
     }
     lines.push(Line::default());
-    let hint = match (fixed, redirect) {
-        (false, true) => MCP_CLIENT_HINT,
-        (false, false) => MCP_CLIENT_NO_REDIRECT_HINT,
-        (true, true) => MCP_CLIENT_SECRET_HINT,
-        (true, false) => MCP_CLIENT_SECRET_ONLY_HINT,
+    let hint = if fixed {
+        MCP_CLIENT_SECRET_HINT
+    } else {
+        MCP_CLIENT_HINT
     };
     lines.extend(dim_wrapped(hint, width));
     lines.push(model_rule(width));
     lines
 }
 
-/// The page `Set`/`Change OAuth client` shows while the server's authorization
+/// The page `Change OAuth client` shows while the server's authorization
 /// server is looked up for the form: the form's title over one status line
 /// and the one key — nothing to type, and nothing said about the provider.
 fn lookup_lines(server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {

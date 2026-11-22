@@ -1396,11 +1396,14 @@ mid-turn (the strip stays above it). Pages:
    failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
    `Reconnect` / `Disable`; connecting → `Reconnect` / `Disable`; disabled →
    `Enable`; off (MCP off for the session, above) → `Disable`. Wherever a
-   sign-in can be made, a client row follows the sign-in rows: `Set OAuth
-   client` where no client is in effect, `Change OAuth client` where one is
-   — entered here, or the entry's own, whether its file spells the secret
-   or not — and `Forget OAuth client` only for one entered here; an entry's
-   own client is its file's to remove (`server_actions`' `client_actions`). When a fresh snapshot changes the list under the user the
+   sign-in can be made and a client is in effect, a client row follows the
+   sign-in rows: `Change OAuth client` — entered here, or the entry's own,
+   whether its file spells the secret or not — and `Forget OAuth client`
+   only for one entered here; an entry's own client is its file's to remove
+   (`server_actions`' `client_actions`). With none in effect there is no
+   client row: `Authenticate` already asks for a client whenever the
+   provider will not register this app, so a `Set OAuth client` row would
+   only have been a second way to the same form. When a fresh snapshot changes the list under the user the
    **selection follows its action**, not its index — a Reconnect turned the
    server `connecting…`, whose list was `[Disable]` alone, so a second Enter
    disabled the server and saved that — and a connecting server's first
@@ -1456,9 +1459,9 @@ mid-turn (the strip stays above it). Pages:
    field, so no caret, and no sign-in left for Esc to cancel.
 
    **The client form.** When the sign-in ends asking for an OAuth client
-   (`McpEvent::AuthNeedsClient`, *Pre-registered clients* above), or `Set
-   OAuth client` or `Change OAuth client` has looked up the server's
-   authorization server (below), the same page becomes a form
+   (`McpEvent::AuthNeedsClient`, *Pre-registered clients* above), or
+   `Change OAuth client` has looked up the server's authorization server
+   (below), the same page becomes a form
    (`McpAuthView::client` — `app::McpClientForm`, `client_form_lines`):
 
    ```
@@ -1472,7 +1475,7 @@ mid-turn (the strip stays above it). Pages:
    Client ID     > 123.apps.googleusercontent.com
    Client secret > ••••••••••••••
 
-   Tab to switch fields · Enter to continue · ctrl+y to copy the redirect URI · Esc to go back
+   Tab to switch fields · Enter to continue · Esc to go back
    ```
 
    The page states **facts and fields, nothing else**. MCP returns no
@@ -1503,10 +1506,10 @@ mid-turn (the strip stays above it). Pages:
    no longer than a hyperlink carries (`links::HYPERLINK_URI_MAX_BYTES`);
    anything else is dropped without a word.
 
-   **The server's page looks the authorization server up first.** `Set
-   OAuth client` and `Change OAuth client` put the auth page on one plain
-   status line (`Looking up the authorization server…`, nothing about the
-   provider, no caret, no paste) and return `McpOp::LookUpAuthClient`;
+   **The server's page looks the authorization server up first.** `Change
+   OAuth client` puts the auth page on one plain status line (`Looking up
+   the authorization server…`, nothing about the provider, no caret, no
+   paste) and returns `McpOp::LookUpAuthClient`;
    `McpManager::look_up_client` runs discovery on a worker — the sign-in's
    own, so Esc calls it off and a sign-in supersedes it — and answers with
    `McpEvent::ClientForm`, which opens the form (`App::ask_mcp_client`)
@@ -1527,9 +1530,10 @@ mid-turn (the strip stays above it). Pages:
    the prefilled port out of the way above. The id and the port are
    `textarea::TextArea`s, edited at their caret — **←/→, Home, End and
    Delete** move and delete there — while the secret, a `SecretValue`, has
-   no caret to move. **Ctrl+U** empties the focused field and **Ctrl+Y**
-   copies the redirect URI (`McpOp::CopyRedirectUri`, the `/copy` seam) — a
-   modified key, since every letter is text here. The id takes 512
+   no caret to move. **Ctrl+U** empties the focused field. There is no
+   copy key: the redirect URI is short and shown whole, to select or type,
+   and a form whose every letter is text has no `c` to give it — the
+   modified key it once had, Ctrl+Y, is readline's paste. The id takes 512
    characters, the secret 4096 and the port five digits. A paste drops its
    control characters and is trimmed — a console's copy button brings a
    line break along — and lands at the id's caret or the secret's end,

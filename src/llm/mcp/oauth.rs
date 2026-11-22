@@ -2462,7 +2462,7 @@ pub fn client_request_for(
     }
 }
 
-/// The lookup `Set`/`Change OAuth client` runs before its form opens: discovery
+/// The lookup `Change OAuth client` runs before its form opens: discovery
 /// alone — nothing registered, no URL shown, no token asked for — then the
 /// form over the client on hand ([`client_request_for`]), so the form names
 /// the issuer a client is created with and the server's documentation link.
@@ -4592,7 +4592,7 @@ mod tests {
         assert_eq!(request.callback_port, Some(8080));
     }
 
-    /// The lookup Set and Change OAuth client run before the form opens:
+    /// The lookup Change OAuth client runs before the form opens:
     /// discovery alone — nothing registered, no URL, no token requested —
     /// and the form's request under the issuer it found and the
     /// documentation link that server's metadata gives, over the client on

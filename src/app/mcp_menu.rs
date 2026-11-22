@@ -44,8 +44,6 @@ pub enum McpServerAction {
     Authenticate,
     Reauthenticate,
     ClearAuth,
-    /// Give the server an OAuth client, where none is in effect.
-    SetClient,
     /// Change the OAuth client in effect — one entered here, or the entry's
     /// own.
     ChangeClient,
@@ -65,7 +63,6 @@ impl McpServerAction {
             Self::Authenticate => "Authenticate",
             Self::Reauthenticate => "Re-authenticate",
             Self::ClearAuth => "Clear authentication",
-            Self::SetClient => "Set OAuth client",
             Self::ChangeClient => "Change OAuth client",
             Self::ForgetClient => "Forget OAuth client",
             Self::Reconnect => "Reconnect",
@@ -82,13 +79,14 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     use McpServerAction as A;
     // The OAuth client a sign-in presents (`docs/mcp.md` *Pre-registered
     // clients*), one row under the sign-in itself wherever a sign-in can be
-    // made: given where none is in effect, changed where one is — entered
-    // here, or the entry's own, whose shipped client a project's or a
-    // plugin's file would otherwise hold for good — and forgotten only where
-    // it was entered here; an entry's own is its file's to remove.
-    let client_actions = |out: &mut Vec<A>| match server.oauth_client() {
-        None => out.push(A::SetClient),
-        Some((_, source)) => {
+    // made and a client is in effect: changed — entered here, or the entry's
+    // own, whose shipped client a project's or a plugin's file would
+    // otherwise hold for good — and forgotten only where it was entered
+    // here; an entry's own is its file's to remove. With none in effect
+    // there is no row: Authenticate asks for a client itself when the
+    // provider needs one.
+    let client_actions = |out: &mut Vec<A>| {
+        if let Some((_, source)) = server.oauth_client() {
             out.push(A::ChangeClient);
             if source == McpClientSource::Entered {
                 out.push(A::ForgetClient);
@@ -179,7 +177,7 @@ pub struct McpAuthView {
     /// closed away with the page it explains, and the toast row it used to
     /// be was cut at the width.
     pub failed: Option<String>,
-    /// The page was opened to enter a client (`Set`/`Change OAuth client`), and
+    /// The page was opened to change the client (`Change OAuth client`), and
     /// the server's authorization server is being looked up for the form:
     /// nothing is signed in to, so there is nothing to type into yet. It
     /// stays set on a failed page, so Enter repeats the lookup.
@@ -684,7 +682,7 @@ impl App {
 
     /// `server`'s auth page becomes the client form over `request`: its
     /// sign-in has no OAuth client to present, or the user's own was turned
-    /// away — or the lookup `Set`/`Change OAuth client` started has found the
+    /// away — or the lookup `Change OAuth client` started has found the
     /// authorization server. `false` when that page is no longer open for
     /// the server.
     pub fn ask_mcp_client(&mut self, server: &str, request: &McpClientRequest) -> bool {
@@ -814,7 +812,7 @@ impl App {
                 // The page a sign-in opens — looking the authorization
                 // server up, not signing in: the form arrives with the
                 // issuer it found.
-                McpServerAction::SetClient | McpServerAction::ChangeClient => {
+                McpServerAction::ChangeClient => {
                     menu.page = McpPage::Auth;
                     menu.selected = 0;
                     menu.auth = McpAuthView {
@@ -895,7 +893,7 @@ impl App {
             return Action::None;
         };
         // A failed sign-in's page: Enter tries again what failed — the
-        // sign-in, or the lookup `Set`/`Change OAuth client` runs — and Esc goes
+        // sign-in, or the lookup `Change OAuth client` runs — and Esc goes
         // back. Nothing is typed there, and nothing is running to cancel.
         if menu.auth.failed.is_some() {
             match key.code {
@@ -975,9 +973,10 @@ impl App {
 
     /// The client form's keys: Tab and ↑/↓ walk the fields, ←/→, Home, End
     /// and Delete work at the id's and the port's caret, Enter moves on and
-    /// — on the last — submits, Ctrl+U empties the focused field, Ctrl+Y
-    /// copies the redirect URI, and Esc goes back to the server's page: the
-    /// sign-in that asked has ended, so there is nothing to cancel.
+    /// — on the last — submits, Ctrl+U empties the focused field, and Esc
+    /// goes back to the server's page: the sign-in that asked has ended, so
+    /// there is nothing to cancel. No copy key: the redirect URI is short
+    /// and whole on the page, to select or type.
     fn on_key_mcp_client(&mut self, key: KeyEvent) -> Action {
         let Some(menu) = &mut self.mcp_menu else {
             return Action::None;
@@ -1043,11 +1042,6 @@ impl App {
                 .for_each(TextArea::move_home),
             KeyCode::End => form.focused_text().into_iter().for_each(TextArea::move_end),
             KeyCode::Char('u') if ctrl => form.clear_focused(),
-            KeyCode::Char('y') if ctrl => {
-                if let Some(uri) = form.redirect_uri() {
-                    return Action::McpOp(McpOp::CopyRedirectUri { uri });
-                }
-            }
             KeyCode::Char(c) if !ctrl => form.type_char(c),
             _ => {}
         }

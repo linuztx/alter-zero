@@ -552,7 +552,7 @@ pub enum McpOp {
         keep_secret: bool,
         callback_port: Option<u16>,
     },
-    /// `Set OAuth client` / `Change OAuth client` on a server's page: look
+    /// `Change OAuth client` on a server's page: look
     /// up the server's authorization server on a worker, then open the
     /// client form over the client in effect, under the issuer and the
     /// documentation link the lookup found (`docs/mcp.md` *The client
@@ -561,7 +561,4 @@ pub enum McpOp {
     /// `Forget OAuth client` on a server's page: drop the client entered for
     /// it, and the login that client was granted.
     ForgetAuthClient { server: String },
-    /// Ctrl+Y on the client form: copy the redirect URI to register with
-    /// the provider.
-    CopyRedirectUri { uri: String },
 }

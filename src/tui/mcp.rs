@@ -217,7 +217,6 @@ impl Session<'_> {
             },
             McpOp::CancelAuth => manager.cancel_auth(),
             McpOp::CopyAuthUrl { url } => self.copy_for_mcp(&url, "Copied authorization URL"),
-            McpOp::CopyRedirectUri { uri } => self.copy_for_mcp(&uri, "Copied redirect URI"),
             McpOp::SubmitAuthUrl { text } => manager.submit_auth_paste(&text),
             // The client form, submitted: kept with the tokens, then the
             // sign-in again — a client that can't be kept comes back as a

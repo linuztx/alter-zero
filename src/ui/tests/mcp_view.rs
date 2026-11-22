@@ -240,8 +240,10 @@ fn the_server_detail_shows_facts_and_actions() {
     assert!(all.contains("https://linear.test/mcp"));
     assert!(all.contains("Config location:"));
     assert!(all.contains("1. Authenticate"));
-    assert!(all.contains("2. Set OAuth client"));
-    assert!(all.contains("3. Disable"));
+    assert!(all.contains("2. Disable"));
+    // No client row with no client in effect: Authenticate asks for one
+    // itself when the provider needs it.
+    assert!(!all.contains("Set OAuth client"), "{all}");
     assert!(all.contains("❯ 1. Authenticate"), "first action selected");
     // No client is in effect, so no `OAuth client:` row.
     assert!(!all.contains("OAuth client:"), "{all}");
@@ -1345,6 +1347,25 @@ fn client_request() -> McpClientRequest {
     }
 }
 
+/// The redirect URI is a fact like the issuer above it, so it is drawn in
+/// the issuer's colour: on the form the accent is the lit field's alone.
+#[test]
+fn the_redirect_uri_is_drawn_like_the_issuer_not_in_the_accent() {
+    use crate::ui::theme::{model_id_color, model_selected_color};
+    let lines = mcp_view_lines(&client_form_app(&client_request()), 100);
+    let ink = |needle: &str| {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains(needle))
+            .and_then(|span| span.style.fg)
+    };
+    let redirect = ink("http://localhost:8976/callback");
+    assert_eq!(redirect, Some(model_id_color()));
+    assert_eq!(redirect, ink("https://login.example.com"));
+    assert_ne!(redirect, Some(model_selected_color()));
+}
+
 /// linear's auth page turned into the client form over `request`.
 fn client_form_app(request: &McpClientRequest) -> App {
     let mut app = mcp_app();
@@ -1399,9 +1420,11 @@ fn the_client_form_shows_the_issuer_and_the_redirect_uri_to_register() {
         (port + 1, port + 2),
         "the fields sit together"
     );
-    assert!(all.contains("Tab to switch fields"), "{all}");
-    assert!(all.contains("ctrl+y to copy the redirect URI"), "{all}");
-    assert!(all.contains("Esc to go back"), "{all}");
+    assert!(
+        all.contains("Tab to switch fields · Enter to continue · Esc to go back"),
+        "{all}"
+    );
+    assert!(!all.contains("ctrl+y"), "{all}");
     // The form stands in for the URL and its paste field.
     assert!(!all.contains("URL > "), "{all}");
     assert!(
@@ -2149,7 +2172,7 @@ fn the_form_over_the_entrys_own_client_shows_the_redirect_it_will_send() {
     assert!(all.contains("Callback port > 12799"), "{all}");
     assert!(all.contains("Client ID     > file-cid"), "{all}");
     assert!(all.contains("Client secret > unchanged"), "{all}");
-    assert!(all.contains("ctrl+y to copy the redirect URI"), "{all}");
+    assert!(!all.contains("ctrl+y"), "{all}");
     app.on_key(key(KeyCode::Up)); // the id
     app.on_key(key(KeyCode::Up)); // the port
     app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));

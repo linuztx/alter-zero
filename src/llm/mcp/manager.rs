@@ -53,7 +53,7 @@ pub enum McpEvent {
         server: String,
         request: oauth::ClientRequest,
     },
-    /// The lookup `Set`/`Change OAuth client` started found the server's
+    /// The lookup `Change OAuth client` started found the server's
     /// authorization server: the auth page becomes the client form over
     /// `request` ([`McpManager::look_up_client`]). Nothing is said when the
     /// page has been left — the user called the lookup off.
@@ -1138,7 +1138,7 @@ impl McpManager {
         self.sign_in(name, SignInPurpose::Authenticate);
     }
 
-    /// `Set`/`Change OAuth client` on a server's page: find its authorization
+    /// `Change OAuth client` on a server's page: find its authorization
     /// server on a worker — the sign-in's own, so Esc calls it off and a
     /// sign-in supersedes it — and answer with the client form over the
     /// client on hand ([`McpEvent::ClientForm`], [`oauth::client_lookup`]).

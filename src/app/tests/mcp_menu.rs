@@ -106,14 +106,13 @@ fn server_actions_follow_the_state() {
             A::ViewTools,
             A::Reauthenticate,
             A::ClearAuth,
-            A::SetClient,
             A::Reconnect,
             A::Disable
         ]
     );
     assert_eq!(
         server_actions(&snapshot("l", McpServerStatus::NeedsAuth, 0)),
-        [A::Authenticate, A::SetClient, A::Disable]
+        [A::Authenticate, A::Disable]
     );
     // A grant the server is refusing must be clearable from the very page
     // that reports it — it used to be removable only by editing the store.
@@ -121,7 +120,7 @@ fn server_actions_follow_the_state() {
     expired.auth = Some(McpAuthState::Expired);
     assert_eq!(
         server_actions(&expired),
-        [A::Authenticate, A::ClearAuth, A::SetClient, A::Disable]
+        [A::Authenticate, A::ClearAuth, A::Disable]
     );
     assert_eq!(
         server_actions(&snapshot("g", McpServerStatus::Disabled, 0)),
@@ -138,7 +137,7 @@ fn server_actions_follow_the_state() {
     // into from here; before, authenticating it was simply unreachable.
     assert_eq!(
         server_actions(&snapshot("f", McpServerStatus::Failed("x".to_string()), 0)),
-        [A::Authenticate, A::SetClient, A::Reconnect, A::Disable]
+        [A::Authenticate, A::Reconnect, A::Disable]
     );
     // A written-in header affords neither login nor clear.
     let mut header = snapshot("h", McpServerStatus::Connected, 1);
@@ -806,36 +805,22 @@ fn a_client_request_for_a_page_no_longer_open_is_not_shown() {
     assert!(!closed.ask_mcp_client("linear", &request));
 }
 
-/// Ctrl+Y copies the redirect URI the form shows — the one to register
-/// with the provider — and does nothing while the port is no port.
+/// The form has no copy key: the redirect URI it shows is short and whole
+/// on the page, to select or type, and Ctrl+Y is readline's paste — so it
+/// does nothing here, while a typed `y` is a letter.
 #[test]
-fn ctrl_y_copies_the_redirect_uri_the_form_shows() {
+fn ctrl_y_does_nothing_on_the_client_form() {
     let mut app = form_app(&client_request());
-    assert_eq!(
-        app.on_key(ctrl('y')),
-        Action::McpOp(McpOp::CopyRedirectUri {
-            uri: "http://localhost:8976/callback".to_string()
-        })
-    );
-    app.on_key(key(KeyCode::Up)); // the port
-    app.on_key(ctrl('u'));
+    let before = form(&app).clone();
     assert_eq!(app.on_key(ctrl('y')), Action::None);
-    type_text(&mut app, "3000");
-    assert_eq!(
-        app.on_key(ctrl('y')),
-        Action::McpOp(McpOp::CopyRedirectUri {
-            uri: "http://localhost:3000/callback".to_string()
-        })
-    );
-    // A typed `y` is a letter, never the copy.
-    app.on_key(key(KeyCode::Down));
+    assert_eq!(form(&app), &before);
+    // The form opens on the id.
     type_text(&mut app, "y");
     assert_eq!(form(&app).client_id.text(), "y");
 }
 
 /// An entry whose own client names its redirect URI (`callbackUrl`) is
-/// asked for its secret beside that very URI — the one the sign-in sends —
-/// and Ctrl+Y copies it.
+/// asked for its secret beside that very URI — the one the sign-in sends.
 #[test]
 fn the_entrys_own_redirect_uri_is_the_one_the_form_names() {
     let request = McpClientRequest {
@@ -845,16 +830,10 @@ fn the_entrys_own_redirect_uri_is_the_one_the_form_names() {
         redirect_uri: Some("http://127.0.0.1:5555/callback/file-cid".to_string()),
         ..client_request()
     };
-    let mut app = form_app(&request);
+    let app = form_app(&request);
     assert_eq!(
         form(&app).redirect_uri().as_deref(),
         Some("http://127.0.0.1:5555/callback/file-cid")
-    );
-    assert_eq!(
-        app.on_key(ctrl('y')),
-        Action::McpOp(McpOp::CopyRedirectUri {
-            uri: "http://127.0.0.1:5555/callback/file-cid".to_string()
-        })
     );
 }
 
@@ -995,15 +974,17 @@ fn naming_its_client(secret: Option<&str>, port: Option<u16>) -> McpServerSnapsh
     server
 }
 
-/// The client rows, wherever a sign-in can be made: Set where no client is
-/// in effect, Change where one is — entered here, or the entry's own, even
-/// one whose file spells its secret — and Forget only for one entered here.
+/// The client rows, wherever a sign-in can be made and a client is in
+/// effect: Change — entered here, or the entry's own, even one whose file
+/// spells its secret — and Forget only for one entered here. With none in
+/// effect there is no client row: Authenticate asks for a client itself
+/// when the provider needs one.
 #[test]
 fn server_actions_offer_the_client_rows_wherever_a_sign_in_can_be_made() {
     use McpServerAction as A;
     assert_eq!(
         server_actions(&snapshot("l", McpServerStatus::NeedsAuth, 0)),
-        [A::Authenticate, A::SetClient, A::Disable]
+        [A::Authenticate, A::Disable]
     );
     let mut entered = snapshot("l", McpServerStatus::NeedsAuth, 0);
     entered.kept_client = Some("typed-cid".to_string());
@@ -1073,9 +1054,7 @@ fn server_actions_offer_the_client_rows_wherever_a_sign_in_can_be_made() {
         server.kept_client = Some("typed-cid".to_string());
         let actions = server_actions(&server);
         assert!(
-            !actions.contains(&A::SetClient)
-                && !actions.contains(&A::ChangeClient)
-                && !actions.contains(&A::ForgetClient),
+            !actions.contains(&A::ChangeClient) && !actions.contains(&A::ForgetClient),
             "{actions:?}"
         );
     }
