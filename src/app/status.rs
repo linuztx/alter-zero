@@ -460,12 +460,13 @@ impl App {
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
     /// while a call waits on the user, either. The ↓ manager band and **every**
     /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
-    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/sponsor`, `/secrets`,
-    /// `/export`, `/context`, `/usage`) own every key the same way, so the
-    /// running cell they keep visible above themselves stays hintless while
-    /// one is open (`docs/background.md`, `docs/llm.md`, `docs/skills.md`,
-    /// `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`, `docs/donate.md`,
-    /// `docs/secrets.md`, `docs/export.md`, `docs/usage.md`).
+    /// `/skills`, `/mascot`, `/spinner`, `/theme`, `/donate`, `/sponsor`,
+    /// `/discord`, `/secrets`, `/export`, `/context`, `/usage`) own every key
+    /// the same way, so the running cell they keep visible above themselves
+    /// stays hintless while one is open (`docs/background.md`, `docs/llm.md`,
+    /// `docs/skills.md`, `docs/mascot.md`, `docs/spinner.md`, `docs/theme.md`,
+    /// `docs/donate.md`, `docs/discord.md`, `docs/secrets.md`,
+    /// `docs/export.md`, `docs/usage.md`).
     #[must_use]
     pub fn background_hint_elapsed(&self) -> Option<Duration> {
         if self.permission.is_some()
@@ -480,6 +481,7 @@ impl App {
             || self.theme_picker.is_some()
             || self.donate_picker.is_some()
             || self.sponsor_page.is_some()
+            || self.discord_page.is_some()
             || self.secrets_page.is_some()
             || self.export_picker.is_some()
             || self.context_usage.is_some()

@@ -175,6 +175,11 @@ release heading when a version is cut.
   GitHub Sponsors link and a contact email, each in a box you can click
   where your terminal follows links, or copy with Enter (`docs/sponsor.md`).
 
+- **`/discord` shows the invite to the community server.** The page offers
+  the Alter Zero Discord invite in a box you can click where your terminal
+  follows links, or copy with Enter. The invite is built into the app, so
+  nothing on disk can change where it points (`docs/discord.md`).
+
 - **Ctrl+O keeps the command you are reading on screen.** The transcript
   shows every tool call's whole output, so one long `cargo test` or file
   read runs to hundreds of rows, and halfway down nothing said which

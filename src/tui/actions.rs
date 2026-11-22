@@ -272,6 +272,12 @@ impl Session<'_> {
                 // (docs/sponsor.md).
             }
             Action::CopySponsorLink(link) => self.copy_sponsor_link(link),
+            Action::OpenDiscordPage | Action::CloseDiscordPage => {
+                // The `/sponsor` page's rule: the pure open or close already
+                // happened and after_key schedules the frame
+                // (docs/discord.md).
+            }
+            Action::CopyDiscordInvite => self.copy_discord_invite(),
             // The pure open already happened; the boundary reloads the file
             // so a secret another session saved is listed (docs/secrets.md).
             Action::OpenSecretsPage => self.open_secrets_page(),
@@ -625,6 +631,9 @@ impl Session<'_> {
             View::Conversation if self.app.donate_picker.is_some() => {}
             // …nor the `/sponsor` page, its twin (docs/sponsor.md)…
             View::Conversation if self.app.sponsor_page.is_some() => {}
+            // …nor the `/discord` page, the `/sponsor` page's twin
+            // (docs/discord.md)…
+            View::Conversation if self.app.discord_page.is_some() => {}
             // …nor does the `/export` page, its sibling (docs/export.md)…
             View::Conversation if self.app.export_picker.is_some() => {}
             // …nor the `/context` page (docs/context-usage.md).

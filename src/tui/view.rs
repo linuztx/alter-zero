@@ -856,6 +856,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::sponsor_page_height(app, screen.width, screen.height) {
         return height;
     }
+    // The read-only `/discord` page, likewise (docs/discord.md).
+    if let Some(height) = ui::discord_page_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The read-only `/export` page, likewise (docs/export.md).
     if let Some(height) = ui::export_picker_height(app, screen.width, screen.height) {
         return height;

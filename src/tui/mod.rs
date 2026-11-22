@@ -91,6 +91,7 @@ pub(crate) mod commit;
 pub(crate) mod config;
 pub(crate) mod context_usage;
 pub(crate) mod diff;
+pub(crate) mod discord;
 pub(crate) mod donate;
 pub(crate) mod event_loop;
 pub(crate) mod export;

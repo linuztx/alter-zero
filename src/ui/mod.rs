@@ -47,6 +47,7 @@ mod context_usage_view;
 mod context_view;
 mod conversation;
 mod diff_view;
+mod discord_view;
 mod donate_view;
 mod export_view;
 mod file_cell;
@@ -111,6 +112,7 @@ pub use self::conversation::{
     banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,
 };
 pub use self::diff_view::{diff_body_rows, render_diff_view};
+pub use self::discord_view::{discord_page_height, discord_view_lines, render_discord_page};
 pub use self::donate_view::{donate_picker_height, donate_view_lines, render_donate_picker};
 pub use self::export_view::{
     export_picker_height, export_text, export_view_lines, render_export_picker,

@@ -44,7 +44,7 @@ pub fn sponsor_view_lines(app: &App, width: u16, height: u16) -> Vec<Line<'stati
         SPONSOR_LINKS.len(),
         &|| {
             vec![
-                vec![title_line(SPONSOR_TITLE_PREFIX, width)],
+                vec![title_line(SPONSOR_TITLE_PREFIX, "", width)],
                 model_wrapped_rows(SPONSOR_BLURB, model_meta_color(), width),
             ]
         },

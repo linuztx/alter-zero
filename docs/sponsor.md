@@ -4,7 +4,9 @@ The **`/sponsor`** command opens a read-only page with the two ways to back
 the developer or reach them: the GitHub Sponsors page and a contact address.
 It is the `/donate` page's twin (`docs/donate.md`) — the same frame, the same
 key grammar, the same short-terminal ladder — over a different catalog, for
-the reader who would rather sponsor through GitHub than send a coin.
+the reader who would rather sponsor through GitHub than send a coin. The
+`/discord` page (`docs/discord.md`) is this page's twin in turn, over the
+one invite to the community server.
 
 ## The rows
 

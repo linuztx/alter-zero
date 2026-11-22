@@ -885,6 +885,7 @@ pub fn cursor_visible(app: &App) -> bool {
         || app.config_review.is_some()
         || app.donate_picker.is_some()
         || app.sponsor_page.is_some()
+        || app.discord_page.is_some()
         || app.export_picker.is_some()
         || app.context_usage.is_some()
         || app.usage_page.is_some()
@@ -1203,6 +1204,11 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // …and the read-only `/sponsor` page, its twin (docs/sponsor.md).
     if app.sponsor_page.is_some() {
         let lines = super::sponsor_view::sponsor_view_lines(app, area.width, area.height);
+        return menu_marker_seat(&lines, area);
+    }
+    // …and the read-only `/discord` page, on its one row (docs/discord.md).
+    if app.discord_page.is_some() {
+        let lines = super::discord_view::discord_view_lines(app, area.width, area.height);
         return menu_marker_seat(&lines, area);
     }
     // …and the read-only `/export` page, its sibling (docs/export.md).
