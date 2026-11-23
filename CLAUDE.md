@@ -3408,7 +3408,7 @@ The `/settings` **Image generation** row (per directory, on by default,
 unavailable without the sign-in, its toast saying how to sign in) gates tool
 and skill, `ALTER_ZERO_IMAGEGEN` seeding it for a run, and a `/login` save
 turns both on at once; `tests/headless.rs` draws from a stand-in Chat
-Completions provider with the sign-in beside it, and `smoke.sh` Phase 167
+Completions provider with the sign-in beside it, and `smoke.sh` Phase 168
 drives it against a stub ChatGPT backend.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)

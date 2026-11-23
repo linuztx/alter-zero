@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 167 — imagegen: a ChatGPT sign-in turns on the tool, its built-in skill and its /settings row, and a turn makes an image
+# Phase 168 — imagegen: a ChatGPT sign-in turns on the tool, its built-in skill and its /settings row, and a turn makes an image
 
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 smoke_begin
@@ -18,38 +18,38 @@ smoke_begin
 # the fact line and the picture.
 
 # ---- half one: signed out, the seeded skill is withheld ----
-S167="${S}_imagegen"
+S168="${S}_imagegen"
 I_CFG="$SMOKE_TMP/cfg-signed-out"
 mkdir -p "$I_CFG"
 # No skills override: the built-ins are seeded into the config home, which is
 # what this half must see withheld. HOME is the suite's empty one.
 I_APP_OUT="env $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS ALTER_ZERO_CONFIG_DIR=$I_CFG ALTER_ZERO_SKILLS_DIR= $BIN_ABS"
-launch "$S167" 100 24 "$I_APP_OUT"
-type_text "$S167" "/skills"
-keys "$S167" Enter
+launch "$S168" 100 24 "$I_APP_OUT"
+type_text "$S168" "/skills"
+keys "$S168" Enter
 sleep 0.7
-out_menu="$(tmux capture-pane -t "$S167" -p)"
+out_menu="$(tmux capture-pane -t "$S168" -p)"
 dump "/skills signed out" "$out_menu"
 expect_has "$out_menu" -F "flaredantic" "/skills lists no built-ins at all"
 expect_lacks "$out_menu" -F "imagegen" "/skills lists the imagegen skill with nobody signed in"
-keys "$S167" Escape
+keys "$S168" Escape
 sleep 0.3
 # The /settings row: unavailable with nobody signed in, and Enter says why.
-type_text "$S167" "/settings"
-keys "$S167" Enter
-wait_pane 5 "$S167" -F "Type to search" >/dev/null || fail "/settings did not open signed out"
-type_text "$S167" "generation"
-out_row="$(wait_pane 5 "$S167" -E "Image generation +false \(unavailable\)")" \
+type_text "$S168" "/settings"
+keys "$S168" Enter
+wait_pane 5 "$S168" -F "Type to search" >/dev/null || fail "/settings did not open signed out"
+type_text "$S168" "generation"
+out_row="$(wait_pane 5 "$S168" -E "Image generation +false \(unavailable\)")" \
 	|| fail "the Image generation row is not unavailable with nobody signed in"
 dump "/settings signed out" "$out_row"
-keys "$S167" Enter
-wait_pane 5 "$S167" -F "it needs a ChatGPT sign-in" >/dev/null \
+keys "$S168" Enter
+wait_pane 5 "$S168" -F "it needs a ChatGPT sign-in" >/dev/null \
 	|| fail "the unavailable Image generation row does not say how to make it available"
 # Esc clears the search, then closes the page.
-keys "$S167" Escape
-keys "$S167" Escape
-wait_pane 5 "$S167" -E '^❯' >/dev/null || fail "Esc did not close /settings signed out"
-tmux kill-session -t "$S167" 2>/dev/null
+keys "$S168" Escape
+keys "$S168" Escape
+wait_pane 5 "$S168" -E '^❯' >/dev/null || fail "Esc did not close /settings signed out"
+tmux kill-session -t "$S168" 2>/dev/null
 if ! grep -q "^name: imagegen" "$I_CFG/skills/imagegen/SKILL.md" 2>/dev/null; then
 	fail "the imagegen built-in was not seeded while signed out"
 fi
@@ -60,7 +60,7 @@ for seeded in LICENSE.txt references/cli.md references/image-api.md references/p
 done
 
 # ---- half two: signed in, a turn makes an image ----
-S167B="${S}_imagegen_signed_in"
+S168B="${S}_imagegen_signed_in"
 I_LOG="$SMOKE_TMP/imagegen.log"
 I_PNG="$SMOKE_TMP/served.png"
 I_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
@@ -76,7 +76,7 @@ def b64url(raw):
 # The access token: claims naming a paid seat and its account. The app reads
 # the payload and never verifies the signature (docs/chatgpt.md).
 claims = {
-    "https://api.openai.com/auth": {"chatgpt_account_id": "acct-167", "chatgpt_plan_type": "plus"},
+    "https://api.openai.com/auth": {"chatgpt_account_id": "acct-168", "chatgpt_plan_type": "plus"},
     "exp": 4102444800,
 }
 jwt = ".".join([b64url(b'{"alg":"none"}'), b64url(json.dumps(claims).encode()), b64url(b"sig")])
@@ -107,7 +107,7 @@ def sse(frames):
     return "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames).encode()
 
 USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
-CALL = {"type": "function_call", "id": "fc_1", "call_id": "call_167",
+CALL = {"type": "function_call", "id": "fc_1", "call_id": "call_168",
         "name": "imagegen", "arguments": json.dumps({"prompt": "a red square"})}
 
 class Stub(BaseHTTPRequestHandler):
@@ -121,7 +121,7 @@ class Stub(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
         self.record(body)
         if self.path == "/oauth/token":
-            self.reply(200, {"access_token": jwt, "refresh_token": "rt-167-rotated", "expires_in": 3600})
+            self.reply(200, {"access_token": jwt, "refresh_token": "rt-168-rotated", "expires_in": 3600})
         elif self.path.startswith("/images/generations"):
             self.reply(200, {"created": 1, "background": "opaque", "output_format": "png",
                              "data": [{"b64_json": base64.b64encode(picture).decode(),
@@ -195,31 +195,31 @@ mkdir -p "$I_CFG2"
 I_DIR="$(work_dir)"
 # Half-blocks at a fixed cell, so the picture is drawn in the pane's own text
 # (docs/images.md); NO_PROXY keeps a developer's proxy off the loopback.
-launch -c "$I_DIR" "$S167B" 100 40 "env $CFG_ENV_NOHIST ALTER_ZERO_CONFIG_DIR=$I_CFG2 ALTER_ZERO_SKILLS_DIR= NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_OPENAI_ISSUER=$I_BASE ALTER_ZERO_PROVIDERS_FILE=$I_PROVIDERS ALTER_ZERO_PROVIDER=chatgpt_codex ALTER_ZERO_MODEL=gpt-stub CHATGPT_CODEX_REFRESH_TOKEN=rt-167 ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 $BIN_ABS"
+launch -c "$I_DIR" "$S168B" 100 40 "env $CFG_ENV_NOHIST ALTER_ZERO_CONFIG_DIR=$I_CFG2 ALTER_ZERO_SKILLS_DIR= NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 ALTER_ZERO_OPENAI_ISSUER=$I_BASE ALTER_ZERO_PROVIDERS_FILE=$I_PROVIDERS ALTER_ZERO_PROVIDER=chatgpt_codex ALTER_ZERO_MODEL=gpt-stub CHATGPT_CODEX_REFRESH_TOKEN=rt-168 ALTER_ZERO_IMAGE_PROTOCOL=halfblocks ALTER_ZERO_IMAGE_CELL_SIZE=5x10 $BIN_ABS"
 
 # Signed in, the skill is listed — the same session that withheld nothing.
-type_text "$S167B" "/skills"
-keys "$S167B" Enter
-in_menu="$(wait_pane 8 "$S167B" -F "imagegen")" || fail "/skills does not list the imagegen skill while signed in"
+type_text "$S168B" "/skills"
+keys "$S168B" Enter
+in_menu="$(wait_pane 8 "$S168B" -F "imagegen")" || fail "/skills does not list the imagegen skill while signed in"
 dump "/skills signed in" "$in_menu"
-keys "$S167B" Escape
+keys "$S168B" Escape
 sleep 0.4
 # …and so is the /settings row, on until a directory turns it off.
-type_text "$S167B" "/settings"
-keys "$S167B" Enter
-wait_pane 5 "$S167B" -F "Type to search" >/dev/null || fail "/settings did not open signed in"
-type_text "$S167B" "generation"
-in_row="$(wait_pane 5 "$S167B" -E "Image generation +true")" \
+type_text "$S168B" "/settings"
+keys "$S168B" Enter
+wait_pane 5 "$S168B" -F "Type to search" >/dev/null || fail "/settings did not open signed in"
+type_text "$S168B" "generation"
+in_row="$(wait_pane 5 "$S168B" -E "Image generation +true")" \
 	|| fail "the Image generation row is not on with a sign-in"
 dump "/settings signed in" "$in_row"
-keys "$S167B" Escape
-keys "$S167B" Escape
-wait_pane 5 "$S167B" -E '^❯' >/dev/null || fail "Esc did not close /settings signed in"
+keys "$S168B" Escape
+keys "$S168B" Escape
+wait_pane 5 "$S168B" -E '^❯' >/dev/null || fail "Esc did not close /settings signed in"
 
 # The turn: the stub's model calls `imagegen`, the image is made and saved,
 # and the model's reply follows.
-submit "$S167B" "make me a small red square image"
-done_pane="$(wait_pane 20 "$S167B" -F "Here is your red square.")" || fail "the turn never finished"
+submit "$S168B" "make me a small red square image"
+done_pane="$(wait_pane 20 "$S168B" -F "Here is your red square.")" || fail "the turn never finished"
 dump "the turn that made an image" "$done_pane"
 expect_has "$done_pane" -F "● ImageGen(a red square)" "the cell does not name the tool and its prompt"
 expect_has "$done_pane" -F "Generated image (PNG, 16x16" "the cell does not state the image's facts"
@@ -227,7 +227,7 @@ expect_has "$done_pane" -F "Saved to" "the cell does not say where the image is"
 # The picture itself: half-block cells in the served square's own red — a
 # uniform colour draws as coloured cells a plain capture shows blank, so the
 # colour is what is looked for (`capture-pane -e`).
-drawn="$(tmux capture-pane -t "$S167B" -p -e)"
+drawn="$(tmux capture-pane -t "$S168B" -p -e)"
 if ! printf '%s\n' "$drawn" | grep -qE '(38|48);2;220;30;30'; then
 	dump "the escaped pane" "$drawn"
 	fail "no picture was drawn under the cell"
@@ -251,7 +251,7 @@ assert len(images) == 1, f"{len(images)} image requests"
 request = images[0]
 headers = request["headers"]
 assert headers["authorization"].startswith("Bearer "), headers
-assert headers["chatgpt-account-id"] == "acct-167", headers
+assert headers["chatgpt-account-id"] == "acct-168", headers
 assert headers["originator"] == "codex_cli_rs", headers
 assert "version" not in headers, "Codex sends no version header: %s" % headers
 assert headers.get("x-codex-image-turn-id"), headers
@@ -270,6 +270,6 @@ assert pictures and pictures[-1]["image_url"].startswith("data:image/png;base64,
 print("ok: Codex's body, the sign-in's headers, and the picture handed back")
 PY
 
-submit "$S167B" "/quit"
+submit "$S168B" "/quit"
 sleep 0.6
-tmux kill-session -t "$S167B" 2>/dev/null
+tmux kill-session -t "$S168B" 2>/dev/null

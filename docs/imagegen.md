@@ -337,7 +337,7 @@ while the tool is not offered (`llm::skill::load_skills`):
   multi-megabyte answer and holds the growth under 2 MB;
   `cargo test --test image_fit_memory` fits three pictures past the cap and
   holds the growth to the copies' encodings plus 4 MB.
-- **On screen:** `smoke.sh` Phase 167 drives a turn end to end against a
+- **On screen:** `smoke.sh` Phase 168 drives a turn end to end against a
   stand-in for the ChatGPT backend, with no network:
   - a ChatGPT Codex session asks for an image;
   - the stub's Responses stream calls `imagegen`;
