@@ -69,6 +69,10 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         crate::llm::tools::AGENT_OUTPUT_TOOL => Some(crate::llm::tools::AGENT_OUTPUT_DISPLAY),
         crate::llm::tools::AGENT_KILL_TOOL => Some(crate::llm::tools::AGENT_KILL_DISPLAY),
         crate::llm::tools::AGENT_LIST_TOOL => Some(crate::llm::tools::AGENT_LIST_DISPLAY),
+        // And the image tool (docs/imagegen.md).
+        crate::llm::imagegen::IMAGEGEN_TOOL_NAME => {
+            Some(crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY)
+        }
         _ => None,
     }
 }

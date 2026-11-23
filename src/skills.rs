@@ -697,6 +697,19 @@ impl SkillRegistry {
         skill_listing(&self.enabled(), budget)
     }
 
+    /// [`listing`](Self::listing), leaving out the skills whose folders are
+    /// `hidden` — a subagent is not briefed on a skill whose tool its type
+    /// may not call (`docs/imagegen.md`).
+    #[must_use]
+    pub fn listing_except(&self, budget: usize, hidden: &[&Path]) -> String {
+        let shown: Vec<SkillMetadata> = self
+            .enabled()
+            .into_iter()
+            .filter(|skill| !hidden.contains(&skill.dir.as_path()))
+            .collect();
+        skill_listing(&shown, budget)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, RegistryState> {
         self.state
             .lock()

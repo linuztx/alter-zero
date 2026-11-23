@@ -346,6 +346,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
         hooks: true,
         skills: true,
         mcp: true,
+        imagegen: true,
         images: true,
         telemetry: true,
         update_check: true,

@@ -1514,3 +1514,102 @@ fn a_picture_whose_file_is_gone_keeps_drawing_what_was_encoded() {
     );
     set_policy(ImagePolicy::default());
 }
+
+// ===== a picture held to the attachment cap (docs/imagegen.md) =====
+
+/// A PNG of `w`×`h` pixels that compresses about as badly as a photo does,
+/// so a smaller copy is smaller in bytes too — a gradient's copy can come
+/// out no smaller than the original.
+fn noise_png(w: u32, h: u32) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    let picture = image::RgbImage::from_fn(w, h, |_, _| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let [r, g, b, _] = state.to_le_bytes();
+        image::Rgb([r, g, b])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(picture)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+/// The bytes a `data:` URL's payload decodes to, counted.
+fn payload_len(url: &str) -> usize {
+    let (_, b64) = url.split_once(";base64,").expect("a data: URL");
+    b64.len() / 4 * 3 - b64.bytes().rev().take_while(|b| *b == b'=').count()
+}
+
+#[test]
+fn a_picture_within_the_cap_attaches_as_it_is_and_leaves_no_copy() {
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("1.png");
+    let png = noise_png(64, 48);
+    std::fs::write(&path, &png).unwrap();
+
+    let fitted = fitted_attachment_data_url(&path, png.len()).expect("encodes");
+    assert_eq!(fitted.sent, None, "sent as it is");
+    assert_eq!(&*fitted.url, data_url_of("image/png", &png));
+    assert!(!dir.path().join(FITTED_DIR).exists(), "no copy is written");
+}
+
+#[test]
+fn a_picture_past_the_cap_sends_a_fitted_copy_every_later_turn_sends_too() {
+    // A provider refuses an image past its limit, and the conversation
+    // re-sends the picture on every turn — so the copy sent in its place is
+    // kept beside it, and the encoder prefers it after a restart too.
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("1.png");
+    let png = noise_png(1200, 800);
+    std::fs::write(&path, &png).unwrap();
+    let cap = png.len() / 2;
+
+    let fitted = fitted_attachment_data_url(&path, cap).expect("a smaller copy fits");
+    let (w, h) = fitted.sent.expect("sent smaller");
+    assert!(w < 1200 && h < 800, "{w}x{h}");
+    assert_eq!(w * 800, h * 1200, "the aspect is kept: {w}x{h}");
+    assert!(payload_len(&fitted.url) <= cap, "within the cap");
+    assert!(dir.path().join(FITTED_DIR).is_dir(), "the copy is kept");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        png,
+        "the picture is untouched"
+    );
+    // This session's next turn shares the very encoding…
+    let later = attachment_data_url(&path).expect("served");
+    assert!(AttachmentUrl::ptr_eq(&fitted.url, &later));
+    // …and a restart, whose cache starts empty, sends the same bytes.
+    clear_attachments();
+    let resumed = attachment_data_url(&path).expect("encodes after a restart");
+    assert_eq!(&*resumed, &*fitted.url);
+}
+
+#[test]
+fn a_copy_older_than_its_picture_is_never_sent() {
+    // The picture rewritten after its copy was made: the copy is stale and
+    // the picture itself goes up.
+    let _guard = policy_lock();
+    set_policy(ImagePolicy::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("1.png");
+    let png = noise_png(1200, 800);
+    std::fs::write(&path, &png).unwrap();
+    fitted_attachment_data_url(&path, png.len() / 2).expect("a copy fits");
+
+    let replacement = noise_png(30, 20);
+    std::fs::write(&path, &replacement).unwrap();
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    clear_attachments();
+    assert_eq!(
+        &*attachment_data_url(&path).expect("encodes"),
+        data_url_of("image/png", &replacement)
+    );
+}

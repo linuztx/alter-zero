@@ -503,6 +503,38 @@ impl ProvidersFile {
         self.providers.get(id)
     }
 
+    /// The provider that signs in with `scheme` and has a credential stored —
+    /// its **own** key variable, or that variable's old name, answering
+    /// through `lookup` with something non-empty. Never the generic
+    /// `ALTER_ZERO_API_KEY`, which a key meant for another provider would
+    /// answer (`docs/imagegen.md`). The shipped provider of a scheme is asked
+    /// first; `None` while nobody is signed in that way.
+    #[must_use]
+    pub fn signed_in_with(
+        &self,
+        scheme: AuthScheme,
+        lookup: impl Fn(&str) -> Option<String>,
+    ) -> Option<&str> {
+        let stored = |name: &str| lookup(name).is_some_and(|value| !value.is_empty());
+        let shipped = (scheme == AuthScheme::ChatGptCodex).then_some(super::chatgpt::PROVIDER_ID);
+        let ids = shipped
+            .into_iter()
+            .chain(self.providers.keys().map(String::as_str));
+        for id in ids {
+            let Some((id, provider)) = self.providers.get_key_value(id) else {
+                continue;
+            };
+            if provider.auth != scheme {
+                continue;
+            }
+            let var = provider.key_env(id);
+            if stored(&var) || super::chatgpt::legacy_key_env(&var).is_some_and(stored) {
+                return Some(id.as_str());
+            }
+        }
+        None
+    }
+
     /// Resolve a [`Selection`] into a [`ModelConfig`], or `None` when the
     /// selected provider isn't in the file.
     #[must_use]
@@ -982,6 +1014,53 @@ mod tests {
         assert_eq!(
             cline.api_key_url.as_deref(),
             Some("https://app.cline.bot/dashboard/account")
+        );
+    }
+
+    #[test]
+    fn the_chatgpt_sign_in_is_found_by_its_own_token_variable() {
+        let file = ProvidersFile::builtin();
+        let lookup = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_string())
+            }
+        };
+        assert_eq!(
+            file.signed_in_with(
+                AuthScheme::ChatGptCodex,
+                lookup(&[("CHATGPT_CODEX_REFRESH_TOKEN", "rt-1")])
+            ),
+            Some("chatgpt_codex")
+        );
+        // A token stored under the variable's old name still signs in.
+        assert_eq!(
+            file.signed_in_with(
+                AuthScheme::ChatGptCodex,
+                lookup(&[("OPENAI_CHATGPT_REFRESH_TOKEN", "rt-1")])
+            ),
+            Some("chatgpt_codex")
+        );
+        // The generic fallback key is meant for some other provider: it is
+        // no ChatGPT sign-in (docs/imagegen.md).
+        assert_eq!(
+            file.signed_in_with(
+                AuthScheme::ChatGptCodex,
+                lookup(&[("ALTER_ZERO_API_KEY", "sk-1")])
+            ),
+            None
+        );
+        assert_eq!(
+            file.signed_in_with(
+                AuthScheme::ChatGptCodex,
+                lookup(&[("CHATGPT_CODEX_REFRESH_TOKEN", "")])
+            ),
+            None
+        );
+        assert_eq!(
+            file.signed_in_with(AuthScheme::ChatGptCodex, lookup(&[])),
+            None
         );
     }
 

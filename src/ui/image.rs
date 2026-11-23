@@ -17,17 +17,18 @@ use ratatui::text::{Line, Span};
 use crate::app::{HistoryItem, Message, Role, ToolCall};
 use crate::images;
 
-/// The `read` tool's name, as the model spells it — the one tool whose output
-/// can be a picture.
+/// The `read` tool's name, as the model spells it — one of the two tools
+/// whose output can be a picture; `imagegen` is the other.
 const READ_TOOL: &str = "read";
 
 /// Every picture a history item shows, as `(path, pixel size)` in the order
 /// they should be drawn.
 ///
-/// Two sources, and only two: a `read` whose result was an image (the size
-/// comes from the tool's own fact line, so it survives a `/resume`), and a
-/// user message carrying Ctrl+V attachments (the size comes from the registry
-/// the paste boundary filled). Everything else has no picture.
+/// Three sources, and only three: a `read` whose result was an image and an
+/// `imagegen` call that saved one (each size from the tool's own fact line,
+/// so it survives a `/resume`), and a user message carrying Ctrl+V
+/// attachments (the size comes from the registry the paste boundary filled).
+/// Everything else has no picture.
 #[must_use]
 pub fn item_images(item: &HistoryItem) -> Vec<(String, (u32, u32))> {
     match item {
@@ -58,9 +59,20 @@ pub fn item_image_paths(item: &HistoryItem) -> Vec<String> {
     }
 }
 
-/// The picture a resolved `read` call shows, if its result was one.
+/// The picture a resolved call shows: an image `read`'s file, or the file a
+/// generated image was saved to — read off its own fact line, which names
+/// the size too (`docs/imagegen.md`).
 fn tool_image(tool: &ToolCall) -> Option<(String, (u32, u32))> {
-    if !tool.name.eq_ignore_ascii_case(READ_TOOL) || tool.shell {
+    if tool.shell {
+        return None;
+    }
+    if tool
+        .name
+        .eq_ignore_ascii_case(crate::llm::imagegen::IMAGEGEN_TOOL_NAME)
+    {
+        return crate::llm::imagegen::generated_image(&tool.output);
+    }
+    if !tool.name.eq_ignore_ascii_case(READ_TOOL) {
         return None;
     }
     let px = images::read_image_size(&tool.output)?;

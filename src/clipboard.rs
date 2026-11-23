@@ -444,7 +444,7 @@ pub(crate) fn store_image(
 /// need be — for a picture on its way in ([`STAGING_PREFIX`]): inside, so the
 /// move onto its number is a same-filesystem rename. Dropped unkept it
 /// deletes itself, which is every refusal's cleanup.
-fn staging_file(dir: &Path, ext: &str) -> Result<tempfile::NamedTempFile, String> {
+pub(crate) fn staging_file(dir: &Path, ext: &str) -> Result<tempfile::NamedTempFile, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     tempfile::Builder::new()
         .prefix(STAGING_PREFIX)
@@ -460,7 +460,11 @@ fn staging_file(dir: &Path, ext: &str) -> Result<tempfile::NamedTempFile, String
 /// number, an exclusive create can't be won twice, and the loser simply
 /// takes the one after — so no paste is ever overwritten by another, and a
 /// picture already in the folder is never clobbered either.
-fn keep_numbered(tmp: tempfile::NamedTempFile, dir: &Path, ext: &str) -> Result<PathBuf, String> {
+pub(crate) fn keep_numbered(
+    tmp: tempfile::NamedTempFile,
+    dir: &Path,
+    ext: &str,
+) -> Result<PathBuf, String> {
     let names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("could not list {}: {e}", dir.display()))?
         .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))

@@ -116,8 +116,15 @@ impl Session<'_> {
     /// skill appeared still carried no `<system-reminder>` — the listing
     /// arrived a turn late, which reads exactly like the rescan not working.
     pub(crate) fn rescan_skills(&mut self) {
-        let (mut skills, errors) =
-            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
+        // The `imagegen` tool first (docs/imagegen.md): a ChatGPT sign-in
+        // since the last turn turns it on, and with it the seeded skill that
+        // drives it, which the walk withholds while the tool is not offered.
+        self.models.refresh_imagegen();
+        let (mut skills, errors) = alter_zero::llm::skill::load_skills(
+            &self.cwd,
+            config::config_home().as_deref(),
+            self.models.imagegen_offered(),
+        );
         // …and the enabled plugins' skills and commands after them, each
         // `{plugin}:{name}` (docs/plugins.md).
         skills.extend(self.plugins.skills());
@@ -203,6 +210,9 @@ impl Session<'_> {
             skills: !self.skill_registry.is_empty(),
             // …nor when no MCP server is declared anywhere (`docs/mcp.md`).
             mcp: self.mcp.has_servers(),
+            // …nor image generation without a ChatGPT Codex sign-in to make
+            // images with (`docs/imagegen.md`).
+            imagegen: self.models.chatgpt_signed_in(),
             // Whether this terminal can draw a picture (`docs/images.md`).
             images: self.term.image_capability().0,
             // Nowhere to keep an install id without a config home — and
@@ -262,7 +272,10 @@ impl Session<'_> {
             // a tool it was told it had (`docs/skills.md`).
             SettingKey::Tools => {
                 self.models.set_tools(settings.tools);
-                self.sync_listings();
+                // The rescan re-renders the listing — and re-decides whether
+                // the built-in `imagegen` skill is read, since its tool rides
+                // the tool set (docs/imagegen.md).
+                self.rescan_skills();
             }
             // The retry budget rides every round of every turn — the main
             // one's and a subagent's.
@@ -306,6 +319,13 @@ impl Session<'_> {
             // Off stops every server and withdraws their tools; on connects
             // the ones the user has enabled in `/mcp` (docs/mcp.md).
             SettingKey::Mcp => self.apply_mcp_setting(settings.mcp_active()),
+            // The tool rides the backend build, and the skill that teaches it
+            // is read only while it is offered — so the row does both
+            // (docs/imagegen.md).
+            SettingKey::ImageGen => {
+                self.models.set_imagegen(settings.imagegen);
+                self.rescan_skills();
+            }
             // The picture geometry: republish the policy, drop the encoded
             // pictures, and rebuild so the committed ones change with it.
             SettingKey::ShowImages | SettingKey::ImageWidth => {

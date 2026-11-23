@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use image::ImageFormat;
 
 use super::AUTO_RESIZE_MAX_PIXELS;
-use super::payload::{cached_payload_file, downscale_for_model_at, payload_mime};
+use super::payload::{
+    cached_payload_file, downscale_file_to, downscale_for_model_at, payload_mime,
+};
 use super::registry::auto_resizing;
 use super::resize_target;
 
@@ -330,6 +332,12 @@ fn attachment_format(mime: &str) -> Option<ImageFormat> {
 /// to shrink it, and only once: the shrunk copy is a sidecar on disk from
 /// then on ([`super::payload`]).
 fn encode_attachment(path: &Path) -> Option<AttachmentUrl> {
+    // A picture too large to attach was sent as a smaller copy, kept beside
+    // it so every later turn — a restart included — sends that copy again
+    // ([`fitted_attachment_data_url`]).
+    if let Some((copy, mime)) = fitted_copy(path) {
+        return stream_file(&copy, mime);
+    }
     let mime = attachment_mime(path);
     if let Some(format) = attachment_format(mime)
         && auto_resizing()
@@ -348,6 +356,124 @@ fn encode_attachment(path: &Path) -> Option<AttachmentUrl> {
         }
     }
     stream_file(path, mime)
+}
+
+/// The folder beside a picture that holds the copy sent in its place when the
+/// picture itself is past the attachment cap ([`fitted_attachment_data_url`],
+/// `docs/imagegen.md`).
+pub const FITTED_DIR: &str = ".attachments";
+
+/// The edges a picture past the cap is shrunk to, largest first, until a
+/// copy fits.
+const FITTED_EDGES: [u32; 5] = [1536, 1024, 768, 512, 256];
+
+/// An encoding held to an attachment cap: the `data:` URL, and the pixel size
+/// it was shrunk to when the picture itself was too large to send — `None`
+/// when it went up as it is.
+#[derive(Debug, Clone)]
+pub struct FittedAttachment {
+    /// What the request carries.
+    pub url: AttachmentUrl,
+    /// The copy's pixel size, when a copy was sent.
+    pub sent: Option<(u32, u32)>,
+}
+
+/// The encoding of the picture at `path`, its payload held to `cap` bytes —
+/// [`attachment_data_url`]'s when that fits, else a copy shrunk until it
+/// does. A provider refuses an image past its limit, and a conversation
+/// re-sends every picture it holds on every turn, so a picture too large to
+/// attach would fail each request from then on; the copy is written to
+/// [`FITTED_DIR`] beside the picture, which the encoder sends in the
+/// picture's place on every later turn — a restart included — and is held as
+/// the picture's encoding now. The picture itself is never touched. `None`
+/// when the file can't be read or no copy fits.
+#[must_use]
+pub fn fitted_attachment_data_url(path: &Path, cap: usize) -> Option<FittedAttachment> {
+    // Decided before anything is encoded: a picture's encoding is its size
+    // in memory again, and one made only to be thrown away is the residue
+    // glibc keeps (`docs/memory.md`).
+    let len = usize::try_from(std::fs::metadata(path).ok()?.len()).ok()?;
+    let shrinks = auto_resizing() && needs_shrink(path, AUTO_RESIZE_MAX_PIXELS);
+    if !shrinks && len <= cap {
+        return attachment_data_url(path).map(|url| FittedAttachment { url, sent: None });
+    }
+    if shrinks {
+        // **Auto-resize images** makes a smaller payload first, as for any
+        // large picture; past the cap even so, it is fitted below.
+        let url = attachment_data_url(path)?;
+        if payload_len(&url) <= cap {
+            return Some(FittedAttachment { url, sent: None });
+        }
+    }
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    let (width, height) = reader.into_dimensions().ok()?;
+    let longest = width.max(height);
+    let small = FITTED_EDGES
+        .iter()
+        .filter(|edge| **edge < longest)
+        .find_map(|edge| downscale_file_to(path, format, *edge).filter(|s| s.bytes.len() <= cap))?;
+    let copy = fitted_copy_path(path, small.format)?;
+    write_copy(&copy, &small.bytes).ok()?;
+    let url = remember_attachment(path, &small.bytes, payload_mime(small.format));
+    Some(FittedAttachment {
+        url,
+        sent: Some(small.size),
+    })
+}
+
+/// How many bytes a `data:` URL's payload decodes to, read off its length.
+fn payload_len(url: &str) -> usize {
+    let b64 = url.split_once(";base64,").map_or(url, |(_, b64)| b64);
+    let padding = b64.bytes().rev().take_while(|b| *b == b'=').count();
+    (b64.len() / 4 * 3).saturating_sub(padding)
+}
+
+/// Where the copy of the picture at `path` lives in `format`:
+/// `{dir}/.attachments/{file name}.{png|jpg}`.
+fn fitted_copy_path(path: &Path, format: ImageFormat) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let ext = if format == ImageFormat::Jpeg {
+        "jpg"
+    } else {
+        "png"
+    };
+    Some(
+        path.parent()?
+            .join(FITTED_DIR)
+            .join(format!("{name}.{ext}")),
+    )
+}
+
+/// The copy sent in place of the picture at `path`, and its MIME — only one
+/// made from the picture as it is now: a picture rewritten since its copy was
+/// made is newer than the copy, and goes up itself.
+fn fitted_copy(path: &Path) -> Option<(PathBuf, &'static str)> {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|meta| meta.modified()).ok();
+    let picture = modified(path)?;
+    [
+        (ImageFormat::Png, "image/png"),
+        (ImageFormat::Jpeg, "image/jpeg"),
+    ]
+    .into_iter()
+    .filter_map(|(format, mime)| Some((fitted_copy_path(path, format)?, mime)))
+    .find(|(copy, _)| modified(copy).is_some_and(|made| made >= picture))
+}
+
+/// Write the copy through a temp file and a rename, so a turn reading it on
+/// another thread never sees half of one.
+fn write_copy(copy: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = copy
+        .parent()
+        .ok_or_else(|| io::Error::other("a copy has a folder"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = tempfile::Builder::new().prefix(".copy-").tempfile_in(dir)?;
+    std::fs::write(tmp.path(), bytes)?;
+    tmp.persist(copy).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// Whether the picture at `path` is larger than `max` on an edge, read from

@@ -55,6 +55,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Hooks** | **`true`** / `false` | Whether the lifecycle hooks the user trusted run — the user's `~/.alter-zero/hooks.json` and a project's — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **On until a directory turns it off** (`docs/per-directory-state.md`); each hook runs once it is trusted in the startup review (`docs/config-review.md`); seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **MCP** | **`true`** / `false` | Whether the MCP servers connect and the model is offered their tools and instructions (`docs/mcp.md` *MCP off for the session*). **On until a directory turns it off**, the Hooks posture. Off stops every server, and each keeps its own `/mcp` enabled or disabled state, so turning the row back on brings back exactly the servers that were enabled; `/mcp` still opens and says MCP is off. Seeded from `ALTER_ZERO_MCP`; **unavailable** when no server is declared in the user's `mcp.json` or a project's. |
+| **Image generation** | **`true`** / `false` | Whether the `imagegen` tool — images made with the ChatGPT Codex sign-in, whatever provider the chat runs on — and the built-in `imagegen` skill that teaches it are offered (`docs/imagegen.md`). **On until a directory turns it off**, the MCP posture; it rides **Tools** like **Skills** does. Seeded from `ALTER_ZERO_IMAGEGEN`; **unavailable** without a ChatGPT Codex sign-in, and the only unavailable row whose toast says how to make it available (`SettingKey::unavailable_reason`: sign in with `/login`). |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
 | **Ask timeout** | `5m` / **`10m`** / `20m` / `30m` / `1h` / `never` | How long an `AskUserQuestion` question waits on an **idle** user before it resolves unanswered and the agent keeps working on its own judgment (`docs/ask.md`) — any key press or paste starts the wait over, and the modal's closing rule counts it down. `never` stops the clock. Seeded from `ALTER_ZERO_ASK_TIMEOUT_SECS` (seconds, `0` = never), whose odd values still read whole (`1m 30s`). Read where it is used: the draw tick reads it on every reading of the idle clock, so a new value applies to a wait already running and `never` stops it at once. |
@@ -303,6 +304,10 @@ docs`.
     gaining each one's tools as its connect lands, opens the review's servers
     page over project servers waiting for it, and names a config problem the
     startup kept quiet about (`docs/mcp.md`).
+  - **Image generation** rebuilds the backend when the tool set flips
+    (`ModelSession::set_imagegen`) and rescans the skills, since the built-in
+    `imagegen` skill is read only while its tool is offered
+    (`docs/imagegen.md`). **Tools** rescans for the same reason.
   - **Verbose output** purge-rebuilds the conversation, the **Show images**
     rule: every committed read and search changes shape — a cell per call, or
     one collapsed line — and the rebuild repaints them from history. Turning
@@ -389,7 +394,8 @@ Precedence at startup is the same rule the rest of the app follows — **the
 environment wins**: an explicitly set `ALTER_ZERO_*` variable overrides the saved
 value for that one setting (`tui::config::apply_setting_overrides` — including
 `ALTER_ZERO_HOOKS`, which seeds the **Hooks** row the way `ALTER_ZERO_TOOLS`
-seeds **Tools**, and `ALTER_ZERO_MCP`, which seeds **MCP** the same way).
+seeds **Tools**, `ALTER_ZERO_MCP`, which seeds **MCP** the same way, and
+`ALTER_ZERO_IMAGEGEN`, which seeds **Image generation**).
 Anything neither set nor saved takes its default.
 
 And, as with `ALTER_ZERO_MODEL`, the environment **never sticks**. A save is a

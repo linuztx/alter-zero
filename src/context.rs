@@ -19,7 +19,6 @@
 use std::path::PathBuf;
 
 use crate::app::{HistoryItem, Role, ToolCall};
-use crate::llm::tools::{image_attachment_note, is_image_read_output};
 
 /// Codex's `/compact` summarization prompt (`prompts/compact_prompt.md`,
 /// verbatim): the user message the compact turn sends over the whole current
@@ -378,6 +377,10 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
         // optional `args` are lossy the same way `bash`'s `timeout` is;
         // the result below carries the body they already rendered into.
         crate::skills::SKILL_TOOL_DISPLAY => "skill",
+        // An `imagegen` call's summary is its prompt, the one required
+        // parameter (`docs/imagegen.md`) — lossy past the header's one line,
+        // but a request a validating provider accepts.
+        crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY => "prompt",
         _ => return "{}".to_string(),
     };
     serde_json::json!({ key: tool.args }).to_string()
@@ -836,8 +839,11 @@ fn record_calls(item: &HistoryItem, ids: &mut CallIds, entries: &mut Vec<RoundEn
             // so later turns keep seeing them. The stored args are the path
             // — the backend re-encodes it each request (a gone file becomes
             // an `[image unavailable]` note there).
-            let attachment = (tool.name == "Read" && is_image_read_output(&tool.output))
-                .then(|| (image_attachment_note(&tool.args), PathBuf::from(&tool.args)));
+            // A generated image rides the same way, from the file its fact
+            // line names (docs/imagegen.md).
+            let attachment =
+                crate::llm::tools::recorded_attachment(&tool.name, &tool.args, &tool.output)
+                    .map(|(note, path)| (note, PathBuf::from(path)));
             entries.push(RoundEntry {
                 position: tool.position,
                 call,
@@ -1735,6 +1741,48 @@ mod tests {
     }
 
     #[test]
+    fn a_generated_image_replays_its_attachment_from_its_fact_line() {
+        // The picture rides every later turn, so a follow-up edit can look at
+        // what it is editing (docs/imagegen.md); the file is the one the fact
+        // line names — the header is the prompt, not a path.
+        let fact = crate::llm::imagegen::format_generated(
+            "PNG",
+            (1024, 1024),
+            1_500_000,
+            "/home/me/.alter-zero/generated_images/s1/1.png",
+        );
+        let history = vec![tool("ImageGen", "a red fox", &fact, ToolStatus::Ok, false)];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "call + result + attachment note: {ctx:?}");
+        assert_eq!(ctx[0].tool_calls[0].name, "imagegen");
+        let note = &ctx[2];
+        assert_eq!(note.role, ContextRole::User);
+        assert_eq!(
+            note.text,
+            crate::llm::tools::attachment_note("imagegen", r#"{"prompt": "a red fox"}"#, &fact),
+            "the note text matches the live turn's exactly"
+        );
+        assert_eq!(
+            note.images,
+            vec![PathBuf::from(
+                "/home/me/.alter-zero/generated_images/s1/1.png"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_generation_replays_without_an_attachment() {
+        let history = vec![tool(
+            "ImageGen",
+            "a red fox",
+            "image generation failed: HTTP 500: image backend failed",
+            ToolStatus::Failed,
+            false,
+        )];
+        assert_eq!(context_messages(&history).len(), 2);
+    }
+
+    #[test]
     fn a_text_read_replays_without_an_attachment() {
         let history = vec![tool(
             "Read",
@@ -2618,6 +2666,22 @@ mod tests {
         )];
         let ctx = context_messages(&history);
         assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"path":"hello.py"}"#);
+    }
+
+    #[test]
+    fn a_generated_image_without_its_arguments_replays_its_prompt() {
+        // `prompt` is required, and a validating provider rejects the call
+        // without it; the header summary is the prompt (docs/imagegen.md).
+        let fact = crate::llm::imagegen::format_generated("PNG", (8, 8), 90, "/g/s1/1.png");
+        let history = vec![tool(
+            crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+            "a red fox",
+            &fact,
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls[0].arguments, r#"{"prompt":"a red fox"}"#);
     }
 
     #[test]

@@ -71,6 +71,30 @@ fn a_silent_running_command_shows_its_clock_and_timeout_live() {
 }
 
 #[test]
+fn a_running_image_generation_shows_how_long_it_has_run() {
+    // A generation takes minutes; a bare `⎿ Running…` for that long reads as
+    // stuck (docs/imagegen.md). The clock is the call's own.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool(
+        crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+        "a red fox at dawn",
+        Some(r#"{"prompt":"a red fox at dawn"}"#),
+    );
+    app.set_status_times(Duration::from_secs(90), None);
+    app.set_command_elapsed(Some(Duration::from_secs(42)));
+    let preview: Vec<String> = preview_tool_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(
+        preview,
+        [
+            "● ImageGen(a red fox at dawn)".to_string(),
+            "  ⎿  Generating image… (42s)".to_string(),
+        ]
+    );
+    assert_eq!(usize::from(preview_rows(&app, 80)), preview.len());
+}
+
+#[test]
 fn a_running_command_whose_output_fits_shows_the_clock_row_under_it() {
     // Second shape: output, but nothing hidden above the window — the clock
     // row stands alone under the output, counting against the model's own

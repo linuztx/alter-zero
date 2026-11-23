@@ -737,6 +737,32 @@ pub(crate) fn paste_store_dir(session: &str) -> PathBuf {
     }
 }
 
+/// Where this session's **generated images** are saved:
+/// `{config_home}/generated_images/{session}` (`docs/imagegen.md`) — durable
+/// like the paste folder, so a resumed conversation still shows its
+/// pictures, and kept: an image is something the user asked for. With no
+/// config home the same layout under the system temp dir. Created by the
+/// first image, not here.
+pub(crate) fn generated_images_dir(session: &str) -> PathBuf {
+    match config_home() {
+        Some(home) => home.join("generated_images").join(session),
+        None => std::env::temp_dir()
+            .join("alter-zero-generated-images")
+            .join(session),
+    }
+}
+
+/// The provider id of the stored **ChatGPT Codex sign-in**, when there is
+/// one: its own token variable resolving from the environment or the `.env`
+/// store — never the generic `ALTER_ZERO_API_KEY` (`docs/imagegen.md`).
+pub(crate) fn chatgpt_signin_id(providers: &ProvidersFile, env_file: &EnvFile) -> Option<String> {
+    providers
+        .signed_in_with(alter_zero::llm::AuthScheme::ChatGptCodex, |name| {
+            resolve_env(env_file, name)
+        })
+        .map(str::to_string)
+}
+
 /// Read `ALTER_ZERO_IMAGE_CACHE_MAX_BYTES`, else
 /// [`clipboard::IMAGE_CACHE_MAX_BYTES`]; `0` means no limit.
 fn image_cache_cap() -> u64 {
@@ -1429,6 +1455,12 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     // starts with MCP off, which `/settings` can turn back on.
     if let Some(on) = env_flag_set("ALTER_ZERO_MCP") {
         settings.mcp = on;
+    }
+    // `ALTER_ZERO_IMAGEGEN` seeds the **Image generation** row for the run,
+    // never saved — its falsy value used to withdraw the tool outright; now
+    // `/settings` can turn it back on (docs/imagegen.md).
+    if let Some(on) = env_flag_set(alter_zero::llm::imagegen::IMAGEGEN_ENV) {
+        settings.imagegen = on;
     }
     if let Some(t) = temperature() {
         settings.temperature = Some(t);

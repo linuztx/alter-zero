@@ -2920,7 +2920,7 @@ repo's), then the config home's `skills`, `~/.agents/skills` and
 `~/.claude/skills`, first root winning a name and a path listed once
 (`docs/agents-dir.md`; `ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
 what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
-naming it, never silence). **Five skills ship in the binary** — `jina-reader` (public webpages and PDFs
+naming it, never silence). **Six skills ship in the binary** — `jina-reader` (public webpages and PDFs
 through Jina Reader using curl, optional `JINA_API_KEY`, no native fetch tool),
 `web-search` (four standard-library Python scripts seeded beside its
 `SKILL.md` under `scripts/` and run with `python3` — written without the
@@ -2943,7 +2943,12 @@ native tool or download on load), `flaredantic` (`SKILL.md` + `reference.md`
 for public localhost tunnels via the external `flare` CLI, Cloudflare for HTTP
 by default, deliberate Serveo TCP or Microsoft with anonymous-access and
 existing-port checks; tracked sessions, local/public verification and exact-process
-cleanup, no native tool/dependency or execution on load), and `skill-creator`,
+cleanup, no native tool/dependency or execution on load), `imagegen` (OpenAI
+Codex's image system skill — Apache-2.0, its `LICENSE.txt`, four adapted
+`references/*.md` and Codex's two scripts unmodified — driving the native
+`imagegen` tool, and the one built-in **withheld from discovery** while that
+tool is not offered: always seeded, its seeded folder passed over by where it
+is, `llm::skill::withheld_builtin_skills`, `docs/imagegen.md`), and `skill-creator`,
 which teaches this format (the frontmatter contract, the roots, how to word a
 description that triggers, how to update one without clobbering it), because
 the format is *ours*: a model asked for "a skill" without it writes a lone
@@ -3188,7 +3193,7 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-twenty-one rows (**Hide thinking**, **Verbose output** — **off** by default,
+twenty-two rows (**Hide thinking**, **Verbose output** — **off** by default,
 so a run of reads, searches and listings folds into one collapsed line,
 `docs/tool-groups.md` —, **Show images**, **Image width**,
 **Auto-resize images** — the three from `docs/images.md` — **Animate
@@ -3202,7 +3207,10 @@ until a directory turns it off: off stops every server
 while each keeps its own `/mcp` on/off, so on brings back exactly the ones
 that were enabled; `/mcp` still opens under a red off-note, the review's
 servers page waits until MCP is on, and `ALTER_ZERO_MCP` seeds the row
-instead of removing the manager, `docs/mcp.md` —, **Temperature**,
+instead of removing the manager, `docs/mcp.md` —, **Image generation** —
+the `imagegen` tool and its skill, on until a directory turns it off,
+unavailable without a ChatGPT Codex sign-in and saying so, seeded by
+`ALTER_ZERO_IMAGEGEN`, `docs/imagegen.md` —, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a
@@ -3351,6 +3359,57 @@ under a red `Can't resume on …` toast and leaving the record alone — so the
 directory's entry is only what a *new* session starts on, and two instances
 in one directory each keep, and each resume, their own model; `smoke.sh`
 Phase 118) — and so are the **`/mascot` and `/spinner` looks** (`mascot.json`/`spinner.json` each gaining `config.json`'s `projects` map over the last choice, a directory pinning that last at its first launch and a choice made in it becoming its entry *and* the last, through one pure `app::LookFile<T>` shared by the two twin catalogs via the `app::Look` trait — `tui::config::adopt_look` at bootstrap, `save_look` from the pickers' Enter, `docs/per-directory-state.md`, `smoke.sh` Phase 114).
+
+**Image generation** (`docs/imagegen.md`): with the **ChatGPT Codex sign-in
+stored** — the `chatgpt_codex` provider's own token variable resolving
+(`ProvidersFile::signed_in_with`, never the generic `ALTER_ZERO_API_KEY`) —
+every real backend is offered the **`imagegen`** tool, whatever provider the
+session runs on: Codex's client-side `image_gen.imagegen` as a plain function,
+`prompt` + `transparent_background` + `referenced_image_paths` (≤5; every
+picture here has a file, so Codex's `num_last_images_to_include` is not
+ported), no size, quality or model (Codex sends `gpt-image-2`, `auto`,
+`auto`). The pure core is `src/llm/imagegen/` — the spec, the checked
+arguments (unknown ones refused by name, Codex's `deny_unknown_fields`), the
+typed body (a `BodySource`, references as the session's shared
+`AttachmentUrl` encodings, an edit's body streamed), the fact line
+`Generated image (PNG, WxH, size) saved to {path}` (`format_generated` /
+`generated_image`), Codex's note to the model, the failure wording (a 429
+`usage_limit_reached` with its reset, `chatgpt::auth_advice` for 401/403 beside
+the endpoint's own words) and `scan.rs`, which streams the answer's first
+`b64_json` through a push base64 decoder straight into a staging file and
+passes over the rest, so no metadata fails a call already billed — kilobytes
+whatever the image weighs (`tests/image_generation_memory.rs`). The tool's
+description is short (the craft is the skill's, listed whenever the tool is).
+`run_imagegen` mints through `chatgpt::authorize` (a Free plan refused
+before any request), sends the bearer, `extra_headers`, the account and a
+fresh `x-codex-image-turn-id` (no `version`: Codex sends none) to
+`{api_base}/images/generations|edits` on a worker the tool thread abandons
+on Esc (`llm::off_thread`, moved out of the MCP manager; a worker that dies
+is a failure, never an interrupt), retries an unreached host or a 5xx twice
+— never a connection lost after the request went out, which may already be
+billed — and saves to `{config_home}/generated_images/{session}/N.png` by the
+paste folder's numbering. The picture rides the next request held to the
+`read` tool's attachment cap: one past it is sent as a copy shrunk until it
+fits (`images::fitted_attachment_data_url`), kept in `.attachments/` beside
+it so the encoder sends the same copy on every later turn, a restart
+included, decoded from the file with no throwaway encoding
+(`tests/image_fit_memory.rs`); a vision-less model gets no picture, and the
+round sends the `[image omitted: …]` note the replay sends
+(`ToolOutcome::image_withheld`), so the cached prefix holds. The executor arm is
+`RealToolExecutor::with_imagegen`, the backend's `with_imagegen` (subagents
+through their `tools:` — `ImageGen`), the boundary's
+`ModelSession::refresh_imagegen` at each turn start (the `skills_attached`
+pattern, the shared `ChatGptSignin` handle kept current by `/login` saves and
+provider reloads); a `read`'s three hardcoded places now take the generated
+image too (`tools::attachment_note`/`recorded_attachment`,
+`ui::image::tool_image`), the cell shows the facts over `Saved to ~/…`
+linked, and a running call counts `Generating image… (Ns)`.
+The `/settings` **Image generation** row (per directory, on by default,
+unavailable without the sign-in, its toast saying how to sign in) gates tool
+and skill, `ALTER_ZERO_IMAGEGEN` seeding it for a run, and a `/login` save
+turns both on at once; `tests/headless.rs` draws from a stand-in Chat
+Completions provider with the sign-in beside it, and `smoke.sh` Phase 168
+drives it against a stub ChatGPT backend.
 
 **herdr support** (`docs/herdr.md`): inside a [herdr](https://herdr.dev)
 pane (`HERDR_ENV` exactly `1` + `HERDR_PANE_ID` + `HERDR_SOCKET_PATH`, read by

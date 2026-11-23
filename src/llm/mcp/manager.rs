@@ -206,34 +206,6 @@ fn sleep_unless_cancelled(pause: Duration, cancel: &CancelToken) -> bool {
     !cancel.is_cancelled()
 }
 
-/// Run blocking work on a worker thread while polling `cancel` on the 20 ms
-/// cadence — the transport's own contract (`docs/mcp.md`), which anything
-/// that blocks a turn's thread must obey. `None` means the turn was
-/// cancelled (or the worker died); the thread is abandoned rather than
-/// joined, exactly as a cancelled transport wait abandons its POST.
-///
-/// A token refresh is a blocking HTTP call, so running it inline on the tool
-/// thread made Esc dead for the token endpoint's whole timeout.
-fn off_thread<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-    cancel: &CancelToken,
-) -> Option<T> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(work());
-    });
-    loop {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        match rx.recv_timeout(POLL) {
-            Ok(value) => return Some(value),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
-        }
-    }
-}
-
 struct ServerState {
     entry: McpServerEntry,
     /// The config a launch uses — the declared one with its `${VAR}`
@@ -1676,7 +1648,7 @@ impl McpManager {
         let stale_refresh = match &server_url {
             Some(url) => {
                 let (path, url) = (auth_path.clone(), url.clone());
-                match off_thread(
+                match crate::llm::off_thread(
                     move || oauth::refresh_if_stale(path.as_deref(), &url),
                     cancel,
                 ) {
@@ -1695,7 +1667,7 @@ impl McpManager {
             && let Some(url) = server_url.clone()
         {
             let path = auth_path.clone();
-            let refreshed = match off_thread(
+            let refreshed = match crate::llm::off_thread(
                 move || {
                     // The token the store held when the server refused
                     // us; a concurrent rotation past it wins the

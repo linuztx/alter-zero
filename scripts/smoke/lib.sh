@@ -109,6 +109,10 @@ smoke_sanitize_env() {
 	# bills — would mark that subscription configured and send /model and
 	# /usage to Google; Phase 148 signs in against its own stub instead.
 	unset ANTIGRAVITY_REFRESH_TOKEN ANTIGRAVITY_PROJECT_ID
+	# …and a developer's ChatGPT Codex sign-in (docs/chatgpt.md), whose
+	# refresh token turns on the `imagegen` tool and its built-in skill for
+	# every phase (docs/imagegen.md); Phase 168 signs in against its own stub.
+	unset CHATGPT_CODEX_REFRESH_TOKEN OPENAI_CHATGPT_REFRESH_TOKEN
 	# Run from inside a herdr pane (docs/herdr.md), every phase's app would
 	# report its turns to the developer's real herdr — the pane the suite was
 	# started from flickering through a hundred agents' states. The herdr

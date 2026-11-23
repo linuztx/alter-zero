@@ -193,6 +193,11 @@ impl Session<'_> {
         match self.models.save_api_key(&env_var, token) {
             Ok(()) => {
                 self.app.close_key_onboarding();
+                // A ChatGPT Codex sign-in offers the `imagegen` tool and its
+                // skill to whatever model answers the chat — now, not at the
+                // next turn, so `/settings` and `/skills` already show them
+                // (docs/imagegen.md).
+                self.rescan_skills();
                 // Name the seat when the exchange did: "Signed in ✓" leaves
                 // open the one thing the user wants to know, and a metered
                 // free seat's remaining quota is better said now than met as

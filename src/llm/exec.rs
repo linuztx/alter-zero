@@ -88,6 +88,10 @@ pub struct RealToolExecutor {
     /// instead of attaching pixels the provider would reject with the whole
     /// turn (`docs/tools.md`). `None`/`Some(true)` attach as normal.
     vision: Option<bool>,
+    /// The `imagegen` tool's sign-in and output folder, when the backend
+    /// offers it (`docs/imagegen.md`). `None` declines a call recoverably —
+    /// a model can name a tool it was never offered.
+    imagegen: Option<crate::llm::imagegen::ImagegenSetup>,
 }
 
 impl RealToolExecutor {
@@ -129,6 +133,15 @@ impl RealToolExecutor {
     #[must_use]
     pub fn with_vision(mut self, vision: Option<bool>) -> Self {
         self.vision = vision;
+        self
+    }
+
+    /// Run `imagegen` calls with this sign-in and output folder — the
+    /// backend copies its own on, when it offers the tool
+    /// (`docs/imagegen.md`).
+    #[must_use]
+    pub fn with_imagegen(mut self, setup: Option<crate::llm::imagegen::ImagegenSetup>) -> Self {
+        self.imagegen = setup;
         self
     }
 }
@@ -180,6 +193,12 @@ impl ToolExecutor for RealToolExecutor {
             "read" => run_read(&call.arguments, self.vision),
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
+            crate::llm::imagegen::IMAGEGEN_TOOL_NAME => match &self.imagegen {
+                Some(setup) => {
+                    crate::llm::imagegen::run_imagegen(&call.arguments, setup, self.vision, cancel)
+                }
+                None => ToolOutcome::error(crate::llm::imagegen::UNAVAILABLE),
+            },
             other => ToolOutcome::error(format!("unknown tool: {other}")),
         }
     }
@@ -504,6 +523,7 @@ fn run_piped(
         truncated: false,
         background: None,
         image: None,
+        image_withheld: false,
         tasks: None,
         context,
         // The status the frame above names, as data (docs/rollout-records.md).
@@ -1450,6 +1470,37 @@ mod tests {
 
     fn exec(name: &str, args: &str) -> ToolOutcome {
         RealToolExecutor::new().execute(&call(name, args), &CancelToken::new(), &mut |_| {})
+    }
+
+    #[test]
+    fn an_imagegen_call_with_no_setup_is_declined_recoverably() {
+        // A model can name a tool it was never offered (docs/imagegen.md).
+        let outcome = exec(
+            crate::llm::imagegen::IMAGEGEN_TOOL_NAME,
+            r#"{"prompt": "a fox"}"#,
+        );
+        assert!(!outcome.ok);
+        assert!(outcome.output.contains("/login"), "{}", outcome.output);
+    }
+
+    #[test]
+    fn an_imagegen_call_reaches_the_tool_when_a_setup_is_attached() {
+        let setup = crate::llm::imagegen::ImagegenSetup {
+            signin: crate::llm::imagegen::ChatGptSignin::default(),
+            dir: std::path::PathBuf::from("/nowhere"),
+            skill: None,
+        };
+        let outcome = RealToolExecutor::new().with_imagegen(Some(setup)).execute(
+            &call(
+                crate::llm::imagegen::IMAGEGEN_TOOL_NAME,
+                r#"{"prompt": "a fox"}"#,
+            ),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        // The tool itself answered: nobody is signed in.
+        assert!(!outcome.ok);
+        assert_eq!(outcome.output, crate::llm::auth::NOT_SIGNED_IN);
     }
 
     /// A running cell as the TUI keeps it: a `ToolScreen`'s settled text

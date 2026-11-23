@@ -4383,6 +4383,90 @@ fn the_fold_shows_three_rows_of_one_long_line_unmarked() {
     );
 }
 
+// --- the generated-image cell (docs/imagegen.md) ---
+
+fn generated_cell(path: &str, status: ToolStatus) -> ToolCall {
+    let output = if status == ToolStatus::Ok {
+        crate::llm::imagegen::format_generated("PNG", (1536, 1024), 2_200_000, path)
+    } else {
+        "image generation failed: HTTP 500: image backend failed".to_string()
+    };
+    tool(
+        crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY,
+        "a red fox",
+        status,
+        &output,
+    )
+}
+
+fn home_paths() -> PathDisplay {
+    PathDisplay::new(
+        "/home/me/project",
+        Some(std::path::PathBuf::from("/home/me")),
+    )
+}
+
+#[test]
+fn a_generated_image_cell_shows_its_facts_and_where_the_file_is() {
+    let path = "/home/me/.alter-zero/generated_images/s1/1.png";
+    let lines = tool_lines(&generated_cell(path, ToolStatus::Ok), 80, &home_paths());
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        rows,
+        [
+            "● ImageGen(a red fox)",
+            "  ⎿  Generated image (PNG, 1536x1024, 2.1 MB)",
+            "     Saved to ~/.alter-zero/generated_images/s1/1.png",
+        ]
+    );
+    // The shown path opens the whole file, whatever short form it wears.
+    assert_eq!(
+        linked_spans(&lines[2]),
+        [(
+            "~/.alter-zero/generated_images/s1/1.png".to_string(),
+            "file:///home/me/.alter-zero/generated_images/s1/1.png".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_saved_path_too_long_for_its_row_wraps_onto_rows_of_its_own() {
+    let path = "/home/me/.alter-zero/generated_images/1763812345-1234567/12.png";
+    let lines = tool_lines(&generated_cell(path, ToolStatus::Ok), 40, &home_paths());
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert!(rows.iter().all(|row| cols(row) <= 40), "{rows:?}");
+    let saved = rows
+        .iter()
+        .position(|row| row.trim() == "Saved to")
+        .expect("its own row");
+    let rest: String = rows[saved + 1..].iter().map(|row| row.trim()).collect();
+    assert_eq!(
+        rest,
+        "~/.alter-zero/generated_images/1763812345-1234567/12.png"
+    );
+    // Every fragment opens the same file.
+    for line in &lines[saved + 1..] {
+        for (_, target) in linked_spans(line) {
+            assert_eq!(target, format!("file://{path}"));
+        }
+    }
+}
+
+#[test]
+fn a_failed_generation_keeps_the_generic_cell() {
+    let lines = tool_lines(
+        &generated_cell("/x/1.png", ToolStatus::Failed),
+        80,
+        &home_paths(),
+    );
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(rows[0], "● ImageGen(a red fox)");
+    assert!(
+        rows[1].contains("image generation failed: HTTP 500"),
+        "{rows:?}"
+    );
+}
+
 // --- the header's path is a `file://` link (docs/links.md) ---
 
 /// The `(text, target)` pairs of a line's link-carrying spans.

@@ -36,9 +36,9 @@ pub mod registry;
 pub mod store;
 
 pub use attachment::{
-    ATTACHMENT_CACHE_MAX_BYTES, AttachmentCache, AttachmentStamp, AttachmentUrl,
-    attachment_data_url, attachment_mime, base64_encode_reader, clear_attachments,
-    remember_attachment, retain_attachments,
+    ATTACHMENT_CACHE_MAX_BYTES, AttachmentCache, AttachmentStamp, AttachmentUrl, FITTED_DIR,
+    FittedAttachment, attachment_data_url, attachment_mime, base64_encode_reader,
+    clear_attachments, fitted_attachment_data_url, remember_attachment, retain_attachments,
 };
 pub use fitted::{
     Downsampler, FIT_MAX_SOURCE_PIXELS, WHOLE_DECODE_MAX_PIXELS, decode_png_fitted, fit_box,
@@ -51,8 +51,8 @@ pub use geometry::{
 };
 pub use payload::{
     Downscaled, PAYLOAD_CACHE_MAX_BYTES, cache_eviction, cached_downscale, cached_payload_file,
-    downscale_for_model, downscale_for_model_at, downscale_to, payload_cache_key, payload_mime,
-    set_payload_cache_dir,
+    downscale_file_to, downscale_for_model, downscale_for_model_at, downscale_to,
+    payload_cache_key, payload_mime, set_payload_cache_dir,
 };
 pub use registry::{
     ImagePolicy, Placement, any_placements, auto_resizing, known_missing, known_size, place,

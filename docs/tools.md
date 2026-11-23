@@ -57,7 +57,8 @@ backend the state it needs: `agent` (`docs/agent-tool.md`),
 `askuserquestion` (`docs/ask.md`), the four task tools
 (`docs/task-tools.md`), and `skill` (`docs/skills.md`) — offered only when at
 least one `SKILL.md` was discovered, since with none it could answer nothing
-but "unknown skill".
+but "unknown skill" — and `imagegen` (`docs/imagegen.md`), offered while the
+ChatGPT Codex sign-in is stored, whatever provider the session runs on.
 
 ## Wire format (Chat Completions)
 

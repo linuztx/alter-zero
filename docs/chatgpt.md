@@ -204,6 +204,13 @@ The account-id header is attached **conditionally**. A token that carries no
 auth claims still authenticates; sending an empty account id is a *different*
 (and invalid) routing hint than sending none.
 
+## What the sign-in also unlocks
+
+Image generation. While the sign-in is stored, every session is offered the
+`imagegen` tool and its built-in skill, whatever provider the session runs
+on. The tool mints its bearer through this module's cache and POSTs to the
+backend's `/images/generations` or `/images/edits` (`docs/imagegen.md`).
+
 ## The sign-ins
 
 Two, and the row asks which before it opens either.

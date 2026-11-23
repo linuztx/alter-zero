@@ -53,6 +53,59 @@ fn image_read(path: &str, px: (u32, u32)) -> HistoryItem {
     })
 }
 
+/// A resolved `imagegen` call that saved `path`, exactly as the executor
+/// records one: the prompt as its header, the fact line as its cell
+/// (`docs/imagegen.md`).
+fn generated(path: &str, px: (u32, u32)) -> HistoryItem {
+    let fact = crate::llm::imagegen::format_generated("PNG", px, 4096, path);
+    HistoryItem::Tool(ToolCall {
+        name: crate::llm::imagegen::IMAGEGEN_TOOL_DISPLAY.to_string(),
+        args: "a red fox".to_string(),
+        status: ToolStatus::Ok,
+        output: fact.clone(),
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        context_output: Some(format!(
+            "{fact}\nGenerated images are saved to /g by default."
+        )),
+        approval_note: None,
+        arguments: Some(r#"{"prompt":"a red fox"}"#.to_string()),
+        batch: None,
+        call_id: None,
+        position: None,
+        run: crate::stream::ToolRun::default(),
+    })
+}
+
+#[test]
+fn a_generated_image_draws_the_file_its_fact_line_names() {
+    let _guard = drawing(120);
+    let item = generated("/g/s/1.png", (1536, 1024));
+    assert_eq!(
+        item_images(&item),
+        vec![("/g/s/1.png".to_string(), (1536, 1024))]
+    );
+    assert_eq!(item_image_paths(&item), vec!["/g/s/1.png".to_string()]);
+    assert!(!marked_rows(&image_block_lines(&item, 100)).is_empty());
+    restore();
+}
+
+#[test]
+fn a_failed_generation_draws_nothing() {
+    let _guard = drawing(120);
+    let mut tool = match generated("/g/s/1.png", (1536, 1024)) {
+        HistoryItem::Tool(tool) => tool,
+        _ => unreachable!(),
+    };
+    tool.status = ToolStatus::Failed;
+    tool.output = "image generation failed: HTTP 500".to_string();
+    let item = HistoryItem::Tool(tool);
+    assert!(item_images(&item).is_empty());
+    assert!(item_image_paths(&item).is_empty());
+    restore();
+}
+
 fn marked_rows(lines: &[Line<'static>]) -> Vec<(u32, u16)> {
     lines
         .iter()

@@ -283,6 +283,13 @@ pub(super) fn live_call_lines(
     if is_command_tool(tool) && tool.status == ToolStatus::Running {
         return running_command_lines(tool, live, elapsed, pulse, width, paths);
     }
+    if tool.status == ToolStatus::Running
+        && tool
+            .name
+            .eq_ignore_ascii_case(crate::llm::imagegen::IMAGEGEN_TOOL_NAME)
+    {
+        return super::tool::imagegen_running_lines(tool, elapsed, pulse, width, paths);
+    }
     live_tool_lines(tool, width, pulse, paths)
 }
 

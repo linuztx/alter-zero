@@ -141,8 +141,12 @@ impl App {
         if !row.available {
             // Phrased around the label rather than after it, so it reads for a
             // singular row and a plural one alike ("Can't change Checkpoints…"
-            // / "…Permission mode…").
-            return Action::Toast(format!("Can't change {} in this session", row.label));
+            // / "…Permission mode…"), and closed on what would make the row
+            // available where that is something the user can do.
+            return Action::Toast(match row.key.unavailable_reason() {
+                Some(reason) => format!("Can't change {} in this session — {reason}", row.label),
+                None => format!("Can't change {} in this session", row.label),
+            });
         }
         if self.settings.cycle(row.key) {
             // Every call is its own cell now: the reads the open group was
