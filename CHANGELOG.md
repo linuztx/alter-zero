@@ -12,6 +12,8 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-23
+
 ### Added
 
 - **Image generation with your ChatGPT sign-in, whatever model you use.**
@@ -2861,7 +2863,8 @@ release heading when a version is cut.
   release whose notes come from this file — driven end to end by
   `scripts/release.sh`, which also rehearses a release locally.
 
-[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/linuztx/alter-zero/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/linuztx/alter-zero/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/linuztx/alter-zero/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/linuztx/alter-zero/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/linuztx/alter-zero/compare/v0.16.0...v0.17.0
