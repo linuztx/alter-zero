@@ -21,6 +21,7 @@ mod compact;
 mod composer;
 mod config_review;
 mod context_usage;
+mod discord;
 mod donate;
 mod drafts;
 mod export;

@@ -241,11 +241,12 @@ Never a scrollback bullet (`docs/toast.md`).
   landing in tmux's paste buffer verbatim), ↓ reaches SOL and wraps back
   to BTC, Esc brings the composer back.
 
-## Shared with `/sponsor`
+## Shared with `/sponsor` and `/discord`
 
 The `/sponsor` page (`docs/sponsor.md`) is this page over another catalog,
-so the parts are shared from `donate_view`: `title_line` takes the title's
-verb, `label_line` a row's two words, `value_box` the boxed text and an
-optional link target (none here — an address opens nothing), and
-`boxed_list_page` is the four-page ladder above over any list of labelled
-boxes.
+and the `/discord` page (`docs/discord.md`) is that page over one invite,
+so the parts are shared from `donate_view`: `title_line` takes the words on
+either side of the app's name (here the verb alone), `label_line` a row's
+two words, `value_box` the boxed text and an optional link target (none
+here — an address opens nothing), and `boxed_list_page` is the four-page
+ladder above over any list of labelled boxes.

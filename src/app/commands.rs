@@ -166,6 +166,10 @@ pub enum CommandEffect {
     /// contact address, each copyable. Works **mid-turn** like `/donate`.
     /// See `docs/sponsor.md`.
     Sponsor,
+    /// Open the read-only `/discord` page: the invite to the Alter Zero
+    /// Discord server, copyable. Works **mid-turn** like `/sponsor`. See
+    /// `docs/discord.md`.
+    Discord,
     /// Open the `/secrets` page: the user's secrets — credentials the agent
     /// uses by placeholder without ever seeing the value — to add, edit and
     /// delete. Works **mid-turn** like `/skills`: it only replaces the
@@ -326,6 +330,13 @@ pub const COMMANDS: &[SlashCommand] = &[
         "sponsor",
         "Sponsor the developer or get in touch",
         CommandEffect::Sponsor,
+    ),
+    // …and, beside the two pages that ask for support, the one that asks
+    // the reader in.
+    SlashCommand::builtin(
+        "discord",
+        "Join the community on Discord",
+        CommandEffect::Discord,
     ),
     SlashCommand::builtin(
         "secrets",
@@ -646,6 +657,12 @@ impl App {
                 // over a const catalog, opened right here. docs/sponsor.md.
                 self.open_sponsor_page();
                 Action::OpenSponsorPage
+            }
+            CommandEffect::Discord => {
+                // /discord works mid-turn like /sponsor: a read-only page
+                // over a const invite, opened right here. docs/discord.md.
+                self.open_discord_page();
+                Action::OpenDiscordPage
             }
             CommandEffect::Secrets => {
                 // /secrets works mid-turn like /skills: the page only

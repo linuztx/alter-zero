@@ -86,6 +86,11 @@ impl App {
         if self.view == View::Conversation && self.sponsor_page.is_some() {
             return self.on_key_sponsor_page(key);
         }
+        // …and the read-only `/discord` page, the `/sponsor` page's twin.
+        // See `docs/discord.md`.
+        if self.view == View::Conversation && self.discord_page.is_some() {
+            return self.on_key_discord_page(key);
+        }
         // …and the read-only `/export` page, the `/donate` page's sibling.
         // See `docs/export.md`.
         if self.view == View::Conversation && self.export_picker.is_some() {

@@ -1705,8 +1705,9 @@ pub(super) const THEME_PREVIEW_REPLY: &str = "Done — `greet.py` greets by name
 // rounded box (the `DEVICE_BOX_*` glyphs). Only its own words and the three
 // colours below live here; the title borrows the banner's gradient. ---
 
-/// The heart leading the title — the sponsor glyph, in a span of its own so
-/// it keeps a colour of its own beside the gradient-washed name.
+/// The heart leading the title — the glyph of the pages about the people
+/// behind the project (`/donate`, `/sponsor`, `/discord`), in a span of its
+/// own so it keeps a colour of its own beside the gradient-washed name.
 pub(super) const DONATE_HEART: &str = "♥ ";
 
 /// The title's verb; the app's name ([`HEADER_NAME`]) follows it, so the
@@ -1775,6 +1776,28 @@ A sponsorship pays for the time that goes into it — thank you.";
 
 /// The dim key hint — the page's whole grammar.
 pub(super) const SPONSOR_HINT: &str = "↑↓ navigate  enter/c copy  esc close";
+
+// --- the read-only /discord page (docs/discord.md). The /sponsor page's
+// twin: its heart, gradient title, label row and rounded box over the const
+// invite. Only its own words live here. ---
+
+/// The words on either side of the app's name in the title: `Join the Alter
+/// Zero Discord`.
+pub(super) const DISCORD_TITLE_PREFIX: &str = "Join the ";
+pub(super) const DISCORD_TITLE_SUFFIX: &str = " Discord";
+
+/// The dim rows under the title: what the server is for.
+pub(super) const DISCORD_BLURB: &str = "Ask for help, share what you have built, and hear \
+about new releases first. Ideas for new features are welcome too.";
+
+/// The row's bold label, and the dim note beside it saying what the boxed
+/// value is.
+pub(super) const DISCORD_LABEL: &str = "Discord";
+pub(super) const DISCORD_NOTE: &str = "invite to the community server";
+
+/// The dim key hint — the page's whole grammar. One row leaves nothing to
+/// navigate, so it names no arrows.
+pub(super) const DISCORD_HINT: &str = "enter/c copy invite link  esc close";
 
 // --- the /secrets page (docs/secrets.md). The /donate page's frame — the
 // family's indent, its `❯` marker, the dim meta ink, the banner-gradient
