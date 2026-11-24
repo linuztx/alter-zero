@@ -2431,23 +2431,29 @@ os.write(1, b"\n")'"#;
         // it and hands the session over as it stands — the outcome flips to
         // backgrounded, the model is told the user moved it, and the command
         // finishes on its own, its log holding every line (docs/bash-tools.md).
+        // The latch goes up once the cell shows the first line, where a user
+        // presses it, never on a clock: a loaded runner can take longer than
+        // any fixed delay to start the session and stream that line, and a
+        // press before it hands off a tail with nothing in it.
         let (registry, mut rx) = test_registry();
         let executor = RealToolExecutor::new().with_background(registry.clone());
-        let flag = registry.clone();
-        let raiser = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            flag.request_background();
-        });
         let mut cell = LiveCell::default();
+        let mut pressed = false;
         let out = executor.execute(
             &call(
                 "bash",
                 r#"{"command":"printf 'early\n'; sleep 2; printf 'late\n'","wait":30}"#,
             ),
             &CancelToken::new(),
-            &mut |progress| cell.take(progress),
+            &mut |progress| {
+                cell.take(progress);
+                if !pressed && cell.view.contains("early") {
+                    registry.request_background();
+                    pressed = true;
+                }
+            },
         );
-        raiser.join().unwrap();
+        assert!(pressed, "the first line reached the cell: {}", out.output);
         assert!(out.ok, "got {}", out.output);
         let task_id = out
             .background
@@ -2506,25 +2512,28 @@ os.write(1, b"\n")'"#;
     fn a_background_request_hands_a_piped_command_off_mid_run() {
         // The same Ctrl+B where no terminal can be had (docs/bash-tools.md):
         // the poll loop adopts the child — the already-produced output
-        // replays into the background stream.
+        // replays into the background stream. Pressed once the cell shows
+        // the first line, the running-command test's rule.
         let (registry, mut rx) = test_registry();
         let registry = registry.without_terminals();
         let executor = RealToolExecutor::new().with_background(registry.clone());
-        let flag = registry.clone();
-        let raiser = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(120));
-            flag.request_background();
-        });
         let mut cell = LiveCell::default();
+        let mut pressed = false;
         let out = executor.execute(
             &call(
                 "bash",
                 r#"{"command":"printf 'early\n'; sleep 2; printf 'late\n'","wait":30}"#,
             ),
             &CancelToken::new(),
-            &mut |progress| cell.take(progress),
+            &mut |progress| {
+                cell.take(progress);
+                if !pressed && cell.view.contains("early") {
+                    registry.request_background();
+                    pressed = true;
+                }
+            },
         );
-        raiser.join().unwrap();
+        assert!(pressed, "the first line reached the cell: {}", out.output);
         let task_id = out.background.clone().expect("backgrounded");
         assert!(
             out.output
