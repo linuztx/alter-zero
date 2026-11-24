@@ -776,14 +776,17 @@ pub fn summarization_request(
     messages
 }
 
+/// The most of a window a summarization request leaves for the summary: an
+/// eighth of it, at most this many tokens.
+const SUMMARY_ROOM_MAX: u64 = 16_384;
+
 /// The estimated tokens a summarization request may cost for a `window`-token
-/// context window: three quarters of it in the provider's tokens — turned
-/// into the estimate's through `calibration`, what the session's usage
-/// reports taught — less the estimated `system` prompt the summarizer is sent
-/// beside the request. The last quarter is the summary's own room and the
-/// slack for whatever the calibration has not learned yet. `None` (no cap)
-/// when the window is unknown. See `docs/compact.md` *The summarization
-/// request must fit*.
+/// context window: the window less room for the summary — an eighth of it,
+/// never more than `SUMMARY_ROOM_MAX` — in the provider's tokens, turned
+/// into the estimate's through `calibration` (what the session's usage
+/// reports taught), less the estimated `system` prompt the summarizer is sent
+/// beside the request. `None` (no cap) when the window is unknown. See
+/// `docs/compact.md` *The summarization request must fit*.
 #[must_use]
 pub fn summarization_budget(
     window: Option<u64>,
@@ -791,7 +794,7 @@ pub fn summarization_budget(
     calibration: crate::tokens::Calibration,
 ) -> Option<usize> {
     let window = window?;
-    let counted = (window / 4).saturating_mul(3);
+    let counted = window.saturating_sub((window / 8).min(SUMMARY_ROOM_MAX));
     let estimated = counted.saturating_mul(1000) / calibration.ratio_permille().max(1);
     Some(
         usize::try_from(estimated)
@@ -800,10 +803,28 @@ pub fn summarization_budget(
     )
 }
 
-/// How far down [`fit_to_budget`] cuts a single text before it starts
-/// dropping whole rounds instead: enough of a tool result's head and tail to
-/// say what it was.
+/// How far down [`fit_to_budget`] cuts the bulk before it starts dropping
+/// whole rounds instead: enough of a tool result's head and tail to say what
+/// it was.
 const FIT_TEXT_FLOOR: usize = 200;
+
+/// How far down the last resort cuts every text: little more than the cut's
+/// own marker.
+const FIT_LAST_RESORT_FLOOR: usize = 16;
+
+/// How many times a cut is measured again and tightened: the estimate is not
+/// linear in bytes, and a cut's marker — and an argument's JSON wrapping —
+/// cost a few tokens of their own.
+const FIT_PASSES: usize = 4;
+
+/// The key a call's cut arguments are carried under, so they stay the JSON
+/// object every wire sends.
+const CUT_ARGUMENTS_KEY: &str = "truncated_arguments";
+
+/// What stands where a summarization request left rounds out; `{n}` is how
+/// many messages went.
+const OMITTED_ROUNDS_NOTE: &str = "[{n} earlier messages — tool calls and their results — were \
+     left out of this request so it fits the model's context window.]";
 
 /// The estimated cost of one context message — the gauge's own rule
 /// (`crate::app::message_tokens`).
@@ -815,26 +836,176 @@ fn message_cost(message: &ContextMessage) -> usize {
 /// steps, each only when the one before left it over (`docs/compact.md`
 /// *The summarization request must fit*):
 ///
-/// 1. **Cut the largest tool results** in the middle, down to a common cap
-///    no lower than [`FIT_TEXT_FLOOR`] — a water level, so the small ones are
-///    untouched and the big ones are cut evenly.
+/// 1. **Cut the bulk** — the tool results and the calls' arguments (a file
+///    written whole) — in the middle, down to a common cap no lower than
+///    [`FIT_TEXT_FLOOR`]: a water level, so the small ones are untouched and
+///    the big ones are cut evenly; a call's arguments stay a JSON object.
 /// 2. **Drop the oldest rounds whole** — an assistant message with every
-///    tool result answering it, oldest first — keeping every user-role
-///    message: the user's own words and an earlier summary's bridge are what
-///    a handoff can least afford to lose, and a call never loses its result.
-/// 3. **Cut the user-role texts** the same way as the tool results, the last
-///    resort.
+///    tool result answering it, oldest first — behind one note saying so,
+///    keeping every user-role message: the user's own words and an earlier
+///    summary's bridge are what a handoff can least afford to lose, and a
+///    call never loses its result.
+/// 3. **Cut every text**, down to [`FIT_LAST_RESORT_FLOOR`], the last resort.
 fn fit_to_budget(messages: &mut Vec<ContextMessage>, budget: usize) {
     let total = |messages: &[ContextMessage]| messages.iter().map(message_cost).sum::<usize>();
     if total(messages) <= budget {
         return;
     }
-    cap_texts(messages, budget, ContextRole::Tool);
-    if total(messages) <= budget {
+    if cap_fields(messages, budget, FIT_TEXT_FLOOR, is_bulk) {
         return;
     }
+    if drop_oldest_rounds(messages, budget) {
+        return;
+    }
+    cap_fields(messages, budget, FIT_LAST_RESORT_FLOOR, |_, _| true);
+}
+
+/// A text the fit may cut: a message's own, or one of its calls' arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Text,
+    Arguments(usize),
+}
+
+/// The bulk a too-big snapshot almost always is: a tool's output, or a
+/// call's arguments.
+fn is_bulk(message: &ContextMessage, field: Field) -> bool {
+    match field {
+        Field::Text => message.role == ContextRole::Tool,
+        Field::Arguments(_) => true,
+    }
+}
+
+/// Every field of `messages` that `include` takes, with its estimated cost.
+fn fields_of(
+    messages: &[ContextMessage],
+    include: fn(&ContextMessage, Field) -> bool,
+) -> Vec<(usize, Field, usize)> {
+    let mut out = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        if include(message, Field::Text) && !message.text.is_empty() {
+            out.push((index, Field::Text, crate::tokens::estimate(&message.text)));
+        }
+        for (call, tool_call) in message.tool_calls.iter().enumerate() {
+            if include(message, Field::Arguments(call)) {
+                out.push((
+                    index,
+                    Field::Arguments(call),
+                    crate::tokens::estimate(&tool_call.arguments),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Cut every field `include` takes above a common cap down to it — the
+/// highest cap that brings the whole list within `budget`, never below
+/// `floor` — measuring again and tightening for a few passes, and report
+/// whether the list fits.
+fn cap_fields(
+    messages: &mut [ContextMessage],
+    budget: usize,
+    floor: usize,
+    include: fn(&ContextMessage, Field) -> bool,
+) -> bool {
+    let total = |messages: &[ContextMessage]| messages.iter().map(message_cost).sum::<usize>();
+    let mut target = budget;
+    for _ in 0..FIT_PASSES {
+        let now = total(messages);
+        if now <= budget {
+            return true;
+        }
+        let cuttable = fields_of(messages, include);
+        let bulk: usize = cuttable.iter().map(|(_, _, cost)| cost).sum();
+        let room = target.saturating_sub(now.saturating_sub(bulk));
+        let sizes: Vec<usize> = cuttable.iter().map(|(_, _, cost)| *cost).collect();
+        let fits = |cap: usize| sizes.iter().map(|size| (*size).min(cap)).sum::<usize>() <= room;
+        // The highest cap that fits, by bisection over [floor, largest].
+        let (mut low, mut high) = (floor, sizes.iter().copied().max().unwrap_or(0));
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if fits(mid) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        let cap = low;
+        let mut cut_any = false;
+        for (index, field, cost) in cuttable {
+            if cost > cap {
+                cut_any |= cut_field(&mut messages[index], field, cap);
+            }
+        }
+        if !cut_any {
+            break;
+        }
+        // Over by what the markers and the wrapping added: aim lower.
+        target = target.saturating_sub(total(messages).saturating_sub(budget));
+    }
+    total(messages) <= budget
+}
+
+/// Cut one field of `message` to about `cap` estimated tokens, reporting
+/// whether it changed. A call's arguments become a JSON object carrying the
+/// cut text — cut again from that text, never wrapped twice.
+fn cut_field(message: &mut ContextMessage, field: Field, cap: usize) -> bool {
+    match field {
+        Field::Text => {
+            let cut = truncate_to_estimate(&message.text, cap);
+            let changed = cut.len() < message.text.len();
+            message.text = cut;
+            changed
+        }
+        Field::Arguments(call) => {
+            let Some(tool_call) = message.tool_calls.get_mut(call) else {
+                return false;
+            };
+            let inner = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                &tool_call.arguments,
+            )
+            .ok()
+            .filter(|object| object.len() == 1)
+            .and_then(|object| {
+                object
+                    .get(CUT_ARGUMENTS_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| tool_call.arguments.clone());
+            let mut keep = cap;
+            let mut wrapped = String::new();
+            for _ in 0..FIT_PASSES {
+                let cut = truncate_to_estimate(&inner, keep);
+                wrapped = serde_json::json!({ CUT_ARGUMENTS_KEY: cut }).to_string();
+                let cost = crate::tokens::estimate(&wrapped);
+                if cost <= cap || keep <= 1 {
+                    break;
+                }
+                keep = keep.saturating_sub(cost - cap).max(1);
+            }
+            if wrapped.len() >= tool_call.arguments.len() {
+                return false;
+            }
+            tool_call.arguments = wrapped;
+            true
+        }
+    }
+}
+
+/// Drop the oldest rounds — an assistant message and the tool results
+/// answering it — until `messages` cost at most `budget`, behind one
+/// [`OMITTED_ROUNDS_NOTE`] where the first one was: joined to the user
+/// message before it, as the derivation joins user texts, else a message of
+/// its own. Every user-role message stays. Reports whether the list fits.
+fn drop_oldest_rounds(messages: &mut Vec<ContextMessage>, budget: usize) -> bool {
+    let total = |messages: &[ContextMessage]| messages.iter().map(message_cost).sum::<usize>();
+    let note_cost = crate::tokens::estimate(&OMITTED_ROUNDS_NOTE.replace("{n}", "00000"));
+    let mut first = None;
+    let mut dropped = 0;
     let mut at = 0;
-    while at < messages.len() && total(messages) > budget {
+    while at < messages.len() && total(messages) + note_cost > budget {
         if messages[at].role != ContextRole::Assistant {
             at += 1;
             continue;
@@ -846,53 +1017,29 @@ fn fit_to_budget(messages: &mut Vec<ContextMessage>, budget: usize) {
         {
             end += 1;
         }
+        first.get_or_insert(at);
+        dropped += end - at;
         messages.drain(at..end);
     }
-    if total(messages) > budget {
-        cap_texts(messages, budget, ContextRole::User);
-    }
-}
-
-/// Cut every `role` message's text above a common cap down to it, the cap the
-/// highest that brings the whole list within `budget` (never below
-/// [`FIT_TEXT_FLOOR`]): a water-filling of the largest texts, middle-truncated
-/// codex's way so each keeps its head and its tail.
-fn cap_texts(messages: &mut [ContextMessage], budget: usize, role: ContextRole) {
-    let costs: Vec<usize> = messages.iter().map(message_cost).collect();
-    let others: usize = messages
-        .iter()
-        .zip(&costs)
-        .filter(|(message, _)| message.role != role)
-        .map(|(_, cost)| cost)
-        .sum();
-    let room = budget.saturating_sub(others);
-    let sizes: Vec<usize> = messages
-        .iter()
-        .zip(&costs)
-        .filter(|(message, _)| message.role == role)
-        .map(|(_, cost)| *cost)
-        .collect();
-    let fits = |cap: usize| sizes.iter().map(|size| (*size).min(cap)).sum::<usize>() <= room;
-    let largest = sizes.iter().copied().max().unwrap_or(0);
-    if fits(largest) {
-        return;
-    }
-    // The highest cap that fits, by bisection over [floor, largest].
-    let (mut low, mut high) = (FIT_TEXT_FLOOR, largest);
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        if fits(mid) {
-            low = mid;
-        } else {
-            high = mid - 1;
+    let Some(first) = first else {
+        return false;
+    };
+    let note = OMITTED_ROUNDS_NOTE.replace("{n}", &dropped.to_string());
+    match first
+        .checked_sub(1)
+        .and_then(|before| messages.get_mut(before))
+    {
+        Some(before)
+            if before.role == ContextRole::User
+                && before.tool_call_id.is_none()
+                && before.images.is_empty() =>
+        {
+            before.text.push_str(MERGE_SEPARATOR);
+            before.text.push_str(&note);
         }
+        _ => messages.insert(first, ContextMessage::new(ContextRole::User, note)),
     }
-    let cap = low;
-    for message in messages.iter_mut().filter(|message| message.role == role) {
-        if crate::tokens::estimate(&message.text) > cap {
-            message.text = truncate_to_estimate(&message.text, cap);
-        }
-    }
+    total(messages) <= budget
 }
 
 /// `text` middle-truncated until the estimate counts it at no more than
@@ -3062,10 +3209,10 @@ mod tests {
     }
 
     #[test]
-    fn a_summarization_request_may_fill_three_quarters_of_the_window() {
-        // The rest is the summary's own room, and slack for a provider that
-        // counts more tokens than the estimate does — less the system prompt
-        // the summarizer is sent beside the request.
+    fn a_summarization_request_leaves_an_eighth_of_the_window_for_the_summary() {
+        // An eighth of the window, never more than 16k tokens, is the
+        // summary's own room — less the system prompt the summarizer is sent
+        // beside the request.
         let uncalibrated = crate::tokens::Calibration::default();
         assert_eq!(
             summarization_budget(None, 0, uncalibrated),
@@ -3074,7 +3221,12 @@ mod tests {
         );
         assert_eq!(
             summarization_budget(Some(50_000), 4_000, uncalibrated),
-            Some(33_500)
+            Some(50_000 - 6_250 - 4_000)
+        );
+        assert_eq!(
+            summarization_budget(Some(1_000_000), 4_000, uncalibrated),
+            Some(1_000_000 - 16_384 - 4_000),
+            "a big window keeps 16k for the summary, not an eighth"
         );
         assert_eq!(
             summarization_budget(Some(1_000), 5_000, uncalibrated),
@@ -3083,16 +3235,75 @@ mod tests {
     }
 
     #[test]
-    fn a_summarization_budget_is_three_quarters_of_the_window_in_the_providers_tokens() {
+    fn a_summarization_budget_is_counted_in_the_providers_tokens() {
         // The request is fitted by the estimate; a provider counting twice
-        // the estimate fills three quarters of the window with half the
+        // the estimate fills the same share of the window with half the
         // estimated tokens.
         let mut doubling = crate::tokens::Calibration::default();
         doubling.learn(2_000, 1_000);
         assert_eq!(
             summarization_budget(Some(40_000), 1_000, doubling),
-            Some(15_000 - 1_000)
+            Some(35_000 / 2 - 1_000)
         );
+    }
+
+    #[test]
+    fn fitting_cuts_huge_call_arguments_and_keeps_them_a_json_object() {
+        // A file written whole is the bulk of the newest round: its call's
+        // arguments are cut like a tool's output, rather than the round
+        // dropped — and they stay a JSON object, as every wire sends them.
+        let HistoryItem::Tool(mut write) = batched("Write", "big.rs", "File created", 2, "toolu_2")
+        else {
+            unreachable!("batched builds a tool item");
+        };
+        write.arguments = Some(
+            serde_json::json!({"path": "big.rs", "content": "let x = 1;\n".repeat(3_000)})
+                .to_string(),
+        );
+        let snapshot = vec![
+            message(Role::User, "write the file"),
+            round(1, "ls", "nothing here yet"),
+            HistoryItem::Tool(write),
+        ];
+        let request = summarization_request(None, &snapshot, Some(2_000));
+        assert!(cost(&request) <= 2_000, "{}", cost(&request));
+        let call = request
+            .iter()
+            .flat_map(|message| message.tool_calls.iter())
+            .find(|call| call.id == "toolu_2")
+            .expect("the newest round stays, its arguments cut");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .is_ok_and(|arguments| arguments.is_object()),
+            "{}",
+            call.arguments
+        );
+        assert!(
+            call.arguments.contains("tokens truncated"),
+            "{}",
+            call.arguments
+        );
+    }
+
+    #[test]
+    fn rounds_left_out_of_a_summarization_request_leave_a_note_where_they_were() {
+        let mut snapshot = vec![message(Role::User, "fix the bug")];
+        for batch in 1..=40 {
+            snapshot.push(round(
+                batch,
+                &format!("step {batch} with a long command line to make the call cost"),
+                &"x".repeat(900),
+            ));
+        }
+        let request = summarization_request(None, &snapshot, Some(3_000));
+        assert!(cost(&request) <= 3_000, "{}", cost(&request));
+        assert!(
+            request[0].text.contains("fix the bug")
+                && request[0].text.contains("left out of this request"),
+            "the note joins the user's message the rounds followed: {}",
+            request[0].text
+        );
+        assert_eq!(request[1].role, ContextRole::Assistant, "{request:?}");
     }
 
     #[test]
@@ -3123,6 +3334,12 @@ mod tests {
         let prompt = &request.last().expect("a prompt").text;
         assert!(prompt.starts_with(SUMMARIZATION_PROMPT), "{prompt}");
         assert!(prompt.ends_with(COMPACT_CHAIN_NOTE.trim_end()), "{prompt}");
+        // What the earlier summary records stands: a summary that tells the
+        // next model to check it again sends it back over work already done.
+        assert!(
+            prompt.contains("never ask for work it records to be checked or done again"),
+            "{prompt}"
+        );
         assert!(
             request.iter().any(|m| m.text.contains("first summary")),
             "the earlier bridge is part of what is summarized"
