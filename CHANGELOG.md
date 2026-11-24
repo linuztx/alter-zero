@@ -26,6 +26,8 @@ release heading when a version is cut.
     window cannot hold. Esc ends the wait. When one tool output takes it
     there at once, that output stays word for word beside the summary.
   - `/compact` works mid-turn too, the same way.
+  - With **Auto compact** off in `/settings`, nothing is summarized on its
+    own: a turn that fills the window ends on an error naming `/compact`.
   - A turn can compact as often as it needs to, and never loops.
   - Headless runs do the same; `--verbose` and `stream-json` report each
     step.

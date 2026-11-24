@@ -302,8 +302,11 @@ impl App {
         self.streaming = Some(String::new());
         // A fresh turn has been handed nothing yet (docs/queue.md).
         self.steered_this_turn = false;
-        // A round announced in the previous turn stamps nothing in this one.
+        // A round announced in the previous turn stamps nothing in this one,
+        // and its round top is nowhere this turn's agent reaches back to
+        // (docs/compact.md *The round that crossed the limit*).
         self.round = None;
+        self.round_top = None;
         // Nor does its reply attempt mark a floor here: an Esc swaps the
         // channel before the round boundary that closes it arrives
         // (docs/offline.md *A connection lost mid-reply*).

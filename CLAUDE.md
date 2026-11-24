@@ -3208,8 +3208,11 @@ construction — on the shared `CompactionSlot`, the agent splices `[system] +
 head + messages[n..]` at its next round top (`CompactionApplied`) and the
 marker lands there naming its cut (`Compaction::cut`), the rounds since
 deriving verbatim and the cell committing mid-turn; at **95%** the agent never
-sends — it waits for the summary (`CompactionWait`, polling the cancel token
-every 20 ms) or forces one — **reaching back** to the round top its last
+sends while a summary can make room — it waits for the summary
+(`CompactionWait`, polling the cancel token every 20 ms) or, with **Auto
+compact** on, forces one (off, nothing is summarized on its own: a request
+that fits goes out, and one the provider's count puts past the window ends
+the turn naming `/compact`) — **reaching back** to the round top its last
 request went out from (`StreamEvent::CompactionRoundTop`, which the loop
 marks, `App::mark_round_top`; the cut records `CompactionCut::back`) when
 one round crossed the limit, so that round stays verbatim — and ends the

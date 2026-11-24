@@ -231,20 +231,25 @@ impl App {
         if self.background_compaction.is_some() || self.is_compacting() {
             return false;
         }
+        // Reaching back: the items since the agent's last round top are the
+        // round that crossed the hard limit — no part of the summary. The
+        // agent keeps that round verbatim whatever is recorded here, so a
+        // reach this history cannot place is refused rather than dropped: a
+        // cut covering everything would put the round in the summary too
+        // (`docs/compact.md` *The round that crossed the limit*).
+        let here = self.history.len();
+        let reach = if back {
+            match self.round_top.filter(|&at| at <= here) {
+                Some(at) => u64::try_from(here - at).unwrap_or(u64::MAX),
+                None => return false,
+            }
+        } else {
+            0
+        };
         let auto = !std::mem::take(&mut self.compaction_requested);
         let user_budget = u64::try_from(crate::context::compact_user_budget(self.context_window))
             .unwrap_or(u64::MAX);
         let timestamp = self.now_stamp();
-        // Reaching back: the items since the agent's last round top are the
-        // round that crossed the hard limit — no part of the summary.
-        let here = self.history.len();
-        let reach = if back {
-            self.round_top
-                .filter(|(generation, at)| *generation == self.history_generation && *at <= here)
-                .map_or(0, |(_, at)| u64::try_from(here - at).unwrap_or(0))
-        } else {
-            0
-        };
         self.history.push(HistoryItem::CompactionCut(CompactionCut {
             id,
             timestamp,
@@ -269,7 +274,7 @@ impl App {
     /// ([`CompactionRoundTop`](crate::stream::StreamEvent::CompactionRoundTop)):
     /// where a checkpoint it takes at the hard limit may reach back to.
     pub fn mark_round_top(&mut self) {
-        self.round_top = Some((self.history_generation, self.history.len()));
+        self.round_top = Some(self.history.len());
     }
 
     /// The compaction running beside the agent's turn, if any.

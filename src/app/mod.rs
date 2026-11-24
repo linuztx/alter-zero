@@ -352,11 +352,14 @@ pub struct App {
     /// been taken yet — the next checkpoint is the user's, not automatic.
     compaction_requested: bool,
     /// Where the running agent's last request went out from — the history's
-    /// generation and length at its last
+    /// length at its last
     /// [`CompactionRoundTop`](crate::stream::StreamEvent::CompactionRoundTop):
     /// where a checkpoint it takes at the hard limit reaches back to
-    /// (`docs/compact.md` *The round that crossed the limit*).
-    round_top: Option<(u64, usize)>,
+    /// (`docs/compact.md` *The round that crossed the limit*). A position,
+    /// not a generation: a cell rewritten in place mid-turn moves nothing.
+    /// Cleared as a turn starts, the only time the history can have been
+    /// rewound under it.
+    round_top: Option<usize>,
     /// How long the running background compaction has been at it — the
     /// boundary's clock, injected per draw (the `set_status_times` pattern).
     compaction_elapsed: Option<Duration>,

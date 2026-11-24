@@ -345,6 +345,18 @@ pub fn context_full_notice(size: u64, window: u64) -> String {
     )
 }
 
+/// The error a turn ends on when its next request no longer fits the window
+/// and the `/settings` **Auto compact** knob is off — nothing is summarized
+/// on its own, so the user is told how to make room (`docs/compact.md` *The
+/// hard limit*).
+#[must_use]
+pub fn auto_compact_off_notice(size: u64, window: u64) -> String {
+    format!(
+        "the conversation no longer fits the model's context window (about {size} of {window} \
+         tokens) and Auto compact is off — run /compact to summarize it, or /clear to start over"
+    )
+}
+
 /// The lead agent's half of the protocol, one per turn (`docs/compact.md`).
 #[derive(Debug)]
 pub struct AgentCompactor {
@@ -471,7 +483,12 @@ impl AgentCompactor {
         let covered = covered.clamp(keep, messages.len());
         let head_len = handoff.head.len();
         messages.splice(keep..covered, handoff.head);
-        self.base = (handoff.head_tokens, keep + head_len);
+        // The derivation joins a plain user text that follows the bridge into
+        // the bridge's own message (`context::push_text`), so the splice
+        // joins it too, or a resumed conversation would send another list
+        // than the agent did (`docs/compact.md` *One rule for the head*).
+        let joined = join_plain_user_text(messages, keep + head_len);
+        self.base = (handoff.head_tokens.saturating_add(joined), keep + head_len);
         self.anchored = true;
         self.floor = Some(handoff.head_tokens);
         // The message counts a failure was measured against described the
@@ -586,23 +603,29 @@ impl AgentCompactor {
             if size < hard_limit(policy.window) {
                 return RoundTop::Go;
             }
-            // At the hard limit: the request must not go out as it stands.
+            // At the hard limit: the request must not go out as it stands —
+            // unless nothing is to make room.
             if self.pending.is_none() {
-                let can_help = compactable
+                // With **Auto compact** off nothing is summarized on its own,
+                // here either: the user manages the context.
+                let can_help = policy.auto
+                    && compactable
                     && policy.hard_can_help()
                     && self
                         .floor
                         .is_none_or(|floor| floor < hard_limit(policy.window))
                     && self.grew_since_failure(messages);
                 if !can_help {
-                    // Nothing can make room: send it if it fits at all — or
-                    // if only the estimate says it does not, which the
+                    // Nothing makes room: send it if it fits at all — or if
+                    // only the estimate says it does not, which the
                     // provider's own count may well contradict — and let the
                     // provider decide; else end the turn saying so.
                     return if size < policy.window || !self.anchored {
                         RoundTop::Go
-                    } else {
+                    } else if policy.auto {
                         RoundTop::Fail(context_full_notice(size, policy.window))
+                    } else {
+                        RoundTop::Fail(auto_compact_off_notice(size, policy.window))
                     };
                 }
                 let reach = Self::reach(messages, previous, size, Some(policy));
@@ -624,6 +647,35 @@ impl AgentCompactor {
 /// past the system prompt and the user's message.
 fn has_a_round(messages: &[ChatMessage]) -> bool {
     messages.iter().any(|message| message.role == "assistant")
+}
+
+/// Join the message at `at` onto the one before it when both are plain user
+/// text — what the derivation's `push_text` makes of two neighbouring user
+/// texts — returning what the joined text costs; 0, and nothing joined,
+/// otherwise.
+fn join_plain_user_text(messages: &mut Vec<ChatMessage>, at: usize) -> u64 {
+    fn plain_user(message: &ChatMessage) -> bool {
+        message.role == "user"
+            && message.tool_calls.is_empty()
+            && message.tool_call_id.is_none()
+            && matches!(message.content, MessageContent::Text(_))
+    }
+    if at == 0
+        || at >= messages.len()
+        || !plain_user(&messages[at - 1])
+        || !plain_user(&messages[at])
+    {
+        return 0;
+    }
+    let next = messages.remove(at);
+    let cost = message_tokens(&next);
+    if let (MessageContent::Text(joined), MessageContent::Text(text)) =
+        (&mut messages[at - 1].content, next.content)
+    {
+        joined.push_str(crate::context::MERGE_SEPARATOR);
+        joined.push_str(&text);
+    }
+    cost
 }
 
 /// The estimated cost of one wire message: its text, a flat rate per
@@ -864,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn with_auto_compact_off_only_the_hard_limit_compacts() {
+    fn with_auto_compact_off_the_threshold_takes_no_checkpoint() {
         let slot = CompactionSlot::default();
         let mut messages = conversation(3, 400);
         let window = cost(&messages) * 100 / 92;
@@ -1169,9 +1221,12 @@ mod tests {
     fn at_the_hard_limit_with_nothing_in_flight_a_compaction_is_forced() {
         let slot = CompactionSlot::default();
         let mut messages = conversation(3, 4_000);
+        let window = cost(&messages) + 10;
         slot.set_policy(Some(CompactionPolicy {
-            auto: false,
-            ..policy(cost(&messages) + 10)
+            // The automatic trigger is paused — the last head alone filled
+            // the threshold — while a summary can still get under the limit.
+            floor: Some(soft_threshold(window)),
+            ..policy(window)
         }));
         let mut compactor = AgentCompactor::new(slot.clone(), 0);
         let (tx, rx) = channel();
@@ -1415,6 +1470,97 @@ mod tests {
             assert_eq!(messages[1], ChatMessage::user(format!("summary {round}")));
             assert_eq!(messages.len(), 4, "[system] + head + the one round since");
         }
+    }
+
+    #[test]
+    fn a_plain_user_text_right_after_the_snapshot_joins_the_summary_bridge() {
+        // The round after the checkpoint came back empty, so the loop asked
+        // the model to go on with a bare user note. The history derives that
+        // note into the bridge's own message (`context::push_text`): the
+        // spliced list must hold the same, or a resumed conversation would
+        // send a list the agent never did.
+        let slot = CompactionSlot::default();
+        let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        let (tx, mut rx) = channel();
+        let cancel = CancelToken::new();
+        let mut messages = conversation(2, 40);
+        slot.request();
+        compactor.before_round(&mut messages, &tx, &cancel);
+        let id = checkpoint_id(&without_round_tops(drain(&mut rx)));
+        messages.push(ChatMessage::user("Your reply was empty. Go on."));
+        slot.publish(Handoff {
+            id,
+            head: head(),
+            head_tokens: 30,
+        });
+        compactor.before_round(&mut messages, &tx, &cancel);
+        assert_eq!(
+            messages,
+            vec![
+                ChatMessage::system("sys"),
+                ChatMessage::user(format!(
+                    "fix it\n\nsummary of what happened{}Your reply was empty. Go on.",
+                    crate::context::MERGE_SEPARATOR
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    fn with_auto_compact_off_the_hard_limit_forces_no_compaction() {
+        // Off means nothing is summarized on its own — not at the threshold
+        // and not at the hard limit: a request that still fits the window
+        // goes out as it stands (`docs/compact.md` *The hard limit*).
+        let slot = CompactionSlot::default();
+        let mut messages = conversation(3, 4_000);
+        let before = messages.clone();
+        slot.set_policy(Some(CompactionPolicy {
+            auto: false,
+            ..policy(cost(&messages) + 10)
+        }));
+        let mut compactor = AgentCompactor::new(slot, 0);
+        let (tx, mut rx) = channel();
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &watchdog()),
+            RoundTop::Go
+        );
+        assert!(
+            without_round_tops(drain(&mut rx)).is_empty(),
+            "no checkpoint and no wait"
+        );
+        assert_eq!(messages, before);
+    }
+
+    /// A cancel token that cancels itself after two seconds — so a wait
+    /// nobody will answer ends a test as a `Stop` instead of hanging it.
+    fn watchdog() -> CancelToken {
+        let cancel = CancelToken::new();
+        let token = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(2));
+            token.cancel();
+        });
+        cancel
+    }
+
+    #[test]
+    fn with_auto_compact_off_a_request_past_the_window_ends_the_turn_saying_so() {
+        let slot = CompactionSlot::default();
+        let mut messages = conversation(3, 4_000);
+        let size = cost(&messages);
+        slot.set_policy(Some(CompactionPolicy {
+            auto: false,
+            ..policy(size - 10)
+        }));
+        let mut compactor = AgentCompactor::new(slot, 0);
+        compactor.observe(size, messages.len());
+        let (tx, mut rx) = channel();
+        let RoundTop::Fail(notice) = compactor.before_round(&mut messages, &tx, &watchdog()) else {
+            panic!("the provider's own count is past the window");
+        };
+        assert!(notice.contains("Auto compact is off"), "{notice}");
+        assert!(notice.contains("/compact"), "{notice}");
+        assert!(without_round_tops(drain(&mut rx)).is_empty());
     }
 
     #[test]

@@ -268,7 +268,11 @@ head the boundary hands the agent is `context::compacted_head`, the very
 function `context_messages_full` opens a compacted history with, called on
 the history up to the cut with the marker's summary and budget; and what the
 agent keeps after the head — `messages[n..]` — is exactly what the history
-holds after the cut, in the order the loop recorded it. The headless suite
+holds after the cut, in the order the loop recorded it. One seam needs
+care: the derivation joins a plain user text that follows the bridge into
+the bridge's own message (`push_text`), so the splice joins it too — the
+bare note the loop sends after an empty reply is the one such text a round
+can open with (`a_plain_user_text_right_after_the_snapshot_joins_the_summary_bridge`). The headless suite
 proves it end to end (`a_long_turn_compacts_in_the_background_and_its_history_derives_what_the_agent_held`):
 a `--continue` run's first request opens on the last request of the turn
 that compacted — under another window, past what every request renders
@@ -289,9 +293,15 @@ provider's own count — past the window. At a round top past it:
   for the handoff, polling the turn's `CancelToken` every 20 ms
   (`WAIT_POLL`) — the cadence every blocking wait on the backend thread
   keeps, so Esc stays the stop button;
-- with none running, it **forces** one — a checkpoint whatever the
-  **Auto compact** knob says (off means "don't compact on your own",
-  never "overflow the window") — and waits for it;
+- with none running, it **forces** one and waits for it — while the
+  **Auto compact** knob is on;
+- with the knob **off** nothing is summarized on its own, here either: the
+  knob says the user manages the context (`/compact`, `/clear`), the way
+  codex and Claude Code treat theirs. The request goes out while it fits
+  the window, and a turn whose request the provider's own count puts past
+  it ends on an error saying so and naming `/compact`
+  (`auto_compact_off_notice`). A `/compact` the user typed mid-turn is still
+  taken, and waited for here like any other;
 - when nothing can make room (*When compacting cannot help*), it sends the
   request if it fits the window at all — or if only the estimate says it
   does not, which the provider's own count may contradict — and otherwise
@@ -317,7 +327,18 @@ verbatim after the summary (`CompactionCheckpoint { back: true }`; the cut
 records how many items it reaches back over, `CompactionCut::back`). After a
 splice in the same round top there is no such spot — the list was rewritten
 — and a checkpoint covers everything. A reaching checkpoint whose summary
-fails is not taken again until something new joins. The headless suite's
+fails is not taken again until something new joins.
+
+The loop's note is a position, and only a turn start clears it: a cell
+rewritten in place while the turn runs — a background agent's completion
+settling its group, the **Show images** knob — bumps the history's
+generation but moves nothing, so it must not cost the reach (an earlier
+version checked the generation and fell back to a cut covering everything,
+while the agent kept the round verbatim anyway: the round went into the
+summary *and* stayed beside it). The agent keeps the round it reached past
+whatever the loop does, so a reach the loop cannot place — no round top
+marked this turn — refuses the checkpoint (the agent is told it failed)
+rather than cut anywhere else. The headless suite's
 `a_round_that_crosses_the_hard_limit_reaches_the_model_word_for_word` drives
 rounds big enough that every compaction is forced, and checks every round's
 output reached the model itself.

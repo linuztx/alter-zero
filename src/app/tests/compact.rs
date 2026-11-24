@@ -852,16 +852,49 @@ fn a_checkpoint_reaching_back_covers_what_preceded_the_last_round_top() {
 }
 
 #[test]
-fn a_checkpoint_reaching_back_with_no_round_top_covers_everything() {
-    // No round top was marked in this conversation: there is nowhere to
-    // reach back to, and the checkpoint covers the history as it stands.
+fn a_checkpoint_reaching_back_keeps_its_reach_across_an_in_place_rewrite() {
+    // A background agent's completion settling — or the Show images knob —
+    // rewrites committed cells in place, bumping the history's generation
+    // while the turn runs. Nothing moved: the round top still marks where
+    // the agent's last request went out from, and the agent splices as if
+    // it reached back, so the cut must reach back too — else the round
+    // since would be both summarized and kept verbatim.
     let mut app = working_turn();
-    let len = app.history.len();
+    app.mark_round_top();
+    let top = app.history.len();
+    app.start_tool("Bash", "cat big.log", None);
+    app.end_tool("the big log", true);
+    app.invalidate_rendered_history();
     assert!(app.begin_background_compaction(7, true));
     assert_eq!(
         app.background_compaction_snapshot()
             .map(<[HistoryItem]>::len),
-        Some(len)
+        Some(top),
+        "the snapshot still ends at the round top"
+    );
+}
+
+#[test]
+fn a_checkpoint_reaching_back_with_no_round_top_is_refused() {
+    // The agent reached back, so it keeps the round since verbatim: a cut
+    // covering everything would put that round in the summary as well.
+    // With no round top to reach back to, the checkpoint is refused — the
+    // boundary tells the agent it failed — and nothing is recorded.
+    let mut app = working_turn();
+    let len = app.history.len();
+    assert!(!app.begin_background_compaction(7, true));
+    assert_eq!(app.history.len(), len, "no cut recorded");
+    assert!(app.background_compaction().is_none());
+}
+
+#[test]
+fn a_round_top_of_an_earlier_turn_is_nowhere_to_reach_back_to() {
+    let mut app = working_turn();
+    app.mark_round_top();
+    app.begin_stream();
+    assert!(
+        !app.begin_background_compaction(7, true),
+        "a new turn's agent never reaches back to another turn's round"
     );
 }
 
