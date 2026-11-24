@@ -43,6 +43,9 @@ impl App {
     pub fn begin_compact(&mut self, auto: bool) {
         self.streaming = Some(String::new());
         self.compact_buffer = Some(String::new());
+        // A reply attempt an Esc cut short marks no floor in this turn
+        // (`begin_stream`'s rule, docs/offline.md).
+        self.attempt_floor = None;
         self.compact_auto = auto;
         self.compact_before = self.context_used;
         self.stream_preview_rows = 1;

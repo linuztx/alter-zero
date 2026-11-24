@@ -119,7 +119,9 @@ what a continuation needs:
 - a subagent's fold and its `RunRecorder` already handle it
   (`docs/agent-progress.md`), and a `/compact` turn's notes never enter the
   conversation's record, so a summary that came back empty just arrives a
-  round later.
+  round later. One cut off at the output cap is finished by the next round,
+  and a retry of that round keeps what the first one wrote
+  (`docs/offline.md` *A connection lost mid-reply*).
 
 ## Bounded, and loud when it runs out
 

@@ -427,7 +427,9 @@ codex's item stream, closed by the result:
 - **Nothing is ever printed that the session later takes back**: a reply
   attempt a lost connection voids is withdrawn from the history
   (`docs/offline.md`), so items past `App::settled_history_len` — what such a
-  retry could still withdraw — wait until the attempt ends.
+  retry could still withdraw — wait until the attempt ends. Since nothing of
+  an attempt is printed before it ends, a client never has anything to
+  discard when a request is retried: nothing it has read is ever withdrawn.
 - A turn ends in `turn.completed` (its summary's duration and tokens) or
   `turn.failed`; an interrupted run still ends in a `result` — codex's
   missing terminal event.
@@ -505,7 +507,14 @@ installed before bootstrap starts any server, and the shutdown is bounded
   the wait runs out; a command left running is stopped and named; the
   system prompt flags place their text, outrank `ALTER_ZERO_SYSTEM_PROMPT`,
   read a file relative to `-C`, and refuse an unreadable file before any
-  request (`docs/system-prompt.md`).
+  request (`docs/system-prompt.md`); and a reply whose connection drops
+  mid-body, after the attempt has recorded a line and two thoughts, is sent
+  again and reported as the retry streamed it, in `text`, `json` and
+  `stream-json`, quiet and with `--verbose`, and in the rollout. None of
+  them shows anything of the dropped attempt (`docs/offline.md` *A
+  connection lost mid-reply*). A summary the output cap cut off, whose
+  continuation drops the same way, keeps its first round in the compaction
+  a `-c` run makes before its prompt.
 - `scripts/smoke.sh` Phase 153: `alter-zero -p --verbose` from a tmux pane —
   the log and the answer on the terminal, its modes unchanged (`stty -g`), and none
   of the TUI's escapes in the raw byte stream (no DSR, no alternate screen,

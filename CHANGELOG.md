@@ -35,6 +35,22 @@ release heading when a version is cut.
     `set -as terminal-features ',<TERM>:clipboard'` to your `~/.tmux.conf`
     (`docs/copy.md`).
 
+- **A compaction keeps its whole summary when a request is retried.** A
+  summary that ran past the model's output limit goes on in a second
+  request. When that request was retried, after a dropped connection or a
+  busy provider's `429` or `503`, the retry also threw away what the first
+  request had written. The compaction (`/compact`, or the automatic one
+  once the context window fills, `-p` runs included) then put only the
+  summary's ending in place of the conversation. A retry now takes back
+  only what its own failed request streamed (`docs/offline.md`).
+
+- **A retry after a mid-reply `/clear` takes back the whole failed
+  attempt.** A `/clear` pressed while a reply streamed could leave the
+  retry's bookkeeping pointing into the cleared conversation. If the next
+  turn's connection then dropped, the retry kept the thought the failed
+  attempt had shown, next to the one the retried reply showed
+  (`docs/offline.md`).
+
 ## [0.20.0] - 2026-11-23
 
 ### Added

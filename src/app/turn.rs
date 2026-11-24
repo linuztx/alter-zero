@@ -304,6 +304,10 @@ impl App {
         self.steered_this_turn = false;
         // A round announced in the previous turn stamps nothing in this one.
         self.round = None;
+        // Nor does its reply attempt mark a floor here: an Esc swaps the
+        // channel before the round boundary that closes it arrives
+        // (docs/offline.md *A connection lost mid-reply*).
+        self.attempt_floor = None;
         // A new real turn re-arms the auto-compact trigger (one attempt per
         // user turn — docs/compact.md).
         self.auto_compact_blocked = false;
@@ -572,9 +576,10 @@ impl App {
     /// Note where the reply attempt now streaming began — the boundary calls
     /// this with **every** reply event, before folding it. The first piece of
     /// [attempt output] since an event of any other kind marks the history's
-    /// length there; any other event closes the mark, because each one is a
-    /// boundary an attempt cannot span — a usage frame, the round's calls, a
-    /// tool resolving, a steered message, the turn's end. A
+    /// length there, and the `/compact` summary's; any other event closes the
+    /// mark, because each one is a boundary an attempt cannot span — a usage
+    /// frame, the round's calls, a tool resolving, a steered message, the
+    /// continuation asked of a cut-off reply, the turn's end. A
     /// [`Retrying`](crate::stream::StreamEvent::Retrying) leaves it for
     /// [`withdraw_attempt`](App::withdraw_attempt) to take
     /// (`docs/offline.md` *A connection lost mid-reply*).
@@ -582,7 +587,10 @@ impl App {
     /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
     pub fn track_attempt(&mut self, event: &crate::stream::StreamEvent) {
         if event.is_attempt_output() {
-            self.attempt_floor.get_or_insert(self.history.len());
+            self.attempt_floor.get_or_insert_with(|| AttemptFloor {
+                history: self.history.len(),
+                summary: self.compact_buffer.as_ref().map_or(0, String::len),
+            });
         } else if !matches!(event, crate::stream::StreamEvent::Retrying { .. }) {
             self.attempt_floor = None;
         }
@@ -595,7 +603,7 @@ impl App {
     #[must_use]
     pub fn settled_history_len(&self) -> usize {
         self.attempt_floor
-            .unwrap_or(self.history.len())
+            .map_or(self.history.len(), |floor| floor.history)
             .min(self.history.len())
     }
 
@@ -607,13 +615,15 @@ impl App {
     ///
     /// Withdrawn: the reply text it streamed (the stream itself stays open for
     /// the next attempt), a thinking phase it opened — dropped, never settled
-    /// into a cell — the calls it was still generating, the `/compact` summary
-    /// so far, and the history items it recorded since
-    /// [`track_attempt`](App::track_attempt)'s mark: a run of its text
-    /// finalised when a phase or a `write` preview opened, and a thought it
-    /// settled. An attempt records nothing else, and the withdrawal never pops
-    /// an item of any other kind — a stale mark can only take back too little.
-    /// A retry before any content finds nothing and returns the default.
+    /// into a cell — the calls it was still generating, what it added to the
+    /// `/compact` summary (a summary the output cap cut off goes on in another
+    /// round, and what the rounds before wrote stays), and the history items
+    /// it recorded since [`track_attempt`](App::track_attempt)'s mark: a run
+    /// of its text finalised when a phase or a `write` preview opened, and a
+    /// thought it settled. An attempt records nothing else, and the withdrawal
+    /// never pops an item of any other kind — a stale mark can only take back
+    /// too little. A retry before any content finds nothing and returns the
+    /// default.
     pub fn withdraw_attempt(&mut self) -> Withdrawn {
         let live = self
             .streaming
@@ -624,14 +634,14 @@ impl App {
         if let Some(text) = self.streaming.as_mut() {
             text.clear();
         }
-        if let Some(summary) = self.compact_buffer.as_mut() {
-            summary.clear();
-        }
         self.reasoning = None;
         self.tool_drafts.clear();
         let mut records = 0;
         if let Some(floor) = self.attempt_floor.take() {
-            while self.history.len() > floor
+            if let Some(summary) = self.compact_buffer.as_mut() {
+                summary.truncate(floor.summary);
+            }
+            while self.history.len() > floor.history
                 && self.history.last().is_some_and(|item| match item {
                     HistoryItem::Reasoning(_) => true,
                     HistoryItem::Message(message) => message.role == Role::Assistant,
@@ -958,6 +968,19 @@ pub struct StreamError {
     pub agents: Option<AgentGroup>,
     /// The error message to show the user.
     pub error: String,
+}
+
+/// Where the reply attempt now streaming began ([`App::track_attempt`]) —
+/// what [`App::withdraw_attempt`] takes the turn back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AttemptFloor {
+    /// The history's length at the attempt's first piece of output.
+    history: usize,
+    /// The `/compact` summary's length then. Unlike the reply buffer, which
+    /// every round boundary flushes, the summary runs on across rounds — one
+    /// the output cap cut off goes on in another — so what the rounds before
+    /// the attempt wrote is still in it.
+    summary: usize,
 }
 
 /// What [`App::withdraw_attempt`] took back of a failed reply attempt, for the
