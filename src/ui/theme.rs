@@ -3453,9 +3453,9 @@ pub const COMPACT_WAITING_ROW: &str = "Waiting for the context to compact…";
 /// boundary.
 pub const COMPACT_READY_ROW: &str = "Context summary ready — it applies at the agent's next step";
 
-/// `/compact` was typed while the agent works, and its checkpoint is not
-/// taken yet.
-pub const COMPACT_REQUESTED_ROW: &str = "Compacting at the agent's next step…";
+/// `/compact` was typed during a turn, and nothing has taken it yet: the
+/// agent's next round top, or the turn's end where no agent loop runs.
+pub const COMPACT_REQUESTED_ROW: &str = "Compaction requested — it starts at the next step…";
 
 // --- The `Agent` tool (docs/agent-tool.md) ---
 

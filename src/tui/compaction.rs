@@ -38,10 +38,18 @@ pub(crate) struct Summarizer {
 
 impl Session<'_> {
     /// `/compact` while the agent works: ask the running agent for a
-    /// checkpoint at its next round top, and say so.
+    /// checkpoint at its next round top, and say so — or, where no agent
+    /// loop runs the turn (a `!` command, the offline demo), say it runs as
+    /// the turn ends, which is where the request is then taken.
     pub(crate) fn request_background_compaction(&mut self) {
         self.compaction_slot.request();
-        self.toast(alter_zero::app::COMPACT_REQUESTED_NOTICE, ToastKind::Info);
+        let shell = self.app.status().is_some_and(|status| status.shell);
+        let notice = if shell || !self.models.is_real() {
+            alter_zero::app::COMPACT_AFTER_TURN_NOTICE
+        } else {
+            alter_zero::app::COMPACT_REQUESTED_NOTICE
+        };
+        self.toast(notice, ToastKind::Info);
     }
 
     /// Publish what the agent may do about compacting — the window, the

@@ -80,9 +80,10 @@ pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number,
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion, Held};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
-    COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COMPACT_REQUESTED_NOTICE,
-    COPY_EMPTY_NOTICE, COPY_OK_NOTICE, CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT,
-    RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
+    COMMANDS, COMPACT_AFTER_TURN_NOTICE, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE,
+    COMPACT_REQUESTED_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, CommandEffect, CommandMenu,
+    INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand, command_query,
+    matching_commands,
 };
 pub use self::compact::{
     BackgroundCompaction, COMPACT_VERB, Compaction, CompactionCut, CompactionPhase,

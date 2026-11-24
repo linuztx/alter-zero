@@ -416,8 +416,8 @@ in the gutter a tool's output hangs from (`ui::compacting_lines`, one of
 
 `Waiting for the context to compact… (12s)` in the warning amber while the
 agent waits at the hard limit, `Context summary ready — it applies at the
-agent's next step` between the handoff and the splice, and `Compacting at
-the agent's next step…` after a `/compact` the agent has not reached yet.
+agent's next step` between the handoff and the splice, and `Compaction
+requested — it starts at the next step…` after a `/compact` the agent has not reached yet.
 Live only — the record is the cell, committed where the summary lands:
 `● Context compacted · 46k → 9.8k tokens · 12s · auto`, its time the
 compaction's own, from checkpoint to splice.
@@ -428,7 +428,9 @@ The command sets a request on the slot; the agent takes it at its next round
 top **whatever the size** — the user asked — as long as a round has run and
 no compaction is running. Its marker is not tagged `auto`. A turn that ends
 before the agent reaches a round top runs it as an ordinary idle compaction
-right after.
+right after — which is also what a turn no agent loop runs does with it (a
+`!` command, the offline demo), so there the toast says `Compacting once this
+turn ends` rather than that the agent keeps working.
 
 ### A turn that ends mid-summary
 

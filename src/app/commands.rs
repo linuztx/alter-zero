@@ -59,6 +59,11 @@ pub const COMPACT_BUSY_NOTICE: &str = "A compaction is already running";
 /// summary landing at a later step of the same turn. See `docs/compact.md`.
 pub const COMPACT_REQUESTED_NOTICE: &str = "Compacting in the background — the agent keeps working";
 
+/// The transient toast that answers `/compact` during a turn no agent loop
+/// runs — a `!` command, the offline demo: nothing takes a checkpoint there,
+/// so the compaction runs as the turn ends. See `docs/compact.md`.
+pub const COMPACT_AFTER_TURN_NOTICE: &str = "Compacting once this turn ends";
+
 /// The transient toast shown when `/compact` finds nothing to summarize — an
 /// empty conversation would send the bare summarization prompt to the model
 /// and "summarize" nothing. See `docs/compact.md`.
