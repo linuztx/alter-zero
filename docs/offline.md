@@ -234,12 +234,15 @@ first byte arrives.
   - `App::withdraw_attempt` (the main turn): the streamed reply text (the
     stream itself stays open), a thinking phase the attempt opened —
     dropped, never settled into a `Thought for …` cell — a call it was
-    generating (the `write` preview), the `/compact` summary so far, and
-    the history items the attempt recorded: a run of its text finalised when
-    a phase or a preview opened, and a thought it settled. An attempt records
-    nothing else, and the withdrawal never pops an item of any other kind, so
-    a wrong mark could only ever take back too little. `history_generation`
-    moves with it (the Ctrl+O cache, the rollout's truncation rewrite).
+    generating (the `write` preview), what it added to the `/compact`
+    summary (a summary cut off at the output cap is finished by another
+    round, and what an earlier round wrote stays), and the history items the
+    attempt recorded: a run of its text finalised when a phase or a preview
+    opened, and a thought it settled. An attempt records nothing else, and
+    the withdrawal never pops an item of any other kind, so a wrong mark
+    could only ever take back too little. `history_generation` moves with it
+    (the Ctrl+O cache, the rollout's truncation rewrite). A compaction starts
+    unmarked, since a mark an interrupted turn left measured another buffer.
   - `AgentRun::apply` (a subagent): the same, off the agent's own transcript
     and strip.
   - `agents::RunRecorder` (the subagent's forwarder): the text it was
@@ -325,7 +328,10 @@ first byte arrives.
 - `app::tests::turn`: `withdraw_attempt` takes back the streamed reply
   (keeping the stream open), the finalised text and the settled thought the
   attempt recorded (a non-append generation bump), an open thought and a
-  `write` preview, a `/compact` summary, and nothing before any content; it
+  `write` preview, the part of a `/compact` summary its own attempt wrote
+  (an earlier round's part stays, even when the retry streamed nothing, and
+  a new compaction ignores a mark an interrupted one left), and nothing
+  before any content; it
   never reaches back past a round boundary — even one that recorded nothing
   — and never pops an item an attempt cannot record; a withdrawn thought is
   no snap target for the round's usage frame. `app::tests::agent`:

@@ -43,6 +43,10 @@ impl App {
     pub fn begin_compact(&mut self, auto: bool) {
         self.streaming = Some(String::new());
         self.compact_buffer = Some(String::new());
+        // A mark left by a turn that ended without a closing event (an Esc
+        // swaps the reply channel) measured another buffer; the retry floor
+        // into this summary starts here (`withdraw_attempt`).
+        self.attempt_floor = None;
         self.compact_auto = auto;
         self.compact_before = self.context_used;
         self.stream_preview_rows = 1;

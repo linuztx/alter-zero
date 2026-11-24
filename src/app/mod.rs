@@ -268,8 +268,8 @@ pub struct App {
     /// ends one round) and by every turn start.
     round_reasoning: Vec<usize>,
     /// Where the reply attempt now streaming began: the [`history`](Self::history)
-    /// length at its first piece of output — the mark a
-    /// [`StreamEvent::Retrying`] withdraws back to
+    /// length, and the `/compact` summary's, at its first piece of output —
+    /// the mark a [`StreamEvent::Retrying`] withdraws back to
     /// ([`withdraw_attempt`](App::withdraw_attempt), `docs/offline.md` *A
     /// connection lost mid-reply*). Set by [`track_attempt`](App::track_attempt)
     /// at the first piece of [attempt output] since an event of any other kind,
@@ -278,7 +278,7 @@ pub struct App {
     ///
     /// [`StreamEvent::Retrying`]: crate::stream::StreamEvent::Retrying
     /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
-    attempt_floor: Option<usize>,
+    attempt_floor: Option<turn::AttemptFloor>,
     /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
     /// crossed the threshold) vs the manual command — recorded onto the marker
     /// so its cell can say `· auto`. Meaningful only while

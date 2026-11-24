@@ -572,9 +572,10 @@ impl App {
     /// Note where the reply attempt now streaming began — the boundary calls
     /// this with **every** reply event, before folding it. The first piece of
     /// [attempt output] since an event of any other kind marks the history's
-    /// length there; any other event closes the mark, because each one is a
-    /// boundary an attempt cannot span — a usage frame, the round's calls, a
-    /// tool resolving, a steered message, the turn's end. A
+    /// length there, and the `/compact` summary's; any other event closes the
+    /// mark, because each one is a boundary an attempt cannot span — a usage
+    /// frame, the round's calls, a tool resolving, a steered message, the
+    /// continuation asked of a cut-off reply, the turn's end. A
     /// [`Retrying`](crate::stream::StreamEvent::Retrying) leaves it for
     /// [`withdraw_attempt`](App::withdraw_attempt) to take
     /// (`docs/offline.md` *A connection lost mid-reply*).
@@ -582,7 +583,11 @@ impl App {
     /// [attempt output]: crate::stream::StreamEvent::is_attempt_output
     pub fn track_attempt(&mut self, event: &crate::stream::StreamEvent) {
         if event.is_attempt_output() {
-            self.attempt_floor.get_or_insert(self.history.len());
+            let floor = AttemptFloor {
+                history: self.history.len(),
+                summary: self.compact_buffer.as_ref().map_or(0, String::len),
+            };
+            self.attempt_floor.get_or_insert(floor);
         } else if !matches!(event, crate::stream::StreamEvent::Retrying { .. }) {
             self.attempt_floor = None;
         }
@@ -595,7 +600,7 @@ impl App {
     #[must_use]
     pub fn settled_history_len(&self) -> usize {
         self.attempt_floor
-            .unwrap_or(self.history.len())
+            .map_or(self.history.len(), |floor| floor.history)
             .min(self.history.len())
     }
 
@@ -607,13 +612,15 @@ impl App {
     ///
     /// Withdrawn: the reply text it streamed (the stream itself stays open for
     /// the next attempt), a thinking phase it opened — dropped, never settled
-    /// into a cell — the calls it was still generating, the `/compact` summary
-    /// so far, and the history items it recorded since
-    /// [`track_attempt`](App::track_attempt)'s mark: a run of its text
-    /// finalised when a phase or a `write` preview opened, and a thought it
-    /// settled. An attempt records nothing else, and the withdrawal never pops
-    /// an item of any other kind — a stale mark can only take back too little.
-    /// A retry before any content finds nothing and returns the default.
+    /// into a cell — the calls it was still generating, what it added to the
+    /// `/compact` summary (an earlier round's part stays: a summary cut off at
+    /// the output cap is finished by another round), and the history items it
+    /// recorded since [`track_attempt`](App::track_attempt)'s mark: a run of
+    /// its text finalised when a phase or a `write` preview opened, and a
+    /// thought it settled. An attempt records nothing else, and the withdrawal
+    /// never pops an item of any other kind — a stale mark can only take back
+    /// too little. A retry before any content finds nothing and returns the
+    /// default.
     pub fn withdraw_attempt(&mut self) -> Withdrawn {
         let live = self
             .streaming
@@ -624,14 +631,21 @@ impl App {
         if let Some(text) = self.streaming.as_mut() {
             text.clear();
         }
+        let floor = self.attempt_floor.take();
         if let Some(summary) = self.compact_buffer.as_mut() {
-            summary.clear();
+            // No mark: this attempt streamed nothing, so the summary stands.
+            let keep = floor.map_or(summary.len(), |floor| floor.summary);
+            // A mark is a length the summary had, so always a char boundary;
+            // checked anyway, since a truncate off one would panic the loop.
+            if summary.is_char_boundary(keep) {
+                summary.truncate(keep);
+            }
         }
         self.reasoning = None;
         self.tool_drafts.clear();
         let mut records = 0;
-        if let Some(floor) = self.attempt_floor.take() {
-            while self.history.len() > floor
+        if let Some(floor) = floor {
+            while self.history.len() > floor.history
                 && self.history.last().is_some_and(|item| match item {
                     HistoryItem::Reasoning(_) => true,
                     HistoryItem::Message(message) => message.role == Role::Assistant,
@@ -982,6 +996,19 @@ impl Withdrawn {
     pub const fn anything(self) -> bool {
         self.records > 0 || self.live
     }
+}
+
+/// Where the reply attempt now streaming began, as [`App::track_attempt`]
+/// marks it at the attempt's first piece of output: what a retry withdraws
+/// back to ([`App::withdraw_attempt`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AttemptFloor {
+    /// The history's length.
+    history: usize,
+    /// The `/compact` summary's length, `0` outside a compaction. A summary
+    /// cut off at the output cap is finished by a second round, so what an
+    /// earlier round wrote sits below the mark and stays.
+    summary: usize,
 }
 
 /// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to

@@ -2161,6 +2161,71 @@ fn a_retry_restarts_a_compaction_summary() {
     assert_eq!(compaction.summary, "The whole summary.");
 }
 
+/// The note the agent loop sends when it asks a reply cut off at the output
+/// cap to go on (`docs/unfinished-replies.md`): a round boundary, like every
+/// event that is not attempt output.
+fn continuation() -> StreamEvent {
+    StreamEvent::HookNote {
+        label: "Continuing".into(),
+        text: "Continue where you left off.".into(),
+        report: None,
+    }
+}
+
+#[test]
+fn a_retry_keeps_the_summary_an_earlier_round_wrote() {
+    // A summary cut off at the output cap is finished in a second round. A
+    // retry there voids only what its own attempt streamed: the first
+    // round's text stays, so the summary that lands is whole rather than
+    // its end alone.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("The user asked for ".into()));
+    app.track_attempt(&continuation());
+    stream_event(&mut app, StreamEvent::Chunk("a pars".into()));
+    let _ = app.withdraw_attempt();
+    stream_event(&mut app, StreamEvent::Chunk("a parser.".into()));
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(compaction.summary, "The user asked for a parser.");
+}
+
+#[test]
+fn a_compaction_takes_no_mark_from_the_turn_before_it() {
+    // An Esc swaps the reply channel, so the attempt it cut short never sees
+    // a closing event and its mark is still set. That mark measured another
+    // summary: a new compaction starts unmarked, and a retry takes back
+    // exactly what its own attempt streamed.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("An old summary, ".into()));
+    app.track_attempt(&continuation());
+    stream_event(&mut app, StreamEvent::Chunk("cut short".into()));
+    let _ = app.interrupt_turn(1);
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("Half a".into()));
+    let _ = app.withdraw_attempt();
+    stream_event(&mut app, StreamEvent::Chunk("The new summary.".into()));
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(compaction.summary, "The new summary.");
+}
+
+#[test]
+fn a_retry_before_any_content_keeps_the_summary_so_far() {
+    // The continuation's request failed before its first byte (a 429, a
+    // 503): that attempt streamed nothing, so nothing of the summary goes.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    stream_event(&mut app, StreamEvent::Chunk("The user asked for ".into()));
+    app.track_attempt(&continuation());
+    let _ = app.withdraw_attempt();
+    stream_event(&mut app, StreamEvent::Chunk("a parser.".into()));
+    let compaction = app.finish_compact(3).expect("the summary lands");
+    assert_eq!(compaction.summary, "The user asked for a parser.");
+}
+
 #[test]
 fn a_withdrawal_never_pops_an_item_no_attempt_records() {
     // An attempt records only reply text and thoughts. Were the mark ever

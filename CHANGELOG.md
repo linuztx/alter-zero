@@ -12,6 +12,17 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A compaction summary keeps its beginning when a request is retried.**
+  A summary that runs past the model's output limit is finished by a
+  follow-up request. When that request was retried, after a dropped
+  connection or a busy provider's `429` or `503`, the retry also threw away
+  what the first request had written, and the conversation went on with
+  only the end of its summary. A retry now takes back only what its own
+  failed attempt streamed. This applies to `/compact`, auto-compaction and
+  headless runs alike.
+
 ## [0.20.0] - 2026-11-23
 
 ### Added
