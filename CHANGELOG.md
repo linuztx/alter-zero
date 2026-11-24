@@ -43,6 +43,13 @@ release heading when a version is cut.
   summary's ending in place of the conversation. A retry now takes back
   only what the failed request streamed (`docs/offline.md`).
 
+- **A retry after a mid-reply `/clear` takes back the whole failed
+  attempt.** A `/clear` pressed while a reply streamed could leave the
+  retry's bookkeeping pointing into the cleared conversation. If the next
+  turn's connection then dropped, the retry kept the thought the failed
+  attempt had shown, next to the one the retried reply showed
+  (`docs/offline.md`).
+
 ## [0.20.0] - 2026-11-23
 
 ### Added

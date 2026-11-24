@@ -260,10 +260,11 @@ first byte arrives.
   round's calls, a tool resolution, a steered message — so a mark can never
   reach back into an earlier round's cells. The main session's mark also
   records the `/compact` summary's length, and a turn start drops any mark
-  left open (`begin_stream`, `begin_compact`). An Esc swaps the channel
-  before the boundary that would close it arrives, and a summary length
-  kept from the compaction it cut short would mark the wrong place in the
-  next one.
+  left open (`begin_stream`, `begin_compact`). An Esc, or a `/clear`, swaps
+  the channel before the boundary that would close the mark arrives. A
+  summary length kept from the compaction it cut short would mark the wrong
+  place in the next one, and a history length kept past a `/clear` would sit
+  above the next turn's attempt, so its retry would take back nothing.
 - **The backend leaves an open phase alone.** `stream_round` closed a
   thinking phase after every attempt, failed ones included; it now closes
   one only after a stream that completed. A failed attempt's phase is the
@@ -340,8 +341,10 @@ first byte arrives.
   summary's earlier rounds kept, whether the later one failed after content
   or before it), and nothing before any content; it
   never reaches back past a round boundary — even one that recorded nothing
-  — and never pops an item an attempt cannot record; a withdrawn thought is
-  no snap target for the round's usage frame. `app::tests::agent`:
+  — and never pops an item an attempt cannot record; a turn marks its own
+  floor, whatever an interrupted compaction or a mid-turn `/clear` left; a
+  withdrawn thought is no snap target for the round's usage frame.
+  `app::tests::agent`:
   `withdraw_agent_attempt` reports what went and marks the roster.
 - `agents::tests`: `AgentRun::apply(Retrying)` withdraws the agent's
   partial, its finalised text and thought, its open thought and clock, its

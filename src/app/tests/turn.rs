@@ -2251,6 +2251,34 @@ fn a_mark_an_interrupted_turn_left_open_never_reaches_into_the_next() {
 }
 
 #[test]
+fn a_turn_marks_its_own_floor_after_a_turn_cleared_mid_stream() {
+    // `/clear` mid-turn swaps the reply channel, so the attempt it cut short
+    // never sees a closing event, and the history its mark measured is gone.
+    // The next turn marks its own floor: a retry there takes back the
+    // thought its attempt settled, which a floor left above the new history
+    // would keep beside the retry's.
+    let mut app = App::new();
+    for text in ["one", "two", "three"] {
+        app.record_user_message(text);
+    }
+    app.begin_stream();
+    stream_event(&mut app, StreamEvent::Chunk("Half a rep".into()));
+    app.clear_conversation();
+    app.record_user_message("explain the parser");
+    app.begin_stream();
+    stream_event(&mut app, StreamEvent::ThinkingStart);
+    stream_event(&mut app, StreamEvent::ThinkingChunk("first try".into()));
+    stream_event(&mut app, StreamEvent::ThinkingEnd);
+    stream_event(&mut app, StreamEvent::Chunk("Draf".into()));
+    assert_eq!(
+        app.withdraw_attempt().records,
+        1,
+        "the settled thought goes"
+    );
+    assert_eq!(history_lines(&app), ["User: explain the parser"]);
+}
+
+#[test]
 fn a_withdrawal_never_pops_an_item_no_attempt_records() {
     // An attempt records only reply text and thoughts. Were the mark ever
     // stale — a round boundary folded without being tracked — the
