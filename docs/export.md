@@ -183,10 +183,12 @@ guessing which second the clock read.
 
 ## The clipboard
 
-The clipboard row goes through `/copy`'s own path
-(`clipboard::copy_to_clipboard`, `docs/copy.md`): arboard, with the OSC 52
-fallback for a headless, SSH or tmux session, the native lease held for the
-app's lifetime. Only the confirmation differs — `Copied the conversation to
+The clipboard row goes through `/copy`'s own path (`Session::copy_text` over
+`clipboard::copy_to_clipboard`, `docs/copy.md`), with the native lease held
+for the app's lifetime. That path is arboard, then the user's terminal. Inside
+tmux the terminal is reached through tmux's own buffer, and elsewhere through
+an OSC 52 escape. A conversation too long for an escape (100 000 bytes)
+still goes through tmux whole. Only the confirmation differs — `Copied the conversation to
 clipboard`, worded for what was actually copied, the `/donate` page's
 `Copied the BTC address to clipboard` sibling — or a red `Copy failed:
 {reason}`. A file write that fails is a red `Export failed: {reason}`.
@@ -238,4 +240,6 @@ Never a scrollback bullet (`docs/toast.md`).
   above the message and the reply, no trailing whitespace, one closing
   newline) and the composer comes back; a second
   `/export`'s Enter on the clipboard row lands the same text in tmux's
-  paste buffer through the OSC 52 fallback; Esc closes without writing.
+  paste buffer through `tmux load-buffer`; Esc closes without writing. Phase 169
+  carries the clipboard row through a second tmux, at its defaults, to the
+  terminal behind it.

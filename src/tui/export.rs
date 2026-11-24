@@ -16,7 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use alter_zero::app::{ExportTarget, ToastKind, export_file_name};
-use alter_zero::{clipboard, ui};
+use alter_zero::ui;
 
 use super::Session;
 
@@ -37,13 +37,8 @@ impl Session<'_> {
     pub(crate) fn export_conversation(&mut self, target: ExportTarget) {
         let text = ui::export_text(&self.app, self.term.screen().width);
         match target {
-            ExportTarget::Clipboard => match clipboard::copy_to_clipboard(&text) {
-                Ok(lease) => {
-                    // Hold the native selection alive for the app's lifetime
-                    // (Linux); None over OSC 52 — `/copy`'s rule.
-                    self.clipboard_lease = lease;
-                    self.toast(EXPORT_COPIED_NOTICE, ToastKind::Info);
-                }
+            ExportTarget::Clipboard => match self.copy_text(&text) {
+                Ok(()) => self.toast(EXPORT_COPIED_NOTICE, ToastKind::Info),
                 Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
             },
             ExportTarget::File => match write_export_file(&self.cwd, &text) {

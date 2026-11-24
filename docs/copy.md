@@ -11,6 +11,17 @@ markdown"). The outcome surfaces as a **transient toast** above the box (an info
 `Copy failed: {e}`), which self-clears after a few seconds instead of committing
 a scrollback bullet. See `docs/toast.md`.
 
+> **Update (2026-11-24):** inside tmux on a remote host, `/copy` toasted
+> "Copied" and the user's clipboard never changed. `/export`'s clipboard
+> row and every page that copies something had the same bug. tmux's
+> defaults drop the OSC 52 escape an application writes. The copy now goes
+> into tmux's own buffer (`tmux load-buffer -w -`), and tmux sends it on to
+> the terminal under those same defaults. It also reaches the terminal
+> inside a multiplexer and over SSH even when the native clipboard took the
+> text. *Reaching the user's clipboard from tmux, screen and SSH* below has
+> the measurements and the routing. It supersedes the clipboard-write steps
+> and the tmux/SSH divergences further down.
+
 > **Update (2026-09-23):** with no response to copy, `/copy` now returns
 > `Action::Toast(COPY_EMPTY_NOTICE)` from the pure core — the same path
 > `/export`'s `Nothing to export` and `/compact`'s `Nothing to compact` take —
@@ -86,6 +97,14 @@ form too). No key is rebound.
 
 ### Clipboard write — the I/O boundary (`clipboard.rs`)
 
+> **Update (2026-11-24):** these steps are now only the desktop's case. The
+> write side lives in `src/clipboard/copy.rs`. Inside tmux or screen, and
+> over SSH, the terminal half runs after a native copy too, and inside tmux
+> it goes through `tmux load-buffer -w -` (*Reaching the user's clipboard
+> from tmux, screen and SSH*). The lease is held by `Session::copy_text`,
+> the one call every page that copies makes. It is replaced only by a new
+> lease, never dropped by a copy only the terminal took.
+
 `pub fn copy_to_clipboard(text: &str) -> Result<Option<ClipboardLease>, String>`:
 
 1. **arboard first** (`arboard_copy`): `Clipboard::new()?.set_text(text)?`. On
@@ -127,18 +146,184 @@ refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
 
 - **No keybinding** — Ctrl+O is the tool-output view here, so `/copy` is a slash
   command only.
-- **No SSH/WSL detection.** We always try arboard first; on a remote host that
-  *has* a clipboard server, arboard would set the *remote* clipboard (codex skips
-  arboard over SSH). The common headless case (no display) falls through to
-  OSC 52 correctly. No WSL PowerShell path.
-- **Plain OSC 52, no tmux passthrough wrap.** We rely on tmux's native OSC 52
-  forwarding (`set-clipboard external`, the modern default) rather than codex's
-  `\x1bPtmux;…` DCS wrap — simpler, and it's what tmux's own buffer captures (so
-  it's smoke-testable). Needs `set-clipboard` ≠ `off` inside tmux.
+- **No WSL path.** There is no PowerShell route: under WSL a copy goes through
+  WSLg's display when there is one, and through the terminal's escape
+  otherwise. SSH, tmux and GNU screen are detected (2026-11-24, *Reaching the
+  user's clipboard from tmux, screen and SSH*).
+- **tmux goes through its own buffer.** This bullet once said tmux's default,
+  `set-clipboard external`, forwards an application's OSC 52 escape. It does
+  not: `external` drops it. That was the remote-tmux bug. A copy inside tmux
+  is now `tmux load-buffer -w -`, with the escape, wrapped in tmux's
+  passthrough and then bare, as its fallback.
 - **No arboard stderr suppression.** Codex silences X11/NSLog noise with a libc
   `dup2`; this crate `forbid`s `unsafe`, so we skip it.
 - **No rewind history.** We have no conversation rollback, so codex's "only the
   most recent 32 responses are available to /copy" eviction case doesn't exist.
+
+## Reaching the user's clipboard from tmux, screen and SSH
+
+Date: 2026-11-24
+
+### The bug
+
+The report: alter-zero inside tmux on a VPS, reached over SSH. `/copy`
+toasted `Copied last message to clipboard` and nothing reached the clipboard
+on the user's machine. `/export`'s clipboard row behaved the same.
+
+The copy tried arboard, which fails on a server with no display, then wrote
+an OSC 52 escape to `/dev/tty`. Inside tmux that is a tmux pane, and tmux's
+defaults drop the escape:
+
+- **`set-clipboard external`** is the default. Since tmux 2.6 it means
+  "tmux sends outside but does not accept inside": tmux sets the terminal's
+  clipboard for its own copies and ignores an escape an application writes.
+  Only `on` accepts one.
+- **`allow-passthrough off`** has been the default since tmux 3.3, when
+  the option arrived. The escape wrapped in tmux's passthrough
+  (`ESC P tmux; … ESC \`) is dropped too.
+
+The write to `/dev/tty` itself succeeded, so the copy reported success. The
+smoke phases never saw it, because each set `set-clipboard on` on its own
+server. Phase 28's comment said the default forwards an application's escape
+and only declines to store it.
+
+### What tmux lets through
+
+`tmux load-buffer -w -` makes the text on stdin a paste buffer. Its `-w`
+(tmux 3.2 and later) has tmux send that buffer to its client's terminal as
+tmux's own clipboard escape. `external` lets that through, since it is
+exactly "tmux may set the terminal's clipboard, an application may not".
+
+These were measured on tmux 3.4 through two nested servers: the outer one
+stands in for the user's terminal (`set-clipboard on`, so whatever escape
+reaches it lands in its buffer), and the inner one, at its defaults, is the
+VPS's tmux:
+
+| in the inner tmux's pane | the inner tmux's setting | reaches the outer terminal |
+|---|---|---|
+| a bare OSC 52 escape | `set-clipboard external` (default) | no |
+| a bare OSC 52 escape | `set-clipboard on` | yes |
+| the escape in tmux's passthrough | `allow-passthrough off` (default) | no |
+| the escape in tmux's passthrough | `allow-passthrough on` | yes |
+| `tmux load-buffer -w -` | `set-clipboard external` (default) | yes |
+| `tmux load-buffer -w -` | `set-clipboard off` | yes |
+
+A 300 KB text went through `load-buffer -w` whole into both buffers. So the
+tmux route carries no size cap of its own: a long `/export` goes through.
+The escape keeps its `OSC52_MAX_BYTES` (100 000), since a terminal that
+cannot take a long escape drops it silently.
+
+tmux sends its escape only to a client whose terminal it believes can take
+one. Its default `terminal-features` names `xterm*` as clipboard-capable, and
+a terminal type whose terminfo has `Ms` counts too. A terminal type outside
+both needs `set -as terminal-features ',<TERM>:clipboard'` in the user's
+`~/.tmux.conf`. The terminal must also accept OSC 52 itself; most do, and
+some ask first or need it switched on.
+
+### The routing (`src/clipboard/copy.rs`)
+
+`copy_to_clipboard` reads three facts from the environment at the boundary
+(`CopyEnvironment`): tmux (`TMUX` or `TMUX_PANE`), GNU screen (`STY`), and
+an SSH login (`SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY`). A variable set
+but empty names nothing. The pure `copy_plan` turns them into the order of
+the attempts:
+
+| the session | first | then | the terminal half |
+|---|---|---|---|
+| a desktop: no multiplexer, no SSH | arboard | only if arboard failed | the bare escape |
+| an SSH login | arboard | always | the bare escape |
+| inside GNU screen | arboard | always | the escape in screen's passthrough, in pieces of 252 bytes |
+| inside tmux, whatever else is true | arboard | always | `tmux load-buffer -w -`; if that fails, the escape framed for tmux |
+
+The terminal half runs even after a native copy, except on a desktop, for
+two reasons:
+
+- Over SSH the machine's clipboard may belong to the server, where nobody
+  pastes from it.
+- A tmux or screen session outlives the terminal that started it. A session
+  started at a desktop and attached later over SSH still has the desktop's
+  `DISPLAY` and no SSH variable. The native copy succeeds on the desktop's
+  clipboard, and only the multiplexer reaches the terminal actually
+  attached.
+
+arboard still runs first everywhere. Under `ssh -X` its display is the
+user's own, and a desktop tmux user keeps the native copy they always had.
+A tmux that sends its escape on to the same desktop's terminal sets the
+clipboard a second time, to the same text, after the native copy. That
+order keeps the terminal's ownership of the selection from racing arboard's.
+
+Inside tmux, tmux wins over screen and SSH: whatever else is true, the
+process writes to a tmux pane.
+
+When `tmux load-buffer` fails, the escape framed for tmux is written: once in
+tmux's passthrough (each `ESC` inside doubled), then once bare. The first gets
+through where tmux allows passthrough (always before 3.3, with
+`allow-passthrough on` since), and the second where `set-clipboard on`. It
+covers two cases:
+
+- a tmux before 3.2, which has no `load-buffer -w`;
+- a session that names tmux but cannot run it. An example is a container
+  whose environment carries the host's `TMUX` (`docker/run.sh` forwards it)
+  with no `tmux` and no socket inside.
+
+A tmux allowing both sets the clipboard twice, to the same text.
+
+A copy succeeds when either half did, and the page's toast is unchanged. An
+escape is unconfirmable either way: a terminal that drops one says nothing.
+When every route fails, the error names each in the order tried:
+`clipboard unavailable: …; tmux: …; OSC 52: …`.
+
+### The `tmux` command
+
+`tmux` comes from `PATH`, the same one the user's shell runs, so a tmux
+built into `~/.local/bin` on a server with an older packaged one is found.
+`TMUX` and `TMUX_PANE`, which tmux set for the app's pane, name the server
+and the pane. tmux sends its escape to the most recently active client
+attached to the pane's session.
+
+The command's stdout goes nowhere, since the TUI owns the terminal. Its
+stderr, flattened to one line, is the reason in the error. The text is
+written from a thread of its own, so a tmux that never reads it cannot hold
+the copy. The wait is bounded at two seconds (`TMUX_COPY_TIMEOUT`); past
+that the command is killed and the escape is written instead. tmux answers
+in milliseconds, so the copy stays on the event loop, like the rest of
+`/copy`: every page raises its toast from the same call.
+
+### The lease
+
+Every page that copies something calls `Session::copy_text`. A copy the
+native clipboard took replaces the held `ClipboardLease`. A copy only the
+terminal took leaves the last lease held. Dropping the last arboard handle
+offers its text to a clipboard manager, which could land over what the
+terminal was just given, and it blocks while it does. Before, eight of the
+nine callers dropped the lease on every terminal-only copy.
+
+### Testing
+
+- `clipboard::copy` (unit) covers:
+  - reading the environment;
+  - the plan for each kind of session;
+  - the order of the attempts, the fallbacks and the combined error, over
+    injected effects;
+  - the three framings of the escape;
+  - the `tmux` runner over stand-in commands: input fed, stderr reported, a
+    command that never finishes killed at the timeout, a missing program.
+- **Phase 169** (smoke) plays the report with two tmux servers:
+  - the phase's own server is the user's terminal (`set-clipboard on`);
+  - a second server at tmux's defaults is the VPS's, its client attached
+    inside the first as an xterm;
+  - the app runs in the second server's pane with an `SSH_CONNECTION`.
+
+  `/copy` and `/export`'s clipboard row must land in the **outer** buffer.
+  Before the fix both toasted "Copied" and left it empty.
+- **Phase 28** covers the bare escape: an SSH login without tmux's
+  variables, the phase's tmux (`set-clipboard on`) playing a terminal that
+  takes the escape.
+- **Phases 112, 122, 156 and 167** read the copy back out of tmux's buffer,
+  where `load-buffer` puts it. They keep `set-clipboard on` only for a tmux
+  older than 3.2, whose copy falls back to the escape. Phase 169 is the one
+  held to tmux's defaults, and it guards its own version-bound checks: the
+  remote buffer needs 3.2, and `allow-passthrough` exists from 3.3.
 
 ## Testing
 

@@ -122,9 +122,15 @@ smoke_sanitize_env() {
 	# wholesale (crossterm memoizes it and emits no SGR at all).
 	unset NO_COLOR
 	# The clipboard phases are written headless ON PURPOSE: with a display the
-	# native arboard path wins, the OSC 52 fallback they read back never fires,
-	# and the suite overwrites the developer's real clipboard on its way past.
+	# native arboard path takes the copy too, and the suite overwrites the
+	# developer's real clipboard on its way past.
 	unset DISPLAY WAYLAND_DISPLAY XAUTHORITY
+	# A copy is also routed on these (docs/copy.md): an SSH login sends it to
+	# the terminal beside the native clipboard, and GNU screen frames the
+	# escape for itself. The phases that play either set them on their own
+	# launches (28, 169), so a suite run from an SSH login or inside screen
+	# copies the way a run from a desktop does.
+	unset SSH_CONNECTION SSH_CLIENT SSH_TTY STY
 	# Telemetry (docs/telemetry.md) is opt-out and pings a real collector once
 	# a day per config home — off for the suite, both exported (the tmux
 	# server inherits it) and spelled out in every launch string.

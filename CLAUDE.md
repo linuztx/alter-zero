@@ -4279,13 +4279,16 @@ dispatches an `Action`
 (`/clear`→`Clear`, `/quit`→`Quit` (there is no `/help`: the palette itself is
 the list of commands), **`/copy`→`Copy(String)`** — codex's `/copy`:
 the pure core picks the last assistant message (`App::last_assistant_text`) and
-the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
-headless/SSH/tmux, then shows a transient `Copied last message to clipboard` toast
+the loop writes it to the system clipboard. That is arboard, then the user's
+terminal: through `tmux load-buffer -w` inside tmux, whose default
+`set-clipboard external` drops an application's own OSC 52, and through an OSC
+52 escape elsewhere. The terminal half always runs inside a multiplexer and
+over SSH, and is the fallback on a desktop. Then it shows a transient `Copied last message to clipboard` toast
 (or a red `Copy failed` toast; with no response yet the pure core returns
 `Toast(COPY_EMPTY_NOTICE)` instead — the `/export`/`/compact` empty rule — so
 `No agent response to copy` is an info toast) — **a self-clearing
 line above the box, not a scrollback bullet** (`docs/toast.md`); the clipboard write is
-the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
+the I/O boundary, the copy's routing and the `base64`/OSC 52 framing a tested pure core in `clipboard`;
 see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
 every conversation records to a rollout JSONL file (the recorder + dir scan at
 the boundary, the format/parse in the pure `session` module) and the command

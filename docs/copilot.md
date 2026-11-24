@@ -140,8 +140,8 @@ open for content that does not exist yet:
   (`no_device_page_ever_stacks_two_blank_rows`, the list pages' own rule
   applied to the page whose content genuinely comes and goes, and
   `docs/view-flow.md` *The frame hugs its content*).
-- `c` copies the code through `/copy`'s own clipboard path (arboard with the
-  OSC 52 fallback, `docs/copy.md`); only the confirmation differs, because
+- `c` copies the code through `/copy`'s own clipboard path (arboard, then the
+  user's terminal, `docs/copy.md`); only the confirmation differs, because
   "Copied last message" would be a lie here.
 - The countdown is a **boundary clock read**, injected per draw
   (`App::set_device_remaining`) exactly like the status line's elapsed — the

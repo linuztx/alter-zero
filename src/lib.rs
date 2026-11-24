@@ -25,8 +25,10 @@
 //! - [`cli`]         — the `--continue`/`--resume` argument parse, usage text,
 //!   and the exit-hint shape (pure; resolution/printing stay in `main.rs` —
 //!   see `docs/cli.md`).
-//! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard +
-//!   OSC 52); the base64 framing is the tested pure core, the rest is I/O.
+//! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard, then
+//!   the terminal through tmux's buffer or an OSC 52 escape); the copy's
+//!   routing and the base64/escape framing are the tested pure core, the rest
+//!   is I/O.
 //! - [`context`]     — the per-session LLM conversation context: derive the
 //!   raw message list a real backend sends (and the Ctrl+D context-debug
 //!   view shows) from history. See `docs/context.md`.
