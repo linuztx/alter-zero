@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::agent::{self, RoundOutcome};
 use super::approval;
 use super::classifier::{ClassifierContext, SafetyClassifier};
+use super::compaction::{AgentCompactor, CompactionSlot, RoundTop, RoundTopSeam};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
@@ -174,6 +175,16 @@ pub struct LlmBackend {
     /// (same type, one level down), and the one-off `/compact` backend keeps
     /// this empty — its turn has a single round and nothing to steer.
     steer: SteerQueue,
+    /// The session's **background compaction** slot (`docs/compact.md`),
+    /// when the boundary attached one — the lead's own backend alone: every
+    /// turn it spawns runs the agent loop with an
+    /// [`AgentCompactor`](super::compaction::AgentCompactor) over it, which
+    /// checkpoints past the threshold, splices a finished summary in at a
+    /// round top and never sends a request past the hard limit. `None` — the
+    /// one-off `/compact` backend, a subagent, the tests — compacts nothing
+    /// mid-turn. The boundary re-attaches the same slot on every rebuild,
+    /// the `SteerQueue` rule.
+    compaction: Option<CompactionSlot>,
     /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
     /// after every tool call, and in the user's stead at the permission gate.
     /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
@@ -263,6 +274,7 @@ impl LlmBackend {
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
             round_budget: None,
             steer: SteerQueue::new(),
+            compaction: None,
             hooks: Arc::new(NoHooks),
             secrets: None,
         }
@@ -382,6 +394,17 @@ impl LlmBackend {
     #[must_use]
     pub fn with_steer(mut self, queue: SteerQueue) -> Self {
         self.steer = queue;
+        self
+    }
+
+    /// Attach the session's background-compaction slot (`docs/compact.md`):
+    /// every turn this backend spawns compacts in the background past the
+    /// threshold and never sends a request past the hard limit. The boundary
+    /// attaches it to the lead's own backend on every rebuild — never to the
+    /// one-off `/compact` backend, which is the summarizer itself.
+    #[must_use]
+    pub fn with_compaction(mut self, slot: CompactionSlot) -> Self {
+        self.compaction = Some(slot);
         self
     }
 
@@ -873,6 +896,15 @@ impl ReplySource for LlmBackend {
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
         let steer = self.steer.clone();
+        // Background compaction (docs/compact.md): the lead's turns compact
+        // over the session's slot, counting the tool schemas every request
+        // carries beside its messages.
+        let compaction = self.compaction.clone();
+        let tools_tokens = self
+            .tool_definitions
+            .iter()
+            .map(|tool| u64::try_from(crate::tokens::estimate(&tool.schema)).unwrap_or(u64::MAX))
+            .fold(0, u64::saturating_add);
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -931,12 +963,30 @@ impl ReplySource for LlmBackend {
             if let Ok(mut previous) = wire_history.lock() {
                 previous.restore(&mut messages);
             }
-            let mut loaded_skills = skills
-                .as_ref()
-                .map(|registry| {
-                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
-                })
-                .unwrap_or_default();
+            // In a cell, because a summary spliced in mid-turn takes the
+            // bodies it covered out of the context, and the seam below
+            // re-reads them from what is left (docs/skills.md).
+            let loaded_skills = std::cell::RefCell::new(
+                skills
+                    .as_ref()
+                    .map(|registry| {
+                        super::skill::LoadedSkills::from_messages(
+                            registry,
+                            &messages,
+                            secrets.as_ref(),
+                        )
+                    })
+                    .unwrap_or_default(),
+            );
+            let compactor = std::cell::RefCell::new(
+                compaction.map(|slot| AgentCompactor::new(slot, tools_tokens)),
+            );
+            let mut seam = LeadSeam {
+                compactor: &compactor,
+                loaded_skills: &loaded_skills,
+                skills: skills.as_ref(),
+                secrets: secrets.as_ref(),
+            };
             let mut executor = RealToolExecutor::new()
                 .with_vision(vision)
                 .with_imagegen(imagegen);
@@ -972,7 +1022,7 @@ impl ReplySource for LlmBackend {
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
             // subagent launcher instead (docs/agent-tool.md).
-            agent::run_agent(
+            agent::run_agent_with(
                 &tx,
                 &cancel,
                 max_tool_calls,
@@ -988,7 +1038,15 @@ impl ReplySource for LlmBackend {
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
-                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                    let (outcome, usage) =
+                        stream_round_counted(&client, msgs, &tx, &cancel, max_retries);
+                    // The provider's count of this request is what the
+                    // compactor measures its next one from (docs/compact.md).
+                    if let (Some(compactor), Some(usage)) = (compactor.borrow_mut().as_mut(), usage)
+                    {
+                        compactor.observe(usage.input, msgs.len());
+                    }
+                    outcome
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
@@ -1028,7 +1086,7 @@ impl ReplySource for LlmBackend {
                             {
                                 return super::skill::run_skill_tool(
                                     registry,
-                                    &mut loaded_skills,
+                                    &mut loaded_skills.borrow_mut(),
                                     call,
                                 );
                             }
@@ -1185,6 +1243,10 @@ impl ReplySource for LlmBackend {
                                 .and_then(|registry| registry.description(id))
                         })
                 },
+                // Background compaction (docs/compact.md): a checkpoint past
+                // the threshold, a summary spliced in, a wait at the hard
+                // limit — at the top of every round.
+                &mut seam,
             );
         })
     }
@@ -2168,6 +2230,54 @@ fn stream_round(
     cancel: &CancelToken,
     max_retries: u32,
 ) -> RoundOutcome {
+    stream_round_counted(client, messages, tx, cancel, max_retries).0
+}
+
+/// The lead agent's round-top seam (`docs/compact.md`): its
+/// [`AgentCompactor`] — `None` on a backend with no compaction slot — and,
+/// when a summary was spliced in, the skills the turn holds loaded re-read
+/// from what is left, so a skill whose body was summarized away can be
+/// loaded again (`docs/skills.md`).
+struct LeadSeam<'a> {
+    compactor: &'a std::cell::RefCell<Option<AgentCompactor>>,
+    loaded_skills: &'a std::cell::RefCell<super::skill::LoadedSkills>,
+    skills: Option<&'a crate::skills::SkillRegistry>,
+    secrets: Option<&'a crate::secrets::SecretRegistry>,
+}
+
+impl RoundTopSeam for LeadSeam<'_> {
+    fn before_round(
+        &mut self,
+        messages: &mut Vec<ChatMessage>,
+        tx: &UnboundedSender<StreamEvent>,
+        cancel: &CancelToken,
+    ) -> RoundTop {
+        let mut compactor = self.compactor.borrow_mut();
+        let Some(compactor) = compactor.as_mut() else {
+            return RoundTop::Go;
+        };
+        let top = compactor.before_round(messages, tx, cancel);
+        if compactor.spliced()
+            && let Some(registry) = self.skills
+        {
+            *self.loaded_skills.borrow_mut() =
+                super::skill::LoadedSkills::from_messages(registry, messages, self.secrets);
+        }
+        top
+    }
+}
+
+/// [`stream_round`], handing back the round's usage frame beside its
+/// outcome — what the lead's compactor measures its next request from
+/// (`docs/compact.md`). The frame still goes out as a
+/// [`StreamEvent::Usage`] either way.
+fn stream_round_counted(
+    client: &OpenAiClient,
+    messages: &[ChatMessage],
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_retries: u32,
+) -> (RoundOutcome, Option<crate::stream::TokenUsage>) {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
     let mut captured = None;
@@ -2245,13 +2355,14 @@ fn stream_round(
             // forward it so the app snaps its tally to the provider's own
             // accounting — one report per round, so an agentic turn
             // accumulates them (docs/prompt-caching.md).
-            if let Some(usage) = outcome.usage {
+            let usage = outcome.usage;
+            if let Some(usage) = usage {
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
-            round_outcome(outcome)
+            (round_outcome(outcome), usage)
         }
-        AttemptResult::Cancelled => RoundOutcome::Cancelled,
-        AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+        AttemptResult::Cancelled => (RoundOutcome::Cancelled, None),
+        AttemptResult::Failed(e) => (RoundOutcome::Failed(e), None),
     }
 }
 

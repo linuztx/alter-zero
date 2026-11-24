@@ -42,6 +42,7 @@ mod assistant;
 mod background_view;
 mod cached_lines;
 mod classifier_view;
+mod compaction;
 mod config_review_view;
 mod context_usage_view;
 mod context_view;
@@ -99,6 +100,7 @@ pub use self::agent::{
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
 pub use self::classifier_view::{classifier_body, classifier_lines};
+pub use self::compaction::{compacting_lines, compacting_rows};
 pub use self::config_review_view::{
     config_review_height, config_review_lines, render_config_review,
 };

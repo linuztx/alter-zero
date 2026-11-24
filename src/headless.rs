@@ -527,6 +527,10 @@ pub struct Reporter {
     /// The log lines of what settled after `held`, waiting with it so the
     /// log keeps the run's order.
     after: Vec<String>,
+    /// The background compaction under way (`docs/compact.md`): its
+    /// checkpoint's id and the stream item its cut opened, which its
+    /// summary updates and its marker completes.
+    open_compaction: Option<(u64, String)>,
 }
 
 /// A started tool call, kept until its record settles.
@@ -553,6 +557,14 @@ const LOG_DENIALS_NAMED: usize = 3;
 /// What the stream says of a tool call's output once the run stopped
 /// under it.
 const INTERRUPTED_OUTPUT: &str = "Interrupted";
+
+/// The log's line for a background compaction's checkpoint
+/// (`docs/compact.md`).
+const COMPACTION_CHECKPOINT_LINE: &str = "● Compacting the context in the background";
+
+/// The log's line for its summary, written and handed to the agent.
+const COMPACTION_SUMMARIZED_LINE: &str =
+    "  ⎿ Compaction summary ready — it applies at the agent's next step";
 
 impl Reporter {
     /// A reporter writing `format`; `verbose` logs each step of the run to
@@ -652,6 +664,29 @@ impl Reporter {
         vec![warning(&format!(
             "the request failed — retrying ({attempt}/{max})"
         ))]
+    }
+
+    /// A background compaction's summary is written and handed to the
+    /// running agent (`docs/compact.md`): the log says so, and the stream
+    /// updates the item its checkpoint opened.
+    pub fn compaction_summarized(&mut self) -> Vec<Emit> {
+        let mut out = Vec::new();
+        if self.verbose {
+            out.push(Emit::Stderr(COMPACTION_SUMMARIZED_LINE.to_string()));
+        }
+        if self.format == OutputFormat::StreamJson
+            && let Some((_, id)) = &self.open_compaction
+        {
+            out.push(Emit::Stdout(event_line(&Event::ItemUpdated {
+                item: ItemEnvelope {
+                    id,
+                    body: ItemBody::CompactionUnderWay {
+                        status: "summarized",
+                    },
+                },
+            })));
+        }
+        out
     }
 
     /// No connection to the provider: said once per outage, on its first
@@ -850,6 +885,32 @@ impl Reporter {
                 })));
             }
             HistoryItem::Message(message) if message.role == Role::Shell => {}
+            // A background compaction's checkpoint opens its item, which
+            // its marker completes (docs/compact.md).
+            HistoryItem::CompactionCut(cut) => {
+                let id = self.next_id();
+                out.push(Emit::Stdout(event_line(&Event::ItemStarted {
+                    item: ItemEnvelope {
+                        id: &id,
+                        body: ItemBody::CompactionUnderWay {
+                            status: "in_progress",
+                        },
+                    },
+                })));
+                self.open_compaction = Some((cut.id, id));
+            }
+            HistoryItem::Compaction(compaction) => {
+                let id = match self.open_compaction.take() {
+                    Some((cut, id)) if compaction.cut == Some(cut) => id,
+                    other => {
+                        self.open_compaction = other;
+                        self.next_id()
+                    }
+                };
+                if let Some(body) = item_body(item) {
+                    out.push(Emit::Stdout(event(body, &id)));
+                }
+            }
             HistoryItem::Tool(call) => {
                 let id = match announced {
                     Some(id) => id,
@@ -1040,11 +1101,29 @@ fn trailing_line(item: &HistoryItem) -> Option<String> {
                 cut(&notice.description, LOG_ARGS_MAX_COLS)
             ))
         }
-        HistoryItem::Compaction(compaction) => Some(format!(
-            "● Context compacted · {} → {} tokens",
-            crate::ui::format_token_count(usize::try_from(compaction.before).unwrap_or(usize::MAX)),
-            crate::ui::format_token_count(usize::try_from(compaction.after).unwrap_or(usize::MAX)),
-        )),
+        HistoryItem::Compaction(compaction) => {
+            let mut line = format!(
+                "● Context compacted · {} → {} tokens",
+                crate::ui::format_token_count(
+                    usize::try_from(compaction.before).unwrap_or(usize::MAX)
+                ),
+                crate::ui::format_token_count(
+                    usize::try_from(compaction.after).unwrap_or(usize::MAX)
+                ),
+            );
+            if compaction.secs > 0 {
+                line.push_str(&format!(
+                    " · {}",
+                    crate::app::format_elapsed(compaction.secs)
+                ));
+            }
+            if compaction.auto {
+                line.push_str(" · auto");
+            }
+            Some(line)
+        }
+        // The checkpoint a background compaction took (docs/compact.md).
+        HistoryItem::CompactionCut(_) => Some(COMPACTION_CHECKPOINT_LINE.to_string()),
         _ => None,
     }
 }
@@ -1331,6 +1410,8 @@ enum Event<'a> {
     },
     #[serde(rename = "item.started")]
     ItemStarted { item: ItemEnvelope<'a> },
+    #[serde(rename = "item.updated")]
+    ItemUpdated { item: ItemEnvelope<'a> },
     #[serde(rename = "item.completed")]
     ItemCompleted { item: ItemEnvelope<'a> },
     #[serde(rename = "turn.completed")]
@@ -1397,6 +1478,13 @@ enum ItemBody<'a> {
         before: u64,
         after: u64,
         summary: &'a str,
+    },
+    /// A background compaction under way — its checkpoint taken
+    /// (`in_progress`), its summary written (`summarized`) — before the
+    /// marker completes the item as a [`ItemBody::Compaction`].
+    #[serde(rename = "compaction")]
+    CompactionUnderWay {
+        status: &'static str,
     },
     Hook {
         label: &'a str,
@@ -2561,6 +2649,74 @@ mod tests {
                 "item_0", "item_1", "item_2", "item_3", "item_4", "item_5", "item_6", "item_7",
                 "item_8"
             ]
+        );
+    }
+
+    /// A background compaction's cut, as the running agent's checkpoint
+    /// records it (`docs/compact.md`).
+    fn compaction_cut(id: u64) -> HistoryItem {
+        HistoryItem::CompactionCut(crate::app::CompactionCut {
+            id,
+            timestamp: String::new(),
+        })
+    }
+
+    /// The marker that lands for cut `id`.
+    fn landed(id: u64) -> HistoryItem {
+        HistoryItem::Compaction(Compaction {
+            summary: "so far".to_string(),
+            before: 46_000,
+            after: 9_800,
+            auto: true,
+            secs: 12,
+            cut: Some(id),
+            ..Compaction::default()
+        })
+    }
+
+    #[test]
+    fn stream_json_opens_a_background_compaction_and_completes_it_where_it_lands() {
+        // Checkpointed, summarized, applied: one item, from its start to its
+        // completion, around whatever the agent did meanwhile.
+        let mut reporter = Reporter::new(OutputFormat::StreamJson, false);
+        let mut emits = reporter.settled(&[compaction_cut(7)]);
+        emits.extend(reporter.settled(&[reply("still working")]));
+        emits.extend(reporter.compaction_summarized());
+        emits.extend(reporter.settled(&[landed(7)]));
+        let events: Vec<serde_json::Value> = stdout(&emits).iter().map(|l| json(l)).collect();
+        assert_eq!(events[0]["type"], "item.started");
+        assert_eq!(events[0]["item"]["type"], "compaction");
+        assert_eq!(events[0]["item"]["status"], "in_progress");
+        let id = events[0]["item"]["id"].clone();
+        assert_eq!(events[1]["item"]["type"], "agent_message");
+        assert_eq!(events[2]["type"], "item.updated");
+        assert_eq!(events[2]["item"]["id"], id);
+        assert_eq!(events[2]["item"]["status"], "summarized");
+        assert_eq!(events[3]["type"], "item.completed");
+        assert_eq!(events[3]["item"]["id"], id, "the same item, completed");
+        assert_eq!(events[3]["item"]["type"], "compaction");
+        assert_eq!(events[3]["item"]["auto"], true);
+        assert_eq!(events[3]["item"]["after"], 9_800);
+    }
+
+    #[test]
+    fn the_log_says_when_a_compaction_is_checkpointed_summarized_and_applied() {
+        let mut reporter = Reporter::new(OutputFormat::Text, true);
+        let mut emits = reporter.settled(&[compaction_cut(7)]);
+        emits.extend(reporter.compaction_summarized());
+        emits.extend(reporter.settled(&[landed(7)]));
+        let log = stderr(&emits);
+        assert_eq!(
+            log,
+            vec![
+                "● Compacting the context in the background".to_string(),
+                "  ⎿ Compaction summary ready — it applies at the agent's next step".to_string(),
+                "● Context compacted · 46k → 9.8k tokens · 12s · auto".to_string(),
+            ]
+        );
+        assert!(
+            stdout(&emits).is_empty(),
+            "the text format's stdout is the answer"
         );
     }
 

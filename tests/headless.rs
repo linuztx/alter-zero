@@ -491,7 +491,11 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<String>>) {
             drop_mid_reply(&mut stream, deltas);
             return;
         }
-        ("text/event-stream", chat_reply(&body))
+        if body.contains(COMPACT) {
+            ("text/event-stream", compact_sse(&body, log))
+        } else {
+            ("text/event-stream", chat_reply(&body))
+        }
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
@@ -614,6 +618,165 @@ const SUMMARY_HEAD: &str = "The user ran a command that failed. ";
 const SUMMARY_DRAFT: &str = "It exited wi";
 /// The continuation that got through.
 const SUMMARY_TAIL: &str = "It exited with code 3.";
+
+/// What a prompt says to make the stand-in work through [`ROUNDS`] tool
+/// rounds of bulky output — the long agentic turn background compaction
+/// exists for (docs/compact.md). Every reply of that conversation reports
+/// its prompt as costing a quarter of its body's bytes, the provider count
+/// the agent measures itself by.
+const COMPACT: &str = "HEADLESS_COMPACT";
+/// How many tool rounds a [`COMPACT`] turn runs before it answers.
+const ROUNDS: usize = 30;
+/// How many lines of prose each round prints — words, so the estimate the
+/// agent measures its own appends with agrees with the stand-in's count. A
+/// round (~190 tokens) stays well under the twentieth of the test's window
+/// between the threshold and the hard limit, so a context that crosses the
+/// threshold is checkpointed there and the agent goes on working while the
+/// summary is written — rather than every crossing landing past the hard
+/// limit, where it waits.
+const ROUND_LINES: usize = 12;
+/// What each round's command prints, ahead of its bulk: which round it was.
+const ROUND_MARK: &str = "ROUND-";
+/// What a [`COMPACT`] conversation's summarizer answers, ahead of the
+/// newest round its snapshot held.
+const SUMMARY_OF: &str = "SUMMARY-UP-TO-";
+
+/// The text of a request message — its `content` a string, or text parts.
+fn content_text(message: &serde_json::Value) -> String {
+    match &message["content"] {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+/// The numbers that follow `mark` in `text`.
+fn marks(text: &str, mark: &str) -> Vec<usize> {
+    text.match_indices(mark)
+        .filter_map(|(at, _)| {
+            text[at + mark.len()..]
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|digits| digits.parse().ok())
+        })
+        .collect()
+}
+
+/// The numbers that follow `mark` in a request's messages, sorted, once
+/// each.
+fn marks_in(body: &str, mark: &str) -> Vec<usize> {
+    let mut found: Vec<usize> = request_messages(body)
+        .iter()
+        .flat_map(|message| marks(&content_text(message), mark))
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// The rounds a request's messages show the output of, by their marks.
+fn rounds_in(body: &str) -> Vec<usize> {
+    marks_in(body, ROUND_MARK)
+}
+
+/// The newest round a summarization request covers: the newest round
+/// output it holds, or the one the earlier summary it folds in covered.
+fn covered_by(body: &str) -> usize {
+    let rounds = rounds_in(body).last().copied().unwrap_or(0);
+    let summarized = marks_in(body, SUMMARY_OF).last().copied().unwrap_or(0);
+    rounds.max(summarized)
+}
+
+/// The bridge text the newest summary the stand-in wrote opens with, by the
+/// summarization requests in `log` — `None` before any.
+fn newest_bridge(log: &Mutex<Vec<String>>) -> Option<String> {
+    let log = log.lock().expect("the log").clone();
+    log.iter()
+        .filter(|chat| chat.contains(COMPACT) && !offers_tools(chat))
+        .map(|chat| covered_by(chat))
+        .max()
+        .map(|covered| format!("{SUMMARY_OF}{covered}:"))
+}
+
+/// A [`COMPACT`] conversation's reply, as a stream with its usage frame:
+/// the summarizer names the newest round its snapshot held; the agent runs
+/// the round after the one its request ends on — the newest result, or,
+/// right after a compaction, the round the summary the request closes on
+/// covered — and answers once [`ROUNDS`] have run, but only from a request
+/// that carries the newest summary, so no compaction is still on its way
+/// when the turn ends (one that is lands at the history's end instead,
+/// which the test's last check is not about). A prompt that is not the
+/// rounds' is answered at once.
+fn compact_sse(body: &str, log: &Mutex<Vec<String>>) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    let say = |text: String| {
+        vec![
+            serde_json::json!({"choices": [{"delta": {"content": text}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]
+    };
+    let run = |round: usize, lines: usize| {
+        let command = format!(
+            "echo {ROUND_MARK}{round}; yes 'the quick brown fox jumps over the lazy dog' | head -n {lines}"
+        );
+        vec![
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": format!("call_round_{round}"), "type": "function",
+                "function": {"name": "bash", "arguments": serde_json::json!({
+                    "command": command,
+                }).to_string()},
+            }]}}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ]
+    };
+    let last = request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .cloned()
+        .unwrap_or_default();
+    let said = content_text(&last);
+    let frames = if !offers_tools(body) {
+        let covered = covered_by(body);
+        say(format!(
+            "{SUMMARY_OF}{covered}: the rounds so far printed prose."
+        ))
+    } else if last["role"] == "user" && !said.contains(COMPACT) {
+        say("Done.".to_string())
+    } else {
+        // A tool result names its round; a user message is the prompt, or
+        // — right after a compaction — the head closing on the bridge,
+        // whose summary says how far the rounds got.
+        let mark = if last["role"] == "tool" {
+            ROUND_MARK
+        } else {
+            SUMMARY_OF
+        };
+        let done = marks(&said, mark).into_iter().max().unwrap_or(0);
+        if done < ROUNDS {
+            run(done + 1, ROUND_LINES)
+        } else {
+            // A checkpoint taken at this very round top sends its summary
+            // request beside this one: give it the moment to arrive.
+            std::thread::sleep(Duration::from_millis(300));
+            match newest_bridge(log) {
+                Some(bridge) if !body.contains(&bridge) => run(done + 1, 3),
+                _ => say(format!("All {ROUNDS} rounds done.")),
+            }
+        }
+    };
+    let mut sse: String = frames
+        .iter()
+        .map(|frame| format!("data: {frame}\n\n"))
+        .collect();
+    let usage = serde_json::json!({"choices": [], "usage": {
+        "prompt_tokens": body.len() / 4, "completion_tokens": 20,
+    }});
+    sse.push_str(&format!("data: {usage}\n\ndata: [DONE]\n\n"));
+    sse
+}
 
 /// The stand-in model's turn. After a tool result it answers `Done.`; to a
 /// user message it makes one call, chosen by what the message says:
@@ -966,39 +1129,344 @@ fn a_reply_whose_connection_drops_reports_only_what_the_retry_streamed() {
     }
 }
 
-/// A summary the output cap cut off goes on in another round
-/// (docs/unfinished-replies.md). A connection lost in that round takes back
-/// what its own attempt streamed and nothing the round before it wrote, so
-/// the compaction a `-c` run makes before its prompt keeps the whole summary
-/// (docs/compact.md).
+/// The messages of a logged chat request.
+fn request_messages(body: &str) -> Vec<serde_json::Value> {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    request["messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// Whether a logged chat request is the agent's — it offers tools — rather
+/// than a summarizer's.
+fn offers_tools(body: &str) -> bool {
+    let request: serde_json::Value = serde_json::from_str(body).expect("a JSON request");
+    request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty())
+}
+
+/// A long agentic turn on a small window compacts **while it runs**, more
+/// than once (docs/compact.md *Background compaction*): each summary covers
+/// a snapshot the agent took at a round boundary, the request after it
+/// carries the summary bridge and the rounds since verbatim — never the
+/// rounds it summarized — and the turn completes. The history then derives
+/// exactly what the agent held: a `--continue` run's first request opens on
+/// the last request's messages, under another window — the recent user
+/// messages a compaction keeps are budgeted by the window it was made in,
+/// which its marker records.
 #[test]
-fn a_retry_in_a_summarys_second_round_keeps_its_first() {
-    let world = World::new("cut-summary");
+fn a_long_turn_compacts_in_the_background_and_its_history_derives_what_the_agent_held() {
+    let world = World::new("background-compaction");
     let stand_in = StandIn::start();
-    let run = |args: &[&str]| {
+    // The fixed overhead — system prompt, tool schemas — measured off a
+    // first request, so the window leaves room for a handful of rounds.
+    let probe = real_run(
+        &world,
+        &stand_in,
+        &["-p", "--permission-mode", "master", "measure"],
+    );
+    assert!(probe.status.success(), "{}", stderr(&probe));
+    let overhead = stand_in.chat_requests()[0].len() / 4;
+    let window = overhead + 3_000;
+    let _ = std::fs::remove_dir_all(world.dir("sessions"));
+    std::fs::create_dir_all(world.dir("sessions")).expect("a sessions dir");
+    let before = stand_in.chat_requests().len();
+    let run = |window: usize, args: &[&str]| {
         let mut command = world.command(args);
         stand_in.configure(&world, &mut command);
         command
-            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .env("ALTER_ZERO_CONTEXT_WINDOW", window.to_string())
             .stdin(Stdio::null())
             .output()
             .expect("the binary runs")
     };
-    let first = run(&[
+    // A prompt longer than the share of the window a compaction keeps of
+    // the user's own words, so the head carries it cut down.
+    let prompt = format!(
+        "{COMPACT} run the rounds. {}",
+        "Keep every round's output in mind. ".repeat(120)
+    );
+    let out = run(
+        window,
+        &[
+            "-p",
+            "--verbose",
+            "--permission-mode",
+            "master",
+            "--output-format",
+            "stream-json",
+            &prompt,
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let events = events(&out);
+    let result = events.last().expect("a result");
+    assert_eq!(result["result"], format!("All {ROUNDS} rounds done."));
+    let chats: Vec<String> = stand_in.chat_requests()[before..].to_vec();
+
+    // Two compactions or more, each completed mid-turn — before the turn's
+    // own end — and each announced as it started and as it was summarized.
+    let completed: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["type"] == "item.completed" && e["item"]["type"] == "compaction")
+        .collect();
+    assert!(completed.len() >= 2, "{events:#?}");
+    let turn_end = events
+        .iter()
+        .position(|e| e["type"] == "turn.completed")
+        .expect("the turn completed");
+    for compaction in &completed {
+        assert_eq!(compaction["item"]["auto"], true);
+        let at = events
+            .iter()
+            .position(|e| std::ptr::eq(e, *compaction))
+            .expect("listed");
+        assert!(at < turn_end, "compacted mid-turn, not after it");
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "item.started" && e["item"]["type"] == "compaction"),
+        "{events:#?}"
+    );
+    let log = stderr(&out);
+    assert!(
+        log.contains("Compacting the context in the background"),
+        "{log}"
+    );
+    assert!(log.contains("Compaction summary ready"), "{log}");
+    assert!(log.contains("● Context compacted"), "{log}");
+
+    // Each summary covered the rounds its snapshot held; the agent's next
+    // request carries its bridge and the rounds since, never those rounds —
+    // and at least one was written while the agent went on working.
+    let summarizations: Vec<&String> = chats.iter().filter(|chat| !offers_tools(chat)).collect();
+    assert!(summarizations.len() >= 2, "{summarizations:#?}");
+    let mut worked_on = 0;
+    for summarization in &summarizations {
+        let covered = covered_by(summarization);
+        assert!(covered > 0, "a summary covers rounds: {summarization}");
+        let bridge = format!("{SUMMARY_OF}{covered}:");
+        let spliced = chats
+            .iter()
+            .find(|chat| offers_tools(chat) && chat.contains(&bridge))
+            .unwrap_or_else(|| panic!("no request carries {bridge}"));
+        let rounds = rounds_in(spliced);
+        assert!(
+            rounds.iter().all(|round| *round > covered),
+            "the summarized rounds are gone: {covered} {rounds:?}"
+        );
+        let newest = rounds.last().copied().unwrap_or(covered);
+        assert_eq!(
+            rounds,
+            (covered + 1..=newest).collect::<Vec<_>>(),
+            "every round since the checkpoint, verbatim"
+        );
+        worked_on += usize::from(newest > covered);
+        assert!(
+            spliced.contains("Another language model started to solve this problem"),
+            "the bridge opens on codex's prefix"
+        );
+    }
+    assert!(
+        worked_on >= 1,
+        "no summary was written while the agent worked"
+    );
+    // From the first compaction on, no request the agent sent is past the
+    // window by the count it reports.
+    let first_spliced = chats
+        .iter()
+        .position(|chat| offers_tools(chat) && chat.contains(SUMMARY_OF))
+        .expect("a spliced request");
+    for chat in chats[first_spliced..]
+        .iter()
+        .filter(|chat| offers_tools(chat))
+    {
+        assert!(chat.len() / 4 <= window, "{} > {window}", chat.len() / 4);
+    }
+    // The rollout keeps each summarizer's usage — tagged a compaction's,
+    // between its checkpoint and the marker it made.
+    let lines = rollout(&world);
+    let cut = lines
+        .iter()
+        .position(|line| line["type"] == "compaction_cut")
+        .unwrap_or_else(|| panic!("a checkpoint: {lines:#?}"));
+    let marker = lines
+        .iter()
+        .position(|line| line["type"] == "compaction")
+        .unwrap_or_else(|| panic!("a marker: {lines:#?}"));
+    assert_eq!(
+        lines[marker]["payload"]["cut"], lines[cut]["payload"]["id"],
+        "the marker names its checkpoint"
+    );
+    assert!(
+        lines[cut..marker]
+            .iter()
+            .any(|line| line["type"] == "usage" && line["payload"]["compact"] == true),
+        "{lines:#?}"
+    );
+
+    // The history derives what the agent held: a new run continuing the
+    // conversation opens on the last request's messages, then the answer and
+    // the new prompt — under a window big enough that nothing compacts
+    // before it goes out. What each request renders afresh for its own
+    // process and window is left out of the comparison: the system prompt
+    // names the process's scratchpad, and the `<system-reminder>`'s agent
+    // listing is budgeted by the window.
+    let last_turn_request = chats
+        .iter()
+        .rev()
+        .find(|chat| offers_tools(chat))
+        .expect("the agent's last request")
+        .clone();
+    let held = conversation_part(&request_messages(&last_turn_request));
+    assert!(
+        !last_turn_request.contains(&prompt),
+        "the head keeps the prompt cut down to the window's share"
+    );
+    let resumed = run(
+        1_000_000,
+        &[
+            "-p",
+            "-c",
+            "--permission-mode",
+            "master",
+            "and now say done",
+        ],
+    );
+    assert!(resumed.status.success(), "{}", stderr(&resumed));
+    let after: Vec<String> = stand_in.chat_requests()[before + chats.len()..].to_vec();
+    let next = after
+        .iter()
+        .find(|chat| offers_tools(chat))
+        .expect("the continued run's request");
+    let derived = conversation_part(&request_messages(next));
+    assert!(derived.len() > held.len(), "{derived:#?}");
+    assert_eq!(
+        derived[..held.len()],
+        held[..],
+        "the history derives exactly what the agent held"
+    );
+}
+
+/// A request's messages past its system prompt, each `<system-reminder>`
+/// block taken out of their text.
+fn conversation_part(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    fn without_reminder(text: &str) -> String {
+        let mut text = text.to_string();
+        while let Some(start) = text.find("<system-reminder>") {
+            let Some(end) = text[start..].find("</system-reminder>") else {
+                break;
+            };
+            let mut end = start + end + "</system-reminder>".len();
+            if text[end..].starts_with("\n\n") {
+                end += 2;
+            }
+            text.replace_range(start..end, "");
+        }
+        text
+    }
+    messages
+        .iter()
+        .skip(1)
+        .map(|message| {
+            let mut message = message.clone();
+            match &mut message["content"] {
+                serde_json::Value::String(text) => *text = without_reminder(text),
+                serde_json::Value::Array(parts) => {
+                    for part in parts {
+                        if let Some(text) = part["text"].as_str() {
+                            part["text"] = serde_json::Value::String(without_reminder(text));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            message
+        })
+        .collect()
+}
+
+/// A summary the output cap cut off goes on in another round
+/// (docs/unfinished-replies.md). A connection lost in that round takes back
+/// what its own attempt streamed and nothing the round before it wrote, so
+/// the compaction a `-c` run makes before its prompt keeps the whole summary
+/// (docs/compact.md). The first run has room to spare, so nothing compacts
+/// while it works.
+#[test]
+fn a_retry_in_a_summarys_second_round_keeps_its_first() {
+    let world = World::new("cut-summary");
+    let stand_in = StandIn::start();
+    let run = |window: &str, args: &[&str]| {
+        let mut command = world.command(args);
+        stand_in.configure(&world, &mut command);
+        command
+            .env("ALTER_ZERO_CONTEXT_WINDOW", window)
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs")
+    };
+    let first = run(
+        "1000000",
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} {CUT_SUMMARY} run it"),
+        ],
+    );
+    assert!(first.status.success(), "{}", stderr(&first));
+    let second = run(
+        "2000",
+        &[
+            "-p",
+            "-c",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} again"),
+        ],
+    );
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_cut_summary_kept(&world, &stand_in);
+}
+
+/// The same summary written in the background, while the turn runs: the
+/// turn ends before it does, the compaction goes on in the turn's stead —
+/// and the retry still takes back only what its own attempt streamed
+/// (docs/compact.md *A turn that ends mid-summary*).
+#[test]
+fn a_retry_in_a_background_summarys_second_round_keeps_its_first() {
+    let world = World::new("cut-background-summary");
+    let stand_in = StandIn::start();
+    let mut command = world.command(&[
         "-p",
         "--permission-mode",
         "master",
         &format!("{RECORD} {CUT_SUMMARY} run it"),
     ]);
-    assert!(first.status.success(), "{}", stderr(&first));
-    let second = run(&[
-        "-p",
-        "-c",
-        "--permission-mode",
-        "master",
-        &format!("{RECORD} again"),
-    ]);
-    assert!(second.status.success(), "{}", stderr(&second));
+    stand_in.configure(&world, &mut command);
+    let out = command
+        .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_cut_summary_kept(&world, &stand_in);
+    let lines = rollout(&world);
+    let cut = lines
+        .iter()
+        .position(|line| line["type"] == "compaction_cut")
+        .unwrap_or_else(|| panic!("the agent took a checkpoint: {lines:#?}"));
+    let marker = lines
+        .iter()
+        .position(|line| line["type"] == "compaction")
+        .expect("a marker");
+    assert!(cut < marker, "{lines:#?}");
+    assert_eq!(lines[marker]["payload"]["cut"], lines[cut]["payload"]["id"]);
+}
+
+/// The cut summary's continuation was dropped once and sent again, and the
+/// conversation's first compaction kept the whole summary.
+fn assert_cut_summary_kept(world: &World, stand_in: &StandIn) {
     let continuations = stand_in
         .chat_requests()
         .iter()
@@ -1008,7 +1476,7 @@ fn a_retry_in_a_summarys_second_round_keeps_its_first() {
         continuations, 2,
         "the continuation was dropped, then sent again"
     );
-    let lines = rollout(&world);
+    let lines = rollout(world);
     let summary = lines
         .iter()
         .find(|line| line["type"] == "compaction")
@@ -1510,29 +1978,36 @@ fn a_compactions_request_is_recorded_as_one() {
     // ahead of the compaction it made (docs/rollout-records.md).
     let world = World::new("compact-usage");
     let stand_in = StandIn::start();
-    let run = |args: &[&str]| {
+    // The first run has room to spare; the second's window is past.
+    let run = |window: &str, args: &[&str]| {
         let mut command = world.command(args);
         stand_in.configure(&world, &mut command);
         command
-            .env("ALTER_ZERO_CONTEXT_WINDOW", "2000")
+            .env("ALTER_ZERO_CONTEXT_WINDOW", window)
             .stdin(Stdio::null())
             .output()
             .expect("the binary runs")
     };
-    let first = run(&[
-        "-p",
-        "--permission-mode",
-        "master",
-        &format!("{RECORD} run it"),
-    ]);
+    let first = run(
+        "1000000",
+        &[
+            "-p",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} run it"),
+        ],
+    );
     assert!(first.status.success(), "{}", stderr(&first));
-    let second = run(&[
-        "-p",
-        "-c",
-        "--permission-mode",
-        "master",
-        &format!("{RECORD} again"),
-    ]);
+    let second = run(
+        "2000",
+        &[
+            "-p",
+            "-c",
+            "--permission-mode",
+            "master",
+            &format!("{RECORD} again"),
+        ],
+    );
     assert!(second.status.success(), "{}", stderr(&second));
     let lines = rollout(&world);
     let compaction = lines

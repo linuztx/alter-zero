@@ -301,6 +301,30 @@ impl RoundTopSeam for NoCompaction {
     }
 }
 
+/// Whether a failed request's error says it did not fit the model's context
+/// window — the one failure a summarizer retries, on a smaller request
+/// (codex drops its oldest item and retries; `docs/compact.md` *The
+/// summarization request must fit*). Read off the words the providers use,
+/// since the wire gives no common code for it.
+#[must_use]
+pub fn is_context_window_refusal(message: &str) -> bool {
+    const SIGNS: &[&str] = &[
+        "context window",
+        "context length",
+        "context_length",
+        "maximum context",
+        "context limit",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+        "maximum number of tokens",
+        "exceeds the context",
+        "reduce the length",
+    ];
+    let message = message.to_lowercase();
+    SIGNS.iter().any(|sign| message.contains(sign))
+}
+
 /// The error a turn ends on when its next request cannot fit the window and
 /// compacting could not make room — the summary failed, or the compacted
 /// context itself is too big.
@@ -330,6 +354,11 @@ pub struct AgentCompactor {
     /// The head of the last splice this turn — the smallest compacting can
     /// make the context, until the boundary's next policy says otherwise.
     floor: Option<u64>,
+    /// Whether the reading stands on a count rather than the estimate alone
+    /// — a usage frame, or the head a splice put in. Only such a reading is
+    /// trusted to refuse a request; the estimate alone sends it for the
+    /// provider to judge.
+    anchored: bool,
     /// Whether the last call spliced.
     spliced: bool,
 }
@@ -345,6 +374,7 @@ impl AgentCompactor {
             pending: None,
             failed_at: None,
             floor: None,
+            anchored: false,
             spliced: false,
         }
     }
@@ -354,6 +384,7 @@ impl AgentCompactor {
     pub fn observe(&mut self, input: u64, count: usize) {
         if input > 0 {
             self.base = (input, count);
+            self.anchored = true;
         }
     }
 
@@ -391,6 +422,7 @@ impl AgentCompactor {
         let head_len = handoff.head.len();
         messages.splice(keep..covered, handoff.head);
         self.base = (handoff.head_tokens, keep + head_len);
+        self.anchored = true;
         self.floor = Some(handoff.head_tokens);
         // The message counts a failure was measured against described the
         // list the splice replaced.
@@ -442,11 +474,15 @@ impl RoundTopSeam for AgentCompactor {
             self.settle(messages, tx);
             let policy = self.slot.policy();
             let size = self.size(messages);
+            // Only a conversation with a round in it has anything to fold
+            // into a summary: before the first, the size is the user's
+            // message and the fixed overhead, which no summary shrinks.
+            let compactable = self.pending.is_none() && has_a_round(messages);
             // A request the user made while this turn ran is taken whatever
             // the size; one of our own past the threshold only while
             // compacting can still help, and not twice over one snapshot.
-            let requested = self.pending.is_none() && self.slot.take_request();
-            let automatic = self.pending.is_none()
+            let requested = compactable && self.slot.take_request();
+            let automatic = compactable
                 && policy.is_some_and(|policy| {
                     policy.auto
                         && policy.soft_can_help()
@@ -467,15 +503,18 @@ impl RoundTopSeam for AgentCompactor {
             }
             // At the hard limit: the request must not go out as it stands.
             if self.pending.is_none() {
-                let can_help = policy.hard_can_help()
+                let can_help = compactable
+                    && policy.hard_can_help()
                     && self
                         .floor
                         .is_none_or(|floor| floor < hard_limit(policy.window))
                     && self.grew_since_failure(messages);
                 if !can_help {
-                    // Nothing can make room: send it if it fits at all, and
-                    // let the provider decide; else end the turn saying so.
-                    return if size < policy.window {
+                    // Nothing can make room: send it if it fits at all — or
+                    // if only the estimate says it does not, which the
+                    // provider's own count may well contradict — and let the
+                    // provider decide; else end the turn saying so.
+                    return if size < policy.window || !self.anchored {
                         RoundTop::Go
                     } else {
                         RoundTop::Fail(context_full_notice(size, policy.window))
@@ -493,6 +532,12 @@ impl RoundTopSeam for AgentCompactor {
             self.slot.wait(WAIT_POLL);
         }
     }
+}
+
+/// Whether `messages` hold a round to summarize — a reply of the model's,
+/// past the system prompt and the user's message.
+fn has_a_round(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|message| message.role == "assistant")
 }
 
 /// The estimated cost of one wire message: its text, a flat rate per
@@ -582,6 +627,26 @@ mod tests {
                 _ => None,
             })
             .expect("a checkpoint")
+    }
+
+    #[test]
+    fn a_context_window_refusal_is_told_apart_from_other_failures() {
+        for refusal in [
+            "HTTP 400: This model's maximum context length is 8192 tokens",
+            "invalid_request_error: prompt is too long: 210000 tokens > 200000 maximum",
+            "the reply filled the model's context window before it finished",
+            "{\"code\":\"context_length_exceeded\"}",
+            "The input token count exceeds the maximum number of tokens allowed",
+        ] {
+            assert!(is_context_window_refusal(refusal), "{refusal}");
+        }
+        for other in [
+            "HTTP 429: rate limited",
+            "connection reset by peer",
+            "HTTP 500",
+        ] {
+            assert!(!is_context_window_refusal(other), "{other}");
+        }
     }
 
     #[test]
@@ -895,11 +960,52 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_compacted_before_a_round_has_run() {
+        // A first request too big for the window is the user's message and
+        // the fixed overhead: there is no round to fold into a summary.
+        let slot = CompactionSlot::default();
+        let mut messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("x".repeat(40_000)),
+        ];
+        slot.set_policy(Some(policy(cost(&messages) / 2)));
+        slot.request();
+        let mut compactor = AgentCompactor::new(slot, 0);
+        let (tx, mut rx) = channel();
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &CancelToken::new()),
+            RoundTop::Go,
+            "sent for the provider to judge"
+        );
+        assert!(drain(&mut rx).is_empty(), "{:?}", drain(&mut rx));
+    }
+
+    #[test]
+    fn an_estimate_no_provider_has_counted_is_never_refused() {
+        // Past the window by the estimate alone — before any usage frame —
+        // the request goes out: the provider's own count decides.
+        let slot = CompactionSlot::default();
+        let mut messages = conversation(3, 4_000);
+        slot.set_policy(Some(CompactionPolicy {
+            floor: Some(u64::MAX),
+            ..policy(cost(&messages) - 10)
+        }));
+        let mut compactor = AgentCompactor::new(slot, 0);
+        let (tx, _rx) = channel();
+        assert_eq!(
+            compactor.before_round(&mut messages, &tx, &CancelToken::new()),
+            RoundTop::Go
+        );
+    }
+
+    #[test]
     fn a_failed_summary_ends_a_turn_that_cannot_fit() {
         let slot = CompactionSlot::default();
         let mut messages = conversation(3, 4_000);
         slot.set_policy(Some(policy(cost(&messages) - 10)));
         let mut compactor = AgentCompactor::new(slot.clone(), 0);
+        // The provider counted what the request before this one carried.
+        compactor.observe(cost(&messages[..4]), 4);
         let (tx, rx) = channel();
         let cancel = CancelToken::new();
         let worker = answer_the_wait(slot, rx, cancel.clone(), |slot, id| slot.fail(id));

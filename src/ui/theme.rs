@@ -3439,6 +3439,24 @@ pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 /// verbatim. See `docs/compact.md`.
 pub const COMPACTED_NOTICE: &str = "Context compacted";
 
+// --- Background compaction's row under the status line (docs/compact.md) ---
+
+/// While the summary of the agent's checkpoint is written beside its work —
+/// dim, with the compaction's own clock after it.
+pub const COMPACTING_ROW: &str = "Compacting context in the background…";
+
+/// While the agent waits for that summary at the hard limit — the one pause
+/// background compaction costs, lit in the warning amber.
+pub const COMPACT_WAITING_ROW: &str = "Waiting for the context to compact…";
+
+/// Once the summary is done, until the agent splices it in at its next round
+/// boundary.
+pub const COMPACT_READY_ROW: &str = "Context summary ready — it applies at the agent's next step";
+
+/// `/compact` was typed while the agent works, and its checkpoint is not
+/// taken yet.
+pub const COMPACT_REQUESTED_ROW: &str = "Compacting at the agent's next step…";
+
 // --- The `Agent` tool (docs/agent-tool.md) ---
 
 /// The tree connectors of a group cell's per-agent rows: `   ├ {description}`

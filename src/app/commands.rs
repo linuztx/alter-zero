@@ -49,10 +49,15 @@ pub const INIT_PROMPT: &str = include_str!("../../prompts/init.md");
 /// See `docs/init.md` / `docs/toast.md`.
 pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progress";
 
-/// The transient toast shown when `/compact` is run while a turn is active —
-/// codex disables it during a task (`available_during_task`); ours rejects with
-/// the `/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
-pub const COMPACT_BUSY_NOTICE: &str = "/compact is disabled while a task is in progress";
+/// The transient toast shown when `/compact` is run while a compaction is
+/// already under way — one runs at a time, in the background or as the
+/// session's turn. See `docs/compact.md` / `docs/toast.md`.
+pub const COMPACT_BUSY_NOTICE: &str = "A compaction is already running";
+
+/// The transient toast that answers `/compact` while the agent works: it is
+/// not refused (codex disables it mid-task) but run in the background, the
+/// summary landing at a later step of the same turn. See `docs/compact.md`.
+pub const COMPACT_REQUESTED_NOTICE: &str = "Compacting in the background — the agent keeps working";
 
 /// The transient toast shown when `/compact` finds nothing to summarize — an
 /// empty conversation would send the bare summarization prompt to the model
@@ -83,10 +88,11 @@ pub enum CommandEffect {
     /// while a turn is active (codex's `available_during_task` is `false`).
     Init,
     /// Run codex's `/compact`: a summarization turn whose reply becomes the
-    /// context bridge (`docs/compact.md`) — or reject with a
-    /// [`COMPACT_BUSY_NOTICE`] toast while a turn is active (codex disables
-    /// it mid-task) / a [`COMPACT_EMPTY_NOTICE`] toast when the derived
-    /// context is empty.
+    /// context bridge (`docs/compact.md`) — while the agent works, a
+    /// **background** compaction it checkpoints for at its next round top
+    /// (codex disables it mid-task; ours keeps the turn going) — or reject
+    /// with a [`COMPACT_BUSY_NOTICE`] toast while one is already running / a
+    /// [`COMPACT_EMPTY_NOTICE`] toast when the derived context is empty.
     Compact,
     /// Open the read-only `/context` page: what fills the context window,
     /// by category, and what the provider said about the last request and
@@ -535,15 +541,22 @@ impl App {
                 }
             }
             CommandEffect::Compact => {
-                // Codex disables /compact while a task runs (the summarize
-                // request would race the stream over the same history); the
-                // rejection is a transient toast like /resume's. An empty
-                // derived context has nothing to summarize. See
+                // While the agent works, /compact asks it for a checkpoint
+                // at its next round top and the summary is written in the
+                // background, landing at a later round boundary — unless one
+                // is already running, or the turn is itself a summarization.
+                // An empty derived context has nothing to summarize. See
                 // docs/compact.md / docs/toast.md.
-                if self.turn_active() {
+                if self.is_compacting()
+                    || self.background_compaction.is_some()
+                    || self.compaction_requested
+                {
                     Action::Toast(COMPACT_BUSY_NOTICE.to_string())
                 } else if !crate::context::derives_conversation(&self.history) {
                     Action::Toast(COMPACT_EMPTY_NOTICE.to_string())
+                } else if self.turn_active() {
+                    self.request_compaction();
+                    Action::CompactInBackground
                 } else {
                     Action::Compact
                 }

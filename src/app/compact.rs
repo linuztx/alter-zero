@@ -11,14 +11,6 @@ use super::*;
 /// `● Context compacted` cell being its record. See `docs/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
 
-/// The auto-compact trigger's numerator/denominator: codex's threshold is
-/// **90% of the context window** (`(context_window * 9) / 10`,
-/// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
-/// turn on its own at the next idle boundary. See `docs/compact.md`.
-const AUTO_COMPACT_NUMERATOR: u64 = 9;
-
-const AUTO_COMPACT_DENOMINATOR: u64 = 10;
-
 impl App {
     /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
     /// machinery like [`begin_shell`](App::begin_shell) so the summarization
@@ -43,6 +35,10 @@ impl App {
     pub fn begin_compact(&mut self, auto: bool) {
         self.streaming = Some(String::new());
         self.compact_buffer = Some(String::new());
+        // An idle compaction covers everything before its marker, under the
+        // budget the window gives it now.
+        self.compact_cut = None;
+        self.compact_user_budget = None;
         // A reply attempt an Esc cut short marks no floor in this turn
         // (`begin_stream`'s rule, docs/offline.md).
         self.attempt_floor = None;
@@ -97,7 +93,14 @@ impl App {
         self.streaming = None;
         self.tool_drafts.clear();
         self.status = None;
-        let mut compaction = Compaction {
+        // An adopted background compaction (its agent's turn ended before
+        // the summary did) keeps the cut and the budget of its checkpoint.
+        let cut = self.compact_cut.take();
+        let user_budget = self.compact_user_budget.take().unwrap_or_else(|| {
+            u64::try_from(crate::context::compact_user_budget(self.context_window))
+                .unwrap_or(u64::MAX)
+        });
+        let compaction = Compaction {
             // A model reply often ends with a trailing newline; the bridge
             // adds its own separators, so store the summary trimmed.
             summary: summary.trim().to_string(),
@@ -106,27 +109,345 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
-            cut: None,
-            user_budget: u64::try_from(crate::context::compact_user_budget(self.context_window))
-                .unwrap_or(u64::MAX),
+            cut,
+            user_budget,
         };
+        let compaction = self.land_marker(compaction);
+        // With nothing after its cut, the whole context is the head — the
+        // smallest compacting can make it. An adopted one's tail is the
+        // agent's last rounds, so its head is counted alone.
+        let head = if cut.is_none() {
+            compaction.after
+        } else {
+            self.head_tokens(&self.marker_head(&compaction))
+        };
+        self.note_floor(head);
+        Some(compaction)
+    }
+
+    /// Append `compaction`'s marker at the end of the history and land it:
+    /// the gauge drops by the estimate of what the summary replaced (codex's
+    /// recompute_token_usage) — what the provider counts beyond the estimate,
+    /// its framing and its own rendering of the tool schemas, stays — and the
+    /// marker records the shrink; the idle trigger waits for the
+    /// conversation to move on. Returns the marker as recorded.
+    fn land_marker(&mut self, mut compaction: Compaction) -> Compaction {
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
-        // The gauge drops by the estimate of what the summary replaced
-        // (codex's recompute_token_usage) — what the provider counts beyond
-        // the estimate, its framing and its own rendering of the tool
-        // schemas, stays — and the marker records the shrink.
         self.refresh_context_used();
-        // The newest frame is the summarizer's request, which described the
-        // conversation the marker just replaced (`docs/context-usage.md`).
+        // The newest frame described the conversation the marker just
+        // replaced (`docs/context-usage.md`).
         self.last_usage = None;
         compaction.after = self.context_used;
         if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
             recorded.after = self.context_used;
         }
-        // One attempt per user turn: no immediate auto re-trigger.
-        self.auto_compact_blocked = true;
-        Some(compaction)
+        self.compact_watermark = Some(self.history_signature());
+        compaction
+    }
+
+    /// Remember what the last compaction's head cost, the smallest
+    /// compacting can make this conversation under this window.
+    fn note_floor(&mut self, head: u64) {
+        self.compact_floor = self.context_window.map(|window| CompactFloor {
+            generation: self.history_generation,
+            window,
+            head,
+        });
+    }
+
+    /// The head `compaction`'s marker derives — the reminder, the recent
+    /// user messages and the bridge — from the history as it stands.
+    fn marker_head(&self, compaction: &Compaction) -> Vec<crate::context::ContextMessage> {
+        let cut = compaction.cut.and_then(|id| self.cut_index(id));
+        let covered = &self.history[..cut.unwrap_or(self.history.len())];
+        crate::context::compacted_head(
+            self.user_instructions.as_deref(),
+            self.listings.as_deref(),
+            covered,
+            &compaction.summary,
+            usize::try_from(compaction.user_budget).unwrap_or(usize::MAX),
+        )
+    }
+
+    /// Where the [`CompactionCut`] with `id` sits in the history.
+    fn cut_index(&self, id: u64) -> Option<usize> {
+        self.history
+            .iter()
+            .rposition(|item| matches!(item, HistoryItem::CompactionCut(cut) if cut.id == id))
+    }
+
+    /// What `head` costs as the opening of a request: the system prompt and
+    /// the tool schemas every request carries, and its messages — read
+    /// through the provider's calibration, the gauge's own way
+    /// (`docs/token-estimate.md`).
+    fn head_tokens(&self, head: &[crate::context::ContextMessage]) -> u64 {
+        let system = self.system_prompt.as_deref().map_or(0, count_tokens);
+        let estimate = u64::try_from(system + estimate_messages_tokens(head))
+            .unwrap_or(u64::MAX)
+            .saturating_add(self.tools_estimate);
+        let calibration = self.context_meter.calibration();
+        estimate.saturating_mul(calibration.ratio_permille()) / 1000
+    }
+
+    // ----- background compaction (docs/compact.md) -----
+
+    /// `/compact` while the agent works: note that the next checkpoint is
+    /// the user's — the boundary asks the running agent for it on the
+    /// shared slot. `false` (nothing noted) while one is already requested or
+    /// running.
+    pub fn request_compaction(&mut self) -> bool {
+        if self.compaction_requested || self.background_compaction.is_some() {
+            return false;
+        }
+        self.compaction_requested = true;
+        true
+    }
+
+    /// Whether `/compact` asked for a checkpoint the agent has not taken yet.
+    #[must_use]
+    pub const fn compaction_requested(&self) -> bool {
+        self.compaction_requested
+    }
+
+    /// The running agent took checkpoint `id` (a
+    /// [`CompactionCheckpoint`](crate::stream::StreamEvent::CompactionCheckpoint)):
+    /// record the [`CompactionCut`] where the history stands — in channel
+    /// order, exactly the snapshot the agent holds — and open the background
+    /// compaction, its summary to be written off screen. `false` (nothing
+    /// recorded) while another is still running: one at a time.
+    pub fn begin_background_compaction(&mut self, id: u64) -> bool {
+        if self.background_compaction.is_some() || self.is_compacting() {
+            return false;
+        }
+        let auto = !std::mem::take(&mut self.compaction_requested);
+        let user_budget = u64::try_from(crate::context::compact_user_budget(self.context_window))
+            .unwrap_or(u64::MAX);
+        let timestamp = self.now_stamp();
+        self.history
+            .push(HistoryItem::CompactionCut(CompactionCut { id, timestamp }));
+        self.background_compaction = Some(BackgroundCompaction {
+            id,
+            auto,
+            before: self.context_used,
+            user_budget,
+            phase: CompactionPhase::Summarizing,
+            waiting: false,
+            summary: String::new(),
+            attempt_floor: None,
+            head_tokens: 0,
+            reports: Vec::new(),
+        });
+        true
+    }
+
+    /// The compaction running beside the agent's turn, if any.
+    #[must_use]
+    pub const fn background_compaction(&self) -> Option<&BackgroundCompaction> {
+        self.background_compaction.as_ref()
+    }
+
+    /// The conversation the running background compaction summarizes: the
+    /// history up to its cut — what the summarization request is built from.
+    #[must_use]
+    pub fn background_compaction_snapshot(&self) -> Option<&[HistoryItem]> {
+        let id = self.background_compaction.as_ref()?.id;
+        Some(&self.history[..self.cut_index(id)?])
+    }
+
+    /// Fold one event of the background summarizer's stream
+    /// (`docs/compact.md`): its text accumulates off screen, a retry
+    /// withdraws what the failed attempt wrote, the compact hooks' cells are
+    /// held for the marker, its usage is billed — to the session's ledger
+    /// alone: never the running turn's tally, never the gauge, which are the
+    /// agent's — and its end says the summary is done or failed.
+    pub fn on_summary_event(&mut self, event: &crate::stream::StreamEvent) -> SummaryStep {
+        use crate::stream::StreamEvent;
+        let Some(compaction) = self.background_compaction.as_mut() else {
+            return SummaryStep::Continue;
+        };
+        if event.is_attempt_output() {
+            compaction
+                .attempt_floor
+                .get_or_insert(compaction.summary.len());
+        } else if !matches!(event, StreamEvent::Retrying { .. }) {
+            compaction.attempt_floor = None;
+        }
+        match event {
+            StreamEvent::Chunk(text) => compaction.summary.push_str(text),
+            StreamEvent::Retrying { .. } => {
+                if let Some(floor) = compaction.attempt_floor.take() {
+                    compaction.summary.truncate(floor);
+                }
+            }
+            StreamEvent::HookNote {
+                report: Some(report),
+                ..
+            } => compaction.reports.push(report.clone()),
+            StreamEvent::Usage(usage) => self.usage_since_launch.record(usage),
+            StreamEvent::StreamDone => {
+                compaction.phase = CompactionPhase::Ready;
+                return SummaryStep::Done;
+            }
+            StreamEvent::Error(message) => return SummaryStep::Failed(message.clone()),
+            _ => {}
+        }
+        SummaryStep::Continue
+    }
+
+    /// The summarization request is being sent again — smaller, after the
+    /// provider refused it as too long (`docs/compact.md`): what the refused
+    /// attempt wrote goes, the compaction itself goes on.
+    pub fn restart_background_summary(&mut self) {
+        if let Some(running) = self.background_compaction.as_mut() {
+            running.summary.clear();
+            running.attempt_floor = None;
+            running.phase = CompactionPhase::Summarizing;
+        }
+    }
+
+    /// The finished summary, trimmed, once the summarizer is done.
+    #[must_use]
+    pub fn background_summary(&self) -> Option<&str> {
+        let compaction = self.background_compaction.as_ref()?;
+        (compaction.phase == CompactionPhase::Ready).then(|| compaction.summary.trim())
+    }
+
+    /// The handoff for the agent once the summary is done: its checkpoint's
+    /// id, the compacted head — the derivation's own
+    /// ([`crate::context::compacted_head`]), so the agent's spliced list and
+    /// every later derivation of the history agree — and what that head
+    /// costs with the system prompt and the tool schemas, which the agent
+    /// measures its next request from and which is remembered as the
+    /// smallest compacting can make the context.
+    pub fn take_compaction_handoff(
+        &mut self,
+    ) -> Option<(u64, Vec<crate::context::ContextMessage>, u64)> {
+        let summary = self.background_summary()?.to_string();
+        let compaction = self.background_compaction.as_ref()?;
+        let (id, budget) = (compaction.id, compaction.user_budget);
+        let covered = self.background_compaction_snapshot()?;
+        let head = crate::context::compacted_head(
+            self.user_instructions.as_deref(),
+            self.listings.as_deref(),
+            covered,
+            &summary,
+            usize::try_from(budget).unwrap_or(usize::MAX),
+        );
+        let head_tokens = self.head_tokens(&head);
+        if let Some(compaction) = self.background_compaction.as_mut() {
+            compaction.head_tokens = head_tokens;
+        }
+        Some((id, head, head_tokens))
+    }
+
+    /// The agent spliced the summary of checkpoint `id` in (a
+    /// [`CompactionApplied`](crate::stream::StreamEvent::CompactionApplied)),
+    /// or its turn ended with the summary ready: append the marker here —
+    /// naming its cut, so the rounds since stay verbatim — land it, and
+    /// hand back what the loop commits. `secs` is how long the compaction
+    /// ran. `None` for a checkpoint that is not the one running, or one
+    /// whose summary is not done.
+    pub fn apply_background_compaction(&mut self, id: u64, secs: u64) -> Option<LandedCompaction> {
+        let running = self.background_compaction.as_ref()?;
+        if running.id != id || running.phase != CompactionPhase::Ready {
+            return None;
+        }
+        let running = self.background_compaction.take()?;
+        // The compact hooks' cells sit above the marker, as an idle
+        // compaction's do — notes that gave the model nothing, so the
+        // derivation is untouched.
+        for report in &running.reports {
+            self.record_hook_note(&report.note_label(), "", Some(report.clone()));
+        }
+        let compaction = Compaction {
+            summary: running.summary.trim().to_string(),
+            timestamp: self.now_stamp(),
+            before: running.before,
+            after: 0,
+            auto: running.auto,
+            secs,
+            cut: Some(running.id),
+            user_budget: running.user_budget,
+        };
+        let marker = self.land_marker(compaction);
+        let head = if running.head_tokens > 0 {
+            running.head_tokens
+        } else {
+            self.head_tokens(&self.marker_head(&marker))
+        };
+        self.note_floor(head);
+        Some(LandedCompaction {
+            marker,
+            reports: running.reports,
+        })
+    }
+
+    /// The summarizer failed (or could not be started): the background
+    /// compaction is over and the conversation stays as it was — the cut it
+    /// left is inert. Returns its id, for the loop to tell the agent.
+    pub fn fail_background_compaction(&mut self) -> Option<u64> {
+        self.background_compaction.take().map(|running| running.id)
+    }
+
+    /// Esc, `/clear`, a session swapped: drop the background compaction and
+    /// any request for one — no marker. Returns its id, if one ran.
+    pub fn cancel_background_compaction(&mut self) -> Option<u64> {
+        self.compaction_requested = false;
+        self.background_compaction.take().map(|running| running.id)
+    }
+
+    /// The agent's turn ended while its summary was still being written: the
+    /// summary goes on as the session's **compact turn** — the strip says
+    /// `Compacting…`, input queues behind it, Esc stops it — and lands at the
+    /// end of the history, still covering only its snapshot
+    /// ([`finish_compact`](Self::finish_compact) keeps the cut). Returns the
+    /// compact hooks' cells it had held, for the loop to commit now; `None`
+    /// when no summary is being written (one already done lands at once,
+    /// [`apply_background_compaction`](Self::apply_background_compaction)).
+    pub fn adopt_background_compaction(&mut self) -> Option<Vec<crate::hooks::HookReport>> {
+        if self
+            .background_compaction
+            .as_ref()
+            .is_none_or(|running| running.phase != CompactionPhase::Summarizing)
+        {
+            return None;
+        }
+        let running = self.background_compaction.take()?;
+        self.begin_compact(running.auto);
+        self.compact_buffer = Some(running.summary);
+        self.compact_before = running.before;
+        self.compact_cut = Some(running.id);
+        self.compact_user_budget = Some(running.user_budget);
+        // Mid-attempt: a retry withdraws what this attempt already wrote.
+        self.attempt_floor = running.attempt_floor.map(|summary| turn::AttemptFloor {
+            history: self.history.len(),
+            summary,
+        });
+        Some(running.reports)
+    }
+
+    /// The agent waits at the hard limit for checkpoint `id`'s summary.
+    pub fn set_compaction_waiting(&mut self, id: u64) {
+        if let Some(running) = self
+            .background_compaction
+            .as_mut()
+            .filter(|running| running.id == id)
+        {
+            running.waiting = true;
+        }
+    }
+
+    /// Inject how long the background compaction has run — the boundary's
+    /// clock, before each draw.
+    pub fn set_compaction_elapsed(&mut self, elapsed: Option<Duration>) {
+        self.compaction_elapsed = elapsed;
+    }
+
+    /// How long the background compaction has run, as last injected.
+    #[must_use]
+    pub const fn compaction_elapsed(&self) -> Option<Duration> {
+        self.compaction_elapsed
     }
 
     /// Inject the active model's context window in tokens (the boundary's
@@ -268,10 +589,13 @@ impl App {
 
     /// Whether the loop should start an **auto-compact** turn at the next idle
     /// boundary: the `/settings` **Auto compact** knob is on, the window is
-    /// known, the gauge is past codex's 90% threshold, no turn is in flight,
-    /// the last compact attempt isn't still blocking (one per user turn), and
-    /// the conversation derives a non-empty context to summarize. See
-    /// `docs/compact.md` / `docs/settings.md`.
+    /// known, the gauge is past codex's 90% threshold, no turn and no
+    /// compaction is in flight, the conversation has moved since the last
+    /// attempt (a compaction is never repeated over the same conversation),
+    /// compacting can still get under the threshold at all, and the
+    /// conversation derives a non-empty context to summarize. The number of
+    /// compactions is otherwise unlimited. See `docs/compact.md` /
+    /// `docs/settings.md`.
     #[must_use]
     pub fn should_auto_compact(&self) -> bool {
         // The `/settings` knob (docs/settings.md): off means the loop never
@@ -282,24 +606,69 @@ impl App {
         let Some(window) = self.context_window else {
             return false;
         };
-        if self.auto_compact_blocked || self.turn_active() || self.is_streaming() {
+        if self.turn_active() || self.is_streaming() || self.background_compaction.is_some() {
+            return false;
+        }
+        if self.compact_watermark == Some(self.history_signature()) {
             return false;
         }
         if self.context_used <= auto_compact_threshold(window) {
             return false;
         }
+        if self.compaction_cannot_help().is_some() {
+            return false;
+        }
         crate::context::derives_conversation(&self.history)
+    }
+
+    /// What the boundary tells the running agent about compacting
+    /// ([`CompactionPolicy`](crate::llm::compaction::CompactionPolicy)): the
+    /// window, the `/settings` **Auto compact** knob, and — while it still
+    /// describes this conversation under this window — the size of the last
+    /// compaction's head, the smallest compacting can make it. `None` with
+    /// no window known: no threshold, no hard limit. See `docs/compact.md`.
+    #[must_use]
+    pub fn compaction_policy(&self) -> Option<crate::llm::compaction::CompactionPolicy> {
+        let window = self.context_window?;
+        Some(crate::llm::compaction::CompactionPolicy {
+            window,
+            auto: self.settings.auto_compact,
+            floor: self.current_floor(),
+        })
+    }
+
+    /// The last compaction's head, while it still describes this
+    /// conversation (no rewind, `/clear` or `/resume` since) under this
+    /// window.
+    fn current_floor(&self) -> Option<u64> {
+        let floor = self.compact_floor?;
+        (floor.generation == self.history_generation && Some(floor.window) == self.context_window)
+            .then_some(floor.head)
+    }
+
+    /// When the last compaction could not get the context under the
+    /// threshold even with nothing after it — its head alone, instructions,
+    /// tool schemas, the recent user messages and the summary, is at or past
+    /// it — the head and the threshold, which the loop says once; automatic
+    /// compaction then stops trying until something changes
+    /// (`docs/compact.md` *When compacting cannot help*). `None` otherwise.
+    #[must_use]
+    pub fn compaction_cannot_help(&self) -> Option<(u64, u64)> {
+        let head = self.current_floor()?;
+        let threshold = auto_compact_threshold(self.context_window?);
+        (head >= threshold).then_some((head, threshold))
     }
 }
 
 /// Where auto-compaction runs for a `window`-token context window: codex's
 /// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
-/// ([`App::should_auto_compact`]) and the `/context` page's headroom
-/// (`docs/context-usage.md`) both read it, so the page can never show a
-/// threshold the loop does not act on.
+/// ([`App::should_auto_compact`]), the running agent
+/// ([`crate::llm::compaction`]) and the `/context` page's headroom
+/// (`docs/context-usage.md`) all read it, so none can show a threshold the
+/// others do not act on.
 #[must_use]
 pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
-    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
+    crate::llm::compaction::soft_threshold(window)
 }
 
 /// The estimate of a derived context: every message's text, a flat
@@ -399,4 +768,74 @@ pub struct CompactionCut {
     pub id: u64,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
+}
+
+/// A compaction running **beside** the agent's turn (`docs/compact.md`
+/// *Background compaction*): the running agent took its checkpoint, the
+/// summary is written off screen on a thread of its own, and the marker
+/// lands where the agent splices it in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundCompaction {
+    /// The checkpoint's id — its [`CompactionCut`]'s, its marker's `cut`.
+    pub id: u64,
+    /// Whether the agent took it on its own (the cell's `· auto`), rather
+    /// than for the user's `/compact`.
+    pub auto: bool,
+    /// The context gauge at the checkpoint — the marker's `before`.
+    pub before: u64,
+    /// The recent-user-message budget the window gave it at the checkpoint.
+    pub user_budget: u64,
+    /// Whether the summary is still being written or waits to be spliced.
+    pub phase: CompactionPhase,
+    /// Whether the agent waits for it at the hard limit — the one pause
+    /// background compaction costs, which the strip says.
+    pub waiting: bool,
+    /// The summary as it streams, never shown.
+    pub(super) summary: String,
+    /// Where the summarizer's current attempt began in
+    /// [`summary`](Self::summary) — what a retry withdraws back to.
+    pub(super) attempt_floor: Option<usize>,
+    /// What the handoff's head costs, once it was built.
+    pub(super) head_tokens: u64,
+    /// The compact hooks' cells, committed with the marker.
+    pub(super) reports: Vec<crate::hooks::HookReport>,
+}
+
+/// Where a [`BackgroundCompaction`] stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionPhase {
+    /// The summarizer is writing.
+    Summarizing,
+    /// The summary is done and handed to the agent, which splices it in at
+    /// its next round top.
+    Ready,
+}
+
+/// What one summarizer event did ([`App::on_summary_event`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryStep {
+    /// Nothing for the loop to do.
+    Continue,
+    /// The summary is done: hand it to the agent.
+    Done,
+    /// The summarizer failed with this error.
+    Failed(String),
+}
+
+/// A background compaction that landed: its marker as recorded, and the
+/// compact hooks' cells to commit above it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LandedCompaction {
+    pub marker: Compaction,
+    pub reports: Vec<crate::hooks::HookReport>,
+}
+
+/// What the last compaction's head cost, and under which history generation
+/// and window it was counted — the smallest compacting can make the
+/// conversation while both still hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CompactFloor {
+    pub(super) generation: u64,
+    pub(super) window: u64,
+    pub(super) head: u64,
 }

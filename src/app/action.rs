@@ -96,6 +96,12 @@ pub enum Action {
     /// [`App::finish_compact`] appends the marker at `StreamDone`. See
     /// `docs/compact.md`.
     Compact,
+    /// `/compact` while the agent works: [`App::request_compaction`] has
+    /// noted it, and the loop asks the running agent for a checkpoint at its
+    /// next round top on the shared slot — the summary is written in the
+    /// background and lands at a later round boundary of the same turn
+    /// (`docs/compact.md` *Background compaction*).
+    CompactInBackground,
     /// `/resume` from an idle composer: open the session picker. The *loop*
     /// scans the sessions dir (the fs I/O stays at the boundary) and hands the
     /// result to [`App::open_resume_picker`]. See `docs/resume.md`.

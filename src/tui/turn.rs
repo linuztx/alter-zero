@@ -322,6 +322,10 @@ impl Session<'_> {
         images: Vec<PathBuf>,
         context: Vec<context::ContextMessage>,
     ) {
+        // The turn's agent compacts by the policy as it stands now — the
+        // window, the knob — not as the last loop bottom left it
+        // (docs/compact.md).
+        self.sync_compaction_policy();
         let cancel = CancelToken::new();
         let handle =
             self.models
@@ -363,7 +367,6 @@ impl Session<'_> {
         if self.app.retire_finished_tasks() {
             self.sync_task_registry();
         }
-        let unheard = self.registry.take_pending_notices();
         // A message the turn never reached a round boundary to read — it
         // simply answered — becomes the next turn instead of being dropped
         // (docs/queue.md). Taken from the shared handle first so the backend
@@ -374,6 +377,14 @@ impl Session<'_> {
         // The finished turn's handle is spent; whatever dispatches below takes
         // its place (and nothing dispatching leaves the loop idle).
         self.inflight = None;
+        // A compaction the turn left running, or asked for, finishes first
+        // as the session's own compact turn (docs/compact.md): what is queued
+        // waits for it, as it does for an idle compaction, and so do the
+        // notices on the board — they are taken at its end.
+        if self.settle_compaction_at_turn_end() {
+            return;
+        }
+        let unheard = self.registry.take_pending_notices();
         if !self.flush_next_queued() && unheard.iter().any(|note| note.from_model) {
             self.start_background_turn(&unheard);
         }

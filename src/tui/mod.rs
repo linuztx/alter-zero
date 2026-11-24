@@ -88,6 +88,7 @@ pub(crate) mod ask;
 pub(crate) mod background;
 pub(crate) mod bootstrap;
 pub(crate) mod commit;
+pub(crate) mod compaction;
 pub(crate) mod config;
 pub(crate) mod context_usage;
 pub(crate) mod diff;
@@ -239,6 +240,12 @@ pub(crate) struct Session<'t> {
     /// turn (`docs/interrupt.md`).
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     reply_rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+    /// The channel a **background** summarizer streams on — beside the turn's
+    /// own, so its summary never touches the reply on screen
+    /// (`docs/compact.md`). Swapped with the reply channel when the agent's
+    /// turn ends before the summary does and the summary becomes the turn.
+    compact_tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    compact_rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
     /// Queries for the `@` file-search worker and its ranked matches, plus the
     /// last query sent — the dedupe that keeps an unchanged token from
     /// re-walking the tree (`docs/file-search.md`).
@@ -348,6 +355,16 @@ pub(crate) struct Session<'t> {
     /// survives a turn that ended without reading them, which is why the
     /// reclaim at every turn end goes through both.
     steer: alter_zero::steer::SteerQueue,
+    /// **Background compaction** (`docs/compact.md`): the slot every lead
+    /// backend shares with this side — the policy published on it, a
+    /// `/compact` request, the finished summary — the summarizer writing
+    /// one, when the running compaction's checkpoint was taken, and the
+    /// policy last published, so the loop bottom writes the slot only when
+    /// it changed.
+    compaction_slot: alter_zero::llm::compaction::CompactionSlot,
+    summarizer: Option<compaction::Summarizer>,
+    compaction_started: Option<Instant>,
+    published_policy: Option<alter_zero::llm::compaction::CompactionPolicy>,
     /// The tool-permission gate and this project's saved rules
     /// (`docs/permissions.md`).
     permissions: PermissionStore,

@@ -71,6 +71,10 @@ impl App {
                 .is_some_and(|status| !status.shell && status.offline.is_none())
             && self.viewed_agent().is_none()
             && self.tasks.is_empty()
+            // A compaction running beside the turn takes the slot with its
+            // own row (docs/compact.md).
+            && self.background_compaction.is_none()
+            && !self.compaction_requested
             && !self.modal_open()
             && !self.view.is_overlay()
     }

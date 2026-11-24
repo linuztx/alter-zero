@@ -308,9 +308,6 @@ impl App {
         // channel before the round boundary that closes it arrives
         // (docs/offline.md *A connection lost mid-reply*).
         self.attempt_floor = None;
-        // A new real turn re-arms the auto-compact trigger (one attempt per
-        // user turn — docs/compact.md).
-        self.auto_compact_blocked = false;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
@@ -539,11 +536,11 @@ impl App {
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
-        // A failed compaction also blocks the auto re-trigger until the next
-        // real turn (it would fail the same way in a tight loop).
-        if self.compact_buffer.take().is_some() {
-            self.auto_compact_blocked = true;
-        }
+        // A compaction running *beside* a failed turn is the boundary's to
+        // settle at the turn's end — it finishes as an idle compaction.
+        let compacting = self.compact_buffer.take().is_some();
+        self.compact_cut = None;
+        self.compact_user_budget = None;
         let partial = if streamed.is_empty() {
             None
         } else {
@@ -562,6 +559,11 @@ impl App {
         // `docs/agent-tool.md`.
         let agents = self.resolve_live_agent_group();
         self.record_message(Role::Error, error);
+        // A failed compaction is not retried over the same conversation —
+        // it would fail the same way in a tight loop (docs/compact.md).
+        if compacting {
+            self.compact_watermark = Some(self.history_signature());
+        }
         // An error is the turn's terminal state — clear the live status without a
         // "Done" summary; the red error notice is the summary.
         self.status = None;
@@ -707,11 +709,12 @@ impl App {
         // it into the composer would undo a submission this turn never made.
         // See docs/compact.md.
         let compacting = self.compact_buffer.take().is_some();
-        if compacting {
-            // The user said no — don't restart it at this same turn end
-            // (docs/compact.md's one-attempt-per-turn rule).
-            self.auto_compact_blocked = true;
-        }
+        self.compact_cut = None;
+        self.compact_user_budget = None;
+        // Esc stops a compaction running beside the turn too — the loop
+        // stops its summarizer, and no marker lands (docs/compact.md).
+        self.background_compaction = None;
+        self.compaction_requested = false;
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
         // A file that was streaming into its cell is output the user saw —
@@ -818,6 +821,11 @@ impl App {
             self.record_message(Role::Error, INTERRUPT_NOTICE);
             Some(INTERRUPT_NOTICE)
         };
+        // The user said no to that compaction — the idle trigger does not
+        // start it again over the same conversation (docs/compact.md).
+        if compacting {
+            self.compact_watermark = Some(self.history_signature());
+        }
         self.status = None;
         Some(InterruptedTurn::Kept {
             partial,
@@ -975,12 +983,12 @@ pub struct StreamError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct AttemptFloor {
     /// The history's length at the attempt's first piece of output.
-    history: usize,
+    pub(super) history: usize,
     /// The `/compact` summary's length then. Unlike the reply buffer, which
     /// every round boundary flushes, the summary runs on across rounds — one
     /// the output cap cut off goes on in another — so what the rounds before
     /// the attempt wrote is still in it.
-    summary: usize,
+    pub(super) summary: usize,
 }
 
 /// What [`App::withdraw_attempt`] took back of a failed reply attempt, for the

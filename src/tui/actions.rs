@@ -158,6 +158,10 @@ impl Session<'_> {
                 // it like any other turn.
                 self.start_compact_turn(/*auto=*/ false);
             }
+            // /compact while the agent works (docs/compact.md): the agent
+            // checkpoints at its next round top and keeps working while the
+            // summary is written beside it.
+            Action::CompactInBackground => self.request_background_compaction(),
             Action::Clear => self.clear_conversation()?,
             Action::KillBackground(id) => self.kill_background(&id),
             Action::MoveToBackground => self.move_to_background(),
@@ -440,6 +444,9 @@ impl Session<'_> {
         // (docs/tool-groups.md).
         let committing = self.commits_allowed();
         self.close_tool_group(committing, self.term.screen().width);
+        // Esc stops a compaction running beside the turn with it — no marker
+        // lands (docs/compact.md).
+        self.stop_background_compaction();
         self.abandon_inflight();
         // The interrupt takes a live foreground agent group down with it, and
         // a member may be the conversation on screen — the `Error` arm's rule
@@ -521,6 +528,9 @@ impl Session<'_> {
         // dropped receiver, so it can't repopulate the cleared state. See
         // docs/interrupt.md.
         self.abandon_inflight();
+        // …and the summary a compaction was writing beside it
+        // (docs/compact.md).
+        self.stop_background_compaction();
         self.render.reset();
         // …and the pictures the wiped conversation kept encoded for the wire
         // (`docs/memory.md`): nothing re-sends them now.

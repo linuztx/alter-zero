@@ -110,6 +110,7 @@ pub(crate) async fn run(term: &mut InlineViewport, startup: Startup) -> io::Resu
             // 3. Every other source, fairly among themselves.
             wake = next_wake(Sources {
                 reply: &mut session.reply_rx,
+                compaction: &mut session.compact_rx,
                 file: &mut session.file_rx,
                 image: &mut session.img_rx,
                 diff: &mut session.diff_rx,
@@ -140,6 +141,9 @@ enum Wake {
     /// committed to scrollback in the conversation view (in an overlay we
     /// hold off and repaint on return).
     Reply(StreamEvent),
+    /// A background summarizer's event — the summary a compaction writes
+    /// beside the running turn (`docs/compact.md`).
+    Compaction(StreamEvent),
     /// A file-search result for the open `@` picker.
     File(FileSearchResult),
     /// A finished Ctrl+V clipboard read.
@@ -181,6 +185,7 @@ enum Wake {
 /// events and the draw ticks (the module docs).
 struct Sources<'a> {
     reply: &'a mut UnboundedReceiver<StreamEvent>,
+    compaction: &'a mut UnboundedReceiver<StreamEvent>,
     file: &'a mut UnboundedReceiver<FileSearchResult>,
     image: &'a mut UnboundedReceiver<Result<PathBuf, String>>,
     diff: &'a mut UnboundedReceiver<DiffResult>,
@@ -211,6 +216,7 @@ struct Sources<'a> {
 async fn next_wake(sources: Sources<'_>) -> Wake {
     tokio::select! {
         Some(event) = sources.reply.recv() => Wake::Reply(event),
+        Some(event) = sources.compaction.recv() => Wake::Compaction(event),
         Some(result) = sources.file.recv() => Wake::File(result),
         Some(result) = sources.image.recv() => Wake::Image(result),
         Some(result) = sources.diff.recv() => Wake::Diff(result),
@@ -239,6 +245,10 @@ impl Session<'_> {
     fn on_wake(&mut self, wake: Wake) -> io::Result<()> {
         match wake {
             Wake::Reply(event) => self.on_reply_event(event),
+            Wake::Compaction(event) => {
+                self.on_compaction_event(event);
+                self.frame.schedule_frame();
+            }
             Wake::File(result) => self.on_file_matches(result),
             Wake::Image(result) => self.on_image_paste(result),
             Wake::Diff(result) => self.on_diff_result(result)?,

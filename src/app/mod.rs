@@ -80,11 +80,14 @@ pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number,
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion, Held};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
-    COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
-    CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
-    command_query, matching_commands,
+    COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COMPACT_REQUESTED_NOTICE,
+    COPY_EMPTY_NOTICE, COPY_OK_NOTICE, CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT,
+    RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
 };
-pub use self::compact::{COMPACT_VERB, Compaction, CompactionCut};
+pub use self::compact::{
+    BackgroundCompaction, COMPACT_VERB, Compaction, CompactionCut, CompactionPhase,
+    LandedCompaction, SummaryStep,
+};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::context_usage::{ContextUsagePage, ContextUsageRow};
@@ -324,13 +327,40 @@ pub struct App {
     /// carries beside the conversation: part of every whole-context
     /// estimate, so the gauge counts them before any provider has.
     tools_estimate: u64,
-    /// One auto-compact attempt per user turn (codex's per-turn semantics):
-    /// set when a compact turn ends **any** way — landed, interrupted, or
-    /// failed — and cleared when the next real turn begins, so a compaction
-    /// that didn't (or couldn't) shrink the context never re-triggers in a
-    /// tight loop, and an Esc'd one isn't immediately restarted against the
-    /// user's wishes. See `docs/compact.md`.
-    auto_compact_blocked: bool,
+    /// The history's `(generation, length)` when the last compaction attempt
+    /// ended — landed, interrupted or failed. The idle auto trigger fires
+    /// only once the history has moved past it, so an attempt is never
+    /// repeated over the same conversation (an Esc'd one is not restarted
+    /// against the user's wishes, a failed one not retried in a tight loop)
+    /// while the number of compactions stays unlimited. See
+    /// `docs/compact.md` *Never a loop*.
+    compact_watermark: Option<(u64, usize)>,
+    /// What the last compaction's head cost — instructions, tool schemas,
+    /// the recent user messages and the summary — under which history
+    /// generation and window: the smallest compacting can make this
+    /// conversation. Past the threshold, compacting cannot help, so neither
+    /// trigger tries (`docs/compact.md` *When compacting cannot help*).
+    compact_floor: Option<compact::CompactFloor>,
+    /// The compaction running **beside** the agent's turn
+    /// (`docs/compact.md` *Background compaction*): its checkpoint, the
+    /// summary as it streams off screen, whether the agent waits for it.
+    /// `None` while none runs; the idle compact turn keeps
+    /// [`compact_buffer`](Self::compact_buffer) instead.
+    background_compaction: Option<compact::BackgroundCompaction>,
+    /// `/compact` was typed while the agent worked and its checkpoint has not
+    /// been taken yet — the next checkpoint is the user's, not automatic.
+    compaction_requested: bool,
+    /// How long the running background compaction has been at it — the
+    /// boundary's clock, injected per draw (the `set_status_times` pattern).
+    compaction_elapsed: Option<Duration>,
+    /// The cut a compact turn's summary ends at, when the turn is a
+    /// background compaction the agent's turn ended under
+    /// ([`adopt_background_compaction`](Self::adopt_background_compaction));
+    /// `None` for an ordinary idle compaction, which covers everything.
+    compact_cut: Option<u64>,
+    /// The recent-user-message budget that adopted compaction recorded at
+    /// its checkpoint, so its marker keeps it.
+    compact_user_budget: Option<u64>,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's
@@ -1390,7 +1420,14 @@ impl App {
         // the estimate rather than hard-zeroing (a bare session still reads
         // 0). Auto-compact re-arms.
         self.refresh_context_used();
-        self.auto_compact_blocked = false;
+        self.compact_watermark = None;
+        self.compact_floor = None;
+        // A compaction running beside the wiped turn goes with it — the loop
+        // stops its summarizer (docs/compact.md).
+        self.background_compaction = None;
+        self.compaction_requested = false;
+        self.compact_cut = None;
+        self.compact_user_budget = None;
         // The last request described the conversation that just went; what
         // the session spent stays in the ledger (`docs/context-usage.md`).
         self.last_usage = None;

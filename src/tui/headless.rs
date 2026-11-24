@@ -322,6 +322,14 @@ pub(crate) async fn run(mut startup: Startup) -> i32 {
                 session.on_headless_reply(event, &mut reporter, run_start, &mut emitted);
             }
             Some(event) = session.bg_rx.recv() => session.on_bg_event(event),
+            // A summary a compaction writes beside the running turn
+            // (docs/compact.md): said in the log and the stream when it is
+            // handed to the agent.
+            Some(event) = session.compact_rx.recv() => {
+                if session.on_compaction_event(event) {
+                    write(&reporter.compaction_summarized());
+                }
+            }
             Some(event) = session.agent_rx.recv() => session.on_headless_agent_message(event),
             Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
             Some((provider, result)) = session.probe_rx.recv(),
@@ -644,6 +652,8 @@ impl Session<'_> {
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
+        // What the running agent may do about compacting (docs/compact.md).
+        self.sync_compaction_policy();
         if compact
             && self.inflight.is_none()
             && !self.models.is_stalled_test_backend()

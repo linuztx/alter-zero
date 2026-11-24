@@ -91,6 +91,10 @@ impl Session<'_> {
         // masked, the delayed Ctrl+B hint's gate (docs/background.md).
         self.app
             .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
+        // How long the compaction running beside the turn has been at it —
+        // its row's `(12s)` (docs/compact.md).
+        self.app
+            .set_compaction_elapsed(self.compaction_started.map(|start| start.elapsed()));
         // The animation phase for the live region's pulsing bullets — a phase,
         // not a measurement: nothing displays it (docs/tool-pulse.md).
         let now = self.clocks.loop_start.elapsed();

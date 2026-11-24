@@ -181,6 +181,10 @@ pub(crate) struct ModelSession {
     /// `/settings` change never leaves the loop pushing into a queue no
     /// backend is draining.
     steer: alter_zero::steer::SteerQueue,
+    /// The session's background-compaction slot (`docs/compact.md`) —
+    /// re-attached on every rebuild like the queue above, so a `/model`
+    /// switch mid-compaction keeps the summary's way to the agent open.
+    compaction: alter_zero::llm::compaction::CompactionSlot,
     permissions: Option<PermissionGate>,
     /// The `AskUserQuestion` gate — `None` in a headless run, where nobody
     /// could answer, so the tool is never offered (`docs/headless.md`).
@@ -270,6 +274,7 @@ impl ModelSession {
         registry: &BackgroundRegistry,
         agents: &AgentRegistry,
         steer: &alter_zero::steer::SteerQueue,
+        compaction: &alter_zero::llm::compaction::CompactionSlot,
         permissions: Option<&PermissionGate>,
         ask: Option<&alter_zero::ask::AskGate>,
         tasks: &alter_zero::tasks::TaskRegistry,
@@ -502,6 +507,7 @@ impl ModelSession {
                 registry,
                 agents,
                 steer,
+                compaction,
                 permissions,
                 ask,
                 tasks,
@@ -606,6 +612,7 @@ impl ModelSession {
             registry: registry.clone(),
             agents: agents.clone(),
             steer: steer.clone(),
+            compaction: compaction.clone(),
             permissions: permissions.cloned(),
             ask: ask.cloned(),
             round_budget: round_budget.cloned(),
@@ -944,6 +951,7 @@ impl ModelSession {
             &self.registry,
             &self.agents,
             &self.steer,
+            &self.compaction,
             self.permissions.as_ref(),
             self.ask.as_ref(),
             &self.tasks,
@@ -1951,6 +1959,7 @@ fn session_backend(
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
     steer: &alter_zero::steer::SteerQueue,
+    compaction: &alter_zero::llm::compaction::CompactionSlot,
     permissions: Option<&PermissionGate>,
     ask: Option<&alter_zero::ask::AskGate>,
     tasks: &alter_zero::tasks::TaskRegistry,
@@ -1984,6 +1993,9 @@ fn session_backend(
         // same one, so a message queued against the turn a `/model` switch
         // replaced still reaches its successor.
         .with_steer(steer.clone())
+        // Background compaction (docs/compact.md): the lead's turns compact
+        // over the session's one slot, whichever backend runs them.
+        .with_compaction(compaction.clone())
         // The shared task list (docs/task-tools.md): enables the four task
         // tools — always attached; the checklist is the session's, so every
         // rebuild re-binds the same registry.

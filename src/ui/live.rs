@@ -499,6 +499,10 @@ pub(super) fn strip_lines(
         // no wait, the tip, once the turn has run a few seconds
         // (docs/tips.md).
         lines.extend(super::offline::status_offline_lines(app, width));
+        // …then a compaction running beside the turn: the summary being
+        // written, or the agent waiting for it at the hard limit
+        // (docs/compact.md).
+        lines.extend(super::compaction::compacting_lines(app, width));
         lines.extend(tasks);
         lines.extend(super::tips::status_tip_lines(app, width));
         lines.push(Line::default()); // STATUS_GAP_ROWS

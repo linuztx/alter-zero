@@ -77,6 +77,10 @@ impl<'t> Session<'t> {
         // Backend → loop (the streamed reply). A tokio channel so the loop can
         // `select!` on it; the backend thread sends without touching the runtime.
         let (tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        // Background summarizer → loop (docs/compact.md): beside the reply
+        // channel, so a summary written while the agent works never reaches
+        // the reply on screen.
+        let (compact_tx, compact_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
         // The frame requester + its scheduler task, and the scheduler's draw-tick
         // channel (scheduler → loop).
         let (frame, frame_rx) = frame::channel();
@@ -503,6 +507,15 @@ impl<'t> Session<'t> {
         // build re-attaches the same handle, so a `/model` switch keeps the
         // queue the running turn's successor will drain.
         let steer = alter_zero::steer::SteerQueue::new();
+        // Background compaction's slot (docs/compact.md), shared like the
+        // queue above. Its checkpoint ids start from the clock, so a resumed
+        // conversation's cuts and this session's never share one.
+        let compaction_slot = alter_zero::llm::compaction::CompactionSlot::starting_at(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs())
+                .saturating_mul(1000),
+        );
 
         // The reply backend and everything that selects it (docs/llm.md).
         let mut models = ModelSession::resolve(
@@ -512,6 +525,7 @@ impl<'t> Session<'t> {
             &registry,
             &agent_registry,
             &steer,
+            &compaction_slot,
             permissions.gate(),
             // AskUserQuestion only where somebody can answer it
             // (docs/headless.md).
@@ -657,6 +671,8 @@ impl<'t> Session<'t> {
             frames: alter_zero::frame::FrameLedger::default(),
             tx,
             reply_rx,
+            compact_tx,
+            compact_rx,
             file_req_tx,
             file_rx,
             last_file_query: None,
@@ -702,6 +718,10 @@ impl<'t> Session<'t> {
             registry,
             agent_registry,
             steer,
+            compaction_slot,
+            summarizer: None,
+            compaction_started: None,
+            published_policy: None,
             permissions,
             ask,
             task_registry,
@@ -1221,6 +1241,9 @@ impl<'t> Session<'t> {
                 }
             }
         }
+        // …and a summary a compaction was writing beside the turn
+        // (docs/compact.md).
+        self.stop_background_compaction();
         // Cancel every /model fetch still out (each detached worker exits on
         // its cancel, and nothing it read is kept), and the /usage page's
         // reads likewise.
@@ -1285,6 +1308,10 @@ impl<'t> Session<'t> {
         self.app
             .set_tool_definitions(self.models.backend().tool_definitions());
         self.app.sync_context_used();
+        // What the running agent may do about compacting, when it changed —
+        // a window a `/model` switch moved, the knob, a compaction that
+        // found it cannot help (docs/compact.md).
+        self.sync_compaction_policy();
         // Auto-compact (docs/compact.md): past codex's 90%-of-window threshold,
         // start the summarization turn on our own at this idle boundary — the loop
         // bottom sees every turn end and gauge change. `should_auto_compact`

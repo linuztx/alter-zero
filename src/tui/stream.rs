@@ -482,11 +482,31 @@ impl Session<'_> {
                 false
             }
             StreamEvent::StreamDone => self.on_stream_done(committing, width),
-            // Background compaction (docs/compact.md): no backend attaches the
-            // round-top seam yet, so none of these is sent.
-            StreamEvent::CompactionCheckpoint { .. }
-            | StreamEvent::CompactionWait { .. }
-            | StreamEvent::CompactionApplied { .. } => false,
+            // Background compaction (docs/compact.md). The running agent took
+            // a checkpoint at this round top: in channel order the history is
+            // exactly its snapshot, so the cut is recorded here and the
+            // summary is started beside the turn — which goes on.
+            StreamEvent::CompactionCheckpoint { id } => {
+                self.on_compaction_checkpoint(id);
+                false
+            }
+            // It waits at the hard limit for that summary: the strip says so.
+            StreamEvent::CompactionWait { id } => {
+                self.app.set_compaction_waiting(id);
+                false
+            }
+            // It spliced the summary in at this round top: the marker lands
+            // here — after the rounds it kept verbatim, before the next one —
+            // the history's derivation becoming what the agent now holds. A
+            // cell like any, so the text before it is finalised first and
+            // the open read/search group closes (invariant 4).
+            StreamEvent::CompactionApplied { id } => {
+                self.flush_segment(committing, width);
+                self.close_tool_group(committing, width);
+                self.render.reset();
+                self.land_background_compaction(id, committing, width);
+                false
+            }
             StreamEvent::Retrying { attempt, max } => {
                 // A failed request is being retried — before any content
                 // streamed, or after its connection was lost under the reply.
@@ -626,6 +646,7 @@ impl Session<'_> {
             self.settle_bg_completions();
             self.render.reset();
             self.clocks.end_turn();
+            self.say_if_compaction_cannot_help();
             return true;
         }
         let final_text = self.app.finish_stream();

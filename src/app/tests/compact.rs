@@ -30,19 +30,6 @@ fn slash_compact_dispatches_the_compact_action_when_idle() {
 }
 
 #[test]
-fn compact_mid_turn_is_rejected_with_a_toast() {
-    let mut app = App::new();
-    app.record_user_message("hello");
-    app.begin_stream();
-    type_str(&mut app, "/compact");
-    assert_eq!(
-        app.on_key(key(KeyCode::Enter)),
-        Action::Toast(COMPACT_BUSY_NOTICE.to_string()),
-    );
-    assert!(app.turn_active(), "the running turn is untouched");
-}
-
-#[test]
 fn compact_with_nothing_to_compact_is_rejected_with_a_toast() {
     let mut app = App::new();
     type_str(&mut app, "/compact");
@@ -356,7 +343,9 @@ fn auto_compact_needs_a_window_and_derivable_content() {
 }
 
 #[test]
-fn auto_compact_never_fires_mid_turn() {
+fn the_idle_trigger_never_fires_mid_turn() {
+    // Mid-turn, compacting is the running agent's own to start, at a round
+    // boundary (docs/compact.md *Background compaction*).
     let mut app = App::new();
     app.record_user_message("hello");
     app.set_context_window(Some(100));
@@ -366,10 +355,9 @@ fn auto_compact_never_fires_mid_turn() {
 }
 
 #[test]
-fn auto_compact_is_blocked_after_a_compaction_until_the_next_turn() {
-    // One attempt per user turn (codex's per-turn semantics): a compaction
-    // that leaves the gauge high must not immediately re-trigger — the
-    // next completed turn re-arms it.
+fn auto_compact_is_not_repeated_right_after_a_compaction() {
+    // A compaction that leaves the gauge high must not immediately
+    // re-trigger over the conversation it just compacted.
     let mut app = App::new();
     app.record_user_message("hello there my friend");
     app.set_context_window(Some(10)); // tiny: the bridge alone exceeds it
@@ -383,13 +371,6 @@ fn auto_compact_is_blocked_after_a_compaction_until_the_next_turn() {
     assert!(
         !app.should_auto_compact(),
         "blocked right after a compaction"
-    );
-    app.begin_stream();
-    app.finish_stream();
-    app.end_turn(1);
-    assert!(
-        app.should_auto_compact(),
-        "the next turn re-arms the trigger"
     );
 }
 
@@ -739,4 +720,428 @@ fn a_model_switch_starts_the_calibration_over() {
     app.record_user_message(&later);
     app.sync_context_used();
     assert_eq!(app.context_used(), counted + estimate_of(&[&later]));
+}
+
+// --- background compaction: the app's half (docs/compact.md) ---
+
+use crate::app::compact::{BackgroundCompaction, CompactionPhase, SummaryStep};
+use crate::stream::StreamEvent;
+
+/// A turn under way on a 50k window: the user's message and one tool round.
+fn working_turn() -> App {
+    let mut app = App::new();
+    app.record_user_message("fix the bug");
+    app.set_context_window(Some(50_000));
+    app.begin_stream();
+    app.start_tool("Bash", "cargo build", None);
+    app.end_tool("built", true);
+    app
+}
+
+/// The running compaction, which the test has just started.
+fn running(app: &App) -> &BackgroundCompaction {
+    app.background_compaction()
+        .expect("a compaction is running")
+}
+
+/// Stream `summary` as the summarizer would, to its end.
+fn summarize(app: &mut App, summary: &str) {
+    assert_eq!(
+        app.on_summary_event(&StreamEvent::Chunk(summary.to_string())),
+        SummaryStep::Continue
+    );
+    assert_eq!(
+        app.on_summary_event(&StreamEvent::StreamDone),
+        SummaryStep::Done
+    );
+}
+
+#[test]
+fn compact_mid_turn_asks_for_a_background_compaction() {
+    // No longer refused: the running agent takes a checkpoint at its next
+    // round top and keeps working.
+    let mut app = working_turn();
+    type_str(&mut app, "/compact");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::CompactInBackground);
+    assert!(app.compaction_requested());
+    assert!(app.turn_active(), "the running turn is untouched");
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn compact_while_a_compaction_runs_is_refused_with_a_toast() {
+    let mut app = working_turn();
+    assert!(app.begin_background_compaction(7));
+    type_str(&mut app, "/compact");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast(COMPACT_BUSY_NOTICE.to_string())
+    );
+    let mut idle = App::new();
+    idle.record_user_message("hi");
+    idle.begin_compact(false);
+    type_str(&mut idle, "/compact");
+    assert_eq!(
+        idle.on_key(key(KeyCode::Enter)),
+        Action::Toast(COMPACT_BUSY_NOTICE.to_string()),
+        "nor over a summarization turn"
+    );
+}
+
+#[test]
+fn a_checkpoint_records_the_cut_where_the_turn_stands() {
+    let mut app = working_turn();
+    let len = app.history.len();
+    let before = app.context_used();
+    assert!(app.begin_background_compaction(7));
+    assert_eq!(app.history.len(), len + 1);
+    assert!(matches!(app.history.last(), Some(HistoryItem::CompactionCut(cut)) if cut.id == 7));
+    assert_eq!(
+        app.background_compaction_snapshot()
+            .map(<[HistoryItem]>::len),
+        Some(len),
+        "the snapshot is the history up to the cut"
+    );
+    let compaction = running(&app);
+    assert!(compaction.auto, "nobody asked: the agent's own");
+    assert_eq!(compaction.phase, CompactionPhase::Summarizing);
+    assert_eq!(compaction.before, before);
+    assert!(
+        !app.begin_background_compaction(8),
+        "one compaction at a time"
+    );
+}
+
+#[test]
+fn a_checkpoint_the_user_asked_for_is_not_tagged_auto() {
+    let mut app = working_turn();
+    assert!(app.request_compaction());
+    assert!(app.begin_background_compaction(7));
+    assert!(!running(&app).auto);
+    assert!(!app.compaction_requested(), "the request was answered");
+}
+
+#[test]
+fn the_summary_streams_off_screen_and_never_touches_the_turn() {
+    let mut app = working_turn();
+    app.push_chunk("the agent's own reply");
+    let tally = app.status().expect("a turn").tokens;
+    app.begin_background_compaction(7);
+    summarize(&mut app, "  the gist\n");
+    assert_eq!(app.streaming_text(), Some("the agent's own reply"));
+    assert_eq!(app.status().expect("a turn").tokens, tally);
+    assert_eq!(app.background_summary(), Some("the gist"));
+    assert_eq!(running(&app).phase, CompactionPhase::Ready);
+}
+
+#[test]
+fn a_retried_summary_attempt_is_withdrawn_before_the_next_one() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    app.on_summary_event(&StreamEvent::Chunk("the first round. ".to_string()));
+    app.on_summary_event(&StreamEvent::HookNote {
+        label: "Reply cut off".to_string(),
+        text: String::new(),
+        report: None,
+    });
+    app.on_summary_event(&StreamEvent::Chunk("half of the".to_string()));
+    app.on_summary_event(&StreamEvent::Retrying { attempt: 1, max: 3 });
+    app.on_summary_event(&StreamEvent::Chunk("the second round.".to_string()));
+    app.on_summary_event(&StreamEvent::StreamDone);
+    assert_eq!(
+        app.background_summary(),
+        Some("the first round. the second round.")
+    );
+}
+
+#[test]
+fn the_summarizers_usage_is_billed_but_moves_neither_the_tally_nor_the_gauge() {
+    let mut app = working_turn();
+    app.apply_usage(&usage_of(40_000, 100));
+    let used = app.context_used();
+    let tally = app.status().expect("a turn").tokens;
+    let billed = app.usage_since_launch();
+    app.begin_background_compaction(7);
+    app.on_summary_event(&StreamEvent::Usage(usage_of(30_000, 500)));
+    assert_eq!(app.context_used(), used, "the gauge is the agent's");
+    assert_eq!(
+        app.status().expect("a turn").tokens,
+        tally,
+        "so is the tally"
+    );
+    let after = app.usage_since_launch();
+    assert_eq!(
+        after.requests,
+        billed.requests + 1,
+        "but the request is billed"
+    );
+    assert_eq!(after.input, billed.input + 30_000);
+}
+
+#[test]
+fn a_failed_summary_reports_its_error_and_leaves_the_conversation_as_it_was() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    let derived = crate::context::context_messages(&app.history);
+    assert_eq!(
+        app.on_summary_event(&StreamEvent::Error("boom".to_string())),
+        SummaryStep::Failed("boom".to_string())
+    );
+    assert_eq!(app.fail_background_compaction(), Some(7));
+    assert!(app.background_compaction().is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_)))
+    );
+    assert_eq!(
+        crate::context::context_messages(&app.history),
+        derived,
+        "the cut left behind is inert"
+    );
+}
+
+#[test]
+fn a_summary_sent_again_starts_over() {
+    // The summarization request did not fit and is sent again smaller: what
+    // the refused one wrote is gone, the compaction itself goes on.
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    app.on_summary_event(&StreamEvent::Chunk("half".to_string()));
+    app.on_summary_event(&StreamEvent::Error("prompt is too long".to_string()));
+    app.restart_background_summary();
+    assert_eq!(running(&app).phase, CompactionPhase::Summarizing);
+    summarize(&mut app, "whole");
+    assert_eq!(app.background_summary(), Some("whole"));
+}
+
+#[test]
+fn the_handoff_is_the_derivations_own_head() {
+    let mut app = working_turn();
+    app.set_user_instructions(Some("be careful".to_string()));
+    app.begin_background_compaction(7);
+    summarize(&mut app, "the gist");
+    let (id, head, head_tokens) = app.take_compaction_handoff().expect("a handoff");
+    assert_eq!(id, 7);
+    let snapshot = app
+        .background_compaction_snapshot()
+        .expect("still running")
+        .to_vec();
+    assert_eq!(
+        head,
+        crate::context::compacted_head(
+            Some("be careful"),
+            None,
+            &snapshot,
+            "the gist",
+            crate::context::compact_user_budget(Some(50_000)),
+        )
+    );
+    assert!(head_tokens > 0);
+}
+
+#[test]
+fn the_marker_lands_where_the_agent_spliced_and_names_its_cut() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    summarize(&mut app, "we built it");
+    // The agent kept working while the summary was written.
+    app.start_tool("Bash", "cargo test", None);
+    app.end_tool("ok", true);
+    assert!(app.apply_background_compaction(8, 3).is_none(), "not ours");
+    let landed = app.apply_background_compaction(7, 12).expect("it lands");
+    let marker = &landed.marker;
+    assert_eq!(marker.cut, Some(7));
+    assert_eq!(marker.summary, "we built it");
+    assert!(marker.auto);
+    assert_eq!(marker.secs, 12);
+    assert_eq!(marker.user_budget, 5_000, "a tenth of the 50k window");
+    assert!(matches!(app.history.last(), Some(HistoryItem::Compaction(c)) if c.cut == Some(7)));
+    assert!(app.background_compaction().is_none());
+    let ctx = crate::context::context_messages(&app.history);
+    let calls: Vec<&str> = ctx
+        .iter()
+        .flat_map(|m| m.tool_calls.iter().map(|c| c.arguments.as_str()))
+        .collect();
+    assert_eq!(calls, vec![r#"{"command":"cargo test"}"#], "{ctx:?}");
+    assert!(ctx[0].text.ends_with("we built it"), "{ctx:?}");
+}
+
+#[test]
+fn the_gauge_drops_when_the_summary_lands_and_the_next_frame_snaps_it() {
+    let mut app = working_turn();
+    // A round whose output filled most of the window.
+    app.start_tool("Bash", "cat big.log", None);
+    app.end_tool(&"log line words ".repeat(12_000), true);
+    app.apply_usage(&usage_of(46_000, 100));
+    app.begin_background_compaction(7);
+    summarize(&mut app, "we built it");
+    let landed = app.apply_background_compaction(7, 1).expect("it lands");
+    assert_eq!(landed.marker.before, 46_000);
+    assert!(landed.marker.after < 46_000, "{landed:?}");
+    assert_eq!(app.context_used(), landed.marker.after);
+    app.apply_usage(&usage_of(9_000, 50));
+    assert_eq!(app.context_used(), 9_000, "the first frame after it snaps");
+}
+
+#[test]
+fn esc_drops_the_background_compaction_and_never_lands_a_marker() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    summarize(&mut app, "we built it");
+    app.interrupt_turn(3).expect("an interrupt");
+    assert!(app.background_compaction().is_none());
+    assert!(app.apply_background_compaction(7, 1).is_none());
+    assert!(
+        !app.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Compaction(_)))
+    );
+}
+
+#[test]
+fn clear_drops_the_background_compaction_and_the_request() {
+    let mut app = working_turn();
+    app.request_compaction();
+    app.begin_background_compaction(7);
+    app.request_compaction();
+    app.clear_conversation();
+    assert!(app.background_compaction().is_none());
+    assert!(!app.compaction_requested());
+}
+
+#[test]
+fn a_turn_that_ends_mid_summary_finishes_as_an_idle_compaction() {
+    // The agent finished before the summary did: the summary keeps going as
+    // the session's turn — queued input waits for it — and lands at the end
+    // of the history, still covering only its snapshot.
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    app.on_summary_event(&StreamEvent::Chunk("we bui".to_string()));
+    app.start_tool("Bash", "cargo test", None);
+    app.end_tool("ok", true);
+    app.push_chunk("All done.");
+    app.finish_stream();
+    let summary = app.take_turn_summary(9).expect("a turn summary");
+    app.record_turn_summary(summary);
+    assert!(app.adopt_background_compaction().is_some());
+    assert!(app.is_compacting() && app.turn_active());
+    assert!(app.background_compaction().is_none(), "it is the turn now");
+    app.push_chunk("lt it");
+    let marker = app.finish_compact(14).expect("it lands");
+    assert_eq!(marker.summary, "we built it");
+    assert_eq!(marker.cut, Some(7));
+    assert!(marker.auto);
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryItem::Compaction(_))
+    ));
+    let ctx = crate::context::context_messages(&app.history);
+    assert!(
+        ctx.iter().any(|m| m.text == "All done."),
+        "what the agent did after the checkpoint stays verbatim: {ctx:?}"
+    );
+}
+
+#[test]
+fn a_summary_ready_when_the_turn_ends_lands_at_its_end() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    summarize(&mut app, "we built it");
+    app.push_chunk("All done.");
+    app.finish_stream();
+    let summary = app.take_turn_summary(9).expect("a turn summary");
+    app.record_turn_summary(summary);
+    assert!(
+        app.adopt_background_compaction().is_none(),
+        "nothing left to write"
+    );
+    let landed = app.apply_background_compaction(7, 2).expect("it lands");
+    assert_eq!(landed.marker.cut, Some(7));
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryItem::Compaction(_))
+    ));
+}
+
+#[test]
+fn the_waiting_flag_says_the_agent_paused_at_the_hard_limit() {
+    let mut app = working_turn();
+    app.begin_background_compaction(7);
+    assert!(!running(&app).waiting);
+    app.set_compaction_waiting(8);
+    assert!(!running(&app).waiting, "not ours");
+    app.set_compaction_waiting(7);
+    assert!(running(&app).waiting);
+}
+
+#[test]
+fn the_policy_carries_the_window_the_knob_and_what_compacting_can_reach() {
+    let mut app = working_turn();
+    let policy = app.compaction_policy().expect("a window");
+    assert_eq!(policy.window, 50_000);
+    assert!(policy.auto);
+    assert_eq!(policy.floor, None);
+    app.set_context_window(None);
+    assert_eq!(app.compaction_policy(), None, "no window, no policy");
+}
+
+#[test]
+fn a_compaction_that_cannot_reach_the_threshold_says_so_and_stops_the_automatic_ones() {
+    // A 100-token window: the summary bridge alone is past 90 of it.
+    let mut app = App::new();
+    app.record_user_message("hello there my friend");
+    app.set_context_window(Some(100));
+    app.begin_stream();
+    app.apply_usage(&usage_of(200, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.should_auto_compact());
+    app.begin_compact(true);
+    app.push_chunk("a summary");
+    app.finish_compact(1).expect("a marker");
+    let (head, threshold) = app.compaction_cannot_help().expect("it says so");
+    assert!(head >= threshold, "{head} {threshold}");
+    assert!(
+        app.compaction_policy()
+            .and_then(|policy| policy.floor)
+            .is_some_and(|floor| floor >= 90),
+        "the agent is told compacting cannot help"
+    );
+    // A new turn changes nothing about that.
+    app.record_user_message("again");
+    app.begin_stream();
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(!app.should_auto_compact(), "no compaction that cannot help");
+    // A new window, a new verdict.
+    app.set_context_window(Some(1_000_000));
+    assert!(app.compaction_cannot_help().is_none());
+}
+
+#[test]
+fn auto_compact_waits_for_the_conversation_to_change_after_an_attempt() {
+    // Unlimited compactions, never a loop: after one — landed, failed or
+    // Esc'd — the trigger re-arms only once something new joins.
+    let mut app = App::new();
+    app.record_user_message(&"a long message ".repeat(40));
+    app.set_context_window(Some(1_000));
+    app.begin_stream();
+    app.apply_usage(&usage_of(950, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.should_auto_compact());
+    app.begin_compact(true);
+    app.push_chunk("half");
+    app.fail_stream("boom");
+    assert!(
+        !app.should_auto_compact(),
+        "the same conversation is not retried"
+    );
+    app.record_user_message("and more");
+    app.begin_stream();
+    app.apply_usage(&usage_of(990, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.should_auto_compact(), "something new: a later retry");
 }
