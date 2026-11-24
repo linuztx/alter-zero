@@ -293,7 +293,12 @@ never existed:
   codex has no exit-2 arm for it), and its completion is PostCompact. The
   wrapper never drains the session-source queue and never continues a
   summarization; its notes stay out of the conversation record (they are
-  ephemeral, like the compact chunks themselves).
+  ephemeral, like the compact chunks themselves). A summary written **while
+  the agent works** (`docs/compact.md`) fires the same pair from the
+  summarizer's own thread — `HookSink::for_compaction` hands the engine the
+  wrapper, `trigger` saying `auto` for one the context asked for and
+  `manual` for a `/compact` typed mid-turn — and its hook-run cells commit
+  with the `● Context compacted` cell they belong to.
 - **`SessionEnd`** fires as a conversation closes — `/clear` (`clear`),
   a `/resume` switching away (`resume`), a quit (`prompt_input_exit`) and a
   headless run's end (`other`, `docs/headless.md`), Claude Code's reasons —

@@ -788,6 +788,70 @@ pub(in crate::stream) fn compact_turn(_cue: &Cue) -> Vec<StreamEvent> {
     events
 }
 
+/// The **compact-live** demo's narration (`docs/compact.md` *Compacting
+/// while the agent works*): what the cell between the calls is, and what the
+/// swap kept.
+const COMPACT_LIVE_REPLY: &str = concat!(
+    "I'll look around the project and compact the context on the way: the \
+     summary is written in the background while I keep working, and the \
+     status line says so until it lands.\n\n",
+    "The summary landed between two calls, where the `Context compacted` cell \
+     sits. Everything before it now reaches me as one handoff message, while \
+     the read I made as it was being written stayed word for word — \
+     **ctrl+d** shows the context as the next request sends it.\n\n",
+    handoff!()
+);
+
+/// The summary the compact-live demo lands — the shape a real one has
+/// (`prompts/compact_prompt.md`), about the demo's own work.
+const DUMMY_LIVE_SUMMARY: &str = "## 1. The user's requests\n\n\
+     - Look around the project and compact the context while working. Still open.\n\n\
+     ## 2. Current state\n\n\
+     - Listed the folder: `about.py` and a `README.md`. Nothing was changed.\n\n\
+     ## 6. Next steps\n\n\
+     1. Read `about.py`, then run it.";
+
+/// How long the compact-live demo's summary says it took to write.
+const DUMMY_LIVE_SUMMARY_SECS: u64 = 2;
+
+/// The **compact-live** demo (`docs/compact.md` *Compacting while the agent
+/// works*): a summary written behind a running turn. A round of work (three
+/// calls, so there is something for the summary to stand in for); the
+/// summary announced, which the status line shows; a second round made while
+/// it is being written; the summary landing, which commits the `Context
+/// compacted` cell where the swap happened; and a last round on the
+/// compacted context. The middle round is what the swap keeps word for word
+/// — the marker's `kept` — so the next request reads the handoff and then
+/// that read, exactly as the live engine leaves it (`llm::compaction`).
+pub(in crate::stream) fn compact_live_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let (first, second) = reply_parts(COMPACT_LIVE_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.extend(round(&[
+        ScriptedCall::command("ls -la", EXPLORE_LISTING, 0),
+        ScriptedCall::command("grep -rn 'card()' .", EXPLORE_GREP, 0),
+        ScriptedCall::command("head -n 20 README.md", EXPLORE_README, 0),
+    ]));
+    events.push(StreamEvent::CompactionStarted { auto: true });
+    events.extend(round(&[ScriptedCall::read(
+        DUMMY_ABOUT_PATH,
+        DUMMY_ABOUT_V1,
+    )]));
+    events.push(StreamEvent::Compacted {
+        summary: DUMMY_LIVE_SUMMARY.to_string(),
+        secs: DUMMY_LIVE_SUMMARY_SECS,
+        budget: 0,
+    });
+    events.extend(round(&[ScriptedCall::command(
+        &format!("python3 {DUMMY_ABOUT_PATH}"),
+        EXPLORE_RUN,
+        0,
+    )]));
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// The markdown-table demo as a **text-only** turn: no thinking pause and no
 /// tool batch — a tool call would split the reply around it, flushing the
 /// block early — so the whole table streams through the strip preview and its

@@ -181,6 +181,13 @@ pub(crate) struct ModelSession {
     /// `/settings` change never leaves the loop pushing into a queue no
     /// backend is draining.
     steer: alter_zero::steer::SteerQueue,
+    /// What the loop tells a running turn about compaction
+    /// (`docs/compact.md` *Compacting while the agent works*): the
+    /// `/settings` **Auto compact** row, the window the footer gauges
+    /// against, a `/compact` typed mid-turn, and the lead conversation's
+    /// seed. Re-attached on every rebuild like the queue above, so a turn
+    /// already running hears a change made while it runs.
+    compaction: alter_zero::compaction::CompactionControl,
     permissions: Option<PermissionGate>,
     /// The `AskUserQuestion` gate — `None` in a headless run, where nobody
     /// could answer, so the tool is never offered (`docs/headless.md`).
@@ -490,6 +497,11 @@ impl ModelSession {
             && imagegen
                 .as_ref()
                 .is_some_and(|setup| setup.signin.get().is_some());
+        // The compaction handle every backend build shares (docs/compact.md):
+        // the row and the window are kept current at the loop bottom; the
+        // override is the environment's, read once.
+        let compaction = alter_zero::compaction::CompactionControl::new(settings.auto_compact);
+        compaction.set_override_window(env_context_window);
         let backend: Box<dyn ReplySource> = match (stall_ms, real_config) {
             (Some(ms), _) => Box::new(stream::StallAi::new(Duration::from_millis(ms))),
             (None, Some(cfg)) => Box::new(session_backend(
@@ -502,6 +514,7 @@ impl ModelSession {
                 registry,
                 agents,
                 steer,
+                &compaction,
                 permissions,
                 ask,
                 tasks,
@@ -606,6 +619,7 @@ impl ModelSession {
             registry: registry.clone(),
             agents: agents.clone(),
             steer: steer.clone(),
+            compaction,
             permissions: permissions.cloned(),
             ask: ask.cloned(),
             round_budget: round_budget.cloned(),
@@ -656,6 +670,12 @@ impl ModelSession {
     /// the `/model` picker's "current" marker key off.
     pub(crate) fn active_model(&self) -> &str {
         &self.active_model
+    }
+
+    /// The handle a running turn reads its compaction policy off
+    /// (`docs/compact.md` *Compacting while the agent works*).
+    pub(crate) fn compaction(&self) -> &alter_zero::compaction::CompactionControl {
+        &self.compaction
     }
 
     /// The footer gauge + auto-compact window: the env override wins, else the
@@ -944,6 +964,7 @@ impl ModelSession {
             &self.registry,
             &self.agents,
             &self.steer,
+            &self.compaction,
             self.permissions.as_ref(),
             self.ask.as_ref(),
             &self.tasks,
@@ -1951,6 +1972,7 @@ fn session_backend(
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
     steer: &alter_zero::steer::SteerQueue,
+    compaction: &alter_zero::compaction::CompactionControl,
     permissions: Option<&PermissionGate>,
     ask: Option<&alter_zero::ask::AskGate>,
     tasks: &alter_zero::tasks::TaskRegistry,
@@ -1984,6 +2006,11 @@ fn session_backend(
         // same one, so a message queued against the turn a `/model` switch
         // replaced still reaches its successor.
         .with_steer(steer.clone())
+        // What keeps a turn inside the model's window while it runs
+        // (docs/compact.md): the same handle on every build, so the
+        // `/settings` row, the window and a `/compact` typed mid-turn reach
+        // whichever backend the turn is running on.
+        .with_compaction(compaction.clone())
         // The shared task list (docs/task-tools.md): enables the four task
         // tools — always attached; the checklist is the session's, so every
         // rebuild re-binds the same registry.

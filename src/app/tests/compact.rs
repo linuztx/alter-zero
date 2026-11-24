@@ -30,16 +30,245 @@ fn slash_compact_dispatches_the_compact_action_when_idle() {
 }
 
 #[test]
-fn compact_mid_turn_is_rejected_with_a_toast() {
+fn compact_mid_turn_asks_the_running_turn_to_compact() {
+    // Not refused any more: the turn compacts at its next step — a round
+    // boundary, or its end — and goes on (docs/compact.md *Compacting while
+    // the agent works*).
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_stream();
     type_str(&mut app, "/compact");
+    assert_eq!(app.on_key(key(KeyCode::Enter)), Action::CompactWhenReady);
+    assert!(app.turn_active(), "the running turn is untouched");
+    assert!(app.input.is_empty());
+}
+
+#[test]
+fn compact_while_a_compaction_is_under_way_says_so() {
+    // A `/compact` turn in flight is the compaction…
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    type_str(&mut app, "/compact");
     assert_eq!(
         app.on_key(key(KeyCode::Enter)),
-        Action::Toast(COMPACT_BUSY_NOTICE.to_string()),
+        Action::Toast(COMPACT_ALREADY_NOTICE.to_string()),
     );
-    assert!(app.turn_active(), "the running turn is untouched");
+    // …and so is a summary being written behind a turn.
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_stream();
+    app.begin_live_compaction(true);
+    type_str(&mut app, "/compact");
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::Toast(COMPACT_ALREADY_NOTICE.to_string()),
+    );
+}
+
+// --- a summary written behind a running turn (docs/compact.md) ---
+
+/// A turn that has made one tool round: the user's message, the model's
+/// text, a resolved read.
+fn mid_turn() -> App {
+    let mut app = App::new();
+    app.set_context_window(Some(50_000));
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.push_chunk("Reading it first.");
+    app.flush_streaming_segment();
+    app.start_tool("Read", "a.rs", Some(r#"{"path":"a.rs"}"#));
+    app.end_tool("fn parse() {}", true);
+    app
+}
+
+#[test]
+fn a_summary_started_behind_a_turn_shows_on_the_status_line_and_commits_nothing() {
+    let mut app = mid_turn();
+    let before = app.history.len();
+    app.set_status_times(Duration::from_secs(40), None);
+    app.begin_live_compaction(true);
+    assert!(app.live_compaction());
+    assert_eq!(app.history.len(), before, "live only");
+    let compacting = app.status().and_then(|status| status.compacting);
+    assert_eq!(
+        compacting,
+        Some(CompactingInfo {
+            began: Duration::from_secs(40),
+            waiting: false
+        })
+    );
+    assert!(
+        !app.is_compacting(),
+        "the turn is the agent's, not a /compact turn"
+    );
+    assert!(app.turn_steerable(), "and still takes the user's messages");
+}
+
+#[test]
+fn a_turn_that_stops_for_its_summary_says_it_is_waiting() {
+    let mut app = mid_turn();
+    app.begin_live_compaction(true);
+    app.wait_on_compaction();
+    assert!(
+        app.status()
+            .and_then(|status| status.compacting)
+            .is_some_and(|compacting| compacting.waiting)
+    );
+}
+
+#[test]
+fn a_landed_summary_keeps_what_was_recorded_while_it_was_written() {
+    // The summarizer read the conversation as it stood when it started; the
+    // round the agent ran meanwhile is no part of the summary, so the marker
+    // keeps it — and every later context replays it after the bridge.
+    let mut app = mid_turn();
+    app.begin_live_compaction(true);
+    app.push_chunk("Now the lexer.");
+    app.flush_streaming_segment();
+    app.start_tool("Read", "b.rs", Some(r#"{"path":"b.rs"}"#));
+    app.end_tool("fn lex() {}", true);
+
+    let compaction = app.land_compaction(" read a.rs \n", 12, 6_250);
+    assert_eq!(compaction.summary, "read a.rs", "trimmed like any summary");
+    assert_eq!(compaction.kept, 2, "the text and the read since");
+    assert!(
+        compaction.resume,
+        "written mid-turn: the bridge says carry on"
+    );
+    assert!(compaction.auto);
+    assert_eq!((compaction.secs, compaction.budget), (12, 6_250));
+    assert_eq!(
+        app.history.last(),
+        Some(&HistoryItem::Compaction(compaction.clone())),
+        "an append, like every compaction"
+    );
+    assert!(!app.live_compaction());
+    assert_eq!(app.status().and_then(|status| status.compacting), None);
+    assert!(app.turn_active(), "the turn goes on");
+
+    let context = crate::context::context_messages(&app.history);
+    let texts: Vec<&str> = context
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect();
+    assert!(texts[0].starts_with("fix the parser\n\n"), "{texts:?}");
+    assert!(texts[0].contains("read a.rs"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|text| text.contains("Reading it first.")),
+        "what the summary covers is gone: {texts:?}"
+    );
+    assert!(texts.contains(&"Now the lexer."), "{texts:?}");
+    assert!(texts.contains(&"fn lex() {}"), "{texts:?}");
+}
+
+#[test]
+fn a_landed_summary_records_the_gauge_before_and_after() {
+    let mut app = App::new();
+    app.set_context_window(Some(50_000));
+    app.record_user_message("fix the parser");
+    app.begin_stream();
+    app.start_tool("Read", "a.rs", Some(r#"{"path":"a.rs"}"#));
+    app.end_tool(&"lorem ".repeat(8_000), true);
+    app.sync_context_used();
+    let before = app.context_used();
+    assert!(before > 8_000, "{before}");
+    app.begin_live_compaction(true);
+    let compaction = app.land_compaction("read a.rs", 3, 6_250);
+    assert_eq!(compaction.before, before);
+    assert_eq!(compaction.after, app.context_used());
+    assert!(compaction.after < before / 10, "{compaction:?}");
+}
+
+#[test]
+fn a_compaction_the_user_asked_for_mid_turn_is_not_tagged_auto() {
+    let mut app = mid_turn();
+    app.begin_live_compaction(false);
+    assert!(!app.land_compaction("s", 1, 20_000).auto);
+}
+
+#[test]
+fn a_summary_nobody_announced_covers_everything_before_it() {
+    // A backend that lands one without saying it started read the whole
+    // conversation: nothing is kept.
+    let mut app = mid_turn();
+    let compaction = app.land_compaction("all of it", 1, 20_000);
+    assert_eq!(compaction.kept, 0);
+    assert!(compaction.auto);
+}
+
+#[test]
+fn a_summary_that_failed_leaves_the_context_as_it_was() {
+    let mut app = mid_turn();
+    let before = crate::context::context_messages(&app.history);
+    app.begin_live_compaction(true);
+    app.end_live_compaction();
+    assert!(!app.live_compaction());
+    assert_eq!(app.status().and_then(|status| status.compacting), None);
+    assert_eq!(crate::context::context_messages(&app.history), before);
+    assert!(app.turn_active());
+}
+
+#[test]
+fn a_turn_that_dies_takes_its_summary_with_it() {
+    // Esc, a backend error, the turn's own end, `/clear`: the thread writing
+    // the summary is gone, and so is the place it would have landed.
+    let mut interrupted = mid_turn();
+    interrupted.begin_live_compaction(true);
+    interrupted.interrupt_turn(1);
+    assert!(!interrupted.live_compaction());
+
+    let mut failed = mid_turn();
+    failed.begin_live_compaction(true);
+    failed.fail_stream("boom");
+    assert!(!failed.live_compaction());
+
+    let mut ended = mid_turn();
+    ended.begin_live_compaction(true);
+    ended.finish_stream();
+    ended.end_turn(1);
+    assert!(!ended.live_compaction());
+
+    let mut cleared = mid_turn();
+    cleared.begin_live_compaction(true);
+    type_str(&mut cleared, "/clear");
+    cleared.on_key(key(KeyCode::Enter));
+    assert!(!cleared.live_compaction());
+}
+
+#[test]
+fn a_summary_started_with_no_turn_running_is_nothing() {
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_live_compaction(true);
+    assert!(!app.live_compaction());
+}
+
+#[test]
+fn what_the_summarizer_cost_joins_the_turns_receipt_and_never_the_gauge() {
+    let mut app = mid_turn();
+    app.apply_usage(&crate::stream::TokenUsage {
+        input: 9_000,
+        output: 100,
+        ..Default::default()
+    });
+    let gauge = app.context_used();
+    app.apply_compaction_usage(&crate::stream::TokenUsage {
+        input: 8_000,
+        output: 500,
+        cached: 7_000,
+        ..Default::default()
+    });
+    assert_eq!(
+        app.context_used(),
+        gauge,
+        "the summarizer's request is not the context"
+    );
+    app.finish_stream();
+    let summary = app.end_turn(5).expect("a summary");
+    assert_eq!(summary.tokens, 9_100 + 8_500);
+    assert_eq!(summary.cached, 7_000);
+    assert_eq!(app.usage_since_launch().requests, 2, "billed in the ledger");
 }
 
 #[test]

@@ -537,6 +537,77 @@ impl Session<'_> {
                 });
                 false
             }
+            StreamEvent::CompactionStarted { auto } => {
+                // A summary of the conversation started being written behind
+                // the turn (docs/compact.md *Compacting while the agent
+                // works*). The summarizer reads the conversation as it stands
+                // at this round boundary, so the history must stand there
+                // too before its length is taken: flush before you
+                // interleave — a no-op at a round top, which a tool
+                // resolution already flushed, but the turn's last reply is
+                // still in the buffer when a `/compact` is taken at its end.
+                // Live only: the status line says so, nothing commits.
+                self.flush_segment(committing, width);
+                self.render.reset();
+                self.app.begin_live_compaction(auto);
+                false
+            }
+            StreamEvent::CompactionWaiting => {
+                // The turn stopped to wait for the summary: the status
+                // line's verb says so until it lands.
+                self.app.wait_on_compaction();
+                false
+            }
+            StreamEvent::CompactionUsage(usage) => {
+                // What the summarizer's request cost: billed in this turn,
+                // never a measure of the conversation's own context — and
+                // its own `usage` line in the rollout, marked as a
+                // compaction's, ahead of the marker it paid for
+                // (docs/rollout-records.md).
+                self.app.apply_compaction_usage(&usage);
+                self.recorder.record_usage(RequestUsage {
+                    after: self.app.history.len(),
+                    usage,
+                    agent: None,
+                    compact: true,
+                });
+                false
+            }
+            StreamEvent::Compacted {
+                summary,
+                secs,
+                budget,
+            } => {
+                // The summary landed and the running turn's context is the
+                // compacted shape. The marker is an append like any record:
+                // the open read/search group closes ahead of it, the run of
+                // text before it is finalised (the turn's last reply, when
+                // it lands at the turn's end), and its cell commits where
+                // the swap happened — under everything the agent did while
+                // it was being written. The turn goes on.
+                self.close_tool_group(committing, width);
+                self.flush_segment(committing, width);
+                self.render.reset();
+                let compaction = self.app.land_compaction(&summary, secs, budget);
+                if committing {
+                    let height = self.live_region_height();
+                    self.term.set_view_height(height);
+                    self.term
+                        .insert_before(ui::compaction_lines(&compaction, width));
+                    self.term.insert_before(vec![Line::default()]);
+                }
+                false
+            }
+            StreamEvent::CompactionFailed { reason } => {
+                // No summary came: the context stands as it was and the turn
+                // goes on. Said where it is seen — inside an agent's session
+                // view the main turn is not on screen (`Retrying`'s rule).
+                self.app.end_live_compaction();
+                if self.app.agent_view.is_none() {
+                    self.toast_compaction_failure(&reason);
+                }
+                false
+            }
             StreamEvent::Error(message) => {
                 // A phase still open when the backend died keeps what streamed
                 // — settled first, so its cell sits ahead of the partial reply
@@ -760,6 +831,20 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
+    /// Say that a summary being written behind a turn did not come
+    /// (`docs/compact.md`): the reason, as an error — or, for a `/compact`
+    /// that found nothing to summarize, the command's own quiet answer.
+    pub(crate) fn toast_compaction_failure(&mut self, reason: &str) {
+        if reason == alter_zero::app::COMPACT_EMPTY_NOTICE {
+            self.toast(reason, ToastKind::Info);
+        } else {
+            self.toast(
+                format!("{}{reason}", alter_zero::app::COMPACT_FAILED_PREFIX),
+                ToastKind::Error,
+            );
+        }
+    }
+
     /// Close the open read/search group unless the live queue's front call is
     /// itself a read, search or listing that will join it
     /// (`docs/tool-groups.md`) — what a batch announcement, a call's start and

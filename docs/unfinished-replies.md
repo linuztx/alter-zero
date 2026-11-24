@@ -66,7 +66,7 @@ acts on, purely, so every branch is a unit test:
 | the stream | the round |
 | --- | --- |
 | asked for tools | `ToolCalls` — whatever the stop reason, a finished call runs |
-| filled the context window | `Failed`: the conversation has no room for a continuation either, and the message points at `/compact` |
+| filled the context window | `Overflow { text }`: the loop has its compactor make room (`docs/compact.md` *A request that does not fit*) and then asks for the rest under the `WindowFull` note, the reply so far kept — or, with **Auto compact** off or nothing left to summarize, ends on the message that points at `/compact` |
 | was stopped by a content filter | `Failed`, naming the filter: asking again meets the same filter |
 | hit the output cap | `CutOff { text }`, the reply so far kept |
 | anything else | `Complete { text }` — empty or not |

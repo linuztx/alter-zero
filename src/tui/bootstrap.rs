@@ -1299,6 +1299,13 @@ impl<'t> Session<'t> {
             self.start_compact_turn(/*auto=*/ true);
             self.frame.schedule_frame();
         }
+        // What a turn that is still running reads about compaction — the
+        // Auto compact row and the window — as they stand after this
+        // iteration, and a `/compact` typed mid-turn that the turn ended
+        // without taking (docs/compact.md *Compacting while the agent
+        // works*).
+        self.sync_compaction_policy();
+        self.run_pending_compact();
         // A newer release the check found mid-turn is announced here, at the
         // first idle loop bottom, never inside a streaming reply (docs/update.md).
         self.flush_pending_update_notice();

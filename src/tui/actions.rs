@@ -158,6 +158,19 @@ impl Session<'_> {
                 // it like any other turn.
                 self.start_compact_turn(/*auto=*/ false);
             }
+            Action::CompactWhenReady => {
+                // /compact while a turn runs (docs/compact.md *Compacting
+                // while the agent works*): the turn compacts at its next
+                // step and goes on. Asked twice, it is still one compaction.
+                let control = self.models.compaction();
+                let notice = if control.requested() {
+                    alter_zero::app::COMPACT_ALREADY_NOTICE
+                } else {
+                    control.request();
+                    alter_zero::app::COMPACT_QUEUED_NOTICE
+                };
+                self.toast(notice, alter_zero::app::ToastKind::Info);
+            }
             Action::Clear => self.clear_conversation()?,
             Action::KillBackground(id) => self.kill_background(&id),
             Action::MoveToBackground => self.move_to_background(),
@@ -537,6 +550,9 @@ impl Session<'_> {
         // the next turn would open by reading a message from the conversation
         // that was just wiped (docs/queue.md).
         let _ = self.steer.take();
+        // …and a `/compact` still waiting for the turn that was just killed:
+        // there is nothing left for it to compact (docs/compact.md).
+        let _ = self.models.compaction().take_request();
         // …and the subagents (docs/agent-tool.md): the wiped roster drops their
         // late events, and the registry forgets them — the conversation that
         // knew their ids is gone, so nothing may list or resume them

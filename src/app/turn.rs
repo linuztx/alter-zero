@@ -311,6 +311,8 @@ impl App {
         // A new real turn re-arms the auto-compact trigger (one attempt per
         // user turn — docs/compact.md).
         self.auto_compact_blocked = false;
+        // A summary the last turn left unfinished went with its thread.
+        self.live_compaction = None;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
@@ -340,6 +342,7 @@ impl App {
             shell: false,
             retry: None,
             offline: None,
+            compacting: None,
             tip: None,
         });
     }
@@ -390,6 +393,7 @@ impl App {
             shell: true,
             retry: None,
             offline: None,
+            compacting: None,
             tip: None,
         });
         self.start_tool(command, "", None);
@@ -469,6 +473,9 @@ impl App {
     /// clearing the status) for an idle composer or a `!` shell turn, whose
     /// committed cell is its own record (`docs/shell-command.md`).
     pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
+        // The turn is over: a summary still marked as in flight has nowhere
+        // left to land (docs/compact.md).
+        self.live_compaction = None;
         let status = self.status.take()?;
         // The gauge folds in what joined after the turn's last usage frame —
         // the reply above all — or, when none arrived (the dummy, a provider
@@ -536,6 +543,8 @@ impl App {
     /// stream-order mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         self.tool_drafts.clear();
+        // The summary being written behind the turn dies with its thread.
+        self.live_compaction = None;
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
@@ -699,6 +708,9 @@ impl App {
         if !self.is_streaming() && !self.turn_active() {
             return None;
         }
+        // A summary being written behind the turn is stopped with it: the
+        // context stands as it was (docs/compact.md).
+        self.live_compaction = None;
         // A /compact turn: drop the half-streamed summary — the swap happens
         // only at StreamDone (codex replaces history at the very end), so an
         // interrupt leaves the old context standing. Taking the buffer also
@@ -905,6 +917,7 @@ impl App {
     /// whether a submission was rolled back (a stale event rolls nothing).
     pub fn block_prompt(&mut self, reason: &str) -> bool {
         self.tool_drafts.clear();
+        self.live_compaction = None;
         if self.streaming.take().is_none() {
             return false;
         }

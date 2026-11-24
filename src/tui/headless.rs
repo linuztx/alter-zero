@@ -651,6 +651,8 @@ impl Session<'_> {
         {
             self.start_compact_turn(/*auto=*/ true);
         }
+        // What a running turn's own compaction reads (docs/compact.md).
+        self.sync_compaction_policy();
         self.recorder
             .sync(&self.app.history, self.app.history_generation());
         self.reaping.retain(|handle| !handle.is_finished());

@@ -33,7 +33,8 @@ there" and fades it after a few seconds.
 | `/login` write fails | `Couldn't write {path}: {e}` | error |
 | `/resume` run mid-turn | `/resume is disabled while a task is in progress` | info |
 | `/init` run mid-turn | `/init is disabled while a task is in progress` | info |
-| `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
+| `/compact` run mid-turn | `Compacting at the agent's next step` (`Already compacting` while a summary is being written) | info |
+| a summary written while the agent worked failed | `Context not compacted: {reason}` | error |
 | `/compact` with an empty context | `Nothing to compact` | info |
 
 The original rows (`/copy`, `/model`, `/login`, `/resume`, and the retired
@@ -93,7 +94,7 @@ pub struct Toast { pub text: String, pub kind: ToastKind }
 nothing lingering.
 
 The slash-command dispatch returns `Action::Toast(String)` for the palette's
-soft rejections — the mid-turn busy notices (`/resume`, `/init`, `/compact`)
+soft rejections — the mid-turn busy notices (`/resume`, `/init`)
 and the commands that find nothing to act on yet: `/compact`'s
 `Nothing to compact`, `/export`'s `Nothing to export` and `/copy`'s
 `No agent response to copy`. The boundary shows every `Action::Toast` as an

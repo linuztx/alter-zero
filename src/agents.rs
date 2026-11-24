@@ -391,6 +391,18 @@ pub struct AgentRun {
     /// [`runtime`](Self::runtime). Cleared the moment the host answers, and
     /// never `Some` beside [`retry`](Self::retry) (`docs/offline.md`).
     pub offline: Option<crate::app::OfflineInfo>,
+    /// Set while a summary of this agent's conversation is **being written
+    /// behind its run** ([`StreamEvent::CompactionStarted`]) — its session
+    /// view's status line shows the `compacting context Ns` clause the main
+    /// turn's does, the start stamped off this run's
+    /// [`runtime`](Self::runtime). A subagent fills its own window like any
+    /// agent, and compacts the same way (`docs/compact.md` *Compacting while
+    /// the agent works*).
+    pub compacting: Option<crate::app::CompactingInfo>,
+    /// Where that summary's coverage ends on [`history`](Self::history): its
+    /// length when the summarizer started. What the agent records from there
+    /// until the summary lands is kept as it happened.
+    compaction_floor: Option<usize>,
 }
 
 impl AgentRun {
@@ -481,6 +493,8 @@ impl AgentRun {
             command_elapsed: None,
             retry: None,
             offline: None,
+            compacting: None,
+            compaction_floor: None,
         }
     }
 
@@ -513,6 +527,8 @@ impl AgentRun {
                 | StreamEvent::ToolStart { .. }
                 | StreamEvent::HookNote { .. }
                 | StreamEvent::Steered { .. }
+                | StreamEvent::CompactionStarted { .. }
+                | StreamEvent::Compacted { .. }
                 | StreamEvent::StreamDone
                 | StreamEvent::Error(_)
         )
@@ -868,6 +884,73 @@ impl AgentRun {
                 self.context_meter.measured(usage.input, estimate, images);
                 self.context_used = self.context_meter.reading(estimate);
             }
+            // A summary of this agent's own conversation started being
+            // written behind its run (docs/compact.md *Compacting while the
+            // agent works*): its coverage ends where the transcript stands
+            // now, after the run of text ahead of it (invariant 4).
+            StreamEvent::CompactionStarted { .. } => {
+                self.flush_segment();
+                self.compaction_floor = Some(self.history.len());
+                self.compacting = Some(crate::app::CompactingInfo {
+                    began: self.runtime,
+                    waiting: false,
+                });
+            }
+            StreamEvent::CompactionWaiting => {
+                if let Some(compacting) = self.compacting.as_mut() {
+                    compacting.waiting = true;
+                }
+            }
+            // The summarizer's request: billed to this agent — its tally,
+            // its turn's receipt, its ledger — and no measure of its context.
+            StreamEvent::CompactionUsage(usage) => {
+                self.usage_tokens += usage.total();
+                self.tokens += usage.total();
+                self.usage.record(usage);
+                self.turn_usage_tokens += usage.total();
+                self.turn_usage_cached += usage.cached;
+                self.turn_usage_cache_write += usage.cache_write;
+            }
+            // The summary landed and the agent's context is the compacted
+            // shape: the marker joins its transcript — keeping what it did
+            // since the summarizer started — and its gauge is read again,
+            // the main session's `App::land_compaction` one level down.
+            StreamEvent::Compacted {
+                summary,
+                secs,
+                budget,
+            } => {
+                self.flush_segment();
+                let floor = self
+                    .compaction_floor
+                    .take()
+                    .map_or(self.history.len(), |floor| floor.min(self.history.len()));
+                self.compacting = None;
+                let before = self.context_used;
+                self.history
+                    .push(HistoryItem::Compaction(crate::app::Compaction {
+                        summary: summary.trim().to_string(),
+                        timestamp: String::new(),
+                        before,
+                        after: 0,
+                        auto: true,
+                        secs: *secs,
+                        kept: self.history.len() - floor,
+                        resume: true,
+                        budget: *budget,
+                    }));
+                let (estimate, _) = self.estimate_context();
+                self.context_meter.rebase(estimate);
+                self.context_used = self.context_meter.reading(estimate);
+                let after = self.context_used;
+                if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
+                    recorded.after = after;
+                }
+            }
+            StreamEvent::CompactionFailed { .. } => {
+                self.compaction_floor = None;
+                self.compacting = None;
+            }
             StreamEvent::StreamDone => {
                 // A phase still open when the round ended keeps what streamed
                 // — settled first, so its cell sits ahead of the reply it
@@ -876,6 +959,7 @@ impl AgentRun {
                 self.result = self.flush_segment();
                 self.tool_queue.clear();
                 self.drafts.clear();
+                self.end_compaction();
                 self.status = AgentStatus::Done;
                 // The gauge folds in what joined after the last usage frame —
                 // the reply — or, with no frame this turn (the dummy, a
@@ -917,6 +1001,7 @@ impl AgentRun {
                 self.flush_segment();
                 self.resolve_tools(message);
                 self.drafts.clear();
+                self.end_compaction();
                 self.error = Some(message.clone());
                 self.status = AgentStatus::Failed;
                 return true;
@@ -1085,6 +1170,8 @@ impl AgentRun {
         // now cancelled.
         self.queued.clear();
         self.followups.clear();
+        // …and the summary being written behind it is stopped with it.
+        self.end_compaction();
         // A call it never finished making is never recorded
         // (docs/write-streaming.md).
         self.drafts.clear();
@@ -1178,6 +1265,13 @@ impl AgentRun {
     fn recovered(&mut self) {
         self.retry = None;
         self.offline = None;
+    }
+
+    /// The run is over: a summary still marked as being written has nowhere
+    /// left to land (`docs/compact.md`).
+    fn end_compaction(&mut self) {
+        self.compacting = None;
+        self.compaction_floor = None;
     }
 
     /// The failed reply attempt is void: take back what it streamed — the
@@ -2262,6 +2356,20 @@ impl AgentRegistry {
             .get(id)
             .map(|slot| slot.description.clone())
             .filter(|description| !description.is_empty())
+    }
+
+    /// The task `id` was launched on — the prompt its conversation opens
+    /// with, which a compaction of that conversation keeps word for word
+    /// (`docs/compact.md`). `None` for an unknown id or an identity-free
+    /// registration.
+    #[must_use]
+    pub fn prompt(&self, id: &str) -> Option<String> {
+        let inner = self.inner.lock().expect("agent registry poisoned");
+        inner
+            .slots
+            .get(id)
+            .map(|slot| slot.prompt.clone())
+            .filter(|prompt| !prompt.is_empty())
     }
 
     /// Record a tool call `id` started, as its `Name(args)` one-liner — the

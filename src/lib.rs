@@ -29,6 +29,10 @@
 //!   the terminal through tmux's buffer or an OSC 52 escape); the copy's
 //!   routing and the base64/escape framing are the tested pure core, the rest
 //!   is I/O.
+//! - [`compaction`]  — compaction policy: where in the window a summary
+//!   starts being written and where the context must shrink, the budgets a
+//!   compaction is cut to, and the handle the loop shares with a running
+//!   turn (pure; the engine is [`llm::compaction`] — see `docs/compact.md`).
 //! - [`context`]     — the per-session LLM conversation context: derive the
 //!   raw message list a real backend sends (and the Ctrl+D context-debug
 //!   view shows) from history. See `docs/context.md`.
@@ -167,6 +171,7 @@ pub mod builtins;
 pub mod checkpoint;
 pub mod cli;
 pub mod clipboard;
+pub mod compaction;
 pub mod context;
 pub mod context_usage;
 pub mod file_search;

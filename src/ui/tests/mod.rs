@@ -248,6 +248,7 @@ pub(super) fn status(
         shell: false,
         retry: None,
         offline: None,
+        compacting: None,
         tip: None,
     }
 }
@@ -309,6 +310,7 @@ pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
         after: 0,
         auto: false,
         secs: 0,
+        ..Default::default()
     }
 }
 

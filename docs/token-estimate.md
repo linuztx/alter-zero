@@ -192,7 +192,16 @@ tokens:
 - **An empty conversation still reads a true zero**, as it always did
   (`docs/compact.md`), whatever the tools.
 - **The summarizer's own frame measures nothing.** A `/compact` request is
-  shaped unlike the conversation's: no tools, plus the compact prompt.
+  shaped unlike the conversation's: no tools, plus the compact prompt — and
+  a transcript of the conversation rather than its messages.
+- **The engine that compacts a running turn reads this same meter.** It
+  decides between two requests, on the backend's thread, where the loop
+  bottom's reading does not reach, so the session's `ContextMeter` is shared
+  (`Arc<Mutex<…>>`) and read through `llm::compaction::LoadMeter`: each
+  round's own usage frame, estimated forward over the messages that joined
+  since, the tool schemas' share among it. The threshold it trips at is the
+  number the footer shows, and after a swap it rebases on the swapped
+  messages, never on the summarizer's frame (`docs/compact.md`).
 
 ### What the provider teaches
 

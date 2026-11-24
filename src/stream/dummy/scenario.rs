@@ -228,6 +228,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.starts_with(turns::COMPACT_PROMPT_MARKER),
         play: Play::Script(turns::compact_turn),
     },
+    // A summary written while the agent works (docs/compact.md). Both words,
+    // so a question *about* compaction still gets an ordinary reply.
+    Scenario {
+        #[cfg(test)]
+        name: "compact-live",
+        selects: |cue| cue.mentions("compact") && cue.mentions("while"),
+        play: Play::Script(turns::compact_live_turn),
+    },
     // A UserPromptSubmit hook refusing the submission (docs/hooks.md) — the
     // more specific cue, so it outranks the general hooks demo below.
     Scenario {

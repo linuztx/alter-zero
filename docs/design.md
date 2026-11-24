@@ -342,11 +342,16 @@ which Ctrl+V reads the clipboard from.
   `/compact` → `Compact` idle (codex's manual context
   compaction — a summarization turn whose invisible reply becomes the
   append-only `HistoryItem::Compaction` marker the context derivation bridges
-  from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
+  from; mid-turn `CompactWhenReady`, which the running turn takes at its
+  next step under a `Toast(COMPACT_QUEUED_NOTICE)`; an empty context a
   `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
   Phase 50; with the model's context window known the footer carries a
-  `{used}/{window} ({pct}%)` gauge and the loop **auto-compacts** past codex's 90%
-  threshold, the cell tagged `· auto` — Phase 51), and `/context` →
+  `{used}/{window} ({pct}%)` gauge and the session **auto-compacts**: a
+  running turn has a summary written in the background from 80% of the
+  window and swaps it in between two rounds, as often as it needs
+  (Phases 170 and 171), and an idle session past codex's 90% threshold
+  starts the same turn the command runs, the cell tagged `· auto` —
+  Phase 51), and `/context` →
   `OpenContextUsage` idle or mid-turn (the read-only page that breaks the
   window down by what fills it and reports the provider's tokens in/out and
   cache hit, kept live by the boundary — see `docs/context-usage.md`,

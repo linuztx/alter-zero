@@ -12,6 +12,35 @@ release heading when a version is cut.
 
 ## [Unreleased]
 
+### Changed
+
+- **The context is compacted while the agent works, as often as it needs.**
+  Auto compact used to run only between turns, so one long turn of tool
+  calls grew past its model's window and ended on the provider's error.
+  Compaction now happens inside the turn.
+  - Past 80% of the window a summary is written in the background while the
+    agent keeps working: the status line says `compacting context 6s`. When
+    it is ready it is swapped in between two steps, and the calls made
+    meanwhile stay word for word. Past 90% the turn waits for the summary
+    instead of sending a request that may not fit.
+  - There is no count to run out. A turn many windows long compacts again
+    and again, each summary carrying forward the one before it. A
+    `● Context compacted · 54.6k → 28.2k tokens · 5s · auto` line marks each
+    one where it happened.
+  - A request the provider refuses for its size is no longer the end of the
+    turn: room is made and it is sent again.
+  - `/compact` works while a turn runs. It is taken at the agent's next step
+    (`Compacting at the agent's next step`) instead of being refused.
+  - A conversation already past its window can be compacted. The summarizer
+    reads a transcript cut to fit, so the request that makes room is never
+    the one that is refused.
+  - Subagents compact their own conversations the same way, and `/context`
+    inside an agent's view shows the headroom that keeps.
+  - The **Auto compact** row in `/settings` switches all of it, and takes
+    effect at the agent's next step.
+  - The summary itself is fuller: the user's requests, the current state,
+    key facts, problems and fixes, what was in progress, and the next steps.
+
 ### Fixed
 
 - **`/copy` and `/export` reach your clipboard from tmux on a remote

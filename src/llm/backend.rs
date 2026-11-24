@@ -14,6 +14,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::agent::{self, RoundOutcome};
 use super::approval;
 use super::classifier::{ClassifierContext, SafetyClassifier};
+use super::compaction::{
+    LoadMeter, RollingCompactor, RollingSetup, SummaryCollector, SummaryHandle, SummaryJob,
+    SummaryOutcome, SummaryResult, seed_from_messages,
+};
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::hooks::{HookSink, NoHooks};
@@ -23,6 +27,7 @@ use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
 use crate::ask::AskGate;
+use crate::compaction::CompactionControl;
 use crate::context::ContextMessage;
 use crate::context_usage::ToolDefinition;
 use crate::images::AttachmentUrl;
@@ -188,6 +193,21 @@ pub struct LlmBackend {
     /// expanded call redacted. Shared by handle, so a `/secrets` save
     /// reaches the very next call without a rebuild.
     secrets: Option<crate::secrets::SecretRegistry>,
+    /// What the session says about compaction (`docs/compact.md`
+    /// *Compacting while the agent works*): whether a turn may compact on
+    /// its own, the model's window, a `/compact` typed mid-turn, and the
+    /// parts of the compacted shape only the history knows. A default handle
+    /// — an embedder's, the live tests' — has auto compaction off, and a
+    /// turn then runs exactly as it did before there was a compactor.
+    /// Shared by handle and re-attached on every rebuild, like
+    /// [`steer`](Self::steer), so the `/settings` row reaches the turn
+    /// already running.
+    compaction: CompactionControl,
+    /// What this provider's usage frames have taught about the size of the
+    /// conversation — the agent loop's own reading of the footer gauge
+    /// ([`LoadMeter`]). The backend's rather than a turn's, so the next turn
+    /// opens knowing what the last one measured.
+    context_meter: Arc<Mutex<crate::tokens::ContextMeter>>,
 }
 
 impl LlmBackend {
@@ -265,6 +285,8 @@ impl LlmBackend {
             steer: SteerQueue::new(),
             hooks: Arc::new(NoHooks),
             secrets: None,
+            compaction: CompactionControl::default(),
+            context_meter: Arc::default(),
         }
     }
 
@@ -382,6 +404,18 @@ impl LlmBackend {
     #[must_use]
     pub fn with_steer(mut self, queue: SteerQueue) -> Self {
         self.steer = queue;
+        self
+    }
+
+    /// Attach the session's compaction handle (`docs/compact.md`): this
+    /// backend's turns — and its subagents' — keep themselves inside the
+    /// model's window, compacting as they run. Like
+    /// [`with_steer`](Self::with_steer) it enables no spec, so it is not
+    /// gated on `tools_enabled`; the boundary re-attaches the same handle on
+    /// every rebuild.
+    #[must_use]
+    pub fn with_compaction(mut self, control: CompactionControl) -> Self {
+        self.compaction = control;
         self
     }
 
@@ -873,6 +907,15 @@ impl ReplySource for LlmBackend {
         // pushes onto it while the turn runs and the agent loop drains it at
         // every round boundary.
         let steer = self.steer.clone();
+        // What keeps the turn inside the model's window while it runs
+        // (docs/compact.md *Compacting while the agent works*): the
+        // session's policy, this backend's reading of the context's size,
+        // and what the tool schemas add to every request.
+        let compaction = self.compaction.clone();
+        let load = LoadMeter::new(
+            Arc::clone(&self.context_meter),
+            schema_tokens(&self.tool_definitions),
+        );
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -931,12 +974,20 @@ impl ReplySource for LlmBackend {
             if let Ok(mut previous) = wire_history.lock() {
                 previous.restore(&mut messages);
             }
-            let mut loaded_skills = skills
-                .as_ref()
-                .map(|registry| {
-                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
-                })
-                .unwrap_or_default();
+            // Behind a cell: a compaction rewrites the conversation the loads
+            // were read out of, and they are read out again (`on_swap` below).
+            let loaded_skills = std::cell::RefCell::new(
+                skills
+                    .as_ref()
+                    .map(|registry| {
+                        super::skill::LoadedSkills::from_messages(
+                            registry,
+                            &messages,
+                            secrets.as_ref(),
+                        )
+                    })
+                    .unwrap_or_default(),
+            );
             let mut executor = RealToolExecutor::new()
                 .with_vision(vision)
                 .with_imagegen(imagegen);
@@ -972,7 +1023,36 @@ impl ReplySource for LlmBackend {
             // request is known to the model within this same turn
             // (docs/background.md). The round's `agent` calls go to the
             // subagent launcher instead (docs/agent-tool.md).
-            agent::run_agent(
+            //
+            // The compactor (docs/compact.md): the summarizer is this same
+            // client with no tools, on a thread of its own, so the agent
+            // keeps working while its summary is written. The seed is the
+            // lead conversation's, set by the loop as this turn started.
+            let summarizer = client.clone().with_tools(Vec::new());
+            let mut compactor = RollingCompactor::new(
+                RollingSetup {
+                    control: compaction.clone(),
+                    inherits: true,
+                    takes_requests: true,
+                    load: load.clone(),
+                    seed: compaction.seed(),
+                    tx: tx.clone(),
+                    cancel: cancel.clone(),
+                },
+                |job| spawn_summary(&summarizer, &hooks, max_retries, job),
+                |compacted| {
+                    // Whatever was read out of the old messages is stale: a
+                    // skill whose body the summary replaced may load again.
+                    if let Some(registry) = &skills {
+                        *loaded_skills.borrow_mut() = super::skill::LoadedSkills::from_messages(
+                            registry,
+                            compacted,
+                            secrets.as_ref(),
+                        );
+                    }
+                },
+            );
+            agent::run_agent_compacting(
                 &tx,
                 &cancel,
                 max_tool_calls,
@@ -988,7 +1068,7 @@ impl ReplySource for LlmBackend {
                     if let Ok(mut previous) = wire_history.lock() {
                         previous.remember(msgs);
                     }
-                    stream_round(&client, msgs, &tx, &cancel, max_retries)
+                    stream_round(&client, msgs, &tx, &cancel, max_retries, Some(&load))
                 },
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
@@ -1028,7 +1108,7 @@ impl ReplySource for LlmBackend {
                             {
                                 return super::skill::run_skill_tool(
                                     registry,
-                                    &mut loaded_skills,
+                                    &mut loaded_skills.borrow_mut(),
                                     call,
                                 );
                             }
@@ -1185,6 +1265,7 @@ impl ReplySource for LlmBackend {
                                 .and_then(|registry| registry.description(id))
                         })
                 },
+                &mut compactor,
             );
         })
     }
@@ -1384,6 +1465,10 @@ struct SubagentConfig {
     /// them exactly as the lead's do — and its briefing names them
     /// (`docs/secrets.md`).
     secrets: Option<crate::secrets::SecretRegistry>,
+    /// The session's compaction handle: a subagent fills its own window
+    /// like any agent, and keeps itself inside it the same way
+    /// (`docs/compact.md` *Compacting while the agent works*).
+    compaction: CompactionControl,
 }
 
 impl LlmBackend {
@@ -1409,6 +1494,7 @@ impl LlmBackend {
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
             secrets: self.secrets.clone(),
+            compaction: self.compaction.clone(),
         }
     }
 }
@@ -1855,6 +1941,23 @@ fn spawn_subagent_run(
         .as_ref()
         .map_or(crate::subagents::AgentTools::All, |def| def.tools.clone());
     let specs = subagent_tool_specs(skills.is_some(), imagegen.is_some(), mcp.as_ref(), &allowed);
+    // What keeps this agent inside its own window (docs/compact.md): the
+    // session's policy, a reading of this conversation alone, and the seed
+    // read off its messages — its briefing leads, its task and whatever it
+    // was sent since are kept word for word.
+    let compaction = config.compaction.clone();
+    let load = LoadMeter::standalone(schema_tokens(&ToolDefinition::from_specs(&specs)));
+    let seed = seed_from_messages(
+        &messages,
+        config.briefing_for(&agent_type),
+        registry.prompt(&id).as_deref(),
+    );
+    // A type pinned to another model runs against a window this session
+    // never listed (docs/agent-context-gauge.md).
+    let inherits = definition
+        .as_ref()
+        .and_then(|def| def.model.named())
+        .is_none();
     // A definition may pin its own model (`model: kimi-k3`): same provider,
     // base and key, and the session's thinking mode / vision verdict dropped
     // — both describe the model being replaced, not this one.
@@ -1976,18 +2079,45 @@ fn spawn_subagent_run(
         let executor = executor;
         let inputs_registry = registry.clone();
         let inputs_id = id.clone();
-        let mut loaded_skills = skills
-            .as_ref()
-            .map(|registry| {
-                super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
-            })
-            .unwrap_or_default();
-        agent::run_agent(
+        let loaded_skills = std::cell::RefCell::new(
+            skills
+                .as_ref()
+                .map(|registry| {
+                    super::skill::LoadedSkills::from_messages(registry, &messages, secrets.as_ref())
+                })
+                .unwrap_or_default(),
+        );
+        // The lead's compactor, one level down: this agent's own client with
+        // no tools summarizes, its events ride its own channel, and a
+        // `/compact` the user typed is the lead's to take, never its.
+        let summarizer = client.clone().with_tools(Vec::new());
+        let mut compactor = RollingCompactor::new(
+            RollingSetup {
+                control: compaction,
+                inherits,
+                takes_requests: false,
+                load: load.clone(),
+                seed,
+                tx: tx2.clone(),
+                cancel: cancel.clone(),
+            },
+            |job| spawn_summary(&summarizer, &hooks, max_retries, job),
+            |compacted| {
+                if let Some(registry) = &skills {
+                    *loaded_skills.borrow_mut() = super::skill::LoadedSkills::from_messages(
+                        registry,
+                        compacted,
+                        secrets.as_ref(),
+                    );
+                }
+            },
+        );
+        agent::run_agent_compacting(
             &tx2,
             &cancel,
             max_tool_calls,
             &mut messages,
-            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
+            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries, Some(&load)),
             |call, on_output| {
                 // The agent companions are the lead's alone — never offered
                 // here, and a hallucinated call is declined recoverably, like
@@ -2028,7 +2158,7 @@ fn spawn_subagent_run(
                         {
                             return super::skill::run_skill_tool(
                                 registry,
-                                &mut loaded_skills,
+                                &mut loaded_skills.borrow_mut(),
                                 call,
                             );
                         }
@@ -2112,7 +2242,11 @@ fn spawn_subagent_run(
                     .and_then(|registry| registry.session(id))
                     .map(|session| session.command)
             },
+            &mut compactor,
         );
+        // The compactor holds a sender of its own: the forwarder ends only
+        // once every one is gone.
+        drop(compactor);
         drop(tx2);
         let (final_text, outcome, terminal) = forwarder.join().unwrap_or_default();
         let outcome = match outcome {
@@ -2167,6 +2301,7 @@ fn stream_round(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     max_retries: u32,
+    load: Option<&LoadMeter>,
 ) -> RoundOutcome {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
@@ -2246,28 +2381,157 @@ fn stream_round(
             // accounting — one report per round, so an agentic turn
             // accumulates them (docs/prompt-caching.md).
             if let Some(usage) = outcome.usage {
+                // …and the turn's own reading of how full the context is
+                // takes the provider's count of this request as its base
+                // (docs/compact.md).
+                if let Some(load) = load {
+                    load.measured(messages, usage.input);
+                }
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
             round_outcome(outcome)
         }
         AttemptResult::Cancelled => RoundOutcome::Cancelled,
+        // A request the provider refused for its size is not a failure the
+        // turn has to end on: the loop makes room and sends it again
+        // (docs/compact.md *A request that does not fit*).
+        AttemptResult::Failed(error) if super::compaction::is_context_overflow(&error) => {
+            RoundOutcome::Overflow { text: None, error }
+        }
         AttemptResult::Failed(e) => RoundOutcome::Failed(e),
     }
+}
+
+/// What the tool schemas add to every request, in estimated tokens — the
+/// footer gauge's own count of them (`App::set_tool_definitions`).
+fn schema_tokens(tools: &[ToolDefinition]) -> u64 {
+    tools
+        .iter()
+        .map(|tool| u64::try_from(crate::tokens::estimate(&tool.schema)).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add)
+}
+
+/// Start one summarization behind a running turn (`docs/compact.md`
+/// *Compacting while the agent works*) and return at once: `job` is sent on
+/// `summarizer` — the turn's own client with no tools — from a thread of its
+/// own, and the [`SummaryResult`] arrives on the handle. The compact hooks
+/// are the conversation's, through [`HookSink::for_compaction`].
+fn spawn_summary(
+    summarizer: &OpenAiClient,
+    hooks: &Arc<dyn HookSink>,
+    max_retries: u32,
+    job: SummaryJob,
+) -> SummaryHandle {
+    let (reply, result) = std::sync::mpsc::channel();
+    let cancel = CancelToken::new();
+    let stop = cancel.clone();
+    let summarizer = summarizer.clone();
+    let hooks = hooks.for_compaction(job.auto);
+    thread::spawn(move || {
+        // A receiver that went away belongs to a turn that is over.
+        let _ = reply.send(summarize(
+            &summarizer,
+            hooks.as_deref(),
+            max_retries,
+            &job,
+            &stop,
+        ));
+    });
+    SummaryHandle { result, cancel }
+}
+
+/// Run one summarization to its end: a **turn of its own**, with no tools,
+/// on the agent loop — so it retries a failed request, asks again for a
+/// summary that came back empty and carries on one the output cap cut off,
+/// exactly as an idle `/compact` turn does (`docs/unfinished-replies.md`) —
+/// its events folded into the result instead of a transcript
+/// ([`SummaryCollector`]).
+///
+/// `PreCompact` fires first, through the compact wrapper's prompt hook: what
+/// it returns is extra instructions for the summarizer, after the request.
+/// `PostCompact` is the wrapper's `stop`, fired by the loop where the
+/// summary completes.
+fn summarize(
+    summarizer: &OpenAiClient,
+    hooks: Option<&dyn HookSink>,
+    max_retries: u32,
+    job: &SummaryJob,
+    cancel: &CancelToken,
+) -> SummaryResult {
+    /// A request that offers no tools asks for none: one stray call is
+    /// answered, a second ends the summarization rather than loop on it.
+    const STRAY_CALLS: usize = 1;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let hooks = hooks.unwrap_or(&NoHooks);
+    let mut messages: Vec<ChatMessage> = job
+        .system
+        .as_deref()
+        .map(ChatMessage::system)
+        .into_iter()
+        .collect();
+    messages.push(ChatMessage::user(&job.request));
+    let opening = super::hooks::turn_start(hooks, &job.request, cancel);
+    for note in opening.notes {
+        if !note.text.is_empty() {
+            messages.push(ChatMessage::user(&note.text));
+        }
+        let _ = tx.send(StreamEvent::HookNote {
+            label: note.label,
+            text: note.text,
+            report: note.report,
+        });
+    }
+    if cancel.is_cancelled() {
+        return SummaryResult::of(SummaryOutcome::Cancelled);
+    }
+    agent::run_agent(
+        &tx,
+        cancel,
+        STRAY_CALLS,
+        &mut messages,
+        |msgs| stream_round(summarizer, msgs, &tx, cancel, max_retries, None),
+        |_, _| tools::ToolOutcome::error("no tools are available while summarizing"),
+        Vec::new,
+        |calls| {
+            calls
+                .iter()
+                .map(|call| {
+                    (
+                        call.id.clone(),
+                        "no tools are available while summarizing".to_string(),
+                    )
+                })
+                .collect()
+        },
+        |_, _| crate::permission::Approval::Allow,
+        hooks,
+        &|_: &str| None,
+    );
+    drop(tx);
+    let mut collector = SummaryCollector::default();
+    while let Ok(event) = rx.try_recv() {
+        collector.fold(event);
+    }
+    collector.finish()
 }
 
 /// What ends a turn whose reply a content filter stopped — the provider
 /// omitted the rest, and asking again would only meet the same filter.
 const CONTENT_FILTER_NOTICE: &str = "the provider's content filter stopped the reply";
 
-/// What ends a turn whose reply filled the model's context window — a
-/// continuation could not fit either, and compacting is what makes room.
+/// What ends a turn whose reply filled the model's context window when no
+/// room could be made for the rest of it — auto compaction is off, or there
+/// was nothing left to summarize (docs/compact.md *A request that does not
+/// fit*).
 const CONTEXT_WINDOW_NOTICE: &str = "the reply filled the model's context window before it \
      finished — run /compact to make room, then send a message to go on";
 
 /// What a finished stream means for the agent loop
 /// (`docs/unfinished-replies.md`): a round that asked for tools runs them,
-/// whatever its stop reason; one stopped by the context window or a content
-/// filter fails, saying which, since neither can be continued; one stopped at
+/// whatever its stop reason; one stopped by a content filter fails, saying
+/// so, since it cannot be continued; one the context window cut off is
+/// [`RoundOutcome::Overflow`] — the loop makes room and asks for the rest,
+/// or ends on the notice when it cannot (`docs/compact.md`); one stopped at
 /// the output cap is [`RoundOutcome::CutOff`], which the loop continues; and
 /// anything else is the model's answer. Whether an *empty* answer may end the
 /// turn is the loop's question, not the wire's.
@@ -2291,7 +2555,14 @@ fn round_outcome(outcome: super::openai::StreamOutcome) -> RoundOutcome {
         })
     };
     match outcome.stop_reason() {
-        StopReason::ContextWindow => failed(CONTEXT_WINDOW_NOTICE),
+        StopReason::ContextWindow => RoundOutcome::Overflow {
+            text: Some(outcome.text.response),
+            // In-band, like a refusal: a 200 stream has no status to name.
+            error: LlmError::Api {
+                status: 0,
+                body: CONTEXT_WINDOW_NOTICE.to_string(),
+            },
+        },
         StopReason::ContentFilter => failed(CONTENT_FILTER_NOTICE),
         StopReason::OutputCap => RoundOutcome::CutOff {
             text: outcome.text.response,
@@ -3647,16 +3918,20 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
     }
 
     #[test]
-    fn a_reply_that_filled_the_context_window_fails_pointing_at_compact() {
+    fn a_reply_that_filled_the_context_window_is_an_overflow_pointing_at_compact() {
         // A continuation could not fit either: the room it needs is the room
-        // the conversation took, which only compacting gives back.
-        let RoundOutcome::Failed(error) = round_outcome(ended_stream(
-            "",
+        // the conversation took, which only compacting gives back. So it is
+        // the loop's to make room for (docs/compact.md) — carrying what the
+        // reply had said, and the words the turn ends on when no room can
+        // be made.
+        let RoundOutcome::Overflow { text, error } = round_outcome(ended_stream(
+            "Half an ans",
             "Weighing it",
             "model_context_window_exceeded",
         )) else {
             panic!("a reply stopped by the context window is no answer");
         };
+        assert_eq!(text.as_deref(), Some("Half an ans"));
         let error = error.to_string();
         assert!(error.contains("context window"), "{error}");
         assert!(error.contains("/compact"), "names the way out: {error}");
@@ -3705,6 +3980,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
             &tx,
             &CancelToken::new(),
             MAX_RETRIES,
+            None,
         );
         let RoundOutcome::CutOff { text } = outcome else {
             panic!("a round stopped at the cap must come back cut off");
@@ -3760,6 +4036,7 @@ root:*:0:0:System Administrator:/var/root:/bin/sh
             &tx,
             &CancelToken::new(),
             MAX_RETRIES,
+            None,
         );
         let RoundOutcome::Complete { text } = outcome else {
             panic!("the restarted round did not complete");

@@ -151,6 +151,10 @@ exactly as `StreamEvent::Usage` carried them:
   compaction's summary (`/compact` or auto-compact, `docs/compact.md`). That
   request is the conversation's own, and its cost is the one an analysis
   most often wants to set apart: it reads the whole context to replace it.
+  A summary written **while the agent worked** is billed the same way, on a
+  `compact` line of its own that sits among the turn's ordinary `usage`
+  lines, just ahead of the `compaction` record it paid for — and with
+  `agent` beside it when the conversation compacted was a subagent's.
 
 All five counts are always written, zeros included, so a reader needs no
 defaults. Their meaning is the per-turn `summary`'s: a finished turn's

@@ -11,9 +11,17 @@
 //! the tool-call cap trips. A round that answers *nothing* — an empty reply, or
 //! one the provider cut off at its output cap — is asked to continue instead of
 //! ending the turn (`docs/unfinished-replies.md`).
+//!
+//! The loop also holds the **compaction seam** (`docs/compact.md`
+//! *Compacting while the agent works*): [`run_agent_compacting`] consults a
+//! [`Compaction`] before every request, when a provider refuses one for its
+//! size, and before the turn ends — so a turn longer than its model's window
+//! is summarized while it runs instead of dying at the limit. [`run_agent`]
+//! is the same loop with nothing to consult.
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::compaction::{Compaction, Flow, NoCompaction, Room};
 use super::exec::ToolProgress;
 use super::hooks::{HookSink, allowed_note, block_texts as hook_block_texts};
 use super::tools::{
@@ -176,6 +184,24 @@ pub const CUT_OFF_NOTE: &str = "[system] Your last response was cut off at the o
      limit. Continue directly from where it stopped — no apology, no recap. Keep your \
      reasoning short, and break the remaining work into smaller steps.";
 
+/// The transcript heading over the continuation of a reply the context
+/// window cut off.
+pub const WINDOW_FULL_LABEL: &str = "Context window full";
+
+/// What the model reads after a reply that ran into the end of the context
+/// window, once a compaction has made room for the rest of it
+/// (`docs/compact.md` *A request that does not fit*). Tagged like
+/// [`EMPTY_REPLY_NOTE`].
+pub const WINDOW_FULL_NOTE: &str = "[system] Your last response was cut off because the context \
+     window was full. The conversation has been compacted to make room. Continue directly from \
+     where it stopped — no apology, no recap.";
+
+/// How many times **in a row** a turn makes room for a request that did not
+/// fit and sends it again. A compaction that leaves a request still too
+/// large has nothing more to give; the next refusal ends the turn on the
+/// provider's own words.
+pub const MAX_OVERFLOW_RECOVERIES: usize = 2;
+
 /// Why a round ended without finishing (`docs/unfinished-replies.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Unfinished {
@@ -183,6 +209,8 @@ enum Unfinished {
     Empty,
     /// Stopped at the provider's output-token cap.
     CutOff,
+    /// Stopped where the context window ended; room has been made since.
+    WindowFull,
 }
 
 impl Unfinished {
@@ -191,6 +219,7 @@ impl Unfinished {
         match self {
             Self::Empty => (EMPTY_REPLY_LABEL, EMPTY_REPLY_NOTE),
             Self::CutOff => (CUT_OFF_LABEL, CUT_OFF_NOTE),
+            Self::WindowFull => (WINDOW_FULL_LABEL, WINDOW_FULL_NOTE),
         }
     }
 
@@ -200,7 +229,7 @@ impl Unfinished {
     const fn stop_failure_kind(self) -> &'static str {
         match self {
             Self::Empty => "unknown",
-            Self::CutOff => "max_output_tokens",
+            Self::CutOff | Self::WindowFull => "max_output_tokens",
         }
     }
 }
@@ -219,6 +248,11 @@ fn unfinished_error(kind: Unfinished) -> String {
             "The model's reply kept getting cut off at its output token limit, even after \
              {MAX_CONTINUATIONS} continuations. Ask for the work in smaller steps, or lower the \
              thinking effort with Ctrl+T."
+        ),
+        Unfinished::WindowFull => format!(
+            "The model's reply kept running into the end of its context window, even after \
+             the conversation was compacted {MAX_CONTINUATIONS} times. Ask for the work in \
+             smaller steps, or switch to a model with a larger window with /model."
         ),
     }
 }
@@ -312,6 +346,17 @@ pub enum RoundOutcome {
     },
     /// The request was cancelled (Esc/quit) — stop silently, the UI owns the notice.
     Cancelled,
+    /// The request **did not fit the model's context window**
+    /// (`docs/compact.md` *A request that does not fit*): the provider
+    /// refused it for its size (`text` is `None` — nothing was said), or the
+    /// reply ran into the window's end part way (`text` is what had
+    /// streamed). The loop asks its compactor to make room and goes on;
+    /// `error` is what the turn ends on when none can be made — what it
+    /// would have failed with before there was a compactor to ask.
+    Overflow {
+        text: Option<String>,
+        error: LlmError,
+    },
     /// The request failed.
     Failed(LlmError),
     /// The request was never sent: a limit the run set was reached — the
@@ -408,6 +453,53 @@ pub fn run_agent(
     cancel: &CancelToken,
     max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
+    round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
+    execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
+    pending_inputs: impl FnMut() -> Vec<PendingInput>,
+    run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
+    approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    hooks: &dyn HookSink,
+    session_command: &dyn Fn(&str) -> Option<String>,
+) {
+    run_agent_compacting(
+        tx,
+        cancel,
+        max_tool_calls,
+        messages,
+        round,
+        execute,
+        pending_inputs,
+        run_agents,
+        approve,
+        hooks,
+        session_command,
+        &mut NoCompaction,
+    );
+}
+
+/// [`run_agent`] with the turn's **compactor** — what keeps a long turn
+/// inside its model's context window (`docs/compact.md` *Compacting while
+/// the agent works*). `compaction` is consulted at three points and nowhere
+/// else:
+///
+/// - at the top of every round, once what the conversation gained since the
+///   last request has been folded in ([`Compaction::before_round`]) — where
+///   a summary is started, swapped in, or waited for;
+/// - when a request did not fit ([`RoundOutcome::Overflow`],
+///   [`Compaction::make_room`]) — room is made and the request sent again,
+///   [`MAX_OVERFLOW_RECOVERIES`] times in a row at most;
+/// - before the turn ends on an answer ([`Compaction::before_done`]) — a
+///   summary still being written lands first.
+///
+/// It is also told each message the user sent mid-turn
+/// ([`Compaction::user_message`]), which the compacted shape keeps word for
+/// word. [`run_agent`] is this with [`NoCompaction`].
+#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
+pub fn run_agent_compacting(
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max_tool_calls: usize,
+    messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(ToolProgress<'_>)) -> ToolOutcome,
     mut pending_inputs: impl FnMut() -> Vec<PendingInput>,
@@ -415,8 +507,13 @@ pub fn run_agent(
     mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
     hooks: &dyn HookSink,
     session_command: &dyn Fn(&str) -> Option<String>,
+    compaction: &mut dyn Compaction,
 ) {
     let mut used_calls = 0usize;
+    // The requests in a row that did not fit the window and were sent again
+    // once room was made (docs/compact.md); any round that got through
+    // zeroes it.
+    let mut overflow_recoveries = 0usize;
     // True from the first Stop/SubagentStop-forced continuation on — the
     // payloads' loop-guard flag (docs/hooks.md).
     let mut stop_hook_active = false;
@@ -447,9 +544,20 @@ pub fn run_agent(
                 // the moment the model actually has the text (docs/queue.md).
                 PendingInput::User(text) => {
                     let _ = tx.send(StreamEvent::Steered { text: text.clone() });
+                    // The user's own words: what a compaction keeps verbatim.
+                    compaction.user_message(&text);
                     messages.push(ChatMessage::user(&text));
                 }
             }
+        }
+        // The context window (docs/compact.md *Compacting while the agent
+        // works*): here, with the last round's results and everything folded
+        // in behind them in place and the next request not yet sent, is
+        // where a summary is started, swapped in, or — past the point where
+        // another request may go out — waited for. A cancel during that wait
+        // is a silent stop like any other.
+        if compaction.before_round(messages) == Flow::Cancelled {
+            return;
         }
         match round(messages) {
             // No answer at all: a round that only thought, or said nothing,
@@ -485,6 +593,7 @@ pub fn run_agent(
             }
             RoundOutcome::Complete { text } => {
                 unfinished_rounds = 0;
+                overflow_recoveries = 0;
                 // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
                 // model finished answering" is native — and *only* here:
                 // never on a cancel (Claude Code returns before stop hooks
@@ -532,10 +641,62 @@ pub fn run_agent(
                     }
                     send_hook_report(tx, verdict.report);
                 }
+                // A summary still being written lands before the turn ends,
+                // so the work is not thrown away with it and the next turn
+                // opens on the compacted context (docs/compact.md).
+                if compaction.before_done(messages) == Flow::Cancelled {
+                    return;
+                }
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
             }
             RoundOutcome::Cancelled => return,
+            // The request did not fit the window (docs/compact.md *A request
+            // that does not fit*). Room is made — a summary swapped in for
+            // what it covers — and the turn goes on: a request the provider
+            // refused outright is simply sent again, while a reply the window
+            // cut off keeps what it said and is asked for the rest, exactly
+            // as one stopped at the output cap is. With no room to make, the
+            // turn ends on what it would always have ended on.
+            RoundOutcome::Overflow { text, error } => {
+                let room = if overflow_recoveries < MAX_OVERFLOW_RECOVERIES {
+                    compaction.make_room(messages)
+                } else {
+                    Room::Unable
+                };
+                match room {
+                    Room::Cancelled => return,
+                    Room::Made => {
+                        overflow_recoveries += 1;
+                        if let Some(said) = text
+                            && !continue_unfinished(
+                                Unfinished::WindowFull,
+                                &said,
+                                &mut unfinished_rounds,
+                                messages,
+                                tx,
+                                cancel,
+                                hooks,
+                            )
+                        {
+                            return;
+                        }
+                    }
+                    Room::Unable => {
+                        let details = error.to_string();
+                        send_hook_report(
+                            tx,
+                            hooks.stop_failure(
+                                super::hooks::stop_failure_kind(&error),
+                                &details,
+                                cancel,
+                            ),
+                        );
+                        let _ = tx.send(StreamEvent::Error(details));
+                        return;
+                    }
+                }
+            }
             // A request the run's budget refused: the turn ends on the
             // limit's own message, the tool-call ceiling's shape — and its
             // `StopFailure` kind, the reference's catch-all for a local limit.
@@ -560,6 +721,7 @@ pub fn run_agent(
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
                 unfinished_rounds = 0;
+                overflow_recoveries = 0;
                 // The cap bounds TOOL CALLS, not the final answer: once the
                 // budget is spent the model still gets one more request, and a
                 // plain-text reply there completes the turn — only a further
@@ -5146,5 +5308,325 @@ mod tests {
                 ("c2".to_string(), "listing".to_string()),
             ]
         );
+    }
+
+    // ===== the context window (docs/compact.md) =====
+
+    /// A compactor that does what its script says and remembers what it was
+    /// asked: how long the messages were at every round boundary, what the
+    /// user said, how many times the turn's end consulted it.
+    #[derive(Default)]
+    struct Scripted {
+        /// The messages' length at each [`Compaction::before_round`].
+        boundaries: Vec<usize>,
+        /// What each [`Compaction::make_room`] answers, in order — and how
+        /// many messages it leaves standing when it makes room.
+        rooms: std::collections::VecDeque<Room>,
+        /// Messages every `Room::Made` cuts the conversation down to.
+        keep: usize,
+        /// The boundary (0-based) at which `before_round` rewrites the
+        /// messages to this.
+        rewrite: Option<(usize, Vec<ChatMessage>)>,
+        /// The boundary at which `before_round` reports a cancel.
+        cancel_at: Option<usize>,
+        cancel_at_done: bool,
+        said: Vec<String>,
+        done: usize,
+    }
+
+    impl Compaction for Scripted {
+        fn before_round(&mut self, messages: &mut Vec<ChatMessage>) -> Flow {
+            let boundary = self.boundaries.len();
+            self.boundaries.push(messages.len());
+            if self.cancel_at == Some(boundary) {
+                return Flow::Cancelled;
+            }
+            if let Some((at, rewritten)) = &self.rewrite
+                && *at == boundary
+            {
+                messages.clone_from(rewritten);
+            }
+            Flow::Continue
+        }
+
+        fn make_room(&mut self, messages: &mut Vec<ChatMessage>) -> Room {
+            let room = self.rooms.pop_front().unwrap_or(Room::Unable);
+            if room == Room::Made {
+                messages.truncate(self.keep);
+            }
+            room
+        }
+
+        fn before_done(&mut self, _messages: &mut Vec<ChatMessage>) -> Flow {
+            self.done += 1;
+            if self.cancel_at_done {
+                Flow::Cancelled
+            } else {
+                Flow::Continue
+            }
+        }
+
+        fn user_message(&mut self, text: &str) {
+            self.said.push(text.to_string());
+        }
+    }
+
+    /// A turn over `rounds` — the outcome of each request, in order — with
+    /// `compaction` at its seam and a tool that always answers `ok`. Returns
+    /// the events it sent, the messages each request carried, and the
+    /// messages it ended on.
+    fn compacting_turn(
+        rounds: Vec<RoundOutcome>,
+        pending: Vec<Vec<PendingInput>>,
+        compaction: &mut Scripted,
+    ) -> (Vec<StreamEvent>, Vec<Vec<ChatMessage>>, Vec<ChatMessage>) {
+        let (tx, mut rx) = unbounded_channel();
+        let mut messages = vec![ChatMessage::system("sys"), ChatMessage::user("go")];
+        let sent = RefCell::new(Vec::new());
+        let mut rounds = rounds.into_iter();
+        let mut pending = pending.into_iter();
+        run_agent_compacting(
+            &tx,
+            &CancelToken::new(),
+            0,
+            &mut messages,
+            |msgs| {
+                sent.borrow_mut().push(msgs.to_vec());
+                rounds.next().unwrap_or_else(answered)
+            },
+            |_, _| ToolOutcome::ok("ok"),
+            || pending.next().unwrap_or_default(),
+            |_| Vec::new(),
+            |_, _| Approval::Allow,
+            &NoHooks,
+            &no_sessions,
+            compaction,
+        );
+        (drain(&mut rx), sent.into_inner(), messages)
+    }
+
+    /// A round in which the model reads one file.
+    fn reads(id: &str) -> RoundOutcome {
+        let calls = vec![call(id, "read", r#"{"path":"a.rs"}"#)];
+        RoundOutcome::ToolCalls {
+            assistant: assistant_with(&calls),
+            calls,
+        }
+    }
+
+    /// A request the provider refused for its size.
+    fn refused_for_its_size() -> RoundOutcome {
+        RoundOutcome::Overflow {
+            text: None,
+            error: LlmError::Api {
+                status: 400,
+                body: "prompt is too long".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn the_window_is_consulted_before_every_request() {
+        // Once per round, with the last round's results already in place:
+        // [sys, go] → + call + result → + call + result.
+        let mut compaction = Scripted::default();
+        let (events, sent, _) =
+            compacting_turn(vec![reads("a"), reads("b")], Vec::new(), &mut compaction);
+        assert_eq!(compaction.boundaries, vec![2, 4, 6]);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn the_request_carries_what_the_compactor_left() {
+        // What `before_round` rewrote is what goes out, and what the round's
+        // own messages are appended to.
+        let compacted = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("go\n\nthe summary"),
+        ];
+        let mut compaction = Scripted {
+            rewrite: Some((1, compacted.clone())),
+            ..Scripted::default()
+        };
+        let (_, sent, messages) =
+            compacting_turn(vec![reads("a"), reads("b")], Vec::new(), &mut compaction);
+        assert_eq!(
+            sent[1], compacted,
+            "the second request is the compacted one"
+        );
+        assert_eq!(messages.len(), 4, "the prefix, then the round after it");
+        assert_eq!(messages[..2], compacted[..]);
+    }
+
+    #[test]
+    fn a_cancel_while_room_is_being_made_ends_the_turn_silently() {
+        let mut compaction = Scripted {
+            cancel_at: Some(1),
+            ..Scripted::default()
+        };
+        let (events, sent, _) =
+            compacting_turn(vec![reads("a"), reads("b")], Vec::new(), &mut compaction);
+        assert_eq!(sent.len(), 1, "the second request is never sent");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::StreamDone | StreamEvent::Error(_))),
+            "a cancelled turn sends no end: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_message_the_user_sent_mid_turn_is_told_to_the_compactor() {
+        // The user's own words are what a compaction keeps verbatim; a
+        // background notice is the app's.
+        let mut compaction = Scripted::default();
+        let pending = vec![
+            Vec::new(),
+            vec![
+                PendingInput::Notice {
+                    seq: 1,
+                    text: "[system] a shell finished".to_string(),
+                },
+                PendingInput::User("also the lexer".to_string()),
+            ],
+        ];
+        let (_, _, messages) = compacting_turn(vec![reads("a")], pending, &mut compaction);
+        assert_eq!(compaction.said, vec!["also the lexer".to_string()]);
+        // …and it was folded in ahead of the boundary that could compact it.
+        assert_eq!(compaction.boundaries, vec![2, 6]);
+        assert_eq!(messages[5], ChatMessage::user("also the lexer"));
+    }
+
+    #[test]
+    fn a_request_that_did_not_fit_is_sent_again_once_room_is_made() {
+        let mut compaction = Scripted {
+            rooms: [Room::Made].into(),
+            keep: 2,
+            ..Scripted::default()
+        };
+        let (events, sent, _) = compacting_turn(
+            vec![reads("a"), refused_for_its_size()],
+            Vec::new(),
+            &mut compaction,
+        );
+        assert_eq!(sent.len(), 3, "the refused request, then the one that fit");
+        assert_eq!(sent[1].len(), 4);
+        assert_eq!(sent[2].len(), 2, "sent again, smaller");
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_that_cannot_be_made_room_for_ends_the_turn_on_the_providers_words() {
+        // No compactor, auto compaction off, nothing left to summarize: the
+        // turn fails exactly as it did before there was anything to ask.
+        let mut compaction = Scripted::default();
+        let (events, sent, _) =
+            compacting_turn(vec![refused_for_its_size()], Vec::new(), &mut compaction);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            events,
+            vec![StreamEvent::Error(
+                "HTTP 400: prompt is too long".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_reply_the_window_cut_off_keeps_what_it_said_and_is_asked_for_the_rest() {
+        let mut compaction = Scripted {
+            rooms: [Room::Made].into(),
+            keep: 2,
+            ..Scripted::default()
+        };
+        let cut = RoundOutcome::Overflow {
+            text: Some("The first step is".to_string()),
+            error: LlmError::Api {
+                status: 0,
+                body: "the reply filled the model's context window".to_string(),
+            },
+        };
+        let (events, sent, _) = compacting_turn(vec![cut], Vec::new(), &mut compaction);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[1][2..],
+            [
+                ChatMessage::new("assistant", "The first step is"),
+                ChatMessage::user(WINDOW_FULL_NOTE),
+            ],
+            "what it said, then the request for the rest — after the room made"
+        );
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::HookNote {
+                    label: WINDOW_FULL_LABEL.to_string(),
+                    text: WINDOW_FULL_NOTE.to_string(),
+                    report: None,
+                },
+                StreamEvent::StreamDone,
+            ]
+        );
+    }
+
+    #[test]
+    fn requests_that_keep_overflowing_end_the_turn() {
+        // Room that does not help is not made for ever.
+        let mut compaction = Scripted {
+            rooms: std::iter::repeat_n(Room::Made, 10).collect(),
+            keep: 2,
+            ..Scripted::default()
+        };
+        let rounds = (0..10).map(|_| refused_for_its_size()).collect();
+        let (events, sent, _) = compacting_turn(rounds, Vec::new(), &mut compaction);
+        assert_eq!(sent.len(), MAX_OVERFLOW_RECOVERIES + 1);
+        assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
+    }
+
+    #[test]
+    fn a_round_that_got_through_earns_the_recoveries_back() {
+        // Two overflows, a round that fits, two more: all four recovered.
+        let mut compaction = Scripted {
+            rooms: std::iter::repeat_n(Room::Made, 10).collect(),
+            keep: 2,
+            ..Scripted::default()
+        };
+        let rounds = vec![
+            refused_for_its_size(),
+            refused_for_its_size(),
+            reads("a"),
+            refused_for_its_size(),
+            refused_for_its_size(),
+        ];
+        let (events, _, _) = compacting_turn(rounds, Vec::new(), &mut compaction);
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+    }
+
+    #[test]
+    fn the_turn_does_not_end_before_the_window_is_settled() {
+        let mut compaction = Scripted::default();
+        let (events, _, _) = compacting_turn(Vec::new(), Vec::new(), &mut compaction);
+        assert_eq!(compaction.done, 1, "asked once, before the turn's end");
+        assert_eq!(events, vec![StreamEvent::StreamDone]);
+
+        // A cancel while it waited there is a silent stop.
+        let mut cancelled = Scripted {
+            cancel_at_done: true,
+            ..Scripted::default()
+        };
+        let (events, _, _) = compacting_turn(Vec::new(), Vec::new(), &mut cancelled);
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn a_turn_that_fails_never_reaches_its_end() {
+        let mut compaction = Scripted::default();
+        let failed = RoundOutcome::Failed(LlmError::Http("boom".to_string()));
+        compacting_turn(vec![failed], Vec::new(), &mut compaction);
+        assert_eq!(compaction.done, 0);
     }
 }

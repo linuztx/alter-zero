@@ -285,10 +285,22 @@ impl Session<'_> {
             None,
             &self.app.history,
         );
-        compact_context.push(context::ContextMessage::new(
-            context::ContextRole::User,
-            context::SUMMARIZATION_PROMPT,
-        ));
+        if compact_backend.is_some() {
+            // A real summarizer reads the conversation as a transcript cut
+            // to a share of the model's window, the prompt under it — so a
+            // conversation that has outgrown the window can still be
+            // compacted, where sending it whole was refused for its size
+            // (docs/compact.md *The compact turn*).
+            compact_context = alter_zero::llm::compaction::summary_context(
+                &compact_context,
+                self.models.context_window(),
+            );
+        } else {
+            compact_context.push(context::ContextMessage::new(
+                context::ContextRole::User,
+                context::SUMMARIZATION_PROMPT,
+            ));
+        }
         let spawn_on: &dyn ReplySource = match compact_backend.as_ref() {
             Some(one_off) => one_off,
             None => self.models.backend(),
@@ -312,12 +324,61 @@ impl Session<'_> {
         images: Vec<PathBuf>,
         context: Vec<context::ContextMessage>,
     ) {
+        // What the turn needs to keep itself inside the model's window
+        // while it runs (docs/compact.md *Compacting while the agent
+        // works*): the policy as it stands, and the two parts of the
+        // compacted shape only this history knows — the block the window
+        // opens with and the user's own messages.
+        self.sync_compaction_policy();
+        self.models
+            .compaction()
+            .set_seed(alter_zero::compaction::CompactionSeed {
+                leading: context::leading_reminder(
+                    self.app.user_instructions.as_deref(),
+                    self.app.listings.as_deref(),
+                ),
+                user_texts: context::recent_user_texts(
+                    &self.app.history,
+                    alter_zero::compaction::DEFAULT_USER_MESSAGE_BUDGET,
+                ),
+            });
         let cancel = CancelToken::new();
         let handle =
             self.models
                 .backend()
                 .spawn(prompt, images, context, self.tx.clone(), cancel.clone());
         self.inflight = Some((cancel, handle));
+    }
+
+    /// Tell a running turn's compactor what the session says now: the
+    /// `/settings` **Auto compact** row and the window the footer gauges
+    /// against. Derived at every loop bottom and before every spawn rather
+    /// than tracked at the places either can change, so it cannot drift.
+    pub(crate) fn sync_compaction_policy(&self) {
+        let control = self.models.compaction();
+        control.set_auto(self.app.settings().auto_compact);
+        control.set_window(self.app.context_window());
+    }
+
+    /// A `/compact` typed mid-turn that no round boundary took — the turn
+    /// ended first, or was never a model's (a `!` command, the offline
+    /// demo): run it now that the session is idle. The loop bottom's call.
+    pub(crate) fn run_pending_compact(&mut self) {
+        if self.inflight.is_some() || !self.models.compaction().take_request() {
+            return;
+        }
+        if self.models.is_stalled_test_backend() {
+            return;
+        }
+        if context::derives_conversation(&self.app.history) {
+            self.start_compact_turn(/*auto=*/ false);
+            self.frame.schedule_frame();
+        } else {
+            self.toast(
+                alter_zero::app::COMPACT_EMPTY_NOTICE,
+                alter_zero::app::ToastKind::Info,
+            );
+        }
     }
 
     /// The every-turn-end dispatch (`docs/background.md`, `docs/queue.md`):

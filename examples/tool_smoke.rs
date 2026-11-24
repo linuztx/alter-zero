@@ -248,6 +248,30 @@ fn main() {
             StreamEvent::NoticeDelivered { seq } => {
                 println!("\x1b[36m[notice {seq} delivered]\x1b[0m");
             }
+            // A summary written while the agent works (docs/compact.md) —
+            // this probe attaches no compaction policy, but print each step
+            // if one ever arrives rather than swallowing it.
+            StreamEvent::CompactionStarted { auto } => {
+                println!("\x1b[36m[compacting the context, auto: {auto}]\x1b[0m");
+            }
+            StreamEvent::CompactionWaiting => {
+                println!("\x1b[36m[waiting for the summary]\x1b[0m");
+            }
+            StreamEvent::CompactionUsage(u) => {
+                println!(
+                    "\x1b[90m[summary usage] in {} · out {}\x1b[0m",
+                    u.input, u.output
+                );
+            }
+            StreamEvent::Compacted { summary, secs, .. } => {
+                println!(
+                    "\x1b[36m[context compacted in {secs}s — a summary of {} chars]\x1b[0m",
+                    summary.chars().count()
+                );
+            }
+            StreamEvent::CompactionFailed { reason } => {
+                println!("\x1b[33m[context not compacted: {reason}]\x1b[0m");
+            }
             StreamEvent::Error(msg) => {
                 println!("\n\x1b[31m[error] {msg}\x1b[0m");
                 break;

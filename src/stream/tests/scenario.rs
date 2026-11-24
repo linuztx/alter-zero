@@ -19,6 +19,7 @@ const EXAMPLES: &[&str] = &[
     "staggered permission demo",
     "permission demo",
     crate::context::SUMMARIZATION_PROMPT,
+    "compact the context while you work",
     "hook demo: block my prompt",
     "show me the hooks demo",
     "send an agent a follow-up",
@@ -519,6 +520,48 @@ fn the_scratchpad_demo_writes_then_edits_a_file_in_the_sessions_scratchpad() {
         crate::scratchpad::is_session_scratchpad(std::path::Path::new(&path)),
         "{path}"
     );
+}
+
+#[test]
+fn the_live_compaction_demo_compacts_between_two_rounds_of_work() {
+    // docs/compact.md *Compacting while the agent works*: the offline demo
+    // of a summary written behind a running turn — a round of work, the
+    // summary announced, a second round made while it is being written, the
+    // summary landing, and a last round after it. The round in the middle
+    // is the one the swap keeps word for word.
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "compact-live")
+        .expect("the live compaction demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the live compaction demo is a script");
+    };
+    let events = script(&Cue::new("compact the context while you work", 0));
+    let marks: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolBatch(_) => Some("round"),
+            StreamEvent::CompactionStarted { auto: true } => Some("started"),
+            StreamEvent::Compacted { .. } => Some("landed"),
+            StreamEvent::StreamDone => Some("done"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        marks,
+        vec!["round", "started", "round", "landed", "round", "done"]
+    );
+    let summary = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::Compacted { summary, .. } => Some(summary.as_str()),
+            _ => None,
+        })
+        .expect("a summary lands");
+    assert!(!summary.trim().is_empty());
+    // A question about compaction is still a question, not this demo.
+    assert_eq!(gated("tell me about compaction"), "tools");
+    assert_eq!(gated("what does /compact do?"), "tools");
 }
 
 #[test]

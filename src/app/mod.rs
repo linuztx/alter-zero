@@ -80,9 +80,10 @@ pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number,
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion, Held};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
-    COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
-    CommandEffect, CommandMenu, INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand,
-    command_query, matching_commands,
+    COMMANDS, COMPACT_ALREADY_NOTICE, COMPACT_EMPTY_NOTICE, COMPACT_FAILED_PREFIX,
+    COMPACT_QUEUED_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, CommandEffect, CommandMenu,
+    INIT_BUSY_NOTICE, INIT_PROMPT, RESUME_BUSY_NOTICE, SlashCommand, command_query,
+    matching_commands,
 };
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub(crate) use self::compact::{estimate_messages_tokens, message_tokens};
@@ -113,6 +114,7 @@ pub use self::model_picker::{ModelLoad, ModelPicker, ProviderList, ProviderLoad}
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::{LiveThought, Reasoning};
+pub(crate) use self::types::IMAGE_INPUT_TOKENS;
 // Crate-internal: `agents::AgentRun` runs the same reasoning-token snap over
 // its own transcript (`docs/agent-view-streaming.md`).
 pub use self::config_review::{
@@ -132,7 +134,7 @@ pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::spinner::{Spinner, SpinnerPicker, SpinnerRow};
 pub use self::sponsor::{SPONSOR_LINKS, SponsorLink, SponsorPage};
 pub use self::status::{
-    OfflineInfo, RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary,
+    CompactingInfo, OfflineInfo, RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary,
 };
 pub use self::tasks::TaskCallRecord;
 pub use self::theme::{Theme, ThemePicker, ThemeRow, parse_theme_file, theme_file_json};
@@ -287,6 +289,12 @@ pub struct App {
     /// The context gauge when the in-flight compaction began — the marker's
     /// `before` count.
     compact_before: u64,
+    /// A summary being written **behind the running turn** — where its
+    /// snapshot ends in [`history`](Self::history), and who asked for it
+    /// (`docs/compact.md` *Compacting while the agent works*). Set by
+    /// [`begin_live_compaction`](App::begin_live_compaction), taken by
+    /// [`land_compaction`](App::land_compaction), and dropped with the turn.
+    live_compaction: Option<compact::LiveCompaction>,
     /// The active model's context window in tokens, when known (the provider's
     /// `/v1/models` `context_length`, the saved settings, or the
     /// `ALTER_ZERO_CONTEXT_WINDOW` override — injected at the boundary via
@@ -1381,6 +1389,9 @@ impl App {
         self.tasks = crate::tasks::TaskStore::default();
         self.streaming = None;
         self.compact_buffer = None;
+        // …and a summary being written behind the turn summarized a
+        // conversation that is gone (docs/compact.md).
+        self.live_compaction = None;
         // An open thinking phase goes with the rest of the in-flight turn —
         // the user asked for a blank screen (docs/thinking-stream.md).
         self.drop_reasoning();

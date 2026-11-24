@@ -11,9 +11,9 @@ use crate::ui::theme::{
     SESSION_WAITING_ROW, SHIMMER_SWEEP, SPINNER_SPAN_COUNT, STATUS_ELLIPSIS, TOOL_RUNNING,
     TOOL_WAITING, TOOL_WRITING, ai_color, header_gradient_end, header_gradient_start,
     shimmer_highlight, spinner_bars_high, spinner_pulse_bright, spinner_tail_color, status_color,
-    status_detail_color, status_done_color, status_offline_color, status_retry_color,
-    status_thinking_color, tool_diff_add_color, tool_diff_del_color, tool_dim_color,
-    tool_pulse_dim,
+    status_compacting_color, status_detail_color, status_done_color, status_offline_color,
+    status_retry_color, status_thinking_color, tool_diff_add_color, tool_diff_del_color,
+    tool_dim_color, tool_pulse_dim,
 };
 
 #[test]
@@ -1016,6 +1016,86 @@ fn the_offline_verb_outranks_a_task_verb_and_shimmers_in_amber() {
         .find(|s| s.content.contains("offline for"))
         .expect("the offline clause");
     assert_eq!(clause.style.fg, Some(status_offline_color()));
+}
+
+/// A live status with a summary being written behind the turn (verb fixed
+/// to "Working"): `began`/`elapsed` are the turn clock's readings when the
+/// summarizer started and now.
+fn status_compacting(began: u64, elapsed: u64, waiting: bool) -> TurnStatus {
+    let mut s = status(42, TokenArrow::Up, elapsed, None);
+    s.compacting = Some(crate::app::CompactingInfo {
+        began: Duration::from_secs(began),
+        waiting,
+    });
+    s
+}
+
+#[test]
+fn a_summary_written_behind_the_turn_shows_as_a_clause_under_the_turns_own_verb() {
+    // docs/compact.md *Compacting while the agent works*: the agent is still
+    // working, so the verb is still its own — the clause says a summary is
+    // on its way, and for how long, off the turn's own clock.
+    let line = status_line(&status_compacting(50, 62, false), 200);
+    let text = plain(&line);
+    assert!(
+        text.ends_with(
+            "Working… (1m 2s · ↑ 42 tokens · compacting context 12s · esc to interrupt)"
+        ),
+        "{text:?}"
+    );
+    let clause = line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("compacting context"))
+        .expect("the compacting clause");
+    assert_eq!(
+        clause.style.fg,
+        Some(status_compacting_color()),
+        "told apart from the dim counts"
+    );
+    assert_ne!(clause.style.fg, Some(status_detail_color()));
+}
+
+#[test]
+fn a_turn_waiting_on_its_summary_says_so_in_the_verb() {
+    // Nothing more is sent until it lands: waiting is all the turn is doing,
+    // so it takes the verb slot — over a task's activeForm too.
+    let line = status_line_with_verb(
+        &status_compacting(50, 62, true),
+        Some("Setting up project structure"),
+        200,
+    );
+    let text = plain(&line);
+    assert!(
+        text.ends_with(
+            "Compacting context… (1m 2s · ↑ 42 tokens · compacting context 12s · esc to interrupt)"
+        ),
+        "{text:?}"
+    );
+    assert!(
+        !text.contains("Setting up") && !text.contains("Working"),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_lost_connection_outranks_a_summary_for_the_verb() {
+    // Both are waits; the one the user can do something about is said.
+    let mut waiting = status_compacting(0, 5, true);
+    waiting.offline = Some(OfflineInfo {
+        host: "api.venice.ai".into(),
+        attempts: 1,
+        began: Duration::ZERO,
+    });
+    let text = plain(&status_line(&waiting, 200));
+    assert!(text.contains("Waiting for internet…"), "{text:?}");
+    assert!(!text.contains("Compacting context…"), "{text:?}");
+}
+
+#[test]
+fn a_status_line_with_no_summary_in_flight_says_nothing_of_one() {
+    let text = plain(&status_line(&status(5, TokenArrow::Down, 3, None), 200));
+    assert!(!text.to_lowercase().contains("compacting"), "{text:?}");
 }
 
 #[test]

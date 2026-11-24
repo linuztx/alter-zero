@@ -371,8 +371,11 @@ pub fn format_token_count(tokens: usize) -> String {
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
 /// `⣤⣀⣀⣀⣀⣀⣀⣀ {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} |
-/// · offline for {d}][ · Thinking for {m}] · esc to interrupt)` — the verb
-/// `Waiting for internet` while no connection can be made (`docs/offline.md`).
+/// · offline for {d}][ · compacting context {d}][ · Thinking for {m}] · esc
+/// to interrupt)` — the verb `Waiting for internet` while no connection can
+/// be made (`docs/offline.md`), `Compacting context` once the turn has
+/// stopped to wait for the summary being written behind it
+/// (`docs/compact.md`).
 ///
 /// It opens with the spinner (`spinner_spans`) and the verb
 /// text **shimmers** — a bright band sweeping its chars, which rest in the
@@ -432,12 +435,23 @@ pub fn styled_status_line(
     // the same shimmer, so the state is told apart by colour as well as by
     // word (docs/offline.md).
     // Otherwise the verb rests in the page titles' dress — the banner
-    // gradient across its own width — under the same sweep.
+    // gradient across its own width — under the same sweep. A turn that has
+    // stopped to wait for the summary being written behind it says that
+    // instead of its own verb, for the same reason (docs/compact.md); a
+    // lost connection, the wait the user can do something about, outranks
+    // it.
+    let waiting_on_summary = status
+        .compacting
+        .is_some_and(|compacting| compacting.waiting);
     spans.extend(match status.offline {
         Some(_) => shimmer_spans_from(
             &format!("{OFFLINE_VERB}{STATUS_ELLIPSIS}"),
             status.elapsed,
             status_offline_color(),
+        ),
+        None if waiting_on_summary => status_verb_shimmer_spans(
+            &format!("{COMPACTING_VERB}{STATUS_ELLIPSIS}"),
+            status.elapsed,
         ),
         None => status_verb_shimmer_spans(
             &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
@@ -476,6 +490,19 @@ pub fn styled_status_line(
                 format_elapsed(outage.duration(status.elapsed).as_secs())
             ),
             Style::new().fg(status_offline_color()),
+        ));
+    }
+    // A summary of the conversation being written behind the turn
+    // (docs/compact.md *Compacting while the agent works*): for how long,
+    // off the turn's own clock, in the colour its `● Context compacted`
+    // cell will land in.
+    if let Some(compacting) = &status.compacting {
+        spans.push(Span::styled(
+            format!(
+                " · {COMPACTING_CLAUSE}{}",
+                format_elapsed(compacting.duration(status.elapsed).as_secs())
+            ),
+            Style::new().fg(status_compacting_color()),
         ));
     }
     // The thinking clause wears the thinking colour — the footer's thinking

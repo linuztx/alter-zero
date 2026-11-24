@@ -481,6 +481,7 @@ fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
         after: 2_100,
         auto: true,
         secs: 0,
+        ..Default::default()
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.starts_with(&format!("● {COMPACTED_NOTICE}")), "{text}");
@@ -497,6 +498,7 @@ fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
         after: 300,
         auto: false,
         secs: 0,
+        ..Default::default()
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("1k → 300 tokens"), "{text}");
@@ -515,6 +517,7 @@ fn the_compaction_cell_appends_its_duration_between_the_shrink_and_the_auto_tag(
         after: 507,
         auto: true,
         secs: 36,
+        ..Default::default()
     };
     let text = plain(&compaction_lines(&compaction, 120)[0]);
     assert!(text.contains("2.1k → 507 tokens · 36s · auto"), "{text}");

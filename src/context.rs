@@ -30,9 +30,11 @@ pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.m
 /// followed by a newline and the marker's summary. See `docs/compact.md`.
 pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix.md");
 
-/// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
-/// recent user messages replayed before the bridge after a `/compact`.
-const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+/// What a bridge closes on when its summary was written **while a turn was
+/// running** (`prompts/compact_resume.md`, [`crate::app::Compaction::resume`]):
+/// nothing the user says follows such a summary, so the bridge itself tells
+/// the model to carry the task on. See `docs/compact.md`.
+pub const SUMMARY_RESUME_NOTE: &str = include_str!("../prompts/compact_resume.md");
 
 /// Codex's `APPROX_BYTES_PER_TOKEN` — the byte↔token heuristic the budget
 /// uses (not the app's token estimate: the walk runs at every turn start and must
@@ -48,7 +50,22 @@ const fn approx_token_count(text: &str) -> usize {
 /// (≈ 4 bytes each) by keeping the head and tail halves — split on char
 /// boundaries — around an `…N tokens truncated…` marker. Text already within
 /// budget passes through untouched.
-fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
+pub(crate) fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
+    truncate_middle_with(text, max_tokens, |removed| {
+        format!("…{removed} tokens truncated…")
+    })
+}
+
+/// [`truncate_middle_to_tokens`] around a mark of the caller's own: `mark` is
+/// handed how many approx tokens the cut removed and says what stands where
+/// they were. Who reads the result decides the wording — the model reads
+/// codex's in its own context, the summarizer reads one that names its
+/// transcript (`llm::compaction::render_transcript`).
+pub(crate) fn truncate_middle_with(
+    text: &str,
+    max_tokens: usize,
+    mark: impl FnOnce(usize) -> String,
+) -> String {
     let max_bytes = max_tokens.saturating_mul(APPROX_BYTES_PER_TOKEN);
     if text.len() <= max_bytes {
         return text.to_string();
@@ -79,37 +96,54 @@ fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
     }
     let removed = (text.len() - max_bytes).div_ceil(APPROX_BYTES_PER_TOKEN);
     format!(
-        "{}…{removed} tokens truncated…{}",
+        "{}{}{}",
         &text[..prefix_end],
+        mark(removed),
         &text[suffix_start..]
     )
 }
 
-/// The typed user messages of `items` that fit `budget` approx tokens —
+/// The typed user messages of `items`, oldest first: only real
+/// [`Role::User`] messages (tool records, shell transcripts, notices, and
+/// earlier compaction markers all drop — codex's `collect_user_messages`).
+fn typed_user_texts(items: &[HistoryItem]) -> impl DoubleEndedIterator<Item = &str> {
+    items.iter().filter_map(|item| match item {
+        HistoryItem::Message(message) if message.role == Role::User => Some(message.text.as_str()),
+        _ => None,
+    })
+}
+
+/// The typed user messages of `items` that fit `budget` approx tokens
+/// ([`budget_user_texts`] over [`typed_user_texts`]).
+fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+    budget_user_texts(typed_user_texts(items), budget)
+}
+
+/// The messages of `texts` (oldest first) that fit `budget` approx tokens —
 /// codex's `build_compacted_history` selection: walk newest→oldest keeping
 /// whole messages while they fit, middle-truncate the first overflowing one to
-/// the remaining budget, then restore chronological order. Only real
-/// [`Role::User`] messages collect (tool records, shell transcripts, notices,
-/// and earlier compaction markers all drop — codex's `collect_user_messages`).
-fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+/// the remaining budget, then restore chronological order.
+///
+/// One walk, two callers: the derivation, over the history's own messages
+/// (`budgeted_user_texts`), and the agent loop compacting a running turn,
+/// over the texts it was handed ([`crate::compaction::CompactionSeed`]) — so
+/// what a compaction keeps on the wire is what every later turn derives.
+pub(crate) fn budget_user_texts<'a>(
+    texts: impl DoubleEndedIterator<Item = &'a str>,
+    budget: usize,
+) -> Vec<String> {
     let mut selected = Vec::new();
     let mut remaining = budget;
-    for item in items.iter().rev() {
-        let HistoryItem::Message(message) = item else {
-            continue;
-        };
-        if message.role != Role::User {
-            continue;
-        }
+    for text in texts.rev() {
         if remaining == 0 {
             break;
         }
-        let tokens = approx_token_count(&message.text);
+        let tokens = approx_token_count(text);
         if tokens <= remaining {
-            selected.push(message.text.clone());
+            selected.push(text.to_string());
             remaining -= tokens;
         } else {
-            selected.push(truncate_middle_to_tokens(&message.text, remaining));
+            selected.push(truncate_middle_to_tokens(text, remaining));
             break;
         }
     }
@@ -117,16 +151,44 @@ fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
     selected
 }
 
+/// The newest typed user messages of `history`, **whole**, as many as a walk
+/// under `budget` approx tokens can reach: every message that fits, and the
+/// one the budget runs out inside. What a turn is handed for the compactions
+/// it may make while it runs ([`crate::compaction::CompactionSeed`]) —
+/// enough for `budget_user_texts` under any budget up to `budget`, without
+/// carrying a long conversation's every message across the thread boundary.
+#[must_use]
+pub fn recent_user_texts(history: &[HistoryItem], budget: usize) -> Vec<String> {
+    let mut recent = Vec::new();
+    let mut remaining = budget;
+    for text in typed_user_texts(history).rev() {
+        if remaining == 0 {
+            break;
+        }
+        recent.push(text.to_string());
+        remaining = remaining.saturating_sub(approx_token_count(text));
+    }
+    recent.reverse();
+    recent
+}
+
 /// The compacted context's bridge message: [`SUMMARY_PREFIX`], a newline, and
 /// the marker's summary — codex's `format!("{SUMMARY_PREFIX}\n{summary}")`,
 /// with its "(no summary available)" fallback when the model streamed nothing.
-fn summary_bridge(summary: &str) -> String {
+/// A summary written while a turn ran (`resume`) closes on
+/// [`SUMMARY_RESUME_NOTE`], a blank line under it.
+pub(crate) fn summary_bridge(summary: &str, resume: bool) -> String {
     let body = if summary.is_empty() {
         "(no summary available)"
     } else {
         summary
     };
-    format!("{SUMMARY_PREFIX}\n{body}")
+    let mut bridge = format!("{SUMMARY_PREFIX}\n{body}");
+    if resume {
+        bridge.push_str(MERGE_SEPARATOR);
+        bridge.push_str(SUMMARY_RESUME_NOTE.trim_end());
+    }
+    bridge
 }
 
 /// The wire role a context message is sent as.
@@ -526,11 +588,20 @@ pub fn context_messages_full(
     listings: Option<&str>,
     history: &[HistoryItem],
 ) -> Vec<ContextMessage> {
+    context_messages_led_by(leading_reminder(user_instructions, listings), history)
+}
+
+/// The `<system-reminder>` [`context_messages_full`] opens the window with,
+/// composed from the same two inputs — `None` when neither says anything.
+/// What a running turn is handed so a compaction it makes keeps the block
+/// its requests began with ([`crate::compaction::CompactionSeed::leading`]).
+#[must_use]
+pub fn leading_reminder(user_instructions: Option<&str>, listings: Option<&str>) -> Option<String> {
     let reminder = crate::reminder::reminder_message(&[
         user_instructions.unwrap_or_default(),
         listings.unwrap_or_default(),
     ]);
-    context_messages_led_by((!reminder.is_empty()).then_some(reminder), history)
+    (!reminder.is_empty()).then_some(reminder)
 }
 
 /// [`context_messages`] behind an already-rendered leading fragment: the
@@ -606,8 +677,8 @@ pub fn context_messages_with(
 /// holds — the compaction split, then the per-item mapping.
 fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
-    // everything before it derives as codex's compacted shape — the budgeted
-    // recent user texts, then the summary bridge — with the items after it
+    // everything its summary covers derives as codex's compacted shape — the
+    // budgeted recent user texts, then the summary bridge — with the rest
     // deriving normally. Earlier markers sit before the last one, so a prior
     // compaction's summary is structurally excluded (only real user texts
     // collect); codex needs an `is_summary_message` prefix check for the same
@@ -619,16 +690,22 @@ fn derive_history_into(out: &mut Derived, history: &[HistoryItem]) {
         let HistoryItem::Compaction(compaction) = &history[cut] else {
             unreachable!("rposition matched a Compaction");
         };
-        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
+        // A summary written while the agent kept working covers the history
+        // as it stood when the summarizer started: the `kept` items recorded
+        // since are no part of it (*Compacting while the agent works*).
+        let covered = cut.saturating_sub(compaction.kept);
+        for text in budgeted_user_texts(&history[..covered], compaction.user_budget()) {
             push_user_text(out, text, vec![], TextOrigin::Typed);
         }
         push_user_text(
             out,
-            summary_bridge(&compaction.summary),
+            summary_bridge(&compaction.summary, compaction.resume),
             vec![],
             TextOrigin::Summary,
         );
-        derive_into(out, &history[cut + 1..]);
+        // What the summary never saw, then everything since the marker — one
+        // run, in which the marker itself derives nothing.
+        derive_into(out, &history[covered..]);
     } else {
         derive_into(out, history);
     }
@@ -971,9 +1048,9 @@ fn derive_item(out: &mut Derived, history: &[HistoryItem], position: usize) {
             unreachable!("call-bearing items are derived a round at a time")
         }
         HistoryItem::Summary(_) => {} // TUI chrome, not conversation
-        // Unreachable through `context_messages` (it splits at the last
-        // marker), but the mapping stays total: a marker inside a plain
-        // run contributes nothing itself.
+        // A marker contributes nothing itself: its bridge is pushed where
+        // its summary's coverage ends (`derive_history_into`), which is
+        // ahead of the items it kept — so the walk over those passes it.
         HistoryItem::Compaction(_) => {}
         // A background shell's completion: a bracketed user-role note
         // carrying the outcome AND the output tail — the model reads the
@@ -2263,12 +2340,189 @@ mod tests {
     fn compaction(summary: &str) -> HistoryItem {
         HistoryItem::Compaction(crate::app::Compaction {
             summary: summary.to_string(),
-            timestamp: String::new(),
-            before: 0,
-            after: 0,
-            auto: false,
-            secs: 0,
+            ..crate::app::Compaction::default()
         })
+    }
+
+    /// A marker whose summary was taken `kept` items before it landed — one
+    /// written while the agent kept working (`docs/compact.md`).
+    fn compaction_keeping(summary: &str, kept: usize) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            kept,
+            ..crate::app::Compaction::default()
+        })
+    }
+
+    #[test]
+    fn a_marker_replays_what_was_recorded_while_its_summary_was_written() {
+        // The summary covers the conversation as it stood when the summarizer
+        // started. The agent kept working: what it did between there and the
+        // marker is no part of the summary, so it replays after the bridge,
+        // as it happened — and what followed the marker after that.
+        let history = vec![
+            message(Role::User, "do the thing"),
+            message(Role::Assistant, "let me check"),
+            tool("Read", "a", "A", ToolStatus::Ok, false),
+            // — the summary was taken here —
+            message(Role::Assistant, "now the second file"),
+            tool("Read", "b", "B", ToolStatus::Ok, false),
+            compaction_keeping("read a", 2),
+            message(Role::Assistant, "done"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 4, "{ctx:?}");
+        assert_eq!(
+            ctx[0].text,
+            format!("do the thing\n\n{SUMMARY_PREFIX}\nread a"),
+            "the summarized part is the user's message and the bridge"
+        );
+        assert_eq!(ctx[1].role, ContextRole::Assistant);
+        assert_eq!(ctx[1].text, "now the second file");
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![ContextToolCall::new("call_0", "read", r#"{"path":"b"}"#)]
+        );
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_0", "B"));
+        assert_eq!(ctx[3].text, "done");
+        assert!(
+            !ctx.iter()
+                .any(|message| message.text.contains("let me check")),
+            "what the summary covers is gone: {ctx:?}"
+        );
+    }
+
+    #[test]
+    fn a_user_message_recorded_while_the_summary_was_written_keeps_its_picture() {
+        // Only the summarized part drops its attachments; a message the
+        // summary never saw replays whole.
+        let history = vec![
+            message(Role::User, "first"),
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "[Image #1] and this".to_string(),
+                timestamp: String::new(),
+                images: vec![PathBuf::from("/tmp/shot.png")],
+            }),
+            compaction_keeping("the first", 1),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert_eq!(ctx[0].images, vec![PathBuf::from("/tmp/shot.png")]);
+        assert!(
+            ctx[0]
+                .text
+                .starts_with(&format!("first\n\n{SUMMARY_PREFIX}\nthe first\n\n")),
+            "{:?}",
+            ctx[0].text
+        );
+    }
+
+    #[test]
+    fn a_marker_keeping_more_than_there_is_summarizes_nothing() {
+        // A count past the start of the history covers nothing at all: the
+        // bridge leads and every item replays.
+        let history = vec![
+            message(Role::User, "only this"),
+            compaction_keeping("nothing yet", 9),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert_eq!(
+            ctx[0].text,
+            format!("{SUMMARY_PREFIX}\nnothing yet\n\nonly this")
+        );
+    }
+
+    #[test]
+    fn a_marker_keeps_its_user_messages_under_the_budget_it_recorded() {
+        // The budget is a share of the window the compaction was made under
+        // (`compaction::user_message_budget`), recorded so the derivation
+        // gives the same messages back on any model.
+        let history = vec![
+            message(Role::User, "an older request that no longer fits"),
+            message(Role::User, "abcd"),
+            HistoryItem::Compaction(crate::app::Compaction {
+                summary: "s".to_string(),
+                budget: 1,
+                ..crate::app::Compaction::default()
+            }),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].text, format!("abcd\n\n{SUMMARY_PREFIX}\ns"));
+    }
+
+    #[test]
+    fn a_marker_written_mid_turn_tells_the_model_to_carry_on() {
+        // A summary swapped in while the agent works is followed by no user
+        // message asking for anything: the bridge itself says to go on.
+        let history = vec![
+            message(Role::User, "fix it"),
+            HistoryItem::Compaction(crate::app::Compaction {
+                summary: "half fixed".to_string(),
+                resume: true,
+                ..crate::app::Compaction::default()
+            }),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[0].text,
+            format!(
+                "fix it\n\n{SUMMARY_PREFIX}\nhalf fixed\n\n{}",
+                SUMMARY_RESUME_NOTE.trim_end()
+            )
+        );
+        // …and one made at rest says nothing of the kind.
+        let rested = context_messages(&[message(Role::User, "fix it"), compaction("fixed")]);
+        assert!(!rested[0].text.contains(SUMMARY_RESUME_NOTE.trim_end()));
+    }
+
+    #[test]
+    fn the_budget_walk_over_texts_is_the_walk_over_the_history() {
+        // The agent loop holds the user's messages as plain texts
+        // (`CompactionSeed::user_texts`): the same walk over them must keep
+        // what the derivation keeps from the history.
+        let big = "y".repeat(120);
+        let items = vec![
+            message(Role::User, "oldest"),
+            message(Role::Assistant, "reply"),
+            message(Role::User, &big),
+            message(Role::User, "abcd"),
+        ];
+        let texts = ["oldest", big.as_str(), "abcd"];
+        for budget in [0, 1, 2, 10, 31, 32, 20_000] {
+            assert_eq!(
+                budget_user_texts(texts.iter().copied(), budget),
+                budgeted_user_texts(&items, budget),
+                "budget {budget}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_recent_user_texts_are_enough_for_any_smaller_budget() {
+        // The seed carries only as many of the newest messages as the
+        // largest budget can use — untruncated, so a smaller budget cuts the
+        // same message the history's own walk would.
+        let big = "z".repeat(200); // 50 approx tokens
+        let history = vec![
+            message(Role::User, "long forgotten"),
+            message(Role::User, &big),
+            message(Role::Assistant, "ok"),
+            message(Role::User, "abcd"),
+            message(Role::Error, "Conversation interrupted"),
+        ];
+        let recent = recent_user_texts(&history, 20);
+        assert_eq!(recent, vec![big.clone(), "abcd".to_string()]);
+        for budget in [1, 5, 20] {
+            assert_eq!(
+                budget_user_texts(recent.iter().map(String::as_str), budget),
+                budgeted_user_texts(&history, budget),
+                "budget {budget}"
+            );
+        }
+        // A budget the whole conversation fits in keeps every message.
+        assert_eq!(recent_user_texts(&history, 20_000).len(), 3);
     }
 
     #[test]
@@ -2289,6 +2543,19 @@ mod tests {
         assert!(out.starts_with("aaaaaaaaaa"), "{out:?}");
         assert!(out.ends_with("bbbbbbbbbb"), "{out:?}");
         assert!(out.contains("tokens truncated…"), "{out:?}");
+    }
+
+    #[test]
+    fn a_middle_cut_can_carry_its_callers_mark() {
+        // The same halves, around whatever the caller says stands for the
+        // missing middle — the summarizer's transcript marks its own cuts.
+        let text = "a".repeat(400) + &"b".repeat(400);
+        let out = truncate_middle_with(&text, 50, |removed| format!("<{removed}>"));
+        assert_eq!(out, format!("{}<150>{}", "a".repeat(100), "b".repeat(100)));
+        assert_eq!(
+            truncate_middle_with("short", 50, |_| unreachable!("nothing to cut")),
+            "short"
+        );
     }
 
     #[test]

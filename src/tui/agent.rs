@@ -131,11 +131,28 @@ impl Session<'_> {
                 compact: false,
             });
         }
+        // …and so is the request that summarized its conversation behind its
+        // run, marked as a compaction's (docs/compact.md).
+        if let StreamEvent::CompactionUsage(usage) = &event {
+            self.recorder.record_usage(RequestUsage {
+                after: self.app.history.len(),
+                usage: *usage,
+                agent: Some(id.to_string()),
+                compact: true,
+            });
+        }
         // Screen commits pause while a framed view's flow covers the agent
         // session view (a menu opened from its palette, `docs/view-flow.md`)
         // — the flow-exit rebuild regenerates the agent transcript from its
         // history, exactly like the view's own returns.
         let viewing = self.viewing_agent(id);
+        // A summary of this agent's conversation that did not come is said
+        // where the agent is on screen.
+        if let StreamEvent::CompactionFailed { reason } = &event
+            && viewing
+        {
+            self.toast_compaction_failure(reason);
+        }
         // Freeze the entry's runtime at its live value before a settling event
         // (the per-frame injection stops once the status is final) — the
         // runtime alone: the status verb moves only with a drawn frame, so a
@@ -543,6 +560,12 @@ impl Session<'_> {
                     .report
                     .as_ref()
                     .map(|report| ui::hook_report_lines(report, width)),
+                // A summary that landed behind the agent's run: its
+                // `● Context compacted` cell, where the swap happened
+                // (docs/compact.md).
+                HistoryItem::Compaction(compaction) => {
+                    Some(ui::compaction_lines(compaction, width))
+                }
                 _ => None,
             })
             .filter(|lines| !lines.is_empty())

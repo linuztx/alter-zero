@@ -78,8 +78,9 @@ One row, the page's width less the inset on both sides, standing for the
 whole window: each category's cells in its own colour, in the order the
 request carries them (system prompt, tools, the reminder's sections,
 messages), then the free space (`░`, dim), then the **auto-compact headroom**
-— the last 10% the session never fills, because at 90% the loop compacts on
-its own (`docs/compact.md`) — hatched `╱`.
+— the last 10% the session never fills, because a turn that reaches 90%
+waits for its summary before it sends another request, and an idle session
+there compacts on its own (`docs/compact.md`) — hatched `╱`.
 
 Each segment's cells are its **own** share of the window, rounded to the
 nearest cell (`allot_cells`), so a category's run is as long as its tokens
@@ -272,8 +273,10 @@ allowlisted set its launch builds — kept by the backend until the type or
 its allowlist moves, since the page asks at every loop bottom), its briefing
 (`App::agent_system_reminder`) and its transcript — against the window of the
 model it runs on, with its own last request and a **This agent** ledger in
-place of the session's. A subagent never auto-compacts, so its bar has no
-hatched headroom.
+place of the session's. A subagent compacts itself as it works, against that
+same window (`docs/compact.md` *Subagents*), so its bar keeps the hatched
+headroom too: `App::context_usage_threshold` is the share of whichever
+window the page is counting.
 
 ## Keys
 

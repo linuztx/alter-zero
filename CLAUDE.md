@@ -327,7 +327,7 @@ fix it was left are in the doc.
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`, `headless`,
-`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `builtins`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, `plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
+`session`, `subprocess`, `pty`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `context_usage`, `background`, `builtins`, `scratchpad`, `secrets`, `agents`, `subagents`, `frontmatter`, `ask`, `tasks`, `skills`, `steer`, `compaction`, `mcp`, `trust`, `checkpoint`, `project_doc`, `reminder`, `permission`, `read_only`, `settings`, `telemetry`, `update`, `herdr`, `tips`, `cli`, `links`, `images`, `tokens`, `plugins`) holds the logic; **`src/main.rs`** is a 73-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -3187,7 +3187,52 @@ included — `tokens::ContextMeter`,
 session view it is the viewed agent's own** — `AgentRun::context_used` /
 `App::context_gauge`, `docs/agent-context-gauge.md`) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+attempt per user turn, the cell tagged `· auto`) — the between-turns half;
+**a running turn compacts itself, as often as it needs** (*Compacting while
+the agent works*: compaction used to wait for the turn to end, so one long
+tool-calling turn grew past its window and died on the provider's refusal).
+`llm::agent::run_agent_compacting` consults a `llm::compaction::Compaction`
+seam before every request, when a provider refuses one for its size, and
+before the turn ends; `RollingCompactor` has a summary written **on a thread
+of its own** past `compaction::soft_threshold` (80%) while the agent keeps
+working (`StreamEvent::CompactionStarted`, the status line's accent
+`· compacting context 6s` clause), swaps it in at the next round boundary
+after it lands — `compacted_prefix` (the reminder, the user's budgeted
+messages and the bridge, as one user message) in place of everything the
+summarizer read, the rounds made meanwhile kept verbatim as the tail
+(`StreamEvent::Compacted`, the `● Context compacted` cell committed where
+the swap happened) — and past `hard_threshold` (90%) **waits** for it
+(`CompactionWaiting`, the verb `Compacting context…`), polling the cancel
+token. No count limits it: what stops a pointless one is
+`worth_compacting` (a gain of `min_gain`), a three-round cooldown after a
+failure and three failures in a row. A request refused for its size
+(`is_context_overflow`, or a wire's `StopReason::ContextWindow`) is
+`RoundOutcome::Overflow` → `make_room` → sent again, twice in a row at most.
+The marker carries **`kept`** (how many items recorded just before it the
+summary does not cover — `App::begin_live_compaction` notes the history's
+length on `CompactionStarted`, `land_compaction` takes the growth), `resume`
+(the bridge closes on `prompts/compact_resume.md`) and `budget` (the user-text
+budget, an eighth of the window), all defaulting to a marker made at rest,
+and `context::derive_history_into` reads `covered = position − kept`; the
+**wire and the derivation are the same bytes** — one set of pieces
+(`budget_user_texts`, `summary_bridge`) and a `CompactionSeed` (the leading
+reminder + the user's typed messages) the boundary hands the backend through
+the shared `CompactionControl` before every spawn — which `tests/compaction.rs`
+holds end to end against a stand-in provider with an enforced window. The
+summarizer never reads the conversation's own messages: `summary_request`
+renders a **transcript** cut to 60% of the window on a tools-free client, so
+the request that makes room is never the one that does not fit — the idle
+`/compact` turn sends the same (`summary_context`) — and every mark of
+something missing says `left out of this transcript` (`TRANSCRIPT_CUT`),
+since codex's `…N tokens truncated…` made a live summarizer report the
+*files* as truncated. `/compact` mid-turn is `Action::CompactWhenReady`
+(taken at the next round, or by `Session::run_pending_compact` once idle on
+a backend with no engine); a subagent gets its own compactor against its own
+window; `PreCompact`/`PostCompact` fire through `HookSink::for_compaction`;
+the summary's cost rides `CompactionUsage` into the turn's tally and a
+`compact` usage line, never the gauge. The offline `compact-live` scenario
+scripts it (`smoke.sh` Phase 170) and Phase 171 drives the real engine
+against a stub that refuses anything past its window) in `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 `ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
@@ -3804,7 +3849,7 @@ mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast
 above the box's top rule* (`App::toast`/`ui::toast_rows`/`toast_line`, threaded
 beside `queued_rows`; dim for info, red for errors). It's raised for
 confirmations and soft rejections the user should see but never keep — `/copy`
-(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/compact`
+(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`
 rejection — instead of committing a scrollback bullet; it never enters `history`,
 and its expiry is timed at the boundary (`Session::toast_deadline` +
 `Session::toast`, the timestamp pattern, cleared in the draw tick). See
@@ -4356,7 +4401,7 @@ a minute while it is read says so; `smoke.sh` Phase 155.
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as
 a regular user turn — echoed as the `❯` message, recorded, checkpointed — that
 the model's agentic tool loop answers by exploring the repo and writing the file;
-mid-turn it is rejected with a `Toast` like `/compact` (codex's
+mid-turn it is rejected with a `Toast` like `/resume` (codex's
 `available_during_task = false`), it never records into the ↑-recall history,
 and an Esc-undo of the turn restores the literal `/init` (palette reopened),
 not the prompt. **The generated guide feeds back into the model's context**
@@ -4385,8 +4430,9 @@ turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
 false)` (the dummy scripts a text-only summary), the reply diverts into
 `App::compact_buffer` (never rendered), and `StreamDone` appends the
 `HistoryItem::Compaction` marker + commits the cyan `● Context compacted`
-cell; mid-turn it is rejected with a `Toast` like `/resume`, an empty derived
-context with `Nothing to compact` (`smoke.sh` Phase 50)).
+cell; mid-turn it is `CompactWhenReady` — taken by the running turn at its
+next step under a `Compacting at the agent's next step` toast — an empty
+derived context `Nothing to compact` (`smoke.sh` Phase 50)).
 **`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the

@@ -835,6 +835,7 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
         shell: false,
         retry: run.retry,
         offline: run.offline.clone(),
+        compacting: run.compacting,
         // A subagent's line hangs no tip (docs/tips.md).
         tip: None,
     }

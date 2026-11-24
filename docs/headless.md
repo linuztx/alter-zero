@@ -208,7 +208,11 @@ byte is still worth reading.
    `--continue`d conversation already past its window compacts first: the
    TUI's idle-boundary auto-compaction (`docs/compact.md`), run once before
    the prompt and afterwards only while the run waits on its subagents —
-   never after the last answer, where it would only cost a request.
+   never after the last answer, where it would only cost a request. A turn
+   that fills its window **while it runs** compacts itself between two
+   rounds, as it does in the TUI: the engine lives in the agent loop, so a
+   long unattended run is not cut short at the window. Each landing is a
+   `compaction` item in the `stream-json` output.
 6. **The loop runs until the session is idle**: no turn in flight, nothing
    queued, no subagent running. A background agent's completion starts the
    follow-up turn the TUI would start, so "launch the critic agent, write a

@@ -35,7 +35,7 @@ survives only as the verb old rollouts recorded.
 ## What shows, and when
 
 The live line is
-`(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} | · offline for {d}][ · Thinking for {m}] · esc to interrupt)`
+`(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max} | · offline for {d}][ · compacting context {d}][ · Thinking for {m}] · esc to interrupt)`
 — `{elapsed}` and `{m}` are **humanized** by `ui::format_elapsed` (see *Elapsed*
 below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 
@@ -48,6 +48,7 @@ below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 | after a tool result  | `( ·•●  ) Hatching… (4s · ↑ 200 tokens · esc to interrupt)`                    |
 | retrying a failure   | `( ·•●  ) Hatching… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`      |
 | waiting for the network | `( ·•●  ) Waiting for internet… (2m 3s · ↑ 42 tokens · offline for 1m 10s · esc to interrupt)` — verb and clause amber, over a `⎿ ((·)) No connection to {host} — trying again · N attempts` row (`docs/offline.md`) |
+| a summary being written behind the turn | `( ·•●  ) Hatching… (2m 4s · ↓ 41.2k tokens · compacting context 6s · esc to interrupt)` — the clause in the accent colour, the turn going on under it; once the turn *waits* on the summary the verb becomes `Compacting context…` until it lands (`docs/compact.md` *Compacting while the agent works*) |
 | finished (committed) | `Hatched for 20s` — the past tense of the verb the line wore last               |
 | interrupted (Esc)    | the red `Conversation interrupted` notice, then the same summary over the tally the line last showed — `Hatched for 8s · ≈24.3k tokens`, `≈` marking the share no usage frame reported (see `docs/interrupt.md`) |
 
@@ -193,8 +194,12 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 - `OfflineInfo { host, attempts, began }` — a live lost-connection wait
   (`docs/offline.md`): `began` is the turn clock's reading when the outage
   started, so `offline for Ns` is one subtraction off the injected `elapsed`.
+- `CompactingInfo { began, waiting }` — a summary being written behind the
+  turn (`docs/compact.md`): `began` is the turn clock's reading when it
+  started, like `OfflineInfo`'s, and `waiting` is whether the turn has
+  stopped to wait for it, which is what swaps the verb.
 - `TurnStatus { verb, done_verb, rotates_from, tokens, arrow, elapsed, thinking,
-  shell, retry, offline }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
+  shell, retry, offline, compacting }` (`verb`/`done_verb` are one `StatusVerb`'s two forms, moved
   together; `rotates_from: Option<usize>` is the `STATUS_VERBS` index the line
   opened on when its verb rotates, `None` when it is fixed as given.
   `elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary

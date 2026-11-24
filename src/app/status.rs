@@ -80,11 +80,42 @@ pub struct TurnStatus {
     /// answers — content, a tool round, or a bounded retry announcement.
     /// Never `Some` beside [`retry`](Self::retry).
     pub offline: Option<OfflineInfo>,
+    /// Set while a summary of the conversation is **being written behind
+    /// the turn** (`docs/compact.md` *Compacting while the agent works*) —
+    /// rendered as a `compacting context Ns` clause, and as the verb itself
+    /// once the turn has stopped to wait for it. Set by
+    /// [`App::begin_live_compaction`] from the backend's
+    /// [`crate::stream::StreamEvent::CompactionStarted`], cleared when the
+    /// summary lands or fails.
+    pub compacting: Option<CompactingInfo>,
     /// The tip this turn's line is showing — or last drew, while something
     /// hides it — once the turn has run [`crate::tips::TIP_DELAY`]; drawn by
     /// [`App::set_status_times`] (`docs/tips.md`). `None` until then, and
     /// for every status built with no turn behind it (a preview, a copy).
     pub tip: Option<ShownTip>,
+}
+
+/// A live **compaction** indicator (`docs/compact.md` *Compacting while the
+/// agent works*): when the summary started being written — the turn's own
+/// clock reading, the [`OfflineInfo`] pattern, so `compacting context 12s`
+/// is one subtraction off the `elapsed` the boundary already injects — and
+/// whether the turn has stopped to wait for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactingInfo {
+    /// The turn clock's reading when the summarizer started.
+    pub began: Duration,
+    /// Whether nothing more is sent until it lands: the context is past its
+    /// hard limit, a request did not fit, or the turn is about to end.
+    pub waiting: bool,
+}
+
+impl CompactingInfo {
+    /// How long the summary has been in the making, given the turn clock's
+    /// reading `now` (never negative).
+    #[must_use]
+    pub fn duration(&self, now: Duration) -> Duration {
+        now.saturating_sub(self.began)
+    }
 }
 
 /// A live retry indicator for the status line: the 1-based retry number and the

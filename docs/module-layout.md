@@ -36,7 +36,7 @@ widened for the split.
 |--------|-------|
 | `mod.rs` | The `App` struct, its core message/toast/clock methods, and the facade (`mod` + `pub use`). |
 | `types.rs` | `Role`, `Message`, `HistoryItem`, `View`, `Toast`, `SessionInfo` — the shared vocabulary. Types that belong to one feature live with it instead: `ToolCall` in `tools.rs`, `Compaction` in `compact.rs`, `StreamError`/`InterruptedTurn` in `turn.rs`. |
-| `status.rs` | `TurnStatus`, `TurnSummary`, `TokenArrow`, `RetryInfo` and the token tally the spinner line renders. |
+| `status.rs` | `TurnStatus`, `TurnSummary`, `TokenArrow`, `RetryInfo`, `CompactingInfo` and the token tally the spinner line renders. |
 | `action.rs` | `Action`: what a key press asks the loop to do. |
 | `keys.rs` | `on_key` (dispatch by `View`) and the conversation view's key map. |
 | `composer.rs` | Paste placeholders, Ctrl+V image attachments, the `!` shell mode. |
@@ -47,7 +47,7 @@ widened for the split.
 | `tools.rs` | The tool-call batch queue, how a call resolves, and `PathDisplay` — the cwd-relative / `~`-relative / absolute rule a file tool's path is *shown* by (`docs/tools.md` *Path display*), injected at the boundary. |
 | `drafts.rs` | The calls a round is still **generating**: `ArgsScanner` (streamed JSON arguments decoded as they arrive), `ToolDraft` and `ToolDrafts` — the lifecycle a `write` previews by while its file streams into its cell (`docs/write-streaming.md`). |
 | `turn.rs` | Turn lifecycle: begin/stream/interrupt/finish, the status tally, the summary. |
-| `compact.rs` | `/compact`, auto-compaction, and the context gauge. |
+| `compact.rs` | `/compact`, auto-compaction, and the context gauge — the `Compaction` marker, the compact turn's begin/finish, and the fold of a summary written while the agent works (`begin_live_compaction`, `land_compaction`). The policy both sides share is the top-level `crate::compaction`, the engine `crate::llm::compaction` (`docs/compact.md`). |
 | `backtrack.rs` | The Esc-Esc backtrack. |
 | `views.rs` | The Ctrl+O and Ctrl+D overlays' state. |
 | `resume.rs` | The `/resume` picker. |

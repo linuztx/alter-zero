@@ -321,6 +321,17 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// A view of this sink for **one compaction** of the conversation it
+    /// serves — the [`CompactHooks`] mapping, where the summarizer's
+    /// "prompt" hook is `PreCompact` and its completion `PostCompact`, with
+    /// `auto` the payloads' `trigger`. What a summary written behind a
+    /// running turn fires its hooks through (`docs/compact.md` *Compacting
+    /// while the agent works*), as an idle `/compact` turn's backend is
+    /// built with the same wrapper. `None` — the default — fires none.
+    fn for_compaction(&self, _auto: bool) -> Option<Arc<dyn HookSink>> {
+        None
+    }
+
     /// The conversation is closing (`reason`: `clear` — a `/clear` starting
     /// a fresh one — `resume`, a `/resume` switching to another, or
     /// `prompt_input_exit`, a quit; Claude Code's values). Envelope-only,
@@ -1865,6 +1876,10 @@ impl HookSink for CommandHooks {
 
     fn for_subagent(&self, agent_id: &str, agent_type: &str) -> Option<Arc<dyn HookSink>> {
         Some(Arc::new(self.tagged(agent_id, agent_type)))
+    }
+
+    fn for_compaction(&self, auto: bool) -> Option<Arc<dyn HookSink>> {
+        Some(Arc::new(CompactHooks::new(self.clone(), auto)))
     }
 
     fn home(&self) -> Option<&Path> {

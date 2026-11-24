@@ -49,15 +49,25 @@ pub const INIT_PROMPT: &str = include_str!("../../prompts/init.md");
 /// See `docs/init.md` / `docs/toast.md`.
 pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progress";
 
-/// The transient toast shown when `/compact` is run while a turn is active —
-/// codex disables it during a task (`available_during_task`); ours rejects with
-/// the `/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
-pub const COMPACT_BUSY_NOTICE: &str = "/compact is disabled while a task is in progress";
-
 /// The transient toast shown when `/compact` finds nothing to summarize — an
 /// empty conversation would send the bare summarization prompt to the model
 /// and "summarize" nothing. See `docs/compact.md`.
 pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
+
+/// What the toast opens with when a summary being written behind a running
+/// turn did not come — the provider's own reason follows. The context
+/// stands as it was and the turn goes on. See `docs/compact.md`.
+pub const COMPACT_FAILED_PREFIX: &str = "Context not compacted: ";
+
+/// The transient toast `/compact` raises when it is run while a turn is in
+/// flight: the turn compacts at its next step — a round boundary, or its end
+/// — instead of the command being refused. See `docs/compact.md`.
+pub const COMPACT_QUEUED_NOTICE: &str = "Compacting at the agent's next step";
+
+/// The toast for a `/compact` run while a compaction is already on its way —
+/// a `/compact` turn, a summary being written behind the turn, or one just
+/// asked for.
+pub const COMPACT_ALREADY_NOTICE: &str = "Already compacting";
 
 /// What running a slash command does. The palette dispatches one of these on
 /// select; `App::run_selected_command` turns it into an [`Action`] for the loop.
@@ -83,10 +93,11 @@ pub enum CommandEffect {
     /// while a turn is active (codex's `available_during_task` is `false`).
     Init,
     /// Run codex's `/compact`: a summarization turn whose reply becomes the
-    /// context bridge (`docs/compact.md`) — or reject with a
-    /// [`COMPACT_BUSY_NOTICE`] toast while a turn is active (codex disables
-    /// it mid-task) / a [`COMPACT_EMPTY_NOTICE`] toast when the derived
-    /// context is empty.
+    /// context bridge (`docs/compact.md`) — while a turn is active, ask
+    /// *it* to compact at its next step instead (codex disables the command
+    /// mid-task); a [`COMPACT_EMPTY_NOTICE`] toast when the derived context
+    /// is empty, a [`COMPACT_ALREADY_NOTICE`] one when a compaction is
+    /// already under way.
     Compact,
     /// Open the read-only `/context` page: what fills the context window,
     /// by category, and what the provider said about the last request and
@@ -535,13 +546,17 @@ impl App {
                 }
             }
             CommandEffect::Compact => {
-                // Codex disables /compact while a task runs (the summarize
-                // request would race the stream over the same history); the
-                // rejection is a transient toast like /resume's. An empty
-                // derived context has nothing to summarize. See
-                // docs/compact.md / docs/toast.md.
-                if self.turn_active() {
-                    Action::Toast(COMPACT_BUSY_NOTICE.to_string())
+                // Mid-turn the command is no longer refused (codex disables
+                // it while a task runs): the running turn is asked to compact
+                // at its next step, and goes on (docs/compact.md *Compacting
+                // while the agent works*). One already under way — a
+                // `/compact` turn, a summary being written behind the turn —
+                // is said rather than doubled. At rest, an empty derived
+                // context has nothing to summarize. See docs/toast.md.
+                if self.is_compacting() || self.live_compaction() {
+                    Action::Toast(COMPACT_ALREADY_NOTICE.to_string())
+                } else if self.turn_active() {
+                    Action::CompactWhenReady
                 } else if !crate::context::derives_conversation(&self.history) {
                     Action::Toast(COMPACT_EMPTY_NOTICE.to_string())
                 } else {

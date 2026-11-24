@@ -134,6 +134,13 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
             StreamEvent::Offline { .. } => panic!("the dummy never loses a connection"),
             StreamEvent::Usage(_) => panic!("the dummy never reports usage"),
+            StreamEvent::CompactionStarted { .. }
+            | StreamEvent::CompactionWaiting
+            | StreamEvent::CompactionUsage(_)
+            | StreamEvent::Compacted { .. }
+            | StreamEvent::CompactionFailed { .. } => {
+                panic!("the default demo compacts nothing")
+            }
             StreamEvent::Permission(_) => {
                 panic!("no gate attached — the dummy never asks")
             }

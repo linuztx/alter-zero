@@ -50,7 +50,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Tools** | `true` / `false` | Whether `bash`/`read`/`write`/`edit`/`agent` are offered to the model at all (`docs/tools.md`). Seeded from `ALTER_ZERO_TOOLS`. Off also withdraws both halves of the `<system-reminder>` — the skills listing and the agent-type listing (`docs/subagents.md`): a roster for a tool the request never carries is a dead end. |
 | **Permission mode** | `manual` / `edit` / **`auto`** / `master` | The same posture Shift+Tab cycles (`docs/permissions.md`) — the row is a second door onto one state, not a copy of it. **`auto` until a project saves another mode**, which it keeps per project in `permissions.json` rather than `settings.json`; seeded for a run, and never saved, from `ALTER_ZERO_PERMISSION_MODE`. |
 | **Checkpoints** | **`false`** / `true` | Per-turn working-directory snapshots (`docs/checkpoint.md`). **Off until a directory turns it on** (`docs/per-directory-state.md`); seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
-| **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
+| **Auto compact** | `true` / `false` | Whether the session compacts on its own (`docs/compact.md`): a running turn has a summary written in the background from 80 % of the context window, swaps it in between two steps and waits for it at 90 %, as often as it needs; an idle session past 90 % runs the summarization turn. Off, a turn that outgrows its window ends on the provider's refusal. `/compact` by hand is unaffected, mid-turn included. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
 | **Hooks** | **`true`** / `false` | Whether the lifecycle hooks the user trusted run — the user's `~/.alter-zero/hooks.json` and a project's — around tool calls, turns, and the session boundaries (`docs/hooks.md`). **On until a directory turns it off** (`docs/per-directory-state.md`); each hook runs once it is trusted in the startup review (`docs/config-review.md`); seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
@@ -314,8 +314,12 @@ docs`.
     it on first lets go of an open group, so the reads it held come back as
     cells of their own (`docs/tool-groups.md`).
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
-    `tui::stream` consults `App::settings().show_thinking()` per phase and
-    `App::should_auto_compact` gates on the flag.
+    `tui::stream` consults `App::settings().show_thinking()` per phase,
+    `App::should_auto_compact` gates on the flag between turns, and the
+    loop bottom copies it onto the session's `CompactionControl`
+    (`Session::sync_compaction_policy`), which the agent loop's own
+    compactor reads at every step — so the row flipped mid-turn holds from
+    the agent's next request (`docs/compact.md`).
   - **Animate mascot** needs nothing either: the frame that poses the banner
     reads the row (`App::banner_pose`), so off repaints it at rest on the
     next draw and no further frame is scheduled, and on picks the animation

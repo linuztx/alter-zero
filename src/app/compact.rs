@@ -11,14 +11,6 @@ use super::*;
 /// `● Context compacted` cell being its record. See `docs/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
 
-/// The auto-compact trigger's numerator/denominator: codex's threshold is
-/// **90% of the context window** (`(context_window * 9) / 10`,
-/// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
-/// turn on its own at the next idle boundary. See `docs/compact.md`.
-const AUTO_COMPACT_NUMERATOR: u64 = 9;
-
-const AUTO_COMPACT_DENOMINATOR: u64 = 10;
-
 impl App {
     /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
     /// machinery like [`begin_shell`](App::begin_shell) so the summarization
@@ -48,6 +40,7 @@ impl App {
         self.attempt_floor = None;
         self.compact_auto = auto;
         self.compact_before = self.context_used;
+        self.live_compaction = None;
         self.stream_preview_rows = 1;
         // Per-turn usage accumulators reset with every turn machinery start.
         self.turn_usage_tokens = 0;
@@ -71,6 +64,7 @@ impl App {
             shell: false,
             retry: None,
             offline: None,
+            compacting: None,
             tip: None,
         });
     }
@@ -106,6 +100,11 @@ impl App {
             after: 0,
             auto: self.compact_auto,
             secs: elapsed_secs,
+            // Made at rest: the summary covers everything before the marker,
+            // and the next thing the model reads is the user's own message.
+            kept: 0,
+            resume: false,
+            budget: crate::compaction::user_message_budget(self.context_window),
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -124,6 +123,126 @@ impl App {
         // One attempt per user turn: no immediate auto re-trigger.
         self.auto_compact_blocked = true;
         Some(compaction)
+    }
+
+    /// A summary of the conversation has started being written **behind the
+    /// running turn** ([`crate::stream::StreamEvent::CompactionStarted`],
+    /// `docs/compact.md` *Compacting while the agent works*). The summarizer
+    /// reads the conversation as it stands at this round boundary, so the
+    /// history's length here is where its summary's coverage ends: whatever
+    /// is recorded from now until it lands is kept as it happened
+    /// ([`Compaction::kept`]). The boundary finalises the streamed text
+    /// first, like every event that interleaves with a reply. The status
+    /// line says so from here on. A no-op with no turn in flight — and
+    /// inside a `/compact` turn, which is the summary.
+    pub fn begin_live_compaction(&mut self, auto: bool) {
+        if self.is_compacting() {
+            return;
+        }
+        let Some(status) = self.status.as_mut() else {
+            return;
+        };
+        status.compacting = Some(CompactingInfo {
+            began: status.elapsed,
+            waiting: false,
+        });
+        self.live_compaction = Some(LiveCompaction {
+            floor: self.history.len(),
+            auto,
+        });
+    }
+
+    /// Whether a summary is being written behind the running turn.
+    #[must_use]
+    pub const fn live_compaction(&self) -> bool {
+        self.live_compaction.is_some()
+    }
+
+    /// The turn has stopped to wait for the summary in flight
+    /// ([`crate::stream::StreamEvent::CompactionWaiting`]): the status line's
+    /// verb says so until it lands.
+    pub fn wait_on_compaction(&mut self) {
+        if let Some(compacting) = self
+            .status
+            .as_mut()
+            .and_then(|status| status.compacting.as_mut())
+        {
+            compacting.waiting = true;
+        }
+    }
+
+    /// One request the summarizer made behind the turn
+    /// ([`crate::stream::StreamEvent::CompactionUsage`]): billed in this
+    /// turn, so it joins the turn's receipt and the session's ledger — and
+    /// the live tally, on top of whatever the round has ticked — but never
+    /// the gauge: its `input` counts the summarizer's own request, not the
+    /// conversation's context (`docs/token-estimate.md`).
+    pub fn apply_compaction_usage(&mut self, usage: &crate::stream::TokenUsage) {
+        self.usage_since_launch.record(usage);
+        let billed = usize::try_from(usage.total()).unwrap_or(usize::MAX);
+        self.turn_usage_tokens = self.turn_usage_tokens.saturating_add(billed);
+        self.turn_usage_cached = self
+            .turn_usage_cached
+            .saturating_add(usize::try_from(usage.cached).unwrap_or(usize::MAX));
+        self.turn_usage_cache_write = self
+            .turn_usage_cache_write
+            .saturating_add(usize::try_from(usage.cache_write).unwrap_or(usize::MAX));
+        if let Some(status) = self.status.as_mut() {
+            status.tokens = status.tokens.saturating_add(billed);
+        }
+    }
+
+    /// The summary landed and the running turn's context is the compacted
+    /// shape now ([`crate::stream::StreamEvent::Compacted`]): append the
+    /// marker — an *append*, like [`finish_compact`](App::finish_compact)'s,
+    /// keeping every item recorded since the summarizer started — re-read the
+    /// gauge, and return the marker for the boundary to commit its
+    /// `● Context compacted` cell. The turn goes on.
+    ///
+    /// `budget` is the approx-token budget the turn kept the user's messages
+    /// under; recorded, so every later derivation keeps the same ones. A
+    /// landing with no summary known to be in flight (a backend that
+    /// announced none) covers everything before it.
+    pub fn land_compaction(&mut self, summary: &str, secs: u64, budget: usize) -> Compaction {
+        let live = self.live_compaction.take();
+        if let Some(status) = self.status.as_mut() {
+            status.compacting = None;
+        }
+        // The gauge as it stands, whatever joined since it was last read.
+        self.sync_context_used();
+        let floor = live.map_or(self.history.len(), |live| {
+            live.floor.min(self.history.len())
+        });
+        let mut compaction = Compaction {
+            summary: summary.trim().to_string(),
+            timestamp: self.now_stamp(),
+            before: self.context_used,
+            after: 0,
+            auto: live.is_none_or(|live| live.auto),
+            secs,
+            kept: self.history.len() - floor,
+            // Written mid-turn: the bridge tells the model to carry on.
+            resume: true,
+            budget,
+        };
+        self.history
+            .push(HistoryItem::Compaction(compaction.clone()));
+        self.refresh_context_used();
+        compaction.after = self.context_used;
+        if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
+            recorded.after = self.context_used;
+        }
+        compaction
+    }
+
+    /// The summary in flight will never land — it failed
+    /// ([`crate::stream::StreamEvent::CompactionFailed`]), or its turn is
+    /// over. The context stands as it was.
+    pub fn end_live_compaction(&mut self) {
+        self.live_compaction = None;
+        if let Some(status) = self.status.as_mut() {
+            status.compacting = None;
+        }
     }
 
     /// Inject the active model's context window in tokens (the boundary's
@@ -290,13 +409,27 @@ impl App {
 }
 
 /// Where auto-compaction runs for a `window`-token context window: codex's
-/// 90% (`ModelInfo::auto_compact_token_limit`). The trigger
-/// ([`App::should_auto_compact`]) and the `/context` page's headroom
-/// (`docs/context-usage.md`) both read it, so the page can never show a
-/// threshold the loop does not act on.
+/// 90% (`ModelInfo::auto_compact_token_limit`) — past it nothing more is
+/// sent until the context is smaller ([`crate::compaction::hard_threshold`]).
+/// The idle trigger ([`App::should_auto_compact`]), the agent loop's own
+/// (`llm::compaction`) and the `/context` page's headroom
+/// (`docs/context-usage.md`) all read that one number, so the page can never
+/// show a threshold nothing acts on.
 #[must_use]
 pub(crate) const fn auto_compact_threshold(window: u64) -> u64 {
-    window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR
+    crate::compaction::hard_threshold(window)
+}
+
+/// A summary being written behind the running turn, as the history sees it
+/// (`docs/compact.md` *Compacting while the agent works*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LiveCompaction {
+    /// The history's length when the summarizer started: its summary covers
+    /// the items before this.
+    floor: usize,
+    /// Whether the context asked for it, or the user did (`/compact` typed
+    /// mid-turn).
+    auto: bool,
 }
 
 /// The estimate of a derived context: every message's text, a flat
@@ -337,7 +470,7 @@ pub(crate) fn message_tokens(
 /// context derivation bridges into every later request, codex's local
 /// compaction (`docs/compact.md`). Renders as the `● Context compacted` cell
 /// (the summary body expands in the Ctrl+O transcript only).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Compaction {
     /// The compact turn's full streamed reply — the handoff summary (may be
     /// empty when the model streamed nothing; the derivation substitutes
@@ -359,4 +492,37 @@ pub struct Compaction {
     /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
     /// old rollout), hiding the clause.
     pub secs: u64,
+    /// How many of the items recorded **just before this marker** the
+    /// summary does not cover. A summary written while the agent kept working
+    /// was taken from the conversation as it stood when the summarizer
+    /// started; everything recorded between there and the marker replays
+    /// after the bridge, exactly as it happened (`docs/compact.md`
+    /// *Compacting while the agent works*). Relative to the marker rather
+    /// than an index of its own, so it means the same thing wherever the
+    /// marker sits. 0 — every compaction made at rest — covers everything
+    /// before the marker.
+    pub kept: usize,
+    /// Whether the summary was written **while a turn was running**: its
+    /// bridge then closes on the note telling the model to carry the task on
+    /// rather than wait to be asked ([`crate::context::SUMMARY_RESUME_NOTE`]).
+    pub resume: bool,
+    /// The approx-token budget its kept user messages were chosen under
+    /// ([`crate::compaction::user_message_budget`], a share of the model's
+    /// window) — recorded, so the derivation gives the same messages back
+    /// whatever model the conversation is later resumed on. 0 = codex's
+    /// fixed 20 000, which every marker written before the field carries.
+    pub budget: usize,
+}
+
+impl Compaction {
+    /// The budget its kept user messages are chosen under
+    /// ([`budget`](Self::budget), or codex's default where none was recorded).
+    #[must_use]
+    pub const fn user_budget(&self) -> usize {
+        if self.budget == 0 {
+            crate::compaction::DEFAULT_USER_MESSAGE_BUDGET
+        } else {
+            self.budget
+        }
+    }
 }

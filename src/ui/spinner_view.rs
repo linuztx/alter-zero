@@ -52,6 +52,7 @@ fn sample_status(first_verb: usize, elapsed: Duration) -> TurnStatus {
         shell: false,
         retry: None,
         offline: None,
+        compacting: None,
         tip: None,
     }
 }

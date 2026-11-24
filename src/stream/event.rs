@@ -579,6 +579,50 @@ pub enum StreamEvent {
     /// the app-side estimate into the provider's own accounting, prompt-cache
     /// detail included. The dummy never sends it. See `docs/prompt-caching.md`.
     Usage(TokenUsage),
+    /// A summary of the conversation so far has **started being written**,
+    /// behind the running turn (`docs/compact.md` *Compacting while the agent
+    /// works*): its context is filling the model's window (`auto`), or the
+    /// user ran `/compact` while the turn was in flight. Sent at a round
+    /// boundary — right after the previous round's tool results and whatever
+    /// was folded in behind them — and the summarizer reads the conversation
+    /// **as it stands there**: the loop marks the place in its history, so
+    /// that what the agent does meanwhile is kept as it happened when the
+    /// summary lands. Nothing commits; the status line says so. Always
+    /// followed, sooner or later, by [`StreamEvent::Compacted`] or
+    /// [`StreamEvent::CompactionFailed`] — or by nothing at all when the
+    /// turn is interrupted first.
+    CompactionStarted { auto: bool },
+    /// The turn has **stopped to wait** for the summary in flight: the
+    /// context is past the point where another request may go out, the
+    /// request it just made did not fit, or the turn is about to end.
+    /// Live-only — the status line's verb becomes `Compacting context`.
+    CompactionWaiting,
+    /// The provider's usage for one request the summarizer made. Billed like
+    /// any other, and part of the turn's receipt — but it measures the
+    /// summarizer's own context, never the conversation's, so the gauge does
+    /// not read it (`docs/token-estimate.md`). Sent ahead of the
+    /// [`StreamEvent::Compacted`] or [`StreamEvent::CompactionFailed`] it
+    /// belongs to.
+    CompactionUsage(TokenUsage),
+    /// The summary landed, and the running turn's context **is now the
+    /// compacted shape**: the user's recent messages and the summary in
+    /// place of everything the summarizer read, then whatever the agent did
+    /// while it was being written. The loop appends the
+    /// [`crate::app::Compaction`] marker — keeping the items recorded since
+    /// [`StreamEvent::CompactionStarted`] — commits the `● Context compacted`
+    /// cell, and re-reads the gauge, so every later turn derives the context
+    /// this one continues on. `secs` is how long the summary took, `budget`
+    /// the approx-token budget its kept user messages were chosen under
+    /// ([`crate::compaction::user_message_budget`]).
+    Compacted {
+        summary: String,
+        secs: u64,
+        budget: usize,
+    },
+    /// The summary in flight could not be written — the request failed, or
+    /// nothing came back. The context stands as it was, the turn goes on,
+    /// and the loop says why in a toast: nothing commits.
+    CompactionFailed { reason: String },
     /// A `write`/`edit`/`bash` call is **waiting on the user's approval**
     /// (`docs/permissions.md`). Sent by the backend thread just before it
     /// blocks on the [`crate::permission::PermissionGate`]; the loop raises
@@ -643,6 +687,11 @@ impl StreamEvent {
             | Self::Retrying { .. }
             | Self::Offline { .. }
             | Self::Usage(_)
+            | Self::CompactionStarted { .. }
+            | Self::CompactionWaiting
+            | Self::CompactionUsage(_)
+            | Self::Compacted { .. }
+            | Self::CompactionFailed { .. }
             | Self::Permission(_)
             | Self::AskUser(_)
             | Self::Error(_)

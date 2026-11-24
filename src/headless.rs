@@ -1676,6 +1676,7 @@ mod tests {
             after: 900,
             auto: true,
             secs: 4,
+            ..Default::default()
         })
     }
 

@@ -88,6 +88,14 @@ pub enum Action {
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,
+    /// `/compact` run **while a turn is in flight** (`docs/compact.md`
+    /// *Compacting while the agent works*): the loop asks the running turn
+    /// to compact at its next step — a round boundary, or its end — through
+    /// the session's [`crate::compaction::CompactionControl`], and says so
+    /// in a toast. A turn that ends without taking the request (the offline
+    /// demo, a `!` command) leaves it for the loop, which runs the
+    /// summarization turn as soon as it is idle.
+    CompactWhenReady,
     /// `/compact` from an idle composer with a non-empty context: run the
     /// summarization turn. The loop calls [`App::begin_compact`], derives the
     /// context, pushes codex's summarization prompt as its final user entry,

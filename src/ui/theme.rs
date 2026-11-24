@@ -2703,6 +2703,26 @@ pub(super) fn status_offline_color() -> Color {
     palette().warning
 }
 
+// --- A summary being written behind the turn (docs/compact.md): the
+// status line's clause while the agent keeps working, and its verb once the
+// turn has stopped to wait for it. ---
+
+/// The verb the status line wears once the turn has **stopped to wait** for
+/// the summary in flight — in place of the turn's own verb and of any task's
+/// activeForm, since waiting is all the turn is doing.
+pub(super) const COMPACTING_VERB: &str = "Compacting context";
+
+/// The clause saying a summary is being written, and for how long:
+/// `compacting context 12s`.
+pub(super) const COMPACTING_CLAUSE: &str = "compacting context ";
+
+/// The accent — the `compacting context` clause, in the colour the
+/// `● Context compacted` cell's bullet will land in ([`system_color`]), so
+/// the clause and the record it turns into read as one thing.
+pub(super) fn status_compacting_color() -> Color {
+    system_color()
+}
+
 /// The ripple's frames — a dot sending rings out and drawing them back in,
 /// the shape of a signal being sent to a host that does not answer. Every
 /// frame is the same width, so the text after it never jitters.

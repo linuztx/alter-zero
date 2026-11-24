@@ -505,6 +505,26 @@ struct CompactionRecord {
     /// `serde(default)`ed like the gauge counts, 0 meaning unknown.
     #[serde(default, skip_serializing_if = "is_zero")]
     secs: u64,
+    /// How many of the items just before the marker its summary does not
+    /// cover — a summary written while the agent kept working
+    /// ([`Compaction::kept`]). Off the wire at 0, which is every compaction
+    /// made at rest and every file from before the field.
+    ///
+    /// [`Compaction::kept`]: crate::app::Compaction::kept
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    kept: usize,
+    /// Whether it was written while a turn ran ([`Compaction::resume`]),
+    /// which is what its bridge closes on.
+    ///
+    /// [`Compaction::resume`]: crate::app::Compaction::resume
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resume: bool,
+    /// The budget its kept user messages were chosen under
+    /// ([`Compaction::budget`]) — 0, and off the wire, for codex's default.
+    ///
+    /// [`Compaction::budget`]: crate::app::Compaction::budget
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    budget: usize,
 }
 
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
@@ -836,6 +856,9 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             after: compaction.after,
             auto: compaction.auto,
             secs: compaction.secs,
+            kept: compaction.kept,
+            resume: compaction.resume,
+            budget: compaction.budget,
         }),
         // The recorder mirrors history append-only, so a background entry's
         // later completion update (`App::settle_agent_completion`) never
@@ -1184,6 +1207,9 @@ fn push_history_item(items: &mut Vec<HistoryItem>, record: ItemRecord) {
                 after: compaction.after,
                 auto: compaction.auto,
                 secs: compaction.secs,
+                kept: compaction.kept,
+                resume: compaction.resume,
+                budget: compaction.budget,
             }));
         }
         ItemRecord::Reasoning(reasoning) => {
@@ -1530,12 +1556,45 @@ mod tests {
             after: 2_100,
             auto: true,
             secs: 36,
+            ..Default::default()
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(value["type"], "compaction");
         assert_eq!(value["payload"]["summary"], "we did the thing");
         assert_eq!(value["payload"]["secs"], 36);
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+        // A compaction made at rest writes nothing of what only one made
+        // mid-turn has to say, so its line keeps the shape it always had.
+        for field in ["kept", "resume", "budget"] {
+            assert!(value["payload"].get(field).is_none(), "{field}: {line}");
+        }
+    }
+
+    #[test]
+    fn a_compaction_made_while_the_agent_worked_round_trips() {
+        // Its summary covers the conversation as it stood when the
+        // summarizer started: how many items were recorded since, that the
+        // bridge tells the model to carry on, and the budget its user
+        // messages were kept under all have to survive a /resume, or the
+        // resumed context is not the one the turn ran on (docs/compact.md).
+        let item = HistoryItem::Compaction(crate::app::Compaction {
+            summary: "half way".into(),
+            timestamp: "03:20 PM".into(),
+            before: 41_000,
+            after: 9_000,
+            auto: true,
+            secs: 12,
+            kept: 3,
+            resume: true,
+            budget: 6_250,
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["kept"], 3);
+        assert_eq!(value["payload"]["resume"], true);
+        assert_eq!(value["payload"]["budget"], 6_250);
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }

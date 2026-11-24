@@ -429,13 +429,19 @@ fn inside_an_agent_view_the_page_is_the_agents_window() {
         tokens(&app, Category::Messages),
         count_tokens("What is the weather in Warsaw?")
     );
-    // Its own window — and no headroom, since a subagent never compacts.
+    // Its own window, and the headroom its own compaction keeps: a subagent
+    // compacts itself while it works, against the window of the model it
+    // runs on (docs/compact.md *Subagents*).
     assert_eq!(app.context_usage_window(), Some(100_000));
-    assert_eq!(app.context_usage_threshold(), None);
+    assert_eq!(app.context_usage_threshold(), Some(90_000));
     assert!(
-        !app.context_usage_rows()
+        app.context_usage_rows()
             .contains(&ContextUsageRow::AutoCompact)
     );
+    // The one switch governs both conversations.
+    app.settings.auto_compact = false;
+    assert_eq!(app.context_usage_threshold(), None);
+    app.settings.auto_compact = true;
     // Leaving the view, the next refresh counts the lead's window again.
     app.close_agent_view();
     app.refresh_context_usage();
