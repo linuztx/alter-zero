@@ -254,17 +254,12 @@ impl Session<'_> {
         }
     }
 
-    /// Copy `text` for an `/mcp` page, saying `done` — the `/copy` seam:
-    /// arboard with the OSC 52 fallback (`docs/copy.md`), so the copy works
-    /// over SSH too.
+    /// Copy `text` for an `/mcp` page, saying `done` — the `/copy` seam
+    /// (`Session::copy_text`, `docs/copy.md`), so the copy reaches a
+    /// terminal at the far end of SSH or tmux too.
     fn copy_for_mcp(&mut self, text: &str, done: &str) {
-        match alter_zero::clipboard::copy_to_clipboard(text) {
-            Ok(lease) => {
-                if let Some(lease) = lease {
-                    self.clipboard_lease = Some(lease);
-                }
-                self.toast(done, ToastKind::Info);
-            }
+        match self.copy_text(text) {
+            Ok(()) => self.toast(done, ToastKind::Info),
             Err(_) => self.toast("Copy failed", ToastKind::Error),
         }
     }

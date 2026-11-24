@@ -9,7 +9,6 @@
 //! [`Action::CopySponsorLink`]: alter_zero::app::Action::CopySponsorLink
 
 use alter_zero::app::{SponsorLink, ToastKind};
-use alter_zero::clipboard;
 
 use super::Session;
 
@@ -18,14 +17,11 @@ impl Session<'_> {
     /// say which one. The page stays open either way — the toast lands above
     /// it with the value still in view.
     pub(crate) fn copy_sponsor_link(&mut self, link: SponsorLink) {
-        match clipboard::copy_to_clipboard(link.value) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                self.toast(
-                    format!("Copied the {} to clipboard", link.noun),
-                    ToastKind::Info,
-                );
-            }
+        match self.copy_text(link.value) {
+            Ok(()) => self.toast(
+                format!("Copied the {} to clipboard", link.noun),
+                ToastKind::Info,
+            ),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }

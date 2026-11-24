@@ -16,13 +16,14 @@ smoke_begin
 # the file opens with the startup banner the terminal did and holds the
 # user's message and the reply, no row carries trailing whitespace — and
 # the composer comes back. A second
-# `/export` picks the clipboard row: headless here (the suite's own unset
-# of the display variables) arboard has no clipboard server, so the OSC 52
-# fallback lands the same text in tmux's paste buffer (Phase 28's trick).
+# `/export` picks the clipboard row: the app, inside the phase's tmux, hands
+# the same text to tmux (`tmux load-buffer`), which keeps it in its paste
+# buffer (Phase 169, docs/copy.md).
 S122="${S}_export"
 EXDIR="$(mktemp -d "$SMOKE_TMP/export.XXXXXX")"
 launch -c "$EXDIR" "$S122" 90 40 "$APP_ABS"
-# tmux must capture OSC 52 from the app into its own buffer (Phase 28).
+# For a tmux older than 3.2, which has no `load-buffer -w`: the copy falls
+# back to the escape there, and only `on` keeps an application's escape.
 tmux set-option -g set-clipboard on
 tmux send-keys -t "$S122" -l "/export"
 sleep 0.4
@@ -126,7 +127,7 @@ else
 	fi
 fi
 # A second /export, Enter on the clipboard row: the toast, the page closed,
-# and the OSC 52 fallback lands the same text in tmux's buffer.
+# and tmux's buffer holds the same text.
 while tmux delete-buffer 2>/dev/null; do :; done
 tmux send-keys -t "$S122" -l "/export"
 sleep 0.3
@@ -139,7 +140,7 @@ printf '%s\n' "$export_copied"
 expect_has "$export_copied" -F "Copied the conversation to clipboard" "Enter on the clipboard row did not confirm the copy"
 expect_lacks "$export_copied" -F "Export conversation" "the clipboard pick did not close the page"
 export_clip="$(tmux show-buffer 2>/dev/null)"
-echo "==== Phase 122: tmux clipboard buffer (the OSC 52 fallback landed here) ===="
+echo "==== Phase 122: tmux clipboard buffer (tmux took it from the app) ===="
 printf '%s\n' "$export_clip"
 expect_has "$export_clip" -F "❯ hello there" "the clipboard does not hold the user's message"
 expect_has "$export_clip" -F "$SETTLED_REPLY" "the clipboard does not hold the reply"

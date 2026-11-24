@@ -74,8 +74,8 @@ The `/donate` grammar, every key owned while the page is open:
 | `1`, `2`            | jump to that row and copy it                          |
 | Esc, Ctrl+C         | close; the composer returns                           |
 
-A copy goes through `/copy`'s clipboard path (arboard, with the OSC 52
-fallback) and confirms with a toast: `Copied the sponsor link to clipboard`
+A copy goes through `/copy`'s clipboard path (arboard, then the user's
+terminal, `docs/copy.md`) and confirms with a toast: `Copied the sponsor link to clipboard`
 or `Copied the email address to clipboard`. The app opens no browser itself;
 the link is the terminal's to follow and the copy is for everywhere else.
 

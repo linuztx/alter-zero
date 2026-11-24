@@ -16,7 +16,6 @@
 use std::time::Duration;
 
 use alter_zero::app::{ToastKind, USAGE_EMPTY_NOTICE, UsageTarget};
-use alter_zero::clipboard;
 use alter_zero::llm::ModelConfig;
 use alter_zero::llm::usage::UsageReport;
 use alter_zero::stream::CancelToken;
@@ -110,11 +109,8 @@ impl Session<'_> {
     /// `c` on the page: the highlighted subscription's usage page to the
     /// clipboard, through `/copy`'s path, the page staying open.
     pub(crate) fn copy_usage_link(&mut self, url: &str) {
-        match clipboard::copy_to_clipboard(url) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                self.toast("Copied the usage link to clipboard", ToastKind::Info);
-            }
+        match self.copy_text(url) {
+            Ok(()) => self.toast("Copied the usage link to clipboard", ToastKind::Info),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }

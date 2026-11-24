@@ -5,20 +5,22 @@
 smoke_begin
 
 # /copy copies the last assistant response to the clipboard
-# (docs/copy.md). Headless here — the display variables are unset for the whole
-# suite, so this holds on a developer's desktop as well as on CI — so arboard
-# has no clipboard server and the OSC 52 fallback fires, which tmux
-# (set-clipboard on, on the suite's own server) captures into its paste buffer,
-# so `show-buffer` reads it back. With a display reaching the app the native
-# path wins instead: nothing lands in tmux's buffer and the copy goes to the
-# user's real clipboard. First an empty conversation: /copy
-# reports "No agent response to copy". Then after a reply finishes, /copy writes
-# the reply's tail to the clipboard and confirms "Copied last message to
-# clipboard".
+# (docs/copy.md). Played as an SSH login straight into a terminal, with no
+# multiplexer in between: the app runs with an SSH_CONNECTION and without
+# tmux's variables, and the phase's tmux, with `set-clipboard on`, is the
+# terminal that takes an OSC 52 escape into its paste buffer, where
+# `show-buffer` reads it back. Headless too — the display variables are unset
+# for the whole suite, so this holds on a developer's desktop as well as on
+# CI — so arboard has no clipboard server and the bare escape is what reaches
+# the clipboard. (Inside tmux the copy goes through tmux's own buffer instead,
+# Phase 169.) First an empty conversation: /copy reports "No agent response to
+# copy". Then after a reply finishes, /copy writes the reply's tail to the
+# clipboard and confirms "Copied last message to clipboard".
 S25="${S}_copy"
-tmux new-session -d -s "$S25" -x 80 -y 24 "$APP"
-# tmux must capture OSC 52 from the app into its own buffer (default is
-# `external`: forward-only, not stored) — `on` stores it so show-buffer sees it.
+tmux new-session -d -s "$S25" -x 80 -y 24 \
+	"env -u TMUX -u TMUX_PANE SSH_CONNECTION='198.51.100.7 52144 203.0.113.10 22' $APP"
+# The terminal takes the app's escape into its buffer. tmux's own default,
+# `external`, would drop it: what a copy made inside tmux goes around.
 tmux set-option -g set-clipboard on
 sleep 0.4
 # Empty conversation: nothing to copy → "No agent response to copy", an info
@@ -51,12 +53,12 @@ copy_ok="$(wait_pane 3 "$S25" -S -20 -- -F "Copied last message to clipboard")" 
 copy_clip="$(tmux show-buffer 2>/dev/null)"
 echo "==== captured pane (after /copy) ===="
 printf '%s\n' "$copy_ok"
-echo "==== tmux clipboard buffer (the OSC 52 fallback landed here) ===="
+echo "==== tmux clipboard buffer (the bare OSC 52 escape landed here) ===="
 printf '%s\n' "$copy_clip"
 tmux kill-session -t "$S25" 2>/dev/null
 
 # Phase 28: /copy reports the empty case, confirms the copy, and the OSC 52
-# fallback actually reached the clipboard — tmux's buffer holds the reply tail
+# escape actually reached the clipboard — tmux's buffer holds the reply tail
 # (docs/copy.md).
 expect_has "$copy_empty" -F "No agent response to copy" "/copy with no assistant message did not show 'No agent response to copy'"
 # Mocha is the fixture's default theme: an info toast wears its dim (#7f849c),
@@ -65,4 +67,4 @@ if ! printf '%s\n' "$copy_empty_styled" | grep -F 'No agent response to copy' | 
 	fail "/copy with nothing to copy is not styled as a dim info toast"
 fi
 expect_has "$copy_ok" -F "Copied last message to clipboard" "/copy did not confirm with 'Copied last message to clipboard'"
-expect_has "$copy_clip" -F "$SETTLED_REPLY" "/copy's OSC 52 fallback did not put the reply on the clipboard (tmux buffer missing the reply tail)"
+expect_has "$copy_clip" -F "$SETTLED_REPLY" "/copy's OSC 52 escape did not put the reply on the clipboard (tmux buffer missing the reply tail)"

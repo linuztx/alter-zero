@@ -330,7 +330,10 @@ directory.
 - **Copy the picture, not the file.** A file copied in a file manager puts a
   *path* on the clipboard, and that path does not exist in the container.
 - **Text copy needs none of this.** `/copy` reaches your clipboard through the
-  terminal itself (OSC 52).
+  terminal itself (OSC 52). Under tmux on your machine, the image has no
+  `tmux` to hand the text to, so the host tmux must let the escape through:
+  `allow-passthrough on` (the pictures' setting, *Inside tmux: enable
+  graphics passthrough* above) or `set-clipboard on`.
 
 **Over SSH, or on macOS and Windows**, there is no desktop socket to forward.
 Put the picture in the workspace and ask for it by path:

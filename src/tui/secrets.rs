@@ -14,7 +14,6 @@
 //! [`Action::SaveSecret`]: alter_zero::app::Action::SaveSecret
 
 use alter_zero::app::ToastKind;
-use alter_zero::clipboard;
 use alter_zero::llm::keystore::{load_secrets_file, update_secrets_file};
 use alter_zero::secrets::{SecretDraft, SecretStore, masked_notice, placeholder};
 
@@ -95,11 +94,8 @@ impl Session<'_> {
     /// a message. The page stays open.
     pub(crate) fn copy_secret_placeholder(&mut self, name: &str) {
         let text = placeholder(name);
-        match clipboard::copy_to_clipboard(&text) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                self.toast(format!("Copied {text} to clipboard"), ToastKind::Info);
-            }
+        match self.copy_text(&text) {
+            Ok(()) => self.toast(format!("Copied {text} to clipboard"), ToastKind::Info),
             Err(reason) => self.toast(format!("Copy failed: {reason}"), ToastKind::Error),
         }
     }
